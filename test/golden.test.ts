@@ -96,7 +96,7 @@ const RICH: typeof STATES = [
 	['rich-ongoing', '#ongoing'],
 	['rich-settings', '#settings'],
 	['rich-settings-more', '#settings/system', p => p.click('details.adv summary')],
-	['rich-focus-A1-details', '#focus/A1', p => p.click('#card-A1 .c-sec details.why:not([data-why]) summary')],
+	['rich-focus-A1-details', '#focus/A1', p => p.click('#card-A1 .c-sec details[data-dbg] summary')],
 ]
 
 // What the page drew: the header with its tabs, the main area, and the key list. The commit in the version line changes with

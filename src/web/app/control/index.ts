@@ -27,6 +27,7 @@ export function listen() {
 		const code = () => d.closest<HTMLElement>('[data-code]')?.dataset.code
 		if (d.dataset?.row != null) { const c = code(); if (c) U(c).open = open }
 		if (d.dataset?.why != null) { const c = code(); if (c) U(c).whyOpen = open }
+		if (d.dataset?.dbg != null) { const c = code(); if (c) U(c).dbgOpen = open }
 		if (d.dataset?.adv != null) S.advOpen = open
 		if (d.dataset?.chan != null) S.chanOpen = open
 	}

@@ -38,7 +38,7 @@ export function init(boot: Boot, io: IO | null, poll: number) {
 export const setView = (v: View) => { V = v }
 
 export function U(code: string): CardUi {
-	return S.ui[code] ??= { status: 'ready', msg: '', lost: false, stale: false, touched: false, pick: null, otherOn: false, other: '', editing: false, text: null, answer: '', ask: '', cmts: null, facts: null, threadOpen: false, whyOpen: false, menu: false }
+	return S.ui[code] ??= { status: 'ready', msg: '', lost: false, stale: false, touched: false, pick: null, otherOn: false, other: '', editing: false, text: null, answer: '', ask: '', cmts: null, facts: null, threadOpen: false, whyOpen: false, dbgOpen: false, menu: false }
 }
 export const cardOf = (code: string): ItemCard | KnowledgeCard | undefined => V.needs.find(c => c.code === code) || V.knowledge.find(c => c.code === code)
 export function syncOrder() {

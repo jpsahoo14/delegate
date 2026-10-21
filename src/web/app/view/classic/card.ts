@@ -107,7 +107,7 @@ function workBlock(c: ItemCard): H {
 		${k.due && !U(`work:${c.code}`).msg ? html`<div class="acts">${btn('Wait 3 days', `wait ${c.code}: 3d`)}${btn('Close', `close ${c.code}`, { ghost: true })}</div>` : ''}${rowState(`work:${c.code}`)}</div>`
 }
 // Show details: the lines that explain this item, and a button that copies them for a bug report.
-const debugBlock = (c: ItemCard): H => c.debug ? html`<div class="c-sec"><details class="why"><summary>${I('right', 'sm chev')}<span class="rs"><b>Details</b></span></summary><div class="why-b"><pre class="dbg">${esc(c.debug.join('\n'))}</pre>${env.snap ? '' : B('Copy details', 'copydebug', { sm: true, ghost: true })}</div></details></div>` : ''
+const debugBlock = (c: ItemCard, u: CardUi): H => c.debug ? html`<div class="c-sec"><details class="why" data-dbg${u.dbgOpen ? raw(' open') : ''}><summary>${I('right', 'sm chev')}<span class="rs"><b>Details</b></span></summary><div class="why-b"><pre class="dbg">${esc(c.debug.join('\n'))}</pre>${env.snap ? '' : B('Copy details', 'copydebug', { sm: true, ghost: true })}</div></details></div>` : ''
 
 export function card(c: ItemCard, enter?: boolean): H {
 	const u = U(c.code), done = S.done.get(c.code)
@@ -117,7 +117,7 @@ export function card(c: ItemCard, enter?: boolean): H {
 		<div class="c-sec">${head(c, u)}${askBlock(c, u)}</div>
 		${workBlock(c)}
 		<div class="c-sec">${bodyOf(c, u)}</div>
-		${why(c, u)}${debugBlock(c)}
+		${why(c, u)}${debugBlock(c, u)}
 		<div class="c-sec c-foot">${actions(c, u)}</div>
 		${askThread(c, u)}</article>`
 }

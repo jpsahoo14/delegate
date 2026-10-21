@@ -183,7 +183,10 @@ test('smoke: Details on a card copies its lines for a bug report', { skip }, asy
 	const t = await open('#focus/A1', s => s.saveConfig({ ...s.config(), showDetails: true }))
 	try {
 		await t.page.context().grantPermissions(['clipboard-read', 'clipboard-write'])
-		await t.page.click('#card-A1 details.why:not([data-why]) summary')
+		await t.page.click('#card-A1 details[data-dbg] summary')
+		// A poll's redraw keeps Details open (CI macOS 10-21: it closed, and Copy details went with it).
+		await t.page.evaluate(() => window.dispatchEvent(new HashChangeEvent('hashchange')))
+		assert.equal(await t.page.locator('#card-A1 details[data-dbg]').getAttribute('open'), '')
 		const lines = await t.page.innerText('#card-A1 pre.dbg')
 		await t.page.click('#card-A1 [data-act=copydebug]')
 		await t.page.waitForSelector('#toast:has-text("Details copied.")')

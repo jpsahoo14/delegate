@@ -19,7 +19,7 @@ export type Primary = { label: string; cmd: string; kind: Kind; disabled?: boole
 export type CardUi = {
 	status: 'ready' | 'pending' | 'refused'; msg: string; lost: boolean; stale: boolean; touched: boolean
 	pick: number[] | null; otherOn: boolean; other: string; editing: boolean; text: string | null; answer: string; ask: string
-	cmts: Set<number> | null; facts: Set<number> | null; threadOpen: boolean; whyOpen: boolean; menu: boolean
+	cmts: Set<number> | null; facts: Set<number> | null; threadOpen: boolean; whyOpen: boolean; dbgOpen: boolean; menu: boolean
 	verb?: string; by?: string; marking?: boolean; mark?: string; marknote?: string; open?: boolean
 }
 

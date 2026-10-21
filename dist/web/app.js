@@ -150,7 +150,7 @@
     V = v;
   };
   function U(code) {
-    return S.ui[code] ??= { status: "ready", msg: "", lost: false, stale: false, touched: false, pick: null, otherOn: false, other: "", editing: false, text: null, answer: "", ask: "", cmts: null, facts: null, threadOpen: false, whyOpen: false, menu: false };
+    return S.ui[code] ??= { status: "ready", msg: "", lost: false, stale: false, touched: false, pick: null, otherOn: false, other: "", editing: false, text: null, answer: "", ask: "", cmts: null, facts: null, threadOpen: false, whyOpen: false, dbgOpen: false, menu: false };
   }
   var cardOf = (code) => V.needs.find((c) => c.code === code) || V.knowledge.find((c) => c.code === code);
   function syncOrder() {
@@ -1177,6 +1177,10 @@
         const c = code();
         if (c) U(c).whyOpen = open;
       }
+      if (d.dataset?.dbg != null) {
+        const c = code();
+        if (c) U(c).dbgOpen = open;
+      }
       if (d.dataset?.adv != null) S.advOpen = open;
       if (d.dataset?.chan != null) S.chanOpen = open;
     };
@@ -1463,7 +1467,7 @@
 		${plan}<ol class="steps">${k.steps.map((x) => html`<li${x.news ? raw(' class="news"') : ""}><span class="m">${esc(when(x.at))}</span> ${esc(x.what)}</li>`)}</ol>
 		${k.due && !U(`work:${c.code}`).msg ? html`<div class="acts">${btn("Wait 3 days", `wait ${c.code}: 3d`)}${btn("Close", `close ${c.code}`, { ghost: true })}</div>` : ""}${rowState(`work:${c.code}`)}</div>`;
   }
-  var debugBlock = (c) => c.debug ? html`<div class="c-sec"><details class="why"><summary>${I("right", "sm chev")}<span class="rs"><b>Details</b></span></summary><div class="why-b"><pre class="dbg">${esc(c.debug.join("\n"))}</pre>${env.snap ? "" : B("Copy details", "copydebug", { sm: true, ghost: true })}</div></details></div>` : "";
+  var debugBlock = (c, u) => c.debug ? html`<div class="c-sec"><details class="why" data-dbg${u.dbgOpen ? raw(" open") : ""}><summary>${I("right", "sm chev")}<span class="rs"><b>Details</b></span></summary><div class="why-b"><pre class="dbg">${esc(c.debug.join("\n"))}</pre>${env.snap ? "" : B("Copy details", "copydebug", { sm: true, ghost: true })}</div></details></div>` : "";
   function card(c, enter) {
     const u = U(c.code), done = S.done.get(c.code);
     if (done) return html`<article class="card" id="card-${esc(c.code)}" data-code="${esc(c.code)}" aria-labelledby="ap-${esc(c.code)}" tabindex="-1"><div class="applied" role="status"><span class="ok">${I("check", "lg")}</span><p id="ap-${esc(c.code)}"><b>${esc(done.msg)}</b><span>${esc(c.who.name)} · ${esc(c.chat.name)}</span></p><span class="code">${esc(c.code)}</span></div>${((r) => r ? html`<div class="c-sec">${markBox(r, u)}</div>` : "")(V.done.find((r) => r.code === c.code && r.notes))}${askThread(sentOf(c), u)}</article>`;
@@ -1472,7 +1476,7 @@
 		<div class="c-sec">${head(c, u)}${askBlock(c, u)}</div>
 		${workBlock(c)}
 		<div class="c-sec">${bodyOf(c, u)}</div>
-		${why(c, u)}${debugBlock(c)}
+		${why(c, u)}${debugBlock(c, u)}
 		<div class="c-sec c-foot">${actions(c, u)}</div>
 		${askThread(c, u)}</article>`;
   }

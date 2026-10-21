@@ -7,7 +7,7 @@ import { automationInput, markCommand, newReminder, peopleOf, rowWatchCommand, r
 import type { CardUi, DoneRow, ItemCard, KnowledgeCard, View } from '../src/web/app/model/types.ts'
 import { esc, html, join, raw } from '../src/web/app/view/html.ts'
 
-const ui = (o: Partial<CardUi> = {}): CardUi => ({ status: 'ready', msg: '', lost: false, stale: false, touched: false, pick: null, otherOn: false, other: '', editing: false, text: null, answer: '', ask: '', cmts: null, facts: null, threadOpen: false, whyOpen: false, menu: false, ...o })
+const ui = (o: Partial<CardUi> = {}): CardUi => ({ status: 'ready', msg: '', lost: false, stale: false, touched: false, pick: null, otherOn: false, other: '', editing: false, text: null, answer: '', ask: '', cmts: null, facts: null, threadOpen: false, whyOpen: false, dbgOpen: false, menu: false, ...o })
 const who = whoOf('Priya Shah')
 const card = (o: Partial<ItemCard> = {}): ItemCard => ({ code: 'A1', type: 'reply', rev: 'r', who, chat: { name: 'C', group: true, guests: false }, at: '', thread: [], newCount: 0, changes: [], why: { sources: [], gaps: [] }, notes: [], status: '', ...o })
 const row = (o: Partial<DoneRow>): DoneRow => ({ code: 'A9', kind: 'reply', who, sentence: '', by: '', at: '2026-10-20T10:00:00.000Z', ...o })
