@@ -64,7 +64,7 @@ function actions(c: ItemCard, u: CardUi): H {
 	// The main button shows busy only for its own action, never for Dismiss, Later, or an answer (dogfood).
 	// It is also busy while the step it waits on runs (preparing a picked option), with that step's word.
 	const pending = u.status === 'pending' && (u.by === 'primary' || u.verb === verb)
-	const busyLabel = /^pick\b/i.test(u.verb || '') && u.by !== 'primary' ? 'Preparing…' : p.kind === 'draft' ? 'Drafting…' : /^(Post|Make)/.test(p.label) ? `${p.label.split(' and ')[0].replace(/^Post/, 'Posting').replace(/^Make/, 'Making')}…` : 'Sending…'
+	const busyLabel = /^pick\b/i.test(u.verb || '') && u.by !== 'primary' ? 'Preparing…' : p.kind === 'draft' ? 'Drafting…' : /^(Post|Make|Approve|Reject|Check)\b/.test(p.label) ? `${p.label.split(' and ')[0].replace(/^Post/, 'Posting').replace(/^Make/, 'Making').replace(/^Approve/, 'Approving').replace(/^Reject/, 'Rejecting').replace(/^Check/, 'Checking')}…` : 'Sending…'
 	// A change failed or was dropped: the reply alone, quoted by the runner first, so nothing goes until a second ok (next action).
 	const only = c.replyOnly && !u.editing ? B('Send reply only', 'replyonly', { verb: c.replyOnly, busy: u.status === 'pending' && u.verb === c.replyOnly, busyLabel: 'Checking…' }) : ''
 	const sec = [u.editing ? B('Cancel edit', 'canceledit', { cls: 'sec-hide' }) : '', only, B('Later', 'later', { ghost: true, verb: `later ${c.code}` })]

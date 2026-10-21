@@ -127,7 +127,7 @@
   function reviewPrimary(c, u) {
     const on = [...u.cmts ?? new Set(c.changes.map((x) => x.n))].sort((a, b) => a - b), all = on.length === c.changes.length;
     const edited = u.text != null && c.draft && u.text.trim() !== c.draft.text.trim();
-    const label = changeLabel(c, on.length, !!c.draft);
+    const label = c.promise && on.length === 1 && !c.draft ? c.changes.find((x) => x.n === on[0]).action : changeLabel(c, on.length, !!c.draft);
     if (edited) return all ? { label: `${label.replace(/ and reply$/, "")} and send your version`, cmd: `send ${c.code}: ${u.text.trim()}`, kind: "finish" } : { label, cmd: "", kind: "finish", disabled: true, hint: "To change the reply and skip a change, do one at a time." };
     const skip = c.changes.map((x) => x.n).filter((n) => !on.includes(n));
     return { label, cmd: all ? `ok ${c.code}` : `ok ${c.code} except ${skip.join(", ")}`, kind: "finish", disabled: !on.length && !c.draft };
@@ -140,7 +140,7 @@
     review: reviewPrimary
   };
   var reviewAgainPrimary = (c, u) => c.reviewAgain && !(c.type === "question" && u.answer.trim()) ? { label: "Review again", cmd: c.reviewAgain, kind: "draft", hint: "The PR changed since the review. Nothing is changed or sent; you will see the new result first.", verb: c.reviewAgain } : void 0;
-  var primaryOf = (c, u, name) => reviewAgainPrimary(c, u) ?? (PRIMARY[c.type] || PRIMARY.reply)(c, u, name);
+  var primaryOf = (c, u, name) => c.promise?.failed !== void 0 && !c.draft ? { label: "Check again", cmd: `ok ${c.code}`, kind: "finish" } : reviewAgainPrimary(c, u) ?? (PRIMARY[c.type] || PRIMARY.reply)(c, u, name);
   var factsOn = (k, u) => u.facts ?? new Set(k.facts.map((_, i) => i + 1));
   var kCmd = (k, u) => {
     const on = factsOn(k, u);
@@ -1761,6 +1761,7 @@
   var meaningLine = (m) => m?.length ? html`<p class="mean">${join(m.map((p) => p.warn ? html`<span class="warn">${I("warn", "sm")}${esc(p.text)}</span>` : esc(p.text)), raw(" · "))}</p>` : "";
   var alsoLine = (c, ic) => !c.changes.length ? "" : c.changes.some((x) => x.meaning) ? html`<div class="also-line">${I(ic, "sm")}<div><b>Also:</b><ul class="also-list">${c.changes.map((x) => html`<li>${esc(x.summary)}${meaningLine(x.meaning)}</li>`)}</ul></div></div>` : html`<p class="also-line">${I(ic, "sm")}<span><b>Also:</b> ${esc(c.changes.map((x) => x.summary).join("; "))}</span></p>`;
   var preview = (c, u) => c.draft?.preview && !u.otherOn ? html`<div class="preview">${draftBlock(c, u)}${alsoLine(c, c.type === "meeting" ? "cal" : "task")}</div>` : "";
+  var saidLine = (c) => c.promise ? html`<p class="also-line">${I("reply", "sm")}<span><b>You said:</b> "${esc(c.promise.said)}"</span></p>${c.promise.failed !== void 0 ? html`<p class="q">Sent. Could not check what your reply promised: ${esc(c.promise.failed)}</p>` : ""}` : "";
   var promiseLines = (c) => html`${c.todos?.length ? html`<p class="also-line">${I("warn", "sm")}<span><b>Yours to do:</b> ${esc(c.todos.join("; "))}</span></p>` : ""}${c.follow ? html`<p class="also-line">${I("eye", "sm")}<span><b>Then:</b> watch ${esc(c.follow.target)} every ${c.follow.everyHours} h until ${esc(c.follow.until)}, for up to 7 days. Change it under Watching.</span></p>` : ""}`;
 
   // src/web/app/view/classic/cards/choice.ts
@@ -1773,12 +1774,12 @@
   var body3 = (c, u) => html`<p class="q">${esc(c.question)}</p>${ctx(c)}<label class="sr" for="ans-${esc(c.code)}">Your answer</label><input class="field" id="ans-${esc(c.code)}" data-input="answer" placeholder="Your answer" value="${esc(u.answer)}" autocomplete="off">`;
 
   // src/web/app/view/classic/cards/reply.ts
-  var body4 = (c, u) => html`${c.question && !c.draft?.preview ? html`<p class="q">${esc(c.question)}</p>` : ""}${ctx(c)}${draftBlock(c, u)}${alsoLine(c, "task")}${promiseLines(c)}`;
+  var body4 = (c, u) => html`${saidLine(c)}${c.question && !c.draft?.preview ? html`<p class="q">${esc(c.question)}</p>` : ""}${ctx(c)}${draftBlock(c, u)}${alsoLine(c, "task")}${promiseLines(c)}`;
 
   // src/web/app/view/classic/cards/review.ts
   function body5(c, u) {
     const on = u.cmts ?? new Set(c.changes.map((x) => x.n));
-    return html`${c.question ? html`<p class="q">${esc(c.question)}</p>` : ""}${c.job ? html`<p class="rv-sum">${I("pr", "sm")}<b>${esc(c.job)}</b><span>· ${esc(plural(c.changes.length, "finding"))}</span></p>` : ""}
+    return html`${saidLine(c)}${c.question ? html`<p class="q">${esc(c.question)}</p>` : ""}${c.job && !c.promise ? html`<p class="rv-sum">${I("pr", "sm")}<b>${esc(c.job)}</b><span>· ${esc(plural(c.changes.length, "finding"))}</span></p>` : ""}
 			<div class="lbl-row"><span>Changes to make</span><span class="sp"></span><span style="text-transform:none;letter-spacing:0;font-weight:500">${on.size} of ${c.changes.length} selected</span></div>
 			<ul class="cmts">${c.changes.map((x) => html`<li><label class="cmt"><input type="checkbox" id="cm-${esc(c.code)}-${x.n}" data-cmt="${x.n}"${on.has(x.n) ? raw(" checked") : ""}${env.snap ? raw(" disabled") : ""}><span class="mk">${I("check")}</span><span class="cb"><span class="loc">${esc(x.target)}<span class="tag">${esc(x.system)}</span></span><p>${esc(x.summary)}</p>${meaningLine(x.meaning)}${x.detail ? html`<pre>${esc(x.detail)}</pre>` : ""}</span></label></li>`)}</ul>${draftBlock(c, u)}`;
   }
@@ -1832,7 +1833,7 @@
   function actions(c, u) {
     const p = primary(c), verb = p.verb || p.cmd;
     const pending = u.status === "pending" && (u.by === "primary" || u.verb === verb);
-    const busyLabel = /^pick\b/i.test(u.verb || "") && u.by !== "primary" ? "Preparing…" : p.kind === "draft" ? "Drafting…" : /^(Post|Make)/.test(p.label) ? `${p.label.split(" and ")[0].replace(/^Post/, "Posting").replace(/^Make/, "Making")}…` : "Sending…";
+    const busyLabel = /^pick\b/i.test(u.verb || "") && u.by !== "primary" ? "Preparing…" : p.kind === "draft" ? "Drafting…" : /^(Post|Make|Approve|Reject|Check)\b/.test(p.label) ? `${p.label.split(" and ")[0].replace(/^Post/, "Posting").replace(/^Make/, "Making").replace(/^Approve/, "Approving").replace(/^Reject/, "Rejecting").replace(/^Check/, "Checking")}…` : "Sending…";
     const only = c.replyOnly && !u.editing ? B("Send reply only", "replyonly", { verb: c.replyOnly, busy: u.status === "pending" && u.verb === c.replyOnly, busyLabel: "Checking…" }) : "";
     const sec = [u.editing ? B("Cancel edit", "canceledit", { cls: "sec-hide" }) : "", only, B("Later", "later", { ghost: true, verb: `later ${c.code}` })];
     const foot = env.snap ? "" : p.hint ? html`<p class="vh">${esc(p.hint)}</p>` : verb ? html`<p class="vh">or type ${kbd(verb.length > 40 ? verb.slice(0, 38) + "…" : verb)} in Teams or your AI chat</p>` : "";

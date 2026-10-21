@@ -1,4 +1,5 @@
 import { active, addPart, homeNamed, homeOf, inWork, named, newTurn, ownerStep, statusOf, step } from './work.ts'
+import { reopenPromise } from './promise.ts'
 import { watchCommand } from './track.ts'
 import { askAtOf } from '../core/numbers.ts'
 import { outcome } from './habits.ts'
@@ -174,6 +175,8 @@ export async function intake(store: Store, src: Source, cfg: Config, cursors: Re
 			if (room && c.kind === 'context') { c = { kind: 'ask', from: c.from, text: c.text }; rooms++ }
 			if (c.kind === 'context') { for (const o of open) appendThread(store, o, toMsg(raw, c.from, c.text, false)); continue }
 			if (wf?.lastMsgId && BigInt(raw.id) <= BigInt(wf.lastMsgId)) continue
+			// The reply already went and its promised change waits, or its check failed: the new ask is a new turn (Slice 3).
+			if (wf && c.kind === 'ask') reopenPromise(store, wf)
 			wf ??= await create(store, src, cfg, chat, c.kind === 'ask' ? earlierOf(store, chat.id, c.from.id) : undefined)
 			if (elsewhere && !wf.partOf) { addPart(elsewhere, wf); step(elsewhere, `${c.from.name.split(' ')[0]} (${chat.group ? chat.name : '1:1'}, ${wf.code}): ${c.text}`, { ref: `part:${wf.id}` }); store.save(elsewhere) }
 			appendThread(store, wf, toMsg(raw, c.from, c.text, false))

@@ -45,5 +45,7 @@ export const alsoLine = (c: ItemCard, ic: string): H => !c.changes.length ? ''
 	: c.changes.some(x => x.meaning) ? html`<div class="also-line">${I(ic, 'sm')}<div><b>Also:</b><ul class="also-list">${c.changes.map(x => html`<li>${esc(x.summary)}${meaningLine(x.meaning)}</li>`)}</ul></div></div>`
 	: html`<p class="also-line">${I(ic, 'sm')}<span><b>Also:</b> ${esc(c.changes.map(x => x.summary).join('; '))}</span></p>`
 export const preview = (c: ItemCard, u: CardUi): H => c.draft?.preview && !u.otherOn ? html`<div class="preview">${draftBlock(c, u)}${alsoLine(c, c.type === 'meeting' ? 'cal' : 'task')}</div>` : ''
+// The owner's own words that already went out, and, when checking what they promised failed, why (Slice 3).
+export const saidLine = (c: ItemCard): H => c.promise ? html`<p class="also-line">${I('reply', 'sm')}<span><b>You said:</b> "${esc(c.promise.said)}"</span></p>${c.promise.failed !== undefined ? html`<p class="q">Sent. Could not check what your reply promised: ${esc(c.promise.failed)}</p>` : ''}` : ''
 // What the reply promises beyond its words: the owner's own to-dos, and the check-back that starts once it is sent (B19).
 export const promiseLines = (c: ItemCard): H => html`${c.todos?.length ? html`<p class="also-line">${I('warn', 'sm')}<span><b>Yours to do:</b> ${esc(c.todos.join('; '))}</span></p>` : ''}${c.follow ? html`<p class="also-line">${I('eye', 'sm')}<span><b>Then:</b> watch ${esc(c.follow.target)} every ${c.follow.everyHours} h until ${esc(c.follow.until)}, for up to 7 days. Change it under Watching.</span></p>` : ''}`

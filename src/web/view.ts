@@ -35,6 +35,8 @@ export type ItemCard = {
 	why: { reason?: string; confidence?: string; sources: SourceRow[]; gaps: string[]; searched?: string[] }
 	notes: Note[]; status: string; openOn?: string; teams?: string
 	todos?: string[]; follow?: { target: string; until: string; everyHours: number }
+	// The owner's own words already went out: said, and why checking what they promised failed (Slice 3).
+	promise?: { said: string; failed?: string }
 	work?: WorkView
 	// Show details (Settings, Advanced): what decided this item, for when something looks wrong.
 	debug?: string[]
@@ -179,6 +181,7 @@ function card(store: Store, w: Workflow): ItemCard {
 		...nextSteps(w),
 		...(store.config().showDetails ? { debug: debugLines(w) } : {}),
 		why: { reason: w.decision?.reason, confidence: w.decision?.confidence, sources: (w.draft?.sources ?? []).map(s => source(s.ref, s.tier, s.stale, s.label, k)), gaps: w.gaps ?? [], searched: (w.looked ?? []).map(lookLine) },
+		...(w.promise?.state === 'offered' || w.promise?.state === 'failed' ? { promise: { said: w.promise.text, ...(w.promise.state === 'failed' ? { failed: w.promise.why ?? 'its run ended without a result' } : {}) } } : {}),
 		work: workView(w, homeOf(store, w)), notes: (w.notes ?? []).map(n => n.sources ? { ...n, sources: n.sources.map(s => ({ ...s, ref: openLink(s.ref) })) } : n), status: w.status, openOn: w.openOn, todos: w.todos, follow: w.follow && { target: w.follow.target, until: w.follow.until, everyHours: w.follow.everyHours ?? 4 },
 		teams: w.chat.id && w.lastMsgId && !w.chat.test ? messageLink(w.chat.id, w.lastMsgId) : undefined,
 	}

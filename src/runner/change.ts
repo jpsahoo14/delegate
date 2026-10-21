@@ -1,10 +1,10 @@
 import { cliServers, clientFor, toolServers } from '../adapters/mcp-client.ts'
 import { NAME } from '../brand.ts'
-import { isVote, pendingEffects, prIdOf, refusal } from '../core/effects.ts'
+import { isVote, pendingEffects, prIdOf, refusal, voteValue } from '../core/effects.ts'
 import type { CallRec, Config, Effect, Workflow } from '../core/types.ts'
 import type { Store } from '../store/state.ts'
 import { parentsOf, stillApproved } from './jobs.ts'
-import { deployMoved, prMoved, prOf, prTarget, type BuildProbe } from './probe.ts'
+import { deployMoved, prMoved, prOf, prTarget, sameVote, type BuildProbe } from './probe.ts'
 import { isDeploy } from '../core/deploy.ts'
 import { callKey, ledgerRec, madeBefore } from './ledger.ts'
 export { madeBefore }
@@ -38,14 +38,20 @@ export async function makeChange(store: Store, jobId: string, runId: string, ind
 	const unusable = !to ? `No tool server is set up for ${e.call!.tool}${cli.error ? `: ${cli.path} could not be read (${cli.error})` : ''}.`
 		: !spec?.command ? `The ${to[0]} tool server is remote (${spec?.type ?? 'http'}); ${NAME} cannot call it yet.` : undefined
 	if (unusable) { store.saveChange(jobId, runId, index, { call: key, state: 'failed', error: unusable, at: at() }); return { error: unusable } }
-	// The ledger: a call made in any run is never made again, whatever the lists say (review 10-21e P1).
-	const made = madeBefore(store, e)
+	// The ledger: a call made in any run is never made again, whatever the lists say (review 10-21e P1). A vote is a state, so the
+	// PR read right before it decides instead: one the PR shows is never cast, and one reset by hand is cast again (re-review P2-4).
+	const made = isVote(e.call) ? undefined : madeBefore(store, e)
 	if (made) { store.saveChange(jobId, runId, index, { call: JSON.stringify(e.call), state: 'done', ref: made.ref, at: made.at }); return { ref: made.ref } }
 	const open = store.callRec(callKey(e.call!))
 	// Recorded in this run too, so the item shows it as may have been made and the owner's "again" can clear it.
 	if (open?.state === 'calling' && !isVote(e.call)) { store.saveChange(jobId, runId, index, { call: key, state: 'calling', at: open.at }); return { error: `Change ${index} may have been made already: an earlier call has no answer. The owner must check, then say to make it again.` } }
 	// A deploy reads its ring and PR again right before the call, as a vote reads its PR (owned work).
 	const moved = isVote(e.call) ? await voteMoved(store, owner, e, probe) : isDeploy(e.call) ? await deployMoved(store, owner, e, probe).then(error => (error ? { error, stale: undefined } : undefined)) : undefined
+	if (moved && 'cast' in moved) {
+		const ref = store.callRec(callKey(e.call!))?.ref ?? 'already cast'
+		store.saveChange(jobId, runId, index, { call: key, state: 'done', ref, at: at() })
+		return { ref }
+	}
 	if (moved) { store.saveChange(jobId, runId, index, { call: key, state: 'failed', error: moved.error, at: at(), ...(moved.stale ? { stale: true as const } : {}) }); return { error: moved.error } }
 	const ledger = (r: Omit<CallRec, 'call' | 'head' | 'vote' | 'at'>) => store.saveCallRec(ledgerRec(e, r))
 	store.saveChange(jobId, runId, index, { call: key, state: 'calling', at: at() }); ledger({ state: 'calling' })
@@ -63,12 +69,15 @@ export async function makeChange(store: Store, jobId: string, runId: string, ind
 
 // The PR as it is right before the vote: still active, at the commit reviewed, and what the owner was shown about it.
 // A PR that cannot be read gets no vote; one that changed asks the owner to review again (stale).
-async function voteMoved(store: Store, wf: Workflow, e: Effect, probe?: BuildProbe): Promise<{ error: string; stale?: boolean } | undefined> {
+// cast: the owner's vote there already says this one, so it is not cast again.
+async function voteMoved(store: Store, wf: Workflow, e: Effect, probe?: BuildProbe): Promise<{ error: string; stale?: boolean } | { cast: true } | undefined> {
 	const c = e.call!, ref = prOf(store, wf) ?? { project: String(c.args.project ?? ''), repo: String(c.args.repositoryId ?? ''), id: prIdOf(c)! }
 	if (!probe?.pr) return { error: `PR ${ref.id} could not be read right before the vote: no Azure DevOps server is set up.` }
 	try {
-		const why = prMoved(await probe.pr(ref.project, ref.repo, ref.id), e)
-		return why.length ? { error: `PR ${ref.id} changed since your review (${why.join(', ')}).`, stale: true } : undefined
+		const st = await probe.pr(ref.project, ref.repo, ref.id), why = prMoved(st, e)
+		if (why.length) return { error: `PR ${ref.id} changed since your review (${why.join(', ')}).`, stale: true }
+		const me = store.config().owner.name.trim().toLowerCase(), mine = st.votes.filter(v => v.name.trim().toLowerCase() === me)
+		return mine.length === 1 && sameVote(mine[0].vote, voteValue(c)) ? { cast: true } : undefined
 	} catch (err) { return { error: `Could not read PR ${ref.id} right before the vote (${String(err).slice(0, 120)}).` } }
 }
 

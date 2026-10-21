@@ -16,7 +16,7 @@ const { renderApp } = await import('../src/web/shell.ts')
 const { view } = await import('../src/web/view.ts')
 const { applyAnswers } = await import('../src/runner/apply.ts')
 const { propose: proposeAutomation } = await import('../src/runner/automations.ts')
-const { seedNext, seedQuiet, stub, pauseNext } = await import('./fixture.ts')
+const { seedNext, seedQuiet, seedPromise, stub, pauseNext } = await import('./fixture.ts')
 
 const PW = process.env.PLAYWRIGHT_CORE ?? (() => { try { return createRequire(import.meta.url).resolve('playwright-core').replace(/index\.js$/, 'index.mjs') } catch { return '' } })()
 const skip = existsSync(PW) ? false : 'playwright-core not found (set PLAYWRIGHT_CORE)'
@@ -388,4 +388,39 @@ test('bug 10-21: in the new experience an Ask Delegate answer uses the card widt
 		assert.equal(await t.page.locator('#card-A1 .na .bot').isVisible(), true, 'with its Delegate mark')
 		assert.equal(await t.page.locator('#card-A1 .na .nsrc a').innerText(), 'PR 4200001')
 	} finally { await t.close() }
+})
+
+// Slice 3: the owner's own words promised a vote. Both experiences show what they said, the vote and what it means, and one
+// button that sends ok; a failed check offers Check again, which the runner applies.
+test('slice 3 own words: the promise shows in both experiences with one button that sends ok', { skip }, async () => {
+	for (const ui of ['new', 'classic'] as const) {
+		const t = await open(ui === 'new' ? '#now' : '#focus', s => seedPromise(s, ui))
+		try {
+			if (ui === 'new') {
+				await t.page.waitForSelector('#now-A60')
+				const a60 = await t.page.textContent('#now-A60')
+				for (const want of ["You said you'd approve PR 4200001", 'You said', "Looks good, I'll approve the PR.", 'PR:', 'Fix the banner on small screens', 'autocomplete is on: your approval may complete it']) assert.ok(a60.includes(want), `${want} in: ${a60}`)
+				assert.match(await t.page.textContent('#now-A61'), /Couldn't check what you told Rita: check again[\s\S]*Why:\s*The AI run stopped after 5 minutes/)
+				await t.page.click('#now-A60 .nract button.primary')
+				await until(() => t.posted.includes('ok A60'))
+				await t.page.click('#now-A61 .nract button.primary')
+				await until(() => t.posted.includes('ok A61'))
+			} else {
+				await t.page.waitForSelector('#card-A60')
+				const c60 = await t.page.textContent('#card-A60')
+				for (const want of ['You said:', "Looks good, I'll approve the PR.", 'Approve PR 4200001', 'autocomplete is on: your approval may complete it']) assert.ok(c60.includes(want), `${want} in: ${c60}`)
+				assert.equal((await t.page.textContent('#pri-A60')).trim(), 'Approve PR 4200001')
+				await t.page.click('#pri-A60')
+				await until(() => t.posted.includes('ok A60'))
+				await t.page.evaluate(() => { location.hash = '#focus/A61' })
+				await t.page.waitForSelector('#card-A61')
+				assert.match(await t.page.textContent('#card-A61'), /Could not check what your reply promised: The AI run stopped after 5 minutes/)
+				assert.equal((await t.page.textContent('#pri-A61')).trim(), 'Check again')
+				await t.page.click('#pri-A61')
+				await until(() => t.posted.includes('ok A61'))
+			}
+			await until(() => t.store.byCode('A61')!.promise?.state === 'pending', 8000)
+			assert.equal(t.store.byCode('A61')!.state, 'done', `${ui}: Check again queues the check, and nothing is made`)
+		} finally { await t.close() }
+	}
 })

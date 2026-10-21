@@ -1,7 +1,7 @@
 import type { BuildFacts, Config, Effect, PrFacts, RingFacts, RunFact, Workflow } from '../core/types.ts'
 import { buildCheck, buildOf, deployLine, isDeploy, pipelineOf, ringMeaning, ringMoved, targetOf } from '../core/deploy.ts'
 import { remoteOf } from './repos.ts'
-import { isVote, pendingEffects, prIdOf, reviewAgain, sameHead } from '../core/effects.ts'
+import { isVote, pendingEffects, prIdOf, reviewAgain, sameHead, voteValue } from '../core/effects.ts'
 import { effectLine } from '../core/render.ts'
 import type { Store } from '../store/state.ts'
 import { clientFor, toolServers } from '../adapters/mcp-client.ts'
@@ -231,6 +231,26 @@ export async function recheckPr(store: Store, w: Workflow, probe?: BuildProbe): 
 	}
 	if (describe(store, w, st)) return `Before you ok ${code}: ${effectLine(pendingEffects(w.effects))}. Say "ok ${code}" to go ahead.`
 	return undefined
+}
+
+// The owner's own words promised a vote: the PR as it is now decides whether one is offered (Slice 3). Closed, or the owner's vote
+// there already says the same: none is needed. New commits since the review: none, and the owner reviews again. A PR that cannot
+// be read keeps the vote, since ok reads it again before any vote.
+export const sameVote = (a: number, b?: number) => a === b || (a >= 5 && (b ?? 0) >= 5)
+export async function voteNow(store: Store, cfg: Config, w: Workflow, effects: Effect[], probe?: BuildProbe): Promise<{ effects: Effect[]; why?: string; again?: string }> {
+	const votes = effects.filter(e => isVote(e.call))
+	if (!votes.length || !probe?.pr) return { effects }
+	const c = votes[0].call!, ref = prOf(store, w) ?? { project: String(c.args.project ?? ''), repo: String(c.args.repositoryId ?? ''), id: prIdOf(c)! }
+	let st: PrState
+	try { st = await probe.pr(ref.project, ref.repo, ref.id) } catch (e) { store.log({ event: 'pr-check-failed', pr: ref.id, error: String(e).slice(0, 200) }); return { effects } }
+	if (/^unknown$/i.test(st.status)) return { effects }
+	const rest = effects.filter(e => !isVote(e.call))
+	if (/completed|abandoned/i.test(st.status)) return { effects: rest, why: `PR ${ref.id} is ${st.status.toLowerCase()}` }
+	const me = cfg.owner.name.trim().toLowerCase(), named = st.votes.filter(v => v.name.trim().toLowerCase() === me)
+	if (named.length === 1 && votes.every(e => sameVote(named[0].vote, voteValue(e.call)))) return { effects: rest, why: `you already voted on PR ${ref.id}` }
+	if (votes.some(e => !sameHead(st.head, e.head))) return { effects: rest, again: reviewAgain(w.code, `PR ${ref.id} changed since your review (new commits).`) }
+	const facts = factsOf(st)
+	return { effects: effects.map(e => (isVote(e.call) ? { ...e, pr: facts } : e)) }
 }
 
 // What changed on a PR since the owner was shown its vote: its state, its commit, or what an approval would do (review 10-21 P1-3).

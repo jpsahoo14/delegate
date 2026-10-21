@@ -84,6 +84,22 @@ export function buildAskPrompt(wf: Workflow, thread: Msg[], cfg: Config, root: s
 	].join('\n'))
 }
 
+// The owner's own words just went out on an item Delegate can change: what do they promise that a listed change can make now (Slice 3)?
+// It runs in the item's own session, so it already knows the work, such as the commit a review read.
+export function buildPromisePrompt(wf: Workflow, thread: Msg[], cfg: Config, root: string, pr?: number): string {
+	return scrub([
+		`You are helping ${cfg.owner.name} (the owner) keep what they just told ${wf.asker?.name ?? 'someone'} on item ${wf.code}. Workflow ${wf.id}, kind "promise".`,
+		'', 'Gates:', gateBlock('promise'),
+		'', playbook(root, 'promise').trim(),
+		'', `Chat: ${wf.chat.name}. Asker: ${wf.asker?.name ?? 'unknown'}.`,
+		'Thread, oldest first:', ...thread.slice(-20).map(m => `- ${m.byOwner ? `${cfg.owner.name} (owner)` : m.from.name}: ${m.text}`),
+		'', `The owner's own words, already sent:`, ...(wf.promise?.text ?? '').split('\n').map(t => `> ${t}`),
+		'', `This item's own target: ${pr ? `PR ${pr}` : 'none'}.`,
+		'', ...allowed(cfg, 'every promise goes in `todos`'),
+		'', `Finish by calling submit_report with workflowId "${wf.id}", intent "${wf.intent ?? 'other'}", and state "done".`,
+	].join('\n'))
+}
+
 // One prompt for both job purposes: do the work, or make the approved changes (dev-spec/slices/04-long-jobs.md).
 export function buildJobPrompt(job: Job, cfg: Config, root: string, o: { clone?: string; telemetry?: string[] } = {}): string {
 	const kind = job.purpose === 'execute' ? 'execute' : job.key.startsWith('bootstrap:') ? 'bootstrap' : job.key.startsWith('learn:') ? 'learn' : job.every ? 'tracker' : 'job'

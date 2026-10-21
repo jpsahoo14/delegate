@@ -3,7 +3,7 @@ import type { Automation, Job, PlanStep, Workflow } from '../core/types.ts'
 import type { Waiting } from '../core/waiting.ts'
 import { type Facts, rankOf, type Section, URGENCY, whoseMove } from '../core/whose.ts'
 import { clock } from '../core/schedule.ts'
-import { pendingEffects } from '../core/effects.ts'
+import { meaningOf, pendingEffects, saidLine, shown, asksReviewAgain } from '../core/effects.ts'
 import { messageLink } from '../adapters/channels.ts'
 import { when } from '../runner/automations.ts'
 import { DELAYS, MAX_TRIES } from '../runner/retry.ts'
@@ -167,7 +167,7 @@ export function dryText(rows: Placed[]): string {
 // Each placed thread as the new page draws it (design-spec/new-experience.md §5, reviews/pm-n1a.md). Code builds every word;
 // times stay timestamps. Quotation marks only for words someone wrote, with who wrote them; anything else is unquoted, after a label.
 export type RowKind =
-	| 'reply' | 'holding' | 'question' | 'choice' | 'meeting' | 'review' | 'check-date' | 'track' | 'your-step' | 'stopped' | 'reminder-new' | 'todo'
+	| 'reply' | 'holding' | 'question' | 'choice' | 'meeting' | 'review' | 'promise' | 'check-date' | 'track' | 'your-step' | 'stopped' | 'reminder-new' | 'todo'
 	| 'waiting-person' | 'waiting-others' | 'watch' | 'waiting-delegate' | 'nobody' | 'reminder'
 	| 'working' | 'scheduled'
 	| 'catchup'
@@ -178,7 +178,7 @@ export type RowKind =
 // "Review again" (the PR changed since the review): existing commands too.
 const CARD_MORE = 'ok <code> except <every change> (Send reply only) | <code>: review again (Review again)'
 export const COMMANDS: Record<RowKind, string> = {
-	reply: `ok <code> (whole draft on the row) | card | ${CARD_MORE}`, holding: `ok <code> (whole draft on the row) | card | ${CARD_MORE}`, question: `card | ${CARD_MORE}`, choice: `card | ${CARD_MORE}`, meeting: `card | ${CARD_MORE}`, review: `card | ${CARD_MORE}`,
+	reply: `ok <code> (whole draft on the row) | card | ${CARD_MORE}`, holding: `ok <code> (whole draft on the row) | card | ${CARD_MORE}`, question: `card | ${CARD_MORE}`, choice: `card | ${CARD_MORE}`, meeting: `card | ${CARD_MORE}`, review: `card | ${CARD_MORE}`, promise: 'ok <code>',
 	'check-date': '<code>: nudge them', track: 'ok <code>', stopped: '<code>: try again', 'reminder-new': 'ok <code>',
 	// N2: Report in the opened item ("<code>: Issues found: 403 on checkout"), and Mark done, which is close with a new meaning
 	// on an item with open to-dos: it marks them done and changes nothing else (R-NEX-05, R-NEX-07).
@@ -290,6 +290,9 @@ export function chipsOf(w: Workflow | undefined, j: Job | undefined, watchChange
 // Your move on an item that needs the owner: the action, verb first, by card type.
 function moveKind(w: Workflow): RowKind {
 	if (w.work?.proposed) return 'track'
+	// The owner's own words went out and promised a change, which waits for one ok; or the check of what they promised failed (Slice 3).
+	// Not when it asks to review again: the vote cannot be made, so the row must not offer it (re-review P1-3).
+	if (!w.draft?.text && !asksReviewAgain(w.code, w.question) && (w.promise?.state === 'failed' || w.promise?.state === 'offered' && pendingEffects(w.effects).length)) return 'promise'
 	if (w.draft?.holding) return 'holding'
 	if (w.work && !w.draft && !w.choices && !w.meeting && /^No news/.test(w.status)) return 'check-date'
 	const t = cardType(w)
@@ -355,6 +358,14 @@ function itemRow(s: Snap, p: Placed, w: Workflow): Body {
 			case 'meeting': return { ...base, kind, headline: `Meet ${name}: ${clip(w.meeting?.subject ?? w.lastAsk, 90)}?`, when: w.meeting?.start, ...(clash ? { warn: `${clash.label}: ${clash.text}` } : {}), primary: open }
 			case 'review': return { ...base, kind, headline: `Approve ${commentsOrChanges(w)}${d ? `, then reply to ${name}` : ''}`, next: { owner: { kind: 'delegate' }, what: `after your ok, ${NAME} ${/comment/.test(commentsOrChanges(w)) ? 'posts them' : 'makes them'}${d ? ' and replies' : ''}` }, primary: open }
 			case 'check-date': return { ...base, kind, headline: `No news on "${clip(w.work?.goal, 80)}": nudge, wait, or close?`, facts: { ...facts, quote: undefined, verb: undefined, at: w.work?.steps.at(-1)?.at ?? w.createdAt, notes: w.work?.waitingOn ? [{ label: 'Waiting on', text: clip(w.work.waitingOn.who, 60), since: w.work.waitingOn.since }] : [] }, primary: { label: 'Draft a nudge', command: `${c}: nudge them` }, more: [{ label: 'Wait 3 days', command: `wait ${c}: 3d` }, { label: 'Close', command: `close ${c}` }] }
+			// The reply already went in the owner's words; one button makes the change it promised, its meaning on the row (Slice 3).
+			case 'promise': {
+				const quote: Quote = { by: 'You', verb: 'said', text: clip(w.promise!.text.replace(/\n/g, ' '), 200) }
+				const f = { ...facts, at: w.sent?.at ?? facts.at, verb: 'said', quote }
+				if (w.promise!.state === 'failed') return { ...base, kind, headline: `Couldn't check what you told ${name}: check again`, facts: { ...f, notes: [{ label: 'Why', text: whyOf(w.promise!.why) }] }, primary: { label: 'Check again', command: `ok ${c}` }, more: [{ label: 'Skip', command: `skip ${c}` }] }
+				const left = pendingEffects(w.effects), meant = left.map(meaningOf).filter((m): m is string => !!m)
+				return { ...base, kind, headline: saidLine(left), facts: { ...f, notes: meant.map(m => ({ label: 'PR', text: clip(m, 200) })) }, primary: { label: left.length === 1 ? shown(left[0]).line : `Make ${left.length} changes`, command: `ok ${c}` }, more: [{ label: 'Skip', command: `skip ${c}` }] }
+			}
 			// The owner's own words proposed this work: "You said", never after the asker's name.
 			case 'track': return { ...base, kind, headline: `Track this? ${clip(w.work?.goal, 110)}`, facts: { ...facts, verb: 'said', quote: w.lastAsk ? { by: 'You', verb: 'said', text: clip(w.lastAsk, 200) } : undefined, notes: w.work?.doneWhen ? [{ label: 'Done when', text: clip(w.work.doneWhen, 160) }] : [] }, primary: { label: 'Track', command: `ok ${c}` }, more: [{ label: 'Skip', command: `skip ${c}` }] }
 		}

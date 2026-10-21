@@ -68,8 +68,10 @@ class FakeSource implements Source {
 let store: InstanceType<typeof Store>, src: FakeSource, runs: string[], script: (prompt: string, wfId: string) => Report | undefined
 
 let readChats: string[] = [], runTools: string[] = []
-const run = async (cfg: Config['agent'], i: { workflowId: string; runId: string; prompt: string }) => {
+const runSessions: string[] = []
+const run = async (cfg: Config['agent'], i: { workflowId: string; runId: string; prompt: string; sessionId?: string }) => {
 	runs.push(i.workflowId)
+	runSessions.push(i.sessionId ?? '')
 	runTools = cfg.tools
 	// What the run's history_search would have recorded.
 	if (readChats.length) { const { recordRead } = await import('../src/runner/sharing.ts'); recordRead(store.root, i.runId, readChats.map(c => `https://teams.microsoft.com/l/message/${encodeURIComponent(c)}/1700000000009`), 'rollout date') }
@@ -4342,7 +4344,9 @@ test('next action: the executor cannot run an unapproved call', async () => {
 	assert.deepEqual(await makeChange(store, job().id, run.id, 0, ado, prProbe), { ref: 'vote-1' }, 'again: the recorded result, no second call')
 	assert.equal(calls.length, 1)
 	const down = async () => { throw new Error('ADO 503') }
-	assert.deepEqual([await makeChange(store, job().id, 'r1', 0, down, prProbe), await makeChange(store, job().id, 'r1', 0, ado, prProbe)], [{ ref: 'vote-1' }, { ref: 'vote-1' }], 'a later run never casts a vote already cast: the ledger answers (review 10-21e P1)')
+	// The PR now shows the vote cast. A vote is a state, so the PR read answers, not the ledger (slice 3 re-review P2-4).
+	prNow = { ...prNow, votes: [{ name: 'Robin Park', vote: 10 }] }
+	assert.deepEqual([await makeChange(store, job().id, 'r1', 0, down, prProbe), await makeChange(store, job().id, 'r1', 0, ado, prProbe)], [{ ref: 'vote-1' }, { ref: 'vote-1' }], 'a later run never casts a vote the PR shows as cast (review 10-21e P1)')
 	assert.equal(calls.length, 1)
 	const j = job()
 	store.saveJob({ ...j, result: { ...j.result!, effects: j.result!.effects.map((e, i) => i === 0 ? { ...e, call: { ...e.call!, args: { ...e.call!.args, vote: 'Rejected' } } } : e) } })
@@ -5759,3 +5763,522 @@ test('owned round 2 P2-5: the live session file is never rewritten; only the syn
 	delete process.env.COPILOT_HOME
 })
 
+
+// Slice 3 (reviews/eng-next-action.md, case 6): the owner's own words that promise a change on the item's PR. The reply goes at once;
+// one short run maps the words to changes, held for one ok, through the same vet, ok, and make_change as every other change.
+const mapPrompts: string[] = []
+// The item's to-dos from the owner's words, without the clone hint every PR item gets.
+const ownTodos = (w: { todos?: string[] }) => w.todos?.filter(t => !/^Clone /.test(t))
+// A PR review that proposed no change, so only the owner's words can add the vote (bug 10-21).
+const prReviewed = async (text = 'Rechecked, all three findings are fixed.') => {
+	voteSetup(); calls.length = 0; mapPrompts.length = 0
+	script = needsJob({ key: 'pr:acme/web/4200001', goal: 'Re-review PR 4200001' })
+	jf.job = (_, id) => ({ workflowId: id, intent: 'pr_review', state: 'needs_human', summary: 'All findings fixed', reply: { text, commitment: false, sources: [{ ref: PR_URL, tier: 'live', origin: 'extracted' }] } })
+	src.post(CHAT, 'me', `[as Kim] Fixed all three, can you take another look? ${PR_URL}`); await goPr(); await goPr()
+	jf.job = () => undefined
+}
+// The mapping run: what it was asked, and what it reports.
+const mapped = (r: Partial<Report> = { effects: [voteEffect()] }) => (p: string, workflowId: string): Report => { mapPrompts.push(p); return { workflowId, intent: 'pr_review', state: 'done', summary: 'What the words promise', ...r } }
+
+test("bug 10-21 own words: the owner's own Send that promises approval goes at once, then offers the vote for one ok", async () => {
+	await prReviewed()
+	const asked = src.chats[CHAT].length
+	// The first review asked for changes; the owner's "Waiting for author" vote is what the promised approval replaces.
+	prNow = { ...prNow, votes: [{ name: 'Robin Park', vote: -5 }] }
+	script = mapped()
+	src.post('self', 'me', "send A1: Rechecked, looks good. I'll approve the PR."); await goPr()
+	assert.deepEqual([src.chats[CHAT].length, src.chats[CHAT].at(-1)!.body], [asked + 1, "Rechecked, looks good. I'll approve the PR."], 'the reply went at once')
+	let wf = store.byCode('A1')!
+	assert.deepEqual([wf.state, pendingOf(wf).map(e => e.summary), wf.status, wf.draft], ['needs_human', ['Approve PR 4200001'], "You said you'd approve PR 4200001", undefined], 'the vote waits for one ok')
+	assert.deepEqual(pendingOf(wf)[0].pr, { title: 'Fix the banner', author: 'Dev Rao', required: [], autoComplete: false }, 'with what the PR is, read from Azure DevOps')
+	assert.equal(mapPrompts.length, 1)
+	assert.match(mapPrompts[0], /Rechecked, looks good\. I'll approve the PR\.[\s\S]*PR 4200001/)
+	assert.equal(runSessions.at(-1), store.job(wf.job!)!.session.id, "in the review's own session, which read the commit")
+	assert.match(src.chats.self.at(-1)!.body, /A1: you said you'd approve PR 4200001 \("Fix the banner" by Dev Rao\)\. Say "ok A1" to do it, or "skip A1"\./)
+	assert.equal(store.jobs().some(j => j.purpose === 'execute'), false, 'nothing is made without the ok')
+	src.post('self', 'me', 'ok A1'); await goPr()
+	assert.ok(store.jobs().some(j => j.purpose === 'execute' && j.state === 'running'), 'ok starts the change run')
+	assert.doesNotMatch(src.chats.self.at(-1)!.body, /then sending the reply/)
+	await makeChanges([0]); await goPr()
+	wf = store.byCode('A1')!
+	assert.deepEqual(calls.map(c => [c.args.action, c.args.pullRequestId, c.args.vote]), [['vote', 4200001, 'Approved']], 'exactly the vote')
+	assert.deepEqual([wf.state, wf.prVote, src.chats[CHAT].length], ['done', 10, asked + 1], 'made, and the reply is never sent twice')
+	assert.match(wf.status, /^Made: Approve PR 4200001/)
+})
+
+test('bug 10-21 own words: an edit, then ok, that promises approval offers the vote once the reply goes', async () => {
+	await prReviewed()
+	script = mapped()
+	src.post('self', 'me', "edit A1: Looks good to me. I'll approve the PR."); await goPr()
+	assert.equal(mapPrompts.length, 0, 'an edit sends nothing, so nothing is mapped yet')
+	src.post('self', 'me', 'ok A1'); await goPr()
+	const wf = store.byCode('A1')!
+	assert.equal(src.chats[CHAT].at(-1)!.body, "Looks good to me. I'll approve the PR.")
+	assert.deepEqual([wf.state, pendingOf(wf).map(e => e.summary), mapPrompts.length], ['needs_human', ['Approve PR 4200001'], 1])
+})
+
+test("slice 3 own words: the page's Send with the owner's words maps them too, and a plain chat reply starts no run", async () => {
+	await prReviewed()
+	script = mapped()
+	act(store, "send A1: Looks good. I'll approve the PR.", store.byCode('A1')!.revAt, 'page')
+	await goPr()
+	assert.deepEqual([store.byCode('A1')!.state, pendingOf(store.byCode('A1')!).length], ['needs_human', 1], 'from the page as from the self-chat')
+	script = draft('It is in ring 0.')
+	src.post(CHAT, 'me', '[as Ravi] Status of the budget?'); await go()
+	const code = store.workflows().find(w => w.asker?.name === 'Ravi')!.code, n = runs.length
+	src.post('self', 'me', `send ${code}: I'll approve the budget tomorrow.`); await go()
+	assert.deepEqual([runs.length, store.byCode(code)!.state, store.byCode(code)!.promise], [n, 'done', undefined], 'no PR, no run')
+})
+
+test('slice 3 own words: "I\'ll approve once the build is green" is a condition: no vote, a to-do and a watch with the condition', async () => {
+	await prReviewed()
+	script = mapped({ todos: ['Approve PR 4200001 once the build is green'], follow: { target: 'PR 4200001 build', until: 'the build is green', everyHours: 2 } })
+	src.post('self', 'me', "send A1: Looks good; I'll approve once the build is green."); await goPr()
+	const wf = store.byCode('A1')!
+	assert.deepEqual([wf.state, pendingOf(wf), ownTodos(wf)], ['done', [], ['Approve PR 4200001 once the build is green']])
+	assert.ok(store.workflows().some(w => w.kind === 'tracker' && /the build is green/.test(store.job(w.job!)?.until ?? '')), 'a watch with the condition')
+	assert.equal(store.jobs().some(j => j.purpose === 'execute'), false)
+	assert.match(src.chats.self.at(-1)!.body, /A1: still yours to do: Approve PR 4200001 once the build is green\. Watching PR 4200001 build every 2 h/)
+	assert.match(mapPrompts[0], /condition/, 'the prompt says what a condition means, not how to spot one')
+})
+
+test('slice 3 own words: "I won\'t approve until the null check is fixed" casts no vote', async () => {
+	await prReviewed()
+	script = mapped({ todos: ['Approve PR 4200001 after the null check is fixed'] })
+	src.post('self', 'me', "send A1: I won't approve until the null check is fixed."); await goPr()
+	const wf = store.byCode('A1')!
+	assert.deepEqual([wf.state, pendingOf(wf), ownTodos(wf)], ['done', [], ['Approve PR 4200001 after the null check is fixed']])
+	assert.equal(store.jobs().some(j => j.purpose === 'execute'), false)
+})
+
+test('slice 3 own words: the owner already voted by hand, so nothing is offered and the item closes as now', async () => {
+	for (const vote of [10, 5]) {
+		await prReviewed()
+		prNow = { ...prNow, votes: [{ name: 'Robin Park', vote }] }
+		script = mapped()
+		const code = store.workflows().at(-1)!.code
+		src.post('self', 'me', `send ${code}: Looks good. I'll approve the PR.`); await goPr()
+		const wf = store.byCode(code)!
+		assert.deepEqual([wf.state, pendingOf(wf), wf.promise], ['done', [], undefined], `already voted ${vote}`)
+	}
+	assert.equal(store.jobs().some(j => j.purpose === 'execute'), false)
+})
+
+test('slice 3 own words: a PR that moved after the review gets no vote, only "Review again?"', async () => {
+	await prReviewed()
+	prNow = { ...prNow, head: 'beef002' }
+	script = mapped()
+	src.post('self', 'me', "send A1: Looks good. I'll approve the PR."); await goPr()
+	const wf = store.byCode('A1')!
+	assert.deepEqual([wf.state, pendingOf(wf)], ['needs_human', []])
+	assert.match(wf.question!, /PR 4200001 changed since your review \(new commits\)\. Review again\? Reply "A1: review again", or "skip A1"\./)
+	assert.equal(store.jobs().some(j => j.purpose === 'execute'), false)
+	// Review again is a new turn of the same item: its vote and reply wait for ok, and both can go.
+	script = promise([voteEffect({ head: 'beef002' })], 'Rechecked the new commits too. Approved.')
+	src.post('self', 'me', 'A1: review again'); await goPr()
+	assert.deepEqual(pendingOf(store.byCode('A1')!).map(e => e.summary), ['Approve PR 4200001'])
+	prNow = { ...prNow, votes: [{ name: 'Robin Park', vote: 0 }] }
+	await see('A1'); src.post('self', 'me', 'ok A1'); await goPr()
+	assert.match(src.chats.self.at(-1)!.body, /Before you ok A1: Approve PR 4200001/)
+	src.post('self', 'me', 'ok A1'); await goPr()
+	await makeChanges([0]); await goPr()
+	assert.deepEqual([calls.length, store.byCode('A1')!.state, src.chats[CHAT].at(-1)!.body], [1, 'done', 'Rechecked the new commits too. Approved.'], 'the vote, then the new reply')
+})
+
+test('slice 3 own words: a completed or abandoned PR gets nothing offered', async () => {
+	for (const status of ['completed', 'abandoned']) {
+		await prReviewed()
+		prNow = { ...prNow, status }
+		script = mapped()
+		const code = store.workflows().at(-1)!.code
+		src.post('self', 'me', `send ${code}: Looks good. I'll approve the PR.`); await goPr()
+		const wf = store.byCode(code)!
+		assert.deepEqual([wf.state, pendingOf(wf)], ['done', []], status)
+	}
+})
+
+test('slice 3 own words: a promise on another PR, or outside the changes allowed, is a to-do with its reason, never a change', async () => {
+	await prReviewed()
+	const reviewers = voteEffect({ summary: 'Add Kim as a reviewer', call: { tool: 'ado-repo_pull_request_write', args: { action: 'update_reviewers', pullRequestId: 4200001, reviewerIds: ['kim'], reviewerAction: 'add' } } })
+	script = mapped({ effects: [voteEffect({ target: 'PR 4200002', summary: 'Approve PR 4200002', call: voteCall(4200002) }), reviewers] })
+	src.post('self', 'me', "send A1: I'll approve 4200002 too, and add Kim as a reviewer."); await goPr()
+	const wf = store.byCode('A1')!
+	assert.deepEqual([wf.state, pendingOf(wf)], ['done', []])
+	assert.deepEqual(ownTodos(wf), ["Approve PR 4200002. Not made for you: PR 4200002 is not this item's PR (4200001)", 'Add Kim as a reviewer. Not made for you: ado-repo_pull_request_write:update_reviewers is not one of the changes you allow'])
+})
+
+test('slice 3 own words: a reply a rule sent is not the owner\'s words, so no run', async () => {
+	const { promiseDue } = await import('../src/runner/promise.ts')
+	await prReviewed()
+	const wf = store.byCode('A1')!
+	wf.draft = { ...wf.draft!, text: "I'll approve the PR.", ownWords: true }
+	assert.deepEqual([promiseDue(store, wf, {}), promiseDue(store, wf, { ruleId: 'r1' })], [true, false])
+	voteSetup(); mapPrompts.length = 0
+	setRules(rule({ who: { accounts: [{ id: 'test:kim', name: 'Kim' }] }, when: {} })); autoOn(); policy(0)
+	script = (p, id) => /kind "promise"/.test(p) ? mapped()(p, id) : draft("Looks good. I'll approve it.")(p, id)
+	src.post(CHAT, 'me', `[as Kim] Quick one: PR 4200009 is ready ${PR_URL.replace('4200001', '4200009')}`); await goPr(); await goPr()
+	const sent = store.workflows().find(w => w.sent?.byRule)
+	assert.ok(sent, 'the rule sent it')
+	assert.deepEqual([mapPrompts.length, sent.promise], [0, undefined])
+})
+
+test("slice 3 own words: words identical to the draft start no run; the draft's own changes already rode along", async () => {
+	await prReviewed()
+	script = mapped()
+	const n = runs.length
+	src.post('self', 'me', 'send A1: Rechecked, all three findings are fixed.'); await goPr()
+	assert.deepEqual([runs.length, store.byCode('A1')!.state], [n, 'done'])
+	await prReviewed('Rechecked, all fixed.')
+	const code = store.workflows().at(-1)!.code, m = runs.length
+	src.post('self', 'me', `edit ${code}: Rechecked, all fixed.`); await goPr()
+	src.post('self', 'me', `ok ${code}`); await goPr()
+	assert.deepEqual([runs.length, store.byCode(code)!.state, mapPrompts.length], [m, 'done', 0], 'an edit back to the same words is no change either')
+})
+
+test('slice 3 own words: paused, the check waits for resume', async () => {
+	await prReviewed()
+	script = mapped()
+	src.post('self', 'me', "send A1: Looks good. I'll approve the PR.")
+	src.post('self', 'me', 'pause'); await goPr()
+	assert.equal(src.chats[CHAT].at(-1)!.body, "Looks good. I'll approve the PR.", 'the send went before the pause')
+	assert.deepEqual([mapPrompts.length, store.byCode('A1')!.state], [0, 'done'], 'no run while paused')
+	await goPr()
+	assert.equal(mapPrompts.length, 0)
+	src.post('self', 'me', 'resume'); await goPr()
+	assert.deepEqual([mapPrompts.length, pendingOf(store.byCode('A1')!).length], [1, 1], 'after resume it runs once')
+})
+
+test('slice 3 own words: a mapping run that fails leaves the reply sent, says it could not check, and offers Check again', async () => {
+	const { nextView } = await import('../src/web/next.ts')
+	const { view } = await import('../src/web/view.ts')
+	await prReviewed()
+	script = (p: string) => { mapPrompts.push(p); return undefined }
+	src.post('self', 'me', "send A1: Looks good. I'll approve the PR."); await goPr()
+	let wf = store.byCode('A1')!
+	assert.equal(src.chats[CHAT].at(-1)!.body, "Looks good. I'll approve the PR.")
+	assert.deepEqual([wf.state, pendingOf(wf), wf.promise?.state], ['needs_human', [], 'failed'])
+	assert.match(wf.status, /Sent\. Could not check what your reply promised/)
+	assert.match(src.chats.self.at(-1)!.body, /A1 went to Kim, but I could not check what it promised\. Nothing was changed\. Say "ok A1" to check again, or "skip A1"\./)
+	const row = nextView(store).move.find(r => r.act === 'A1')!
+	assert.deepEqual([row.kind, row.primary?.label, row.primary?.command], ['promise', 'Check again', 'ok A1'])
+	assert.equal(view(store, undefined).needs.find(c => c.code === 'A1')!.promise?.failed !== undefined, true, 'the classic card says so too')
+	assert.equal(store.jobs().some(j => j.purpose === 'execute'), false, 'no change made')
+	script = mapped()
+	src.post('self', 'me', 'ok A1'); await goPr()
+	wf = store.byCode('A1')!
+	assert.deepEqual([wf.state, pendingOf(wf).map(e => e.summary), mapPrompts.length], ['needs_human', ['Approve PR 4200001'], 2], 'Check again runs it once more')
+})
+
+test('slice 3 own words: a second send while the check is pending starts no second run and offers the change once', async () => {
+	await prReviewed()
+	script = mapped()
+	src.post('self', 'me', "send A1: Looks good. I'll approve the PR.")
+	src.post('self', 'me', 'send A1: Approving now.'); await goPr()
+	const wf = store.byCode('A1')!
+	assert.equal(mapPrompts.length, 1, 'one run')
+	assert.match(mapPrompts[0], /I'll approve the PR\.[\s\S]*Approving now\./, 'it reads both')
+	assert.deepEqual(pendingOf(wf).map(e => e.summary), ['Approve PR 4200001'], 'one change')
+	const n = src.chats[CHAT].length
+	src.post('self', 'me', 'send A1: Also, nice work.'); await goPr()
+	assert.deepEqual([mapPrompts.length, pendingOf(store.byCode('A1')!).length, src.chats[CHAT].length], [1, 1, n], 'while the change waits for ok, new words neither run again nor send')
+	assert.match(src.chats.self.at(-1)!.body, /A1's reply already went to Kim\. Say "ok A1" to approve PR 4200001, or "skip A1"\./)
+})
+
+test('slice 3 own words: with no draft from Delegate, the owner\'s words are their own however often they edit them', async () => {
+	voteSetup(); mapPrompts.length = 0
+	script = (_: string, workflowId: string): Report => ({ workflowId, intent: 'commitment_decision', state: 'needs_human', summary: 'Asks for a sign-off', question: 'Approve it?' })
+	src.post(CHAT, 'me', `[as Kim] Can you sign off? ${PR_URL}`); await goPr()
+	assert.equal(store.byCode('A1')!.draft, undefined)
+	script = mapped()
+	src.post('self', 'me', "edit A1: Yes, I'll approve it."); await goPr()
+	src.post('self', 'me', "send A1: Yes, I'll approve it."); await goPr()
+	assert.equal(src.chats[CHAT].at(-1)!.body, "Yes, I'll approve it.")
+	assert.deepEqual([mapPrompts.length, pendingOf(store.byCode('A1')!).map(e => e.summary)], [1, ['Approve PR 4200001']], 'the same words twice are still not a draft of Delegate\'s')
+	assert.deepEqual(store.job(store.byCode('A1')!.job!)?.result?.effects.map(e => e.summary), ['Approve PR 4200001'], 'an item with no job gets one that carries the vote, so ok can make it')
+})
+
+test('slice 3 review P1-1: a skipped promise is gone, so the item\'s next turn is an ordinary draft and ok never sends what the row did not show', async () => {
+	const { nextView } = await import('../src/web/next.ts')
+	await prReviewed()
+	script = mapped()
+	src.post('self', 'me', "send A1: Looks good. I'll approve the PR."); await goPr()
+	src.post('self', 'me', 'skip A1'); await goPr()
+	let wf = store.byCode('A1')!
+	assert.deepEqual([wf.state, wf.promise, pendingOf(wf)], ['done', undefined, []], 'skip drops the promise and its change')
+	assert.deepEqual(pendingOf({ effects: store.job(wf.job!)!.result!.effects }), [], 'on the job too')
+	script = promise([voteEffect()], 'Rechecked again. Approved.')
+	src.post(CHAT, 'me', `[as Kim] One more fix, please recheck ${PR_URL}`); await goPr()
+	wf = store.byCode('A1')!
+	const row = nextView(store).move.find(r => r.act === 'A1')!
+	assert.notEqual(row.kind, 'promise', 'a new draft is not shown as the old promise')
+	assert.equal(wf.promise, undefined)
+})
+
+test('slice 3 review P1-2: a new message while the vote is offered starts a new turn whose reply can go, and the promise is checked again after', async () => {
+	await prReviewed()
+	script = mapped()
+	src.post('self', 'me', "send A1: Looks good. I'll approve the PR."); await goPr()
+	assert.equal(store.byCode('A1')!.promise?.state, 'offered')
+	script = draft('You are welcome.')
+	src.post(CHAT, 'me', '[as Kim] Thanks! Also, is the banner in ring 0?'); await goPr()
+	let wf = store.byCode('A1')!
+	assert.deepEqual([wf.state, wf.draft?.text, wf.sent, wf.promise?.state, pendingOf(wf)], ['needs_human', 'You are welcome.', undefined, 'pending', []], 'a new turn; the offered vote is withdrawn, the promise waits')
+	assert.deepEqual(pendingOf({ effects: store.job(wf.job!)!.result!.effects }), [], 'on its job too, so a later ok cannot make it unseen')
+	script = mapped()
+	await see('A1'); src.post('self', 'me', 'ok A1'); await goPr()
+	wf = store.byCode('A1')!
+	assert.equal(src.chats[CHAT].at(-1)!.body, 'You are welcome.', 'the new reply went')
+	assert.deepEqual([wf.state, pendingOf(wf).map(e => e.summary), wf.promise?.state], ['needs_human', ['Approve PR 4200001'], 'offered'], 'then the vote is offered again')
+})
+
+test('slice 3 review P1-2: a new message after the check failed starts a new turn, and its reply can go', async () => {
+	await prReviewed()
+	script = (p: string) => { mapPrompts.push(p); return undefined }
+	src.post('self', 'me', "send A1: Looks good. I'll approve the PR."); await goPr()
+	assert.equal(store.byCode('A1')!.promise?.state, 'failed')
+	script = draft('Yes, ring 0.')
+	src.post(CHAT, 'me', '[as Kim] Is the banner in ring 0?'); await goPr()
+	await see('A1'); src.post('self', 'me', 'ok A1'); await goPr()
+	assert.equal(src.chats[CHAT].at(-1)!.body, 'Yes, ring 0.', 'ok sends the new draft, it does not close the item as "check again"')
+})
+
+test('slice 3 review P1-3: the check never runs in the owner\'s clone with a shell tool', async () => {
+	await prReviewed()
+	const code = mkdtempSync(join(tmpdir(), 'delegate-code-'))
+	const wf = store.byCode('A1')!
+	store.saveJob({ ...store.job(wf.job!)!, repo: code })
+	store.saveConfig({ ...store.config(), agent: { ...store.config().agent, tools: ['ado-repo_pull_request', 'bash'] } })
+	script = mapped()
+	src.post('self', 'me', "send A1: Looks good. I'll approve the PR."); await goPr()
+	assert.equal(mapPrompts.length, 0, 'not run')
+	assert.deepEqual([store.byCode('A1')!.promise?.state, store.byCode('A1')!.state], ['failed', 'needs_human'])
+	assert.match(store.byCode('A1')!.status, /never runs in your clone with a shell tool \(bash\)/)
+})
+
+test('slice 3 review P2-4 P2-5: leaving out the promised change rests the item; the AI chat shows the change first, with no reply to quote', async () => {
+	await prReviewed()
+	script = mapped()
+	src.post('self', 'me', "send A1: Looks good. I'll approve the PR."); await goPr()
+	const id = store.writeAnswer({ code: 'A1', verb: 'ok', surface: 'chat', seenAt: '' }).id
+	await goPr()
+	assert.match(store.outcome(id)!, /^Here is A1 first\. Nothing was changed\. You said you'd approve PR 4200001: ok will Approve PR 4200001/)
+	assert.doesNotMatch(store.outcome(id)!, /then reply/)
+	src.post('self', 'me', 'ok A1 except 1'); await goPr()
+	const wf = store.byCode('A1')!
+	assert.deepEqual([wf.state, wf.promise, calls.length], ['done', undefined, 0])
+	assert.match(src.chats.self.at(-1)!.body, /Nothing was changed for A1; its reply already went\./)
+})
+
+test('slice 3 review round 2: a check cut off by a crash runs again on the next cycle', async () => {
+	await prReviewed()
+	script = (p: string) => { mapPrompts.push(p); throw new Error('crashed') }
+	src.post('self', 'me', "send A1: Looks good. I'll approve the PR."); await goPr().catch(() => undefined)
+	store.save({ ...store.byCode('A1')!, state: 'done', promise: { text: "Looks good. I'll approve the PR.", at: new Date().toISOString(), state: 'checking' } }, false)
+	script = mapped()
+	await goPr()
+	assert.deepEqual([store.byCode('A1')!.promise?.state, pendingOf(store.byCode('A1')!).length], ['offered', 1])
+})
+
+test('slice 3 rebase: two askers on one PR: the promised vote on Kim\'s item is the owner\'s to-do while Rita\'s comment waits, and Rita\'s ok still makes exactly her comment', async () => {
+	await prReviewed()
+	store.saveConfig({ ...store.config(), agent: { ...store.config().agent, effectTools: ['ado-repo_pull_request_write:vote', 'ado-repo_pull_request_thread_write'] } })
+	// Rita asks about the same PR: the same review job takes her ask.
+	script = needsJob({ key: 'pr:acme/web/4200001', goal: 'Re-review PR 4200001' })
+	jf.job = (_, id) => ({ workflowId: id, intent: 'pr_review', state: 'needs_human', summary: 'All findings fixed', reply: { text: 'Rechecked, all fixed.', commitment: false, sources: [{ ref: PR_URL, tier: 'live', origin: 'extracted' }] } })
+	src.post(CHAT, 'me', `[as Rita] Can you check it too? ${PR_URL}`); await goPr(); await goPr()
+	jf.job = () => undefined
+	const kim = store.byCode('A1')!, rita = store.workflows().find(w => w.asker?.name === 'Rita')!
+	assert.equal(rita.job, kim.job, 'one review job for both askers')
+	// The owner answers Rita: a comment for her, waiting for its ok.
+	const comment = voteEffect({ action: 'comment', summary: 'Comment on PR 4200001', call: { tool: 'ado-repo_pull_request_thread_write', args: { action: 'create', repositoryId: 'web', pullRequestId: 4200001, content: 'One nit on the null check.' } }, head: undefined })
+	script = promise([comment], 'Left you one nit on the null check.')
+	src.post('self', 'me', `${rita.code}: Leave Rita a nit about the null check.`); await goPr()
+	assert.deepEqual(pendingOf(store.byCode(rita.code)!).map(e => e.summary), ['Comment on PR 4200001'])
+	// Then the owner's own words on Kim's item promise the vote.
+	script = mapped()
+	src.post('self', 'me', "send A1: Looks good. I'll approve the PR."); await goPr()
+	const a1 = store.byCode('A1')!
+	assert.deepEqual([a1.state, pendingOf(a1), a1.promise], ['done', [], undefined], 'no vote offered over Rita\'s list')
+	assert.deepEqual(ownTodos(a1), ['Approve PR 4200001. Not made for you: another open item on this review has changes waiting; ok or skip it first, then say it again, or make it by hand'])
+	assert.deepEqual(pendingOf({ effects: store.job(kim.job!)!.result!.effects }).map(e => e.summary), ['Comment on PR 4200001'], "the job's list is still Rita's")
+	calls.length = 0
+	await see(rita.code); src.post('self', 'me', `ok ${rita.code}`); await goPr()
+	assert.doesNotMatch(src.chats.self.at(-1)!.body, /out of date/)
+	await makeChanges([0]); await goPr()
+	assert.deepEqual(calls.map(c => [c.tool, c.args.action, c.args.content]), [['repo_pull_request_thread_write', 'create', 'One nit on the null check.']], 'exactly her comment, and no vote')
+})
+
+test('slice 3 rebase: a redraft during a change run never replaces the list it is making, even in another order', async () => {
+	voteSetup(); calls.length = 0
+	script = needsJob({ key: 'pr:acme/web/4200001', goal: 'Re-review PR 4200001' })
+	jf.job = (_, id) => ({ workflowId: id, intent: 'pr_review', state: 'needs_human', summary: 'All findings fixed', reply: { text: 'Rechecked, all fixed.', commitment: false, sources: [{ ref: PR_URL, tier: 'live', origin: 'extracted' }] } })
+	src.post(CHAT, 'me', `[as Kim] Fixed all three, can you take another look? ${PR_URL}`); await goPr(); await goPr()
+	store.saveConfig({ ...store.config(), agent: { ...store.config().agent, effectTools: ['ado-comment', 'ado-repo_pull_request_write:vote'] } })
+	script = promise([NOTE, voteEffect()], "Left a comment. I've approved the PR.")
+	src.post('self', 'me', "A1: Looks good. I'll approve the PR."); await goPr()
+	jf.job = () => undefined
+	await see('A1'); src.post('self', 'me', 'ok A1'); await goPr(); src.post('self', 'me', 'ok A1'); await goPr()
+	const job = store.job(store.byCode('A1')!.job!)!
+	const { makeChange } = await import('../src/runner/change.ts')
+	await makeChange(store, job.id, job.run!.id, 0, ado, prProbe)
+	// The redraft lists the vote first: the comment the run already made must stay made, and the vote must stay to make.
+	script = promise([voteEffect({ summary: 'Approve PR 4200001 with suggestions', call: voteCall(4200001, 'ApprovedWithSuggestions') }), NOTE], 'Approved with suggestions, and left a comment.')
+	src.post(CHAT, 'me', '[as Kim] One more small change, please re-approve'); await goPr()
+	assert.deepEqual(pendingOf(store.byCode('A1')!).map(e => e.call?.args.vote ?? e.call?.args.content), ['ApprovedWithSuggestions'], 'the vote is still to make; only the comment was made')
+})
+
+test('slice 3 rebase: after new commits reset the votes, a vote Delegate cast at the old commit does not stop the one promised at the new commit', async () => {
+	await prReviewed()
+	const a1 = store.byCode('A1')!
+	store.save({ ...a1, effects: [voteEffect({ done: { ref: 'vote-0', at: new Date().toISOString() } })] }, false)
+	prNow = { ...prNow, head: 'beef002', votes: [{ name: 'Robin Park', vote: 0 }] }
+	script = mapped({ effects: [voteEffect({ head: 'beef002' })] })
+	src.post('self', 'me', "send A1: Rechecked the new commits too. I'll approve again."); await goPr()
+	assert.deepEqual(pendingOf(store.byCode('A1')!).map(e => [e.summary, e.head]), [['Approve PR 4200001', 'beef002']], 'a vote at a new commit is a new vote')
+})
+
+// Re-review 10-21 (slice3b): the owner's ordinary next steps never leave a promise item stuck.
+test('slice 3b P1-1: an answer on an offered promise is a new turn: its reply goes once and the vote is made once', async () => {
+	await prReviewed(); script = mapped()
+	src.post('self', 'me', "send A1: Looks good. I'll approve the PR."); await goPr()
+	const before = src.chats[CHAT].length
+	script = promise([voteEffect()], 'Approved, and thanks for the quick fixes.')
+	src.post('self', 'me', 'A1: also thank Kim for the quick fixes'); await goPr()
+	await see('A1'); src.post('self', 'me', 'ok A1'); await goPr(); src.post('self', 'me', 'ok A1'); await goPr()
+	await makeChanges([0]); await goPr()
+	const wf = store.byCode('A1')!
+	assert.deepEqual([calls.length, src.chats[CHAT].length - before, src.chats[CHAT].at(-1)!.body], [1, 1, 'Approved, and thanks for the quick fixes.'])
+	assert.doesNotMatch(src.chats.self.map(m => m.body).join('\n'), /already exists/)
+	assert.deepEqual([wf.state, wf.promise?.state === 'offered'], ['done', false])
+})
+
+test('slice 3b P1-2: after a failed check, an answer\'s draft is what ok sends, with the vote, never "Check again"', async () => {
+	const { view } = await import('../src/web/view.ts')
+	const { primaryOf } = await import('../src/web/app/model/derive.ts')
+	await prReviewed(); script = (p: string) => { mapPrompts.push(p); return undefined }
+	src.post('self', 'me', "send A1: Looks good. I'll approve the PR."); await goPr()
+	script = promise([voteEffect()], 'Approved, thanks.')
+	src.post('self', 'me', 'A1: approve it and thank Kim'); await goPr()
+	const ui = { status: 'ready', msg: '', lost: false, stale: false, touched: false, pick: null, otherOn: false, other: '', editing: false, text: null, answer: '', ask: '', cmts: null, facts: null, threadOpen: false, whyOpen: false, dbgOpen: false, menu: false } as never
+	assert.notEqual(primaryOf(view(store, undefined).needs.find(c => c.code === 'A1')!, ui, 'Delegate').label, 'Check again', 'a shown draft wins')
+	await see('A1'); src.post('self', 'me', 'ok A1'); await goPr(); src.post('self', 'me', 'ok A1'); await goPr()
+	await makeChanges([0]); await goPr()
+	assert.deepEqual([calls.length, src.chats[CHAT].at(-1)!.body, store.byCode('A1')!.state], [1, 'Approved, thanks.', 'done'])
+})
+
+test('slice 3b P1-2: a draft shown on an item whose check failed wins: ok sends it, and the card\'s button sends it', async () => {
+	const { view } = await import('../src/web/view.ts')
+	const { primaryOf } = await import('../src/web/app/model/derive.ts')
+	await prReviewed(); script = (p: string) => { mapPrompts.push(p); return undefined }
+	src.post('self', 'me', "send A1: Looks good. I'll approve the PR."); await goPr()
+	// However a draft came to sit on a failed check, ok is about the draft the owner sees.
+	store.save({ ...store.byCode('A1')!, sent: undefined, draft: { text: 'Approved, thanks.', commitment: false, sources: [] }, revAt: new Date().toISOString() })
+	const ui = { status: 'ready', msg: '', lost: false, stale: false, touched: false, pick: null, otherOn: false, other: '', editing: false, text: null, answer: '', ask: '', cmts: null, facts: null, threadOpen: false, whyOpen: false, dbgOpen: false, menu: false } as never
+	assert.deepEqual(primaryOf(view(store, undefined).needs.find(c => c.code === 'A1')!, ui, 'Delegate').label, 'Send')
+	await see('A1'); src.post('self', 'me', 'ok A1'); await goPr()
+	assert.equal(src.chats[CHAT].at(-1)!.body, 'Approved, thanks.')
+})
+
+test('slice 3b P1-3: a PR that moved at ok turns the promise row into Review again, and reviewing again sends a new reply and votes once', async () => {
+	const { nextView } = await import('../src/web/next.ts')
+	await prReviewed(); script = mapped()
+	src.post('self', 'me', "send A1: Looks good. I'll approve the PR."); await goPr()
+	const before = src.chats[CHAT].length
+	prNow = { ...prNow, head: 'beef002' }
+	act(store, 'ok A1', store.byCode('A1')!.revAt, 'page'); await goPr()
+	const w1 = store.byCode('A1')!
+	assert.deepEqual([w1.sent, w1.promise, pendingOf(w1), /Review again\?/.test(w1.question ?? '')], [undefined, undefined, [], true], 'a new turn that asks to review again')
+	// However an offered promise came to ask to review again, its row never offers the vote.
+	const crafted = { ...w1, id: 'w-crafted', code: 'A77', question: w1.question!.replace(/A1\b/g, 'A77'), sent: { msgId: 'm77', at: new Date().toISOString() }, promise: { text: "I'll approve.", at: new Date().toISOString(), state: 'offered' as const }, effects: [voteEffect()] }
+	store.save(crafted, false)
+	assert.notEqual(nextView(store).move.find(r => r.act === 'A77')?.kind, 'promise')
+	store.save({ ...crafted, state: 'done' }, false)
+	const row = nextView(store).move.find(r => r.act === 'A1')!
+	assert.notEqual(row.primary?.label, 'Approve PR 4200001', 'the row no longer offers the vote it cannot make')
+	assert.notEqual(row.kind, 'promise')
+	script = promise([voteEffect({ head: 'beef002' })], 'Rechecked the new commits. Approved.')
+	src.post('self', 'me', 'A1: review again'); await goPr()
+	await see('A1'); src.post('self', 'me', 'ok A1'); await goPr(); src.post('self', 'me', 'ok A1'); await goPr()
+	await makeChanges([0]); await goPr()
+	assert.deepEqual([calls.length, src.chats[CHAT].length - before, src.chats[CHAT].at(-1)!.body, store.byCode('A1')!.state], [1, 1, 'Rechecked the new commits. Approved.', 'done'])
+})
+
+test('slice 3b P2-1: on a shared review, an ok that waits on another item\'s change names it', async () => {
+	await prReviewed()
+	store.saveConfig({ ...store.config(), agent: { ...store.config().agent, effectTools: ['ado-repo_pull_request_write:vote', 'ado-repo_pull_request_thread_write'] } })
+	script = needsJob({ key: 'pr:acme/web/4200001', goal: 'Re-review PR 4200001' })
+	jf.job = (_, id) => ({ workflowId: id, intent: 'pr_review', state: 'needs_human', summary: 'All findings fixed', reply: { text: 'Rechecked, all fixed.', commitment: false, sources: [{ ref: PR_URL, tier: 'live', origin: 'extracted' }] } })
+	src.post(CHAT, 'me', `[as Rita] Can you check it too? ${PR_URL}`); await goPr(); await goPr()
+	jf.job = () => undefined
+	const rita = store.workflows().find(w => w.asker?.name === 'Rita')!
+	// Kim's vote is offered first, so it is the review job's list; then Rita's comment cannot replace it.
+	script = mapped()
+	src.post('self', 'me', "send A1: Looks good. I'll approve the PR."); await goPr()
+	assert.equal(store.byCode('A1')!.promise?.state, 'offered')
+	const comment = voteEffect({ action: 'comment', summary: 'Comment on PR 4200001', call: { tool: 'ado-repo_pull_request_thread_write', args: { action: 'create', repositoryId: 'web', pullRequestId: 4200001, content: 'One nit.' } }, head: undefined })
+	script = promise([comment], 'Left you one nit.')
+	src.post('self', 'me', `${rita.code}: Leave Rita a nit.`); await goPr()
+	await see(rita.code); src.post('self', 'me', `ok ${rita.code}`); await goPr()
+	assert.match(src.chats.self.at(-1)!.body, new RegExp(`${rita.code} waits on A1's change on this review: ok or skip A1 first\\.`))
+	// The advice works: ok A1 makes the vote, then Rita's ok makes her comment.
+	src.post('self', 'me', 'ok A1'); await goPr(); await makeChanges([0]); await goPr()
+	calls.length = 0
+	await see(rita.code); src.post('self', 'me', `ok ${rita.code}`); await goPr(); await makeChanges([0]); await goPr()
+	assert.deepEqual(calls.map(c => c.args.content), ['One nit.'])
+})
+
+test('slice 3b: a new review result for another asker on the same PR starts a new turn on an offered promise item, so its reply can go', async () => {
+	await prReviewed(); script = mapped()
+	src.post('self', 'me', "send A1: Looks good. I'll approve the PR."); await goPr()
+	assert.equal(store.byCode('A1')!.promise?.state, 'offered')
+	const before = src.chats[CHAT].length
+	script = needsJob({ key: 'pr:acme/web/4200001', goal: 'Re-review PR 4200001' })
+	jf.job = (_, id) => ({ workflowId: id, intent: 'pr_review', state: 'needs_human', summary: 'All findings fixed', reply: { text: 'Rechecked again, all fixed.', commitment: false, sources: [{ ref: PR_URL, tier: 'live', origin: 'extracted' }] } })
+	src.post(CHAT, 'me', `[as Rita] Can you check it too? ${PR_URL}`); await goPr(); await goPr()
+	jf.job = () => undefined
+	script = mapped()
+	await see('A1'); src.post('self', 'me', 'ok A1'); await goPr()
+	assert.deepEqual([src.chats[CHAT].length - before - 1, src.chats[CHAT].at(-1)!.body], [1, 'Rechecked again, all fixed.'], 'the new reply goes')
+	assert.doesNotMatch(src.chats.self.map(m => m.body).join('\n'), /already exists/)
+	assert.deepEqual(pendingOf(store.byCode('A1')!).map(e => e.summary), ['Approve PR 4200001'], 'and the promise is offered again after it')
+})
+
+test('slice 3b P2-2: a PR completed between the offer and ok rests the item and quotes no empty reply', async () => {
+	await prReviewed(); script = mapped()
+	src.post('self', 'me', "send A1: Looks good. I'll approve the PR."); await goPr()
+	prNow = { ...prNow, status: 'completed' }
+	src.post('self', 'me', 'ok A1'); await goPr()
+	assert.match(src.chats.self.at(-1)!.body, /Not done A1: PR 4200001 is completed, so no vote is needed\. Nothing was changed; its reply already went\./)
+	assert.doesNotMatch(src.chats.self.at(-1)!.body, /it says: ""/)
+	assert.deepEqual([store.byCode('A1')!.state, calls.length], ['done', 0])
+})
+
+test('slice 3b P2-3: a change refused at ok on a promise item says to leave it out, not to send only the reply', async () => {
+	await prReviewed(); script = mapped()
+	src.post('self', 'me', "send A1: Looks good. I'll approve the PR."); await goPr()
+	store.saveConfig({ ...store.config(), agent: { ...store.config().agent, effectTools: ['ado-repo_pull_request_thread_write'] } })
+	src.post('self', 'me', 'ok A1'); await goPr()
+	assert.match(src.chats.self.at(-1)!.body, /"ok A1 except 1" to leave it out/)
+	assert.doesNotMatch(src.chats.self.at(-1)!.body, /send only the reply/)
+})
+
+test('slice 3b P2-4: a vote is a state: the PR read decides, so a vote reset by hand is cast again, and one the PR shows is never cast', async () => {
+	await prReviewed(); script = mapped()
+	src.post('self', 'me', "send A1: Looks good. I'll approve the PR."); await goPr()
+	const { ledgerRec } = await import('../src/runner/ledger.ts')
+	// Delegate approved at this commit earlier; the owner reset the vote by hand, so the PR shows none.
+	store.saveCallRec(ledgerRec(voteEffect(), { state: 'done', ref: 'vote-old' }))
+	src.post('self', 'me', 'ok A1'); await goPr()
+	await makeChanges([0]); await goPr()
+	assert.deepEqual(calls.map(c => c.args.vote), ['Approved'], 'cast again: the PR showed no vote')
+	// And the other way: the PR already shows the owner's approval, so no call is made.
+	await prReviewed(); script = mapped()
+	const code = store.workflows().at(-1)!.code
+	src.post('self', 'me', `send ${code}: Looks good. I'll approve the PR.`); await goPr()
+	prNow = { ...prNow, votes: [{ name: 'Robin Park', vote: 10 }] }
+	calls.length = 0
+	src.post('self', 'me', `ok ${code}`); await goPr()
+	const job = store.jobs().find(j => j.purpose === 'execute' && j.run)
+	if (job) { await makeChanges([0]); await goPr() }
+	assert.equal(calls.length, 0, 'never a vote the PR already shows')
+})

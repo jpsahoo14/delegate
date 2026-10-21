@@ -182,6 +182,20 @@ export function seedQuiet(store: Store, moving = false) {
 	return store
 }
 
+// Slice 3: the owner's own words went out. A60's promised a vote, which waits for one ok; checking A61's failed (both made up).
+export function seedPromise(store: Store, ui: 'new' | 'classic' = 'new') {
+	seedQuiet(store)
+	store.saveUi(ui)
+	const at = ago(5), said = "Rechecked, all three are fixed. Looks good, I'll approve the PR."
+	const call = { tool: 'ado-repo_pull_request_write', args: { action: 'vote', project: 'Globex', repositoryId: 'web', pullRequestId: 4200001, vote: 'Approved' } }
+	store.saveJob({ schema: 1, id: 'j-a60', key: 'pr:acme/web/4200001', goal: 'Re-review PR 4200001', session: { agent: 'copilot', id: 's-j60' }, state: 'done', purpose: 'work', parents: ['w-A60'], asks: [], createdAt: at, updatedAt: at, result: { summary: 'All three fixed', effects: [] } } as never)
+	const vote = { system: 'ado', action: 'approve', target: 'PR 4200001', summary: 'Approve PR 4200001', call, head: 'c0ffee1', pr: { title: 'Fix the banner on small screens', author: 'Dev Rao', required: ['Web Team'], autoComplete: true } }
+	store.saveJob({ ...store.job('j-a60')!, result: { summary: 'All three fixed', effects: [vote] } })
+	item(store, 'A60', 'Kim Lane', 'Web reviews', { createdAt: ago(40), job: 'j-a60', lastAsk: 'Fixed all three, can you take another look? PR 4200001', sent: { msgId: 'm60', at, text: said }, promise: { text: said, at, state: 'offered' }, status: "You said you'd approve PR 4200001", effects: [vote], revAt: at })
+	item(store, 'A61', 'Rita Vale', 'Release sync', { createdAt: ago(30), lastAsk: 'Can you sign off on PR 4200002 today?', sent: { msgId: 'm61', at, text: "Yes, I'll approve it after lunch." }, promise: { text: "Yes, I'll approve it after lunch.", at, state: 'failed', why: 'The AI run stopped after 5 minutes' }, status: 'Sent. Could not check what your reply promised: The AI run stopped after 5 minutes', revAt: at })
+	return store
+}
+
 // Pause as the pause command does (runner/apply.ts control): a scheduled send goes back to the owner, held by the pause.
 export function pauseNext(store: Store) {
 	store.saveControl({ ...store.control(), paused: true, stopped: false })

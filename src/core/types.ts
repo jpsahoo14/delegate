@@ -27,7 +27,8 @@ export type Source = { ref: string; tier: 'card' | 'live' | 'private'; origin: '
 
 // holding: the run fell short of its goal, so this only says the answer is coming; never sent by a rule.
 // byOwner: the owner typed or edited these words, so they are never signed.
-export type Draft = { text: string; commitment: boolean; sources: Source[]; preview?: boolean; holding?: true; byOwner?: true }
+// ownWords: the owner's words differ from Delegate's draft, or there was none, so they may promise what the draft did not (Slice 3).
+export type Draft = { text: string; commitment: boolean; sources: Source[]; preview?: boolean; holding?: true; byOwner?: true; ownWords?: true }
 
 // A standing instruction, such as a reminder at a fixed time (design-spec/automations.md).
 // The text is approved once, when the owner starts it, and always goes out with the assistant marker.
@@ -254,6 +255,9 @@ export type Workflow = {
 	missed?: { at: string }
 	// The pending changes are ones the reply itself promised, not a job's findings: shown as a reply with "Also:".
 	promised?: boolean
+	// The owner's own words went out on an item whose PR Delegate can change: one short run maps what they promise to changes held
+	// for ok (Slice 3). pending: waits for the run; checking: the run is going; offered: its changes wait for ok; failed: it could not tell.
+	promise?: { text: string; at: string; state: 'pending' | 'checking' | 'offered' | 'failed'; why?: string }
 	approved?: { text: string; effects: string; at: string }
 	revAt?: string
 	newCount: number

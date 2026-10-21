@@ -71,7 +71,8 @@ function choicePrimary(c: ItemCard, u: CardUi, name: string): Primary {
 function reviewPrimary(c: ItemCard, u: CardUi): Primary {
 	const on = [...(u.cmts ?? new Set(c.changes.map(x => x.n)))].sort((a, b) => a - b), all = on.length === c.changes.length
 	const edited = u.text != null && c.draft && u.text.trim() !== c.draft.text.trim()
-	const label = changeLabel(c, on.length, !!c.draft)
+	// The owner's own words promised one change: the button says it, "Approve PR 4200001" (Slice 3).
+	const label = c.promise && on.length === 1 && !c.draft ? c.changes.find(x => x.n === on[0])!.action : changeLabel(c, on.length, !!c.draft)
 	if (edited) return all ? { label: `${label.replace(/ and reply$/, '')} and send your version`, cmd: `send ${c.code}: ${u.text!.trim()}`, kind: 'finish' } : { label, cmd: '', kind: 'finish', disabled: true, hint: 'To change the reply and skip a change, do one at a time.' }
 	const skip = c.changes.map(x => x.n).filter(n => !on.includes(n))
 	return { label, cmd: all ? `ok ${c.code}` : `ok ${c.code} except ${skip.join(', ')}`, kind: 'finish', disabled: !on.length && !c.draft }
@@ -88,7 +89,8 @@ const PRIMARY: Record<ItemCard['type'], (c: ItemCard, u: CardUi, name: string) =
 // card, words the owner typed still go as their answer.
 const reviewAgainPrimary = (c: ItemCard, u: CardUi): Primary | undefined => c.reviewAgain && !(c.type === 'question' && u.answer.trim())
 	? { label: 'Review again', cmd: c.reviewAgain, kind: 'draft', hint: 'The PR changed since the review. Nothing is changed or sent; you will see the new result first.', verb: c.reviewAgain } : undefined
-export const primaryOf = (c: ItemCard, u: CardUi, name: string) => reviewAgainPrimary(c, u) ?? (PRIMARY[c.type] || PRIMARY.reply)(c, u, name)
+// A check of what the owner's own words promised failed: its one action runs it again (Slice 3).
+export const primaryOf = (c: ItemCard, u: CardUi, name: string): Primary => c.promise?.failed !== undefined && !c.draft ? { label: 'Check again', cmd: `ok ${c.code}`, kind: 'finish' } : reviewAgainPrimary(c, u) ?? (PRIMARY[c.type] || PRIMARY.reply)(c, u, name)
 
 // To learn: every fact by default; a subset names the ones to keep.
 export const factsOn = (k: KnowledgeCard, u: CardUi) => u.facts ?? new Set(k.facts.map((_, i) => i + 1))

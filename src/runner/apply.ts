@@ -1,7 +1,7 @@
 import { answerHabit, outcome } from './habits.ts'
 import { membersOf } from './sharing.ts'
 import { active, afterSend, closeWork, doneTodos, homeOf, inWork, keepTodos, newTurn, openTodos, statusOf, step, wait } from './work.ts'
-import { pendingEffects, refusal, sameChange, vet } from '../core/effects.ts'
+import { asksReviewAgain, doLine, pendingEffects, refusal, saidLine, sameChange, vet } from '../core/effects.ts'
 import type { Answer, Config, Effect, Person, Workflow } from '../core/types.ts'
 import { sendGate } from '../core/gate.ts'
 import { classify, htmlToText } from '../core/intake.ts'
@@ -26,6 +26,7 @@ import { askAtOf } from '../core/numbers.ts'
 import { FOLLOW_DAYS, startFollow, startWatch, stopWatch, watchCommand } from './track.ts'
 import { prTarget, recheckDeploy, recheckPr, voteDropped, type BuildProbe } from './probe.ts'
 import { deployRunning, isValidate, reportsResult, saysTested, testedAsk } from './validate.ts'
+import { checkAgain, dropPromise, notePromise, promiseDue, reopenPromise, rest } from './promise.ts'
 import { isDeploy } from '../core/deploy.ts'
 
 // Apply owner answers in time order. Effects run here and nowhere else.
@@ -130,9 +131,15 @@ async function applyOne(store: Store, src: Source, cfg: Config, wf: Workflow, a:
 	// seenAt "" means a text surface never displayed this item: the owner is shown it first (review 085 P0-1).
 	if ((a.verb === 'ok' || ((a.verb === 'edit' || a.verb === 'send') && effectsLeft)) && a.seenAt !== undefined && wf.revAt && (a.seenAt === '' || a.seenAt < wf.revAt) && (wf.state === 'needs_human' || wf.state === 'scheduled')) {
 		store.markShown([wf])
+		// The owner's own words already went: only the change they promised is left, with no reply to show (Slice 3).
+		if (wf.sent && !wf.draft?.text && effectsLeft) return reply(store, src, a, `${MARK} Here is ${wf.code} first. Nothing was changed. ${saidLine(pendingEffects(wf.effects))}: ok will ${effectLine(pendingEffects(wf.effects))}. Say "ok ${wf.code}" to do it.`)
 		if (a.seenAt === '') return reply(store, src, a, `${MARK} Here is ${wf.code} first. Nothing was sent. ${wf.asker?.name ?? 'They'} asked: "${(wf.lastAsk ?? '').slice(0, 200)}". ${effectsLeft ? `ok will ${effectLine(pendingEffects(wf.effects))}, then reply` : 'Reply'}: "${wf.draft?.text ?? ''}". Say "ok ${wf.code}" to send it.`)
 		return reply(store, src, a, `${MARK} ${wf.code} changed after you looked. Nothing was sent or changed. It now ${effectsLeft ? `will ${effectLine(pendingEffects(wf.effects))}, then reply: "${wf.draft?.text ?? ''}"` : wf.draft?.text ? `says: "${wf.draft.text}"` : `asks: ${wf.question ?? wf.status}`}. Say "more ${wf.code}" to see it, then "ok ${wf.code}".`)
 	}
+	// The owner's own words went out and a check of what they promised failed: ok runs it once more (Slice 3).
+	if (a.verb === 'ok' && wf.promise?.state === 'failed' && !wf.draft?.text) { const r = checkAgain(store, wf); store.save(wf); return reply(store, src, a, `${MARK} ${r}`) }
+	// The reply already went and the change it promised waits: new words would be a second reply, so they wait until it is settled.
+	if ((a.verb === 'send' || a.verb === 'edit') && a.text && wf.sent && wf.promise?.state === 'offered') return reply(store, src, a, `${MARK} ${wf.code}'s reply already went to ${wf.asker?.name?.split(/\s+/)[0] ?? 'them'}. Say "ok ${wf.code}" to ${doLine(pendingEffects(wf.effects))}, or "skip ${wf.code}".`)
 	if (a.verb === 'ok') { const r = okRelay(store, wf); if (r) { store.save(wf); return reply(store, src, a, `${MARK} ${r}`) } }
 	// New words on an item with changes are a preview that shows the changes again, never an approval of both (next action).
 	if (a.verb === 'send' && a.text && effectsLeft) a = { ...a, verb: 'edit' }
@@ -144,6 +151,7 @@ async function applyOne(store: Store, src: Source, cfg: Config, wf: Workflow, a:
 			if (wf.kind !== 'tracker' && wf.draft && !wf.sent) store.log({ event: 'skipped', workflowId: wf.id, code: wf.code, chat: wf.chat.id, intent: wf.intent, asker: wf.asker, ask: wf.lastAsk?.slice(0, 400), draft: wf.draft.text })
 			if (wf.kind !== 'tracker' && wf.draft && !wf.sent) outcome(store, wf, 'skipped')
 			withdraw(store, procs, wf)
+			dropPromise(store, wf)
 			// Skipping a reply on open work drops only that reply (R-WRK-08).
 			if (inWork(store, wf)) { const home = homeOf(store, wf); step(home, `${wf === home ? '' : `${wf.code}: `}You skipped a reply`); newTurn(wf, !!wf.sent); Object.assign(wf, { state: 'open', status: statusOf(home), pending: [] }); if (home !== wf) store.save(home); break }
 			if (wf.kind === 'tracker') stopTracker(store, procs, wf)
@@ -167,6 +175,9 @@ async function applyOne(store: Store, src: Source, cfg: Config, wf: Workflow, a:
 			return reply(store, src, a, `${MARK} Asking about ${wf.code}. The answer comes back here; nothing is sent to ${wf.asker?.name ?? 'anyone'}.`)
 		case 'answer':
 			withdraw(store, procs, wf)
+			// The reply already went and its promised change waits, or its check failed: the owner's answer is a new turn, whose own
+			// reply can go; the promise is checked again once it rests (re-review P1-1, P1-2).
+			if (wf.sent) reopenPromise(store, wf)
 			// A tracker's question goes back to its own job, not to the reply worker.
 			if (wf.kind === 'tracker' && wf.job && store.job(wf.job)) {
 				const job = store.job(wf.job)!
@@ -192,7 +203,7 @@ async function applyOne(store: Store, src: Source, cfg: Config, wf: Workflow, a:
 			if (wf.state === 'waiting_on_task' || wf.state === 'running') return reply(store, src, a, `${MARK} ${wf.code} is still working. I'll show the draft first.`)
 			const original = wf.learnAfter?.draft ?? wf.draft?.text
 			// An edit is never approved: a scheduled automatic send is cancelled and waits for ok (final review P0-3).
-			Object.assign(wf, { state: 'needs_human', sendAt: undefined, approved: undefined, draft: { ...(wf.draft ?? { commitment: false, sources: [] }), text: a.text!, preview: true, byOwner: true }, question: undefined, revAt: new Date().toISOString(), status: 'Edited by you', learnAfter: original ? { draft: original, sent: a.text! } : undefined })
+			Object.assign(wf, { state: 'needs_human', sendAt: undefined, approved: undefined, draft: { ...(wf.draft ?? { commitment: false, sources: [] }), text: a.text!, preview: true, byOwner: true, ownWords: ownWords(wf, a.text!) }, question: undefined, revAt: new Date().toISOString(), status: 'Edited by you', learnAfter: original ? { draft: original, sent: a.text! } : undefined })
 			store.save(wf)
 			store.markShown([wf])
 			const left = pendingEffects(wf.effects)
@@ -210,7 +221,7 @@ async function applyOne(store: Store, src: Source, cfg: Config, wf: Workflow, a:
 			if (a.verb === 'send' && a.text) {
 				const original = wf.learnAfter?.draft ?? wf.draft?.text
 				if (original && original.trim() !== a.text.trim()) wf.learnAfter = { draft: original, sent: a.text }
-				wf.draft = { ...(wf.draft ?? { commitment: false, sources: [] }), text: a.text, byOwner: true }
+				wf.draft = { ...(wf.draft ?? { commitment: false, sources: [] }), text: a.text, byOwner: true, ownWords: ownWords(wf, a.text) }
 			}
 			// An item with changes on other systems makes them first; the reply follows when all are done (R-HIL-21).
 			// New messages are read first, so a "never mind" stops the changes too (tester P1-4).
@@ -245,9 +256,17 @@ async function applyOne(store: Store, src: Source, cfg: Config, wf: Workflow, a:
 			// A vote on a pull request is checked against the PR as it is now, after the owner's choice of changes.
 			// A deploy is checked against its ring and PR as they are now; if either moved, it is drawn again, not run (owned work).
 			const stale = await recheckPr(store, wf, probe) ?? await recheckDeploy(store, wf, probe)
+			if (stale && wf.promise && wf.sent && !wf.draft?.text) {
+				// The owner's own words already went (Slice 3). A closed PR leaves nothing to make, so the item rests; a PR that moved
+				// asks to review again, as a new turn whose vote and reply both wait for ok (re-review P1-3, P2-2).
+				if (!pendingEffects(wf.effects).length) { const why = wf.status; rest(store, wf); store.save(wf); return reply(store, src, a, `${MARK} Not done ${wf.code}: ${why}. Nothing was changed; its reply already went.`) }
+				if (asksReviewAgain(wf.code, wf.question)) { const keep = { question: wf.question, status: wf.status }; newTurn(wf); Object.assign(wf, { ...keep, promise: undefined, state: 'needs_human', revAt: new Date().toISOString() }) }
+			}
 			if (stale) { store.save(wf); store.markShown([wf]); return reply(store, src, a, `${MARK} ${stale}`) }
 			const held = approveEffects(store, cfg, wf, !!a.again)
-			if (held !== undefined) { store.save(wf); return reply(store, src, a, `${MARK} ${held || `Posting ${wf.code}'s ${effectLine(pendingEffects(wf.effects))} now, then sending the reply.`}`) }
+			if (held !== undefined) { store.save(wf); return reply(store, src, a, `${MARK} ${held || `Posting ${wf.code}'s ${effectLine(pendingEffects(wf.effects))} now${wf.draft?.text ? ', then sending the reply' : ''}.`}`) }
+			// The owner left out every change their own words promised, and the reply already went: nothing is left to do (Slice 3).
+			if (wf.promise && wf.sent && !wf.draft?.text) { rest(store, wf); store.save(wf); return reply(store, src, a, `${MARK} Nothing was changed for ${wf.code}; its reply already went.`) }
 			await send(store, src, cfg, wf, wf.draft?.text, { answer: a })
 			break
 		}
@@ -304,7 +323,7 @@ function pick(store: Store, cfg: Config, wf: Workflow, a: Answer): string | unde
 		const effects = v ? v.effects.filter(e => !busy || !isDeploy(e.call)) : own ? undefined : wf.effects
 		if (job && effects !== wf.effects) { job.result = { summary: job.result?.summary ?? 'Chosen by the owner', effects: effects ?? [] }; store.saveJob(job) }
 		else if (!job && effects?.length) changesJob(store, cfg, wf, effects.map(e => ({ ...e })))
-		Object.assign(wf, { draft: { ...(wf.draft ?? { commitment: false, sources: [] }), text: o.reply, preview: true, byOwner: undefined }, learnAfter: undefined, effects, question: undefined, picked: nums, revAt: now, status: `You picked "${o.label}"` })
+		Object.assign(wf, { draft: { ...(wf.draft ?? { commitment: false, sources: [] }), text: o.reply, preview: true, byOwner: undefined, ownWords: undefined }, learnAfter: undefined, effects, question: undefined, picked: nums, revAt: now, status: `You picked "${o.label}"` })
 		return undefined
 	}
 	Object.assign(wf, { ownerAnswer: `The owner picked: ${chosen.map(o => o.label).join('; ')}`, picked: nums, state: 'running', status: 'Rewriting with your choice' })
@@ -332,6 +351,12 @@ function only(store: Store, wf: Workflow, nums: number[]): string | Effect[] {
 }
 
 const norm = (t: string) => htmlToText(t).replace(/\s+/g, ' ').trim()
+// The owner's words differ from what Delegate drafted, or it drafted nothing: they may promise something new (Slice 3).
+const flat = (t: string) => t.replace(/\s+/g, ' ').trim()
+function ownWords(wf: Workflow, text: string): true | undefined {
+	const theirs = wf.learnAfter?.draft ?? (wf.draft?.byOwner ? undefined : wf.draft?.text)
+	return !theirs || flat(theirs) !== flat(text) ? true : undefined
+}
 // Letters and digits only: a post carries our text after the quote it answers, with tags and mentions in between (review 10-20 R1c).
 const squash = (t: string) => norm(t).replace(/[^\p{L}\p{N}]+/gu, '').toLowerCase()
 
@@ -431,6 +456,8 @@ export async function send(store: Store, src: Source, cfg: Config, wf: Workflow,
 	const home = homeOf(store, wf)
 	if (home.work) { afterSend(wf, out!, msgId, home); if (!active(home)) { stopWatch(store, home); closeFamily(store, realProcs, home, home.work.closed?.why ?? 'closed') } if (home !== wf) store.save(home) }
 	else close(wf, by.ruleId ? `Sent by rule ${by.ruleId}: "${text!.slice(0, 70)}"` : `Sent: "${text!.slice(0, 80)}"`)
+	// The owner's own words may promise what the draft did not: a short run checks, after the reply is out (Slice 3).
+	if (promiseDue(store, wf, by)) notePromise(store, wf, text!)
 	wf.sendAt = undefined
 	wf.newCount = 0
 	store.save(wf)
@@ -623,5 +650,7 @@ async function correct(store: Store, src: Source, wf: Workflow, a: Answer) {
 	const { msgId } = await src.send(wf.chat.id, a.text!)
 	store.addSent(msgId, a.text!)
 	store.log({ event: 'correction', workflowId: wf.id, code: wf.code, msgId, sentId: wf.sent?.msgId, text: a.text })
+	// A correction is the owner's words too; one sent while the last check waits joins it, so one run reads both (Slice 3).
+	if (prTarget(store, wf)) { notePromise(store, wf, a.text!); store.save(wf) }
 	await reply(store, src, a, `${MARK} Posted your correction for ${wf.code}.`)
 }

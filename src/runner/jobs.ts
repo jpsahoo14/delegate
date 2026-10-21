@@ -27,6 +27,7 @@ import { checked, WORKER_SERVER, WORKER_TOOLS, workerMcp, readDirs } from './dis
 import { isBootstrap, YOURS, type BootSource } from './bootstrap.ts'
 import { knowledgeOf, propose } from './proposals.ts'
 import { send } from './apply.ts'
+import { reopenPromise, rest } from './promise.ts'
 import { forkSession, ownerFor, sessionBytes, backupSession, restoreSession } from './own.ts'
 import { dueTrackers } from './track.ts'
 import { close } from './intake.ts'
@@ -282,6 +283,9 @@ export function finishWork(store: Store, job: Job, r: Report, asksAtStart: numbe
 	// The job found nothing for the owner (a PR already merged, or approved by others): no card, a Done row, and a step on open work (dogfood 10-20).
 	const nothing = r.state === 'done' && !r.reply && !r.question && !effects.length
 	if (!again) for (const wf of parentsOf(store, job)) {
+		// The reply already went and its promised change waits, or its check failed: a new result is a new turn, whose own reply can
+		// go; the owner's words are checked again once it rests (Slice 3, re-review).
+		if (wf.sent) reopenPromise(store, wf)
 		// Rules never send a review's or an investigation's result; the card says so, so the owner is not left guessing (dogfood 10-20, A34).
 		const decision = r.reply ? { action: 'draft', reason: 'A review or investigation result always waits for you', confidence: confidence(r.reply.sources ?? []) } : wf.decision
 		Object.assign(wf, { state: nothing ? (wf.work || wf.partOf ? 'open' : 'done') : 'needs_human', closedBy: nothing && !(wf.work || wf.partOf) ? 'job' : undefined, learnAfter: r.reply ? undefined : wf.learnAfter, status: nothing ? `Nothing needed: ${r.summary}` : r.summary, question: r.question, draft: r.reply ? { ...r.reply } : nothing ? undefined : wf.draft, effects, decision, waitingSince: undefined, approved: undefined, newCount: 0, revAt: new Date().toISOString(), ...(r.context ? { context: r.context } : {}) })
@@ -336,7 +340,9 @@ async function finishExecute(store: Store, src: Source, cfg: Config, job: Job) {
 		const moving = effects.filter(e => e.done && isDeploy(e.call)).map(e => deployed(store, wf, e, e.done!.ref, job.goal)).filter((x): x is string => !!x)
 		if (left.length) {
 			const how = left.some(e => e.maybe) ? `Check whether it was made, then reply "ok ${wf.code} again" to make it once more` : `Reply "ok ${wf.code}" to retry`
-			Object.assign(wf, { state: 'needs_human', waitingSince: undefined, status: `Made ${effects.length - left.length} of ${effects.length} changes. Not done: ${left.map(e => `${changeText(e)}${e.error ? ` (${e.error.slice(0, 80)})` : ''}`).join('; ')}. ${how}, or "ok ${wf.code} except ${left.map((_, i) => i + 1).join(' ')}" to send only the reply` })
+			// The owner's own words already went, so there is no reply left to send on its own (Slice 3).
+			const or = wf.promise && wf.sent && !wf.draft?.text ? `, or "skip ${wf.code}"` : `, or "ok ${wf.code} except ${left.map((_, i) => i + 1).join(' ')}" to send only the reply`
+			Object.assign(wf, { state: 'needs_human', waitingSince: undefined, status: `Made ${effects.length - left.length} of ${effects.length} changes. Not done: ${left.map(e => `${changeText(e)}${e.error ? ` (${e.error.slice(0, 80)})` : ''}`).join('; ')}. ${how}${or}` })
 			store.save(wf)
 			continue
 		}
@@ -350,6 +356,12 @@ async function finishExecute(store: Store, src: Source, cfg: Config, job: Job) {
 		// A deploy with no reply to send: the work goes on, and the build check watches the run.
 		if (moving.length && !wf.draft?.text) {
 			Object.assign(wf, { state: 'open', status: moving.join('; '), waitingSince: undefined, pending: [] })
+			store.save(wf)
+			continue
+		}
+		// The owner's own words went out before the change they promised: once it is made, the item rests where the send left it (Slice 3).
+		if (wf.promise && wf.sent && !wf.draft?.text) {
+			rest(store, wf, `Made: ${effects.filter(e => e.done).map(changeText).join('; ')}`)
 			store.save(wf)
 			continue
 		}
@@ -402,6 +414,19 @@ export function changesJob(store: Store, cfg: Config, wf: Workflow, effects: Eff
 	wf.job = job.id
 }
 
+// The changes ok will make ride on the item's own job (a PR review), or on one that only carries them, so ok runs the same executor.
+// A new list replaces the old one, or ok would refuse it as out of date (A48). Never while a change run is making the approved list
+// ('busy'), nor on a job another open item still shows its own changes from ('shared', review 10-21c P1-1). Returns why it did not.
+export function carry(store: Store, cfg: Config, wf: Workflow, effects: Effect[]): 'busy' | 'shared' | undefined {
+	const own = wf.job ? store.job(wf.job) : undefined
+	if (!own) { changesJob(store, cfg, wf, effects); return undefined }
+	if (executing(own)) return 'busy'
+	if (parentsOf(store, own).some(p => p.id !== wf.id && pendingEffects(p.effects).length)) return 'shared'
+	own.result = { ...own.result, summary: own.result?.summary ?? 'Chosen by the owner', effects }
+	store.saveJob(own)
+	return undefined
+}
+
 // ok on an item with changes: approve exactly what the owner saw. One change run per job; later oks join it.
 // The Settings switch that allows a call, by its label: its action's ("PR vote"), else its tool's, else the tool's name.
 const switchOf = (c: Call) => { const one = `${c.tool}:${String(c.args.action ?? '')}`; return changeName(one) !== one ? changeName(one) : changeName(c.tool) }
@@ -416,13 +441,17 @@ export function approveEffects(store: Store, cfg: Config, wf: Workflow, again = 
 	if (maybe && !again) return `${wf.code}'s ${shown(maybe).line} may already have been made. Check it, then say "ok ${wf.code} again" to make it once more, or "ok ${wf.code} except ${left.indexOf(maybe) + 1}" to leave it out.`
 	// A new result is being worked out; the shown changes may be replaced (review 01-04 P1-4).
 	if (job.purpose === 'work' && (job.state === 'running' || job.state === 'queued')) return `${wf.code} is still working on a new result. I'll show it first.`
-	if (keyOf(job.result?.effects) !== effectsKey(wf)) return `${wf.code}'s changes are out of date. Ask for a fresh review, or skip ${wf.code}.`
+	if (keyOf(job.result?.effects) !== effectsKey(wf)) {
+		// The job holds another open item's changes on the same review: this one waits on that one, so say which (re-review P2-1).
+		const first = parentsOf(store, job).find(p => p.id !== wf.id && pendingEffects(p.effects).length && effectsKey(p) === keyOf(job.result?.effects))
+		return first ? `${wf.code} waits on ${first.code}'s change on this review: ok or skip ${first.code} first.` : `${wf.code}'s changes are out of date. Ask for a fresh review, or skip ${wf.code}.`
+	}
 	// A change refused now, such as one switched off in Settings after it was shown, is never queued (review chui P2-3). It runs before
 	// the empty-list check, so with every switch off the owner is sent to the switch, not to setup (re-review N1).
 	const pr = prTarget(store, wf)
 	for (const e of left) {
 		const why = refusal(cfg, e, pr)
-		if (why) return `${wf.code}'s ${shown(e).line} cannot be made: ${why}. ${e.call && !isDeploy(e.call) && !allows(cfg.agent.effectTools, e.call) ? `Turn on "${switchOf(e.call)}" in Settings, or say` : 'Say'} "ok ${wf.code} except ${left.indexOf(e) + 1}" to ${left.length === 1 ? 'send only the reply' : 'leave it out'}.`
+		if (why) return `${wf.code}'s ${shown(e).line} cannot be made: ${why}. ${e.call && !isDeploy(e.call) && !allows(cfg.agent.effectTools, e.call) ? `Turn on "${switchOf(e.call)}" in Settings, or say` : 'Say'} "ok ${wf.code} except ${left.indexOf(e) + 1}" to ${left.length === 1 && !(wf.sent && !wf.draft?.text) ? 'send only the reply' : 'leave it out'}.`
 	}
 	// A deploy is allowed by "Where Delegate may deploy", not by the write tools (owned work).
 	if (!cfg.agent.effectTools?.length && !left.every(e => isDeploy(e.call) && cfg.deploy?.allowed.length)) return `${wf.code} has ${left.length} change(s) to make, but no write tools are set. Add them in setup (the "tools" step, as effectTools), or skip ${wf.code}.`
@@ -437,7 +466,7 @@ export function approveEffects(store: Store, cfg: Config, wf: Workflow, again = 
 	const now = new Date().toISOString()
 	if (!executing(job)) Object.assign(job, { state: 'queued', purpose: 'execute' })
 	store.saveJob(job)
-	Object.assign(wf, { state: 'waiting_on_task', approved: { text: wf.draft?.text ?? '', effects: effectsKey(wf), at: now }, waitingSince: now, status: `Making ${left.length} change(s), then sending the reply` })
+	Object.assign(wf, { state: 'waiting_on_task', approved: { text: wf.draft?.text ?? '', effects: effectsKey(wf), at: now }, waitingSince: now, status: `Making ${left.length} change(s)${wf.draft?.text ? ', then sending the reply' : ''}` })
 	store.save(wf)
 	return ''
 }

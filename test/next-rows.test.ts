@@ -371,3 +371,35 @@ test('N1a page model: the address wins, then the newer of the server file and th
 	assert.deepEqual(['home', 'focus', 'focus/A7', 'ongoing', 'ongoing/running', 'ongoing/automations', 'done/replies', 'settings/system', 'knowledge', 'nowhere'].map(newRoute),
 		['now', 'now', 'now/A7', 'now/waiting', 'now/working', 'now/waiting', 'done/replies', 'settings/system', 'knowledge', 'now'])
 })
+
+// Slice 3: the owner's own words went out and promised a change. One row, in Your move, in both experiences: what they said,
+// the change and what it means, and one button that makes it (ok); a check that failed offers Check again (ok) and makes nothing.
+test('slice 3 own words: the promise row says what you said and the change with its meaning, with one button that makes it; a failed check offers Check again', async () => {
+	const { primaryOf } = await import('../src/web/app/model/derive.ts')
+	const { view } = await import('../src/web/view.ts')
+	const store = seedNext(fresh()), at = new Date(Date.now() - 5 * 60_000).toISOString(), said = "Looks good. I'll approve the PR."
+	const call = { tool: 'ado-repo_pull_request_write', args: { action: 'vote', pullRequestId: 4200001, vote: 'Approved' } }
+	store.saveJob({ schema: 1, id: 'j-a60', key: 'pr:acme/web/4200001', goal: 'Re-review PR 4200001', session: { agent: 'copilot', id: 's-j60' }, state: 'done', purpose: 'work', parents: ['w-A60'], asks: [], createdAt: at, updatedAt: at, result: { summary: 'Fixed', effects: [] } } as never)
+	item(store, 'A60', 'Kim Lane', 'Web', { job: 'j-a60', lastAsk: 'Fixed all three, can you take another look?', sent: { msgId: 'm60', at, text: said }, promise: { text: said, at, state: 'offered' }, status: "You said you'd approve PR 4200001",
+		effects: [{ system: 'ado', action: 'approve', target: 'PR 4200001', summary: 'Approve', call, head: 'c0ffee1', pr: { title: 'Fix the banner', author: 'Dev Rao', required: [], autoComplete: true } }] })
+	item(store, 'A61', 'Rita Vale', 'Web', { lastAsk: 'Can you check PR 4200002?', sent: { msgId: 'm61', at, text: said }, promise: { text: said, at, state: 'failed', why: 'timed out' }, status: 'Sent. Could not check what your reply promised: timed out' })
+	const v = nextView(store), a60 = byAct(v, 'A60'), a61 = byAct(v, 'A61')
+	assert.deepEqual([a60.section, a60.kind, a60.headline, a60.primary, a60.more], ['move', 'promise', "You said you'd approve PR 4200001", { label: 'Approve PR 4200001', command: 'ok A60' }, [{ label: 'Skip', command: 'skip A60' }]])
+	assert.deepEqual([a60.facts.verb, a60.facts.at, a60.facts.quote], ['said', at, { by: 'You', verb: 'said', text: said }], 'the owner\'s words, quoted after "You said"')
+	assert.deepEqual(a60.facts.notes, [{ label: 'PR', text: '"Fix the banner" by Dev Rao; autocomplete is on: your approval may complete it' }], 'what the vote means, from Azure DevOps')
+	assert.deepEqual([a61.section, a61.kind, a61.headline, a61.primary, a61.facts.notes], ['move', 'promise', "Couldn't check what you told Rita: check again", { label: 'Check again', command: 'ok A61' }, [{ label: 'Why', text: 'timed out' }]])
+	assert.equal(COMMANDS.promise, 'ok <code>')
+	// A promise row never stands in for a draft: an item with a reply to send is a reply row, whose draft the owner sees.
+	item(store, 'A62', 'Dev Rao', 'Web', { lastAsk: 'Status?', promise: { text: said, at, state: 'offered' }, effects: [{ system: 'ado', action: 'approve', target: 'PR 4200001', summary: 'Approve', call, head: 'c0ffee1' }], draft: { text: 'Ring 0 today.', commitment: false, sources: [] } })
+	assert.notEqual(byAct(nextView(store), 'A62').kind, 'promise')
+	// The classic card: the same words, the same change and meaning, the same one action.
+	const cards = view(store, undefined).needs, c60 = cards.find(c => c.code === 'A60')!, c61 = cards.find(c => c.code === 'A61')!
+	const ui = { status: 'ready', msg: '', lost: false, stale: false, touched: false, pick: null, otherOn: false, other: '', editing: false, text: null, answer: '', ask: '', cmts: null, facts: null, threadOpen: false, whyOpen: false, dbgOpen: false, menu: false } as never
+	assert.deepEqual([c60.type, c60.promise, c60.changes[0].meaning, primaryOf(c60, ui, 'Delegate')], ['review', { said }, [{ text: '"Fix the banner" by Dev Rao' }, { text: 'autocomplete is on: your approval may complete it', warn: true }], { label: 'Approve PR 4200001', cmd: 'ok A60', kind: 'finish', disabled: false }])
+	assert.deepEqual([c61.promise, primaryOf(c61, ui, 'Delegate')], [{ said, failed: 'timed out' }, { label: 'Check again', cmd: 'ok A61', kind: 'finish' }])
+	// The row's one button is applied by the runner: ok on a failed check queues the check again, and changes nothing.
+	const r = actResult(store, 'ok A61', a61.rev, 'page')
+	assert.ok(r.accepted, r.text)
+	await applyAnswers(store, stub, store.config(), procs as never)
+	assert.deepEqual([store.byCode('A61')!.promise?.state, store.byCode('A61')!.state, store.outcome(r.ids[0])], ['pending', 'done', 'Checking again what you told Rita.'])
+})

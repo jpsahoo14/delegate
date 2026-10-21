@@ -124,10 +124,11 @@ export async function tick(store: Store, deps: { source?: Source; run?: RunWorke
 		const probed = await probeBuilds(store, probe).catch(e => { store.log({ event: 'probe-failed', error: String(e).slice(0, 300) }); return 0 })
 		await describeDeploys(store, probe).catch(e => store.log({ event: 'probe-failed', error: String(e).slice(0, 300) }))
 		await describeTargets(store, probe).catch(e => store.log({ event: 'probe-failed', error: String(e).slice(0, 300) }))
-		await probePRs(store, cfg, probe, Date.now(), kicked).catch(e => store.log({ event: 'probe-failed', error: String(e).slice(0, 300) })).finally(closeProbe)
+		await probePRs(store, cfg, probe, Date.now(), kicked).catch(e => store.log({ event: 'probe-failed', error: String(e).slice(0, 300) }))
 		const due = store.workflows().filter(w => dueWork(w))
 		for (const w of due) { askWhatNext(w); store.save(w) }
-		const runs = await dispatch(store, src, cfg, deps.run)
+		// The owner's own words may promise a vote: its PR is read through the same probe, then closed (Slice 3).
+		const runs = await dispatch(store, src, cfg, deps.run, probe).finally(closeProbe)
 		// Jobs run detached: the tick starts and checks them, and never waits (R-LNG-02).
 		const handedBack = checkOpen(store, procs, procs.bootMs?.())
 		const jobsDone = await checkJobs(store, src, cfg, procs)
