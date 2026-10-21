@@ -42137,7 +42137,7 @@ function itemRow(store2, w) {
   const name = w.asker?.name ?? "Someone", where = w.chat.group ? ` in ${w.chat.name}` : "", first3 = name.split(/[\s,(]+/)[0];
   const made = (w.effects ?? []).filter((e) => e.done);
   const base = { code: w.code, who: who(name), teams: teamsOf(w), ask: w.redacted ? void 0 : askLine(w.lastAsk) || void 0, ...w.msgIds.length ? { msgs: msgKeys(w) } : {} };
-  if (w.sent) return { ...base, kind: made.length && w.intent === "pr_review" ? "review" : "reply", sentence: made.length && w.intent === "pr_review" ? `Reviewed for ${name} and replied${where}` : `Replied to ${name}${where}`, by: w.sent.byRule ? `by rule ${w.sent.byRule}` : "by you", at: w.sent.at, text: w.redacted ? void 0 : w.sent.text ?? w.draft?.text, said: w.redacted ? void 0 : short2(w.sent.text ?? w.draft?.text), own: !w.sent.byRule, notes: w.notes ?? [], why: { reason: w.decision?.reason, confidence: w.decision?.confidence, sources: (w.draft?.sources ?? []).map((s2) => source(s2.ref, s2.tier, s2.stale, s2.label)), gaps: w.gaps ?? [] }, rule: w.sent.byRule, undoUntil: w.sent.byRule ? w.sent.undoUntil : void 0, work: workLine(homeOf(store2, w)) };
+  if (w.sent) return { ...base, kind: made.length && w.intent === "pr_review" ? "review" : "reply", sentence: made.length && w.intent === "pr_review" ? `Reviewed for ${name} and replied${where}` : `Replied to ${name}${where}`, by: w.sent.byRule ? `by rule ${w.sent.byRule}` : "by you", at: w.sent.at, text: w.redacted ? void 0 : w.sent.text ?? w.draft?.text, said: w.redacted ? void 0 : short2(w.sent.text ?? w.draft?.text), own: !w.sent.byRule, notes: w.notes ?? [], why: { reason: w.decision?.reason, confidence: w.decision?.confidence, sources: (w.draft?.sources ?? []).map((s2) => source(s2.ref, s2.tier, s2.stale, s2.label)), gaps: w.gaps ?? [] }, rule: w.sent.byRule, undoUntil: w.sent.undoUntil, work: workLine(homeOf(store2, w)) };
   if (w.fyi) return { ...base, kind: "catchup", sentence: w.fyi.line, gist: w.fyi.gist ?? base.ask, watch: w.fyi.watch, watchedAs: w.watchedAs, by: `${first3}${w.chat.group ? ` \xB7 ${w.chat.name}` : ""}`, at: w.fyi.at ?? w.updatedAt, high: w.fyi.weight === "high" };
   if (closedHow(w) === "replied") {
     const mine = store2.thread(w.id).filter((m) => m.byOwner).at(-1);
@@ -43208,7 +43208,7 @@ function route(open2, senderId, recent, text2 = "") {
   return named(theirs, text2) ?? theirs.sort((a, b) => a.updatedAt.localeCompare(b.updatedAt)).at(-1) ?? recent;
 }
 function recentItem(store2, chatId, senderId, quietHours, now = Date.now()) {
-  const undoable = (w) => !!w.sent?.undoUntil && Date.parse(w.sent.undoUntil) > now;
+  const undoable = (w) => !!w.sent?.byRule && !!w.sent.undoUntil && Date.parse(w.sent.undoUntil) > now;
   const fresh = (w) => w.job ? now - Date.parse(w.updatedAt) < 7 * 864e5 : !quietFor(store2, w, quietHours, now);
   return closedBy(store2, chatId, senderId).filter((w) => !undoable(w) && fresh(w)).at(-1);
 }
@@ -44007,7 +44007,7 @@ async function send(store2, src, cfg, wf, text2, by) {
   const askAt = askAtOf(store2.thread(wf.id), wf.msgIds), edited = !!wf.draft?.byOwner;
   const changesOff = (wf.effects ?? []).filter((e) => e.off).length;
   wf.needsMe = void 0;
-  wf.sent = { msgId, at: (/* @__PURE__ */ new Date()).toISOString(), text: text2, byRule: by.ruleId, undoUntil: by.ruleId ? new Date(Date.now() + p.undoMin * 6e4).toISOString() : void 0 };
+  wf.sent = { msgId, at: (/* @__PURE__ */ new Date()).toISOString(), text: text2, byRule: by.ruleId, undoUntil: new Date(Date.now() + p.undoMin * 6e4).toISOString() };
   keepTodos(wf, wf.sent.at);
   const home = homeOf(store2, wf);
   if (home.work) {
@@ -44083,7 +44083,7 @@ async function control(store2, src, a, procs) {
   await reply(store2, src, a, `${MARK} ${CONTROL_REPLY[v]}`);
 }
 async function undo(store2, src, cfg, wf, a) {
-  if (!wf.sent?.byRule) return reply(store2, src, a, `${MARK} I can't unsend a reply you approved yourself. Nothing changed. To add a correction, say "send ${wf.code}: <text>".`);
+  if (!wf.sent) return reply(store2, src, a, `${MARK} ${wf.code} has not been sent. Nothing changed.`);
   if (Date.now() > Date.parse(wf.sent.undoUntil ?? "")) {
     return reply(store2, src, a, `${MARK} The undo window for ${wf.code} has closed. To post a correction, say "send ${wf.code}: <text>".`);
   }
@@ -44101,8 +44101,9 @@ async function undo(store2, src, cfg, wf, a) {
     }
   }
   store2.log({ event: "undo", workflowId: wf.id, code: wf.code, msgId: wf.sent.msgId, rule: wf.sent.byRule, how });
+  const made = (wf.effects ?? []).filter((e) => e.done);
   Object.assign(wf, { state: "needs_human", sent: void 0, status: "Undone by you. The draft is kept." });
-  await reply(store2, src, a, `${MARK} Undid ${wf.code} (message ${how}). It is back in your inbox as a draft.`);
+  await reply(store2, src, a, `${MARK} Undid ${wf.code} (message ${how}). It is back in your inbox as a draft.${made.length ? ` The ${made.length === 1 ? "change it made stays" : `${made.length} changes it made stay`}: ${made.map((e) => e.summary).join("; ")}.` : ""}`);
 }
 async function mark(store2, src, cfg, wf, a, procs) {
   if (wf.state !== "done" && wf.state !== "open" || !wf.sent) return reply(store2, src, a, `${MARK} ${wf.code} has not been sent. Edit or skip the draft instead.`);
@@ -44701,7 +44702,7 @@ async function nudge(store2, src, cfg) {
   if (inQuietHours(/* @__PURE__ */ new Date(), cfg.quiet)) return false;
   const all = store2.workflows();
   const needs = all.filter((w) => w.state === "needs_human");
-  const undoable = all.filter((w) => w.sent?.undoUntil && Date.parse(w.sent.undoUntil) > Date.now());
+  const undoable = all.filter((w) => w.sent?.byRule && w.sent.undoUntil && Date.parse(w.sent.undoUntil) > Date.now());
   const kp = store2.proposals().filter((p) => p.state === "needs_human");
   const fresh = [...needs, ...undoable, ...kp].filter((w) => !n.lastNudgeAt || w.updatedAt > n.lastNudgeAt);
   const urgent = undoable.some((w) => fresh.includes(w));
@@ -45908,11 +45909,11 @@ function itemRow2(s2, p, w) {
     const fits = !!d && d.length <= INLINE_MAX && !pendingEffects(w.effects).length && !w.choices && !mustSee(w);
     const clash = w.context?.find((f) => f.tone === "warn");
     switch (kind) {
-      // You can only send what you can see: Send is on the row only when the whole draft is, in the headline or under it.
+      // A row never sends: Open shows the reply to read, edit or send (owner 10-21: Send on a row sent a reply meant to be edited).
       case "reply":
-        return { ...base, kind, ...said(`Send reply to ${name}`, d, fits), primary: fits ? { label: "Send", command: `ok ${c}` } : open2 };
+        return { ...base, kind, ...said(`Send reply to ${name}`, d, fits), primary: open2 };
       case "holding":
-        return { ...base, kind, ...said(`Send ${name} a holding reply`, d, fits), primary: fits ? { label: "Send holding reply", command: `ok ${c}` } : open2 };
+        return { ...base, kind, ...said(`Send ${name} a holding reply`, d, fits), primary: open2 };
       case "question":
         return { ...base, kind, headline: `Answer ${name}: ${clip2(w.question ?? w.lastAsk, 110)}`, primary: open2 };
       case "choice":

@@ -37,12 +37,14 @@ export async function refresh() {
 /* ------------------------------ acting ------------------------------ */
 // Sends a command, then waits for its result. kind says how: finish (the item should leave), draft (wait for a new draft),
 // pick, ask, mark, later, keep, row (a list action).
+// The revision of the Now row the owner acts on, so its result can clear once the row changes.
+const rowRev = (act: string) => { const n = V.next; return n ? [...n.move, ...n.working, ...n.waiting, ...n.catchup.rows].find(r => r.act === act)?.rev ?? '' : '' }
 // sent: called once the runner has the command, so a form keeps its words until then (review N2 P2-6).
 export async function act(key: string, code: string, cmd: string, kind: Kind, seenAt?: string, by = '', sent?: () => void) {
 	const io = env.io
 	if (!io || !cmd) return
 	const u = U(key)
-	Object.assign(u, { status: 'pending', msg: '', lost: false, verb: cmd, menu: false, by })
+	Object.assign(u, { status: 'pending', msg: '', lost: false, verb: cmd, menu: false, by, rev: kind === 'row' ? rowRev(code) : undefined })
 	render()
 	let r
 	try { r = await io.call(cmd, seenAt) } catch {

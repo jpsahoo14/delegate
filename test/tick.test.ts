@@ -977,6 +977,19 @@ test('R-POL-02 C7 with auto-send off, a rule-allowed reply stays a draft', async
 	assert.equal(store.control().autoSend, true)
 })
 
+test('owner 10-21: a reply you approved yourself can be undone for 10 minutes; any change already made stays, and says so', async () => {
+	script = (_, id) => ({ workflowId: id, intent: 'status_next_step', state: 'needs_human', summary: 'Answer', reply: { text: 'Not yet, my approval is not recorded.', commitment: false, sources: [] } })
+	src.post(CHAT, 'me', '[as Rahul] Did you get the chance to approve it?'); await go()
+	await see('A1'); src.post('self', 'me', 'ok A1'); await go()
+	const sent = store.byCode('A1')!.sent!
+	assert.ok(sent && Date.parse(sent.undoUntil!) - Date.now() > 9 * 60_000, 'an undo window, though no rule sent it')
+	const before = src.chats[CHAT].length
+	src.post('self', 'me', 'undo A1'); await go()
+	const wf = store.byCode('A1')!
+	assert.deepEqual([wf.state, wf.sent, src.chats[CHAT].length, wf.draft?.text], ['needs_human', undefined, before - 1, 'Not yet, my approval is not recorded.'], 'the message is deleted and the draft is back')
+	assert.match(src.chats.self.at(-1)!.body, /Undid A1 \(message deleted\)/)
+})
+
 test('R-POL-04 where Teams refuses deletes, undo edits the message into a withdrawal note', async () => {
 	setRules(rule()); autoOn(); policy(0)
 	src.noDelete = true

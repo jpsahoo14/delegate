@@ -47,7 +47,7 @@ function undoStrip(): H {
 	const open = (V.done ?? []).filter((r: DoneRow) => r.undoUntil && Date.parse(r.undoUntil) > Date.now())
 	return html`${open.map(r => {
 		const rule = /by rule (\S+)/.exec(r.by)?.[1], left = Math.max(0, Math.round((Date.parse(r.undoUntil!) - Date.now()) / 1000))
-		return html`<div class="nundo" data-code="${esc(r.code)}" role="status"><p>${esc(`Sent for you to ${first(r.who.name)}${rule ? ` (rule ${rule})` : ''}`)}${r.said ? html`<span class="nsaid">: <span class="nquo">"${esc(r.said)}"</span></span>` : ''}</p>${env.snap ? '' : html`<button class="btn sm" data-act="undo" data-v="${esc(r.code)}"${U(`row:${r.code}`).status === 'pending' ? raw(' disabled') : ''}>${I('undo', 'sm')}<span class="bl">Undo <span data-until="${esc(r.undoUntil!)}">${esc(mmss(left))}</span></span></button>`}${rowState(`row:${r.code}`)}</div>`
+		return html`<div class="nundo" data-code="${esc(r.code)}" role="status"><p>${esc(rule ? `Sent for you to ${first(r.who.name)} (rule ${rule})` : `Sent to ${first(r.who.name)}`)}${r.said ? html`<span class="nsaid">: <span class="nquo">"${esc(r.said)}"</span></span>` : ''}</p>${env.snap ? '' : html`<button class="btn sm" data-act="undo" data-v="${esc(r.code)}"${U(`row:${r.code}`).status === 'pending' ? raw(' disabled') : ''}>${I('undo', 'sm')}<span class="bl">Undo <span data-until="${esc(r.undoUntil!)}">${esc(mmss(left))}</span></span></button>`}${rowState(`row:${r.code}`)}</div>`
 	})}`
 }
 

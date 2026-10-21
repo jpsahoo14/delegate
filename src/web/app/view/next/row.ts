@@ -58,9 +58,6 @@ function action(r: NextRow, a: NonNullable<NextRow['primary']>, main: boolean, o
 	if (!a.command) return env.snap ? '' : html`<a class="btn sm${primary && !open ? raw(' primary') : ''}" href="${open ? raw('#now') : html`#now/${esc(r.act)}`}"${open ? raw(' aria-expanded="true"') : raw(' aria-expanded="false"')}>${esc(open ? 'Hide' : a.label)}</a>`
 	if (a.command.includes('{text}')) return ''
 	if (env.snap) return html`<span class="verb${primary ? raw(' primary') : ''}">${esc(a.command)}</span>`
-	// Paused, nothing is sent: a Send says so and waits; the banner's Resume is the one action (PM review 3).
-	const held = !!V.next?.paused && main && (r.kind === 'reply' || r.kind === 'holding') && /^ok /.test(a.command)
-	if (held) return html`<button class="btn sm" disabled aria-label="${esc(`${a.label}: paused, nothing is sent`)}"><span class="bl">Paused</span></button>`
 	return html`<button class="btn sm${primary ? raw(' primary') : main ? '' : raw(' ghost')}" data-act="nact" data-v="${esc(a.command)}"${busy || (primary && S.offline) ? raw(' disabled') : ''}><span class="bl">${esc(a.label)}</span></button>`
 }
 
@@ -69,7 +66,7 @@ function tell(r: NextRow): H {
 	const a = r.primary
 	if (!a?.command?.includes('{text}') || env.snap) return a?.command?.includes('{text}') ? html`<span class="verb">${esc(a.command.replace('{text}', '<what you did>'))}</span>` : ''
 	const u = U(`tell:${r.act}`)
-	return html`<form class="ntell" data-form="tell" data-code="${esc(r.act)}" data-cmd="${esc(a.command)}" aria-label="${esc(a.label)}"><label class="sr" for="tell-${esc(r.act)}">What you did or found, for ${esc(env.name)}</label><input id="tell-${esc(r.act)}" data-tell="${esc(r.act)}" placeholder="What did you find?" autocomplete="off" value="${esc(u.answer)}"${S.offline ? raw(' disabled') : ''}><button class="btn sm primary" type="submit"${!u.answer.trim() || S.offline ? raw(' disabled') : ''}>${esc(a.label)}</button></form>`
+	return html`<form class="ntell" data-form="tell" data-code="${esc(r.act)}" data-cmd="${esc(a.command)}" aria-label="${esc(a.label)}"><label class="sr" for="tell-${esc(r.act)}">What you did or found, for ${esc(env.name)}</label><input id="tell-${esc(r.act)}" data-tell="${esc(r.act)}" placeholder="Tell ${esc(env.name)} what you did, or what to do next" autocomplete="off" value="${esc(u.answer)}"${S.offline ? raw(' disabled') : ''}><button class="btn sm primary" type="submit"${!u.answer.trim() || S.offline ? raw(' disabled') : ''}>${esc(a.label)}</button></form>`
 }
 
 // The opened row: the owned work and to-dos (N2), then the classic card when there is one to act on.
@@ -87,7 +84,10 @@ export function row(r: NextRow, open: boolean): H {
 	const fresh = env.snap ? undefined : freshOf(r, S.nowLook?.[r.act] ?? rowMark(V, r))
 	const chips = [...(fresh ? [{ kind: fresh, text: FRESH_TEXT[fresh] }] : []), ...r.chips].map(ch => html`<span class="tag ${raw(TONE[ch.kind] ?? '')}${ch.kind === 'new' || ch.kind === 'back' ? raw(` fresh-${ch.kind}`) : ''}">${esc(ch.text)}</span>`)
 	const nx = nextLine(r)
-	const acts = U(`row:${r.act}`).msg ? '' : html`${r.primary ? action(r, r.primary, true, open) : ''}${(r.more ?? []).map(m => action(r, m, false, false))}`
+	// A result belongs to the row as it was when the owner acted: once the item changes, it clears and the buttons are back (A33).
+	const ru = U(`row:${r.act}`)
+	if (ru.msg && ru.status !== 'pending' && ru.rev !== undefined && r.rev !== ru.rev) Object.assign(ru, { msg: '', rev: undefined })
+	const acts = ru.msg ? '' : html`${r.primary ? action(r, r.primary, true, open) : ''}${(r.more ?? []).map(m => action(r, m, false, false))}`
 	return html`<li class="nrow k-${raw(r.kind)}${open ? raw(' open') : ''}" id="now-${esc(r.act)}" data-code="${esc(r.act)}"${r.rev ? html` data-rev="${esc(r.rev)}"` : ''}>
 		<div class="nmain">${lead}<div class="nrbody">
 			<div class="nh"><b class="nt">${esc(forPage(r.headline))}</b>${chips}<span class="code">${esc(r.act)}</span></div>

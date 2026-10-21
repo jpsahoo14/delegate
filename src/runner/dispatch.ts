@@ -324,7 +324,7 @@ export async function nudge(store: Store, src: Source, cfg: Config): Promise<boo
 	if (inQuietHours(new Date(), cfg.quiet)) return false
 	const all = store.workflows()
 	const needs = all.filter(w => w.state === 'needs_human')
-	const undoable = all.filter(w => w.sent?.undoUntil && Date.parse(w.sent.undoUntil) > Date.now())
+	const undoable = all.filter(w => w.sent?.byRule && w.sent.undoUntil && Date.parse(w.sent.undoUntil) > Date.now())
 	const kp = store.proposals().filter(p => p.state === 'needs_human')
 	const fresh = [...needs, ...undoable, ...kp].filter(w => !n.lastNudgeAt || w.updatedAt > n.lastNudgeAt)
 	// An automatic send nudges at once, because its undo window is shorter than the nudge interval.

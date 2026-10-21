@@ -350,9 +350,9 @@ function itemRow(s: Snap, p: Placed, w: Workflow): Body {
 		const fits = !!d && d.length <= INLINE_MAX && !pendingEffects(w.effects).length && !w.choices && !mustSee(w)
 		const clash = w.context?.find(f => f.tone === 'warn')
 		switch (kind) {
-			// You can only send what you can see: Send is on the row only when the whole draft is, in the headline or under it.
-			case 'reply': return { ...base, kind, ...said(`Send reply to ${name}`, d, fits), primary: fits ? { label: 'Send', command: `ok ${c}` } : open }
-			case 'holding': return { ...base, kind, ...said(`Send ${name} a holding reply`, d, fits), primary: fits ? { label: 'Send holding reply', command: `ok ${c}` } : open }
+			// A row never sends: Open shows the reply to read, edit or send (owner 10-21: Send on a row sent a reply meant to be edited).
+			case 'reply': return { ...base, kind, ...said(`Send reply to ${name}`, d, fits), primary: open }
+			case 'holding': return { ...base, kind, ...said(`Send ${name} a holding reply`, d, fits), primary: open }
 			case 'question': return { ...base, kind, headline: `Answer ${name}: ${clip(w.question ?? w.lastAsk, 110)}`, primary: open }
 			case 'choice': return { ...base, kind, headline: `Pick for ${name}: ${clip(pickPrompt(w.choices?.prompt ?? w.lastAsk), 110)}`, primary: open }
 			case 'meeting': return { ...base, kind, headline: `Meet ${name}: ${clip(w.meeting?.subject ?? w.lastAsk, 90)}?`, when: w.meeting?.start, ...(clash ? { warn: `${clash.label}: ${clash.text}` } : {}), primary: open }

@@ -311,11 +311,15 @@
       lost();
     }
   }
+  var rowRev = (act2) => {
+    const n = V.next;
+    return n ? [...n.move, ...n.working, ...n.waiting, ...n.catchup.rows].find((r) => r.act === act2)?.rev ?? "" : "";
+  };
   async function act(key, code, cmd, kind, seenAt, by = "", sent) {
     const io = env.io;
     if (!io || !cmd) return;
     const u = U(key);
-    Object.assign(u, { status: "pending", msg: "", lost: false, verb: cmd, menu: false, by });
+    Object.assign(u, { status: "pending", msg: "", lost: false, verb: cmd, menu: false, by, rev: kind === "row" ? rowRev(code) : void 0 });
     render();
     let r;
     try {
@@ -2395,15 +2399,13 @@
     if (!a.command) return env.snap ? "" : html`<a class="btn sm${primary2 && !open ? raw(" primary") : ""}" href="${open ? raw("#now") : html`#now/${esc(r.act)}`}"${open ? raw(' aria-expanded="true"') : raw(' aria-expanded="false"')}>${esc(open ? "Hide" : a.label)}</a>`;
     if (a.command.includes("{text}")) return "";
     if (env.snap) return html`<span class="verb${primary2 ? raw(" primary") : ""}">${esc(a.command)}</span>`;
-    const held = !!V.next?.paused && main2 && (r.kind === "reply" || r.kind === "holding") && /^ok /.test(a.command);
-    if (held) return html`<button class="btn sm" disabled aria-label="${esc(`${a.label}: paused, nothing is sent`)}"><span class="bl">Paused</span></button>`;
     return html`<button class="btn sm${primary2 ? raw(" primary") : main2 ? "" : raw(" ghost")}" data-act="nact" data-v="${esc(a.command)}"${busy || primary2 && S.offline ? raw(" disabled") : ""}><span class="bl">${esc(a.label)}</span></button>`;
   }
   function tell(r) {
     const a = r.primary;
     if (!a?.command?.includes("{text}") || env.snap) return a?.command?.includes("{text}") ? html`<span class="verb">${esc(a.command.replace("{text}", "<what you did>"))}</span>` : "";
     const u = U(`tell:${r.act}`);
-    return html`<form class="ntell" data-form="tell" data-code="${esc(r.act)}" data-cmd="${esc(a.command)}" aria-label="${esc(a.label)}"><label class="sr" for="tell-${esc(r.act)}">What you did or found, for ${esc(env.name)}</label><input id="tell-${esc(r.act)}" data-tell="${esc(r.act)}" placeholder="What did you find?" autocomplete="off" value="${esc(u.answer)}"${S.offline ? raw(" disabled") : ""}><button class="btn sm primary" type="submit"${!u.answer.trim() || S.offline ? raw(" disabled") : ""}>${esc(a.label)}</button></form>`;
+    return html`<form class="ntell" data-form="tell" data-code="${esc(r.act)}" data-cmd="${esc(a.command)}" aria-label="${esc(a.label)}"><label class="sr" for="tell-${esc(r.act)}">What you did or found, for ${esc(env.name)}</label><input id="tell-${esc(r.act)}" data-tell="${esc(r.act)}" placeholder="Tell ${esc(env.name)} what you did, or what to do next" autocomplete="off" value="${esc(u.answer)}"${S.offline ? raw(" disabled") : ""}><button class="btn sm primary" type="submit"${!u.answer.trim() || S.offline ? raw(" disabled") : ""}>${esc(a.label)}</button></form>`;
   }
   function ncard(r, c) {
     const own = owned(r, !!c);
@@ -2417,7 +2419,9 @@
     const fresh = env.snap ? void 0 : freshOf(r, S.nowLook?.[r.act] ?? rowMark(V, r));
     const chips = [...fresh ? [{ kind: fresh, text: FRESH_TEXT[fresh] }] : [], ...r.chips].map((ch) => html`<span class="tag ${raw(TONE[ch.kind] ?? "")}${ch.kind === "new" || ch.kind === "back" ? raw(` fresh-${ch.kind}`) : ""}">${esc(ch.text)}</span>`);
     const nx = nextLine(r);
-    const acts = U(`row:${r.act}`).msg ? "" : html`${r.primary ? action(r, r.primary, true, open) : ""}${(r.more ?? []).map((m) => action(r, m, false, false))}`;
+    const ru = U(`row:${r.act}`);
+    if (ru.msg && ru.status !== "pending" && ru.rev !== void 0 && r.rev !== ru.rev) Object.assign(ru, { msg: "", rev: void 0 });
+    const acts = ru.msg ? "" : html`${r.primary ? action(r, r.primary, true, open) : ""}${(r.more ?? []).map((m) => action(r, m, false, false))}`;
     return html`<li class="nrow k-${raw(r.kind)}${open ? raw(" open") : ""}" id="now-${esc(r.act)}" data-code="${esc(r.act)}"${r.rev ? html` data-rev="${esc(r.rev)}"` : ""}>
 		<div class="nmain">${lead}<div class="nrbody">
 			<div class="nh"><b class="nt">${esc(forPage(r.headline))}</b>${chips}<span class="code">${esc(r.act)}</span></div>
@@ -2455,7 +2459,7 @@
     const open = (V.done ?? []).filter((r) => r.undoUntil && Date.parse(r.undoUntil) > Date.now());
     return html`${open.map((r) => {
       const rule = /by rule (\S+)/.exec(r.by)?.[1], left = Math.max(0, Math.round((Date.parse(r.undoUntil) - Date.now()) / 1e3));
-      return html`<div class="nundo" data-code="${esc(r.code)}" role="status"><p>${esc(`Sent for you to ${first(r.who.name)}${rule ? ` (rule ${rule})` : ""}`)}${r.said ? html`<span class="nsaid">: <span class="nquo">"${esc(r.said)}"</span></span>` : ""}</p>${env.snap ? "" : html`<button class="btn sm" data-act="undo" data-v="${esc(r.code)}"${U(`row:${r.code}`).status === "pending" ? raw(" disabled") : ""}>${I("undo", "sm")}<span class="bl">Undo <span data-until="${esc(r.undoUntil)}">${esc(mmss(left))}</span></span></button>`}${rowState(`row:${r.code}`)}</div>`;
+      return html`<div class="nundo" data-code="${esc(r.code)}" role="status"><p>${esc(rule ? `Sent for you to ${first(r.who.name)} (rule ${rule})` : `Sent to ${first(r.who.name)}`)}${r.said ? html`<span class="nsaid">: <span class="nquo">"${esc(r.said)}"</span></span>` : ""}</p>${env.snap ? "" : html`<button class="btn sm" data-act="undo" data-v="${esc(r.code)}"${U(`row:${r.code}`).status === "pending" ? raw(" disabled") : ""}>${I("undo", "sm")}<span class="bl">Undo <span data-until="${esc(r.undoUntil)}">${esc(mmss(left))}</span></span></button>`}${rowState(`row:${r.code}`)}</div>`;
     })}`;
   }
   function footer() {

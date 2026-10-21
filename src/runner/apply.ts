@@ -451,7 +451,7 @@ export async function send(store: Store, src: Source, cfg: Config, wf: Workflow,
 	// Every new draft replaces effects, so an off change here belongs to this reply's turn.
 	const changesOff = (wf.effects ?? []).filter(e => e.off).length
 	wf.needsMe = undefined
-	wf.sent = { msgId, at: new Date().toISOString(), text, byRule: by.ruleId, undoUntil: by.ruleId ? new Date(Date.now() + p.undoMin * 60_000).toISOString() : undefined }
+	wf.sent = { msgId, at: new Date().toISOString(), text, byRule: by.ruleId, undoUntil: new Date(Date.now() + p.undoMin * 60_000).toISOString() }
 	keepTodos(wf, wf.sent.at)
 	const home = homeOf(store, wf)
 	if (home.work) { afterSend(wf, out!, msgId, home); if (!active(home)) { stopWatch(store, home); closeFamily(store, realProcs, home, home.work.closed?.why ?? 'closed') } if (home !== wf) store.save(home) }
@@ -526,9 +526,10 @@ async function control(store: Store, src: Source, a: Answer, procs: Procs) {
 	await reply(store, src, a, `${MARK} ${CONTROL_REPLY[v]}`)
 }
 
-// Undo deletes an automatic reply during its window and turns the item back into a draft (R-POL-04).
+// Undo deletes a sent reply during its window, sent by a rule or approved by the owner, and turns the item back into a draft
+// (R-POL-04; owner 10-21). A change already made, such as a vote, is not undone by it.
 async function undo(store: Store, src: Source, cfg: Config, wf: Workflow, a: Answer) {
-	if (!wf.sent?.byRule) return reply(store, src, a, `${MARK} I can't unsend a reply you approved yourself. Nothing changed. To add a correction, say "send ${wf.code}: <text>".`)
+	if (!wf.sent) return reply(store, src, a, `${MARK} ${wf.code} has not been sent. Nothing changed.`)
 	if (Date.now() > Date.parse(wf.sent.undoUntil ?? '')) {
 		return reply(store, src, a, `${MARK} The undo window for ${wf.code} has closed. To post a correction, say "send ${wf.code}: <text>".`)
 	}
@@ -542,8 +543,9 @@ async function undo(store: Store, src: Source, cfg: Config, wf: Workflow, a: Ans
 		}
 	}
 	store.log({ event: 'undo', workflowId: wf.id, code: wf.code, msgId: wf.sent.msgId, rule: wf.sent.byRule, how })
+	const made = (wf.effects ?? []).filter(e => e.done)
 	Object.assign(wf, { state: 'needs_human', sent: undefined, status: 'Undone by you. The draft is kept.' })
-	await reply(store, src, a, `${MARK} Undid ${wf.code} (message ${how}). It is back in your inbox as a draft.`)
+	await reply(store, src, a, `${MARK} Undid ${wf.code} (message ${how}). It is back in your inbox as a draft.${made.length ? ` The ${made.length === 1 ? 'change it made stays' : `${made.length} changes it made stay`}: ${made.map(e => e.summary).join('; ')}.` : ''}`)
 }
 
 // After the undo window, the owner can still post a correction under the sent reply. The owner wrote it, so no marker.

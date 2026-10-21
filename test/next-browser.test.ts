@@ -223,15 +223,14 @@ test('next Now: the summary line, every row kind on its fixture, attributed word
 		assert.doesNotMatch(await text('A27'), /Next:/, 'the headline names who it waits on')
 		assert.match(await text('A6'), /Next: after your ok, Delegate posts them and replies/)
 		assert.match(await text('A5'), /Conflict: You have "1:1 with Ana"/)
-		assert.equal(await t.page.locator('#now-A1 [data-act=nact]').count(), 0, 'a draft longer than the row has no Send on the row')
-		assert.equal(await t.page.locator('#now-A20 [data-act=nact][data-v="ok A20"]').count(), 1)
+		assert.equal(await t.page.locator('#main [data-act=nact][data-v^="ok A"]').evaluateAll((l: Element[]) => l.filter(e => /^Send/.test(e.textContent ?? '')).length), 0, 'no row sends; replies open (owner 10-21)')
 		assert.deepEqual([await t.page.locator('#now-A23 [data-act=nact]').count(), await t.page.locator('#now-A23 form[data-form=tell]').count()], [0, 1], 'your step is a field, without Wait 3 days')
-		assert.equal(await t.page.getAttribute('#tell-A23', 'placeholder'), 'What did you find?')
+		assert.equal(await t.page.getAttribute('#tell-A23', 'placeholder'), 'Tell Delegate what you did, or what to do next')
 		assert.match(await flat('#now-move .nmin'), /When you have a minute: 1 fact to check/)
 		assert.equal(await t.page.locator('#now-catchup .nmore').getAttribute('href'), '#done/catchup')
 		// Row codes only on focus and in the open row.
 		assert.equal(await t.page.locator('#now-A20 .nh .code').isVisible(), false)
-		await t.page.focus('#now-A20 [data-act=nact]')
+		await t.page.focus('#now-A20 .nract a')
 		assert.equal(await t.page.locator('#now-A20 .nh .code').isVisible(), true)
 		// Classic links open the matching place in Now; the open card drops the row's header and ask.
 		await t.page.evaluate(() => { location.hash = '#focus/A3' })
@@ -280,13 +279,11 @@ test('next Now: empty states, and paused drafting goes on while sends wait', { s
 	try {
 		assert.equal(await t.page.locator('#now-working .nsh .tag').innerText(), 'Paused: drafts go on, nothing is sent')
 		assert.deepEqual(await t.page.locator('#now-working .nrow').evaluateAll((l: Element[]) => l.map(e => e.id)), ['now-A24', 'now-A7'], 'the draft stays in Working')
-		assert.match((await t.page.locator('#now-A36').innerText()).replace(/\s+/g, ' '), /Send reply to Alex: "Yes, build 512 is green\." Held: you paused .* Paused$/)
+		assert.match((await t.page.locator('#now-A36').innerText()).replace(/\s+/g, ' '), /Send reply to Alex: "Yes, build 512 is green\." Held: you paused .* Open$/)
 		assert.equal(await t.page.locator('#now-A36').evaluate((e: Element) => e.closest('section')!.id), 'now-move', 'held for you, in Your move')
-		assert.equal(await t.page.locator('#now-A36 .nract button').first().isDisabled(), true)
 		assert.equal(await t.page.locator('#nsum .tag').count(), 0, 'the paused tag is only on Working\'s header')
 		assert.doesNotMatch(await t.page.locator('#main').innerText(), /[Ss]ends?[^\n]{0,40}when you resume/)
-		const send = t.page.locator('#now-A20 .nract button').first()
-		assert.deepEqual([await send.innerText(), await send.isDisabled()], ['Paused', true], 'Send waits for resume')
+		assert.equal(await t.page.locator('#now-A20 .nract').innerText(), 'Open', 'a row opens even when paused; sends wait for resume')
 		assert.equal(await t.page.locator('.health [data-act=healthfix]').innerText(), 'Resume')
 	} finally { await t.close() }
 })
@@ -300,8 +297,6 @@ test('next actions: each row kind\'s action posts its existing command, and the 
 			await until(done)
 		}
 		const s = t.store, w = (c: string) => s.byCode(c)!
-		await press('A20', 'Send', 'ok A20', () => !!w('A20').sent)
-		await press('A21', 'Send holding reply', 'ok A21', () => !!w('A21').sent)
 		await press('A22', 'Try again', 'A22: try again', () => w('A22').state === 'running')
 		await press('A34', 'Draft a nudge', 'A34: nudge them', () => w('A34').state === 'running')
 		await press('A37', 'Track', 'ok A37', () => w('A37').state === 'open')
@@ -328,7 +323,7 @@ test('next actions: each row kind\'s action posts its existing command, and the 
 		await t.page.click('#pri-A3')
 		await until(() => t.posted.includes('ok A3'))
 		await until(() => !!w('A3').sent)
-		assert.equal(t.posted.filter(c => /^ok A20$/.test(c)).length, 1, 'each action is sent once')
+		assert.equal(t.posted.filter(c => /^ok A3$/.test(c)).length, 1, 'each action is sent once')
 	} finally { await t.close() }
 })
 
@@ -426,4 +421,36 @@ test('slice 3 own words: the promise shows in both experiences with one button t
 			assert.equal(t.store.byCode('A61')!.state, 'done', `${ui}: Check again queues the check, and nothing is made`)
 		} finally { await t.close() }
 	}
+})
+
+test('owner 10-21: a short reply opens instead of sending; after Send in the card, Undo is on Now for a reply you approved', { skip }, async () => {
+	const t = await open('#now')
+	try {
+		const row = t.page.locator('#now-A20 .nract a, #now-A20 .nract button').first()
+		assert.equal(await row.innerText(), 'Open', 'the row opens; it never sends')
+		await row.click()
+		await t.page.waitForSelector('#pri-A20')
+		assert.deepEqual(t.posted, [], 'opening sends nothing')
+		await t.page.click('#pri-A20')
+		await until(() => !!t.store.byCode('A20')!.sent)
+		await t.page.waitForFunction(() => [...document.querySelectorAll('.nundo')].some(e => /^Sent to /.test((e as HTMLElement).innerText)))
+		const strip = t.page.locator('.nundo', { hasText: /^Sent to / })
+		assert.match((await strip.innerText()).replace(/\s+/g, ' '), /^Sent to \w+: ".+" Undo \d+:\d\d$/)
+		await strip.locator('[data-act=undo]').click()
+		await until(() => t.posted.includes('undo A20'))
+	} finally { await t.close() }
+})
+
+test('owner 10-21 A33: after you tell Delegate something, the row\'s result clears once the item changes, and its button is back', { skip }, async () => {
+	const t = await open('#now')
+	try {
+		await t.page.fill('#tell-A23', 'Deleted the message; please send that I approved the PR.')
+		await t.page.press('#tell-A23', 'Enter')
+		await until(() => t.posted.some(p => p.startsWith('A23: ')))
+		await t.page.waitForFunction(() => !!document.querySelector('#now-A23 [role=status]')?.textContent)
+		const w = t.store.byCode('A23')!
+		t.store.save({ ...w, state: 'needs_human', work: undefined, draft: { text: "I've approved the PR.", commitment: true, sources: [], preview: true }, revAt: new Date(Date.now() + 1000).toISOString() })
+		await t.page.waitForFunction(() => /Open/.test(document.querySelector('#now-A23 .nract')?.textContent ?? ''), undefined, { timeout: 6000 })
+		assert.equal(await t.page.locator('#now-A23 [role=status]').count(), 0, 'the old result is gone')
+	} finally { await t.close() }
 })

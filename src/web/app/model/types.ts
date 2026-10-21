@@ -23,6 +23,8 @@ export type CardUi = {
 	pick: number[] | null; otherOn: boolean; other: string; editing: boolean; text: string | null; answer: string; ask: string
 	cmts: Set<number> | null; facts: Set<number> | null; threadOpen: boolean; whyOpen: boolean; dbgOpen: boolean; menu: boolean
 	verb?: string; by?: string; marking?: boolean; mark?: string; marknote?: string; open?: boolean
+	// The row's revision when the owner acted: a result belongs to the row as it was (owner 10-21 A33).
+	rev?: string
 }
 
 // The forms on the page: a reminder, a watch from the Ongoing sheet, and a watch from a Catch up row.

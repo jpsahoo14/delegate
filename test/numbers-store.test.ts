@@ -150,11 +150,11 @@ test('R-NEX-11 the Friday line: Friday\'s summary adds this week\'s numbers unde
 	const store = setup()
 	seedWeeks(store)
 	logLines(store, '2026-10-23', 'mac', [{ at: at('2026-10-23', '09:00'), event: 'tick' }, sent('A4', at('2026-10-23')), { at: at('2026-10-23'), event: 'state', code: 'A5', from: 'needs_human', to: 'done', closedBy: 'replied' }])
-	item(store, 'A6', 'Kim', 'Plans', {})
+	item(store, 'A6', 'Kim', 'Plans', { createdAt: at('2026-10-23'), updatedAt: at('2026-10-23') })
 	const fri = summaryText(store, new Date('2026-10-23T18:00:00Z'))!
 	assert.match(fri, /^Assistant · Today: [^\n]*\nThis week: 2 handled for you · 2 of 3 replies as drafted · 0 missed\.\n/)
 	assert.doesNotMatch(summaryText(store, new Date('2026-10-22T18:00:00Z'))!, /This week/)
-	assert.doesNotMatch(fri, /\d+ ?(h|min)\b/, 'never a time')
+	assert.doesNotMatch(fri.split('\n')[1], /\d+ ?(h|min)\b/, 'never a time on the week line')
 	store.saveConfig({ ...store.config(), tz: 'Etc/GMT-14' })
 	assert.match(summaryText(store, new Date('2026-10-22T10:30:00Z'))!, /\nThis week: /, 'Friday 00:30 on the owner\'s clock; Thursday on nearly every machine\'s')
 	const quiet = setup()

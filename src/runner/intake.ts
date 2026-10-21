@@ -221,7 +221,7 @@ function route(open: Workflow[], senderId: string, recent?: Workflow, text = '')
 // any other item until the thread has been quiet for quietHours (R-WF-09).
 function recentItem(store: Store, chatId: string, senderId: string, quietHours: number, now = Date.now()): Workflow | undefined {
 	// An item still inside its undo window keeps its receipt, so a follow-up starts a new item instead (review 01-04 P1-8).
-	const undoable = (w: Workflow) => !!w.sent?.undoUntil && Date.parse(w.sent.undoUntil) > now
+	const undoable = (w: Workflow) => !!w.sent?.byRule && !!w.sent.undoUntil && Date.parse(w.sent.undoUntil) > now
 	const fresh = (w: Workflow) => (w.job ? now - Date.parse(w.updatedAt) < 7 * 86_400_000 : !quietFor(store, w, quietHours, now))
 	return closedBy(store, chatId, senderId).filter(w => !undoable(w) && fresh(w)).at(-1)
 }

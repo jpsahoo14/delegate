@@ -28,8 +28,8 @@ test('N1a rows: each kind on its fixture has its section, a verb-first headline,
 	const got = (act: string) => { const r = byAct(v, act); return [r.section, r.kind, r.primary?.label ?? '', r.primary?.command ?? ''] }
 	assert.deepEqual(Object.fromEntries(['A1', 'A2', 'A3', 'A5', 'A6', 'A20', 'A21', 'A22', 'A23', 'A34', 'A35', 'A37', 'A24', 'A36', 'A7', 'A29', 'R1', 'A25', 'A28', 'A26', 'A27', 'W2', 'A30'].map(c => [c, got(c)])), {
 		A1: ['move', 'reply', 'Open', ''], A2: ['move', 'question', 'Open', ''], A3: ['move', 'choice', 'Open', ''], A5: ['move', 'meeting', 'Open', ''], A6: ['move', 'review', 'Open', ''],
-		A20: ['move', 'reply', 'Send', 'ok A20'], A21: ['move', 'holding', 'Send holding reply', 'ok A21'], A22: ['move', 'stopped', 'Try again', 'A22: try again'],
-		A23: ['move', 'your-step', 'Tell Delegate', 'A23: {text}'], A34: ['move', 'check-date', 'Draft a nudge', 'A34: nudge them'], A35: ['move', 'reply', 'Send', 'ok A35'], A37: ['move', 'track', 'Track', 'ok A37'],
+		A20: ['move', 'reply', 'Open', ''], A21: ['move', 'holding', 'Open', ''], A22: ['move', 'stopped', 'Try again', 'A22: try again'],
+		A23: ['move', 'your-step', 'Tell Delegate', 'A23: {text}'], A34: ['move', 'check-date', 'Draft a nudge', 'A34: nudge them'], A35: ['move', 'reply', 'Open', ''], A37: ['move', 'track', 'Track', 'ok A37'],
 		A24: ['working', 'working', '', ''], A36: ['working', 'scheduled', 'Hold', 'later A36'], A7: ['working', 'working', '', ''],
 		A29: ['waiting', 'watch', 'Got it', 'ok A29'], R1: ['waiting', 'reminder', 'Pause', 'pause R1'], A25: ['waiting', 'waiting-delegate', '', ''],
 		A28: ['waiting', 'waiting-person', 'Draft a nudge', 'A28: nudge them'], A26: ['waiting', 'nobody', 'Do it now', 'A26: do the next step now'],
@@ -137,7 +137,7 @@ test('N1a rows: Next says who and what, with times as timestamps, and is dropped
 	assert.deepEqual(['reviewing PR 2204', 'rechecking the build', 'running the tests', 'investigating build 512'], ['Review PR 2204', 'Recheck the build', 'Run the tests', 'Investigate build 512'].map(gerund))
 })
 
-test('N1a rows: Send is on the row only when the whole draft is', () => {
+test('owner 10-21: a row never sends; Open shows the reply to read, edit or send (Send on a row sent a reply the owner meant to edit)', () => {
 	const store = fresh()
 	store.saveConfig({ schema: 1, owner: { id: 'me', name: 'Robin Park' }, source: { command: [], selfChatId: 'self' }, watch: [], agent: { flavor: 'copilot', command: [], tools: [] } } as never)
 	const mid = 'x'.repeat(120), long = 'y'.repeat(INLINE_MAX + 1)
@@ -148,14 +148,14 @@ test('N1a rows: Send is on the row only when the whole draft is', () => {
 	item(store, 'A4', 'Kim', 'Kim', { draft: { text: 'Sent the invite.', commitment: false, sources: [] }, effects: [{ system: 'calendar', action: 'create_event', target: 'Your calendar', summary: 'Invite: sync' }] })
 	const v = nextView(store), r = (c: string) => byAct(v, c)
 	assert.deepEqual([r('A4').kind, r('A4').primary], ['reply', { label: 'Open' }])
-	assert.deepEqual([r('A1').headline, r('A1').draft, r('A1').primary], ['Send reply to Kim: "Short."', undefined, { label: 'Send', command: 'ok A1' }])
-	assert.deepEqual([r('A2').headline, r('A2').draft, r('A2').primary], ['Send reply to Kim', mid, { label: 'Send', command: 'ok A2' }])
+	assert.deepEqual([r('A1').headline, r('A1').draft, r('A1').primary], ['Send reply to Kim: "Short."', undefined, { label: 'Open' }])
+	assert.deepEqual([r('A2').headline, r('A2').draft, r('A2').primary], ['Send reply to Kim', mid, { label: 'Open' }])
 	assert.deepEqual([r('A3').draft, r('A3').primary], [undefined, { label: 'Open' }], 'a draft longer than the row opens the card')
 	assert.ok(r('A3').headline.endsWith('…"'))
 })
 
 // Review P1 and P2-2: what the card makes the owner look at before ok is not on the row, so such a draft opens the card.
-test('N1a rows: a short draft with a need-to-know hold, a commitment, a warning, a gap, a private or labelled source, or a blank opens the card', () => {
+test('N1a rows: every reply row opens the card, whatever its draft holds (owner 10-21: a row never sends)', () => {
 	const store = fresh()
 	store.saveConfig({ schema: 1, owner: { id: 'me', name: 'Robin Park' }, source: { command: [], selfChatId: 'self' }, watch: [], agent: { flavor: 'copilot', command: [], tools: [] } } as never)
 	const draft = (over: Record<string, unknown> = {}) => ({ text: 'Ships Oct 24.', commitment: false, sources: [], ...over })
@@ -173,10 +173,7 @@ test('N1a rows: a short draft with a need-to-know hold, a commitment, a warning,
 	]
 	for (const [code, over] of cases) item(store, code, 'Kim', 'Kim', over as never)
 	const v = nextView(store), p = (c: string) => byAct(v, c).primary
-	assert.deepEqual(cases.map(([c]) => [c, p(c)?.command ?? p(c)?.label]), [
-		['A1', 'ok A1'], ['A2', 'Open'], ['A3', 'Open'], ['A4', 'Open'], ['A5', 'Open'], ['A6', 'Open'], ['A7', 'Open'], ['A8', 'Open'],
-		['A9', 'ok A9'], ['A10', 'ok A10'],
-	], 'an info fact and an unlabelled knowledge source still fit on the row')
+	assert.deepEqual(cases.map(([c]) => [c, p(c)]), cases.map(([c]) => [c, { label: 'Open' }]))
 	assert.equal(byAct(v, 'A8').draft, undefined)
 })
 
@@ -239,7 +236,7 @@ test('N1a sections: every open thread once, Catch up shows 3 of its count, and W
 	assert.deepEqual([p.off, p.paused], [{ text: 'Paused: drafts go on, nothing is sent' }, true])
 	assert.deepEqual(p.working.map(r => r.act).sort(), ['A24', 'A7'])
 	const a36 = p.move.find(r => r.act === 'A36')!
-	assert.deepEqual([a36.kind, a36.headline, a36.chips.map(c => c.text), a36.next, a36.primary], ['reply', 'Send reply to Alex: "Yes, build 512 is green."', ['Held: you paused'], undefined, { label: 'Send', command: 'ok A36' }])
+	assert.deepEqual([a36.kind, a36.headline, a36.chips.map(c => c.text), a36.next, a36.primary], ['reply', 'Send reply to Alex: "Yes, build 512 is green."', ['Held: you paused'], undefined, { label: 'Open' }])
 	assert.doesNotMatch(JSON.stringify(p), /[Ss]ends?[^"]{0,40}when you resume/, 'nothing promises a send after resume')
 	// Paused while no machine reads: nothing is Working, the header says Delegate is off, and Send still waits (round 3, P1).
 	store.saveChats({ ...store.chats(), goodAt: new Date(Date.now() - 2 * 3_600_000).toISOString(), readAt: new Date(Date.now() - 2 * 3_600_000).toISOString() })

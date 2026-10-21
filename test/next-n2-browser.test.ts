@@ -241,7 +241,7 @@ test('re-review N2 P2-A: Mark done on another item\'s to-do keeps the row\'s own
 		await until(() => t.store.byCode('A41')!.kept!.every(x => !!x.done))
 		// A41 has no open to-do left, so its list goes; the toast says what was marked.
 		await t.page.waitForFunction(() => !document.querySelector('#now-A43 .iown [data-v="close A41"]') && /Marked your to-do on A41 done/.test(document.getElementById('toast')?.textContent ?? ''))
-		assert.equal(await t.page.locator('#now-A43 .nract [data-v="ok A43"]').count(), 1, 'the row keeps its Send')
+		assert.equal(await t.page.locator('#now-A43 .nract').innerText(), 'Hide', 'the row keeps its own button')
 		assert.equal(await t.page.locator('#now-A43 .iown [data-v="close A43"]').isDisabled(), false, 'the other Mark done stays')
 		assert.deepEqual(t.posted, ['close A41'])
 	} finally { await t.close() }
