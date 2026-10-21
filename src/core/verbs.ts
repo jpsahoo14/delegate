@@ -45,9 +45,12 @@ export function parseVerbs(input: string): Parsed[] | null {
 	if (auto) return [{ verb: auto[1].toLowerCase() === 'on' ? 'auto-on' : 'auto-off' }]
 	const segs = input.trim().split(',')
 	const parts: string[] = []
+	// Once a command takes the owner's words, every comma after it is part of them: "send A7: Yes, ok" sends "Yes, ok",
+	// and never a second command (review react-spec P0-1).
+	const takesText = (p: string) => !!parsePart(p.trim())?.some(x => x.text !== undefined)
 	for (const seg of segs) {
 		const t = seg.trim()
-		if (parts.length && !parsePart(t)) parts[parts.length - 1] += `,${seg}`
+		if (parts.length && (takesText(parts[parts.length - 1]) || !parsePart(t))) parts[parts.length - 1] += `,${seg}`
 		else parts.push(t)
 	}
 	const out: Parsed[] = []

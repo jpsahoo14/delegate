@@ -24,6 +24,17 @@ test('R-HIL-15 verbs: single, multiple, ranges, and answers with commas', () => 
 	assert.deepEqual(parseVerbs('ok'), [{ verb: 'ok' }])
 })
 
+test('review react-spec P0-1: once a command takes text, every comma after it is the owner\'s words, never another command', () => {
+	assert.deepEqual(parseVerbs('send A7: Yes, ok'), [{ code: 'A7', verb: 'send', text: 'Yes, ok' }])
+	assert.deepEqual(parseVerbs('A3: Use this: fine, ok A9'), [{ code: 'A3', verb: 'answer', text: 'Use this: fine, ok A9' }])
+	assert.deepEqual(parseVerbs('A1: sure, ok'), [{ code: 'A1', verb: 'answer', text: 'sure, ok' }])
+	assert.deepEqual(parseVerbs('ok A1, skip A2, A3: hi, ok A4'), [
+		{ code: 'A1', verb: 'ok', text: undefined },
+		{ code: 'A2', verb: 'skip', text: undefined },
+		{ code: 'A3', verb: 'answer', text: 'hi, ok A4' },
+	], 'commands before the first text still batch')
+})
+
 test('R-HIL-15 verbs: personal notes are not commands', () => {
 	for (const s of ['buy milk', 'a1 sauce recipe', 'okay then', 'edit A1:', 'A1', '']) assert.equal(parseVerbs(s), null, s)
 })

@@ -438,6 +438,7 @@ test('owner 10-21: a short reply opens instead of sending; after Send in the car
 		assert.match((await strip.innerText()).replace(/\s+/g, ' '), /^Sent to \w+: ".+" Undo \d+:\d\d$/)
 		await strip.locator('[data-act=undo]').click()
 		await until(() => t.posted.includes('undo A20'))
+		await until(() => !t.store.byCode('A20')!.sent && t.store.byCode('A20')!.state === 'needs_human')
 	} finally { await t.close() }
 })
 

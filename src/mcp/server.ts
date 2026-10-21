@@ -363,7 +363,8 @@ export function actResult(store: Store, command: string, shownAt?: string, from:
 		if (marks) { ids.push(store.writeAnswer({ code: wf.code, verb: p.verb, text: p.text, surface: 'chat', seenAt: shownAt ?? store.seenRev(wf.code), todos: seen.map(t => t.id) }).id); out.push(`${wf.code} will mark ${seen.length === 1 ? 'its to-do' : `its ${seen.length} to-dos`} done. Nothing is sent.`); continue }
 		if (wf.state === 'done' && !reopenable(wf, p.verb) && !(p.verb === 'mine' && wf.fyi) && !['undo', 'ask', 'wrong', 'incomplete', 'unneeded'].includes(p.verb) && !(p.verb === 'send' && wf.sent)) { out.push(`${wf.code} is already done: ${wf.status}`); shown++; continue }
 		if (p.verb === 'mine' && (wf.state !== 'done' || !wf.fyi)) { out.push(`${wf.code} is not in Catch up, so nothing changed.`); shown++; continue }
-		if (p.verb === 'undo' && !wf.sent?.byRule) { out.push(`${wf.code}: I can't unsend a reply you approved yourself. To add a correction, say "send ${wf.code}: <text>".`); shown++; continue }
+		// Every sent reply can be undone inside its window, as the page offers; the runner says when it has closed (owner 10-21; review react-spec P0-2).
+		if (p.verb === 'undo' && !wf.sent) { out.push(`${wf.code}: has not been sent, so there is nothing to undo.`); shown++; continue }
 		ids.push(store.writeAnswer({ code: wf.code, verb: p.verb, text: p.text, nums: p.nums, except: p.except, again: p.again, surface: 'chat', seenAt: shownAt ?? store.seenRev(wf.code) }).id)
 		const ask = wf.lastAsk ? ` (${wf.asker?.name}: "${wf.lastAsk.slice(0, 80)}")` : ''
 		const left = pendingEffects(wf.effects)

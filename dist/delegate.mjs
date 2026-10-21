@@ -41123,9 +41123,10 @@ function parseVerbs(input2) {
   if (auto) return [{ verb: auto[1].toLowerCase() === "on" ? "auto-on" : "auto-off" }];
   const segs = input2.trim().split(",");
   const parts2 = [];
+  const takesText = (p) => !!parsePart(p.trim())?.some((x) => x.text !== void 0);
   for (const seg of segs) {
     const t2 = seg.trim();
-    if (parts2.length && !parsePart(t2)) parts2[parts2.length - 1] += `,${seg}`;
+    if (parts2.length && (takesText(parts2[parts2.length - 1]) || !parsePart(t2))) parts2[parts2.length - 1] += `,${seg}`;
     else parts2.push(t2);
   }
   const out = [];
@@ -49711,8 +49712,8 @@ function actResult(store2, command, shownAt, from = "chat") {
       shown2++;
       continue;
     }
-    if (p.verb === "undo" && !wf.sent?.byRule) {
-      out.push(`${wf.code}: I can't unsend a reply you approved yourself. To add a correction, say "send ${wf.code}: <text>".`);
+    if (p.verb === "undo" && !wf.sent) {
+      out.push(`${wf.code}: has not been sent, so there is nothing to undo.`);
       shown2++;
       continue;
     }

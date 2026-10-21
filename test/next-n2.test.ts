@@ -299,3 +299,11 @@ test('re-review N2 P2-D: every rule has a place in the design order, and an unkn
 	assert.equal(PRECEDENCE.length, RULES.length)
 	assert.deepEqual([rankOf('needs-you'), rankOf('a-new-rule')], [0, PRECEDENCE.length])
 })
+
+test('review react-spec P0-2: the page can undo a reply the owner approved, inside its window, exactly as it offers', async () => {
+	const store = fresh()
+	const w = store.byCode('A20')!
+	store.save({ ...w, state: 'done', sent: { msgId: 'm-a20', at: new Date().toISOString(), text: w.draft!.text, undoUntil: new Date(Date.now() + 9 * 60_000).toISOString() } })
+	const r = await send(store, 'undo A20')
+	assert.deepEqual([store.byCode('A20')!.state, store.byCode('A20')!.sent], ['needs_human', undefined], `undone (${r.said} ${r.out})`)
+})
