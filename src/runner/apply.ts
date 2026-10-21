@@ -1,7 +1,7 @@
 import { answerHabit, outcome } from './habits.ts'
 import { membersOf } from './sharing.ts'
-import { active, afterSend, closeWork, doneTodos, homeOf, inWork, keepTodos, newTurn, openTodos, statusOf, step, wait } from './work.ts'
-import { asksReviewAgain, doLine, pendingEffects, refusal, saidLine, sameChange, vet } from '../core/effects.ts'
+import { active, afterSend, approvalAsk, canCloseApproval, closeWork, doneTodos, homeOf, inWork, keepTodos, linksIn, newTurn, openTodos, statusOf, step, wait } from './work.ts'
+import { asksReviewAgain, doLine, isVote, pendingEffects, prIdOf, refusal, saidLine, sameChange, vet } from '../core/effects.ts'
 import type { Answer, Config, Effect, Person, Workflow } from '../core/types.ts'
 import { sendGate } from '../core/gate.ts'
 import { classify, htmlToText } from '../core/intake.ts'
@@ -24,7 +24,7 @@ import { answerProposal, knowledgeOf, nextProposal } from './proposals.ts'
 import { CMD } from '../brand.ts'
 import { askAtOf } from '../core/numbers.ts'
 import { FOLLOW_DAYS, startFollow, startWatch, stopWatch, watchCommand } from './track.ts'
-import { prTarget, recheckDeploy, recheckPr, voteDropped, type BuildProbe } from './probe.ts'
+import { adoProbe, prRefOf, probePRs, prTarget, recheckDeploy, recheckPr, voteDropped, type BuildProbe } from './probe.ts'
 import { deployRunning, isValidate, reportsResult, saysTested, testedAsk } from './validate.ts'
 import { checkAgain, dropPromise, notePromise, promiseDue, reopenPromise, rest } from './promise.ts'
 import { isDeploy } from '../core/deploy.ts'
@@ -267,7 +267,7 @@ async function applyOne(store: Store, src: Source, cfg: Config, wf: Workflow, a:
 			if (held !== undefined) { store.save(wf); return reply(store, src, a, `${MARK} ${held || `Posting ${wf.code}'s ${effectLine(pendingEffects(wf.effects))} now${wf.draft?.text ? ', then sending the reply' : ''}.`}`) }
 			// The owner left out every change their own words promised, and the reply already went: nothing is left to do (Slice 3).
 			if (wf.promise && wf.sent && !wf.draft?.text) { rest(store, wf); store.save(wf); return reply(store, src, a, `${MARK} Nothing was changed for ${wf.code}; its reply already went.`) }
-			await send(store, src, cfg, wf, wf.draft?.text, { answer: a })
+			await send(store, src, cfg, wf, wf.draft?.text, { answer: a }, probe)
 			break
 		}
 		case 'undo':
@@ -406,7 +406,27 @@ async function threadSince(store: Store, src: Source, cfg: Config, wf: Workflow,
 	return { asker, ours, ownerReplied, ownerAt }
 }
 
-export async function send(store: Store, src: Source, cfg: Config, wf: Workflow, text: string | undefined, by: SendBy): Promise<boolean> {
+export async function send(store: Store, src: Source, cfg: Config, wf: Workflow, text: string | undefined, by: SendBy, probe?: BuildProbe): Promise<boolean> {
+	const target = prTarget(store, wf)
+	const ref = prRefOf(store, wf)
+	const aboutPR = !!ref || wf.intent === 'pr_review' || linksIn([wf.lastAsk ?? '', ...store.thread(wf.id).filter(m => m.from.id === wf.asker?.id).map(m => m.text)].join('\n')).some(l => l.startsWith('pr:'))
+	if (approvalAsk(wf.lastAsk ?? '') && !voteDropped(wf.status) && aboutPR && !wf.effects?.some(e => e.done && isVote(e.call) && target !== undefined && target === prIdOf(e.call))) {
+		const live = probe ?? adoProbe(cfg)
+		try {
+			if (!live?.pr) throw new Error('no live PR check is configured')
+			if (!ref) throw new Error('the approval ask has no unambiguous PR link')
+			const st = await live.pr(ref.project, ref.repo, ref.id)
+			if (!/^(active|completed|abandoned)$/i.test(st.status) || !st.votes.length && !/completed|abandoned/i.test(st.status)) throw new Error('the live PR response has no status or reviewers')
+			const mine = cfg.owner.name.trim().toLowerCase()
+			if (!/completed|abandoned/i.test(st.status) && (!mine || st.votes.filter(v => v.name.trim().toLowerCase() === mine).length !== 1)) throw new Error('the owner reviewer vote is missing or ambiguous')
+			await probePRs(store, cfg, { ...live, pr: async () => st }, Date.now(), true, [wf])
+			if (wf.state !== 'needs_human' || !wf.draft) { store.save(wf); return false }
+		} catch (e) {
+			Object.assign(wf, { state: 'needs_human', sendAt: undefined, status: `Not sent: the PR approval could not be verified (${String(e).slice(0, 160)})` })
+			store.log({ event: 'pr-send-held', code: wf.code, reason: String(e).slice(0, 160) }); store.save(wf)
+			return false
+		} finally { if (!probe) await live?.close?.() }
+	}
 	// After approved changes the reply goes out later; the result goes back to where the owner said ok.
 	const a = by.answer ?? { id: '', code: wf.code, verb: 'ok', surface: wf.answerSurface ?? 'chat', at: '' } as Answer
 	const p = { ...DEFAULT_POLICY, ...cfg.policy }
@@ -454,7 +474,7 @@ export async function send(store: Store, src: Source, cfg: Config, wf: Workflow,
 	wf.sent = { msgId, at: new Date().toISOString(), text, byRule: by.ruleId, undoUntil: new Date(Date.now() + p.undoMin * 60_000).toISOString() }
 	keepTodos(wf, wf.sent.at)
 	const home = homeOf(store, wf)
-	if (home.work) { afterSend(wf, out!, msgId, home); if (!active(home)) { stopWatch(store, home); closeFamily(store, realProcs, home, home.work.closed?.why ?? 'closed') } if (home !== wf) store.save(home) }
+	if (home.work) { afterSend(wf, out!, msgId, home, canCloseApproval(store, home)); if (!active(home)) { stopWatch(store, home); closeFamily(store, realProcs, home, home.work.closed?.why ?? 'closed') } if (home !== wf) store.save(home) }
 	else close(wf, by.ruleId ? `Sent by rule ${by.ruleId}: "${text!.slice(0, 70)}"` : `Sent: "${text!.slice(0, 80)}"`)
 	// The owner's own words may promise what the draft did not: a short run checks, after the reply is out (Slice 3).
 	if (promiseDue(store, wf, by)) notePromise(store, wf, text!)
@@ -635,6 +655,7 @@ async function workVerb(store: Store, src: Source, wf: Workflow, a: Answer, proc
 
 // Closing work closes its parts too, withdrawing anything they were about to do.
 export function closeFamily(store: Store, procs: Procs, home: Workflow, why: string) {
+	stopWatch(store, home)
 	if (!home.work?.closed) closeWork(home, why)
 	else Object.assign(home, { state: 'done', status: `Closed: ${why}`, pending: [] })
 	for (const id of home.work?.parts ?? []) {

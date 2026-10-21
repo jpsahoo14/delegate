@@ -21,7 +21,7 @@ import { discover } from './discover.ts'
 import { dueSends } from './autosend.ts'
 import { daily } from './daily.ts'
 import { dueAutomations } from './automations.ts'
-import { checkJobs, legacyEffects, realProcs, startJobs, type Procs } from './jobs.ts'
+import { checkJobs, legacyEffects, realProcs, settleCompleted, startJobs, type Procs } from './jobs.ts'
 import { checkOpen } from './continue.ts'
 import { stampPlaces } from './place.ts'
 import { writeSnapshot } from '../web/server.ts'
@@ -93,6 +93,7 @@ export async function tick(store: Store, deps: { source?: Source; run?: RunWorke
 		// Finished reports land before the owner's answers, so an ok never acts on a turn that news already replaced (review P0.4).
 		const jobsEarly = await checkJobs(store, src, cfg, procs)
 		legacyEffects(store)
+		settleCompleted(store, procs)
 		// The owner's ok re-reads a pull request before voting on it, through the same read the PR checks use.
 		// The AI CLI's tool list is read for it; one that cannot be read is named in Health and never stops the cycle (review 10-21b P1).
 		const cli = cliServers(cfg.agent.flavor)

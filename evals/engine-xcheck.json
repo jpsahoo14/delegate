@@ -1,0 +1,9 @@
+[
+  { "id": "group-two-prs", "text": "Can this PR get a review too? Pull request 4300201 https://dev.azure.com/acme/Canvas/_git/widget/pullrequest/4300201. And this one: Pull request 4300202 https://dev.azure.com/acme/Canvas/_git/widget/pullrequest/4300202", "expect": "Keep both PR asks owned by this sender; review both or split them; never fold them into another sender's completed review." },
+  { "id": "group-deployment-fyi", "text": "The widget service is in BLUE but the E2E testing is still in progress.", "fyi": "Kim: widget service is in BLUE; testing is not complete.", "expect": "Catch up when the owner's profile owns widget service; no reply or invented task." },
+  { "id": "group-partner-fyi", "text": "Opened the registration regression against the partner team; we need to hear from them.", "fyi": "Kim opened the registration regression with the partner team.", "expect": "Catch up for the owner's area, or a news step on the same active work; not noise just because someone else acts next." },
+  { "id": "group-document-fyi", "text": "Dev, can you share a one-pager with the outcomes and project plan before onboarding next week?", "fyi": "Kim requested the onboarding plan from Dev.", "expect": "Catch up when relevant to the owner's onboarding; do not reply on Dev's behalf." },
+  { "id": "meeting-recap-fyi", "text": "Widget architecture meeting recap and recording: https://example.org/widget/recap", "fyi": "Kim shared the widget architecture recap and recording.", "expect": "Catch up for a relevant meeting; report the shared recap, never invent its contents." },
+  { "id": "thanks-noise", "text": "Thanks, that helps!", "expect": "Done without fyi or reply: no new information." },
+  { "id": "unrelated-room-noise", "text": "Dev, please pick the sandwich order for the picnic.", "expect": "Done without fyi or reply: an unrelated request for someone else is not the owner's action or relevant news." }
+]

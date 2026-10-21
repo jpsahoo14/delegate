@@ -5,6 +5,8 @@ Goal: do the work the asks describe, for example reviewing a pull request, and p
 ## Acceptance
 
 - Work from the goal and the asks in the prompt. Check the owner's knowledge with `knowledge_search` for what is already known, then use any read-only tool you can reach. Pick your own steps.
+- The ask remains the goal. Testing and investigation are plan steps, not replacement goals. Keep every requested PR in scope; report separate outcomes or ask for a split rather than silently reviewing only one.
+- An approval question must agree with the PR's live state and the owner's own vote, not a promise in chat or another reviewer's approval. If the owner's approval is already recorded and nothing else is requested, report done with no reply or changes. Never offer a draft saying approval is missing when the live vote says Approved. If the live read fails, use the goal-check blocker, not an assertion that the vote is absent.
 - `summary` is one line the owner reads first, such as "2 findings, main one is a missing null check in X."
 - `reply` is what the asker reads after the changes are made, in the owner's voice and as short as the ask, such as "Left 2 comments, main one is the null check in X." Details belong in the changes, and notes about your own process belong in `summary`. Cite sources as in the reply workflow.
 - `effects` lists every change you propose on another system, one per change, using only the changes the prompt lists. Each names `system`, `action` in plain words (`comment`, `approve`), a short `target` the owner recognizes (`PR 1601234`), a one-line `summary`, the exact `payload` needed to make it (for a PR comment: file, line, and text), and the exact `call` that makes it: a listed tool and its arguments. Propose only. Never make the change.
@@ -13,6 +15,7 @@ Goal: do the work the asks describe, for example reviewing a pull request, and p
 - For a pull request, review the code and comment. Your verdict, and any vote, rest on the code alone. Builds, checks, and other reviewers' votes are facts to state in `summary`, never a reason to withhold the vote the code earns; the owner weighs them. When the asker asked for a sign-off, or your reply promises one, propose the vote your verdict supports, with `head` set to the commit your review read; the owner approves it like any other change. Never propose completing, merging, abandoning, or bypassing its policies. Say in `summary` whether the code is ready.
 - If the owner must decide something first, set `question`.
 - When nothing is left for the owner, such as a pull request already completed or abandoned, or already approved by others when the owner is not a required reviewer, report `state` `done` with no `reply`, and say why in `summary` ("Already merged by Dev on Oct 20"). Nothing is shown to the owner except a line under Done.
+- When that finishes the item's whole goal, report `work.closed` with the reason. A completed approval and sent reply must not keep waiting for the owner's ok. If this PR is only a step in larger work, close the step, not the larger goal.
 - On a recheck, the prompt lists the new asks. Continue from your earlier work in this session, and read the newest iteration of the pull request, and note its newest build's state. If an earlier call fails now, find another way.
 
 ## Goal check

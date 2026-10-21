@@ -26,7 +26,7 @@ import { joinInto, say, splitOff } from './intake.ts'
 import { ackJob, afterDraft, ownerActive } from './autosend.ts'
 import { attachJob, carry } from './jobs.ts'
 import { isVote, refusedAsk, sameChange, vet } from '../core/effects.ts'
-import { prTarget, voteNow, type BuildProbe } from './probe.ts'
+import { probePRs, prTarget, voteNow, type BuildProbe } from './probe.ts'
 import { checkPromise, failPromise, promisesDue } from './promise.ts'
 import { heldBy } from './owner.ts'
 import { knowledgeOf, resolveEvidence } from './proposals.ts'
@@ -171,6 +171,8 @@ function refuseStart(cfg: Config, folder?: string) {
 async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run: RunWorker, probe?: BuildProbe) {
 	refuseStart(cfg)
 	if (wf.state !== 'running') return runAsk(store, src, cfg, wf, run)
+	await probePRs(store, cfg, probe, Date.now(), true, [wf])
+	if (wf.state !== 'running') return
 	const runId = ulid()
 	const { cwd, mcpConfigPath } = workerMcp(store, wf.id, runId)
 	const others = wf.code ? store.openInChat(wf.chat.id).filter(o => o.id !== wf.id && o.code && !o.followUp) : []
@@ -202,6 +204,7 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 		// The home is read and written in one synchronous step, so a part's run and the home's run never overwrite each other (review part 2 #4).
 		const h = family(store, fresh, report)
 		applyReport(fresh, checked(store, cfg, report), h)
+		if (fresh.draft) fresh.prDraft = wf.prRead
 		if (report.goalMet === false) store.log({ event: 'short-of-goal', workflowId: fresh.id, code: fresh.code, kind: blockerOf(report.blocker).kind, why: blockerOf(report.blocker).why, tried: blockerOf(report.blocker).tried })
 		// Closed with a last reply: the family closes when that reply is sent; without one, now.
 		if (h.work?.closed) { stopWatch(store, h); if (!fresh.draft && !fresh.question) closeFamily(store, realProcs, h, h.work.closed.why) }
@@ -236,6 +239,7 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 	fresh.drewOn = drewOn.length ? drewOn : undefined
 	fresh.shareHold = drewOn.length ? await sharingHold(store, src, fresh, drewOn) : undefined
 	if (report && !report.job) await afterDraft(store, src, cfg, fresh)
+	if (report && !report.job && fresh.state === 'done' && fresh.closedBy === 'nothing') for (const msgId of wf.pending) store.log({ event: 'intake-skip', chat: wf.chat.id, msgId, code: wf.code, reason: fresh.fyi ? 'judged FYI; no reply' : 'judged no owner action or relevant news' })
 	if (report?.job) await ackJob(store, src, cfg, fresh)
 	store.save(fresh)
 	store.archiveReport(wf.id, runId)
@@ -275,10 +279,11 @@ export function checked(store: Store, cfg: Config, r: Report): Report {
 }
 
 export function applyReport(wf: Workflow, r: Report, home = wf) {
+	const changedAsk = r.work?.changedAsk && wf.pending.includes(r.work.changedAsk) && wf.msgIds.includes(r.work.changedAsk) ? r.work.changedAsk : undefined
 	wf.intent = r.intent
 	wf.pending = []
 	const fresh = !home.work
-	mergeWork(home, r.work, undefined, home === wf ? '' : label(wf, home))
+	mergeWork(home, r.work, undefined, home === wf ? '' : label(wf, home), changedAsk)
 	// A candidate from the owner's own message is shown for ok before it is tracked (R-WRK-11).
 	if (wf.startedBy === 'owner' && fresh && home.work && home === wf) {
 		home.work.proposed = true
@@ -297,8 +302,7 @@ export function applyReport(wf: Workflow, r: Report, home = wf) {
 		return
 	}
 	if (!home.work && (r.intent === 'none' || r.state === 'done') || !r.reply && !r.question) {
-		// A guess about a message to the whole group is never listed: busy groups would flood Catch up (review 10-20).
-		Object.assign(wf, { state: 'done', status: r.summary || 'No reply needed', closedBy: 'nothing', fyi: r.fyi?.line.trim() && wf.startedBy !== 'room' && !wf.needsMe && (!wf.before || !!r.fyi.watch?.target) ? { line: r.fyi.line.trim(), weight: r.fyi.weight, at: new Date().toISOString(), ...(r.fyi.gist?.trim() ? { gist: r.fyi.gist.trim() } : {}), ...(r.fyi.watch?.target ? { watch: r.fyi.watch } : {}) } : undefined })
+		Object.assign(wf, { state: 'done', status: r.summary || 'No reply needed', closedBy: 'nothing', fyi: r.fyi?.line.trim() && !wf.needsMe && (!wf.before || !!r.fyi.watch?.target) ? { line: r.fyi.line.trim(), weight: r.fyi.weight, at: new Date().toISOString(), ...(r.fyi.gist?.trim() ? { gist: r.fyi.gist.trim() } : {}), ...(r.fyi.watch?.target ? { watch: r.fyi.watch } : {}) } : undefined })
 		return
 	}
 	const preview = !!wf.ownerAnswer || !!wf.correction

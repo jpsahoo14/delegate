@@ -84,6 +84,7 @@ export type Work = {
 }
 export type WorkReport = {
 	goal?: string; doneWhen?: string; step?: string
+	changedAsk?: string
 	next?: { who: 'you' | 'them' | 'me'; what: string }
 	waitingOn?: { who: string; where?: string }
 	links?: string[]; closed?: string; checkInDays?: number
@@ -175,6 +176,10 @@ export type Workflow = {
 	msgIds: string[]
 	lastAsk?: string
 	intent?: Intent
+	// PR identity, status, head and owner vote read before drafting; the reply keeps that basis until the next turn.
+	prRead?: string
+	prDraft?: string
+	completionSeen?: string
 	draft?: Draft
 	question?: string
 	// What the worker could not read, such as an image or a file it has no access to (R-ING-11).

@@ -9,6 +9,17 @@ Proof kinds:
 - `live <file>` is a live run on real Teams with its steps and evidence in that file.
 - `manual:` is followed by the steps to run by hand.
 
+## Engine crosscheck regressions
+
+| ID | Scenario | Proof |
+| --- | --- | --- |
+| SC-430 | A live owner approval withdraws a contradictory draft even when the vote was already seen. Approval-only asks check before drafting and sending; missing or ambiguous evidence holds the send. Changed head/vote evidence invalidates the draft, including a reset to zero. Owed own-vote replies survive PR completion, and a multiple-PR follow-up never closes from only one vote. (R-HIL-21) | `engine crosscheck F1:`; `engine crosscheck safety:` |
+| SC-431 | Terminal approval work and its parts close; a recorded vote plus a sent reply closes only a bounded approval goal. Broader goals, unfinished plans and pending family decisions survive. Persisted receipts close satisfied approval work or queue legacy remaining work once, without AI or another send during repair. A row uses its own ask's PR, not an old attached job's. (R-WRK-02, R-NEX-03) | `engine crosscheck F2:`; `engine crosscheck F2/A19:`; `engine crosscheck F2/F3:`; `engine crosscheck safety:` |
+| SC-432 | Every fixture state and every shared inbox fixture appears in exactly one placement. A partner wait names the partner even without a next step, and a part with no local work record remains visible in classic progress. Terminal no-action approval work is not Waiting. (R-NEX-03) | `engine crosscheck F3/A14:`; `engine crosscheck F3:` |
+| SC-433 | A plan may add testing steps without replacing the original ask or done-when. Only an explicit change tied to a new owned pending ask can update those fields; a stale report cannot. (R-WRK-02) | `engine crosscheck F2/A19:`; `engine crosscheck A19:`; `engine crosscheck prompts:` |
+| SC-434 | An unmentioned group review request reaches independent paced judgment without replacing an older unanswered ask. A different sender or a different PR cannot disappear inside another review, including URL-only requests. Every intake skip records a reason, chat ID, and message ID, without the message text. (R-ING-08, R-WF-01) | `engine crosscheck F5:`; `engine crosscheck F5/F8:`; `engine crosscheck prompts:`; `engine crosscheck safety:` |
+| SC-435 | Relevant deployment progress, partner regressions, onboarding documents, and meeting recaps can reach Catch up without an owner mention; noise and unrelated requests still close without an FYI. The fictional corpus in evals/engine-xcheck.json records positive and negative prompt judgments. (R-NEX-03, R-ING-08) | `engine crosscheck F5/F8:`; `engine crosscheck prompts:` |
+
 ## Asks and replies
 
 | ID | Scenario | Proof |
@@ -16,7 +27,7 @@ Proof kinds:
 | SC-01 | Someone asks the owner a question in a 1:1. It becomes item A1 with a draft, and the owner gets one nudge. | `R-ING-01 R-WF-01 R-HIL-06 an ask becomes item A1` |
 | SC-02 | The asker adds a follow-up before the owner acts. It joins the same item. | `R-WF-01 a follow-up joins the open item`, `R-WF-01 two asks in one tick` |
 | SC-03 | A thank-you or FYI needs nothing. No item appears. | `R-ING-04 a thank-you closes silently`, eval R06, eval R08, eval R11 |
-| SC-04 | In a group chat only messages that mention the owner are asks. | `R-ING-08 group messages are asks only when they mention the owner`, eval R09 |
+| SC-04 | In a group chat, mentions identify direct asks; unaddressed messages are paced for judgment rather than silently discarded. | `R-ING-08 group messages are asks only when they mention the owner`; `R-ING-08 discovered group chats judge unaddressed messages`; eval R09 |
 | SC-05 | A second person asks something else in the same chat. It becomes its own item. | `D2 an ask from a different person starts its own item`, `D2 the worker splits an off-topic message` |
 | SC-06 | The owner replies in Teams themselves. The item closes and nothing is sent twice. | `R-WF-13 ok after the owner already replied`, `R-POL-03 C2 a scheduled reply is dropped` |
 | SC-07 | A question the owner has answered before is drafted from their past messages, with links. | `history search asks Teams with the owner filter`, eval R13, eval R15, eval R17 |

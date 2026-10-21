@@ -71,7 +71,7 @@ export function factsOf(s: Snap, sub: Subject): Facts {
 		subject: 'item', state: w.state, runner: s.runner, queue: s.queue.get(w.id),
 		job: j && { state: j.state, watch: !!j.every, retryLater: !!j.retry && Date.parse(j.retry.at) > s.now, slot: s.slots.has(j.id), retry: !!j.retry },
 		// A step for "them" that waits on the owner by name is the owner's step.
-		work: w.work && { open: !w.work.closed, next: nextWho(s, w.work) },
+		work: w.work && { open: !w.work.closed, next: nextWho(s, w.work), waiting: !!w.work.waitingOn },
 		todos: openTodos(w).length,
 		fyiUnread: !!w.fyi && (w.fyi.at ?? w.updatedAt) > s.catchupSeen,
 	}
@@ -110,6 +110,7 @@ function nextOf(s: Snap, sub: Subject, f: Facts, section: Section): { next?: Pla
 		const runs = !!j && (j.state === 'queued' || j.state === 'running') || !!w.work!.plan?.some(p => p.probe && !p.done)
 		return { next: { owner: runs ? { kind: 'delegate' } : { kind: 'nobody' }, what: n.what }, why }
 	}
+	if (f.work?.open && w.work?.waitingOn) return { next: { owner: { kind: 'others', text: w.work.waitingOn.who }, what: w.work.waitingOn.where }, why }
 	if (f.state === 'waiting_on_sender') return { next: { owner: { kind: 'others', text: w.asker?.name ?? 'them' } }, why }
 	return { next: busy ? { owner: { kind: 'delegate' } } : { owner: { kind: 'nobody' } }, why }
 }

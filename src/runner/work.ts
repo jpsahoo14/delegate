@@ -2,6 +2,7 @@ import { site } from '../core/site.ts'
 import type { PlanStep, Report, Step, Workflow, WorkReport } from '../core/types.ts'
 import type { Store } from '../store/state.ts'
 import { canonicalKey } from './jobs.ts'
+import { isVote, prIdOf, voteValue } from '../core/effects.ts'
 
 // Open work: an item that keeps one code until its work is closed. Every state change for work items is here (dev-spec/work.md).
 
@@ -23,6 +24,7 @@ export const label = (wf: Workflow, home: Workflow) => (wf === home || wf.id ===
 export function linksIn(text: string): string[] {
 	const out = new Set<string>()
 	for (const m of text.matchAll(/\b(?:pull request|PR)\s*#?\s*(\d{4,})/gi)) out.add(`pr:${m[1]}`)
+	for (const m of text.matchAll(/https?:\/\/[^\s<>]+\/pullrequest\/(\d+)/gi)) out.add(`pr:${m[1]}`)
 	const esc = (w: string) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 	const builds = ['build', 'run', 'pipeline run', ...(site().buildWords ?? [])].map(esc).join('|')
 	for (const m of text.matchAll(new RegExp(`\\b(?:${builds})\\s*#?\\s*(\\d{6,})\\b`, 'gi'))) out.add(`build:${m[1]}`)
@@ -56,7 +58,7 @@ export function step(wf: Workflow, what: string, o: { ref?: string; news?: boole
 	return true
 }
 
-export function mergeWork(wf: Workflow, w: WorkReport | undefined, now = new Date(), from = '') {
+export function mergeWork(wf: Workflow, w: WorkReport | undefined, now = new Date(), from = '', changedAsk?: string) {
 	if (!w) return
 	const at = now.toISOString()
 	if (!wf.work) {
@@ -64,8 +66,10 @@ export function mergeWork(wf: Workflow, w: WorkReport | undefined, now = new Dat
 		wf.work = { goal: w.goal, doneWhen: w.doneWhen ?? 'the asker has what they needed', steps: [], links: [] }
 		step(wf, `Started: ${w.goal}`, { at })
 	} else {
-		if (w.goal) wf.work.goal = w.goal
-		if (w.doneWhen) wf.work.doneWhen = w.doneWhen
+		if (changedAsk && w.changedAsk === changedAsk) {
+			if (w.goal) wf.work.goal = w.goal
+			if (w.doneWhen) wf.work.doneWhen = w.doneWhen
+		}
 		if (wf.work.closed && !w.closed) wf.work.closed = undefined
 	}
 	const k = wf.work
@@ -97,7 +101,7 @@ export function mergePlan(old: PlanStep[], next: NonNullable<WorkReport['plan']>
 // Ending a turn without new input (wait, skip, close, the owner's own message) keeps the last send for Done and "Not right?".
 // The turn's own to-dos go with it; the ones a sent reply promised (kept) stay until the owner marks them done (R-NEX-07).
 export function newTurn(wf: Workflow, keepSent = false) {
-	Object.assign(wf, { draft: undefined, choices: undefined, question: undefined, effects: undefined, promised: undefined, decision: undefined, approved: undefined, picked: undefined, sendAt: undefined, correction: undefined, todos: undefined, newCount: 0, ...(keepSent ? {} : { sent: undefined }) })
+	Object.assign(wf, { draft: undefined, prDraft: undefined, choices: undefined, question: undefined, effects: undefined, promised: undefined, decision: undefined, approved: undefined, picked: undefined, sendAt: undefined, correction: undefined, todos: undefined, newCount: 0, ...(keepSent ? {} : { sent: undefined }) })
 }
 
 // When a reply goes out, what it promised the owner would do becomes theirs to keep, once per open text (R-NEX-07).
@@ -126,12 +130,35 @@ export function settle(wf: Workflow, r: Report, home = wf): boolean {
 }
 
 // After a reply is sent. Returns true when the item stays open.
-export function afterSend(wf: Workflow, text: string, msgId: string, home = wf): boolean {
+export function afterSend(wf: Workflow, text: string, msgId: string, home = wf, closeApproval = true): boolean {
 	if (!home.work) return false
+	wf.completionSeen = `sent:${msgId}`
 	step(home, `${label(wf, home)}Replied: ${text}`, { ref: `sent:${msgId}` })
+	const effects = (wf.effects ?? []).filter(e => !e.off)
+	if (closeApproval && wf === home && approvalOnly(home) && !wf.follow && effects.length && effects.every(e => e.done) && effects.some(e => isVote(e.call) && (voteValue(e.call) ?? 0) >= 5 && linksIn(wf.lastAsk ?? '').includes(`pr:${prIdOf(e.call)}`))) {
+		home.work.closed = { at: new Date().toISOString(), why: 'Approval recorded and reply sent' }
+		home.work.next = undefined
+		home.work.waitingOn = undefined
+	}
 	if (!active(home)) { Object.assign(wf, { state: 'done', status: `Closed: ${home.work.closed?.why ?? 'closed'}`, pending: [] }); return false }
 	Object.assign(wf, { state: 'open', status: statusOf(home), pending: [] })
 	return true
+}
+
+export const approvalAsk = (text: string) => /approv|sign[ -]?off|\blgtm\b/i.test(text) && !/re[ -]?review|review again|recheck/i.test(text)
+export const approvalOnly = (wf: Workflow) => {
+	const k = wf.work
+	if (!k || !/^(?:please\s+)?(?:review\s+(?:and|&)\s+)?(?:approve|sign[ -]?off)\s+(?:PR|pull request)\s*#?\s*\d{4,}[.!]?$/i.test(k.goal)) return false
+	if (k.plan?.some(p => !p.done) || /\b(?:after|before|then|validat\w*|test\w*|deploy\w*|ship\w*|monitor\w*|rollback|config\w*|partner)\b/i.test(k.doneWhen)) return false
+	const goal = linksIn(k.goal).filter(l => l.startsWith('pr:')), ask = linksIn(wf.lastAsk ?? '').filter(l => l.startsWith('pr:'))
+	return new Set([...k.links.filter(l => /^pr:/i.test(l)), ...goal, ...ask].map(l => l.split(/[:/]/).at(-1))).size <= 1
+}
+
+export function canCloseApproval(store: Store, home: Workflow): boolean {
+	return approvalOnly(home) && !/\b(?:then|also|after|before|plus)\b|[;&]|\band\b(?!\s+approve)/i.test(home.lastAsk ?? '') && !(home.work?.parts ?? []).some(id => {
+		const part = store.workflow(id)
+		return part && part.state !== 'done' && (part.pending.length || part.question || part.draft || part.state === 'running' || part.state === 'waiting_on_task' || active(part))
+	})
 }
 
 export function statusOf(wf: Workflow): string {
@@ -144,6 +171,8 @@ export function statusOf(wf: Workflow): string {
 export function closeWork(wf: Workflow, why: string) {
 	if (!wf.work) return
 	wf.work.closed = { at: new Date().toISOString(), why }
+	wf.work.next = undefined
+	wf.work.waitingOn = undefined
 	step(wf, `Closed: ${why}`)
 	newTurn(wf, !!wf.sent)
 	Object.assign(wf, { state: 'done', status: `Closed: ${why}`, pending: [] })

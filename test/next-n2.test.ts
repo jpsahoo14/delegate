@@ -49,7 +49,7 @@ test('N2 whose rule 5: an open to-do puts the item in Your move, even a done one
 		[{ state: 'open', work: { open: true, next: 'them' }, todos: 0 }, 'waiting', 'waiting'],
 	]
 	assert.deepEqual(cases.map(([f]) => { const m = whoseMove({ ...base, ...f }); return [m.section, m.rule] }), cases.map(([, s, r]) => [s, r]))
-	assert.deepEqual(RULES.map(r => r.id), ['catchup', 'done', 'needs-you', 'stopped', 'todo', 'job-running', 'starts-next', 'your-step', 'waiting'])
+	assert.deepEqual(RULES.map(r => r.id), ['catchup', 'done', 'needs-you', 'stopped', 'todo', 'job-running', 'starts-next', 'your-step', 'partner-wait', 'waiting'])
 })
 
 test('N2 owned work: the opened item has every plan step with its owner, done steps ticked, the current step marked, and your move', () => {
