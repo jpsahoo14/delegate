@@ -1,7 +1,7 @@
 import type { Store } from '../store/state.ts'
 import { counted } from '../store/numbers.ts'
 import { numbers, type Numbers, type WindowKey } from '../core/numbers.ts'
-import { isThread, threadLink } from '../adapters/channels.ts'
+import { messageLink } from '../adapters/channels.ts'
 import { listsOf } from './app/model/numbers.ts'
 import { itemRows, type DoneRow } from './view.ts'
 
@@ -13,7 +13,7 @@ export type NumbersRow = Omit<DoneRow, 'text' | 'why' | 'notes'>
 export type MissedLink = { at: string; teams?: string }
 export type NumbersPage = Numbers & { rows: Record<string, NumbersRow>; missed: Record<string, MissedLink> }
 
-const link = (chat: string, msgId: string) => (isThread(chat) ? threadLink(chat, msgId) : `https://teams.microsoft.com/l/message/${encodeURIComponent(chat)}/${msgId}`)
+const link = messageLink
 
 export function numbersPage(store: Store, key: WindowKey = 'this', now = new Date()): NumbersPage {
 	const evs = counted(store), wfs = store.workflows(), n = numbers(evs, wfs, now, store.config()?.tz, key)

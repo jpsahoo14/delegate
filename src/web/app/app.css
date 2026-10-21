@@ -594,7 +594,7 @@ label.chk{display:flex;gap:8px;align-items:flex-start;font-size:13px;color:var(-
 #app[data-ui=next] .nrow .ri{width:32px;height:32px;border-radius:9px;display:grid;place-items:center;background:var(--surface-2);color:var(--text-2);flex:none}
 #app[data-ui=next] .k-working .ri{background:var(--accent-soft);color:var(--accent-text)}
 #app[data-ui=next] .k-stopped .ri{background:var(--warn-soft);color:var(--warn)}
-#app[data-ui=next] .nb{flex:1;min-width:0}
+#app[data-ui=next] .nrbody{flex:1;min-width:0}
 #app[data-ui=next] .nh{display:flex;align-items:baseline;gap:6px 8px;flex-wrap:wrap}
 #app[data-ui=next] .nt{font-weight:600;line-height:1.4;overflow-wrap:anywhere}
 #app[data-ui=next] .nh .code{margin-left:auto}
@@ -605,7 +605,7 @@ label.chk{display:flex;gap:8px;align-items:flex-start;font-size:13px;color:var(-
 #app[data-ui=next] .ng{margin:4px 0 0;color:var(--text-2);font-size:13.5px}
 #app[data-ui=next] .nn{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12.5px;color:var(--text-2);margin-top:4px}
 #app[data-ui=next] .nrow .m{display:block;font-size:12.5px;color:var(--text-3);margin-top:4px}
-#app[data-ui=next] .na{display:flex;gap:6px;flex:none;align-items:center;flex-wrap:wrap;justify-content:flex-end;max-width:260px}
+#app[data-ui=next] .nract{display:flex;gap:6px;flex:none;align-items:center;flex-wrap:wrap;justify-content:flex-end;max-width:260px}
 #app[data-ui=next] .ntell{display:flex;gap:6px;align-items:center;margin-top:8px;max-width:560px}
 #app[data-ui=next] .ntell input{flex:1;min-width:0;padding:7px 10px;border-radius:9px;border:1px solid var(--border-strong);background:var(--surface);color:var(--text)}
 #app[data-ui=next] .ncard{padding:0 16px 16px}
@@ -655,7 +655,7 @@ label.chk{display:flex;gap:8px;align-items:flex-start;font-size:13px;color:var(-
   #app[data-ui=next] .nsec{margin:12px 0}
   #app[data-ui=next] .nsec:not(.open){display:none}
   #app[data-ui=next] .nmain{flex-wrap:wrap;padding:12px 14px}
-  #app[data-ui=next] .na{width:100%;max-width:none;justify-content:flex-start;padding-left:44px}
+  #app[data-ui=next] .nract{width:100%;max-width:none;justify-content:flex-start;padding-left:44px}
   #app[data-ui=next] .ncard{padding:0 8px 12px}
   #app[data-ui=next] .pill .pt{display:inline}
   #app[data-ui=next] .nnote .wide{display:none}

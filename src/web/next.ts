@@ -4,7 +4,7 @@ import type { Waiting } from '../core/waiting.ts'
 import { type Facts, type Section, URGENCY, whoseMove } from '../core/whose.ts'
 import { clock } from '../core/schedule.ts'
 import { pendingEffects } from '../core/effects.ts'
-import { isThread, threadLink } from '../adapters/channels.ts'
+import { messageLink } from '../adapters/channels.ts'
 import { when } from '../runner/automations.ts'
 import { DELAYS, MAX_TRIES } from '../runner/retry.ts'
 import { cardType, msgKeys, readingOf, who as whoOf, type Who } from './view.ts'
@@ -226,7 +226,7 @@ export const INLINE_MAX = 180
 const first = (n?: string) => String(n || 'them').split(/\s+/)[0]
 const firsts = (ns: string[]) => { const f = ns.map(first); return f.length > 1 ? `${f.slice(0, -1).join(', ')} and ${f.at(-1)}` : f[0] ?? 'them' }
 const clip = (t = '', n = 90) => { const s = t.replace(/\s+/g, ' ').trim(); return s.length > n ? `${s.slice(0, n - 1).trimEnd()}…` : s }
-const teamsLink = (w: Workflow) => w.chat.id && w.lastMsgId && !w.chat.test ? (isThread(w.chat.id) ? threadLink(w.chat.id, w.lastMsgId) : `https://teams.microsoft.com/l/message/${encodeURIComponent(w.chat.id)}/${w.lastMsgId}`) : undefined
+const teamsLink = (w: Workflow) => w.chat.id && w.lastMsgId && !w.chat.test ? messageLink(w.chat.id, w.lastMsgId) : undefined
 const triesOf = (r: NonNullable<Job['retry']>) => `${r.n} of ${DELAYS[r.last.kind]?.length ?? MAX_TRIES}`
 // "every hour", "every 2 hours", "every day", "every 30 min".
 export const every = (min: number) => min % 1440 === 0 ? (min === 1440 ? 'every day' : `every ${min / 1440} days`) : min % 60 === 0 ? (min === 60 ? 'every hour' : `every ${min / 60} hours`) : `every ${min} min`
@@ -355,7 +355,7 @@ function itemRow(s: Snap, p: Placed, w: Workflow): Body {
 
 function waitRow(w: Waiting): Body {
 	const to = firsts(w.to)
-	return { kind: 'waiting-person', headline: clip(`You asked ${to}: "${w.text}"`, 160), who: whoOf(w.to[0]), facts: { where: w.chat.name, at: w.at, verb: 'asked' }, chips: [], primary: { label: 'Draft a nudge', command: `ok ${w.code}` }, more: [{ label: 'Close', command: `skip ${w.code}` }], teams: w.msgId ? `https://teams.microsoft.com/l/message/${encodeURIComponent(w.chat.id)}/${w.msgId}` : undefined }
+	return { kind: 'waiting-person', headline: clip(`You asked ${to}: "${w.text}"`, 160), who: whoOf(w.to[0]), facts: { where: w.chat.name, at: w.at, verb: 'asked' }, chips: [], primary: { label: 'Draft a nudge', command: `ok ${w.code}` }, more: [{ label: 'Close', command: `skip ${w.code}` }], teams: w.msgId ? messageLink(w.chat.id, w.msgId) : undefined }
 }
 
 function reminderRow(p: Placed, a: Automation): Body {

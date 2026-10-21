@@ -43,6 +43,15 @@
     if (/^[A-Z]\d+\s*:/i.test(v)) return "Updating the draft with your answer.";
     return `Working on "${v.length > 60 ? v.slice(0, 58) + "…" : v}".`;
   }
+  function sourceChip(s2) {
+    if (s2.label) return s2.label;
+    if (s2.ref.startsWith("card:")) return s2.ref.slice(5).split(/[/#]/)[0].replace(/-/g, " ");
+    if (!/^https?:\/\//.test(s2.ref)) return s2.ref.slice(0, 60);
+    const u = new URL(s2.ref), pr = u.pathname.match(/\/pullrequest\/(\d+)/);
+    if (pr) return `PR ${pr[1]}`;
+    if (u.hostname === "teams.microsoft.com") return "Teams message";
+    return u.hostname.replace(/^www\./, "");
+  }
 
   // src/web/app/io/transport.ts
   var sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -1786,7 +1795,7 @@
   function noteHtml(c, n, i) {
     if (!n.a) return html`<li class="nq">${esc(n.q)}</li><li class="na"><span class="bot" aria-hidden="true">${I("spark", "sm")}</span><div class="nb"><span class="typing" aria-hidden="true"><i></i><i></i><i></i></span><span class="wait"> ${esc(env.name)} is looking into it.</span></div></li>`;
     return html`<li class="nq">${esc(n.q)}</li><li class="na"><span class="bot" aria-hidden="true">${I("spark", "sm")}</span><div class="nb"><span class="sr">${esc(env.name)}:</span><p>${esc(n.a)}</p>
-		${n.sources?.length ? html`<div class="nsrc">${n.sources.map((s2) => html`<span class="tag">${s2.tier === "private" ? I("lock", "sm") : ""}${esc(s2.label || s2.ref.replace(/^card:/, "").split(/[/#]/)[0])}</span>`)}</div>` : ""}
+		${n.sources?.length ? html`<div class="nsrc">${n.sources.map((s2) => html`<span class="tag">${s2.tier === "private" ? I("lock", "sm") : ""}${/^https:\/\//.test(s2.ref) && !env.snap ? html`<a href="${esc(s2.ref)}" target="_blank" rel="noopener">${esc(sourceChip(s2))}</a>` : esc(sourceChip(s2))}</span>`)}</div>` : ""}
 		${env.snap ? "" : html`<div class="nacts">${c.draft || c.type === "question" ? B("Use this in the reply", "usenote", { sm: true, ic: "spark", v: i }) : ""}${B("Ask more", "askmore", { sm: true, ghost: true })}</div>`}</div></li>`;
   }
   function markBox(r, u) {
@@ -2284,14 +2293,14 @@
     const nx = nextLine(r);
     const acts = U(`row:${r.act}`).msg ? "" : html`${r.primary ? action(r, r.primary, true, open) : ""}${(r.more ?? []).map((m) => action(r, m, false, false))}`;
     return html`<li class="nrow k-${raw(r.kind)}${open ? raw(" open") : ""}" id="now-${esc(r.act)}" data-code="${esc(r.act)}"${r.rev ? html` data-rev="${esc(r.rev)}"` : ""}>
-		<div class="nmain">${lead}<div class="nb">
+		<div class="nmain">${lead}<div class="nrbody">
 			<div class="nh"><b class="nt">${esc(r.headline)}</b>${chips}<span class="code">${esc(r.act)}</span></div>
 			${facts(r)}
 			${r.draft ? html`<blockquote class="nd">${esc(r.draft)}</blockquote>` : ""}${r.gist ? html`<p class="ng">${esc(r.gist)}</p>` : ""}
 			${r.warn ? html`<div class="nwarn">${I("warn", "sm")}<span>${esc(r.warn)}</span></div>` : ""}
 			${nx ? html`<div class="nn"><span>Next: ${esc(nx)}</span></div>` : ""}
 			${tell(r)}${rowState(`row:${r.act}`)}
-		</div>${acts ? html`<div class="na">${acts}</div>` : ""}</div>
+		</div>${acts ? html`<div class="nract">${acts}</div>` : ""}</div>
 		${open ? c ? html`<div class="ncard">${card(c)}</div>` : html`<p class="m ncard">${esc(`${r.act} has no card to open here.`)}${r.teams ? html` <a href="${esc(r.teams)}" target="_blank" rel="noopener">Open in Teams</a>` : ""}</p>` : ""}
 	</li>`;
   }

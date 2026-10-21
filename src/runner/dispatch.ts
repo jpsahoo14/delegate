@@ -24,7 +24,7 @@ import { levelOf } from '../core/levels.ts'
 import { CLI } from '../paths.ts'
 import { joinInto, say, splitOff } from './intake.ts'
 import { ackJob, afterDraft, ownerActive } from './autosend.ts'
-import { attachJob, changesJob } from './jobs.ts'
+import { attachJob, changesJob, executing } from './jobs.ts'
 import { refusedAsk, vet } from '../core/effects.ts'
 import { prTarget } from './probe.ts'
 import { heldBy } from './owner.ts'
@@ -211,8 +211,9 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 			const made = [...(own?.result?.effects ?? []), ...(fresh.effects ?? [])].filter(e => e.done)
 			const list = () => effects.map(e => ({ ...e, done: made.find(m => m.system === e.system && m.action === e.action && m.target === e.target)?.done }))
 			if (!own) changesJob(store, cfg, fresh, list())
-			// A redraft replaces the carrier's list, or ok would refuse it as out of date.
-			else if (own.key === `item:${fresh.id}`) { own.result = { summary: own.result?.summary ?? 'Chosen by the owner', effects: list() }; store.saveJob(own) }
+			// A redraft replaces the list ok will make, on a carrier or on the item's own work (a PR review), or ok would refuse it as out of date (A48).
+			// Never while a change run is making the approved list.
+			else if (!executing(own)) { own.result = { ...own.result, summary: own.result?.summary ?? 'Chosen by the owner', effects: list() }; store.saveJob(own) }
 			Object.assign(fresh, { effects: list(), promised: true })
 		}
 		else if (fresh.promised) Object.assign(fresh, { effects: undefined, promised: undefined })

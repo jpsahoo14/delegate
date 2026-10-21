@@ -236,7 +236,7 @@ test('next Now: the summary line, every row kind on its fixture, attributed word
 		// Classic links open the matching place in Now; the open card drops the row's header and ask.
 		await t.page.evaluate(() => { location.hash = '#focus/A3' })
 		await t.page.waitForSelector('#now-A3.open #card-A3')
-		assert.deepEqual([await t.page.locator('#now-A3 .nh .code').isVisible(), await t.page.locator('#card-A3 .c-who').isVisible(), await t.page.locator('#now-A3 .na a').innerText()], [true, false, 'Hide'])
+		assert.deepEqual([await t.page.locator('#now-A3 .nh .code').isVisible(), await t.page.locator('#card-A3 .c-who').isVisible(), await t.page.locator('#now-A3 .nract a').innerText()], [true, false, 'Hide'])
 	} finally { await t.close() }
 })
 
@@ -282,10 +282,10 @@ test('next Now: empty states, and paused drafting goes on while sends wait', { s
 		assert.deepEqual(await t.page.locator('#now-working .nrow').evaluateAll((l: Element[]) => l.map(e => e.id)), ['now-A24', 'now-A7'], 'the draft stays in Working')
 		assert.match((await t.page.locator('#now-A36').innerText()).replace(/\s+/g, ' '), /Send reply to Alex: "Yes, build 512 is green\." Held: you paused .* Paused$/)
 		assert.equal(await t.page.locator('#now-A36').evaluate((e: Element) => e.closest('section')!.id), 'now-move', 'held for you, in Your move')
-		assert.equal(await t.page.locator('#now-A36 .na button').first().isDisabled(), true)
+		assert.equal(await t.page.locator('#now-A36 .nract button').first().isDisabled(), true)
 		assert.equal(await t.page.locator('#nsum .tag').count(), 0, 'the paused tag is only on Working\'s header')
 		assert.doesNotMatch(await t.page.locator('#main').innerText(), /[Ss]ends?[^\n]{0,40}when you resume/)
-		const send = t.page.locator('#now-A20 .na button').first()
+		const send = t.page.locator('#now-A20 .nract button').first()
 		assert.deepEqual([await send.innerText(), await send.isDisabled()], ['Paused', true], 'Send waits for resume')
 		assert.equal(await t.page.locator('.health [data-act=healthfix]').innerText(), 'Resume')
 	} finally { await t.close() }
@@ -295,7 +295,7 @@ test('next actions: each row kind\'s action posts its existing command, and the 
 	const t = await open('#now', s => { seedNext(s); proposeAutomation(s, { to: 'Arun Mehta', text: 'Please share the notes.', every: 'day', at: '16:00' }); return s })
 	try {
 		const press = async (code: string, label: string, cmd: string, done: () => boolean) => {
-			await t.page.locator(`#now-${code} .na`).getByRole('button', { name: label, exact: true }).click()
+			await t.page.locator(`#now-${code} .nract`).getByRole('button', { name: label, exact: true }).click()
 			await until(() => t.posted.includes(cmd))
 			await until(done)
 		}
@@ -320,7 +320,7 @@ test('next actions: each row kind\'s action posts its existing command, and the 
 		await until(() => t.posted.includes('A23: Tried it twice, it works'))
 		await until(() => w('A23').state === 'running')
 		// A row that opens: the card's own action, here a pick and then its Send.
-		await t.page.click('#now-A3 .na a')
+		await t.page.click('#now-A3 .nract a')
 		await t.page.waitForSelector('#now-A3.open #card-A3')
 		await t.page.click('label:has(#o-A3-1)')
 		await until(() => t.posted.includes('pick A3 1'))
@@ -371,4 +371,21 @@ test('next first screen: at 1280×800 and 400×860 the summary line and the firs
 			if (width === 1280) assert.equal(await inside('#now-A6 .nn'), true, "Vikram's Next line is on the first screen")
 		} finally { await t.close() }
 	}
+})
+
+test('bug 10-21: in the new experience an Ask Delegate answer uses the card width, and its source chip names the PR', { skip }, async () => {
+	const t = await open('#now/A1', s => {
+		seedNext(s)
+		const w = s.byCode('A1')!
+		w.notes = [{ q: 'Why no vote?', a: 'Your words were read as a next step, not as an instruction to vote. Your vote is still none.', sources: [{ ref: 'https://dev.azure.com/acme/Globex/_git/web/pullrequest/4200001', tier: 'live', origin: 'extracted' }], at: new Date().toISOString() }]
+		s.save(w)
+		return s
+	})
+	try {
+		await t.page.waitForSelector('#card-A1 .na .nb p')
+		const [answer, list] = await t.page.evaluate(() => [document.querySelector('#card-A1 .na .nb')!.getBoundingClientRect().width, document.querySelector('#card-A1 .na')!.closest('ul,ol')!.getBoundingClientRect().width])
+		assert.ok(answer > list * 0.6, `the answer is ${answer}px of a ${list}px list`)
+		assert.equal(await t.page.locator('#card-A1 .na .bot').isVisible(), true, 'with its Delegate mark')
+		assert.equal(await t.page.locator('#card-A1 .na .nsrc a').innerText(), 'PR 4200001')
+	} finally { await t.close() }
 })

@@ -3,6 +3,7 @@ import type { Store } from '../store/state.ts'
 import { offRecord } from '../core/levels.ts'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { messageLink } from '../adapters/channels.ts'
 
 // Habits: steady patterns in what the owner does, offered as standing instructions they accept or not (dev-spec/habits.md).
 export type Habit = {
@@ -21,7 +22,7 @@ const norm = (t: string) => t.replace(/\s+/g, ' ').trim().toLowerCase()
 // One record per handled item, with whether the owner changed the words, compared as text (review: verb alone lies).
 export function outcome(store: Store, wf: Workflow, how: Outcome['how'], o: { draft?: string; sent?: string; approvedBy?: string; msgId?: string } = {}) {
 	const edited = how === 'sent' && !!o.draft && !!o.sent && norm(o.draft) !== norm(o.sent)
-	const link = o.msgId ? `https://teams.microsoft.com/l/message/${encodeURIComponent(wf.chat.id)}/${o.msgId}` : undefined
+	const link = o.msgId ? messageLink(wf.chat.id, o.msgId) : undefined
 	store.log({ event: 'outcome', how, chat: wf.chat.id, group: !!wf.chat.group, guests: wf.chat.guests, asker: wf.asker, intent: wf.intent, edited, approvedBy: o.approvedBy, ...(link ? { link } : {}) })
 }
 

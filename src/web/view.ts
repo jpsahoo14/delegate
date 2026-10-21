@@ -7,7 +7,7 @@ import { bootLines, knowledgeOf } from '../runner/proposals.ts'
 import type { Knowledge } from '../knowledge/index.ts'
 import { describe, when } from '../runner/automations.ts'
 import { DEFAULT_UNTIL } from '../runner/track.ts'
-import { isThread, parseThread, threadLink } from '../adapters/channels.ts'
+import { isThread, parseThread, messageLink } from '../adapters/channels.ts'
 import { NAME } from '../brand.ts'
 import type { versionInfo } from '../os/autoupdate.ts'
 import type { settingsView } from './settings.ts'
@@ -159,7 +159,7 @@ function card(store: Store, w: Workflow): ItemCard {
 		...(store.config().showDetails ? { debug: debugLines(w) } : {}),
 		why: { reason: w.decision?.reason, confidence: w.decision?.confidence, sources: (w.draft?.sources ?? []).map(s => source(s.ref, s.tier, s.stale, s.label, k)), gaps: w.gaps ?? [], searched: (w.looked ?? []).map(lookLine) },
 		work: workView(w, homeOf(store, w)), notes: w.notes ?? [], status: w.status, openOn: w.openOn, todos: w.todos, follow: w.follow && { target: w.follow.target, until: w.follow.until, everyHours: w.follow.everyHours ?? 4 },
-		teams: w.chat.id && w.lastMsgId && !w.chat.test ? (isThread(w.chat.id) ? threadLink(w.chat.id, w.lastMsgId) : `https://teams.microsoft.com/l/message/${encodeURIComponent(w.chat.id)}/${w.lastMsgId}`) : undefined,
+		teams: w.chat.id && w.lastMsgId && !w.chat.test ? messageLink(w.chat.id, w.lastMsgId) : undefined,
 	}
 }
 
@@ -174,7 +174,7 @@ export const SEEN_KEYS = ['replies', 'reviews', 'changes', 'reminders', 'learned
 // The ask on one line, without the greeting, for list rows: "Hi Robin, which date…" reads "which date…".
 const askLine = (t = '') => t.replace(/^\s*(hi|hello|hey|hii+|good (morning|afternoon|evening))\b[^,.!:\n]{0,40}[,.!:]?\s*/i, '').replace(/\s+/g, ' ').trim().slice(0, 160)
 const short = (t = '') => t.replace(/\s+/g, ' ').trim().slice(0, 200)
-const teamsOf = (w: Workflow, msgId = w.lastMsgId) => (w.chat.id && msgId && !w.chat.test ? (isThread(w.chat.id) ? threadLink(w.chat.id, msgId) : `https://teams.microsoft.com/l/message/${encodeURIComponent(w.chat.id)}/${msgId}`) : undefined)
+const teamsOf = (w: Workflow, msgId = w.lastMsgId) => (w.chat.id && msgId && !w.chat.test ? messageLink(w.chat.id, msgId) : undefined)
 // Why an item closed with no reply from Delegate. Items from before closedBy was kept are read from their status.
 const closedHow = (w: Workflow) => w.closedBy ?? (/^You replied yourself/.test(w.status) ? 'replied' : /^Skipped by you/.test(w.status) ? 'skipped' : undefined)
 
@@ -275,7 +275,7 @@ export function view(store: Store, since: string | undefined, now = new Date()):
 	const due = now.getTime() - (cfg.followUpHours ?? 24) * 3_600_000
 	// A wait with an open follow-up item is shown as that item; once the item closes, it returns after another followUpHours.
 	const quietSince = (w: ReturnType<Store['waiting']>[number]) => { const f = w.item ? store.byCode(w.item) : undefined; return f ? (f.state === 'done' ? Date.parse(f.updatedAt) : Infinity) : Date.parse(w.at) }
-	const waiting = store.waiting().filter(w => w.state === 'waiting' && quietSince(w) < due).map(w => ({ code: w.code, to: w.to.join(', '), chat: w.chat.name, text: w.text, at: w.at, link: w.msgId ? `https://teams.microsoft.com/l/message/${encodeURIComponent(w.chat.id)}/${w.msgId}` : undefined }))
+	const waiting = store.waiting().filter(w => w.state === 'waiting' && quietSince(w) < due).map(w => ({ code: w.code, to: w.to.join(', '), chat: w.chat.name, text: w.text, at: w.at, link: w.msgId ? messageLink(w.chat.id, w.msgId) : undefined }))
 	const updates = watching.filter(w => w.update).length
 	return {
 		now: now.toISOString(), since, owner: cfg.owner.name,

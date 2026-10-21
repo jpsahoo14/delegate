@@ -4070,6 +4070,40 @@ test('bug 10-20 A34 vote: an approved reply that promises approval casts the vot
 	assert.equal(calls.length, 1)
 })
 
+test("bug 10-21 A48: after a review with no changes, the owner's answer \"I'll approve\" becomes a vote that ok casts, not \"out of date\"", async () => {
+	voteSetup(); calls.length = 0
+	script = needsJob({ key: 'pr:acme/web/4200001', goal: 'Re-review PR 4200001' })
+	jf.job = (_, id) => ({ workflowId: id, intent: 'pr_review', state: 'needs_human', summary: 'All findings fixed', reply: { text: 'Rechecked, all three findings are fixed.', commitment: false, sources: [{ ref: PR_URL, tier: 'live', origin: 'extracted' }] } })
+	src.post(CHAT, 'me', `[as Kim] Fixed all three, can you take another look? ${PR_URL}`); await goPr(); await goPr()
+	assert.deepEqual([store.byCode('A1')!.state, pendingOf(store.byCode('A1')!).length], ['needs_human', 0], 'the review result proposes no change')
+	script = promise([voteEffect()], "Looks good to me. I've approved the PR.")
+	src.post('self', 'me', "A1: Looks good to me. I'll approve the PR."); await goPr()
+	assert.deepEqual(pendingOf(store.byCode('A1')!).map(e => e.summary), ['Approve PR 4200001'], 'the answer became a vote for ok')
+	await see('A1'); src.post('self', 'me', 'ok A1'); await goPr()
+	assert.match(src.chats.self.at(-1)!.body, /Before you ok A1: Approve PR 4200001/, 'what the vote means is shown first')
+	src.post('self', 'me', 'ok A1'); await goPr()
+	assert.doesNotMatch(src.chats.self.map(m => m.body).join('\n'), /out of date/)
+	await makeChanges([0]); await goPr()
+	assert.deepEqual(calls.map(c => [c.args.action, c.args.pullRequestId, c.args.vote]), [['vote', 4200001, 'Approved']], 'the vote was cast')
+	assert.equal(src.chats[CHAT].at(-1)!.body, "Looks good to me. I've approved the PR.", 'then the reply went out')
+})
+
+test('bug 10-21 A48: a redraft while the approved changes are being made does not swap the list under the change run', async () => {
+	voteSetup(); calls.length = 0
+	script = needsJob({ key: 'pr:acme/web/4200001', goal: 'Re-review PR 4200001' })
+	jf.job = (_, id) => ({ workflowId: id, intent: 'pr_review', state: 'needs_human', summary: 'All findings fixed', reply: { text: 'Rechecked, all fixed.', commitment: false, sources: [{ ref: PR_URL, tier: 'live', origin: 'extracted' }] } })
+	src.post(CHAT, 'me', `[as Kim] Fixed all three, can you take another look? ${PR_URL}`); await goPr(); await goPr()
+	script = promise([voteEffect()], "Looks good. I've approved the PR.")
+	src.post('self', 'me', "A1: Looks good. I'll approve the PR."); await goPr()
+	jf.job = () => undefined
+	await see('A1'); src.post('self', 'me', 'ok A1'); await goPr(); src.post('self', 'me', 'ok A1'); await goPr()
+	const job = store.job(store.byCode('A1')!.job!)!
+	assert.deepEqual([job.purpose, job.state], ['execute', 'running'], 'the change run is making the vote')
+	script = promise([voteEffect({ summary: 'Approve PR 4200001 with suggestions', call: voteCall(4200001, 'ApprovedWithSuggestions') })], 'Approved with suggestions.')
+	src.post(CHAT, 'me', '[as Kim] One more small change, please re-approve'); await goPr()
+	assert.deepEqual(store.job(job.id)!.result!.effects!.map(e => e.call?.args.vote), ['Approved'], 'the running change run keeps the list the owner approved')
+})
+
 test("next action: a vote names only the item's PR", async () => {
 	voteSetup()
 	const reviewers = voteEffect({ summary: 'Add Kim as a reviewer', call: { tool: 'ado-repo_pull_request_write', args: { action: 'update_reviewers', pullRequestId: 4200001, reviewerIds: ['kim'], reviewerAction: 'add' } } })

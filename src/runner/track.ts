@@ -5,7 +5,7 @@ import type { Store } from '../store/state.ts'
 import { slug } from '../knowledge/format.ts'
 import { forkSession, sessionCwd } from './own.ts'
 import { watchEnded } from './work.ts'
-import { isThread, threadLink } from '../adapters/channels.ts'
+import { messageLink } from '../adapters/channels.ts'
 import { parseWatch } from '../core/verbs.ts'
 
 // A tracker is a job that runs again every N minutes until its condition holds, with one item the owner sees (R-TRK-01, R-ADP-01).
@@ -60,7 +60,7 @@ export function track(store: Store, t: TrackInput, session?: string, made?: (cod
 export type WatchResult = { text: string; accepted: boolean; code?: string }
 
 const teamsLink = (wf: Workflow) => !wf.chat.id || !wf.lastMsgId || wf.chat.test ? undefined
-	: isThread(wf.chat.id) ? threadLink(wf.chat.id, wf.lastMsgId) : `https://teams.microsoft.com/l/message/${encodeURIComponent(wf.chat.id)}/${wf.lastMsgId}`
+	: messageLink(wf.chat.id, wf.lastMsgId)
 
 function started(store: Store, t: TrackInput): WatchResult {
 	let code = ''

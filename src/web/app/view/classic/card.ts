@@ -1,7 +1,7 @@
 // The card around every item: who and where, the ask and its thread, open work, the type's body, why, the action,
 // and the Ask thread. A card handled this visit stays as a short line, with Not right and Ask still there.
 import { primaryOf } from '../../model/derive.ts'
-import { doing, first, plural, when } from '../../model/format.ts'
+import { doing, first, plural, sourceChip, when } from '../../model/format.ts'
 import { MARKS } from '../../model/forms.ts'
 import type { CardUi, DoneRow, ItemCard, Who } from '../../model/types.ts'
 import { S, U, V, env } from '../../state/store.ts'
@@ -72,7 +72,7 @@ function actions(c: ItemCard, u: CardUi): H {
 function noteHtml(c: Asked, n: Note, i: number): H {
 	if (!n.a) return html`<li class="nq">${esc(n.q)}</li><li class="na"><span class="bot" aria-hidden="true">${I('spark', 'sm')}</span><div class="nb"><span class="typing" aria-hidden="true"><i></i><i></i><i></i></span><span class="wait"> ${esc(env.name)} is looking into it.</span></div></li>`
 	return html`<li class="nq">${esc(n.q)}</li><li class="na"><span class="bot" aria-hidden="true">${I('spark', 'sm')}</span><div class="nb"><span class="sr">${esc(env.name)}:</span><p>${esc(n.a)}</p>
-		${n.sources?.length ? html`<div class="nsrc">${n.sources.map(s => html`<span class="tag">${s.tier === 'private' ? I('lock', 'sm') : ''}${esc(s.label || s.ref.replace(/^card:/, '').split(/[/#]/)[0])}</span>`)}</div>` : ''}
+		${n.sources?.length ? html`<div class="nsrc">${n.sources.map(s => html`<span class="tag">${s.tier === 'private' ? I('lock', 'sm') : ''}${/^https:\/\//.test(s.ref) && !env.snap ? html`<a href="${esc(s.ref)}" target="_blank" rel="noopener">${esc(sourceChip(s))}</a>` : esc(sourceChip(s))}</span>`)}</div>` : ''}
 		${env.snap ? '' : html`<div class="nacts">${c.draft || c.type === 'question' ? B('Use this in the reply', 'usenote', { sm: true, ic: 'spark', v: i }) : ''}${B('Ask more', 'askmore', { sm: true, ghost: true })}</div>`}</div></li>`
 }
 // A sent reply can be marked not right (model/forms.ts MARKS). In the snapshot, the words to type.

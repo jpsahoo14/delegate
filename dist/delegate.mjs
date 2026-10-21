@@ -20918,7 +20918,7 @@ function parseMessageLink(link2) {
     return void 0;
   }
 }
-var threadId, isThread, threadLink, isChannel, emptyThreadCache, items, next, Threads;
+var threadId, isThread, threadLink, messageLink, isChannel, emptyThreadCache, items, next, Threads;
 var init_channels = __esm({
   "src/adapters/channels.ts"() {
     "use strict";
@@ -20928,6 +20928,7 @@ var init_channels = __esm({
       const t2 = parseThread(id);
       return `https://teams.microsoft.com/l/message/${encodeURIComponent(t2.channelId)}/${msgId}?groupId=${t2.teamId}&parentMessageId=${t2.rootId}`;
     };
+    messageLink = (chatId, msgId) => isThread(chatId) ? threadLink(chatId, msgId) : `https://teams.microsoft.com/l/message/${chatId}/${msgId}?context=%7B%22contextType%22%3A%22chat%22%7D`;
     isChannel = (chatId = "") => /@thread\.(tacv2|skype)$/.test(chatId);
     emptyThreadCache = () => ({ threads: [], roots: {}, names: {}, last: {} });
     items = (p) => p.replies ?? p.messages ?? p.value ?? [];
@@ -40117,7 +40118,7 @@ import { existsSync as existsSync9, readFileSync as readFileSync8, writeFileSync
 import { join as join11 } from "node:path";
 function outcome(store2, wf, how, o = {}) {
   const edited = how === "sent" && !!o.draft && !!o.sent && norm(o.draft) !== norm(o.sent);
-  const link2 = o.msgId ? `https://teams.microsoft.com/l/message/${encodeURIComponent(wf.chat.id)}/${o.msgId}` : void 0;
+  const link2 = o.msgId ? messageLink(wf.chat.id, o.msgId) : void 0;
   store2.log({ event: "outcome", how, chat: wf.chat.id, group: !!wf.chat.group, guests: wf.chat.guests, asker: wf.asker, intent: wf.intent, edited, approvedBy: o.approvedBy, ...link2 ? { link: link2 } : {} });
 }
 function noticeHabits(store2, cfg, now = Date.now()) {
@@ -40215,6 +40216,7 @@ var init_habits = __esm({
   "src/runner/habits.ts"() {
     "use strict";
     init_levels();
+    init_channels();
     DAY = 864e5;
     norm = (t2) => t2.replace(/\s+/g, " ").trim().toLowerCase();
     covered = (rules, asker, intent) => rules.some((r) => r.then === "send" && r.who.accounts?.some((a) => a.id === asker) && (!r.when.intent || r.when.intent === intent) && (!r.when.chat || r.when.chat === "direct"));
@@ -41078,7 +41080,7 @@ var init_track = __esm({
     init_verbs();
     DEFAULT_UNTIL = "it is done: merged, answered, decided, or resolved";
     localDay2 = (d = /* @__PURE__ */ new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-    teamsLink = (wf) => !wf.chat.id || !wf.lastMsgId || wf.chat.test ? void 0 : isThread(wf.chat.id) ? threadLink(wf.chat.id, wf.lastMsgId) : `https://teams.microsoft.com/l/message/${encodeURIComponent(wf.chat.id)}/${wf.lastMsgId}`;
+    teamsLink = (wf) => !wf.chat.id || !wf.lastMsgId || wf.chat.test ? void 0 : messageLink(wf.chat.id, wf.lastMsgId);
     watchCommand = (store2, p) => {
       if (!p.code) return watchSomething(store2, p.text);
       const wf = store2.byCode(p.code);
@@ -41686,7 +41688,7 @@ function card(store2, w) {
     openOn: w.openOn,
     todos: w.todos,
     follow: w.follow && { target: w.follow.target, until: w.follow.until, everyHours: w.follow.everyHours ?? 4 },
-    teams: w.chat.id && w.lastMsgId && !w.chat.test ? isThread(w.chat.id) ? threadLink(w.chat.id, w.lastMsgId) : `https://teams.microsoft.com/l/message/${encodeURIComponent(w.chat.id)}/${w.lastMsgId}` : void 0
+    teams: w.chat.id && w.lastMsgId && !w.chat.test ? messageLink(w.chat.id, w.lastMsgId) : void 0
   };
 }
 function knowledge(p) {
@@ -41776,7 +41778,7 @@ function view(store2, since, now = /* @__PURE__ */ new Date()) {
     const f = w.item ? store2.byCode(w.item) : void 0;
     return f ? f.state === "done" ? Date.parse(f.updatedAt) : Infinity : Date.parse(w.at);
   };
-  const waiting = store2.waiting().filter((w) => w.state === "waiting" && quietSince(w) < due2).map((w) => ({ code: w.code, to: w.to.join(", "), chat: w.chat.name, text: w.text, at: w.at, link: w.msgId ? `https://teams.microsoft.com/l/message/${encodeURIComponent(w.chat.id)}/${w.msgId}` : void 0 }));
+  const waiting = store2.waiting().filter((w) => w.state === "waiting" && quietSince(w) < due2).map((w) => ({ code: w.code, to: w.to.join(", "), chat: w.chat.name, text: w.text, at: w.at, link: w.msgId ? messageLink(w.chat.id, w.msgId) : void 0 }));
   const updates = watching.filter((w) => w.update).length;
   return {
     now: now.toISOString(),
@@ -41831,7 +41833,7 @@ var init_view = __esm({
     SEEN_KEYS = ["replies", "reviews", "changes", "reminders", "learned", "catchup"];
     askLine = (t2 = "") => t2.replace(/^\s*(hi|hello|hey|hii+|good (morning|afternoon|evening))\b[^,.!:\n]{0,40}[,.!:]?\s*/i, "").replace(/\s+/g, " ").trim().slice(0, 160);
     short2 = (t2 = "") => t2.replace(/\s+/g, " ").trim().slice(0, 200);
-    teamsOf = (w, msgId = w.lastMsgId) => w.chat.id && msgId && !w.chat.test ? isThread(w.chat.id) ? threadLink(w.chat.id, msgId) : `https://teams.microsoft.com/l/message/${encodeURIComponent(w.chat.id)}/${msgId}` : void 0;
+    teamsOf = (w, msgId = w.lastMsgId) => w.chat.id && msgId && !w.chat.test ? messageLink(w.chat.id, msgId) : void 0;
     closedHow = (w) => w.closedBy ?? (/^You replied yourself/.test(w.status) ? "replied" : /^Skipped by you/.test(w.status) ? "skipped" : void 0);
     msgKeys = (w) => {
       const c = isThread(w.chat.id) ? parseThread(w.chat.id).channelId : w.chat.id;
@@ -43117,7 +43119,7 @@ import { randomUUID as randomUUID5 } from "node:crypto";
 function learnFrom(store2, cfg, wf, draft, sent) {
   if (offRecord(cfg, wf.chat.id)) return;
   const now = (/* @__PURE__ */ new Date()).toISOString();
-  const link2 = wf.sent?.msgId ? `https://teams.microsoft.com/l/message/${encodeURIComponent(wf.chat.id)}/${wf.sent.msgId}` : "";
+  const link2 = wf.sent?.msgId ? messageLink(wf.chat.id, wf.sent.msgId) : "";
   const goal = [`Draft: "${draft}"`, `Sent by the owner: "${sent}"`, `Sent message: ${link2 || "no link"}, ${now.slice(0, 10)}, ${cfg.owner.name}`, `Chat: ${wf.chat.name}. Asker: ${wf.asker?.name ?? "unknown"}.`].join("\n");
   store2.saveJob({ schema: 1, id: ulid3(), key: `learn:${wf.id}:${ulid3()}`, goal, label: `your edit of ${wf.code}`, session: { agent: cfg.agent.flavor, id: randomUUID5() }, state: "queued", purpose: "work", parents: [], asks: [], createdAt: now, updatedAt: now });
 }
@@ -43126,6 +43128,7 @@ var init_learn = __esm({
     "use strict";
     init_ids();
     init_levels();
+    init_channels();
   }
 });
 
@@ -44103,8 +44106,8 @@ async function runOne(store2, src, cfg, wf, run2) {
       const made = [...own3?.result?.effects ?? [], ...fresh.effects ?? []].filter((e) => e.done);
       const list2 = () => effects.map((e) => ({ ...e, done: made.find((m) => m.system === e.system && m.action === e.action && m.target === e.target)?.done }));
       if (!own3) changesJob(store2, cfg, fresh, list2());
-      else if (own3.key === `item:${fresh.id}`) {
-        own3.result = { summary: own3.result?.summary ?? "Chosen by the owner", effects: list2() };
+      else if (!executing(own3)) {
+        own3.result = { ...own3.result, summary: own3.result?.summary ?? "Chosen by the owner", effects: list2() };
         store2.saveJob(own3);
       }
       Object.assign(fresh, { effects: list2(), promised: true });
@@ -45311,7 +45314,7 @@ function itemRow2(s2, p, w) {
 }
 function waitRow(w) {
   const to = firsts(w.to);
-  return { kind: "waiting-person", headline: clip2(`You asked ${to}: "${w.text}"`, 160), who: who(w.to[0]), facts: { where: w.chat.name, at: w.at, verb: "asked" }, chips: [], primary: { label: "Draft a nudge", command: `ok ${w.code}` }, more: [{ label: "Close", command: `skip ${w.code}` }], teams: w.msgId ? `https://teams.microsoft.com/l/message/${encodeURIComponent(w.chat.id)}/${w.msgId}` : void 0 };
+  return { kind: "waiting-person", headline: clip2(`You asked ${to}: "${w.text}"`, 160), who: who(w.to[0]), facts: { where: w.chat.name, at: w.at, verb: "asked" }, chips: [], primary: { label: "Draft a nudge", command: `ok ${w.code}` }, more: [{ label: "Close", command: `skip ${w.code}` }], teams: w.msgId ? messageLink(w.chat.id, w.msgId) : void 0 };
 }
 function reminderRow(p, a) {
   const facts = { who: a.to.name, where: when(a.schedule), at: a.updatedAt };
@@ -45401,7 +45404,7 @@ var init_next = __esm({
       const s2 = t2.replace(/\s+/g, " ").trim();
       return s2.length > n ? `${s2.slice(0, n - 1).trimEnd()}\u2026` : s2;
     };
-    teamsLink2 = (w) => w.chat.id && w.lastMsgId && !w.chat.test ? isThread(w.chat.id) ? threadLink(w.chat.id, w.lastMsgId) : `https://teams.microsoft.com/l/message/${encodeURIComponent(w.chat.id)}/${w.lastMsgId}` : void 0;
+    teamsLink2 = (w) => w.chat.id && w.lastMsgId && !w.chat.test ? messageLink(w.chat.id, w.lastMsgId) : void 0;
     triesOf = (r) => `${r.n} of ${DELAYS[r.last.kind]?.length ?? MAX_TRIES}`;
     every = (min) => min % 1440 === 0 ? min === 1440 ? "every day" : `every ${min / 1440} days` : min % 60 === 0 ? min === 60 ? "every hour" : `every ${min / 60} hours` : `every ${min} min`;
     whyOf = (error62) => {
@@ -48509,7 +48512,7 @@ function listsOf(d) {
 
 // src/web/numbers.ts
 init_view();
-var link = (chat, msgId) => isThread(chat) ? threadLink(chat, msgId) : `https://teams.microsoft.com/l/message/${encodeURIComponent(chat)}/${msgId}`;
+var link = messageLink;
 function numbersPage(store2, key = "this", now = /* @__PURE__ */ new Date()) {
   const evs = counted(store2), wfs = store2.workflows(), n = numbers(evs, wfs, now, store2.config()?.tz, key);
   const codes = new Set(Object.values(listsOf({ ...n, rows: {}, missed: {} })).flatMap((l) => l.groups.flatMap((g) => g.codes)));

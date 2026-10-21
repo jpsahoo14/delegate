@@ -108,7 +108,7 @@ const keyOf = (effects: Effect[] = []) => JSON.stringify(pendingEffects(effects)
 export const effectsKey = (wf: Workflow) => keyOf(wf.effects)
 // Valid only if the item still shows what was approved, and the job would run exactly that (review 01-04 P0-2).
 export const stillApproved = (wf: Workflow, job?: Job) => !!wf.approved && wf.state !== 'done' && wf.approved.text === (wf.draft?.text ?? '') && wf.approved.effects === effectsKey(wf) && (!job || wf.approved.effects === keyOf(job.result?.effects))
-const executing = (job: Job) => job.purpose === 'execute' && (job.state === 'queued' || job.state === 'running')
+export const executing = (job: Job) => job.purpose === 'execute' && (job.state === 'queued' || job.state === 'running')
 
 // Start every queued job as a detached run. A change run starts only while some item still holds a valid ok (R-HIL-21, R-SET-07).
 export function startJobs(store: Store, cfg: Config, procs: Procs, hold: string[] = []): number {

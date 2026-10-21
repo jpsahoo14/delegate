@@ -42,3 +42,13 @@ export function doing(verb = '', name: string): string {
 	if (/^[A-Z]\d+\s*:/i.test(v)) return 'Updating the draft with your answer.'
 	return `Working on "${v.length > 60 ? v.slice(0, 58) + '…' : v}".`
 }
+// The words on an answer's source chip: what the source is, not the start of its address (bug 10-21: "https:").
+export function sourceChip(s: { ref: string; label?: string }): string {
+	if (s.label) return s.label
+	if (s.ref.startsWith('card:')) return s.ref.slice(5).split(/[/#]/)[0].replace(/-/g, ' ')
+	if (!/^https?:\/\//.test(s.ref)) return s.ref.slice(0, 60)
+	const u = new URL(s.ref), pr = u.pathname.match(/\/pullrequest\/(\d+)/)
+	if (pr) return `PR ${pr[1]}`
+	if (u.hostname === 'teams.microsoft.com') return 'Teams message'
+	return u.hostname.replace(/^www\./, '')
+}

@@ -121,3 +121,15 @@ test('page state: before drawing Needs you, the queue settles on the card asked 
 	store.S.cur = 'A2'; viewing()
 	assert.equal(store.S.cur, 'A2')
 })
+
+test('bug 10-21: an answer source chip says what the source is, never "https:"', async () => {
+	const { sourceChip } = await import('../src/web/app/model/format.ts')
+	assert.deepEqual([
+		sourceChip({ ref: 'https://dev.azure.com/acme/Globex/_git/web/pullrequest/4200001?iteration=15' }),
+		sourceChip({ ref: 'https://teams.microsoft.com/l/message/19:k@thread.v2/17?context=%7B%7D' }),
+		sourceChip({ ref: 'https://docs.example.com/guide/setup' }),
+		sourceChip({ ref: 'card:banner-fix/decisions#3' }),
+		sourceChip({ ref: 'https://docs.example.com/x', label: 'Setup guide' }),
+		sourceChip({ ref: 'a note' }),
+	], ['PR 4200001', 'Teams message', 'docs.example.com', 'banner fix', 'Setup guide', 'a note'])
+})

@@ -237,7 +237,7 @@ test('Done v2: Catch up rows read on their own and open Teams; Home shows what i
 		assert.match(await text(t.page, '.also-hrow .also-h'), /^Catch up · 4 new$/i)
 		assert.deepEqual(await t.page.$$eval('.catchup .rt b', (e: Element[]) => e.map(x => x.textContent)), ['Shared the v5 spec as a pre-read', 'Posted the config PR', 'Moved standup to 10:30'])
 		assert.equal(await t.page.$eval('.catchup .rt .gist', (e: Element) => e.textContent), 'Free-text locations allowed; ring 1 stays Oct 24. Nothing asked of you.', 'a second line says what changed')
-		assert.match(await t.page.$eval('.catchup a.rlink', (e: Element) => e.getAttribute('href')!), /^https:\/\/teams\.microsoft\.com\/l\/message\/19%3Aspec%40thread\.v2\/170000000001$/, 'the row opens Teams')
+		assert.match(await t.page.$eval('.catchup a.rlink', (e: Element) => e.getAttribute('href')!), /^https:\/\/teams\.microsoft\.com\/l\/message\/19:spec@thread\.v2\/170000000001\?context=%7B%22contextType%22%3A%22chat%22%7D$/, 'the row opens Teams')
 		const doneCount = () => t.page.$eval('#tabs a[href="#done"]', (a: Element) => a.querySelector('.count')?.textContent ?? '')
 		assert.ok(Number(await doneCount()) >= 4, 'Done shows how much is new')
 		await t.page.click('.catchup .mini-more')

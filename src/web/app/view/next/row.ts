@@ -78,14 +78,14 @@ export function row(r: NextRow, open: boolean): H {
 	const nx = nextLine(r)
 	const acts = U(`row:${r.act}`).msg ? '' : html`${r.primary ? action(r, r.primary, true, open) : ''}${(r.more ?? []).map(m => action(r, m, false, false))}`
 	return html`<li class="nrow k-${raw(r.kind)}${open ? raw(' open') : ''}" id="now-${esc(r.act)}" data-code="${esc(r.act)}"${r.rev ? html` data-rev="${esc(r.rev)}"` : ''}>
-		<div class="nmain">${lead}<div class="nb">
+		<div class="nmain">${lead}<div class="nrbody">
 			<div class="nh"><b class="nt">${esc(r.headline)}</b>${chips}<span class="code">${esc(r.act)}</span></div>
 			${facts(r)}
 			${r.draft ? html`<blockquote class="nd">${esc(r.draft)}</blockquote>` : ''}${r.gist ? html`<p class="ng">${esc(r.gist)}</p>` : ''}
 			${r.warn ? html`<div class="nwarn">${I('warn', 'sm')}<span>${esc(r.warn)}</span></div>` : ''}
 			${nx ? html`<div class="nn"><span>Next: ${esc(nx)}</span></div>` : ''}
 			${tell(r)}${rowState(`row:${r.act}`)}
-		</div>${acts ? html`<div class="na">${acts}</div>` : ''}</div>
+		</div>${acts ? html`<div class="nract">${acts}</div>` : ''}</div>
 		${open ? (c ? html`<div class="ncard">${card(c as never)}</div>` : html`<p class="m ncard">${esc(`${r.act} has no card to open here.`)}${r.teams ? html` <a href="${esc(r.teams)}" target="_blank" rel="noopener">Open in Teams</a>` : ''}</p>`) : ''}
 	</li>`
 }
