@@ -240,3 +240,19 @@ test('test teardown: a connection still open never keeps the test server, and so
 	assert.equal(await Promise.race([closed, new Promise<boolean>(r => setTimeout(() => r(false), 2000))]), true, 'closed at once')
 	sock.destroy()
 })
+
+test('review 10-21c P2-4: a Teams link saved in the old shape, in knowledge or an answer, is shown in the shape Teams opens', async () => {
+	const { view } = await import('../src/web/view.ts')
+	const { knowledgeOf, remember } = await import('../src/runner/proposals.ts')
+	const store = setup()
+	const k = knowledgeOf(store, store.config())
+	const old = 'https://teams.microsoft.com/l/message/19%3Akim%40thread.v2/1700000000002'
+	const opens = 'https://teams.microsoft.com/l/message/19:kim@thread.v2/1700000000002?context=%7B%22contextType%22%3A%22chat%22%7D'
+	remember(store, k, 'Owner', { topic: 'Banner fix', type: 'decision', text: 'Ring 3 after one clean week.', link: old, audience: 'team' })
+	const h = k.search('ring clean')[0]
+	const base = store.workflows()[0]
+	store.save({ ...base, notes: [{ q: 'Where?', a: 'In the spec chat.', sources: [{ ref: old, tier: 'live', origin: 'extracted' }], at: new Date().toISOString() }], draft: { ...base.draft!, sources: [{ ref: `card:${h.topic}/${h.card}#${h.id}`, tier: 'card', origin: 'extracted' }, { ref: old, tier: 'live', origin: 'extracted' }] } })
+	const c = view(store, undefined).needs[0]
+	assert.deepEqual([c.why.sources.map(s => s.href), c.notes[0].sources?.map(s => s.ref)], [[opens, opens], [opens]])
+	assert.equal(k.bySource(old)?.text, 'Ring 3 after one clean week.', 'the saved link is unchanged, so the same message is still known')
+})

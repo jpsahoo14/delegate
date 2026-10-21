@@ -2,7 +2,7 @@ import { planRetry, retryStatus } from './retry.ts'
 import { homeOf, step, watchNews } from './work.ts'
 import { confidence } from '../core/policy.ts'
 import { uptime } from 'node:os'
-import { changeSays, isVote, unsafeRead, pendingEffects, refusedAsk, reviewAgain, shown, vet, voteValue } from '../core/effects.ts'
+import { changeSays, isVote, unsafeRead, pendingEffects, refusedAsk, reviewAgain, sameChange, shown, vet, voteValue } from '../core/effects.ts'
 import { prOf, prTarget } from './probe.ts'
 import { cloneFor, cloneTodo, repoRef } from './repos.ts'
 import { deployed, deployRunning, findingNotBlocker, isValidate, proposeTargets, shellInClone, shellTool, telemetryNote, telemetryTools } from './validate.ts'
@@ -129,6 +129,7 @@ export function startJobs(store: Store, cfg: Config, procs: Procs, hold: string[
 			if (store.control().paused) continue
 			if (!parentsOf(store, job).some(p => stillApproved(p, job))) {
 				Object.assign(job, { state: 'done', purpose: 'work' })
+				adoptList(store, job)
 				store.saveJob(job)
 				store.log({ event: 'job-execute-dropped', job: job.id, why: 'no valid ok' })
 				continue
@@ -300,7 +301,8 @@ async function finishExecute(store: Store, src: Source, cfg: Config, job: Job) {
 	store.log({ event: 'job-executed', job: job.id, items: parents.map(w => w.code), kept: effects.filter(e => !e.off).length, removed: effects.filter(e => e.off).length, done: effects.length - left.length, left: left.length })
 	for (const wf of parents) {
 		const ok = stillApproved(wf, before)
-		wf.effects = effects
+		// An item whose list was not the one made keeps its own, with what was made marked (review 10-21c P1-1).
+		wf.effects = ok ? effects : wf.effects?.map(e => ({ ...e, done: e.done ?? effects.find(m => m.done && sameChange(m, e))?.done }))
 		if (vote !== undefined) wf.prVote = vote
 		wf.approved = undefined
 		if (!ok) {
@@ -345,7 +347,14 @@ async function finishExecute(store: Store, src: Source, cfg: Config, job: Job) {
 		store.save(wf)
 	}
 	Object.assign(job, { result: { ...job.result!, effects }, state: again ? 'queued' : 'done', purpose: 'work', run: undefined, nextAt: job.every ? new Date(Date.now() + job.every * 60_000).toISOString() : job.nextAt })
+	adoptList(store, job)
 	store.saveJob(job)
+}
+
+// Once a change run ends, the list its open items now show is the one ok makes, when they agree (review 10-21c P2-1).
+function adoptList(store: Store, job: Job) {
+	const lists = parentsOf(store, job).filter(p => pendingEffects(p.effects).length).map(p => p.effects!)
+	if (lists.length && lists.every(l => keyOf(l) === keyOf(lists[0])) && keyOf(lists[0]) !== keyOf(job.result?.effects)) job.result = { ...job.result!, effects: lists[0].map(e => ({ ...e })) }
 }
 
 // A picked option that makes changes, on an item with no job: a job that only carries them, so ok runs the same executor (design-spec S5).
@@ -429,6 +438,7 @@ function stopRun(store: Store, procs: Procs, job: Job, why: string) {
 	// Asks that arrived during the stopped run get a work run in the same session.
 	const again = !!job.run && job.asks.length > job.run.asks
 	Object.assign(job, { state: again ? 'queued' : 'done', purpose: 'work', run: undefined })
+	adoptList(store, job)
 	store.saveJob(job)
 	store.log({ event: 'job-execute-stopped', job: job.id, why })
 }

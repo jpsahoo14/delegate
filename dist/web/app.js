@@ -47,7 +47,13 @@
     if (s2.label) return s2.label;
     if (s2.ref.startsWith("card:")) return s2.ref.slice(5).split(/[/#]/)[0].replace(/-/g, " ");
     if (!/^https?:\/\//.test(s2.ref)) return s2.ref.slice(0, 60);
-    const u = new URL(s2.ref), pr = u.pathname.match(/\/pullrequest\/(\d+)/);
+    let u;
+    try {
+      u = new URL(s2.ref);
+    } catch {
+      return s2.ref.slice(0, 60);
+    }
+    const pr = u.pathname.match(/\/pullrequest\/(\d+)/);
     if (pr) return `PR ${pr[1]}`;
     if (u.hostname === "teams.microsoft.com") return "Teams message";
     return u.hostname.replace(/^www\./, "");

@@ -20797,7 +20797,7 @@ function changeSays(e) {
   const rest = x.detail.replace(/\n/g, "; ");
   return `${x.line}${where ? ` at ${where}` : ""}${says}${rest ? says ? ` (${rest})` : `: ${rest}` : ""}`;
 }
-var pendingEffects, parts, allows, toolOf, NEVER_KEY, never2, prTool, forbidden, WRITE_VERBS, verbWrite, prIdOf, isVote, VOTES, VOTE_NAME, VOTE_WORDS, sameHead, reviewAgain, refusedAsk, LINES, line, changeName, changeLine, meaningOf, prMeaning, str, VOTE_SAYS, at;
+var pendingEffects, sameChange, parts, allows, toolOf, NEVER_KEY, never2, prTool, forbidden, WRITE_VERBS, verbWrite, prIdOf, isVote, VOTES, VOTE_NAME, VOTE_WORDS, sameHead, reviewAgain, refusedAsk, LINES, line, changeName, changeLine, meaningOf, prMeaning, str, VOTE_SAYS, at;
 var init_effects = __esm({
   "src/core/effects.ts"() {
     "use strict";
@@ -20805,6 +20805,7 @@ var init_effects = __esm({
     init_brand();
     init_deploy();
     pendingEffects = (es = []) => es.filter((e) => !e.done && !e.off);
+    sameChange = (a, b) => a.system === b.system && a.action === b.action && a.target === b.target && JSON.stringify(a.call ?? a.payload ?? null) === JSON.stringify(b.call ?? b.payload ?? null);
     parts = (entry) => {
       const i = entry.indexOf(":");
       return i < 0 ? [entry] : [entry.slice(0, i), entry.slice(i + 1)];
@@ -20918,7 +20919,7 @@ function parseMessageLink(link2) {
     return void 0;
   }
 }
-var threadId, isThread, threadLink, messageLink, isChannel, emptyThreadCache, items, next, Threads;
+var threadId, isThread, threadLink, messageLink, openLink, isChannel, emptyThreadCache, items, next, Threads;
 var init_channels = __esm({
   "src/adapters/channels.ts"() {
     "use strict";
@@ -20929,6 +20930,10 @@ var init_channels = __esm({
       return `https://teams.microsoft.com/l/message/${encodeURIComponent(t2.channelId)}/${msgId}?groupId=${t2.teamId}&parentMessageId=${t2.rootId}`;
     };
     messageLink = (chatId, msgId) => isThread(chatId) ? threadLink(chatId, msgId) : `https://teams.microsoft.com/l/message/${chatId}/${msgId}?context=%7B%22contextType%22%3A%22chat%22%7D`;
+    openLink = (link2) => {
+      const m = parseMessageLink(link2);
+      return m ? messageLink(m.chatId, m.msgId) : link2;
+    };
     isChannel = (chatId = "") => /@thread\.(tacv2|skype)$/.test(chatId);
     emptyThreadCache = () => ({ threads: [], roots: {}, names: {}, last: {} });
     items = (p) => p.replies ?? p.messages ?? p.value ?? [];
@@ -41622,12 +41627,12 @@ function detailsOf(store2) {
 }
 function source(ref, tier, stale, label2, k) {
   const e = ref.startsWith("card:") ? k?.read(ref) : void 0, fact = e && !Array.isArray(e) ? e : void 0;
-  const link2 = fact?.src.map((x) => x.link).find((l) => /^https:\/\//.test(l));
+  const link2 = fact?.src.map((x) => x.link).find((l) => /^https:\/\//.test(l)), open2 = link2 && openLink(link2);
   const priv = fact?.audience === "private" || tier === "private";
-  if (fact) return { kind: priv ? "Private" : "Knowledge", label: fact.text, href: link2, stale, ...priv ? { locked: true } : {} };
+  if (fact) return { kind: priv ? "Private" : "Knowledge", label: fact.text, href: open2, stale, ...priv ? { locked: true } : {} };
   if (tier === "card") return { kind: "Knowledge", label: `Your knowledge: ${ref.replace(/^card:/, "").split(/[/#]/)[0].replace(/-/g, " ")}`, stale };
-  if (tier === "private") return { kind: "Private", label: label2 ?? "A private chat or file", locked: true, stale, .../^https:\/\//.test(ref) ? { href: ref } : {} };
-  const href = /^https:\/\//.test(ref) ? ref : void 0;
+  if (tier === "private") return { kind: "Private", label: label2 ?? "A private chat or file", locked: true, stale, .../^https:\/\//.test(ref) ? { href: openLink(ref) } : {} };
+  const href = /^https:\/\//.test(ref) ? openLink(ref) : void 0;
   const short3 = href ? (() => {
     const u = new URL(href);
     return `${u.hostname.replace(/^www\./, "")}${u.pathname.length > 1 ? u.pathname.slice(0, 40) : ""}`;
@@ -41683,7 +41688,7 @@ function card(store2, w) {
     ...store2.config().showDetails ? { debug: debugLines(w) } : {},
     why: { reason: w.decision?.reason, confidence: w.decision?.confidence, sources: (w.draft?.sources ?? []).map((s2) => source(s2.ref, s2.tier, s2.stale, s2.label, k)), gaps: w.gaps ?? [], searched: (w.looked ?? []).map(lookLine) },
     work: workView(w, homeOf(store2, w)),
-    notes: w.notes ?? [],
+    notes: (w.notes ?? []).map((n) => n.sources ? { ...n, sources: n.sources.map((s2) => ({ ...s2, ref: openLink(s2.ref) })) } : n),
     status: w.status,
     openOn: w.openOn,
     todos: w.todos,
@@ -44104,9 +44109,9 @@ async function runOne(store2, src, cfg, wf, run2) {
     if (fresh.kind === "reply" && effects.length && fresh.draft) {
       const own3 = fresh.job ? store2.job(fresh.job) : void 0;
       const made = [...own3?.result?.effects ?? [], ...fresh.effects ?? []].filter((e) => e.done);
-      const list2 = () => effects.map((e) => ({ ...e, done: made.find((m) => m.system === e.system && m.action === e.action && m.target === e.target)?.done }));
+      const list2 = () => effects.map((e) => ({ ...e, done: made.find((m) => sameChange(m, e))?.done }));
       if (!own3) changesJob(store2, cfg, fresh, list2());
-      else if (!executing(own3)) {
+      else if (!executing(own3) && !parentsOf(store2, own3).some((p) => p.id !== fresh.id && pendingEffects(p.effects).length)) {
         own3.result = { ...own3.result, summary: own3.result?.summary ?? "Chosen by the owner", effects: list2() };
         store2.saveJob(own3);
       }
@@ -44352,6 +44357,7 @@ function startJobs(store2, cfg, procs, hold = []) {
       if (store2.control().paused) continue;
       if (!parentsOf(store2, job).some((p) => stillApproved(p, job))) {
         Object.assign(job, { state: "done", purpose: "work" });
+        adoptList(store2, job);
         store2.saveJob(job);
         store2.log({ event: "job-execute-dropped", job: job.id, why: "no valid ok" });
         continue;
@@ -44520,7 +44526,7 @@ async function finishExecute(store2, src, cfg, job) {
   store2.log({ event: "job-executed", job: job.id, items: parents.map((w) => w.code), kept: effects.filter((e) => !e.off).length, removed: effects.filter((e) => e.off).length, done: effects.length - left.length, left: left.length });
   for (const wf of parents) {
     const ok = stillApproved(wf, before);
-    wf.effects = effects;
+    wf.effects = ok ? effects : wf.effects?.map((e) => ({ ...e, done: e.done ?? effects.find((m) => m.done && sameChange(m, e))?.done }));
     if (vote !== void 0) wf.prVote = vote;
     wf.approved = void 0;
     if (!ok) {
@@ -44562,7 +44568,12 @@ async function finishExecute(store2, src, cfg, job) {
     store2.save(wf);
   }
   Object.assign(job, { result: { ...job.result, effects }, state: again ? "queued" : "done", purpose: "work", run: void 0, nextAt: job.every ? new Date(Date.now() + job.every * 6e4).toISOString() : job.nextAt });
+  adoptList(store2, job);
   store2.saveJob(job);
+}
+function adoptList(store2, job) {
+  const lists = parentsOf(store2, job).filter((p) => pendingEffects(p.effects).length).map((p) => p.effects);
+  if (lists.length && lists.every((l) => keyOf(l) === keyOf(lists[0])) && keyOf(lists[0]) !== keyOf(job.result?.effects)) job.result = { ...job.result, effects: lists[0].map((e) => ({ ...e })) };
 }
 function changesJob(store2, cfg, wf, effects) {
   const now = (/* @__PURE__ */ new Date()).toISOString();
@@ -44635,6 +44646,7 @@ function stopRun(store2, procs, job, why) {
   }
   const again = !!job.run && job.asks.length > job.run.asks;
   Object.assign(job, { state: again ? "queued" : "done", purpose: "work", run: void 0 });
+  adoptList(store2, job);
   store2.saveJob(job);
   store2.log({ event: "job-execute-stopped", job: job.id, why });
 }

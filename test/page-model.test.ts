@@ -131,5 +131,6 @@ test('bug 10-21: an answer source chip says what the source is, never "https:"',
 		sourceChip({ ref: 'card:banner-fix/decisions#3' }),
 		sourceChip({ ref: 'https://docs.example.com/x', label: 'Setup guide' }),
 		sourceChip({ ref: 'a note' }),
-	], ['PR 4200001', 'Teams message', 'docs.example.com', 'banner fix', 'Setup guide', 'a note'])
+		sourceChip({ ref: 'https://wiki home/page' }),
+	], ['PR 4200001', 'Teams message', 'docs.example.com', 'banner fix', 'Setup guide', 'a note', 'https://wiki home/page'])
 })

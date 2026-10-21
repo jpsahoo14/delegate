@@ -121,7 +121,7 @@ const CASE = {
 			assert.deepEqual(await codesShown(t.page), [...d.now.missed.pointed, ...d.now.missed.mine])
 			const lost = t.page.locator('li[data-code="missed:1760000000001"]')
 			assert.match(await lost.textContent(), /You pointed at this message\. No item was made for it\./)
-			assert.equal(await lost.locator('a').getAttribute('href'), 'https://teams.microsoft.com/l/message/19%3Aglobexsync%40thread.v2/1760000000001')
+			assert.equal(await lost.locator('a').getAttribute('href'), 'https://teams.microsoft.com/l/message/19:globexsync@thread.v2/1760000000001?context=%7B%22contextType%22%3A%22chat%22%7D')
 			// A bar opens its week; replies as drafted open the replies divided by, by kind.
 			await t.page.goto(`${t.url}#numbers`)
 			await t.page.waitForSelector(READY)

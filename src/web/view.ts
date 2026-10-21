@@ -7,7 +7,7 @@ import { bootLines, knowledgeOf } from '../runner/proposals.ts'
 import type { Knowledge } from '../knowledge/index.ts'
 import { describe, when } from '../runner/automations.ts'
 import { DEFAULT_UNTIL } from '../runner/track.ts'
-import { isThread, parseThread, messageLink } from '../adapters/channels.ts'
+import { isThread, parseThread, messageLink, openLink } from '../adapters/channels.ts'
 import { NAME } from '../brand.ts'
 import type { versionInfo } from '../os/autoupdate.ts'
 import type { settingsView } from './settings.ts'
@@ -111,12 +111,12 @@ function detailsOf(store: Store): { runner: string; log: string[] } {
 // The page is the owner's own, so a cited fact shows its words and a link to where it was said (B30).
 function source(ref: string, tier: string, stale?: boolean, label?: string, k?: Knowledge): SourceRow {
 	const e = ref.startsWith('card:') ? k?.read(ref) : undefined, fact = e && !Array.isArray(e) ? e : undefined
-	const link = fact?.src.map(x => x.link).find(l => /^https:\/\//.test(l))
+	const link = fact?.src.map(x => x.link).find(l => /^https:\/\//.test(l)), open = link && openLink(link)
 	const priv = fact?.audience === 'private' || tier === 'private'
-	if (fact) return { kind: priv ? 'Private' : 'Knowledge', label: fact.text, href: link, stale, ...(priv ? { locked: true } : {}) }
+	if (fact) return { kind: priv ? 'Private' : 'Knowledge', label: fact.text, href: open, stale, ...(priv ? { locked: true } : {}) }
 	if (tier === 'card') return { kind: 'Knowledge', label: `Your knowledge: ${ref.replace(/^card:/, '').split(/[/#]/)[0].replace(/-/g, ' ')}`, stale }
-	if (tier === 'private') return { kind: 'Private', label: label ?? 'A private chat or file', locked: true, stale, ...(/^https:\/\//.test(ref) ? { href: ref } : {}) }
-	const href = /^https:\/\//.test(ref) ? ref : undefined
+	if (tier === 'private') return { kind: 'Private', label: label ?? 'A private chat or file', locked: true, stale, ...(/^https:\/\//.test(ref) ? { href: openLink(ref) } : {}) }
+	const href = /^https:\/\//.test(ref) ? openLink(ref) : undefined
 	const short = href ? (() => { const u = new URL(href); return `${u.hostname.replace(/^www\./, '')}${u.pathname.length > 1 ? u.pathname.slice(0, 40) : ''}` })() : ref.slice(0, 60)
 	return { kind: 'In the chat', label: label ? `${short} · ${label}` : short, href, stale }
 }
@@ -158,7 +158,7 @@ function card(store: Store, w: Workflow): ItemCard {
 		changes: pendingEffects(w.effects).map((e, i) => { const s = shown(e); return { n: i + 1, summary: s.text, target: s.loc || s.system, system: s.system, action: s.line, detail: s.detail || undefined, ...(meaningOf(e) ? { meaning: meaningOf(e) } : {}) } }),
 		...(store.config().showDetails ? { debug: debugLines(w) } : {}),
 		why: { reason: w.decision?.reason, confidence: w.decision?.confidence, sources: (w.draft?.sources ?? []).map(s => source(s.ref, s.tier, s.stale, s.label, k)), gaps: w.gaps ?? [], searched: (w.looked ?? []).map(lookLine) },
-		work: workView(w, homeOf(store, w)), notes: w.notes ?? [], status: w.status, openOn: w.openOn, todos: w.todos, follow: w.follow && { target: w.follow.target, until: w.follow.until, everyHours: w.follow.everyHours ?? 4 },
+		work: workView(w, homeOf(store, w)), notes: (w.notes ?? []).map(n => n.sources ? { ...n, sources: n.sources.map(s => ({ ...s, ref: openLink(s.ref) })) } : n), status: w.status, openOn: w.openOn, todos: w.todos, follow: w.follow && { target: w.follow.target, until: w.follow.until, everyHours: w.follow.everyHours ?? 4 },
 		teams: w.chat.id && w.lastMsgId && !w.chat.test ? messageLink(w.chat.id, w.lastMsgId) : undefined,
 	}
 }

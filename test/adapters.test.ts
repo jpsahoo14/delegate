@@ -340,9 +340,9 @@ test('bug 10-20 spawn: a reply run that times out is stopped with every process 
 
 test('bug 10-21: a link to a chat message has the shape Teams copies, so Teams opens it', async () => {
 	const { messageLink } = await import('../src/adapters/channels.ts')
-	assert.equal(messageLink('19:a1_b2@unq.gbl.spaces', '1792575754689'), 'https://teams.microsoft.com/l/message/19:a1_b2@unq.gbl.spaces/1792575754689?context=%7B%22contextType%22%3A%22chat%22%7D')
+	assert.equal(messageLink('19:a1_b2@unq.gbl.spaces', '1700000000001'), 'https://teams.microsoft.com/l/message/19:a1_b2@unq.gbl.spaces/1700000000001?context=%7B%22contextType%22%3A%22chat%22%7D')
 	assert.equal(messageLink('19:meeting_NjM0@thread.v2', '17'), 'https://teams.microsoft.com/l/message/19:meeting_NjM0@thread.v2/17?context=%7B%22contextType%22%3A%22chat%22%7D')
 	assert.equal(messageLink('ch|T1|19:c1@thread.tacv2|1700', '1701'), 'https://teams.microsoft.com/l/message/19%3Ac1%40thread.tacv2/1701?groupId=T1&parentMessageId=1700', 'a channel reply keeps its team and thread')
 	const { parseMessageLink } = await import('../src/adapters/channels.ts')
-	assert.deepEqual(parseMessageLink(messageLink('19:a1_b2@unq.gbl.spaces', '1792575754689')), parseMessageLink('https://teams.microsoft.com/l/message/19:a1_b2@unq.gbl.spaces/1792575754689?context=%7B%22contextType%22%3A%22chat%22%7D'), 'Delegate reads its own links back')
+	assert.deepEqual(parseMessageLink(messageLink('19:a1_b2@unq.gbl.spaces', '1700000000001')), parseMessageLink('https://teams.microsoft.com/l/message/19:a1_b2@unq.gbl.spaces/1700000000001?context=%7B%22contextType%22%3A%22chat%22%7D'), 'Delegate reads its own links back')
 })

@@ -5,6 +5,8 @@ import { DEPLOY, deployLine, deployRefusal, isDeploy, isPipelineTool, pipelineOf
 
 // The changes still to make: not done, and not unchecked by the owner (design-spec S6).
 export const pendingEffects = (es: Effect[] = []): Effect[] => es.filter(e => !e.done && !e.off)
+// The same change: the same call, or the same payload when there is no call. Two comments on one PR are two changes (review 10-21c P2-2).
+export const sameChange = (a: Effect, b: Effect) => a.system === b.system && a.action === b.action && a.target === b.target && JSON.stringify(a.call ?? a.payload ?? null) === JSON.stringify(b.call ?? b.payload ?? null)
 
 // An allowed change is a tool, or one action of a tool that does several ("ado-repo_pull_request_write:vote").
 // An entry without an action allows the whole tool, as before (R-HIL-21).

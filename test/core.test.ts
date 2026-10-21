@@ -174,3 +174,15 @@ test('dogfood 10-20: an answer from someone the owner asked counts for a week, i
 	assert.equal(continuesOwner(nextTurn(t, { owner: false, from: christian, at: day(1) }), tian, day(2.5)), false, 'someone else joined in first')
 })
 
+
+test('review 10-21c P2-2: a change counts as made only when it is the same call, not another change on the same PR', async () => {
+	const { sameChange } = await import('../src/core/effects.ts')
+	const note = (content: string) => ({ system: 'ado', action: 'comment', target: 'PR 4200001', summary: content, call: { tool: 'ado-comment', args: { pullRequestId: 4200001, content } } })
+	const vote = (v: string) => ({ system: 'ado', action: 'approve', target: 'PR 4200001', summary: v, call: { tool: 'ado-repo_pull_request_write', args: { action: 'vote', pullRequestId: 4200001, vote: v } } })
+	assert.deepEqual([
+		sameChange(note('Null check'), { ...note('Null check'), done: { at: 'x', ref: 't1' } }),
+		sameChange(note('Null check'), note('Please add a test')),
+		sameChange(vote('Approved'), vote('ApprovedWithSuggestions')),
+		sameChange({ system: 'ado', action: 'comment', target: 'PR 1', summary: 's', payload: { a: 1 } }, { system: 'ado', action: 'comment', target: 'PR 1', summary: 's2', payload: { a: 1 } }),
+	], [true, false, false, true])
+})

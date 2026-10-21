@@ -47,7 +47,9 @@ export function sourceChip(s: { ref: string; label?: string }): string {
 	if (s.label) return s.label
 	if (s.ref.startsWith('card:')) return s.ref.slice(5).split(/[/#]/)[0].replace(/-/g, ' ')
 	if (!/^https?:\/\//.test(s.ref)) return s.ref.slice(0, 60)
-	const u = new URL(s.ref), pr = u.pathname.match(/\/pullrequest\/(\d+)/)
+	let u: URL
+	try { u = new URL(s.ref) } catch { return s.ref.slice(0, 60) }
+	const pr = u.pathname.match(/\/pullrequest\/(\d+)/)
 	if (pr) return `PR ${pr[1]}`
 	if (u.hostname === 'teams.microsoft.com') return 'Teams message'
 	return u.hostname.replace(/^www\./, '')

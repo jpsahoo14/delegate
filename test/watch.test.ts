@@ -97,7 +97,7 @@ test('watch A41 without fyi.watch watches the line, gives the job the Teams mess
 	const was = store.byCode(src.code)!.updatedAt
 	actResult(store, `watch ${src.code}`)
 	const [wf] = trackers(store)
-	const link = `https://teams.microsoft.com/l/message/${encodeURIComponent(CHAT)}/1792000000042`
+	const link = `https://teams.microsoft.com/l/message/${CHAT}/1792000000042?context=%7B%22contextType%22%3A%22chat%22%7D`
 	assert.equal(wf.lastAsk, `Watch Dev shared the v5 spec pre-read until ${DEFAULT_UNTIL}`)
 	assert.ok(jobOf(store, wf).asks[0].endsWith(`It came from this Teams message: ${link}`), 'the job can open the message it came from')
 	assert.equal(jobOf(store, wf).until, DEFAULT_UNTIL)

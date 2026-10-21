@@ -205,7 +205,7 @@ test('R-NEX-11 every number brings its rows: /numbers and the panel\'s numbers_v
 		const lost = v.now.missed.pointed.find((c: string) => c.startsWith('missed:'))
 		assert.equal(lost, 'missed:1760000000001')
 		assert.equal(v.rows[lost], undefined, 'no item was made for it')
-		assert.equal(v.missed[lost].teams, 'https://teams.microsoft.com/l/message/19%3Aglobexsync%40thread.v2/1760000000001')
+		assert.equal(v.missed[lost].teams, 'https://teams.microsoft.com/l/message/19:globexsync@thread.v2/1760000000001?context=%7B%22contextType%22%3A%22chat%22%7D')
 		const r = v.rows[v.handled.reply[0]]
 		assert.deepEqual([r.kind, r.by, typeof r.ask, typeof r.said], ['reply', 'by you', 'string', 'string'], 'a reply reads as the exchange, as in Done')
 		assert.equal(v.rows[v.handled.nothing[0]].kind, 'closed')
