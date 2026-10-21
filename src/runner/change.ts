@@ -6,7 +6,7 @@ import type { Store } from '../store/state.ts'
 import { parentsOf, stillApproved } from './jobs.ts'
 import { deployMoved, prMoved, prOf, prTarget, type BuildProbe } from './probe.ts'
 import { isDeploy } from '../core/deploy.ts'
-import { callKey, madeBefore } from './ledger.ts'
+import { callKey, ledgerRec, madeBefore } from './ledger.ts'
 export { madeBefore }
 
 // Calls one tool on one of the owner's tool servers.
@@ -42,11 +42,12 @@ export async function makeChange(store: Store, jobId: string, runId: string, ind
 	const made = madeBefore(store, e)
 	if (made) { store.saveChange(jobId, runId, index, { call: JSON.stringify(e.call), state: 'done', ref: made.ref, at: made.at }); return { ref: made.ref } }
 	const open = store.callRec(callKey(e.call!))
-	if (open?.state === 'calling' && !isVote(e.call)) return { error: `Change ${index} may have been made already: an earlier call has no answer. The owner must check, then say to make it again.` }
+	// Recorded in this run too, so the item shows it as may have been made and the owner's "again" can clear it.
+	if (open?.state === 'calling' && !isVote(e.call)) { store.saveChange(jobId, runId, index, { call: key, state: 'calling', at: open.at }); return { error: `Change ${index} may have been made already: an earlier call has no answer. The owner must check, then say to make it again.` } }
 	// A deploy reads its ring and PR again right before the call, as a vote reads its PR (owned work).
 	const moved = isVote(e.call) ? await voteMoved(store, owner, e, probe) : isDeploy(e.call) ? await deployMoved(store, owner, e, probe).then(error => (error ? { error, stale: undefined } : undefined)) : undefined
 	if (moved) { store.saveChange(jobId, runId, index, { call: key, state: 'failed', error: moved.error, at: at(), ...(moved.stale ? { stale: true as const } : {}) }); return { error: moved.error } }
-	const ledger = (r: Omit<CallRec, 'call' | 'head' | 'at'>) => store.saveCallRec({ call: callKey(e.call!), head: e.head, at: at(), ...r })
+	const ledger = (r: Omit<CallRec, 'call' | 'head' | 'vote' | 'at'>) => store.saveCallRec(ledgerRec(e, r))
 	store.saveChange(jobId, runId, index, { call: key, state: 'calling', at: at() }); ledger({ state: 'calling' })
 	try {
 		const r = await call(to![0], to![1], e.call!.args) as { id?: unknown } | undefined

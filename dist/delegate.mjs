@@ -44330,19 +44330,22 @@ var init_dispatch = __esm({
 // src/runner/ledger.ts
 function madeBefore(store2, e) {
   const r = e.call ? store2.callRec(callKey(e.call)) : void 0;
-  return r?.state === "done" && (!isVote(e.call) || (r.head ?? null) === (e.head ?? null)) ? r : void 0;
+  return r?.state === "done" && (!isVote(e.call) || (r.head ?? null) === (e.head ?? null) && r.vote === voteOf(e.call)) ? r : void 0;
 }
 function clearCalling(store2, e) {
   const r = e.call ? store2.callRec(callKey(e.call)) : void 0;
   if (r?.state === "calling") store2.saveCallRec({ ...r, state: "failed", error: "The owner checked and said to make it again", at: (/* @__PURE__ */ new Date()).toISOString() });
 }
-var sorted, callKey;
+var sorted, callKey, voteOf, maybeOf, ledgerRec;
 var init_ledger = __esm({
   "src/runner/ledger.ts"() {
     "use strict";
     init_effects();
-    sorted = (v) => Array.isArray(v) ? v.map(sorted) : v && typeof v === "object" ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, sorted(v[k])])) : v;
-    callKey = (c) => JSON.stringify([c.tool, sorted(c.args)]);
+    sorted = (v) => typeof v === "string" ? v.trim() : Array.isArray(v) ? v.map(sorted) : v && typeof v === "object" ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, sorted(v[k])])) : v;
+    callKey = (c) => JSON.stringify([c.tool, sorted(isVote(c) ? { ...c.args, vote: void 0 } : c.args)]);
+    voteOf = (c) => isVote(c) ? String(voteValue(c) ?? c.args.vote ?? "") : void 0;
+    maybeOf = (store2, e) => !!e.maybe || !!e.call && !isVote(e.call) && store2.callRec(callKey(e.call))?.state === "calling";
+    ledgerRec = (e, r) => ({ call: callKey(e.call), head: e.head, vote: voteOf(e.call), at: (/* @__PURE__ */ new Date()).toISOString(), ...r });
   }
 });
 
@@ -44661,7 +44664,7 @@ function approveEffects(store2, cfg, wf, again = false) {
   }
   const left = pendingEffects(wf.effects);
   if (!job || !left.length) return void 0;
-  const maybe = left.find((e) => e.maybe);
+  const maybe = left.find((e) => maybeOf(store2, e));
   if (maybe && !again) return `${wf.code}'s ${shown(maybe).line} may already have been made. Check it, then say "ok ${wf.code} again" to make it once more, or "ok ${wf.code} except ${left.indexOf(maybe) + 1}" to leave it out.`;
   if (job.purpose === "work" && (job.state === "running" || job.state === "queued")) return `${wf.code} is still working on a new result. I'll show it first.`;
   if (keyOf(job.result?.effects) !== effectsKey(wf)) return `${wf.code}'s changes are out of date. Ask for a fresh review, or skip ${wf.code}.`;
@@ -44673,7 +44676,7 @@ function approveEffects(store2, cfg, wf, again = false) {
   if (!cfg.agent.effectTools?.length && !left.every((e) => isDeploy(e.call) && cfg.deploy?.allowed.length)) return `${wf.code} has ${left.length} change(s) to make, but no write tools are set. Add them in setup (the "tools" step, as effectTools), or skip ${wf.code}.`;
   if (store2.control().paused) return `Paused, so ${wf.code}'s changes were not made. Say "resume", then ok again.`;
   if (maybe) {
-    for (const e of left.filter((x) => x.maybe)) clearCalling(store2, e);
+    for (const e of left.filter((x) => maybeOf(store2, x))) clearCalling(store2, e);
     const clear = (es = []) => es.map((e) => ({ ...e, maybe: void 0 }));
     wf.effects = clear(wf.effects);
     job.result = { ...job.result, effects: clear(job.result?.effects) };
@@ -48466,13 +48469,16 @@ async function makeChange(store2, jobId, runId, index, call, probe) {
     return { ref: made.ref };
   }
   const open2 = store2.callRec(callKey(e.call));
-  if (open2?.state === "calling" && !isVote(e.call)) return { error: `Change ${index} may have been made already: an earlier call has no answer. The owner must check, then say to make it again.` };
+  if (open2?.state === "calling" && !isVote(e.call)) {
+    store2.saveChange(jobId, runId, index, { call: key, state: "calling", at: open2.at });
+    return { error: `Change ${index} may have been made already: an earlier call has no answer. The owner must check, then say to make it again.` };
+  }
   const moved = isVote(e.call) ? await voteMoved(store2, owner, e, probe) : isDeploy(e.call) ? await deployMoved(store2, owner, e, probe).then((error62) => error62 ? { error: error62, stale: void 0 } : void 0) : void 0;
   if (moved) {
     store2.saveChange(jobId, runId, index, { call: key, state: "failed", error: moved.error, at: at3(), ...moved.stale ? { stale: true } : {} });
     return { error: moved.error };
   }
-  const ledger = (r) => store2.saveCallRec({ call: callKey(e.call), head: e.head, at: at3(), ...r });
+  const ledger = (r) => store2.saveCallRec(ledgerRec(e, r));
   store2.saveChange(jobId, runId, index, { call: key, state: "calling", at: at3() });
   ledger({ state: "calling" });
   try {

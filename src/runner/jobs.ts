@@ -32,7 +32,7 @@ import { close } from './intake.ts'
 import { hashOf } from '../knowledge/format.ts'
 import { findSession, sendToSession } from '../mesh/route.ts'
 import { addr, MAX_TEXT, readReceipt, settle, TTL_MS } from '../mesh/inbox.mjs'
-import { clearCalling } from './ledger.ts'
+import { clearCalling, maybeOf } from './ledger.ts'
 
 export type Procs = {
 	start: (cfg: Config['agent'], i: RunInput & { workflowId: string; runId: string }) => { pid: number }
@@ -387,7 +387,7 @@ export function approveEffects(store: Store, cfg: Config, wf: Workflow, again = 
 	const left = pendingEffects(wf.effects)
 	if (!job || !left.length) return undefined
 	// A change that may have been made is made again only when the owner says so, after checking (review 10-21 P2-7).
-	const maybe = left.find(e => e.maybe)
+	const maybe = left.find(e => maybeOf(store, e))
 	if (maybe && !again) return `${wf.code}'s ${shown(maybe).line} may already have been made. Check it, then say "ok ${wf.code} again" to make it once more, or "ok ${wf.code} except ${left.indexOf(maybe) + 1}" to leave it out.`
 	// A new result is being worked out; the shown changes may be replaced (review 01-04 P1-4).
 	if (job.purpose === 'work' && (job.state === 'running' || job.state === 'queued')) return `${wf.code} is still working on a new result. I'll show it first.`
@@ -404,7 +404,7 @@ export function approveEffects(store: Store, cfg: Config, wf: Workflow, again = 
 	if (store.control().paused) return `Paused, so ${wf.code}'s changes were not made. Say "resume", then ok again.`
 	// "again" counts only once the change run is queued; a refused ok leaves it unsaid (review 10-21b P2-5).
 	if (maybe) {
-		for (const e of left.filter(x => x.maybe)) clearCalling(store, e)
+		for (const e of left.filter(x => maybeOf(store, x))) clearCalling(store, e)
 		const clear = (es: Effect[] = []) => es.map(e => ({ ...e, maybe: undefined }))
 		wf.effects = clear(wf.effects)
 		job.result = { ...job.result!, effects: clear(job.result?.effects) }

@@ -4193,18 +4193,28 @@ test('review 10-21e P1: a change already made is never made again, whatever the 
 	assert.equal(madeBefore(store, { ...NOTE, call: { tool: 'ado-comment', args: { pullRequestId: 4200001, content: 'Another' } } }), undefined, 'nor another comment')
 })
 
-test('review 10-21e P1-1: a call an earlier run started with no answer is not repeated until the owner says again', async () => {
+test('review 10-21e P1-1: a call an earlier run started with no answer is not repeated until the owner says again, and again makes it once', async () => {
 	voteSetup(['ado-comment', 'ado-repo_pull_request_write:vote']); calls.length = 0
 	script = promise([NOTE], 'Left a comment.')
 	src.post(CHAT, 'me', `[as Kim] Can you look? ${PR_URL}`); await goPr(); await goPr()
 	jf.job = () => undefined
-	const { callKey, clearCalling } = await import('../src/runner/ledger.ts')
+	const { callKey, maybeOf, madeBefore, ledgerRec } = await import('../src/runner/ledger.ts')
 	store.saveCallRec({ call: callKey(NOTE.call), state: 'calling', at: new Date().toISOString() })
+	assert.deepEqual(pendingOf(store.byCode('A1')!).map(e => !!e.maybe), [false], 'no list marks it: the ledger alone knows')
 	await see('A1'); src.post('self', 'me', 'ok A1'); await goPr()
-	const [r] = await makeChanges([0]); await goPr()
-	assert.deepEqual([calls.length, /may have been made/.test(r.error ?? '')], [0, true], 'not posted: it may already be there')
-	clearCalling(store, NOTE)
-	assert.equal(store.callRec(callKey(NOTE.call))!.state, 'failed', 'again clears it')
+	assert.match(src.chats.self.at(-1)!.body, /may already have been made/, 'ok asks the owner to check first')
+	src.post('self', 'me', 'ok A1 again'); await goPr()
+	await makeChanges([0]); await goPr()
+	assert.deepEqual(calls.map(c => c.args.content), ['Null check'], 'again makes it, once')
+	assert.equal(src.chats[CHAT].at(-1)!.body, 'Left a comment.')
+	store.saveCallRec({ call: callKey(voteCall()), state: 'calling', head: 'c0ffee1', at: new Date().toISOString() })
+	assert.equal(maybeOf(store, voteEffect()), false, 'a vote only sets a state: it may be cast again without asking')
+	const v = (vote: string) => voteEffect({ call: voteCall(4200001, vote) })
+	store.saveCallRec(ledgerRec(v('Approved'), { state: 'done', ref: 'v1' }))
+	store.saveCallRec(ledgerRec(v('Rejected'), { state: 'done', ref: 'v2' }))
+	assert.equal(madeBefore(store, v('Approved')), undefined, 'a vote changed since is not cast, whatever was cast before (review 10-21e P2-4)')
+	assert.ok(madeBefore(store, v('Rejected')), 'the latest vote is')
+	assert.equal(callKey({ tool: 'ado-comment', args: { pullRequestId: 1, content: 'Null check ' } }), callKey({ tool: 'ado-comment', args: { content: 'Null check', pullRequestId: 1 } }), 'order and edge spaces do not make a new call (P2-1)')
 })
 
 test("next action: a vote names only the item's PR", async () => {
