@@ -2,7 +2,7 @@ import { planRetry, retryStatus } from './retry.ts'
 import { homeOf, step, watchNews } from './work.ts'
 import { confidence } from '../core/policy.ts'
 import { uptime } from 'node:os'
-import { changeSays, isVote, unsafeRead, pendingEffects, refusedAsk, reviewAgain, carryMarks, shown, vet, voteValue } from '../core/effects.ts'
+import { allows, changeSays, isVote, unsafeRead, pendingEffects, refusal, refusedAsk, reviewAgain, carryMarks, shown, vet, voteValue } from '../core/effects.ts'
 import { prOf, prTarget } from './probe.ts'
 import { cloneFor, cloneTodo, repoRef } from './repos.ts'
 import { deployed, deployRunning, findingNotBlocker, isValidate, proposeTargets, shellInClone, shellTool, telemetryNote, telemetryTools } from './validate.ts'
@@ -392,6 +392,12 @@ export function approveEffects(store: Store, cfg: Config, wf: Workflow, again = 
 	if (keyOf(job.result?.effects) !== effectsKey(wf)) return `${wf.code}'s changes are out of date. Ask for a fresh review, or skip ${wf.code}.`
 	// A deploy is allowed by "Where Delegate may deploy", not by the write tools (owned work).
 	if (!cfg.agent.effectTools?.length && !left.every(e => isDeploy(e.call) && cfg.deploy?.allowed.length)) return `${wf.code} has ${left.length} change(s) to make, but no write tools are set. Add them in setup (the "tools" step, as effectTools), or skip ${wf.code}.`
+	// A change refused now, such as one switched off in Settings after it was shown, is never queued (review chui P2-3).
+	const pr = prTarget(store, wf)
+	for (const e of left) {
+		const why = refusal(cfg, e, pr)
+		if (why) return `${wf.code}'s ${shown(e).line} cannot be made: ${why}. ${e.call && !isDeploy(e.call) && !allows(cfg.agent.effectTools, e.call) ? 'Turn it on in Settings, or say' : 'Say'} "ok ${wf.code} except ${left.indexOf(e) + 1}" to ${left.length === 1 ? 'send only the reply' : 'leave it out'}.`
+	}
 	if (store.control().paused) return `Paused, so ${wf.code}'s changes were not made. Say "resume", then ok again.`
 	// "again" counts only once the change run is queued; a refused ok leaves it unsaid (review 10-21b P2-5).
 	if (maybe) {

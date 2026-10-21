@@ -2,7 +2,7 @@
 import { time, whoOf } from '../../../model/format.ts'
 import type { CardUi, ItemCard } from '../../../model/types.ts'
 import { env } from '../../../state/store.ts'
-import { esc, html, raw, type H } from '../../html.ts'
+import { esc, html, join, raw, type H } from '../../html.ts'
 import { I } from '../../icons.ts'
 import { av } from '../parts.ts'
 
@@ -36,7 +36,14 @@ export function meetingStrip(c: ItemCard): H {
 	const dl = day === 0 ? 'Today' : day === 1 ? 'Tomorrow' : s.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })
 	return html`<div class="mtg"><span class="cal" aria-hidden="true"><small>${esc(s.toLocaleDateString([], { month: 'short' }))}</small><b>${s.getDate()}</b></span><div class="mt"><b>${esc(m.subject)}</b><span>${esc(dl)} ${esc(time(s))} to ${esc(time(e))}</span></div><span class="stack">${m.attendees.slice(0, 3).map(a => av(whoOf(a), 'sm'))}</span></div>`
 }
-export const alsoLine = (c: ItemCard, ic: string): H => c.changes.length ? html`<p class="also-line">${I(ic, 'sm')}<span><b>Also:</b> ${esc(c.changes.map(x => x.summary).join('; '))}</span></p>` : ''
+// What a change means, from Azure DevOps, in one quiet line under it: a vote's PR, with "your approval may complete it" as a
+// warning, or a deploy's ring (next action, owned work).
+type Meaning = NonNullable<ItemCard['changes'][number]['meaning']>
+export const meaningLine = (m?: Meaning): H => m?.length ? html`<p class="mean">${join(m.map(p => p.warn ? html`<span class="warn">${I('warn', 'sm')}${esc(p.text)}</span>` : esc(p.text)), raw(' · '))}</p>` : ''
+// With a meaning to show, each change is its own line with its meaning under it (review chui P2-2); otherwise one line, as before.
+export const alsoLine = (c: ItemCard, ic: string): H => !c.changes.length ? ''
+	: c.changes.some(x => x.meaning) ? html`<div class="also-line">${I(ic, 'sm')}<div><b>Also:</b><ul class="also-list">${c.changes.map(x => html`<li>${esc(x.summary)}${meaningLine(x.meaning)}</li>`)}</ul></div></div>`
+	: html`<p class="also-line">${I(ic, 'sm')}<span><b>Also:</b> ${esc(c.changes.map(x => x.summary).join('; '))}</span></p>`
 export const preview = (c: ItemCard, u: CardUi): H => c.draft?.preview && !u.otherOn ? html`<div class="preview">${draftBlock(c, u)}${alsoLine(c, c.type === 'meeting' ? 'cal' : 'task')}</div>` : ''
 // What the reply promises beyond its words: the owner's own to-dos, and the check-back that starts once it is sent (B19).
 export const promiseLines = (c: ItemCard): H => html`${c.todos?.length ? html`<p class="also-line">${I('warn', 'sm')}<span><b>Yours to do:</b> ${esc(c.todos.join('; '))}</span></p>` : ''}${c.follow ? html`<p class="also-line">${I('eye', 'sm')}<span><b>Then:</b> watch ${esc(c.follow.target)} every ${c.follow.everyHours} h until ${esc(c.follow.until)}, for up to 7 days. Change it under Watching.</span></p>` : ''}`

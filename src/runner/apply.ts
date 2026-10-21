@@ -2,7 +2,7 @@ import { answerHabit, outcome } from './habits.ts'
 import { membersOf } from './sharing.ts'
 import { active, afterSend, closeWork, homeOf, inWork, newTurn, statusOf, step, wait } from './work.ts'
 import { pendingEffects, sameChange, vet } from '../core/effects.ts'
-import type { Answer, Config, Person, Workflow } from '../core/types.ts'
+import type { Answer, Config, Effect, Person, Workflow } from '../core/types.ts'
 import { sendGate } from '../core/gate.ts'
 import { classify, htmlToText } from '../core/intake.ts'
 import { mdToHtml } from '../core/format.ts'
@@ -24,7 +24,7 @@ import { answerProposal, knowledgeOf, nextProposal } from './proposals.ts'
 import { CMD } from '../brand.ts'
 import { askAtOf } from '../core/numbers.ts'
 import { FOLLOW_DAYS, startFollow, startWatch, stopWatch, watchCommand } from './track.ts'
-import { prTarget, recheckDeploy, recheckPr, type BuildProbe } from './probe.ts'
+import { prTarget, recheckDeploy, recheckPr, voteDropped, type BuildProbe } from './probe.ts'
 import { deployRunning, isValidate, saysTested, testedAsk } from './validate.ts'
 import { isDeploy } from '../core/deploy.ts'
 
@@ -226,9 +226,12 @@ async function applyOne(store: Store, src: Source, cfg: Config, wf: Workflow, a:
 			// "ok A6 #1 #3" makes only those changes; the rest are unchecked on the item and its job alike (design-spec S6).
 			if (a.nums?.length) {
 				const r = only(store, wf, a.nums)
-				if (r) return reply(store, src, a, `${MARK} ${r}`)
+				if (typeof r === 'string') return reply(store, src, a, `${MARK} ${r}`)
 				// Only the reply is left, and it was written counting on the changes left out: it is quoted, and a new ok sends it (review 10-21 P2-10).
-				if (!pendingEffects(wf.effects).length && wf.draft?.text && !wf.draft.byOwner) {
+				// The owner's own words too, when a change left out failed, may have been made, or was a vote dropped as not needed: they
+				// still count on it ("Send reply only", review chui P1-1).
+				const unmade = r.some(e => e.error || e.maybe) || voteDropped(wf.status)
+				if (!pendingEffects(wf.effects).length && wf.draft?.text && (!wf.draft.byOwner || unmade)) {
 					wf.revAt = new Date().toISOString()
 					store.save(wf); store.markShown([wf])
 					return reply(store, src, a, `${MARK} Only the reply goes now, and it says: "${wf.draft.text}" It was written counting on the changes you left out. Say "ok ${wf.code}" to send it as it is, or "edit ${wf.code}: <text>" to change it.`)
@@ -304,7 +307,8 @@ function pick(store: Store, cfg: Config, wf: Workflow, a: Answer): string | unde
 }
 
 // The numbers are the order the changes are shown in: only those still to make.
-function only(store: Store, wf: Workflow, nums: number[]): string | undefined {
+// Returns why the numbers are refused, or the changes it left out.
+function only(store: Store, wf: Workflow, nums: number[]): string | Effect[] {
 	const left = pendingEffects(wf.effects)
 	// [0]: "except" named every change, so only the reply goes.
 	const none = nums.length === 1 && nums[0] === 0
@@ -319,7 +323,7 @@ function only(store: Store, wf: Workflow, nums: number[]): string | undefined {
 		if (j >= 0) job!.result!.effects[j] = { ...job!.result!.effects[j], off: true }
 	}
 	if (job) store.saveJob(job)
-	return undefined
+	return left.filter(e => !keep.has(e))
 }
 
 const norm = (t: string) => htmlToText(t).replace(/\s+/g, ' ').trim()

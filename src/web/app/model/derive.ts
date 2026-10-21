@@ -84,7 +84,11 @@ const PRIMARY: Record<ItemCard['type'], (c: ItemCard, u: CardUi, name: string) =
 	meeting: (c, u, name) => c.choices ? choicePrimary(c, u, name) : replyPrimary(c, u),
 	review: reviewPrimary,
 }
-export const primaryOf = (c: ItemCard, u: CardUi, name: string) => (PRIMARY[c.type] || PRIMARY.reply)(c, u, name)
+// A PR that changed since the review: ok is refused until the owner reviews again, so that is the main action. On a question
+// card, words the owner typed still go as their answer.
+const reviewAgainPrimary = (c: ItemCard, u: CardUi): Primary | undefined => c.reviewAgain && !(c.type === 'question' && u.answer.trim())
+	? { label: 'Review again', cmd: c.reviewAgain, kind: 'draft', hint: 'The PR changed since the review. Nothing is changed or sent; you will see the new result first.', verb: c.reviewAgain } : undefined
+export const primaryOf = (c: ItemCard, u: CardUi, name: string) => reviewAgainPrimary(c, u) ?? (PRIMARY[c.type] || PRIMARY.reply)(c, u, name)
 
 // To learn: every fact by default; a subset names the ones to keep.
 export const factsOn = (k: KnowledgeCard, u: CardUi) => u.facts ?? new Set(k.facts.map((_, i) => i + 1))

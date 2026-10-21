@@ -16,7 +16,7 @@ process.env.DELEGATE_LOCAL = mkdtempSync(join(tmpdir(), 'delegate-glocal-'))
 process.env.DELEGATE_NO_KICK = '1'
 const { Store } = await import('../src/store/state.ts')
 const { serveInbox, writeSnapshot } = await import('../src/web/server.ts')
-const { seedInbox, seedNext, seedNumbers, seedQuiet, pauseNext } = await import('./fixture.ts')
+const { seedChanges, seedInbox, seedNext, seedNumbers, seedQuiet, pauseNext } = await import('./fixture.ts')
 
 const PW = process.env.PLAYWRIGHT_CORE ?? (() => { try { return createRequire(import.meta.url).resolve('playwright-core').replace(/index\.js$/, 'index.mjs') } catch { return '' } })()
 const skip = existsSync(PW) ? false : 'playwright-core not found (set PLAYWRIGHT_CORE)'
@@ -206,7 +206,26 @@ test('golden: the Numbers tab draws its numbers, lists, offline, and first week 
 	}
 })
 
+// What a change means (a vote that may complete its PR, a deploy's ring), Send reply only (a failed change, a dropped vote),
+// Review again (a PR that changed), and the switches for the changes Delegate may propose; then the card on the new page.
+const CHANGES: typeof STATES = [...['A60', 'A61', 'A62', 'A63', 'A64'].map(c => [`changes-focus-${c}`, `#focus/${c}`] as [string, string]), ['changes-settings', '#settings/you']]
+const NEXT_CHANGES: typeof STATES = [['next-changes-open-A60', '#now/A60']]
+// A reply that promised the vote and a comment: each change on its own line under "Also:", the vote with its meaning (review chui P2-2).
+const PROMISED: typeof STATES = [['changes-focus-A60-promised', '#focus/A60']]
+// deno-lint-ignore no-explicit-any
+function promised(s: any) {
+	const w = s.byCode('A60'), c = { ...w.effects[0], summary: 'Thanks for the fix.', pr: undefined, call: { tool: 'ado-repo_pull_request_thread_write', args: { action: 'create', repositoryId: 'web', pullRequestId: 4200001, content: 'Thanks for the fix.' } } }
+	s.save({ ...w, promised: true, effects: [...w.effects, c] }, false)
+	const j = s.job('j-A60'); s.saveJob({ ...j, result: { ...j.result, effects: [...j.result.effects, c] } })
+	return s
+}
+
 for (const theme of ['light', 'dark']) {
+	test(`golden: what a change means, Send reply only, Review again, and the change switches (${theme})`, { skip }, async () => {
+		await draw(theme, s => s, CHANGES, false, s => seedChanges(s))
+		await draw(theme, s => s, NEXT_CHANGES, false, s => seedChanges(s, 'new'))
+		await draw(theme, promised, PROMISED, false, s => seedChanges(s))
+	})
 	test(`golden: every tab, card, and sheet draws exactly as before (${theme})`, { skip }, () => draw(theme, s => s, STATES, true))
 	test(`golden: Catch up, open work, promises, waiting, channels, and suggestions draw exactly as before (${theme})`, { skip }, () => draw(theme, seedRich, RICH, false))
 	test(`golden: the new experience draws Now, its open card, Done, and Settings (${theme})`, { skip }, () => draw(theme, s => seedNext(s, 'new', false), NEXT, false))

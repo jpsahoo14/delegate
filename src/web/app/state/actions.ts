@@ -233,10 +233,19 @@ export function checkUpdate() {
 	}, () => { S.checking = false; say('Could not reach the page server.', false); render() })
 }
 export function saveSetting(key: string) {
-	const u = U(`set:${key}`), value = S.set[key] ?? V.settings!.rows.find(r => r.key === key)?.value ?? '', io = env.io
+	const row = V.settings!.rows.find(r => r.key === key), u = U(`set:${key}`), value = S.set[key] ?? row?.value ?? '', io = env.io
 	if (!io?.settings) return
+	// A switch that did not save goes back to what is saved; a field keeps what the owner typed, to fix it.
+	const undo = () => { if (row?.kind === 'switch') delete S.set[key] }
 	Object.assign(u, { status: 'pending', msg: '' }); render()
-	io.settings(key, value).then(r => { Object.assign(u, { status: 'ready', msg: r.text }); if (r.ok) delete S.set[key]; say(r.text, r.ok); refresh() }, () => { Object.assign(u, { status: 'ready', msg: 'Could not reach the page server.' }); render() })
+	io.settings(key, value).then(r => { Object.assign(u, { status: 'ready', msg: r.text }); if (r.ok) delete S.set[key]; else undo(); say(r.text, r.ok); refresh() }, () => { undo(); Object.assign(u, { status: 'ready', msg: 'Could not reach the page server.' }); render() })
+}
+// A switch saves as it is flipped, through the same save as any setting.
+export function toggleSetting(key: string) {
+	const row = V.settings?.rows.find(r => r.key === key)
+	if (!row || U(`set:${key}`).status === 'pending') return
+	S.set[key] = (S.set[key] ?? row.value) === 'true' ? 'false' : 'true'
+	saveSetting(key)
 }
 export function report(text: string) {
 	const io = env.io

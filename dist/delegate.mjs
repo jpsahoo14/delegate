@@ -20681,7 +20681,7 @@ function parseTargets(raw, cfg) {
   }
   return { ok: true, targets: out };
 }
-var DEPLOY, isPipelineTool, isDeploy, int2, pipelineOf, obj, NEVER_RING, KEYS, targetOf, neverId, same, hhmm, runLine, ringMeaning, paramText, targetsText;
+var DEPLOY, isPipelineTool, isDeploy, int2, pipelineOf, obj, NEVER_RING, KEYS, targetOf, neverId, same, hhmm, runLine, ringParts, ringMeaning, paramText, targetsText;
 var init_deploy = __esm({
   "src/core/deploy.ts"() {
     "use strict";
@@ -20699,7 +20699,8 @@ var init_deploy = __esm({
     same = (a, b) => !!a && !!b && (a.toLowerCase() === b.toLowerCase() || Math.min(a.length, b.length) >= 7 && (a.toLowerCase().startsWith(b.toLowerCase()) || b.toLowerCase().startsWith(a.toLowerCase())));
     hhmm = (iso) => new Date(iso).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
     runLine = (r) => `run ${r.id} by ${r.by || "someone"} at ${hhmm(r.at)}${r.result ? `, ${r.result.toLowerCase()}` : r.status ? `, ${r.status.toLowerCase()}` : ""}`;
-    ringMeaning = (f) => [f.running.length ? `running now: ${f.running.map(runLine).join("; ")}` : "nothing running", f.last ? `last ${runLine(f.last)}` : "no runs yet"].join("; ");
+    ringParts = (f) => [{ text: f.running.length ? `running now: ${f.running.map(runLine).join("; ")}` : "nothing running" }, { text: f.last ? `last ${runLine(f.last)}` : "no runs yet" }];
+    ringMeaning = (f) => ringParts(f).map((p) => p.text).join("; ");
     paramText = (p) => Object.entries(p ?? {}).map(([k, v]) => ` ${k}=${v}`).join("");
     targetsText = (ts = []) => ts.map((t2) => `${t2.ring} ${t2.project ? `${t2.project}/` : ""}${t2.pipelineId}${paramText(t2.params)}`).join(", ");
   }
@@ -20797,7 +20798,7 @@ function changeSays(e) {
   const rest = x.detail.replace(/\n/g, "; ");
   return `${x.line}${where ? ` at ${where}` : ""}${says}${rest ? says ? ` (${rest})` : `: ${rest}` : ""}`;
 }
-var pendingEffects, sameChange, carryMarks, parts, allows, toolOf, NEVER_KEY, never2, prTool, forbidden, WRITE_VERBS, verbWrite, prIdOf, isVote, VOTES, VOTE_NAME, VOTE_WORDS, sameHead, reviewAgain, refusedAsk, LINES, line, changeName, changeLine, meaningOf, prMeaning, str, VOTE_SAYS, at;
+var pendingEffects, sameChange, carryMarks, parts, allows, toolOf, NEVER_KEY, never2, prTool, forbidden, WRITE_VERBS, verbWrite, prIdOf, isVote, VOTES, VOTE_NAME, VOTE_WORDS, sameHead, reviewAgainCmd, reviewAgain, asksReviewAgain, refusedAsk, LINES, WRITE_DEFAULTS, offerable, line, changeName, changeLine, prParts, meaningParts, meaningOf, str, VOTE_SAYS, at;
 var init_effects = __esm({
   "src/core/effects.ts"() {
     "use strict";
@@ -20842,7 +20843,9 @@ var init_effects = __esm({
       const [x, y] = [a?.toLowerCase() ?? "", b?.toLowerCase() ?? ""];
       return !!x && !!y && (x === y || Math.min(x.length, y.length) >= 7 && (x.startsWith(y) || y.startsWith(x)));
     };
-    reviewAgain = (code, why) => `${why} Review again? Reply "${code}: review again", or "skip ${code}".`;
+    reviewAgainCmd = (code) => `${code}: review again`;
+    reviewAgain = (code, why) => `${why} Review again? Reply "${reviewAgainCmd(code)}", or "skip ${code}".`;
+    asksReviewAgain = (code, question) => !!question?.includes(`Reply "${reviewAgainCmd(code)}"`);
     refusedAsk = (code, n) => `The reply counts on ${n === 1 ? "a change" : `${n} changes`} ${NAME} cannot make, listed as yours to do. Change the reply with "edit ${code}: <text>", or skip ${code}.`;
     LINES = {
       [DEPLOY]: ["Deploy", `run a pipeline on "Where ${NAME} may deploy" with a PR's build as its resource`],
@@ -20851,14 +20854,20 @@ var init_effects = __esm({
       "ado-wit_work_item_write:update": ["Work item update", "change fields on one work item; the update must fail if the item changed since it was read"],
       "calendar-CreateEvent": ["Calendar invite", "create a meeting on the owner's calendar and invite people"]
     };
+    WRITE_DEFAULTS = { ado: ["repo_pull_request_thread_write", "repo_pull_request_write:vote", "wit_work_item_write:update"], calendar: ["CreateEvent"] };
+    offerable = (entry) => {
+      const [tool, action] = parts(entry);
+      return !/complet|merge|abandon|bypass|delete/i.test(entry) && !/pipelines?_write|run_?pipeline/i.test(tool) && !(/pull_?request_write$/i.test(tool) && !action);
+    };
     line = (entry) => LINES[entry] ?? site().actions?.[entry];
     changeName = (entry) => line(entry)?.[0] ?? entry;
     changeLine = (entry) => {
       const l = line(entry);
       return l ? `${entry}: ${l[1]}` : entry;
     };
-    meaningOf = (e) => e.pr ? prMeaning(e.pr) : e.ring ? ringMeaning(e.ring) : void 0;
-    prMeaning = (p) => [`"${p.title}" by ${p.author}`, ...p.required.length ? [`required reviewers: ${p.required.join(", ")}`] : [], ...p.autoComplete ? ["autocomplete is on: your approval may complete it"] : []].join("; ");
+    prParts = (p) => [{ text: `"${p.title}" by ${p.author}` }, ...p.required.length ? [{ text: `required reviewers: ${p.required.join(", ")}` }] : [], ...p.autoComplete ? [{ text: "autocomplete is on: your approval may complete it", warn: true }] : []];
+    meaningParts = (e) => e.pr ? prParts(e.pr) : e.ring ? ringParts(e.ring) : void 0;
+    meaningOf = (e) => meaningParts(e)?.map((p) => p.text).join("; ");
     str = (v) => typeof v === "string" ? v : JSON.stringify(v);
     VOTE_SAYS = { 10: (pr) => `Approve ${pr}`, 5: (pr) => `Approve ${pr} with suggestions`, 0: (pr) => `Reset your vote on ${pr}`, [-5]: (pr) => `Wait for author on ${pr}`, [-10]: (pr) => `Reject ${pr}` };
     at = (v) => {
@@ -39596,7 +39605,7 @@ async function recheckPr(store2, w, probe) {
   if (/completed|abandoned/i.test(st.status)) {
     setEffects(store2, w, (es = []) => es.map((e) => isVote(e.call) && !e.done ? { ...e, off: true } : e));
     const rest = pendingEffects(w.effects).length, state = st.status.toLowerCase();
-    w.status = `PR ${id} is ${state}, so no vote is needed`;
+    w.status = noVoteNeeded(id, state);
     return `Not done ${code}: PR ${id} is ${state}, so no vote is needed. The reply was written counting on the vote; it says: "${w.draft?.text ?? ""}". Say "ok ${code}" to ${rest ? "make the other changes and send it as it is" : "send it as it is"}, "edit ${code}: <text>" to change it, or "skip ${code}".`;
   }
   const head = left.find((e) => isVote(e.call))?.head;
@@ -39737,7 +39746,7 @@ async function deployMoved(store2, w, e, probe) {
     return `Could not read ${ring} right before the deploy (${String(err).slice(0, 120)}).`;
   }
 }
-var EVERY_MS, PR_LINK, VOTE, prChanges, factsOf, clock, deploys, projectOf, sameCall;
+var EVERY_MS, PR_LINK, VOTE, prChanges, factsOf, noVoteNeeded, voteDropped, clock, deploys, projectOf, sameCall;
 var init_probe = __esm({
   "src/runner/probe.ts"() {
     "use strict";
@@ -39753,6 +39762,8 @@ var init_probe = __esm({
     VOTE = { "10": (id) => `approved PR ${id}`, "5": (id) => `approved PR ${id} with suggestions`, "-5": (id) => `voted "Waiting for author" on PR ${id}`, "-10": (id) => `rejected PR ${id}` };
     prChanges = (w) => pendingEffects(w.effects).filter((e) => isVote(e.call) && prIdOf(e.call) !== void 0);
     factsOf = (st) => ({ title: st.title ?? "", author: st.author ?? "", required: st.required ?? [], autoComplete: !!st.autoComplete });
+    noVoteNeeded = (id, state) => `PR ${id} is ${state}, so no vote is needed`;
+    voteDropped = (status3 = "") => /^PR \d+ is \w+, so no vote is needed$/.test(status3);
     clock = (iso, tz) => {
       try {
         return new Date(iso).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hourCycle: "h23", ...tz ? { timeZone: tz } : {} });
@@ -41670,6 +41681,15 @@ function workView(w, home = w) {
   if (!k) return void 0;
   return { goal: k.goal, next: nextOf(k), waiting: k.waitingOn && `${k.waitingOn.who}${k.waitingOn.where ? ` (${k.waitingOn.where})` : ""}`, due: home === w && w.state === "needs_human" && !w.draft && /^No news/.test(w.status), steps: k.steps.slice(-6).map((x) => ({ at: x.at, what: x.what, news: !!x.news })), plan: (k.plan ?? []).map((p) => ({ what: p.what, who: p.who, done: !!p.done, ...p.in ? { where: p.in } : {}, ...p.probe ? { build: `${p.probe.build}${p.seen ? ` \xB7 ${p.seen}` : ""}` } : {} })), ...home !== w ? { home: home.code } : {}, proposed: !!k.proposed };
 }
+function nextSteps(w) {
+  const left = pendingEffects(w.effects);
+  const failed = left.some((e) => e.error || e.maybe), dropped = voteDropped(w.status) && (w.effects ?? []).some((e) => e.off && !e.done && isVote(e.call));
+  return {
+    // Never while a question is open: every ok is refused then (a stale vote after a change run, a refusedAsk; review chui P2-1).
+    ...left.length && w.draft?.text && !w.sent && !w.question && (failed || dropped) ? { replyOnly: `ok ${w.code} except ${left.map((_, i) => i + 1).join(" ")}` } : {},
+    ...asksReviewAgain(w.code, w.question) ? { reviewAgain: reviewAgainCmd(w.code) } : {}
+  };
+}
 function card(store2, w) {
   const k = knowledgeOf(store2, store2.config());
   const job = w.job ? store2.job(w.job) : void 0;
@@ -41694,9 +41714,10 @@ function card(store2, w) {
     job: job?.goal,
     // Every field is built from the change's call, never the AI's words about it (review 10-21 P1-1).
     changes: pendingEffects(w.effects).map((e, i) => {
-      const s2 = shown(e);
-      return { n: i + 1, summary: s2.text, target: s2.loc || s2.system, system: s2.system, action: s2.line, detail: s2.detail || void 0, ...meaningOf(e) ? { meaning: meaningOf(e) } : {} };
+      const s2 = shown(e), m = meaningParts(e);
+      return { n: i + 1, summary: s2.text, target: s2.loc || s2.system, system: s2.system, action: s2.line, detail: s2.detail || void 0, ...m ? { meaning: m } : {} };
     }),
+    ...nextSteps(w),
     ...store2.config().showDetails ? { debug: debugLines(w) } : {},
     why: { reason: w.decision?.reason, confidence: w.decision?.confidence, sources: (w.draft?.sources ?? []).map((s2) => source(s2.ref, s2.tier, s2.stale, s2.label, k)), gaps: w.gaps ?? [], searched: (w.looked ?? []).map(lookLine) },
     work: workView(w, homeOf(store2, w)),
@@ -41833,6 +41854,7 @@ var init_view = __esm({
     "use strict";
     init_work();
     init_effects();
+    init_probe();
     init_render();
     init_proposals();
     init_automations();
@@ -43350,8 +43372,9 @@ async function applyOne(store2, src, cfg, wf, a, procs, probe) {
       }
       if (a.nums?.length) {
         const r = only(store2, wf, a.nums);
-        if (r) return reply(store2, src, a, `${MARK} ${r}`);
-        if (!pendingEffects(wf.effects).length && wf.draft?.text && !wf.draft.byOwner) {
+        if (typeof r === "string") return reply(store2, src, a, `${MARK} ${r}`);
+        const unmade = r.some((e) => e.error || e.maybe) || voteDropped(wf.status);
+        if (!pendingEffects(wf.effects).length && wf.draft?.text && (!wf.draft.byOwner || unmade)) {
           wf.revAt = (/* @__PURE__ */ new Date()).toISOString();
           store2.save(wf);
           store2.markShown([wf]);
@@ -43456,7 +43479,7 @@ function only(store2, wf, nums) {
     if (j2 >= 0) job.result.effects[j2] = { ...job.result.effects[j2], off: true };
   }
   if (job) store2.saveJob(job);
-  return void 0;
+  return left.filter((e) => !keep.has(e));
 }
 async function askGone(store2, src, cfg, wf, a) {
   const id = wf.msgIds.at(-1);
@@ -44641,6 +44664,11 @@ function approveEffects(store2, cfg, wf, again = false) {
   if (job.purpose === "work" && (job.state === "running" || job.state === "queued")) return `${wf.code} is still working on a new result. I'll show it first.`;
   if (keyOf(job.result?.effects) !== effectsKey(wf)) return `${wf.code}'s changes are out of date. Ask for a fresh review, or skip ${wf.code}.`;
   if (!cfg.agent.effectTools?.length && !left.every((e) => isDeploy(e.call) && cfg.deploy?.allowed.length)) return `${wf.code} has ${left.length} change(s) to make, but no write tools are set. Add them in setup (the "tools" step, as effectTools), or skip ${wf.code}.`;
+  const pr = prTarget(store2, wf);
+  for (const e of left) {
+    const why = refusal(cfg, e, pr);
+    if (why) return `${wf.code}'s ${shown(e).line} cannot be made: ${why}. ${e.call && !isDeploy(e.call) && !allows(cfg.agent.effectTools, e.call) ? "Turn it on in Settings, or say" : "Say"} "ok ${wf.code} except ${left.indexOf(e) + 1}" to ${left.length === 1 ? "send only the reply" : "leave it out"}.`;
+  }
   if (store2.control().paused) return `Paused, so ${wf.code}'s changes were not made. Say "resume", then ok again.`;
   if (maybe) {
     for (const e of left.filter((x) => x.maybe)) clearCalling(store2, e);
@@ -45419,7 +45447,7 @@ function nextView(store2, now = Date.now()) {
   const off = s2.runner === "ok" ? void 0 : s2.runner === "paused" ? { text: "Paused: drafts go on, nothing is sent" } : s2.runner === "off" ? { text: `${NAME} is off`, ...reading.at ? { since: reading.at } : {} } : { text: s2.runner === "capped" ? "Daily limit reached; it runs again tomorrow" : `${NAME} is ${s2.runner}` };
   return { move: move2, working, waiting, catchup: { count: cu.length, worth: cu.filter((r) => high(r) === 0).length, rows: cu.slice(0, 3) }, minute: { facts: store2.proposals().filter((p) => p.state === "needs_human").length, suggestions: store2.habits().filter((h) => h.state === "suggested").length }, ...off ? { off } : {}, ...store2.control().paused || store2.config().paused ? { paused: true } : {}, handled: handledThisWeek(store2, s2.workflows, new Date(now)) };
 }
-var isMe, runnerWhy, titleOf, ownerText, NAMES, COMMANDS, INLINE_MAX, first, firsts, clip2, teamsLink2, triesOf, every, whyOf, mustSee, SHORT, said, commentsOrChanges, pickPrompt, watchLine;
+var isMe, runnerWhy, titleOf, ownerText, NAMES, CARD_MORE, COMMANDS, INLINE_MAX, first, firsts, clip2, teamsLink2, triesOf, every, whyOf, mustSee, SHORT, said, commentsOrChanges, pickPrompt, watchLine;
 var init_next = __esm({
   "src/web/next.ts"() {
     "use strict";
@@ -45437,13 +45465,14 @@ var init_next = __esm({
     titleOf = (sub) => sub.kind === "waiting" ? sub.w.text : sub.kind === "reminder" ? `Remind ${sub.a.to.name}: ${sub.a.text}` : sub.wf.work && !sub.wf.work.closed ? sub.wf.work.goal : sub.wf.fyi?.line ?? sub.wf.lastAsk ?? sub.wf.status;
     ownerText = (o) => o.kind === "you" ? "You" : o.kind === "delegate" ? NAME : o.kind === "others" ? o.text : "nobody is on this yet";
     NAMES = { move: "YOUR MOVE", working: `${NAME.toUpperCase()} IS WORKING`, waiting: "WAITING ON OTHERS", catchup: "CATCH UP", done: "DONE" };
+    CARD_MORE = "ok <code> except <every change> (Send reply only) | <code>: review again (Review again)";
     COMMANDS = {
-      reply: "ok <code> (whole draft on the row) | card",
-      holding: "ok <code> (whole draft on the row) | card",
-      question: "card",
-      choice: "card",
-      meeting: "card",
-      review: "card",
+      reply: `ok <code> (whole draft on the row) | card | ${CARD_MORE}`,
+      holding: `ok <code> (whole draft on the row) | card | ${CARD_MORE}`,
+      question: `card | ${CARD_MORE}`,
+      choice: `card | ${CARD_MORE}`,
+      meeting: `card | ${CARD_MORE}`,
+      review: `card | ${CARD_MORE}`,
       "check-date": "<code>: nudge them",
       track: "ok <code>",
       "your-step": "<code>: {text}",
@@ -48013,6 +48042,8 @@ init_policy();
 init_schedule();
 init_levels();
 init_effects();
+init_site();
+init_mcp_client();
 init_deploy();
 init_repos();
 init_state();
@@ -48287,6 +48318,31 @@ var SETTINGS = [
     parse: (raw) => set2({ showDetails: raw === "true" || void 0 })
   }
 ];
+function changeChoices(cfg) {
+  const have = new Set(Object.keys(toolServers(cfg))), s2 = site();
+  const byServer = [.../* @__PURE__ */ new Set([...Object.keys(WRITE_DEFAULTS), ...Object.keys(s2.write ?? {})])].flatMap((n) => [...WRITE_DEFAULTS[n] ?? [], ...s2.write?.[n] ?? []].map((t2) => `${n}-${t2}`));
+  const own3 = (e) => [...have].some((n) => e.startsWith(`${n}-`));
+  return [...new Set([...byServer, ...Object.keys(s2.actions ?? {})].filter(own3).concat(cfg.agent.effectTools ?? []))].filter(offerable);
+}
+var changeSpecs = (cfg) => changeChoices(cfg).map((entry) => ({
+  key: `change:${entry}`,
+  label: changeName(entry),
+  help: changeLine(entry),
+  kind: "switch",
+  section: "you",
+  read: (c) => String((c.agent.effectTools ?? []).includes(entry)),
+  saved: (raw) => raw === "true" ? `${changeName(entry)} is on: ${NAME} may propose it, each time for your ok.` : `${changeName(entry)} is off: new drafts won't propose it, and an ok on one already shown is refused.`,
+  parse: (raw, store2) => {
+    if (raw !== "true" && raw !== "false") return { ok: false, why: "Turn it on or off." };
+    const cfg2 = store2.config(), on = raw === "true";
+    if (on && cfg2.agent.tools.includes(toolOf(entry))) return { ok: false, why: `${toolOf(entry)} is one of the read tools workers hold, so it cannot also be a change. Remove it from the read tools in setup first.` };
+    return { ok: true, save: (c) => ({ ...c, agent: { ...c.agent, effectTools: on ? [.../* @__PURE__ */ new Set([...c.agent.effectTools ?? [], entry])] : (c.agent.effectTools ?? []).filter((x) => x !== entry) } }) };
+  }
+}));
+var specsOf = (cfg) => {
+  const i = SETTINGS.findIndex((x) => x.key === "deployTo") + 1;
+  return [...SETTINGS.slice(0, i), ...changeSpecs(cfg), ...SETTINGS.slice(i)];
+};
 function whoOf(r) {
   const names = (r.who.accounts ?? []).map((a) => a.name).filter(Boolean);
   if (!names.length) return r.who.group ? `Anyone in ${r.who.group === "team" ? "your team" : r.who.group === "org" ? "your organization" : "other companies"}` : "";
@@ -48322,23 +48378,24 @@ function settingsView(store2) {
   const cfg = store2.config();
   const words3 = (t2) => store2.ui().ui === "new" ? t2.replace("Waiting on others", "Waiting").replace("Check for updates on Home", "Check for updates at the foot of Now") : t2;
   return {
-    rows: SETTINGS.map((s2) => ({ key: s2.key, label: words3(s2.label), help: words3(typeof s2.help === "function" ? s2.help(cfg) : s2.help), kind: s2.kind, section: s2.section, value: s2.read(cfg, store2), options: s2.options, ...s2.advanced ? { advanced: true } : {} })),
+    rows: specsOf(cfg).map((s2) => ({ key: s2.key, label: words3(s2.label), help: words3(typeof s2.help === "function" ? s2.help(cfg) : s2.help), kind: s2.kind, section: s2.section, value: s2.read(cfg, store2), options: s2.options, ...s2.advanced ? { advanced: true } : {} })),
     about: aboutView(store2),
     fixed: [
       { label: "Tools drafts may read", value: cfg.agent.tools.filter((t2) => !["view", "glob", "grep"].includes(t2)).join(", ") || "none", how: `Say "set up ${CMD}" and change the tools step.` },
-      { label: "Changes it may propose (each after your ok)", value: (cfg.agent.effectTools ?? []).map(changeName).join("; ") || "none", how: `Say "set up ${CMD}" and change the tools step.` },
+      // Changes allowed in setup that Settings never offers as a switch, such as a whole tool: shown, changed only in setup.
+      ...((x) => x.length ? [{ label: "Other changes setup allows (each after your ok)", value: x.map(changeName).join("; "), how: `Say "set up ${CMD}" and change the tools step.` }] : [])((cfg.agent.effectTools ?? []).filter((e) => !offerable(e))),
       { label: "Reads your chats from", value: cfg.runner ?? "the machine where setup last finished", how: `On another machine, say "move ${NAME} here".` }
     ]
   };
 }
 async function saveSetting(store2, key, raw, deps = {}) {
-  const spec = SETTINGS.find((s2) => s2.key === key);
+  const spec = specsOf(store2.config()).find((s2) => s2.key === key);
   if (!spec) return { ok: false, text: "That setting cannot be changed here." };
   const r = spec.check ? await spec.check(String(raw ?? ""), store2, deps) : spec.parse(String(raw ?? ""), store2);
   if (!r.ok) return { ok: false, text: r.why };
   store2.saveConfig(r.save(store2.config(), store2));
   store2.log({ event: "setting", key });
-  return { ok: true, text: `Saved ${spec.label.toLowerCase()}. It applies from the next cycle, on every machine.` };
+  return { ok: true, text: `${spec.saved ? spec.saved(String(raw)) : `Saved ${spec.label.toLowerCase()}.`} It applies from the next cycle, on every machine.` };
 }
 async function checkTargets(raw, store2, { probe }) {
   const r = parseTargets(raw, store2.config());
@@ -49675,7 +49732,7 @@ var READ_DEFAULTS = {
   calendar: ["ListCalendarView", "FindMeetingTimes", "GetUserDateAndTimeZoneSettings"],
   ado: ["repo_pull_request", "repo_pull_request_thread", "pipelines_build", "pipelines_build_log", "wit_work_item", "search_workitem", "search_wiki", "wiki"]
 };
-var WRITE = { ado: ["repo_pull_request_thread_write", "repo_pull_request_write:vote", "wit_work_item_write:update"], calendar: ["CreateEvent"] };
+var WRITE = WRITE_DEFAULTS;
 function defaultTools(mcpConfig = cliConfigPath("copilot")) {
   const have = readJson(mcpConfig, {}).mcpServers ?? {};
   const read3 = { ...READ_DEFAULTS, ...site().read }, write = { ...WRITE, ...site().write };

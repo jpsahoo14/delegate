@@ -1,7 +1,9 @@
 import { DEFAULT_POLICY, signatureOf, signsApproved } from '../core/policy.ts'
 import { DEFAULT_POLL, validTz } from '../core/schedule.ts'
 import { LEVEL_SAYS } from '../core/levels.ts'
-import { changeName } from '../core/effects.ts'
+import { WRITE_DEFAULTS, changeLine, changeName, offerable, toolOf } from '../core/effects.ts'
+import { site } from '../core/site.ts'
+import { toolServers } from '../adapters/mcp-client.ts'
 import { NEVER_RING, parseTargets, targetsText } from '../core/deploy.ts'
 import type { BuildProbe } from '../runner/probe.ts'
 import { remoteOf } from '../runner/repos.ts'
@@ -15,7 +17,7 @@ import { UPDATE_EVERY_MIN } from '../os/autoupdate.ts'
 
 // The settings the page can change, in one table: how each is shown, read, checked, and saved (B13).
 // Each saves to the shared config (or profile.md) in the storage folder, so every machine and the next cycle use it.
-type Kind = 'text' | 'line' | 'list' | 'number' | 'choice' | 'bool' | 'time'
+type Kind = 'text' | 'line' | 'list' | 'number' | 'choice' | 'bool' | 'time' | 'switch'
 // Settings are grouped by what the owner is trying to do (design-spec/settings-v2.md); advanced rows sit under More in the last one.
 export type Section = 'learned' | 'you' | 'replies' | 'timing' | 'system'
 type Spec = {
@@ -24,6 +26,8 @@ type Spec = {
 	parse: (raw: string, store: Store) => Parsed
 	// A setting that must be checked against another system before it is saved (owned work: a deploy target).
 	check?: (raw: string, store: Store, deps: SaveDeps) => Promise<Parsed>
+	// What a save says, when the label alone does not (a switch says whether it is on).
+	saved?: (raw: string) => string
 }
 type Parsed = { ok: true; save: (cfg: Config, store: Store) => Config } | { ok: false; why: string }
 export type SaveDeps = { probe?: BuildProbe }
@@ -111,6 +115,31 @@ export const SETTINGS: Spec[] = [
 		read: c => String(!!c.showDetails), parse: raw => set({ showDetails: raw === 'true' || undefined }) },
 ]
 
+// The changes Delegate may propose, one switch each (R-HIL-21): setup's defaults and the workplace's (site.json write and actions),
+// for the tool servers the owner has, and any the owner already allows. Never abandon, complete, merge, bypass, delete, or a
+// pipeline write: deploys follow "Where Delegate may deploy". A switch only edits the list, never an item; an ok on a change it
+// no longer allows is refused (runner/jobs.ts approveEffects), and so is one approved but not made yet (runner/change.ts).
+export function changeChoices(cfg: Config): string[] {
+	const have = new Set(Object.keys(toolServers(cfg))), s = site()
+	const byServer = [...new Set([...Object.keys(WRITE_DEFAULTS), ...Object.keys(s.write ?? {})])].flatMap(n => [...(WRITE_DEFAULTS[n] ?? []), ...(s.write?.[n] ?? [])].map(t => `${n}-${t}`))
+	const own = (e: string) => [...have].some(n => e.startsWith(`${n}-`))
+	return [...new Set([...byServer, ...Object.keys(s.actions ?? {})].filter(own).concat(cfg.agent.effectTools ?? []))].filter(offerable)
+}
+const changeSpecs = (cfg: Config): Spec[] => changeChoices(cfg).map(entry => ({
+	key: `change:${entry}`, label: changeName(entry), help: changeLine(entry), kind: 'switch', section: 'you',
+	read: c => String((c.agent.effectTools ?? []).includes(entry)),
+	saved: raw => raw === 'true' ? `${changeName(entry)} is on: ${NAME} may propose it, each time for your ok.` : `${changeName(entry)} is off: new drafts won't propose it, and an ok on one already shown is refused.`,
+	parse: (raw, store) => {
+		if (raw !== 'true' && raw !== 'false') return { ok: false, why: 'Turn it on or off.' }
+		const cfg = store.config(), on = raw === 'true'
+		// A read tool is never also a write tool: workers would hold it before the owner's ok (setup's rule).
+		if (on && cfg.agent.tools.includes(toolOf(entry))) return { ok: false, why: `${toolOf(entry)} is one of the read tools workers hold, so it cannot also be a change. Remove it from the read tools in setup first.` }
+		return { ok: true, save: c => ({ ...c, agent: { ...c.agent, effectTools: on ? [...new Set([...(c.agent.effectTools ?? []), entry])] : (c.agent.effectTools ?? []).filter(x => x !== entry) } }) }
+	},
+}))
+// Every setting the page can change: the table, with the change switches after "Where Delegate may deploy".
+const specsOf = (cfg: Config): Spec[] => { const i = SETTINGS.findIndex(x => x.key === 'deployTo') + 1; return [...SETTINGS.slice(0, i), ...changeSpecs(cfg), ...SETTINGS.slice(i)] }
+
 export type SettingRow = { key: string; label: string; help: string; kind: Kind; section: Section; value: string; options?: { value: string; label: string }[]; advanced?: true }
 export type ReadOnlyRow = { label: string; value: string; how: string }
 
@@ -155,24 +184,25 @@ export function settingsView(store: Store): { rows: SettingRow[]; fixed: ReadOnl
 	// The new experience names its places differently: Waiting, and the foot of Now (PM review of N1a, 7).
 	const words = (t: string) => store.ui().ui === 'new' ? t.replace('Waiting on others', 'Waiting').replace('Check for updates on Home', 'Check for updates at the foot of Now') : t
 	return {
-		rows: SETTINGS.map(s => ({ key: s.key, label: words(s.label), help: words(typeof s.help === 'function' ? s.help(cfg) : s.help), kind: s.kind, section: s.section, value: s.read(cfg, store), options: s.options, ...(s.advanced ? { advanced: true as const } : {}) })),
+		rows: specsOf(cfg).map(s => ({ key: s.key, label: words(s.label), help: words(typeof s.help === 'function' ? s.help(cfg) : s.help), kind: s.kind, section: s.section, value: s.read(cfg, store), options: s.options, ...(s.advanced ? { advanced: true as const } : {}) })),
 		about: aboutView(store),
 		fixed: [
 			{ label: 'Tools drafts may read', value: cfg.agent.tools.filter(t => !['view', 'glob', 'grep'].includes(t)).join(', ') || 'none', how: `Say "set up ${CMD}" and change the tools step.` },
-			{ label: 'Changes it may propose (each after your ok)', value: (cfg.agent.effectTools ?? []).map(changeName).join('; ') || 'none', how: `Say "set up ${CMD}" and change the tools step.` },
+			// Changes allowed in setup that Settings never offers as a switch, such as a whole tool: shown, changed only in setup.
+			...((x => x.length ? [{ label: 'Other changes setup allows (each after your ok)', value: x.map(changeName).join('; '), how: `Say "set up ${CMD}" and change the tools step.` }] : [])((cfg.agent.effectTools ?? []).filter(e => !offerable(e)))),
 			{ label: 'Reads your chats from', value: cfg.runner ?? 'the machine where setup last finished', how: `On another machine, say "move ${NAME} here".` },
 		],
 	}
 }
 
 export async function saveSetting(store: Store, key: string, raw: string, deps: SaveDeps = {}): Promise<{ ok: boolean; text: string }> {
-	const spec = SETTINGS.find(s => s.key === key)
+	const spec = specsOf(store.config()).find(s => s.key === key)
 	if (!spec) return { ok: false, text: 'That setting cannot be changed here.' }
 	const r = spec.check ? await spec.check(String(raw ?? ''), store, deps) : spec.parse(String(raw ?? ''), store)
 	if (!r.ok) return { ok: false, text: r.why }
 	store.saveConfig(r.save(store.config(), store))
 	store.log({ event: 'setting', key })
-	return { ok: true, text: `Saved ${spec.label.toLowerCase()}. It applies from the next cycle, on every machine.` }
+	return { ok: true, text: `${spec.saved ? spec.saved(String(raw)) : `Saved ${spec.label.toLowerCase()}.`} It applies from the next cycle, on every machine.` }
 }
 
 // Each target is read from Azure DevOps before it is saved: its project must hold that pipeline ID, and its real name must not be

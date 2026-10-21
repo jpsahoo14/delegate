@@ -7,7 +7,7 @@ import { homedir, hostname } from 'node:os'
 import { join } from 'node:path'
 import { z } from 'zod'
 import type { Config } from '../core/types.ts'
-import { toolOf, unsafeRead } from '../core/effects.ts'
+import { WRITE_DEFAULTS, toolOf, unsafeRead } from '../core/effects.ts'
 import { remoteOf, saveCodeFolders } from '../runner/repos.ts'
 import { cliConfigPath, toolServers } from '../adapters/mcp-client.ts'
 import { assertTestSafe, readJson, writeJson } from '../store/fs.ts'
@@ -237,9 +237,7 @@ export const READ_DEFAULTS: Record<string, string[]> = {
 	ado: ['repo_pull_request', 'repo_pull_request_thread', 'pipelines_build', 'pipelines_build_log', 'wit_work_item', 'search_workitem', 'search_wiki', 'wiki'],
 }
 // Writes are only proposed; each runs after the owner's ok (R-HIL-29). A workplace adds its own servers in site.json.
-// Never offered: abandoning, completing or merging, bypassing policies, deleting, or creating or renaming a pipeline,
-// so the PR tool is offered for its vote only and the work-item tool for its update only.
-const WRITE: Record<string, string[]> = { ado: ['repo_pull_request_thread_write', 'repo_pull_request_write:vote', 'wit_work_item_write:update'], calendar: ['CreateEvent'] }
+const WRITE = WRITE_DEFAULTS
 export function defaultTools(mcpConfig = cliConfigPath('copilot')) {
 	const have = readJson<{ mcpServers?: Record<string, { command?: string; args?: string[] }> }>(mcpConfig, {}).mcpServers ?? {}
 	const read = { ...READ_DEFAULTS, ...site().read }, write = { ...WRITE, ...site().write }

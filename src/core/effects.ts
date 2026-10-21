@@ -1,7 +1,7 @@
 import { site } from './site.ts'
 import type { Call, Config, Effect, PrFacts } from './types.ts'
 import { NAME } from '../brand.ts'
-import { DEPLOY, deployLine, deployRefusal, isDeploy, isPipelineTool, pipelineOf, ringMeaning, targetOf } from './deploy.ts'
+import { DEPLOY, deployLine, deployRefusal, isDeploy, isPipelineTool, pipelineOf, ringParts, targetOf } from './deploy.ts'
 
 // The changes still to make: not done, and not unchecked by the owner (design-spec S6).
 export const pendingEffects = (es: Effect[] = []): Effect[] => es.filter(e => !e.done && !e.off)
@@ -91,8 +91,10 @@ export function vet(cfg: Config, effects: Effect[] = [], pr?: number): { effects
 	return { effects: [first], todos }
 }
 
-// A PR that changed since the review: the owner reviews again before any vote.
-export const reviewAgain = (code: string, why: string) => `${why} Review again? Reply "${code}: review again", or "skip ${code}".`
+// A PR that changed since the review: the owner reviews again before any vote. The page's "Review again" sends the same words.
+export const reviewAgainCmd = (code: string) => `${code}: review again`
+export const reviewAgain = (code: string, why: string) => `${why} Review again? Reply "${reviewAgainCmd(code)}", or "skip ${code}".`
+export const asksReviewAgain = (code: string, question?: string) => !!question?.includes(`Reply "${reviewAgainCmd(code)}"`)
 
 // The reply was written counting on refused changes, so it is not sent as it is: the owner changes it first.
 export const refusedAsk = (code: string, n: number) => `The reply counts on ${n === 1 ? 'a change' : `${n} changes`} ${NAME} cannot make, listed as yours to do. Change the reply with "edit ${code}: <text>", or skip ${code}.`
@@ -105,6 +107,14 @@ const LINES: Record<string, [string, string]> = {
 	'ado-wit_work_item_write:update': ['Work item update', 'change fields on one work item; the update must fail if the item changed since it was read'],
 	'calendar-CreateEvent': ['Calendar invite', 'create a meeting on the owner\'s calendar and invite people'],
 }
+// The changes Delegate may propose by default, by server, each made after the owner's ok (R-HIL-29); setup offers them, and
+// Settings shows each as a switch. Never offered: abandoning, completing or merging, bypassing policies, deleting, or creating
+// or renaming a pipeline, so the PR tool is offered for its vote only and the work-item tool for its update only.
+export const WRITE_DEFAULTS: Record<string, string[]> = { ado: ['repo_pull_request_thread_write', 'repo_pull_request_write:vote', 'wit_work_item_write:update'], calendar: ['CreateEvent'] }
+// A change Settings may offer as a switch: never one of those, never a whole PR write tool (it also completes and abandons), and
+// never a pipeline write; deploys are allowed by "Where Delegate may deploy", by pipeline ID.
+export const offerable = (entry: string) => { const [tool, action] = parts(entry); return !/complet|merge|abandon|bypass|delete/i.test(entry) && !/pipelines?_write|run_?pipeline/i.test(tool) && !(/pull_?request_write$/i.test(tool) && !action) }
+
 // A workplace's own changes describe themselves in site.json.
 const line = (entry: string) => LINES[entry] ?? site().actions?.[entry]
 export const changeName = (entry: string) => line(entry)?.[0] ?? entry
@@ -112,8 +122,12 @@ export const changeLine = (entry: string) => { const l = line(entry); return l ?
 
 // What a PR change means, from Azure DevOps: its title and author, required reviewers, and whether an approval may complete it.
 // A change's facts from Azure DevOps, for any kind: a PR's meaning, or a ring's runs (owned work).
-export const meaningOf = (e: Effect) => (e.pr ? prMeaning(e.pr) : e.ring ? ringMeaning(e.ring) : undefined)
-export const prMeaning = (p: PrFacts) => [`"${p.title}" by ${p.author}`, ...(p.required.length ? [`required reviewers: ${p.required.join(', ')}`] : []), ...(p.autoComplete ? ['autocomplete is on: your approval may complete it'] : [])].join('; ')
+// The page shows it in parts, a warning in its own tone (an approval that may complete the PR); text surfaces join them.
+export type Meaning = { text: string; warn?: true }[]
+export const prParts = (p: PrFacts): Meaning => [{ text: `"${p.title}" by ${p.author}` }, ...(p.required.length ? [{ text: `required reviewers: ${p.required.join(', ')}` }] : []), ...(p.autoComplete ? [{ text: 'autocomplete is on: your approval may complete it', warn: true as const }] : [])]
+export const meaningParts = (e: Effect): Meaning | undefined => (e.pr ? prParts(e.pr) : e.ring ? ringParts(e.ring) : undefined)
+export const meaningOf = (e: Effect) => meaningParts(e)?.map(p => p.text).join('; ')
+export const prMeaning = (p: PrFacts) => prParts(p).map(x => x.text).join('; ')
 
 // What the owner sees for a change, built only from the call that runs, never from the AI's words about it (review 10-21 P1-1).
 // Known kinds read as a person would write them (golden master 10-21). Each names the arguments it shows; every other argument

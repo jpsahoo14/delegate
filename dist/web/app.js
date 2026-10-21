@@ -139,7 +139,8 @@
     meeting: (c, u, name) => c.choices ? choicePrimary(c, u, name) : replyPrimary(c, u),
     review: reviewPrimary
   };
-  var primaryOf = (c, u, name) => (PRIMARY[c.type] || PRIMARY.reply)(c, u, name);
+  var reviewAgainPrimary = (c, u) => c.reviewAgain && !(c.type === "question" && u.answer.trim()) ? { label: "Review again", cmd: c.reviewAgain, kind: "draft", hint: "The PR changed since the review. Nothing is changed or sent; you will see the new result first.", verb: c.reviewAgain } : void 0;
+  var primaryOf = (c, u, name) => reviewAgainPrimary(c, u) ?? (PRIMARY[c.type] || PRIMARY.reply)(c, u, name);
   var factsOn = (k, u) => u.facts ?? new Set(k.facts.map((_, i) => i + 1));
   var kCmd = (k, u) => {
     const on = factsOn(k, u);
@@ -594,19 +595,30 @@
     });
   }
   function saveSetting(key) {
-    const u = U(`set:${key}`), value = S.set[key] ?? V.settings.rows.find((r) => r.key === key)?.value ?? "", io = env.io;
+    const row4 = V.settings.rows.find((r) => r.key === key), u = U(`set:${key}`), value = S.set[key] ?? row4?.value ?? "", io = env.io;
     if (!io?.settings) return;
+    const undo = () => {
+      if (row4?.kind === "switch") delete S.set[key];
+    };
     Object.assign(u, { status: "pending", msg: "" });
     render();
     io.settings(key, value).then((r) => {
       Object.assign(u, { status: "ready", msg: r.text });
       if (r.ok) delete S.set[key];
+      else undo();
       say(r.text, r.ok);
       refresh();
     }, () => {
+      undo();
       Object.assign(u, { status: "ready", msg: "Could not reach the page server." });
       render();
     });
+  }
+  function toggleSetting(key) {
+    const row4 = V.settings?.rows.find((r) => r.key === key);
+    if (!row4 || U(`set:${key}`).status === "pending") return;
+    S.set[key] = (S.set[key] ?? row4.value) === "true" ? "false" : "true";
+    saveSetting(key);
   }
   function report(text2) {
     const io = env.io;
@@ -1048,6 +1060,13 @@
         break;
       case "continue":
         act(code, code, `continue ${code}`, "keep", c.rev);
+        break;
+      // The runner answers with the reply quoted and asks for one more ok; the card keeps that answer as its result line.
+      case "replyonly":
+        if (c.replyOnly) act(code, code, c.replyOnly, "keep", c.rev);
+        break;
+      case "setswitch":
+        toggleSetting(v);
         break;
       case "theme":
         setTheme(nextTheme());
@@ -1720,7 +1739,8 @@
     const dl = day2 === 0 ? "Today" : day2 === 1 ? "Tomorrow" : s2.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
     return html`<div class="mtg"><span class="cal" aria-hidden="true"><small>${esc(s2.toLocaleDateString([], { month: "short" }))}</small><b>${s2.getDate()}</b></span><div class="mt"><b>${esc(m.subject)}</b><span>${esc(dl)} ${esc(time(s2))} to ${esc(time(e))}</span></div><span class="stack">${m.attendees.slice(0, 3).map((a) => av(whoOf(a), "sm"))}</span></div>`;
   }
-  var alsoLine = (c, ic) => c.changes.length ? html`<p class="also-line">${I(ic, "sm")}<span><b>Also:</b> ${esc(c.changes.map((x) => x.summary).join("; "))}</span></p>` : "";
+  var meaningLine = (m) => m?.length ? html`<p class="mean">${join(m.map((p) => p.warn ? html`<span class="warn">${I("warn", "sm")}${esc(p.text)}</span>` : esc(p.text)), raw(" · "))}</p>` : "";
+  var alsoLine = (c, ic) => !c.changes.length ? "" : c.changes.some((x) => x.meaning) ? html`<div class="also-line">${I(ic, "sm")}<div><b>Also:</b><ul class="also-list">${c.changes.map((x) => html`<li>${esc(x.summary)}${meaningLine(x.meaning)}</li>`)}</ul></div></div>` : html`<p class="also-line">${I(ic, "sm")}<span><b>Also:</b> ${esc(c.changes.map((x) => x.summary).join("; "))}</span></p>`;
   var preview = (c, u) => c.draft?.preview && !u.otherOn ? html`<div class="preview">${draftBlock(c, u)}${alsoLine(c, c.type === "meeting" ? "cal" : "task")}</div>` : "";
   var promiseLines = (c) => html`${c.todos?.length ? html`<p class="also-line">${I("warn", "sm")}<span><b>Yours to do:</b> ${esc(c.todos.join("; "))}</span></p>` : ""}${c.follow ? html`<p class="also-line">${I("eye", "sm")}<span><b>Then:</b> watch ${esc(c.follow.target)} every ${c.follow.everyHours} h until ${esc(c.follow.until)}, for up to 7 days. Change it under Watching.</span></p>` : ""}`;
 
@@ -1739,9 +1759,9 @@
   // src/web/app/view/classic/cards/review.ts
   function body5(c, u) {
     const on = u.cmts ?? new Set(c.changes.map((x) => x.n));
-    return html`${c.job ? html`<p class="rv-sum">${I("pr", "sm")}<b>${esc(c.job)}</b><span>· ${esc(plural(c.changes.length, "finding"))}</span></p>` : ""}
+    return html`${c.question ? html`<p class="q">${esc(c.question)}</p>` : ""}${c.job ? html`<p class="rv-sum">${I("pr", "sm")}<b>${esc(c.job)}</b><span>· ${esc(plural(c.changes.length, "finding"))}</span></p>` : ""}
 			<div class="lbl-row"><span>Changes to make</span><span class="sp"></span><span style="text-transform:none;letter-spacing:0;font-weight:500">${on.size} of ${c.changes.length} selected</span></div>
-			<ul class="cmts">${c.changes.map((x) => html`<li><label class="cmt"><input type="checkbox" id="cm-${esc(c.code)}-${x.n}" data-cmt="${x.n}"${on.has(x.n) ? raw(" checked") : ""}${env.snap ? raw(" disabled") : ""}><span class="mk">${I("check")}</span><span class="cb"><span class="loc">${esc(x.target)}<span class="tag">${esc(x.system)}</span></span><p>${esc(x.summary)}</p>${x.detail ? html`<pre>${esc(x.detail)}</pre>` : ""}</span></label></li>`)}</ul>${draftBlock(c, u)}`;
+			<ul class="cmts">${c.changes.map((x) => html`<li><label class="cmt"><input type="checkbox" id="cm-${esc(c.code)}-${x.n}" data-cmt="${x.n}"${on.has(x.n) ? raw(" checked") : ""}${env.snap ? raw(" disabled") : ""}><span class="mk">${I("check")}</span><span class="cb"><span class="loc">${esc(x.target)}<span class="tag">${esc(x.system)}</span></span><p>${esc(x.summary)}</p>${meaningLine(x.meaning)}${x.detail ? html`<pre>${esc(x.detail)}</pre>` : ""}</span></label></li>`)}</ul>${draftBlock(c, u)}`;
   }
 
   // src/web/app/view/classic/cards/index.ts
@@ -1794,7 +1814,8 @@
     const p = primary(c), verb = p.verb || p.cmd;
     const pending = u.status === "pending" && (u.by === "primary" || u.verb === verb);
     const busyLabel = /^pick\b/i.test(u.verb || "") && u.by !== "primary" ? "Preparing…" : p.kind === "draft" ? "Drafting…" : /^(Post|Make)/.test(p.label) ? `${p.label.split(" and ")[0].replace(/^Post/, "Posting").replace(/^Make/, "Making")}…` : "Sending…";
-    const sec = [u.editing ? B("Cancel edit", "canceledit", { cls: "sec-hide" }) : "", B("Later", "later", { ghost: true, verb: `later ${c.code}` })];
+    const only = c.replyOnly && !u.editing ? B("Send reply only", "replyonly", { verb: c.replyOnly, busy: u.status === "pending" && u.verb === c.replyOnly, busyLabel: "Checking…" }) : "";
+    const sec = [u.editing ? B("Cancel edit", "canceledit", { cls: "sec-hide" }) : "", only, B("Later", "later", { ghost: true, verb: `later ${c.code}` })];
     const foot = env.snap ? "" : p.hint ? html`<p class="vh">${esc(p.hint)}</p>` : verb ? html`<p class="vh">or type ${kbd(verb.length > 40 ? verb.slice(0, 38) + "…" : verb)} in Teams or your AI chat</p>` : "";
     return html`${stateLine(u, u.verb || verb)}<div class="acts">${B(p.label, "primary", { primary: true, id: `pri-${c.code}`, disabled: p.disabled || u.stale, busy: pending, busyLabel, verb })}${sec}</div>${foot}`;
   }
@@ -2032,6 +2053,10 @@
     if (r.kind === "bool") return html`<select id="${esc(id)}" data-set="${esc(r.key)}"><option value="false"${v === "false" ? raw(" selected") : ""}>Off</option><option value="true"${v === "true" ? raw(" selected") : ""}>On</option></select>`;
     return html`<input id="${esc(id)}" class="field" data-set="${esc(r.key)}" value="${esc(v)}"${r.kind === "number" ? raw(' inputmode="numeric"') : ""}>`;
   }
+  function switchRow(r) {
+    const u = U(`set:${r.key}`), on = (S.set[r.key] ?? r.value) === "true", id = `set-${r.key}`, busy = u.status === "pending";
+    return html`<li class="setrow swrow" data-code="set:${esc(r.key)}" data-sec="${esc(r.section)}"><div class="swl"><b id="${esc(id)}-l">${esc(r.label)}</b><span class="m" id="${esc(id)}-h">${esc(r.help)}</span>${u.msg ? html`<span class="m" role="status">${esc(u.msg)}</span>` : ""}</div>${env.snap ? html`<span class="m">${esc(on ? "On" : "Off")}</span>` : html`<button class="uisw setsw${busy ? raw(" busy") : ""}" id="${esc(id)}" type="button" role="switch" aria-checked="${raw(String(on))}" aria-labelledby="${esc(id)}-l" aria-describedby="${esc(id)}-h" data-act="setswitch" data-v="${esc(r.key)}"${busy || S.offline ? raw(" disabled") : ""}><span class="uisw-l">${esc(on ? "On" : "Off")}</span><span class="uisw-t" aria-hidden="true"><i></i></span></button>`}</li>`;
+  }
   function row2(r) {
     const u = U(`set:${r.key}`), changed = (S.set[r.key] ?? r.value) !== r.value;
     return html`<li class="setrow" data-code="set:${esc(r.key)}" data-sec="${esc(r.section)}"><label for="set-${esc(r.key)}"><b>${esc(r.label)}</b><span class="m">${esc(r.help)}</span></label>${input(r)}<div class="markacts">${B(u.status === "pending" ? "Saving…" : "Save", "saveset", { sm: true, primary: changed, v: r.key, disabled: !changed, busy: u.status === "pending" })}${r.key === "pollIdle" ? checkNow() : ""}${u.msg ? html`<span class="m">${esc(u.msg)}</span>` : ""}</div>${r.key === "pollIdle" ? rowState("row:retry") : ""}</li>`;
@@ -2043,11 +2068,13 @@
     const sugg = html`${ab.suggestions.map((x) => html`<li class="setrow" data-code="${esc(x.code)}"><b>${esc(x.text)}</b><span class="m">${esc(x.does)}</span><span class="m">Evidence: ${esc(x.evidence)}</span>${U(`row:${x.code}`).msg ? "" : html`<div class="markacts">${act2("Turn on", `ok ${x.code}`, { primary: true })}${act2("Not now", `skip ${x.code}`, { ghost: true })}${act2("Never", `never ${x.code}`, { ghost: true })}</div>`}${rowState(`row:${x.code}`)}</li>`)}`;
     const rules = html`${ab.rules.map((r) => html`<li class="setrow"><b>${esc(r.text)}</b>${r.who ? html`<span class="m">For: ${esc(r.who)}</span>` : ""}<span class="m">${esc(r.learned ?? "You said this.")}${r.held ? raw(" · On hold") : ""}</span>${r.code && !U(`row:${r.code}`).msg ? html`<div class="markacts">${act2("Remove", `never ${r.code}`, { ghost: true })}</div>` : ""}${r.code ? rowState(`row:${r.code}`) : ""}</li>`)}` || raw('<li class="setrow"><span class="m">None: every reply waits for your ok.</span></li>');
     const fixed = st.fixed.map((f) => html`<li class="setrow"><b>${esc(f.label)}</b><span class="sent">${esc(f.value)}</span><span class="m">${esc(f.how)}</span></li>`);
-    const rows2 = (sec, adv = false) => st.rows.filter((r) => r.section === sec && !!r.advanced === adv).map(row2);
+    const rows2 = (sec, adv = false) => st.rows.filter((r) => r.section === sec && !!r.advanced === adv && r.kind !== "switch").map(row2);
+    const sw = st.rows.filter((r) => r.kind === "switch");
+    const changes = sw.length ? html`<h3 class="section-h">Changes ${esc(env.name)} may propose</h3><p class="m" style="margin:-4px 0 10px">Each one waits for your ok on its item. Turning one off edits only this list, never your items: an ok on a change it no longer allows is refused, even one approved but not made yet. Deploys follow "Where ${esc(env.name)} may deploy" above.</p><ul class="rows setrows">${sw.map(switchRow)}</ul>` : "";
     const unsaved = (sec) => st.rows.some((r) => r.section === sec && S.set[r.key] !== void 0 && S.set[r.key] !== r.value);
     const body6 = {
       learned: html`${sugg ? html`<h3 class="section-h">Suggestions</h3><ul class="rows setrows">${sugg}</ul>` : ""}<h3 class="section-h">Standing instructions</h3><ul class="rows setrows">${rules}</ul>${ab.chats?.length ? html`<h3 class="section-h">Chats you marked</h3><ul class="rows setrows">${ab.chats.map((c) => html`<li class="setrow"><b>${esc(c.name)}</b><span class="m">${esc(c.says[0].toUpperCase() + c.says.slice(1))}. Say "${esc(c.name)} is normal again" to undo.</span></li>`)}</ul>` : ""}<h3 class="section-h">Learning</h3><ul class="rows setrows">${rows2("learned")}</ul>`,
-      you: html`<ul class="rows setrows">${rows2("you")}</ul>`,
+      you: html`<ul class="rows setrows">${rows2("you")}</ul>${changes}`,
       replies: html`<p class="m" style="margin:-4px 0 10px">Replies go out by themselves only for your <a href="#settings/learned">standing instructions</a>. These limits apply to every one.</p><ul class="rows setrows">${rows2("replies")}</ul>`,
       timing: html`<ul class="rows setrows">${rows2("timing")}</ul>`,
       system: html`<ul class="rows setrows">${rows2("system")}</ul><details class="adv" data-adv${S.advOpen ? raw(" open") : ""}><summary class="section-h">More</summary><ul class="rows setrows">${rows2("system", true)}</ul>${V.details ? detailsPanel() : ""}<h3 class="section-h">Changed by setup</h3><ul class="rows setrows">${fixed}</ul></details>`

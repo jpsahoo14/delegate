@@ -205,6 +205,9 @@ function setEffects(store: Store, w: Workflow, f: (es?: Effect[]) => Effect[]) {
 
 // At ok, a vote on a pull request is checked against the PR as it is now: still the item's, still open, and at the commit the review read.
 // Returns why nothing was done, or undefined to go ahead (next action, R-HIL-21).
+// The status of an item whose vote was dropped because its PR is completed or abandoned; the page offers "Send reply only" on it.
+export const noVoteNeeded = (id: number, state: string) => `PR ${id} is ${state}, so no vote is needed`
+export const voteDropped = (status = '') => /^PR \d+ is \w+, so no vote is needed$/.test(status)
 export async function recheckPr(store: Store, w: Workflow, probe?: BuildProbe): Promise<string | undefined> {
 	const left = prChanges(w)
 	if (!left.length) return undefined
@@ -217,7 +220,7 @@ export async function recheckPr(store: Store, w: Workflow, probe?: BuildProbe): 
 	if (/completed|abandoned/i.test(st.status)) {
 		setEffects(store, w, (es = []) => es.map(e => (isVote(e.call) && !e.done ? { ...e, off: true } : e)))
 		const rest = pendingEffects(w.effects).length, state = st.status.toLowerCase()
-		w.status = `PR ${id} is ${state}, so no vote is needed`
+		w.status = noVoteNeeded(id, state)
 		// The reply was written counting on the vote, so it is quoted before it goes without it (review 10-21 P2-10).
 		return `Not done ${code}: PR ${id} is ${state}, so no vote is needed. The reply was written counting on the vote; it says: "${w.draft?.text ?? ''}". Say "ok ${code}" to ${rest ? 'make the other changes and send it as it is' : 'send it as it is'}, "edit ${code}: <text>" to change it, or "skip ${code}".`
 	}

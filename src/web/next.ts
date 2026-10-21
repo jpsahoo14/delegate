@@ -169,8 +169,11 @@ export type RowKind =
 // Each row kind and the exact existing command its button sends (design-spec/new-experience.md §9). "<code>" is the code that
 // placed the row (a part's own code), "{text}" the owner's words from the row's field, "card" the classic card's own actions
 // ("<code>: answer", "pick <code> n", "ok <code>"), and "" no button: nothing waits on the owner. No new verbs.
+// Any card a row opens may also say "Send reply only" (a change failed or was dropped) or
+// "Review again" (the PR changed since the review): existing commands too.
+const CARD_MORE = 'ok <code> except <every change> (Send reply only) | <code>: review again (Review again)'
 export const COMMANDS: Record<RowKind, string> = {
-	reply: 'ok <code> (whole draft on the row) | card', holding: 'ok <code> (whole draft on the row) | card', question: 'card', choice: 'card', meeting: 'card', review: 'card',
+	reply: `ok <code> (whole draft on the row) | card | ${CARD_MORE}`, holding: `ok <code> (whole draft on the row) | card | ${CARD_MORE}`, question: `card | ${CARD_MORE}`, choice: `card | ${CARD_MORE}`, meeting: `card | ${CARD_MORE}`, review: `card | ${CARD_MORE}`,
 	'check-date': '<code>: nudge them', track: 'ok <code>', 'your-step': '<code>: {text}', stopped: '<code>: try again', 'reminder-new': 'ok <code>',
 	'waiting-person': 'ok <W code> | <code>: nudge them', 'waiting-others': '<code>: nudge them', watch: 'ok <code> (when changed)', 'waiting-delegate': '', nobody: '<code>: do the next step now', reminder: 'pause <code> | resume <code>',
 	working: '', scheduled: 'later <code>',

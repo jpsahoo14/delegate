@@ -73,7 +73,8 @@ export function buildCheck(id: number, b: BuildRead | undefined, pr: PrNow): { f
 const hhmm = (iso: string) => new Date(iso).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
 export const runLine = (r: RunFact) => `run ${r.id} by ${r.by || 'someone'} at ${hhmm(r.at)}${r.result ? `, ${r.result.toLowerCase()}` : r.status ? `, ${r.status.toLowerCase()}` : ''}`
 // What the ring is doing, as Azure DevOps listed it before the ok: shown with the deploy, never the AI's words.
-export const ringMeaning = (f: RingFacts) => [f.running.length ? `running now: ${f.running.map(runLine).join('; ')}` : 'nothing running', f.last ? `last ${runLine(f.last)}` : 'no runs yet'].join('; ')
+export const ringParts = (f: RingFacts) => [{ text: f.running.length ? `running now: ${f.running.map(runLine).join('; ')}` : 'nothing running' }, { text: f.last ? `last ${runLine(f.last)}` : 'no runs yet' }]
+export const ringMeaning = (f: RingFacts) => ringParts(f).map(p => p.text).join('; ')
 // The ring has moved since it was shown: a new run, or a different one running.
 export function ringMoved(was: RingFacts, now: RingFacts): string | undefined {
 	const newer = now.last && (!was.last || now.last.id !== was.last.id) ? now.last : undefined

@@ -763,3 +763,16 @@ a.num-bin:hover .num-bw{color:var(--accent-text)}
 #app[data-ui=next] .nsince .nsl{color:var(--text-2);margin-right:4px}
 #app[data-ui=next] .tag.fresh-new::before,#app[data-ui=next] .tag.fresh-back::before{content:"";display:inline-block;width:6px;height:6px;border-radius:50%;background:currentColor;margin-right:5px;vertical-align:1px}
 
+
+/* What a change means, under it on the card: a vote's PR and a deploy's ring; an approval that may complete the PR warns. */
+.mean{margin:4px 0 0;font-size:12.5px;color:var(--text-2);overflow-wrap:anywhere}
+.also-list{list-style:none;margin:2px 0 0;padding:0}
+.also-list li+li{margin-top:6px}
+.also-list .mean{margin-top:2px}
+.mean .warn{color:var(--warn);font-weight:500}
+.mean .warn svg{vertical-align:-2px;margin-right:4px}
+/* Settings: the changes Delegate may propose, one switch each, saved as it flips. */
+.setrows .swrow{grid-template-columns:1fr auto;align-items:center}
+.swrow .swl{display:grid;gap:2px;min-width:0}
+.swrow .setsw{padding:6px 8px}
+.swrow .setsw:disabled{opacity:.6;cursor:default}

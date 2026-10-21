@@ -5,6 +5,7 @@ import type { Store } from '../src/store/state.ts'
 import type { Workflow } from '../src/core/types.ts'
 import { knowledgeOf, propose } from '../src/runner/proposals.ts'
 import { answerAutomation, propose as proposeAutomation } from '../src/runner/automations.ts'
+import { reviewAgain } from '../src/core/effects.ts'
 
 const ago = (min: number) => new Date(Date.now() - min * 60_000).toISOString()
 const soon = (min: number) => new Date(Date.now() + min * 60_000).toISOString()
@@ -27,7 +28,8 @@ export function item(store: Store, code: string, name: string, chat: string, ove
 export function seedInbox(store: Store) {
 	store.saveConfig({
 		schema: 1, owner: { id: 'me', name: 'Robin Park' }, source: { command: [], selfChatId: 'self' }, watch: [],
-		agent: { flavor: 'copilot', command: [], tools: [], effectTools: ['ado-comment'] }, maxParallel: 1, nudgeEveryMin: 30,
+		// The changes A6 proposes are ones the owner allows, so its ok is accepted (review chui P2-3 checks this at ok).
+		agent: { flavor: 'copilot', command: [], tools: [], effectTools: ['ado-repo_pull_request_thread_write'] }, maxParallel: 1, nudgeEveryMin: 30,
 	})
 	item(store, 'A1', 'Priya Shah', 'Meeting options', {
 		createdAt: ago(1200), chat: { id: '19:mo@thread.v2', name: 'Meeting options', test: false, group: true, guests: true },
@@ -218,5 +220,39 @@ export function seedNumbers(store: Store, now = new Date(), first = false) {
 	})
 	mkdirSync(join(store.root, 'state', 'log'), { recursive: true })
 	for (const l of lines) appendFileSync(join(store.root, 'state', 'log', `${String(l.at).slice(0, 10)}-pc.jsonl`), JSON.stringify(l) + '\n')
+	return store
+}
+
+// What a change means, and what to do when one fails, is dropped, or went stale (the page side of next action and owned work).
+// On top of seedInbox: a vote whose approval may complete its PR, a deploy with its ring, a failed comment, a vote dropped
+// because its PR completed, and a vote whose PR changed since the review. Made-up people, PRs, and pipelines only.
+export function seedChanges(store: Store, ui: 'new' | 'classic' = 'classic') {
+	seedInbox(store)
+	const cfg = store.config()
+	const none = { command: 'delegate-test-no-such-server' }
+	store.saveConfig({ ...cfg, agent: { ...cfg.agent, tools: ['ado-repo_pull_request'], effectTools: ['ado-repo_pull_request_thread_write', 'ado-repo_pull_request_write:vote'], mcpServers: { ado: none, calendar: none } }, deploy: { allowed: [{ pipelineId: 3003, ring: 'TEST3', project: 'Globex', name: 'Web-deploy-test3' }] } } as never)
+	if (ui === 'new') store.saveUi('new', true)
+	const vote = (id: number, over: Record<string, unknown> = {}) => ({ system: 'ado', action: 'approve', target: `PR ${id}`, summary: `Approve PR ${id}`, call: { tool: 'ado-repo_pull_request_write', args: { action: 'vote', project: 'Globex', repositoryId: 'web', pullRequestId: id, vote: 'Approved' } }, head: 'c0ffee1', ...over })
+	const comment = (id: number, content: string, over: Record<string, unknown> = {}) => ({ system: 'ado', action: 'comment', target: `PR ${id}`, summary: content, call: { tool: 'ado-repo_pull_request_thread_write', args: { action: 'create', repositoryId: 'web', pullRequestId: id, content } }, ...over })
+	const withJob = (code: string, who: string, chat: string, pr: number, effects: Record<string, unknown>[], over: Partial<Workflow>) => {
+		store.saveJob({ schema: 1, id: `j-${code}`, key: `pr:${pr}`, goal: `Reviewed PR ${pr}`, session: { agent: 'copilot', id: `sj-${code}` }, state: 'done', purpose: 'work', parents: [`w-${code}`], asks: [], intent: 'pr_review', result: { summary: 'Reviewed', effects }, createdAt: ago(40), updatedAt: ago(40) } as never)
+		return item(store, code, who, chat, { createdAt: ago(45), intent: 'pr_review', job: `j-${code}`, effects: effects.map(e => ({ ...e })) as never, decision: { action: 'draft', reason: 'It changes something outside the chat', confidence: 'high' }, ...over })
+	}
+	withJob('A60', 'Dev Rao', 'Banner v2', 4200001, [vote(4200001, { pr: { title: 'Fix the banner', author: 'Dev Rao', required: ['Web Team'], autoComplete: true } })], {
+		lastAsk: 'Can you approve the banner fix?', draft: { text: 'Looks good to me; approved.', commitment: false, sources: [] } })
+	const at = ago(30)
+	withJob('A61', 'Kim Ito', 'Release sync', 4200002, [{ system: 'ado', action: 'deploy', target: 'TEST3', summary: 'Deploy build 9100001 to TEST3', head: '3fa91c2e', deploy: { ring: 'TEST3', pr: 4200002 },
+		call: { tool: 'ado-pipelines_write', args: { action: 'run_pipeline', project: 'Globex', pipelineId: 3003, resources: { pipelines: { ci: { runId: 9100001 } } } } },
+		build: { id: 9100001, pr: 4200002, head: '3fa91c2e', version: '3fa91c2e', branch: 'refs/pull/4200002/merge', readAt: at },
+		ring: { last: { id: 900, by: 'Pete Ross', at: '2026-10-20T08:10:00.000Z', status: 'completed', result: 'succeeded' }, running: [], readAt: at } }], {
+		lastAsk: 'Can you put PR 4200002 on TEST3?', draft: { text: 'Deploying PR 4200002 to TEST3 now. I will share results after.', commitment: false, sources: [] } })
+	withJob('A62', 'Rita Vale', 'Spec review', 4200004, [comment(4200004, 'The retry limit should come from config.', { error: 'ADO 503: the service is unavailable' })], {
+		lastAsk: 'Can you look at PR 4200004?', draft: { text: 'Left one comment on PR 4200004: the retry limit should come from config.', commitment: false, sources: [] },
+		status: 'Made 0 of 1 changes. Not done: comment on PR 4200004 (ADO 503: the service is unavailable). Reply "ok A62" to retry, or "ok A62 except 1" to send only the reply' })
+	withJob('A63', 'Pia Lin', 'Config', 4200003, [vote(4200003, { off: true }), comment(4200003, 'Rename the flag before ring 1.')], {
+		lastAsk: 'Can you approve the config PR?', draft: { text: 'Approved, with one note on the flag name.', commitment: false, sources: [] }, status: 'PR 4200003 is completed, so no vote is needed' })
+	withJob('A64', 'Sam Lee', 'Search', 4200005, [vote(4200005)], {
+		lastAsk: 'Can you approve the search PR?', draft: { text: 'Approved.', commitment: false, sources: [] },
+		question: reviewAgain('A64', 'PR 4200005 changed since your review (new commits).'), status: 'PR 4200005 changed since your review' })
 	return store
 }

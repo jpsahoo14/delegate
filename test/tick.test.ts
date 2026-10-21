@@ -4279,7 +4279,7 @@ test('next action: the card says the vote may complete the PR', async () => {
 	assert.match(src.chats.self.at(-1)!.body, /Before you ok A1: Approve PR 4200001 \("Fix the banner" by Dev Rao; required reviewers: Web Team; autocomplete is on: your approval may complete it\)/)
 	const { view } = await import('../src/web/view.ts')
 	const card = view(store, undefined).needs.find(c => c.code === 'A1')!
-	assert.match(card.changes[0].meaning!, /autocomplete is on: your approval may complete it/)
+	assert.match(card.changes[0].meaning!.map(p => p.text).join('; '), /autocomplete is on: your approval may complete it/)
 	src.post('self', 'me', 'ok A1'); await goPr()
 	assert.equal(store.jobs().some(j => j.purpose === 'execute' && j.state === 'running'), true, 'the next ok makes the change')
 })

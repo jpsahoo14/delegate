@@ -27,6 +27,9 @@ export function onClick(e: MouseEvent) {
 		case 'dismiss': A.act(code, code, `skip ${code}`, 'finish', c.rev); break
 		case 'skipk': A.act(code, code, `skip ${code}`, 'finish', c.rev); break
 		case 'continue': A.act(code, code, `continue ${code}`, 'keep', c.rev); break
+		// The runner answers with the reply quoted and asks for one more ok; the card keeps that answer as its result line.
+		case 'replyonly': if (c.replyOnly) A.act(code, code, c.replyOnly, 'keep', c.rev); break
+		case 'setswitch': A.toggleSetting(v); break
 		case 'theme': setTheme(nextTheme()); say(`Theme: ${THEME_LABEL[theme()]}.`, false); break
 		case 'ui': void switchUi(env.ui === 'new' ? 'classic' : 'new'); break
 		case 'uinote': closeNote(); break

@@ -163,9 +163,11 @@ test('B13 settings save to the shared config only when valid; profile goes to pr
 	assert.equal((await saveSetting(store, 'agent', 'x')).ok, false, 'only the listed settings')
 	const v = settingsView(store)
 	assert.deepEqual(v.rows.find(r => r.key === 'autoUpdate')?.value, 'off')
-	assert.deepEqual(v.fixed.map(f => f.label), ['Tools drafts may read', 'Changes it may propose (each after your ok)', 'Reads your chats from'])
-	store.saveConfig({ ...store.config(), agent: { ...store.config().agent, effectTools: ['ado-repo_pull_request_thread_write', 'ado-repo_pull_request_write:vote', 'x-other'] } })
-	assert.equal(settingsView(store).fixed[1].value, 'PR comment; PR vote; x-other', 'next action: Settings shows the allowed actions, by what they do')
+	assert.deepEqual(v.fixed.map(f => f.label), ['Tools drafts may read', 'Reads your chats from'], 'the changes it may propose are switches, not a read-only line (R-HIL-21)')
+	store.saveConfig({ ...store.config(), agent: { ...store.config().agent, effectTools: ['ado-repo_pull_request_thread_write', 'ado-repo_pull_request_write:vote', 'x-other', 'ado-repo_pull_request_write'] } })
+	const w = settingsView(store)
+	assert.deepEqual(w.rows.filter(r => r.kind === 'switch').map(r => `${r.label}=${r.value}`), ['PR comment=true', 'PR vote=true', 'x-other=true'], 'next action: Settings shows the allowed actions, by what they do')
+	assert.deepEqual(w.fixed.map(f => `${f.label}: ${f.value}`)[1], 'Other changes setup allows (each after your ok): ado-repo_pull_request_write', 'a whole PR tool is never a switch, but is still shown')
 })
 
 test('dogfood 10-20 Advanced settings: each is checked before it is saved, and lands where the runner reads it', async () => {

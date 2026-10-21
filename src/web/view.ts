@@ -1,6 +1,7 @@
 import { homeOf } from '../runner/work.ts'
 import type { Automation, Choices, Fact, Meeting, Note, Proposal, Workflow } from '../core/types.ts'
-import { meaningOf, pendingEffects, shown } from '../core/effects.ts'
+import { asksReviewAgain, isVote, meaningParts, pendingEffects, reviewAgainCmd, shown, type Meaning } from '../core/effects.ts'
+import { voteDropped } from '../runner/probe.ts'
 import { groups, lookLine } from '../core/render.ts'
 import type { Store } from '../store/state.ts'
 import { bootLines, knowledgeOf } from '../runner/proposals.ts'
@@ -19,8 +20,9 @@ import type { NextView } from './next.ts'
 
 export type Who = { name: string; initials: string; hue: number }
 export type SourceRow = { kind: 'Knowledge' | 'In the chat' | 'Private'; label: string; href?: string; stale?: boolean; locked?: boolean }
-// meaning: for a PR change, what Azure DevOps says the PR is and what the change may do (next action)
-export type Change = { n: number; summary: string; target: string; system: string; action: string; detail?: string; meaning?: string }
+// meaning: what Azure DevOps says the change is about, in parts: a vote's PR and what an approval may do (a warning), or a
+// deploy's ring (next action, owned work)
+export type Change = { n: number; summary: string; target: string; system: string; action: string; detail?: string; meaning?: Meaning }
 export type CardType = 'reply' | 'question' | 'choice' | 'meeting' | 'review'
 
 export type ItemCard = {
@@ -36,6 +38,11 @@ export type ItemCard = {
 	work?: WorkView
 	// Show details (Settings, Advanced): what decided this item, for when something looks wrong.
 	debug?: string[]
+	// "Send reply only": a change failed or was dropped as not needed, and the reply is unsent. The existing "ok <code> except
+	// <every change>"; the runner quotes the reply and a second ok sends it (next action).
+	replyOnly?: string
+	// "Review again": the PR changed since the review, so the question asks for the stale flow's own command.
+	reviewAgain?: string
 }
 // Open work as the page shows it: the goal, where it stands, and its latest steps (R-WRK-07).
 export type WorkView = { goal: string; next?: string; waiting?: string; due: boolean; steps: { at: string; what: string; news: boolean }[]; plan: { what: string; who: string; done: boolean; where?: string; build?: string }[]; home?: string; proposed: boolean }
@@ -144,6 +151,18 @@ function workView(w: Workflow, home = w): WorkView | undefined {
 	return { goal: k.goal, next: nextOf(k), waiting: k.waitingOn && `${k.waitingOn.who}${k.waitingOn.where ? ` (${k.waitingOn.where})` : ''}`, due: home === w && w.state === 'needs_human' && !w.draft && /^No news/.test(w.status), steps: k.steps.slice(-6).map(x => ({ at: x.at, what: x.what, news: !!x.news })), plan: (k.plan ?? []).map(p => ({ what: p.what, who: p.who, done: !!p.done, ...(p.in ? { where: p.in } : {}), ...(p.probe ? { build: `${p.probe.build}${p.seen ? ` · ${p.seen}` : ''}` } : {}) })), ...(home !== w ? { home: home.code } : {}), proposed: !!k.proposed }
 }
 
+// What the owner can do when a change did not go as shown: send only the reply, or review a changed PR again. Cards are only
+// for items that wait on the owner (needs_human), so a working item never offers either.
+function nextSteps(w: Workflow): Pick<ItemCard, 'replyOnly' | 'reviewAgain'> {
+	const left = pendingEffects(w.effects)
+	const failed = left.some(e => e.error || e.maybe), dropped = voteDropped(w.status) && (w.effects ?? []).some(e => e.off && !e.done && isVote(e.call))
+	return {
+		// Never while a question is open: every ok is refused then (a stale vote after a change run, a refusedAsk; review chui P2-1).
+		...(left.length && w.draft?.text && !w.sent && !w.question && (failed || dropped) ? { replyOnly: `ok ${w.code} except ${left.map((_, i) => i + 1).join(' ')}` } : {}),
+		...(asksReviewAgain(w.code, w.question) ? { reviewAgain: reviewAgainCmd(w.code) } : {}),
+	}
+}
+
 function card(store: Store, w: Workflow): ItemCard {
 	const k = knowledgeOf(store, store.config())
 	const job = w.job ? store.job(w.job) : undefined
@@ -155,7 +174,8 @@ function card(store: Store, w: Workflow): ItemCard {
 		question: w.question, draft: w.draft?.text && !/^_{3,}$/.test(w.draft.text.trim()) ? { text: w.draft.text, commitment: w.draft.commitment, preview: !!w.draft.preview, ...(w.draft.holding ? { holding: true } : {}) } : undefined,
 		choices: w.choices, picked: w.picked, context: [...(w.shareHold ? [{ label: 'Need to know', text: w.shareHold, tone: 'warn' as const }] : []), ...(w.context ?? [])], meeting: w.meeting, job: job?.goal,
 		// Every field is built from the change's call, never the AI's words about it (review 10-21 P1-1).
-		changes: pendingEffects(w.effects).map((e, i) => { const s = shown(e); return { n: i + 1, summary: s.text, target: s.loc || s.system, system: s.system, action: s.line, detail: s.detail || undefined, ...(meaningOf(e) ? { meaning: meaningOf(e) } : {}) } }),
+		changes: pendingEffects(w.effects).map((e, i) => { const s = shown(e), m = meaningParts(e); return { n: i + 1, summary: s.text, target: s.loc || s.system, system: s.system, action: s.line, detail: s.detail || undefined, ...(m ? { meaning: m } : {}) } }),
+		...nextSteps(w),
 		...(store.config().showDetails ? { debug: debugLines(w) } : {}),
 		why: { reason: w.decision?.reason, confidence: w.decision?.confidence, sources: (w.draft?.sources ?? []).map(s => source(s.ref, s.tier, s.stale, s.label, k)), gaps: w.gaps ?? [], searched: (w.looked ?? []).map(lookLine) },
 		work: workView(w, homeOf(store, w)), notes: (w.notes ?? []).map(n => n.sources ? { ...n, sources: n.sources.map(s => ({ ...s, ref: openLink(s.ref) })) } : n), status: w.status, openOn: w.openOn, todos: w.todos, follow: w.follow && { target: w.follow.target, until: w.follow.until, everyHours: w.follow.everyHours ?? 4 },
