@@ -4093,34 +4093,43 @@ test('bug 10-21 A48: a new message during the change run stops it; the redrafted
 	script = needsJob({ key: 'pr:acme/web/4200001', goal: 'Re-review PR 4200001' })
 	jf.job = (_, id) => ({ workflowId: id, intent: 'pr_review', state: 'needs_human', summary: 'All findings fixed', reply: { text: 'Rechecked, all fixed.', commitment: false, sources: [{ ref: PR_URL, tier: 'live', origin: 'extracted' }] } })
 	src.post(CHAT, 'me', `[as Kim] Fixed all three, can you take another look? ${PR_URL}`); await goPr(); await goPr()
-	script = promise([voteEffect()], "Looks good. I've approved the PR.")
+	store.saveConfig({ ...store.config(), agent: { ...store.config().agent, effectTools: ['ado-comment', 'ado-repo_pull_request_write:vote'] } })
+	script = promise([NOTE, voteEffect()], "Left a comment. I've approved the PR.")
 	src.post('self', 'me', "A1: Looks good. I'll approve the PR."); await goPr()
 	jf.job = () => undefined
 	await see('A1'); src.post('self', 'me', 'ok A1'); await goPr(); src.post('self', 'me', 'ok A1'); await goPr()
 	const job = store.job(store.byCode('A1')!.job!)!
-	assert.deepEqual([job.purpose, job.state], ['execute', 'running'], 'the change run is making the vote')
-	script = promise([voteEffect({ summary: 'Approve PR 4200001 with suggestions', call: voteCall(4200001, 'ApprovedWithSuggestions') })], 'Approved with suggestions.')
+	assert.deepEqual([job.purpose, job.state], ['execute', 'running'], 'the change run is making the changes')
+	const { makeChange } = await import('../src/runner/change.ts')
+	await makeChange(store, job.id, job.run!.id, 0, ado, prProbe)
+	script = promise([NOTE, voteEffect({ summary: 'Approve PR 4200001 with suggestions', call: voteCall(4200001, 'ApprovedWithSuggestions') })], 'Left a comment. Approved with suggestions.')
 	src.post(CHAT, 'me', '[as Kim] One more small change, please re-approve'); await goPr()
-	assert.deepEqual([store.job(job.id)!.purpose, calls.length], ['work', 0], 'the run stopped before any vote')
-	assert.deepEqual(store.job(job.id)!.result!.effects!.map(e => e.call?.args.vote), ['ApprovedWithSuggestions'], 'the job now holds the redrafted change')
+	assert.deepEqual([store.job(job.id)!.purpose, calls.map(c => c.args.content ?? c.args.vote)], ['work', ['Null check']], 'the run stopped after the comment, before the vote')
+	assert.deepEqual(pendingOf(store.job(job.id)!.result!).map(e => e.call?.args.vote ?? e.call?.args.content), ['ApprovedWithSuggestions'], 'the job holds the redrafted vote, and the comment as made')
+	assert.deepEqual(pendingOf(store.byCode('A1')!).map(e => e.summary), ['Approve PR 4200001 with suggestions'], 'so does the item')
 	assert.doesNotMatch(src.chats[CHAT].map(m => m.body).join('\n'), /approved/i, 'no reply went out on the old ok')
 	await see('A1'); src.post('self', 'me', 'ok A1'); await goPr(); src.post('self', 'me', 'ok A1'); await goPr()
 	assert.doesNotMatch(src.chats.self.slice(-2).map(m => m.body).join('\n'), /out of date/, 'ok can make the redrafted change')
-	await makeChanges([0]); await goPr()
-	assert.deepEqual(calls.map(c => c.args.vote), ['ApprovedWithSuggestions'])
-	assert.equal(src.chats[CHAT].at(-1)!.body, 'Approved with suggestions.')
+	await makeChanges([1]); await goPr()
+	assert.deepEqual(calls.map(c => c.args.content ?? c.args.vote), ['Null check', 'ApprovedWithSuggestions'], 'the comment once, then the new vote')
+	assert.equal(src.chats[CHAT].at(-1)!.body, 'Left a comment. Approved with suggestions.')
 })
 
-test('review 10-21c P1-1: two askers on one PR; one item\'s redraft does not take the other\'s changes, and each can still be approved', async () => {
-	const other = 'other-chat'
-	store.saveConfig({ ...store.config(), watch: [...store.config().watch, { id: other, name: 'Other', test: true }] })
-	src.post(other, 'me', 'history'); await go()
+// Kim (A1, CHAT) and Lee (A2, other chat) ask about one PR; its review proposes one comment that both items show.
+const OTHER = 'other-chat'
+const NOTE = { system: 'ado', action: 'comment', target: 'PR 4200001', summary: 'Null check in a.ts', call: { tool: 'ado-comment', args: { pullRequestId: 4200001, content: 'Null check' } } }
+const twoAskers = async () => {
+	store.saveConfig({ ...store.config(), watch: [...store.config().watch, { id: OTHER, name: 'Other', test: true }] })
+	src.post(OTHER, 'me', 'history'); await go()
 	voteSetup(['ado-comment', 'ado-repo_pull_request_write:vote']); calls.length = 0
-	const note = { system: 'ado', action: 'comment', target: 'PR 4200001', summary: 'Null check in a.ts', call: { tool: 'ado-comment', args: { pullRequestId: 4200001, content: 'Null check' } } }
 	script = needsJob({ key: 'pr:acme/web/4200001', goal: 'Review PR 4200001' }); jf.job = () => undefined
-	src.post(CHAT, 'me', `[as Kim] Can you review? ${PR_URL}`); src.post(other, 'me', `[as Lee] Is this good? ${PR_URL}`); await goPr()
-	finishExecLike((_, id) => ({ workflowId: id, intent: 'pr_review', state: 'needs_human', summary: '1 finding', reply: { text: 'Left 1 comment on PR 4200001.', commitment: false, sources: [{ ref: PR_URL, tier: 'live', origin: 'extracted' }] }, effects: [note] })); await goPr()
-	const job = store.byCode('A1')!.job!
+	src.post(CHAT, 'me', `[as Kim] Can you review? ${PR_URL}`); src.post(OTHER, 'me', `[as Lee] Is this good? ${PR_URL}`); await goPr()
+	finishExecLike((_, id) => ({ workflowId: id, intent: 'pr_review', state: 'needs_human', summary: '1 finding', reply: { text: 'Left 1 comment on PR 4200001.', commitment: false, sources: [{ ref: PR_URL, tier: 'live', origin: 'extracted' }] }, effects: [NOTE] })); await goPr()
+	return store.byCode('A1')!.job!
+}
+
+test('review 10-21c P1-1: two askers on one PR; one item\'s redraft does not take the other\'s changes, and each can still be approved', async () => {
+	const job = await twoAskers(), other = OTHER, note = NOTE
 	assert.deepEqual([store.byCode('A2')!.job, pendingOf(store.byCode('A2')!).map(e => e.summary)], [job, ['Null check in a.ts']], 'both items share the review and its comment')
 	script = promise([note, voteEffect()], 'Left 1 comment and approved.')
 	src.post('self', 'me', "A1: Leave the comment, and I'll approve."); await goPr()
@@ -4140,6 +4149,27 @@ test('review 10-21c P1-1: two askers on one PR; one item\'s redraft does not tak
 	await makeChanges([1, 2]); await goPr()
 	assert.deepEqual(calls.map(c => c.args.vote ?? c.args.content), ['Null check', 'Please add a test', 'Approved'], 'each comment once, then the vote')
 	assert.equal(src.chats[CHAT].at(-1)!.body, 'Left 2 comments and approved.')
+})
+
+test('review 10-21d P2-1: once the other asker is skipped, ok makes the redraft its item shows', async () => {
+	await twoAskers()
+	script = promise([NOTE, voteEffect()], 'Left 1 comment and approved.')
+	src.post('self', 'me', "A1: Leave the comment, and I'll approve."); await goPr()
+	src.post('self', 'me', 'skip A2'); await goPr()
+	await see('A1'); src.post('self', 'me', 'ok A1'); await goPr(); src.post('self', 'me', 'ok A1'); await goPr()
+	assert.doesNotMatch(src.chats.self.slice(-2).map(m => m.body).join('\n'), /out of date/)
+	assert.equal(store.job(store.byCode('A1')!.job!)!.purpose, 'execute')
+})
+
+test('review 10-21d P2-3: "except" leaves out the change the owner named, even when the item and the job list it in another order', async () => {
+	const job = await twoAskers()
+	const test = { ...NOTE, summary: 'Ask for a test', call: { tool: 'ado-comment', args: { pullRequestId: 4200001, content: 'Please add a test' } } }
+	const made = { ...NOTE, done: { ref: 't0', at: new Date().toISOString() } }
+	const a1 = store.byCode('A1')!, j = store.job(job)!
+	store.save({ ...a1, effects: [made, test, voteEffect()] }); store.saveJob({ ...j, result: { ...j.result!, effects: [test, voteEffect()] } })
+	store.save({ ...store.byCode('A2')!, state: 'done' })
+	await see('A1'); src.post('self', 'me', 'ok A1 except 1'); await goPr(); src.post('self', 'me', 'ok A1'); await goPr()
+	assert.deepEqual(store.job(job)!.result!.effects!.filter(e => e.off).map(e => e.summary), ['Ask for a test'], 'change 1 is left out, not the vote')
 })
 
 test("next action: a vote names only the item's PR", async () => {

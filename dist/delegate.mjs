@@ -20797,7 +20797,7 @@ function changeSays(e) {
   const rest = x.detail.replace(/\n/g, "; ");
   return `${x.line}${where ? ` at ${where}` : ""}${says}${rest ? says ? ` (${rest})` : `: ${rest}` : ""}`;
 }
-var pendingEffects, sameChange, parts, allows, toolOf, NEVER_KEY, never2, prTool, forbidden, WRITE_VERBS, verbWrite, prIdOf, isVote, VOTES, VOTE_NAME, VOTE_WORDS, sameHead, reviewAgain, refusedAsk, LINES, line, changeName, changeLine, meaningOf, prMeaning, str, VOTE_SAYS, at;
+var pendingEffects, sameChange, carryMarks, parts, allows, toolOf, NEVER_KEY, never2, prTool, forbidden, WRITE_VERBS, verbWrite, prIdOf, isVote, VOTES, VOTE_NAME, VOTE_WORDS, sameHead, reviewAgain, refusedAsk, LINES, line, changeName, changeLine, meaningOf, prMeaning, str, VOTE_SAYS, at;
 var init_effects = __esm({
   "src/core/effects.ts"() {
     "use strict";
@@ -20805,7 +20805,12 @@ var init_effects = __esm({
     init_brand();
     init_deploy();
     pendingEffects = (es = []) => es.filter((e) => !e.done && !e.off);
-    sameChange = (a, b) => a.system === b.system && a.action === b.action && a.target === b.target && JSON.stringify(a.call ?? a.payload ?? null) === JSON.stringify(b.call ?? b.payload ?? null);
+    sameChange = (a, b) => JSON.stringify([a.system, a.action, a.target, a.call ?? a.payload ?? null, a.head ?? null]) === JSON.stringify([b.system, b.action, b.target, b.call ?? b.payload ?? null, b.head ?? null]);
+    carryMarks = (list2, from = []) => list2.map((e) => {
+      if (e.done) return e;
+      const m = from.find((x) => (x.done || x.maybe) && sameChange(x, e));
+      return m ? { ...e, done: m.done, maybe: m.maybe, error: m.error } : e;
+    });
     parts = (entry) => {
       const i = entry.indexOf(":");
       return i < 0 ? [entry] : [entry.slice(0, i), entry.slice(i + 1)];
@@ -43440,7 +43445,8 @@ function only(store2, wf, nums) {
   const offIdx = (wf.effects ?? []).map((e, i) => left.includes(e) && !keep.has(e) ? i : -1).filter((i) => i >= 0);
   for (const i of offIdx) {
     wf.effects[i] = { ...wf.effects[i], off: true };
-    if (job?.result?.effects[i]) job.result.effects[i] = { ...job.result.effects[i], off: true };
+    const j2 = job?.result?.effects.findIndex((x) => pendingEffects([x]).length && sameChange(x, wf.effects[i])) ?? -1;
+    if (j2 >= 0) job.result.effects[j2] = { ...job.result.effects[j2], off: true };
   }
   if (job) store2.saveJob(job);
   return void 0;
@@ -44509,14 +44515,7 @@ function finishWork(store2, job, r, asksAtStart) {
   if (!again) store2.log({ event: "job-done", job: job.id, key: job.key, summary: r.summary, effects: effects.length });
 }
 async function finishExecute(store2, src, cfg, job) {
-  const effects = (job.result?.effects ?? []).map((e) => ({ ...e }));
-  for (const [i, c] of Object.entries(store2.changes(job.id, job.run.id))) {
-    const e = effects[Number(i)];
-    if (!e) continue;
-    if (c.state === "done") Object.assign(e, { done: { ref: c.ref, at: c.at }, error: void 0 });
-    else if (c.state === "failed") e.error = c.error;
-    else Object.assign(e, { error: "No answer from the tool, so it may have been made", ...isVote(e.call) ? {} : { maybe: true } });
-  }
+  const effects = foldChanges(store2, job);
   const stale = Object.values(store2.changes(job.id, job.run.id)).find((c) => c.stale);
   const vote = voteValue(effects.find((e) => e.done && isVote(e.call))?.call);
   const left = pendingEffects(effects);
@@ -44526,7 +44525,7 @@ async function finishExecute(store2, src, cfg, job) {
   store2.log({ event: "job-executed", job: job.id, items: parents.map((w) => w.code), kept: effects.filter((e) => !e.off).length, removed: effects.filter((e) => e.off).length, done: effects.length - left.length, left: left.length });
   for (const wf of parents) {
     const ok = stillApproved(wf, before);
-    wf.effects = ok ? effects : wf.effects?.map((e) => ({ ...e, done: e.done ?? effects.find((m) => m.done && sameChange(m, e))?.done }));
+    wf.effects = ok ? effects : wf.effects && carryMarks(wf.effects, effects);
     if (vote !== void 0) wf.prVote = vote;
     wf.approved = void 0;
     if (!ok) {
@@ -44571,9 +44570,29 @@ async function finishExecute(store2, src, cfg, job) {
   adoptList(store2, job);
   store2.saveJob(job);
 }
+function foldChanges(store2, job) {
+  const effects = (job.result?.effects ?? []).map((e) => ({ ...e }));
+  for (const [i, c] of Object.entries(job.run ? store2.changes(job.id, job.run.id) : {})) {
+    const e = effects[Number(i)];
+    if (!e) continue;
+    if (c.state === "done") Object.assign(e, { done: { ref: c.ref, at: c.at }, error: void 0 });
+    else if (c.state === "failed") e.error = c.error;
+    else Object.assign(e, { error: "No answer from the tool, so it may have been made", ...isVote(e.call) ? {} : { maybe: true } });
+  }
+  return effects;
+}
 function adoptList(store2, job) {
-  const lists = parentsOf(store2, job).filter((p) => pendingEffects(p.effects).length).map((p) => p.effects);
-  if (lists.length && lists.every((l) => keyOf(l) === keyOf(lists[0])) && keyOf(lists[0]) !== keyOf(job.result?.effects)) job.result = { ...job.result, effects: lists[0].map((e) => ({ ...e })) };
+  const parents = parentsOf(store2, job).filter((p) => pendingEffects(p.effects).length);
+  if (!parents.length || !parents.every((p) => effectsKey(p) === effectsKey(parents[0]))) return;
+  const list2 = carryMarks(parents[0].effects.map((e) => ({ ...e })), job.result?.effects);
+  for (const p of parents) {
+    const mine = carryMarks(p.effects, list2);
+    if (keyOf(mine) !== effectsKey(p)) {
+      p.effects = mine;
+      store2.save(p);
+    }
+  }
+  if (keyOf(list2) !== keyOf(job.result?.effects) || pendingEffects(list2).length !== pendingEffects(job.result?.effects).length) job.result = { ...job.result, effects: list2 };
 }
 function changesJob(store2, cfg, wf, effects) {
   const now = (/* @__PURE__ */ new Date()).toISOString();
@@ -44583,6 +44602,12 @@ function changesJob(store2, cfg, wf, effects) {
 }
 function approveEffects(store2, cfg, wf, again = false) {
   const job = wf.job ? store2.job(wf.job) : void 0;
+  if (job && !executing(job) && !(job.purpose === "work" && (job.state === "running" || job.state === "queued"))) {
+    store2.save(wf);
+    adoptList(store2, job);
+    store2.saveJob(job);
+    wf.effects = store2.workflow(wf.id)?.effects ?? wf.effects;
+  }
   const left = pendingEffects(wf.effects);
   if (!job || !left.length) return void 0;
   const maybe = left.find((e) => e.maybe);
@@ -44645,7 +44670,7 @@ function stopRun(store2, procs, job, why) {
     return;
   }
   const again = !!job.run && job.asks.length > job.run.asks;
-  Object.assign(job, { state: again ? "queued" : "done", purpose: "work", run: void 0 });
+  Object.assign(job, { result: { ...job.result, effects: foldChanges(store2, job) }, state: again ? "queued" : "done", purpose: "work", run: void 0 });
   adoptList(store2, job);
   store2.saveJob(job);
   store2.log({ event: "job-execute-stopped", job: job.id, why });

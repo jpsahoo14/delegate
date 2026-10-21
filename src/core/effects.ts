@@ -6,7 +6,9 @@ import { DEPLOY, deployLine, deployRefusal, isDeploy, isPipelineTool, pipelineOf
 // The changes still to make: not done, and not unchecked by the owner (design-spec S6).
 export const pendingEffects = (es: Effect[] = []): Effect[] => es.filter(e => !e.done && !e.off)
 // The same change: the same call, or the same payload when there is no call. Two comments on one PR are two changes (review 10-21c P2-2).
-export const sameChange = (a: Effect, b: Effect) => a.system === b.system && a.action === b.action && a.target === b.target && JSON.stringify(a.call ?? a.payload ?? null) === JSON.stringify(b.call ?? b.payload ?? null)
+export const sameChange = (a: Effect, b: Effect) => JSON.stringify([a.system, a.action, a.target, a.call ?? a.payload ?? null, a.head ?? null]) === JSON.stringify([b.system, b.action, b.target, b.call ?? b.payload ?? null, b.head ?? null])
+// A list takes what is known about each of its changes from another list of the same changes: made, or may have been made (review 10-21d P1).
+export const carryMarks = (list: Effect[], from: Effect[] = []) => list.map(e => { if (e.done) return e; const m = from.find(x => (x.done || x.maybe) && sameChange(x, e)); return m ? { ...e, done: m.done, maybe: m.maybe, error: m.error } : e })
 
 // An allowed change is a tool, or one action of a tool that does several ("ado-repo_pull_request_write:vote").
 // An entry without an action allows the whole tool, as before (R-HIL-21).

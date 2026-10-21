@@ -2,7 +2,7 @@ import { planRetry, retryStatus } from './retry.ts'
 import { homeOf, step, watchNews } from './work.ts'
 import { confidence } from '../core/policy.ts'
 import { uptime } from 'node:os'
-import { changeSays, isVote, unsafeRead, pendingEffects, refusedAsk, reviewAgain, sameChange, shown, vet, voteValue } from '../core/effects.ts'
+import { changeSays, isVote, unsafeRead, pendingEffects, refusedAsk, reviewAgain, carryMarks, shown, vet, voteValue } from '../core/effects.ts'
 import { prOf, prTarget } from './probe.ts'
 import { cloneFor, cloneTodo, repoRef } from './repos.ts'
 import { deployed, deployRunning, findingNotBlocker, isValidate, proposeTargets, shellInClone, shellTool, telemetryNote, telemetryTools } from './validate.ts'
@@ -277,16 +277,7 @@ export function finishWork(store: Store, job: Job, r: Report, asksAtStart: numbe
 // The approved changes ran. The reply goes out only to items whose ok still matches what they approved.
 async function finishExecute(store: Store, src: Source, cfg: Config, job: Job) {
 	// A change counts as made only when make_change recorded it, never because the run says so (next action).
-	const effects = (job.result?.effects ?? []).map(e => ({ ...e }))
-	for (const [i, c] of Object.entries(store.changes(job.id, job.run!.id))) {
-		const e = effects[Number(i)]
-		if (!e) continue
-		if (c.state === 'done') Object.assign(e, { done: { ref: c.ref, at: c.at }, error: undefined })
-		else if (c.state === 'failed') e.error = c.error
-		// A call with no answer may have happened: it is never repeated by itself (decision A3). A vote only sets a state, so it
-		// may be tried again; anything else waits for the owner to check and say "again" (review 10-21 P2-7).
-		else Object.assign(e, { error: 'No answer from the tool, so it may have been made', ...(isVote(e.call) ? {} : { maybe: true }) })
-	}
+	const effects = foldChanges(store, job)
 	// A vote refused because the PR changed since the review: the owner reviews again; nothing is sent (review 10-21 P1-3).
 	const stale = Object.values(store.changes(job.id, job.run!.id)).find(c => c.stale)
 	// Delegate's own vote is recorded on its items, so the PR check does not take it for the owner acting outside Delegate.
@@ -302,7 +293,7 @@ async function finishExecute(store: Store, src: Source, cfg: Config, job: Job) {
 	for (const wf of parents) {
 		const ok = stillApproved(wf, before)
 		// An item whose list was not the one made keeps its own, with what was made marked (review 10-21c P1-1).
-		wf.effects = ok ? effects : wf.effects?.map(e => ({ ...e, done: e.done ?? effects.find(m => m.done && sameChange(m, e))?.done }))
+		wf.effects = ok ? effects : wf.effects && carryMarks(wf.effects, effects)
 		if (vote !== undefined) wf.prVote = vote
 		wf.approved = undefined
 		if (!ok) {
@@ -351,10 +342,30 @@ async function finishExecute(store: Store, src: Source, cfg: Config, job: Job) {
 	store.saveJob(job)
 }
 
-// Once a change run ends, the list its open items now show is the one ok makes, when they agree (review 10-21c P2-1).
+// What a change run recorded, folded into the job's list: a change counts as made only when make_change recorded it,
+// never because the run says so (next action). Read before a run is finished or stopped, so nothing made is forgotten (review 10-21d P1).
+function foldChanges(store: Store, job: Job): Effect[] {
+	const effects = (job.result?.effects ?? []).map(e => ({ ...e }))
+	for (const [i, c] of Object.entries(job.run ? store.changes(job.id, job.run.id) : {})) {
+		const e = effects[Number(i)]
+		if (!e) continue
+		if (c.state === 'done') Object.assign(e, { done: { ref: c.ref, at: c.at }, error: undefined })
+		else if (c.state === 'failed') e.error = c.error
+		// A call with no answer may have happened: it is never repeated by itself (decision A3). A vote only sets a state, so it
+		// may be tried again; anything else waits for the owner to check and say "again" (review 10-21 P2-7).
+		else Object.assign(e, { error: 'No answer from the tool, so it may have been made', ...(isVote(e.call) ? {} : { maybe: true }) })
+	}
+	return effects
+}
+
+// When no change run is under way, the list its open items show is the one ok makes, when they agree (review 10-21c P2-1).
+// What is known as made carries over, and the items get it too, so each still shows exactly what ok makes.
 function adoptList(store: Store, job: Job) {
-	const lists = parentsOf(store, job).filter(p => pendingEffects(p.effects).length).map(p => p.effects!)
-	if (lists.length && lists.every(l => keyOf(l) === keyOf(lists[0])) && keyOf(lists[0]) !== keyOf(job.result?.effects)) job.result = { ...job.result!, effects: lists[0].map(e => ({ ...e })) }
+	const parents = parentsOf(store, job).filter(p => pendingEffects(p.effects).length)
+	if (!parents.length || !parents.every(p => effectsKey(p) === effectsKey(parents[0]))) return
+	const list = carryMarks(parents[0].effects!.map(e => ({ ...e })), job.result?.effects)
+	for (const p of parents) { const mine = carryMarks(p.effects!, list); if (keyOf(mine) !== effectsKey(p)) { p.effects = mine; store.save(p) } }
+	if (keyOf(list) !== keyOf(job.result?.effects) || pendingEffects(list).length !== pendingEffects(job.result?.effects).length) job.result = { ...job.result!, effects: list }
 }
 
 // A picked option that makes changes, on an item with no job: a job that only carries them, so ok runs the same executor (design-spec S5).
@@ -368,6 +379,8 @@ export function changesJob(store: Store, cfg: Config, wf: Workflow, effects: Eff
 // ok on an item with changes: approve exactly what the owner saw. One change run per job; later oks join it.
 export function approveEffects(store: Store, cfg: Config, wf: Workflow, again = false): string | undefined {
 	const job = wf.job ? store.job(wf.job) : undefined
+	// No change run and no new result under way: the list the open items agree on is the one ok makes (review 10-21d P2-1).
+	if (job && !executing(job) && !(job.purpose === 'work' && (job.state === 'running' || job.state === 'queued'))) { store.save(wf); adoptList(store, job); store.saveJob(job); wf.effects = store.workflow(wf.id)?.effects ?? wf.effects }
 	const left = pendingEffects(wf.effects)
 	if (!job || !left.length) return undefined
 	// A change that may have been made is made again only when the owner says so, after checking (review 10-21 P2-7).
@@ -437,7 +450,7 @@ function stopRun(store: Store, procs: Procs, job: Job, why: string) {
 	}
 	// Asks that arrived during the stopped run get a work run in the same session.
 	const again = !!job.run && job.asks.length > job.run.asks
-	Object.assign(job, { state: again ? 'queued' : 'done', purpose: 'work', run: undefined })
+	Object.assign(job, { result: { ...job.result!, effects: foldChanges(store, job) }, state: again ? 'queued' : 'done', purpose: 'work', run: undefined })
 	adoptList(store, job)
 	store.saveJob(job)
 	store.log({ event: 'job-execute-stopped', job: job.id, why })

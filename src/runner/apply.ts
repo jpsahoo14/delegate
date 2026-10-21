@@ -1,7 +1,7 @@
 import { answerHabit, outcome } from './habits.ts'
 import { membersOf } from './sharing.ts'
 import { active, afterSend, closeWork, homeOf, inWork, newTurn, statusOf, step, wait } from './work.ts'
-import { pendingEffects, vet } from '../core/effects.ts'
+import { pendingEffects, sameChange, vet } from '../core/effects.ts'
 import type { Answer, Config, Person, Workflow } from '../core/types.ts'
 import { sendGate } from '../core/gate.ts'
 import { classify, htmlToText } from '../core/intake.ts'
@@ -314,7 +314,9 @@ function only(store: Store, wf: Workflow, nums: number[]): string | undefined {
 	const offIdx = (wf.effects ?? []).map((e, i) => (left.includes(e) && !keep.has(e) ? i : -1)).filter(i => i >= 0)
 	for (const i of offIdx) {
 		wf.effects![i] = { ...wf.effects![i], off: true }
-		if (job?.result?.effects[i]) job.result.effects[i] = { ...job.result.effects[i], off: true }
+		// By change, not by place: the item and its job may list the same changes in another order (review 10-21d P2-3).
+		const j = job?.result?.effects.findIndex(x => pendingEffects([x]).length && sameChange(x, wf.effects![i])) ?? -1
+		if (j >= 0) job!.result!.effects[j] = { ...job!.result!.effects[j], off: true }
 	}
 	if (job) store.saveJob(job)
 	return undefined
