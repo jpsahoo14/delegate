@@ -8,3 +8,13 @@
 | 2026-10-22 | Goal fidelity | Plans add steps without rewriting the original goal or done-when. A changed goal requires a new owned pending ask identified in the report. SC-433. |
 | 2026-10-22 | Group asks and skip audit | Unmentioned group messages are persisted for independent paced judgment rather than silently discarded or allowed to replace unanswered owned asks. Distinct PR asks keep their identity, including URL-only follow-ups. Skip reasons contain IDs, not message text. SC-434. |
 | 2026-10-22 | Relevant FYIs | Reply prompts distinguish owner action from relevant news and noise. Relevant group updates and recaps may become Catch up even without a mention. Fictional positive and negative cases cover the classification contract; these are not a claim of live-model accuracy. SC-435. |
+
+## Preview changelog
+
+2026-10-22: Designed React preview architecture and normalized schema before UI.
+Added an opt-in foundation build and three-version menu. No item actions yet.
+Existing Classic and New remain available. See R-REACT-01, 02 and 09.
+
+2026-10-22: Rebased the React foundation onto the reconciled engine, replaced
+the class utility package with an owned helper, and reserved the version menu's
+layout allocation so native option/font metrics cannot resize the header.

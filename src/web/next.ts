@@ -474,8 +474,8 @@ export function rowsOf(s: Snap, placed: Placed[]): NextRow[] {
 }
 
 // The new page's data, built only when the new page asks (/data?ui=new): classic never pays for it.
-export function nextView(store: Store, now = Date.now()): NextView {
-	const s = snapshot(store, now), rows = rowsOf(s, place(s))
+export function nextView(store: Store, now = Date.now(), options: { snapshot?: Snap; allCatchup?: boolean } = {}): NextView {
+	const s = options.snapshot ?? snapshot(store, now), rows = rowsOf(s, place(s))
 	const of = (sec: Section) => rows.filter(r => r.section === sec)
 	// Your move: meetings that start within 2 hours first, then the oldest ask first.
 	const soon = (r: NextRow) => r.kind === 'meeting' && !!r.when && Date.parse(r.when) - now < 2 * 3_600_000 ? 0 : 1
@@ -488,5 +488,5 @@ export function nextView(store: Store, now = Date.now()): NextView {
 	const reading = readingOf(store, now)
 	// Paused drafts go on and sends wait (tick.ts drafts every cycle; gate.ts refuses every send).
 	const off = s.runner === 'ok' ? undefined : s.runner === 'paused' ? { text: 'Paused: drafts go on, nothing is sent' } : s.runner === 'off' ? { text: `${NAME} is off`, ...(reading.at ? { since: reading.at } : {}) } : { text: s.runner === 'capped' ? 'Daily limit reached; it runs again tomorrow' : `${NAME} is ${s.runner}` }
-	return { move, working, waiting, catchup: { count: cu.length, worth: cu.filter(r => high(r) === 0).length, rows: cu.slice(0, 3) }, minute: { facts: store.proposals().filter(p => p.state === 'needs_human').length, suggestions: store.habits().filter(h => h.state === 'suggested').length }, ...(off ? { off } : {}), ...(store.control().paused || store.config().paused ? { paused: true } : {}), handled: handledThisWeek(store, s.workflows, new Date(now)) }
+	return { move, working, waiting, catchup: { count: cu.length, worth: cu.filter(r => high(r) === 0).length, rows: options.allCatchup ? cu : cu.slice(0, 3) }, minute: { facts: store.proposals().filter(p => p.state === 'needs_human').length, suggestions: store.habits().filter(h => h.state === 'suggested').length }, ...(off ? { off } : {}), ...(store.control().paused || store.config().paused ? { paused: true } : {}), handled: handledThisWeek(store, s.workflows, new Date(now)) }
 }

@@ -28,6 +28,7 @@ import { adoProbe, prRefOf, probePRs, prTarget, recheckDeploy, recheckPr, voteDr
 import { deployRunning, isValidate, reportsResult, saysTested, testedAsk } from './validate.ts'
 import { checkAgain, dropPromise, notePromise, promiseDue, reopenPromise, rest } from './promise.ts'
 import { isDeploy } from '../core/deploy.ts'
+import { pageAnswerRefusal } from '../core/page-approval.ts'
 
 // Apply owner answers in time order. Effects run here and nowhere else.
 export async function applyAnswers(store: Store, src: Source, cfg: Config, procs: Procs = realProcs, controlsOnly = false, probe?: BuildProbe): Promise<number> {
@@ -37,6 +38,17 @@ export async function applyAnswers(store: Store, src: Source, cfg: Config, procs
 		const wf = answer.code ? store.byCode(answer.code) : undefined
 		try {
 			const kp = answer.code?.startsWith('K') ? store.proposal(answer.code) : undefined
+			if (answer.page) {
+				if (store.answered(answer.id)) { store.doneAnswer(file); continue }
+				const refusal = pageAnswerRefusal(answer, wf, answer.code.startsWith('R') ? store.automation(answer.code) : undefined, kp)
+				if (refusal) {
+					await reply(store, src, answer, `${MARK} ${refusal}`)
+					store.doneAnswer(file)
+					store.log({ event: 'page-answer-refused', code: answer.code, verb: answer.verb, reason: refusal })
+					n++
+					continue
+				}
+			}
 			// "except" names what to leave out; it becomes the list of what to keep.
 			if (answer.except?.length) {
 				const total = kp ? kp.ops.length : wf ? pendingEffects(wf.effects).length : 0

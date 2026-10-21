@@ -166,8 +166,7 @@ function nextSteps(w: Workflow): Pick<ItemCard, 'replyOnly' | 'reviewAgain'> {
 	}
 }
 
-function card(store: Store, w: Workflow): ItemCard {
-	const k = knowledgeOf(store, store.config())
+export function card(store: Store, w: Workflow, k = knowledgeOf(store, store.config())): ItemCard {
 	const job = w.job ? store.job(w.job) : undefined
 	return {
 		code: w.code, type: cardType(w), rev: w.revAt ?? w.updatedAt, who: who(w.asker?.name), at: w.createdAt,

@@ -99,6 +99,20 @@ Delegate can carry work you own, such as testing your PR on a test ring and repo
 
 Not needed: pipeline IDs, ring names, deploy steps, or queries. Delegate reads them from the repo.
 
+## React preview
+
+The browser's App version menu offers Classic, New and React (preview). The
+preview currently contains the new front-end foundation and version switching,
+not your items or actions yet. Choose New or Classic to use all existing
+features. The choice is remembered on this machine only and switching sends
+nothing. The chat panel continues using New when React is selected; saved
+read-only snapshots remain Classic.
+
+Development: `npm run build` builds both pages and updates integrity hashes.
+`npm run typecheck` covers both front ends; `npm run test:react` runs the React
+component tests. Built preview assets are shipped under `dist/web-react`, so
+installed machines do not need the front-end development dependencies.
+
 ## Use
 
 Type `delegate` in a terminal to open Home in your browser, or ask your AI chat `what needs me?`. In the chat, `/delegate` invokes the skill; plain words work too. Your Teams self-chat takes the same words, so you can answer from your phone.
@@ -208,4 +222,3 @@ Anything specific to where you work stays out of this repo. Put it in `site.json
 - `images`: the server and tool that open an image pasted into a Teams message.
 - `incidentWords` and `buildWords`: other words for an incident or a build, so "TKT 123456" links to it.
 - `processNames`: your wrapper's process name, so Delegate recognizes its own runs.
-
