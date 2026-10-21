@@ -25,8 +25,8 @@ import { CLI } from '../paths.ts'
 import { joinInto, say, splitOff } from './intake.ts'
 import { ackJob, afterDraft, ownerActive } from './autosend.ts'
 import { attachJob, carry } from './jobs.ts'
-import { refusedAsk, sameChange, vet } from '../core/effects.ts'
-import { prTarget, type BuildProbe } from './probe.ts'
+import { isVote, refusedAsk, sameChange, vet } from '../core/effects.ts'
+import { prTarget, voteNow, type BuildProbe } from './probe.ts'
 import { checkPromise, failPromise, promisesDue } from './promise.ts'
 import { heldBy } from './owner.ts'
 import { knowledgeOf, resolveEvidence } from './proposals.ts'
@@ -60,7 +60,7 @@ export async function dispatch(store: Store, src: Source, cfg: Config, run: RunW
 	for (let i = 0; i < queue.length; i += cfg.maxParallel) {
 		await Promise.all(queue.slice(i, i + cfg.maxParallel).map(async wf => {
 			// One run that cannot start fails only its own item; sends, reminders, and the other drafts go on (review 10-20 R3).
-			try { await runOne(store, src, cfg, wf, run) } catch (e) { startFailed(store, wf, e); return }
+			try { await runOne(store, src, cfg, wf, run, probe) } catch (e) { startFailed(store, wf, e); return }
 			const ran = store.workflow(wf.id)
 			if (ran?.startFails) { ran.startFails = undefined; store.save(ran, false) }
 			done++
@@ -168,7 +168,7 @@ function refuseStart(cfg: Config, folder?: string) {
 	if (shell) throw new Error(shellInClone(shell))
 }
 
-async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run: RunWorker) {
+async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run: RunWorker, probe?: BuildProbe) {
 	refuseStart(cfg)
 	if (wf.state !== 'running') return runAsk(store, src, cfg, wf, run)
 	const runId = ulid()
@@ -211,7 +211,10 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 		if (report.goalMet === false && fresh.draft && !fresh.draft.holding) fresh.draft = { ...fresh.draft, holding: true }
 		// Each promised change must be one the owner allows, on this item's PR; any other becomes a to-do with the reason (next action).
 		const v = vet(cfg, report.goalMet === false ? [] : report.effects, prTarget(store, fresh))
-		const effects = v.effects
+		// A vote is read against its PR now, so the card shows what it means and the owner's first ok casts it (bug 10-21 A12).
+		// Anything the read would change (a closed PR, new commits) is left to the check at ok, which says why.
+		const read = v.effects.some(e => isVote(e.call) && !e.pr) ? await voteNow(store, cfg, fresh, v.effects, probe) : undefined
+		const effects = read && !read.why && !read.again && read.effects.length === v.effects.length ? read.effects : v.effects
 		if (v.todos.length && fresh.draft) Object.assign(fresh, { todos: [...new Set([...(fresh.todos ?? []), ...v.todos])], question: fresh.question ?? refusedAsk(fresh.code, v.todos.length) })
 		if (fresh.kind === 'reply' && effects.length && fresh.draft) {
 			const own = fresh.job ? store.job(fresh.job) : undefined

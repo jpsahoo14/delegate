@@ -1,7 +1,7 @@
 // The card around every item: who and where, the ask and its thread, open work, the type's body, why, the action,
 // and the Ask thread. A card handled this visit stays as a short line, with Not right and Ask still there.
 import { primaryOf } from '../../model/derive.ts'
-import { doing, first, plural, sourceChip, when } from '../../model/format.ts'
+import { doing, first, plural, refusalOf, sourceChip, when } from '../../model/format.ts'
 import { MARKS } from '../../model/forms.ts'
 import type { CardUi, DoneRow, ItemCard, Who } from '../../model/types.ts'
 import { S, U, V, env } from '../../state/store.ts'
@@ -55,7 +55,7 @@ export function stateLine(u: CardUi, verb: string): H {
 	if (u.status === 'pending') return u.lost
 		? html`<div class="state lost" role="status">${I('off')}<p><b>Lost connection. Retrying…</b> ${esc(env.name)} has your action. It will not be sent twice.</p></div>`
 		: html`<div class="state pending" role="status"><span class="spin" aria-hidden="true"></span><p>${esc(doing(verb, env.name))} Usually under a minute. You can move on.</p></div>`
-	if (u.status === 'refused') return html`<div class="state refused" role="alert">${I('warn')}<p><b>Not done.</b> ${esc(u.msg)}</p></div>`
+	if (u.status === 'refused') { const r = refusalOf(u.msg); return html`<div class="state ${r.cls}" role="alert">${I(r.cls === 'check' ? 'info' : 'warn')}<p><b>${r.label}</b> ${esc(u.msg)}</p></div>` }
 	if (u.msg) return html`<div class="state ${raw(u.lost ? 'lost' : 'info')}" role="status">${I(u.lost ? 'off' : 'info')}<p>${esc(u.msg)}</p></div>`
 	return ''
 }

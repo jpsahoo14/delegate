@@ -4082,8 +4082,6 @@ test("bug 10-21 A48: after a review with no changes, the owner's answer \"I'll a
 	src.post('self', 'me', "A1: Looks good to me. I'll approve the PR."); await goPr()
 	assert.deepEqual(pendingOf(store.byCode('A1')!).map(e => e.summary), ['Approve PR 4200001'], 'the answer became a vote for ok')
 	await see('A1'); src.post('self', 'me', 'ok A1'); await goPr()
-	assert.match(src.chats.self.at(-1)!.body, /Before you ok A1: Approve PR 4200001/, 'what the vote means is shown first')
-	src.post('self', 'me', 'ok A1'); await goPr()
 	assert.doesNotMatch(src.chats.self.map(m => m.body).join('\n'), /out of date/)
 	await makeChanges([0]); await goPr()
 	assert.deepEqual(calls.map(c => [c.args.action, c.args.pullRequestId, c.args.vote]), [['vote', 4200001, 'Approved']], 'the vote was cast')
@@ -4286,14 +4284,12 @@ test('next action: the card says the vote may complete the PR', async () => {
 	prNow = { ...prNow, required: ['Web Team'], autoComplete: true }
 	script = promise()
 	src.post(CHAT, 'me', `[as Kim] Updated the description, can you approve? ${PR_URL}`); await goPr()
-	await see('A1'); src.post('self', 'me', 'ok A1'); await goPr()
-	assert.equal(store.jobs().some(j => j.purpose === 'execute'), false, 'an ok before the PR was described only describes it')
-	assert.match(src.chats.self.at(-1)!.body, /Before you ok A1: Approve PR 4200001 \("Fix the banner" by Dev Rao; required reviewers: Web Team; autocomplete is on: your approval may complete it\)/)
+	// The draft reads the PR, so the card says what the vote means before any ok, and one ok makes it (bug 10-21 A12).
 	const { view } = await import('../src/web/view.ts')
 	const card = view(store, undefined).needs.find(c => c.code === 'A1')!
-	assert.match(card.changes[0].meaning!.map(p => p.text).join('; '), /autocomplete is on: your approval may complete it/)
-	src.post('self', 'me', 'ok A1'); await goPr()
-	assert.equal(store.jobs().some(j => j.purpose === 'execute' && j.state === 'running'), true, 'the next ok makes the change')
+	assert.match(card.changes[0].meaning!.map(p => p.text).join('; '), /"Fix the banner" by Dev Rao; required reviewers: Web Team; autocomplete is on: your approval may complete it/)
+	await see('A1'); src.post('self', 'me', 'ok A1'); await goPr()
+	assert.equal(store.jobs().some(j => j.purpose === 'execute' && j.state === 'running'), true, 'the first ok makes the change')
 })
 
 test('next action: an edit that drops the promise shows the change again', async () => {
@@ -4407,6 +4403,24 @@ test('next action: a new vote is described at once, even right after a PR check'
 	script = promise()
 	src.post(CHAT, 'me', `[as Kim] Updated the description, can you approve? ${PR_URL}`); await goPr(); await goPr()
 	assert.deepEqual(store.byCode('A1')!.effects?.[0].pr, { title: 'Fix the banner', author: 'Dev Rao', required: [], autoComplete: false })
+})
+
+test("bug 10-21 A12: a vote an answer adds is described with the redraft, so the owner's first ok casts it", async () => {
+	voteSetup(); calls.length = 0
+	prNow = { ...prNow, autoComplete: true, required: ['Web Team'] }
+	script = needsJob({ key: 'pr:acme/web/4200001', goal: 'Review PR 4200001' })
+	jf.job = (_, id) => ({ workflowId: id, intent: 'pr_review', state: 'needs_human', summary: 'Recommend approve', reply: { text: 'No issues found.', commitment: false, sources: [{ ref: PR_URL, tier: 'live', origin: 'extracted' }] } })
+	src.post(CHAT, 'me', `[as Kim] Please approve ${PR_URL}`); await goPr(); await goPr()
+	store.saveProbeMark({ prAt: new Date().toISOString() })
+	script = promise([voteEffect()], 'Approved.')
+	src.post('self', 'me', "A1: It's ready for my approval."); await goPr()
+	assert.deepEqual(store.byCode('A1')!.effects?.[0].pr, { title: 'Fix the banner', author: 'Dev Rao', required: ['Web Team'], autoComplete: true }, 'the card shows what the vote means before any ok')
+	jf.job = () => undefined
+	src.post('self', 'me', 'ok A1'); await goPr()
+	assert.doesNotMatch(src.chats.self.at(-1)!.body, /Before you ok/, 'one ok is enough')
+	await makeChanges([0]); await goPr()
+	assert.deepEqual(calls.map(c => c.args.vote), ['Approved'])
+	assert.equal(src.chats[CHAT].at(-1)!.body, 'Approved.')
 })
 
 test('next action: the change run calls make_change on its worker server, which keeps to the ok and records the outcome', async () => {
@@ -5879,8 +5893,6 @@ test('slice 3 own words: a PR that moved after the review gets no vote, only "Re
 	assert.deepEqual(pendingOf(store.byCode('A1')!).map(e => e.summary), ['Approve PR 4200001'])
 	prNow = { ...prNow, votes: [{ name: 'Robin Park', vote: 0 }] }
 	await see('A1'); src.post('self', 'me', 'ok A1'); await goPr()
-	assert.match(src.chats.self.at(-1)!.body, /Before you ok A1: Approve PR 4200001/)
-	src.post('self', 'me', 'ok A1'); await goPr()
 	await makeChanges([0]); await goPr()
 	assert.deepEqual([calls.length, store.byCode('A1')!.state, src.chats[CHAT].at(-1)!.body], [1, 'done', 'Rechecked the new commits too. Approved.'], 'the vote, then the new reply')
 })

@@ -289,6 +289,8 @@ textarea.edit:focus,input.field:focus{outline:none;border-color:var(--accent);bo
 .state.pending{background:var(--surface-2);color:var(--text-2)}
 .state.refused{background:var(--danger-soft);color:var(--text);border:1px solid color-mix(in srgb,var(--danger) 35%,transparent)}
 .state.refused svg{color:var(--danger);margin-top:2px}
+.state.check{background:var(--accent-soft);color:var(--text);border:1px solid color-mix(in srgb,var(--accent) 35%,transparent)}
+.state.check svg{color:var(--accent);margin-top:2px}
 .state p{margin:0;flex:1}
 .stale{display:flex;gap:10px;align-items:center;padding:10px 20px;background:var(--warn-soft);font-size:13.5px;border-bottom:1px solid color-mix(in srgb,var(--warn) 25%,transparent)}
 .stale svg{color:var(--warn)}

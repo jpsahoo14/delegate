@@ -134,3 +134,11 @@ test('bug 10-21: an answer source chip says what the source is, never "https:"',
 		sourceChip({ ref: 'https://wiki home/page' }),
 	], ['PR 4200001', 'Teams message', 'docs.example.com', 'banner fix', 'Setup guide', 'a note', 'https://wiki home/page'])
 })
+
+test('bug 10-21 A12: a "Before you ok" answer is a check, not a failure', async () => {
+	const { refusalOf } = await import('../src/web/app/model/format.ts')
+	assert.deepEqual([
+		refusalOf('Before you ok A12: Approve PR 4200001 ("Fix the banner" by Dev Rao). Say "ok A12" to go ahead.'),
+		refusalOf('A1\'s changes are out of date. Ask for a fresh review, or skip A1.'),
+	], [{ label: 'Check this first.', cls: 'check' }, { label: 'Not done.', cls: 'refused' }])
+})

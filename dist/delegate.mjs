@@ -44458,7 +44458,7 @@ async function dispatch(store2, src, cfg, run2 = runAgent, probe) {
   for (let i = 0; i < queue.length; i += cfg.maxParallel) {
     await Promise.all(queue.slice(i, i + cfg.maxParallel).map(async (wf) => {
       try {
-        await runOne(store2, src, cfg, wf, run2);
+        await runOne(store2, src, cfg, wf, run2, probe);
       } catch (e) {
         startFailed(store2, wf, e);
         return;
@@ -44552,7 +44552,7 @@ function refuseStart(cfg, folder) {
   const shell = folder && shellTool(cfg.agent.tools);
   if (shell) throw new Error(shellInClone(shell));
 }
-async function runOne(store2, src, cfg, wf, run2) {
+async function runOne(store2, src, cfg, wf, run2, probe) {
   refuseStart(cfg);
   if (wf.state !== "running") return runAsk(store2, src, cfg, wf, run2);
   const runId = ulid3();
@@ -44600,7 +44600,8 @@ async function runOne(store2, src, cfg, wf, run2) {
     if (h !== fresh) store2.save(h);
     if (report2.goalMet === false && fresh.draft && !fresh.draft.holding) fresh.draft = { ...fresh.draft, holding: true };
     const v = vet(cfg, report2.goalMet === false ? [] : report2.effects, prTarget(store2, fresh));
-    const effects = v.effects;
+    const read4 = v.effects.some((e) => isVote(e.call) && !e.pr) ? await voteNow(store2, cfg, fresh, v.effects, probe) : void 0;
+    const effects = read4 && !read4.why && !read4.again && read4.effects.length === v.effects.length ? read4.effects : v.effects;
     if (v.todos.length && fresh.draft) Object.assign(fresh, { todos: [.../* @__PURE__ */ new Set([...fresh.todos ?? [], ...v.todos])], question: fresh.question ?? refusedAsk(fresh.code, v.todos.length) });
     if (fresh.kind === "reply" && effects.length && fresh.draft) {
       const own3 = fresh.job ? store2.job(fresh.job) : void 0;

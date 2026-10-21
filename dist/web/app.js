@@ -58,6 +58,7 @@
     if (u.hostname === "teams.microsoft.com") return "Teams message";
     return u.hostname.replace(/^www\./, "");
   }
+  var refusalOf = (msg) => /^Before you ok\b/.test(msg) ? { label: "Check this first.", cls: "check" } : { label: "Not done.", cls: "refused" };
 
   // src/web/app/io/transport.ts
   var sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -1826,7 +1827,10 @@
   }
   function stateLine(u, verb) {
     if (u.status === "pending") return u.lost ? html`<div class="state lost" role="status">${I("off")}<p><b>Lost connection. Retrying…</b> ${esc(env.name)} has your action. It will not be sent twice.</p></div>` : html`<div class="state pending" role="status"><span class="spin" aria-hidden="true"></span><p>${esc(doing(verb, env.name))} Usually under a minute. You can move on.</p></div>`;
-    if (u.status === "refused") return html`<div class="state refused" role="alert">${I("warn")}<p><b>Not done.</b> ${esc(u.msg)}</p></div>`;
+    if (u.status === "refused") {
+      const r = refusalOf(u.msg);
+      return html`<div class="state ${r.cls}" role="alert">${I(r.cls === "check" ? "info" : "warn")}<p><b>${r.label}</b> ${esc(u.msg)}</p></div>`;
+    }
     if (u.msg) return html`<div class="state ${raw(u.lost ? "lost" : "info")}" role="status">${I(u.lost ? "off" : "info")}<p>${esc(u.msg)}</p></div>`;
     return "";
   }

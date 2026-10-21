@@ -54,3 +54,5 @@ export function sourceChip(s: { ref: string; label?: string }): string {
 	if (u.hostname === 'teams.microsoft.com') return 'Teams message'
 	return u.hostname.replace(/^www\./, '')
 }
+// An ok the runner did not act on: a check to read first ("Before you ok …"), or a change not made (bug 10-21 A12).
+export const refusalOf = (msg: string) => (/^Before you ok\b/.test(msg) ? { label: 'Check this first.', cls: 'check' } : { label: 'Not done.', cls: 'refused' })
