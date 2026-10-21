@@ -153,6 +153,9 @@ export type Job = {
 	updatedAt: string
 }
 
+// A to-do the owner owes: at, when the reply that promised it was sent; done, when the owner marked it done (R-NEX-07).
+export type Todo = { id: string; text: string; at: string; done?: string }
+
 export type Workflow = {
 	schema: 1
 	id: Id
@@ -206,8 +209,10 @@ export type Workflow = {
 	learnAfter?: { draft: string; sent: string }
 	// The owner marked a sent reply wrong or incomplete: the next draft is a follow-up that fixes it, held for their ok.
 	correction?: { kind: 'wrong' | 'incomplete'; note?: string; sent: string; at: string }
-	// What the reply promises that is still the owner's to do, and the check-back it promised (B19).
+	// What the reply promises that is still the owner's to do, and the check-back it promised (B19). This turn's list: a new turn drops it.
 	todos?: string[]
+	// The to-dos a sent reply promised, kept across turns until the owner marks them done (R-NEX-07, N2).
+	kept?: Todo[]
 	follow?: Follow
 	work?: Work
 	// A part: this chat's item for work whose record lives on another item (dev-spec/work.md part 2).
@@ -302,7 +307,8 @@ export const CONTROL_VERBS = ['pause', 'resume', 'stop', 'auto-on', 'auto-off'] 
 // seenAt: when the owner gave the command. An ok older than the item's last change approves nothing (review 01-04 P0).
 // nums: 1-based option numbers for pick, or the only changes an ok approves.
 // again: "ok A1 again", the owner checked that a change which may have been made was not, so it is made once more.
-export type Answer = { id: Id; code: Code; verb: Verb; text?: string; nums?: number[]; except?: number[]; again?: true; surface: 'chat' | 'self' | 'panel'; at: string; seenAt?: string }
+// todos: on a close from the page, the open to-dos the owner saw, so Mark done marks only those (review N2 P2-1).
+export type Answer = { id: Id; code: Code; verb: Verb; text?: string; nums?: number[]; except?: number[]; again?: true; surface: 'chat' | 'self' | 'panel'; at: string; seenAt?: string; todos?: string[] }
 
 export type WatchedChat = { id: string; name: string; test?: boolean; group?: boolean; since?: string }
 

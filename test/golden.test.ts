@@ -16,7 +16,7 @@ process.env.DELEGATE_LOCAL = mkdtempSync(join(tmpdir(), 'delegate-glocal-'))
 process.env.DELEGATE_NO_KICK = '1'
 const { Store } = await import('../src/store/state.ts')
 const { serveInbox, writeSnapshot } = await import('../src/web/server.ts')
-const { seedChanges, seedInbox, seedNext, seedNumbers, seedQuiet, pauseNext } = await import('./fixture.ts')
+const { seedChanges, seedInbox, seedNext, seedNumbers, seedOwned, seedQuiet, pauseNext } = await import('./fixture.ts')
 
 const PW = process.env.PLAYWRIGHT_CORE ?? (() => { try { return createRequire(import.meta.url).resolve('playwright-core').replace(/index\.js$/, 'index.mjs') } catch { return '' } })()
 const skip = existsSync(PW) ? false : 'playwright-core not found (set PLAYWRIGHT_CORE)'
@@ -180,6 +180,14 @@ function seedFresh(s: any) {
 	s.log({ event: 'tick' })
 	return s
 }
+// N2: owned work on Now (the opened item's checklist, your move, Report your result) and a to-do a sent reply left.
+const NEXT_N2: typeof STATES = [
+	['next-now-owned', '#now'],
+	['next-now-owned-open', '#now/A40'],
+	['next-now-owned-report', '#now/A40', async p => { await p.click('#now-A40 .ichoice:has-text("Issues found")'); await p.fill('#saw-A40', '403 on checkout, correlation 5f2c') }],
+	['next-now-owned-waiting', '#now/A41'],
+	['next-now-todo-open', '#now/A42'],
+]
 const NEXT_EMPTY: typeof STATES = [['next-quiet', '#now']]
 const NEXT_MOVING: typeof STATES = [['next-nothing-for-you', '#now']]
 const NEXT_PAUSED: typeof STATES = [['next-paused', '#now']]
@@ -238,4 +246,5 @@ for (const theme of ['light', 'dark']) {
 		await draw(theme, s => seedNext(s, 'new', false), NEXT_N1B, false)
 		await draw(theme, s => seedFresh(seedNext(s, 'new', false)), NEXT_FRESH, false)
 	})
+	test(`golden: the new experience's owned work, Report, and to-dos (${theme})`, { skip }, () => draw(theme, s => seedOwned(seedNext(s, 'new', false)), NEXT_N2, false))
 }

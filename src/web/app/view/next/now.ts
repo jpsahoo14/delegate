@@ -18,8 +18,8 @@ type Sec = 'move' | 'working' | 'waiting' | 'catchup'
 // Empty sections other than Your move are not drawn: the summary line already says 0.
 function section(id: Sec, title: string, count: string, rows: NextRow[], extra: H = '', empty: H = '', foot: H = ''): H {
 	if (id !== 'move' && !rows.length) return ''
-	const [, sub] = S.route.split('/'), open = id === 'move' || sub === id
-	const shown = rows.find(r => r.act === sub || r.code === sub)
+	// A section opens for its own link, and on the narrow panel also for the item opened in it, which would otherwise be folded away.
+	const [, sub] = S.route.split('/'), shown = rows.find(r => r.act === sub || r.code === sub), open = id === 'move' || sub === id || !!shown
 	return html`<section class="nsec${open ? raw(' open') : ''}" id="now-${raw(id)}" aria-labelledby="nh-${raw(id)}">
 		<div class="nsh"><h2 id="nh-${raw(id)}">${esc(title)}<span class="nc">&nbsp;· ${esc(count)}</span></h2><span class="sp"></span>${extra}</div>
 		${rows.length ? html`<ul class="nrows">${rows.map(r => row(r, r === shown))}</ul>` : empty}${foot}</section>`

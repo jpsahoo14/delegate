@@ -111,13 +111,14 @@ function workBlock(c: ItemCard): H {
 // Show details: the lines that explain this item, and a button that copies them for a bug report.
 const debugBlock = (c: ItemCard, u: CardUi): H => c.debug ? html`<div class="c-sec"><details class="why" data-dbg${u.dbgOpen ? raw(' open') : ''}><summary>${I('right', 'sm chev')}<span class="rs"><b>Details</b></span></summary><div class="why-b"><pre class="dbg">${esc(c.debug.join('\n'))}</pre>${env.snap ? '' : B('Copy details', 'copydebug', { sm: true, ghost: true })}</div></details></div>` : ''
 
-export function card(c: ItemCard, enter?: boolean): H {
+// work: false when the new page's opened item draws the work itself (view/next/item.ts), so it is not shown twice.
+export function card(c: ItemCard, enter?: boolean, o: { work?: boolean } = {}): H {
 	const u = U(c.code), done = S.done.get(c.code)
 	if (done) return html`<article class="card" id="card-${esc(c.code)}" data-code="${esc(c.code)}" aria-labelledby="ap-${esc(c.code)}" tabindex="-1"><div class="applied" role="status"><span class="ok">${I('check', 'lg')}</span><p id="ap-${esc(c.code)}"><b>${esc(done.msg)}</b><span>${esc(c.who.name)} · ${esc(c.chat.name)}</span></p><span class="code">${esc(c.code)}</span></div>${(r => r ? html`<div class="c-sec">${markBox(r, u)}</div>` : '')(V.done.find(r => r.code === c.code && r.notes))}${askThread(sentOf(c), u)}</article>`
 	return html`<article class="card${enter ? raw(' enter') : ''}" id="card-${esc(c.code)}" data-code="${esc(c.code)}" data-rev="${esc(c.rev)}" aria-labelledby="h-${esc(c.code)}" tabindex="-1">
 		${u.stale ? html`<div class="stale" role="status">${I('warn')}<p><b>Changed since you looked.</b> There is a newer version of this item.</p>${B('Show the new version', 'shownew', { sm: true })}</div>` : ''}
 		<div class="c-sec">${head(c, u)}${askBlock(c, u)}</div>
-		${workBlock(c)}
+		${o.work === false ? '' : workBlock(c)}
 		<div class="c-sec">${bodyOf(c, u)}</div>
 		${why(c, u)}${debugBlock(c, u)}
 		<div class="c-sec c-foot">${actions(c, u)}</div>

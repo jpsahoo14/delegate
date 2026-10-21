@@ -650,6 +650,34 @@ label.chk{display:flex;gap:8px;align-items:flex-start;font-size:13px;color:var(-
 #app[data-ui=next] .nchan summary{cursor:pointer;padding:4px 8px}
 #app[data-ui=next] .nchan ul{list-style:none;margin:6px 0;padding:0 8px}
 #app[data-ui=next] .navbtn .count{margin-left:2px}
+/* N2: the opened item with work: your move, the checklist with owners, Report your result, what happened (design §6). */
+#app[data-ui=next] .iown{background:var(--surface);border-radius:var(--r-lg);box-shadow:var(--shadow-2);padding:4px 16px 12px;margin-bottom:10px}
+#app[data-ui=next] .isec{padding:10px 0;border-top:1px solid var(--border)}
+#app[data-ui=next] .isec:first-child{border-top:0}
+#app[data-ui=next] .isec h3{margin:0 0 6px;font-size:11.5px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--text-3)}
+#app[data-ui=next] .isec h3 .im{display:inline;text-transform:none;letter-spacing:0;font-weight:400;margin:0}
+#app[data-ui=next] .iyours,#app[data-ui=next] .ithen{margin:0;font-size:14.5px;line-height:1.5}
+#app[data-ui=next] .iyours{font-weight:600}
+#app[data-ui=next] .itodos{list-style:none;margin:6px 0 0;padding:0;display:grid;gap:4px;font-size:14px}
+#app[data-ui=next] .itodos li,#app[data-ui=next] .icheck li{display:flex;gap:8px;align-items:baseline}
+#app[data-ui=next] .itodos .im{margin-left:4px;font-size:12.5px;color:var(--text-3)}
+#app[data-ui=next] .icheck{list-style:none;margin:0;padding:0;display:grid;gap:5px;font-size:13.5px}
+#app[data-ui=next] .icheck .ib,#app[data-ui=next] .itodos .ib{flex:none;width:16px;display:inline-grid;place-items:center;color:var(--text-3);align-self:center}
+#app[data-ui=next] .icheck .ring,#app[data-ui=next] .itodos .ring{width:9px;height:9px;border-radius:50%;border:1.5px solid var(--border-strong)}
+#app[data-ui=next] .icheck .iw{flex:1;min-width:0;overflow-wrap:anywhere}
+#app[data-ui=next] .icheck .io{flex:none;max-width:45%;text-align:right;font-size:12.5px;color:var(--text-3)}
+#app[data-ui=next] .icheck li.done{color:var(--text-2)}
+#app[data-ui=next] .icheck li.done .ib{color:var(--success)}
+#app[data-ui=next] .icheck li.now{font-weight:600}
+#app[data-ui=next] .icheck li.now .ib{color:var(--accent-text)}
+#app[data-ui=next] .ires{display:flex;flex-wrap:wrap;gap:6px 14px;border:0;margin:0 0 8px;padding:0}
+#app[data-ui=next] .ichoice{display:inline-flex;gap:6px;align-items:center;font-size:14px;cursor:pointer}
+#app[data-ui=next] .ireport textarea{width:100%;box-sizing:border-box;max-width:640px;min-height:64px;font-size:14px}
+#app[data-ui=next] .iacts{display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center;margin-top:8px}
+#app[data-ui=next] .iacts .im{display:inline;margin:0;font-size:12.5px;color:var(--text-3)}
+#app[data-ui=next] .ihist{list-style:none;padding:0;margin:0;display:grid;gap:2px;font-size:12.5px;color:var(--text-2)}
+#app[data-ui=next] .ihist li.news{color:var(--text);font-weight:600}
+#app[data-ui=next] .ihist .im{color:var(--text-3);margin-right:6px}
 /* Narrow (the AI-chat panel): Your move leads; the summary line opens the other sections, one at a time. */
 @container app (max-width:600px){
   #app[data-ui=next] .nsec{margin:12px 0}

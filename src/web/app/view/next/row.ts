@@ -8,6 +8,7 @@ import { card } from '../classic/card.ts'
 import { av, rowState } from '../classic/parts.ts'
 import { esc, html, join, raw, type H } from '../html.ts'
 import { I } from '../icons.ts'
+import { onDay, owned } from './item.ts'
 
 const ICON: Partial<Record<NextRow['kind'], string>> = { working: 'bolt', scheduled: 'clock', watch: 'eye', 'waiting-delegate': 'clock', reminder: 'clock', 'reminder-new': 'clock', catchup: 'eye', stopped: 'warn' }
 const TONE: Partial<Record<string, string>> = { changed: 'accent', retrying: 'warn', held: 'warn', worth: 'accent', new: 'accent', back: 'accent' }
@@ -36,6 +37,8 @@ function facts(r: NextRow): H {
 	const f = r.facts, q = f.quote, time = f.verb ? `${f.verb} ${when(f.at)}` : ''
 	const ownQuote = !!q && q.by === f.who && q.verb === f.verb
 	const parts: H[] = [
+		// A to-do: "You promised Rita on Mon · no tool can do it" (R-NEX-07).
+		...(f.promise?.to ? [esc(`You promised ${f.promise.to} ${onDay(f.promise.at)}`)] : []), ...(f.promise?.why ? [esc(f.promise.why)] : []),
 		...(f.who ? [esc(f.who)] : []), ...(f.where ? [esc(f.where)] : []),
 		...(r.when ? [esc(`starts ${when(r.when)}`)] : []),
 		// One time with its verb: "asked 9:10 AM: …" for the person on the row, "You said 9:10 AM: …" for someone else.
@@ -69,6 +72,14 @@ function tell(r: NextRow): H {
 	return html`<form class="ntell" data-form="tell" data-code="${esc(r.act)}" data-cmd="${esc(a.command)}" aria-label="${esc(a.label)}"><label class="sr" for="tell-${esc(r.act)}">What you did or found, for ${esc(env.name)}</label><input id="tell-${esc(r.act)}" data-tell="${esc(r.act)}" placeholder="What did you find?" autocomplete="off" value="${esc(u.answer)}"${S.offline ? raw(' disabled') : ''}><button class="btn sm primary" type="submit"${!u.answer.trim() || S.offline ? raw(' disabled') : ''}>${esc(a.label)}</button></form>`
 }
 
+// The opened row: the owned work and to-dos (N2), then the classic card when there is one to act on.
+function ncard(r: NextRow, c: ReturnType<typeof cardOf>): H {
+	const own = owned(r, !!c)
+	if (c) return html`${own ? html`<div class="ncard">${own}</div>` : ''}<div class="ncard">${card(c as never, false, { work: !own })}</div>`
+	if (own) return html`<div class="ncard">${own}</div>`
+	return html`<p class="m ncard">${esc(`${r.act} has no card to open here.`)}${r.teams ? html` <a href="${esc(r.teams)}" target="_blank" rel="noopener">Open in Teams</a>` : ''}</p>`
+}
+
 export function row(r: NextRow, open: boolean): H {
 	const c = open ? cardOf(r.act) : undefined, icon = ICON[r.kind]
 	const lead = r.who && !icon ? av(r.who) : html`<span class="ri">${I(icon ?? 'clock')}</span>`
@@ -84,8 +95,8 @@ export function row(r: NextRow, open: boolean): H {
 			${r.draft ? html`<blockquote class="nd">${esc(r.draft)}</blockquote>` : ''}${r.gist ? html`<p class="ng">${esc(r.gist)}</p>` : ''}
 			${r.warn ? html`<div class="nwarn">${I('warn', 'sm')}<span>${esc(r.warn)}</span></div>` : ''}
 			${nx ? html`<div class="nn"><span>Next: ${esc(nx)}</span></div>` : ''}
-			${tell(r)}${rowState(`row:${r.act}`)}
+			${open && r.work?.report ? '' : tell(r)}${rowState(`row:${r.act}`)}
 		</div>${acts ? html`<div class="nract">${acts}</div>` : ''}</div>
-		${open ? (c ? html`<div class="ncard">${card(c as never)}</div>` : html`<p class="m ncard">${esc(`${r.act} has no card to open here.`)}${r.teams ? html` <a href="${esc(r.teams)}" target="_blank" rel="noopener">Open in Teams</a>` : ''}</p>`) : ''}
+		${open ? ncard(r, c) : ''}
 	</li>`
 }

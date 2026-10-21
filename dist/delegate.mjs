@@ -21518,6 +21518,7 @@ function loadLocal() {
 }
 function upgrade(w) {
   w.msgIds ??= [...w.pending];
+  if (!w.kept && w.todos?.length && w.sent && (w.state === "done" || w.state === "open")) w.kept = [...new Set(w.todos)].map((text2, i) => ({ id: `t${i + 1}`, text: text2, at: w.sent.at }));
   return w;
 }
 async function withTickLock(fn, bootMs = Date.now() - uptime() * 1e3) {
@@ -39523,15 +39524,15 @@ function effectLine(effects) {
 function groups(wfs, since) {
   const needs = wfs.filter((w) => w.state === "needs_human").sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   const watching = wfs.filter((w) => w.kind === "tracker" && w.state === "waiting_on_task");
-  const running = wfs.filter((w) => w.kind !== "tracker" && (w.state === "running" || w.state === "waiting_on_task" || w.state === "scheduled"));
+  const running2 = wfs.filter((w) => w.kind !== "tracker" && (w.state === "running" || w.state === "waiting_on_task" || w.state === "scheduled"));
   const done = [...wfs.filter((w) => w.state === "done" && w.code && (!since || w.updatedAt > since) && w.intent !== "none"), ...watching.filter((w) => w.changedAt && (!since || w.changedAt > since) && (!w.ackAt || w.changedAt > w.ackAt))];
-  return { needs, watching, running, done };
+  return { needs, watching, running: running2, done };
 }
 function renderList(wfs, now, since, health = {}, extra = {}) {
   const kp = (extra.proposals ?? []).filter((p) => p.state === "needs_human").sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   const bg = extra.background ?? [];
-  const { needs, watching, running, done } = groups(wfs, since);
-  const head = [`${needs.length} need you`, `${done.length} done`, `${running.length + bg.length} running`, ...kp.length ? [`${kp.length} to learn`] : []].join(" \xB7 ");
+  const { needs, watching, running: running2, done } = groups(wfs, since);
+  const head = [`${needs.length} need you`, `${done.length} done`, `${running2.length + bg.length} running`, ...kp.length ? [`${kp.length} to learn`] : []].join(" \xB7 ");
   const out = [head];
   const problems = Object.values(health);
   if (problems.length) out.push("", "### Health", ...problems.map((p) => `- ${p.text} (since ${age(p.since, now)} ago)`));
@@ -39551,8 +39552,8 @@ function renderList(wfs, now, since, health = {}, extra = {}) {
   const progress2 = wfs.filter((w) => w.state === "open" && w.work);
   if (progress2.length) out.push("", "### In progress", ...progress2.map((w) => `- **${w.code}** \xB7 ${clip(oneLine(w.work.goal), 80)} \xB7 ${w.status}`), `Say "more ${progress2[0].code}" for its steps, or "close ${progress2[0].code}: why" when it is finished.`);
   if (watching.length) out.push("", "### Watching", ...watching.map((w) => `- **${w.code}** \xB7 ${w.lastAsk?.replace(/^Watch /, "") ?? ""} \xB7 ${w.status}`));
-  if (running.length || bg.length) out.push("", "### Running", ...running.map((w) => `- ${renderItem(w, "line", now)}`), ...bg.map((b) => `- ${b.what} (${Math.max(0, Math.round((now.getTime() - Date.parse(b.since)) / 6e4))} min)`));
-  if (!needs.length && !done.length && !running.length && !kp.length && !bg.length && !progress2.length) out.push("", "Nothing needs you.");
+  if (running2.length || bg.length) out.push("", "### Running", ...running2.map((w) => `- ${renderItem(w, "line", now)}`), ...bg.map((b) => `- ${b.what} (${Math.max(0, Math.round((now.getTime() - Date.parse(b.since)) / 6e4))} min)`));
+  if (!needs.length && !done.length && !running2.length && !kp.length && !bg.length && !progress2.length) out.push("", "Nothing needs you.");
   return out.join("\n");
 }
 function renderNudge(needs, undoable = [], now = /* @__PURE__ */ new Date(), kp = []) {
@@ -39571,7 +39572,7 @@ function okWill(wf) {
   return left.length ? `ok will: ${effectLine(left)}${wf.draft?.text ? ", then send the reply" : ""}` : "";
 }
 function renderPhone(wfs, kp = [], health = {}, since) {
-  const { needs, watching, running, done } = groups(wfs, since);
+  const { needs, watching, running: running2, done } = groups(wfs, since);
   const line2 = (w) => {
     const left = pendingEffects(w.effects);
     const what = w.choices && !w.draft?.preview ? `pick one: ${w.choices.options.map((o, i) => `${i + 1} ${clip(o.label, 24)}`).join(" \xB7 ")}` : w.question ? `needs your answer: ${clip(oneLine(w.question), 60)}` : left.length ? `${effectLine(left)}, then reply` : `reply ready: "${clip(oneLine(w.draft?.text ?? ""), 50)}"`;
@@ -39580,7 +39581,7 @@ function renderPhone(wfs, kp = [], health = {}, since) {
   const problems = Object.values(health).map((p) => `\u26A0 ${p.text}`);
   const open2 = kp.filter((p) => p.state === "needs_human");
   const learn = open2.length ? `${open2.length} topic${open2.length > 1 ? "s" : ""} to learn: "review knowledge"` : "";
-  const also = [running.length && `${running.length} running`, watching.length && `${watching.length} watching`, done.length && `${done.length} done since you last looked`].filter(Boolean).join(" \xB7 ");
+  const also = [running2.length && `${running2.length} running`, watching.length && `${watching.length} watching`, done.length && `${done.length} done since you last looked`].filter(Boolean).join(" \xB7 ");
   const more = also ? `Also: ${also}. Say "more <code>" for any item.` : "";
   if (!needs.length) return [`${MARK} Nothing needs you.`, ...problems, learn, more].filter(Boolean).join("\n");
   const eg = needs.find((w) => !w.question) ?? needs[0];
@@ -39992,7 +39993,7 @@ function testedAsk(home, text2, now = /* @__PURE__ */ new Date()) {
   const deployed2 = [...home.work?.plan ?? []].reverse().find((p) => p.ring);
   const from = w ? `${w[1]} (your time zone)` : deployed2?.done ?? home.work?.steps.find((s2) => /^Deployed /.test(s2.what))?.at ?? home.work?.steps[0]?.at ?? home.createdAt;
   const to = w ? `${w[2]} (your time zone)` : now.toISOString();
-  return `Owner: "${text2}". The owner tested. Read the results for ${from} to ${to}${deployed2 ? ` on ${deployed2.ring.name} (run ${deployed2.ring.run})` : ""} and draft the report.`;
+  return `Owner: "${text2}". ${/^blocked\b/i.test(text2.trim()) ? "The owner could not finish testing" : "The owner tested"}. Read the results for ${from} to ${to}${deployed2 ? ` on ${deployed2.ring.name} (run ${deployed2.ring.run})` : ""} and draft the report.`;
 }
 function proposeTargets(store2, r) {
   if (!r.deployTargets?.length) return;
@@ -40043,7 +40044,7 @@ async function describeTargets(store2, probe) {
   store2.saveConfig({ ...cfg, deploy: { ...was, proposed, never: never3 } });
   return real.size;
 }
-var TELEMETRY, isValidate, NOT_READ, findingNotBlocker, WINDOW, LEAD, saysTested, SHELL, shellTool, shellInClone;
+var TELEMETRY, isValidate, NOT_READ, findingNotBlocker, WINDOW, LEAD, saysTested, REPORTED, reportsResult, SHELL, shellTool, shellInClone;
 var init_validate = __esm({
   "src/runner/validate.ts"() {
     "use strict";
@@ -40063,6 +40064,8 @@ var init_validate = __esm({
       const before = t2.slice(0, m.index);
       return LEAD.test(before);
     };
+    REPORTED = /^(both work|issues found|blocked)\s*(?::|$)/i;
+    reportsResult = (text2 = "") => REPORTED.test(text2.trim());
     SHELL = /(^|[-_])(bash|sh|zsh|fish|shell|powershell|pwsh|cmd|terminal|exec|execute|run_?command)([-_(]|$)/i;
     shellTool = (tools) => tools.find((t2) => SHELL.test(t2));
     shellInClone = (shell) => `It never runs in your clone with a shell tool (${shell}): it could run a pipeline or a deploy script outside your ok. Remove ${shell} from the read tools in setup`;
@@ -42005,7 +42008,7 @@ function view(store2, since, now = /* @__PURE__ */ new Date()) {
     const k = w.work, job = k.watch ? store2.job(k.watch) : void 0, last3 = k.steps.at(-1);
     return { code: w.code, who: who(w.asker?.name), chat: w.chat.name, goal: k.goal, status: w.status, last: last3 && { at: last3.at, what: last3.what }, next: nextOf(k), checkAt: k.checkAt, every: job?.every, endsAt: job?.every ? job.endsAt : void 0, rev: w.updatedAt };
   });
-  const running = [...g.running.map((w) => ({ code: w.code, what: w.status, who: w.asker?.name, since: w.waitingSince ?? w.updatedAt })), ...bootLines(store2).map((b) => ({ code: "", what: b.what, since: b.since, ...b.total ? { progress: (b.done ?? 0) / b.total } : {} }))];
+  const running2 = [...g.running.map((w) => ({ code: w.code, what: w.status, who: w.asker?.name, since: w.waitingSince ?? w.updatedAt })), ...bootLines(store2).map((b) => ({ code: "", what: b.what, since: b.since, ...b.total ? { progress: (b.done ?? 0) / b.total } : {} }))];
   const state = c.stopped ? "stopped" : c.paused || cfg.paused ? "paused" : "on";
   const health = Object.entries(store2.health()).map(([key, h]) => ({ key, text: h.text, since: h.since, fix: key === "source" ? { label: "Try again", command: "retry" } : void 0 }));
   if (state !== "on") health.unshift({ key: "paused", text: state === "stopped" ? `${NAME} is stopped. It is not reading your chats.` : `${NAME} is paused. It keeps drafting, and sends nothing.`, since: "", fix: { label: "Resume", command: "resume" } });
@@ -42030,7 +42033,7 @@ function view(store2, since, now = /* @__PURE__ */ new Date()) {
       { key: "watching", count: updates, label: updates === 1 ? "update" : "updates", sub: [`${watching.length} watched`, ...progress2.length ? [`${progress2.length} in progress`] : []].join(" \xB7 ") },
       { key: "waiting", count: waiting.length, label: "waiting on others", sub: waiting[0] ? `${waiting[0].to}, since ${new Date(waiting[0].at).toLocaleDateString("en-US", { month: "short", day: "numeric" })}` : void 0 },
       { key: "suggestions", count: store2.habits().filter((h) => h.state === "suggested").length, label: "suggestion", sub: "From what you usually do" },
-      { key: "running", count: running.length, label: "running" },
+      { key: "running", count: running2.length, label: "running" },
       { key: "automations", count: autos.filter((a) => a.state !== "paused").length, label: autos.length === 1 ? "automation" : "automations", sub: autos.find((a) => a.next) ? `Next: ${autos.find((a) => a.next).to}` : void 0 }
     ].filter((t2) => t2.count > 0 || t2.key === "watching" && watching.length + progress2.length > 0),
     seen: store2.seen(),
@@ -42038,7 +42041,7 @@ function view(store2, since, now = /* @__PURE__ */ new Date()) {
     needs,
     knowledge: kp,
     done,
-    running,
+    running: running2,
     watching,
     progress: progress2,
     waiting,
@@ -43528,7 +43531,7 @@ async function applyOne(store2, src, cfg, wf, a, procs, probe) {
         Object.assign(wf, { state: "waiting_on_task", question: void 0, status: "Checking again with your answer", waitingSince: (/* @__PURE__ */ new Date()).toISOString() });
         break;
       }
-      if (wf.job && store2.job(wf.job) && isValidate(store2.job(wf.job), wf) && saysTested(a.text)) {
+      if (wf.job && store2.job(wf.job) && isValidate(store2.job(wf.job), wf) && (saysTested(a.text) || reportsResult(a.text))) {
         const job = store2.job(wf.job);
         Object.assign(job, { asks: [...job.asks, testedAsk(homeOf(store2, wf), a.text)], ...job.state === "running" ? {} : { state: "queued", purpose: "work", error: void 0 } });
         store2.saveJob(job);
@@ -43774,6 +43777,7 @@ async function send(store2, src, cfg, wf, text2, by) {
   const changesOff = (wf.effects ?? []).filter((e) => e.off).length;
   wf.needsMe = void 0;
   wf.sent = { msgId, at: (/* @__PURE__ */ new Date()).toISOString(), text: text2, byRule: by.ruleId, undoUntil: by.ruleId ? new Date(Date.now() + p.undoMin * 6e4).toISOString() : void 0 };
+  keepTodos(wf, wf.sent.at);
   const home = homeOf(store2, wf);
   if (home.work) {
     afterSend(wf, out, msgId, home);
@@ -43911,6 +43915,12 @@ async function retune(store2, src, wf, a) {
 }
 async function workVerb(store2, src, wf, a, procs) {
   if (a.verb === "close") {
+    if (a.todos && !openTodos(wf).some((t2) => a.todos.includes(t2.id))) return reply(store2, src, a, `${MARK} ${wf.code}: the ${a.todos.length === 1 ? "to-do you marked is" : "to-dos you marked are"} already done. ${wf.code} stays ${wf.state === "done" ? "done" : "open"}. Nothing was sent.`);
+    if (openTodos(wf).length) {
+      const done = doneTodos(wf, void 0, a.todos);
+      store2.save(wf);
+      return reply(store2, src, a, `${MARK} Marked ${done.length === 1 ? "your to-do" : `your ${done.length} to-dos`} on ${wf.code} done: ${done.join("; ")}. ${wf.state === "done" ? `${wf.code} stays done.` : `${wf.code} stays open; say "close ${wf.code}" again to close it.`} Nothing was sent.`);
+    }
     if (wf.state === "done") return reply(store2, src, a, `${MARK} ${wf.code} is already closed: ${wf.status}`);
     const why = a.text?.trim() || "Closed by you";
     const home2 = homeOf(store2, wf);
@@ -44197,9 +44207,9 @@ import { randomUUID as randomUUID7 } from "node:crypto";
 async function dispatch(store2, src, cfg, run2 = runAgent) {
   const cap = cfg.dailyRuns ?? 200;
   const room = cap - store2.runsToday();
-  const running = store2.workflows().filter((w) => w.state === "running" && heldBy(store2, w) !== "window").sort((a, b) => a.updatedAt.localeCompare(b.updatedAt));
-  const paced = running.filter((w) => w.paced).slice(0, store2.runsToday() < cap / 2 ? cfg.maxParallel : 0);
-  const queue = [...running.filter((w) => !w.paced), ...paced].slice(0, Math.max(0, room));
+  const running2 = store2.workflows().filter((w) => w.state === "running" && heldBy(store2, w) !== "window").sort((a, b) => a.updatedAt.localeCompare(b.updatedAt));
+  const paced = running2.filter((w) => w.paced).slice(0, store2.runsToday() < cap / 2 ? cfg.maxParallel : 0);
+  const queue = [...running2.filter((w) => !w.paced), ...paced].slice(0, Math.max(0, room));
   for (const w of queue) if (w.paced) {
     w.paced = void 0;
     store2.save(w, false);
@@ -45213,6 +45223,17 @@ function mergePlan(old, next2, at3, keep = false) {
 function newTurn(wf, keepSent = false) {
   Object.assign(wf, { draft: void 0, choices: void 0, question: void 0, effects: void 0, promised: void 0, decision: void 0, approved: void 0, picked: void 0, sendAt: void 0, correction: void 0, todos: void 0, newCount: 0, ...keepSent ? {} : { sent: void 0 } });
 }
+function keepTodos(wf, at3) {
+  const kept = wf.kept ?? [];
+  let n = kept.reduce((m, t2) => Math.max(m, Number(t2.id.replace(/\D/g, "")) || 0), 0);
+  const add = [...new Set(wf.todos ?? [])].filter((text2) => !kept.some((t2) => !t2.done && t2.text === text2)).map((text2) => ({ id: `t${++n}`, text: text2, at: at3 }));
+  wf.kept = [...kept, ...add];
+}
+function doneTodos(wf, at3 = (/* @__PURE__ */ new Date()).toISOString(), only2) {
+  const open2 = openTodos(wf).filter((t2) => !only2 || only2.includes(t2.id));
+  wf.kept = (wf.kept ?? []).map((t2) => open2.includes(t2) ? { ...t2, done: at3 } : t2);
+  return open2.map((t2) => t2.text);
+}
 function settle3(wf, r, home = wf) {
   if (!home.work) return false;
   if (r.reply || r.question) return false;
@@ -45295,7 +45316,7 @@ function ownerStep(wf, text2, msgId, home = wf) {
   newTurn(wf, !!wf.sent);
   Object.assign(wf, { state: "open", status: statusOf(home), pending: [] });
 }
-var DAY3, MAX_STEPS, active, inWork, label, sameLink;
+var DAY3, MAX_STEPS, active, inWork, label, sameLink, openTodos;
 var init_work = __esm({
   "src/runner/work.ts"() {
     "use strict";
@@ -45307,6 +45328,7 @@ var init_work = __esm({
     inWork = (store2, wf) => active(homeOf(store2, wf));
     label = (wf, home) => wf === home || wf.id === home.id ? "" : `${wf.asker?.name?.split(" ")[0] ?? wf.chat.name} (${wf.chat.group ? wf.chat.name : "1:1"}, ${wf.code}): `;
     sameLink = (a, b) => a.split(":")[0].toLowerCase() === b.split(":")[0].toLowerCase() && a.split(/[:/]/).at(-1) === b.split(/[:/]/).at(-1);
+    openTodos = (wf) => (wf.kept ?? []).filter((t2) => !t2.done);
   }
 });
 
@@ -45394,27 +45416,37 @@ function whoseMove(f) {
   const r = RULES2.find((r2) => r2.when(f));
   return { section: r.section, rule: r.id };
 }
-var RULES2, URGENCY;
+var running, startsNext, RULES2, URGENCY, PRECEDENCE, rankOf;
 var init_whose = __esm({
   "src/core/whose.ts"() {
     "use strict";
+    running = (f) => f.job?.state === "running" && !f.job.watch;
+    startsNext = (f) => {
+      const draft = f.state === "running" && f.queue === "next", run2 = f.job?.state === "queued" && !f.job.watch && !f.job.retryLater && !!f.job.slot;
+      return f.runner === "ok" ? draft || f.state === "scheduled" || run2 : f.runner === "paused" && (draft || run2 && !f.job.retry);
+    };
     RULES2 = [
-      { id: "catchup", section: "catchup", when: (f) => f.state === "done" && f.fyiUnread },
-      { id: "done", section: "done", when: (f) => f.state === "done" },
+      // An item with an open to-do is not done for the owner, whatever its state (rule 5).
+      { id: "catchup", section: "catchup", when: (f) => f.state === "done" && f.fyiUnread && !f.todos },
+      { id: "done", section: "done", when: (f) => f.state === "done" && !f.todos },
       { id: "needs-you", section: "move", when: (f) => f.state === "needs_human" },
       // A watch between checks is waiting_on_task with its job done: that is waiting, not stopped.
       { id: "stopped", section: "move", when: (f) => f.state === "waiting_on_task" && (!f.job || f.job.state === "failed" || f.job.state === "done" && !f.job.watch) },
-      { id: "job-running", section: "working", when: (f) => f.job?.state === "running" && !f.job.watch },
-      // Paused, drafts and new work runs go on and every send waits (runner/tick.ts drafts each cycle; core/gate.ts refuses sends;
-      // runner/jobs.ts holds retries), so a rule send and a retry wait while a queued draft or run still starts next cycle.
-      { id: "starts-next", section: "working", when: (f) => {
-        const draft = f.state === "running" && f.queue === "next", run2 = f.job?.state === "queued" && !f.job.watch && !f.job.retryLater && !!f.job.slot;
-        return f.runner === "ok" ? draft || f.state === "scheduled" || run2 : f.runner === "paused" && (draft || run2 && !f.job.retry);
-      } },
+      // Rule 5 (design §3), before Working as its number says. Only where rule 4 places the item (the owner's step, nothing running)
+      // does it say that step instead; while Delegate runs, the to-do keeps the item in Your move (review N2 P2-3).
+      // A rule send that is due places the item until it goes, with its time; then the to-do is back (re-review N2 P2-B).
+      { id: "todo", section: "move", when: (f) => !!f.todos && f.state !== "scheduled" && !(f.work?.open && f.work.next === "you" && !running(f) && !startsNext(f)) },
+      { id: "job-running", section: "working", when: running },
+      { id: "starts-next", section: "working", when: startsNext },
       { id: "your-step", section: "move", when: (f) => !!f.work?.open && f.work.next === "you" },
       { id: "waiting", section: "waiting", when: () => true }
     ];
     URGENCY = ["move", "working", "waiting", "catchup", "done"];
+    PRECEDENCE = ["needs-you", "stopped", "your-step", "todo", "job-running", "starts-next", "waiting", "catchup", "done"];
+    rankOf = (id) => {
+      const i = PRECEDENCE.indexOf(id);
+      return i < 0 ? PRECEDENCE.length : i;
+    };
   }
 });
 
@@ -45478,7 +45510,8 @@ function factsOf2(s2, sub) {
     queue: s2.queue.get(w.id),
     job: j2 && { state: j2.state, watch: !!j2.every, retryLater: !!j2.retry && Date.parse(j2.retry.at) > s2.now, slot: s2.slots.has(j2.id), retry: !!j2.retry },
     // A step for "them" that waits on the owner by name is the owner's step.
-    work: w.work && { open: !w.work.closed, next: w.work.next?.who === "them" && isMe(s2, w.work.waitingOn?.who) ? "you" : w.work.next?.who },
+    work: w.work && { open: !w.work.closed, next: nextWho(s2, w.work) },
+    todos: openTodos(w).length,
     fyiUnread: !!w.fyi && (w.fyi.at ?? w.updatedAt) > s2.catchupSeen
   };
 }
@@ -45522,7 +45555,8 @@ function place(s2) {
     const f = factsOf2(s2, x.sub), { section, rule } = whoseMove(f);
     const code = x.sub.kind === "item" ? x.sub.wf.code : x.sub.kind === "waiting" ? x.sub.w.code : x.sub.a.code;
     const have = threads.get(x.home);
-    const wins = !have || URGENCY.indexOf(section) < URGENCY.indexOf(have.section) || URGENCY.indexOf(section) === URGENCY.indexOf(have.section) && code === x.home;
+    const sec = have ? URGENCY.indexOf(section) - URGENCY.indexOf(have.section) : -1, rk = have ? rankOf(rule) - rankOf(have.rule) : -1;
+    const wins = !have || sec < 0 || sec === 0 && (rk < 0 || rk === 0 && code === x.home);
     const placed = { code: x.home, act: code, section, rule, subjects: [...have?.subjects ?? [], code], title: titleOf(x.sub).slice(0, 160), who: x.who, chat: x.chat, at: x.at, ...nextOf2(s2, x.sub, f, section) };
     if (wins) threads.set(x.home, have ? { ...placed, at: have.at > x.at ? have.at : x.at } : placed);
     else threads.set(x.home, { ...have, subjects: [...have.subjects, code], at: have.at > x.at ? have.at : x.at });
@@ -45599,6 +45633,7 @@ function itemRow2(s2, p, w) {
   }
   if (p.section === "move") {
     if (p.rule === "stopped") return { ...base, kind: "stopped", headline: `Couldn't finish ${j2?.goal ? gerund(clip2(j2.goal, 100)) : `this for ${name}`}: try again, or do it yourself`, facts: { ...facts, notes: [{ label: "Why", text: whyOf(j2?.error) }] }, primary: { label: "Try again", command: `${c}: try again` }, more: [{ label: "Close", command: `close ${c}` }] };
+    if (p.rule === "todo") return todoRow(s2, base, w);
     if (p.rule === "your-step") return { ...base, kind: "your-step", headline: clip2(w.work?.next?.what ?? w.work?.goal, 140), facts: { ...facts, notes: goal(w.work?.goal) }, primary: { label: "Tell " + NAME, command: `${c}: {text}` } };
     const kind = moveKind(w), d = w.draft?.text ?? "";
     const fits = !!d && d.length <= INLINE_MAX && !pendingEffects(w.effects).length && !w.choices && !mustSee(w);
@@ -45643,6 +45678,45 @@ function itemRow2(s2, p, w) {
   }
   return { ...base, kind: "waiting-person", headline: `Waiting on ${name} to answer`, facts: { ...facts, quote: void 0, notes: w.decision?.reason ? [{ label: "Waiting for", text: clip2(w.decision.reason, 160) }] : [] }, primary: { label: "Draft a nudge", command: `${c}: nudge them` } };
 }
+function todoRow(s2, base, w) {
+  const open2 = openTodos(w), t2 = open2[0], [what, why] = t2.text.split(REFUSED);
+  const where = w.chat.name && w.chat.name !== w.asker?.name ? w.chat.name : void 0;
+  const more = open2.length > 1 ? ` (+${open2.length - 1} more)` : "";
+  const to = !why && !CLONE.test(t2.text) && w.asker?.name && !isMe(s2, w.asker.name) && !isMe(s2, w.asker.name.split(/\s+/)[0]) ? first(w.asker.name) : void 0;
+  const promise2 = { ...to ? { to } : {}, at: t2.at, ...why ? { why: clip2(why, 140) } : CLONE.test(t2.text) ? {} : { why: "no tool can do it" } };
+  return { ...base, kind: "todo", rev: open2.map((x) => x.at).sort().at(-1), headline: clip2(`To do: ${what.replace(/[.\s]+$/, "")}${more}`, 160), facts: { at: t2.at, ...where ? { where } : {}, promise: promise2 }, primary: { label: "Mark done", command: `close ${w.code}` }, more: [{ label: "Open" }] };
+}
+function workOf(s2, p, w, home) {
+  const k = home.work;
+  if (!k || k.closed || k.proposed) return void 0;
+  const who2 = nextWho(s2, k), plan2 = k.plan ?? [], items2 = new Map(s2.workflows.map((x) => [x.code, x]));
+  const on = k.waitingOn?.who && !isMe(s2, k.waitingOn.who) ? k.waitingOn.who : void 0;
+  const named2 = plan2.find((x) => !x.done && !!k.next && x.what === k.next.what);
+  const cur = named2 ?? plan2.find((x) => !x.done && x.who === who2) ?? (who2 ? void 0 : plan2.find((x) => !x.done));
+  const part = (x) => {
+    const it = x.in ? items2.get(x.in) : void 0;
+    return it && (it.id === home.id || it.partOf === home.id) ? it : void 0;
+  };
+  const person = (x) => {
+    const n = part(x)?.asker?.name;
+    return n && !isMe(s2, n) && !isMe(s2, n.split(/\s+/)[0]) ? n : void 0;
+  };
+  const owner = (x) => x.who === "you" ? { kind: "you" } : x.who === "me" ? { kind: "delegate" } : { kind: "others", text: person(x) || x === named2 && on || "Someone else" };
+  const steps = plan2.map((x) => ({ what: x.what, owner: owner(x), done: !!x.done, now: x === cur, ...part(x) ? { where: x.in } : {}, ...x.probe ? { build: x.probe.build } : {} }));
+  const seen = plan2.filter((x) => x.done && x.probe).sort((a, b) => b.done.localeCompare(a.done))[0];
+  const check2 = seen && { what: seen.ring ? "Deploy" : "Build", at: seen.done, build: seen.probe.build };
+  const yourNext = plan2.find((x) => !x.done && x.who === "you" && x !== cur);
+  const then = who2 && who2 !== "you" && k.next ? { owner: who2 === "me" ? { kind: "delegate" } : { kind: "others", text: on ?? "Someone else" }, what: k.next.what, ...yourNext ? { you: yourNext.what } : {} } : void 0;
+  return {
+    goal: k.goal,
+    steps,
+    ...who2 === "you" && k.next ? { yours: { what: k.next.what, ...check2 ? { check: check2 } : {} } } : {},
+    ...then ? { then } : {},
+    ...p.rule === "your-step" && w === home ? { report: `${home.code}: {result}: {text}` } : {},
+    happened: k.steps.slice(-6).reverse().map((x) => ({ at: x.at, what: x.what, news: !!x.news })),
+    total: k.steps.length
+  };
+}
 function waitRow(w) {
   const to = firsts(w.to);
   return { kind: "waiting-person", headline: clip2(`You asked ${to}: "${w.text}"`, 160), who: who(w.to[0]), facts: { where: w.chat.name, at: w.at, verb: "asked" }, chips: [], primary: { label: "Draft a nudge", command: `ok ${w.code}` }, more: [{ label: "Close", command: `skip ${w.code}` }], teams: w.msgId ? messageLink(w.chat.id, w.msgId) : void 0 };
@@ -45668,7 +45742,9 @@ function rowsOf(s2, placed) {
   return placed.filter((p) => p.section !== "done").map((p) => {
     const w = items2.get(p.act), wt = waits.get(p.act), a = autos.get(p.act);
     const body = w ? itemRow2(s2, p, w) : wt ? waitRow(wt) : reminderRow(p, a);
-    return { code: p.code, act: p.act, section: p.section, rule: p.rule, ...body, ...freshOf(p, w, items2) };
+    const home = w && (w.partOf && s2.workflows.find((x) => x.id === w.partOf) || w), work = w && workOf(s2, p, w, home);
+    const todos = p.subjects.map((c) => items2.get(c)).filter((x) => !!x).flatMap((x) => openTodos(x).map((t2) => ({ id: t2.id, text: t2.text, at: t2.at, code: x.code })));
+    return { code: p.code, act: p.act, section: p.section, rule: p.rule, ...body, ...freshOf(p, w, items2), ...work ? { work } : {}, ...todos.length ? { todos } : {} };
   });
 }
 function nextView(store2, now = Date.now()) {
@@ -45685,7 +45761,7 @@ function nextView(store2, now = Date.now()) {
   const off = s2.runner === "ok" ? void 0 : s2.runner === "paused" ? { text: "Paused: drafts go on, nothing is sent" } : s2.runner === "off" ? { text: `${NAME} is off`, ...reading.at ? { since: reading.at } : {} } : { text: s2.runner === "capped" ? "Daily limit reached; it runs again tomorrow" : `${NAME} is ${s2.runner}` };
   return { move: move2, working, waiting, catchup: { count: cu.length, worth: cu.filter((r) => high(r) === 0).length, rows: cu.slice(0, 3) }, minute: { facts: store2.proposals().filter((p) => p.state === "needs_human").length, suggestions: store2.habits().filter((h) => h.state === "suggested").length }, ...off ? { off } : {}, ...store2.control().paused || store2.config().paused ? { paused: true } : {}, handled: handledThisWeek(store2, s2.workflows, new Date(now)) };
 }
-var isMe, runnerWhy, titleOf, ownerText, NAMES, CARD_MORE, COMMANDS, INLINE_MAX, first, firsts, clip2, teamsLink2, triesOf, every, whyOf, mustSee, SHORT, said, commentsOrChanges, pickPrompt, watchLine;
+var isMe, nextWho, runnerWhy, titleOf, ownerText, NAMES, CARD_MORE, COMMANDS, INLINE_MAX, first, firsts, clip2, teamsLink2, triesOf, every, whyOf, mustSee, SHORT, said, commentsOrChanges, pickPrompt, watchLine, REFUSED, CLONE;
 var init_next = __esm({
   "src/web/next.ts"() {
     "use strict";
@@ -45698,7 +45774,9 @@ var init_next = __esm({
     init_view();
     init_brand();
     init_numbers2();
+    init_work();
     isMe = (s2, who2) => !!who2 && s2.me.includes(who2.toLowerCase());
+    nextWho = (s2, k) => k.next?.who === "them" && isMe(s2, k.waitingOn?.who) ? "you" : k.next?.who;
     runnerWhy = { off: `${NAME} is not reading now`, paused: `${NAME} is paused`, stopped: `${NAME} is stopped`, capped: "daily limit reached; tomorrow" };
     titleOf = (sub) => sub.kind === "waiting" ? sub.w.text : sub.kind === "reminder" ? `Remind ${sub.a.to.name}: ${sub.a.text}` : sub.wf.work && !sub.wf.work.closed ? sub.wf.work.goal : sub.wf.fyi?.line ?? sub.wf.lastAsk ?? sub.wf.status;
     ownerText = (o) => o.kind === "you" ? "You" : o.kind === "delegate" ? NAME : o.kind === "others" ? o.text : "nobody is on this yet";
@@ -45713,9 +45791,12 @@ var init_next = __esm({
       review: `card | ${CARD_MORE}`,
       "check-date": "<code>: nudge them",
       track: "ok <code>",
-      "your-step": "<code>: {text}",
       stopped: "<code>: try again",
       "reminder-new": "ok <code>",
+      // N2: Report in the opened item ("<code>: Issues found: 403 on checkout"), and Mark done, which is close with a new meaning
+      // on an item with open to-dos: it marks them done and changes nothing else (R-NEX-05, R-NEX-07).
+      "your-step": "<code>: {text} | <code>: {result}: {text} (Report)",
+      todo: "close <code> (Mark done)",
       "waiting-person": "ok <W code> | <code>: nudge them",
       "waiting-others": "<code>: nudge them",
       watch: "ok <code> (when changed)",
@@ -45755,6 +45836,8 @@ var init_next = __esm({
       return /[?]$/.test(s2) ? s2 : `${s2}?`;
     };
     watchLine = (t2 = "") => t2.replace(/^Watch\s+/i, "").replace(/\s+until\s+(it\s+is\s+)?merged$/i, ", until it merges").replace(/\s+until\s+(?!it merges$)/i, ", until ");
+    REFUSED = /\.\s*Not made for you:\s*/;
+    CLONE = /^Clone \S+ on \S+ \(git clone /;
   }
 });
 
@@ -48682,6 +48765,7 @@ init_proposals();
 init_bootstrap();
 init_own();
 init_track();
+init_work();
 init_status();
 
 // src/runner/change.ts
@@ -49322,6 +49406,13 @@ function actResult(store2, command, shownAt, from = "chat") {
       out.push(renderMore(wf, store2.thread(wf.id), /* @__PURE__ */ new Date()));
       store2.markShown([wf]);
       shown2++;
+      continue;
+    }
+    const marks = p.verb === "close" && openTodos(wf).length > 0;
+    const drawn = marks ? openTodos(wf).filter((t2) => from !== "page" || !shownAt || t2.at <= shownAt) : [], seen = drawn.length ? drawn : openTodos(wf);
+    if (marks) {
+      ids.push(store2.writeAnswer({ code: wf.code, verb: p.verb, text: p.text, surface: "chat", seenAt: shownAt ?? store2.seenRev(wf.code), todos: seen.map((t2) => t2.id) }).id);
+      out.push(`${wf.code} will mark ${seen.length === 1 ? "its to-do" : `its ${seen.length} to-dos`} done. Nothing is sent.`);
       continue;
     }
     if (wf.state === "done" && !reopenable(wf, p.verb) && !(p.verb === "mine" && wf.fyi) && !["undo", "ask", "wrong", "incomplete", "unneeded"].includes(p.verb) && !(p.verb === "send" && wf.sent)) {

@@ -62,7 +62,7 @@ test('N0 whose move: each rule places its case, first match wins, and needs_huma
 		[{ state: 'waiting_on_sender' }, 'waiting', 'waiting'],
 	]
 	assert.deepEqual(cases.map(([f]) => { const m = whoseMove({ ...base, ...f }); return [m.section, m.rule] }), cases.map(([, s, r]) => [s, r]))
-	assert.deepEqual(RULES.map(r => r.id), ['catchup', 'done', 'needs-you', 'stopped', 'job-running', 'starts-next', 'your-step', 'waiting'])
+	assert.deepEqual(RULES.map(r => r.id), ['catchup', 'done', 'needs-you', 'stopped', 'todo', 'job-running', 'starts-next', 'your-step', 'waiting'])
 })
 
 test('N0 live cases: a stale "you" plan step, a Delegate step nothing runs, and "them" in the AI words, never a glued name', () => {

@@ -50,6 +50,9 @@ type Notify = { lastNudgeAt?: string; previews?: Record<string, Preview | Previe
 // Fill fields added after a file was written, so older files keep loading (R-DST-04).
 function upgrade(w: Workflow): Workflow {
 	w.msgIds ??= [...w.pending]
+	// Before N2 a sent reply's to-dos were plain text that the next turn dropped: they become kept to-dos, dated by the send (R-NEX-07).
+	// Only on a sent item that is done or open; a later turn's draft has its own to-dos, not yet promised.
+	if (!w.kept && w.todos?.length && w.sent && (w.state === 'done' || w.state === 'open')) w.kept = [...new Set(w.todos)].map((text, i) => ({ id: `t${i + 1}`, text, at: w.sent!.at }))
 	return w
 }
 

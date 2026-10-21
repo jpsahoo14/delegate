@@ -16,6 +16,7 @@ import { changeKnowledge, inbox, knowledgeOf, publish, remember, renderProposal 
 import { BOOT_SOURCES, startBootstrap } from '../runner/bootstrap.ts'
 import { disown, own } from '../runner/own.ts'
 import { track, watchCommand } from '../runner/track.ts'
+import { openTodos } from '../runner/work.ts'
 import { statusText } from '../runner/status.ts'
 import { makeChange, mcpCaller } from '../runner/change.ts'
 import { adoProbe } from '../runner/probe.ts'
@@ -354,6 +355,12 @@ export function actResult(store: Store, command: string, shownAt?: string, from:
 		if (!wf) { out.push(code ? `${code}: no such item.` : 'Which item? Add a code, for example "ok A7".'); continue }
 		if (p.verb === 'more') { out.push(renderMore(wf, store.thread(wf.id), new Date())); store.markShown([wf]); shown++; continue }
 		// Promise only what can happen (final review persona notes).
+		// Mark done: close on an item with open to-dos marks them done, even when the item is done (R-NEX-07).
+		// From the page, only the to-dos it drew: the button carries the newest one's time, and one kept after that stays open (re-review N2 P2-C).
+		const marks = p.verb === 'close' && openTodos(wf).length > 0
+		// A rev older than every open to-do came from a button that drew none (a Close on another row): all open, as before.
+		const drawn = marks ? openTodos(wf).filter(t => from !== 'page' || !shownAt || t.at <= shownAt) : [], seen = drawn.length ? drawn : openTodos(wf)
+		if (marks) { ids.push(store.writeAnswer({ code: wf.code, verb: p.verb, text: p.text, surface: 'chat', seenAt: shownAt ?? store.seenRev(wf.code), todos: seen.map(t => t.id) }).id); out.push(`${wf.code} will mark ${seen.length === 1 ? 'its to-do' : `its ${seen.length} to-dos`} done. Nothing is sent.`); continue }
 		if (wf.state === 'done' && !reopenable(wf, p.verb) && !(p.verb === 'mine' && wf.fyi) && !['undo', 'ask', 'wrong', 'incomplete', 'unneeded'].includes(p.verb) && !(p.verb === 'send' && wf.sent)) { out.push(`${wf.code} is already done: ${wf.status}`); shown++; continue }
 		if (p.verb === 'mine' && (wf.state !== 'done' || !wf.fyi)) { out.push(`${wf.code} is not in Catch up, so nothing changed.`); shown++; continue }
 		if (p.verb === 'undo' && !wf.sent?.byRule) { out.push(`${wf.code}: I can't unsend a reply you approved yourself. To add a correction, say "send ${wf.code}: <text>".`); shown++; continue }

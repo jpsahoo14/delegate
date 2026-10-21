@@ -1,5 +1,5 @@
 // Typing, picking, and submitting: fields keep the owner's words in the page state; forms send them.
-import { primaryOf } from '../model/derive.ts'
+import { RESULTS, primaryOf } from '../model/derive.ts'
 import type { ItemCard, KnowledgeCard } from '../model/types.ts'
 import * as A from '../state/actions.ts'
 import { S, U, cardOf, env } from '../state/store.ts'
@@ -17,6 +17,8 @@ export function onChange(e: Event) {
 	// The Numbers tab's window: its numbers are asked for again.
 	if (t.dataset.numwin != null) { void loadNumbers(t.value as WindowKey); return }
 	if (t.dataset.f) { (S.form as Record<string, unknown>)[t.dataset.f] = t.value; render(); return }
+	// Report your result: the choice is kept in the page state, so a redraw keeps it (N2).
+	if (t.dataset.result) { U(`result:${t.dataset.result}`).pick = [+t.value]; render(); return }
 	const el = t.closest<HTMLElement>('[data-code]'); if (!el) return
 	const code = el.dataset.code!, c = cardOf(code) as ItemCard, u = U(code)
 	if (t.dataset.opt) {
@@ -41,6 +43,7 @@ export function onInput(e: Event) {
 	if (t.dataset.wf) { (S.watchForm as Record<string, unknown>)[t.dataset.wf] = t.value; enable('watchgo', !!S.watchForm!.target.trim()); return }
 	if (t.dataset.set) { S.set[t.dataset.set] = t.value; current().patch.unsaved(t); return }
 	if (t.dataset.f === 'text') { S.form!.text = t.value; current().patch.reminder(S.form!); enable('autocreate', !!t.value.trim()); return }
+	if (t.dataset.saw) { U(`result:${t.dataset.saw}`).answer = t.value; return }
 	if (t.dataset.tell) { U(`tell:${t.dataset.tell}`).answer = t.value; const b = document.querySelector<HTMLButtonElement>(`[data-form=tell][data-code="${t.dataset.tell}"] button[type=submit]`); if (b) b.disabled = !t.value.trim(); return }
 	const el = t.closest<HTMLElement>('[data-code]'); if (!el || !t.dataset.input) return
 	const code = el.dataset.code!, c = cardOf(code) as ItemCard, u = U(code)
@@ -58,6 +61,15 @@ export function onSubmit(e: SubmitEvent) {
 	if (form === 'find') { e.preventDefault(); A.findMissed(); return }
 	// Your step on work: what the owner did or found goes back through the answer path ("A30: …").
 	if (form === 'tell') { e.preventDefault(); const code = f.dataset.code!, u = U(`tell:${code}`), text = u.answer.trim(); if (!text) return; u.answer = ''; A.act(`row:${code}`, code, f.dataset.cmd!.replace('{text}', text), 'row'); return }
+	// Report your result: "<code>: Issues found: 403 on checkout", through the answer path. Delegate drafts; ok sends (R-NEX-05).
+	if (form === 'result') {
+		e.preventDefault()
+		const code = f.dataset.code!, u = U(`result:${code}`), result = RESULTS[u.pick?.[0] ?? -1], saw = u.answer.replace(/\s+/g, ' ').trim()
+		if (!result) return
+		// Functions, so a "$&" in pasted logs is not a replacement pattern (review N2 P2-4); the words go only once the runner has them.
+		A.act(`row:${code}`, code, f.dataset.cmd!.replace('{result}', () => result).replace(saw ? '{text}' : ': {text}', () => saw), 'row', undefined, '', () => Object.assign(u, { pick: null, answer: '' }))
+		return
+	}
 	if (form === 'mark') { e.preventDefault(); A.markCard(f.closest<HTMLElement>('[data-code]')!.dataset.code!); return }
 	if (form !== 'ask') return
 	e.preventDefault()

@@ -1,6 +1,6 @@
 import { answerHabit, outcome } from './habits.ts'
 import { membersOf } from './sharing.ts'
-import { active, afterSend, closeWork, homeOf, inWork, newTurn, statusOf, step, wait } from './work.ts'
+import { active, afterSend, closeWork, doneTodos, homeOf, inWork, keepTodos, newTurn, openTodos, statusOf, step, wait } from './work.ts'
 import { pendingEffects, refusal, sameChange, vet } from '../core/effects.ts'
 import type { Answer, Config, Effect, Person, Workflow } from '../core/types.ts'
 import { sendGate } from '../core/gate.ts'
@@ -25,7 +25,7 @@ import { CMD } from '../brand.ts'
 import { askAtOf } from '../core/numbers.ts'
 import { FOLLOW_DAYS, startFollow, startWatch, stopWatch, watchCommand } from './track.ts'
 import { prTarget, recheckDeploy, recheckPr, voteDropped, type BuildProbe } from './probe.ts'
-import { deployRunning, isValidate, saysTested, testedAsk } from './validate.ts'
+import { deployRunning, isValidate, reportsResult, saysTested, testedAsk } from './validate.ts'
 import { isDeploy } from '../core/deploy.ts'
 
 // Apply owner answers in time order. Effects run here and nowhere else.
@@ -176,8 +176,9 @@ async function applyOne(store: Store, src: Source, cfg: Config, wf: Workflow, a:
 				Object.assign(wf, { state: 'waiting_on_task', question: undefined, status: 'Checking again with your answer', waitingSince: new Date().toISOString() })
 				break
 			}
-			// "tested" (or a time window) on validate work: its job reads the results for that window and drafts the report, held for ok (owned work).
-			if (wf.job && store.job(wf.job) && isValidate(store.job(wf.job), wf) && saysTested(a.text)) {
+			// "tested" (or a time window), or a result from Report, on validate work: its job reads the results for that window and drafts
+			// the report, held for ok (owned work, R-NEX-05).
+			if (wf.job && store.job(wf.job) && isValidate(store.job(wf.job), wf) && (saysTested(a.text) || reportsResult(a.text))) {
 				const job = store.job(wf.job)!
 				Object.assign(job, { asks: [...job.asks, testedAsk(homeOf(store, wf), a.text!)], ...(job.state === 'running' ? {} : { state: 'queued', purpose: 'work', error: undefined }) })
 				store.saveJob(job)
@@ -426,6 +427,7 @@ export async function send(store: Store, src: Source, cfg: Config, wf: Workflow,
 	const changesOff = (wf.effects ?? []).filter(e => e.off).length
 	wf.needsMe = undefined
 	wf.sent = { msgId, at: new Date().toISOString(), text, byRule: by.ruleId, undoUntil: by.ruleId ? new Date(Date.now() + p.undoMin * 60_000).toISOString() : undefined }
+	keepTodos(wf, wf.sent.at)
 	const home = homeOf(store, wf)
 	if (home.work) { afterSend(wf, out!, msgId, home); if (!active(home)) { stopWatch(store, home); closeFamily(store, realProcs, home, home.work.closed?.why ?? 'closed') } if (home !== wf) store.save(home) }
 	else close(wf, by.ruleId ? `Sent by rule ${by.ruleId}: "${text!.slice(0, 70)}"` : `Sent: "${text!.slice(0, 80)}"`)
@@ -564,6 +566,16 @@ async function retune(store: Store, src: Source, wf: Workflow, a: Answer) {
 // close ends work for good; wait puts open work back in progress with a later check date (R-WRK-05, R-WRK-06).
 async function workVerb(store: Store, src: Source, wf: Workflow, a: Answer, procs: Procs) {
 	if (a.verb === 'close') {
+		// Mark done (R-NEX-07): open to-dos a sent reply left go first, and nothing else changes. A done item is never reopened,
+		// and open work stays open, so the button can never end work; a second close does that.
+		// From the page, only the to-dos the owner saw: one kept after they looked stays open, and when none they saw is still open
+		// the close was for them, so the work never closes by it (review N2 P2-1).
+		if (a.todos && !openTodos(wf).some(t => a.todos!.includes(t.id))) return reply(store, src, a, `${MARK} ${wf.code}: the ${a.todos.length === 1 ? 'to-do you marked is' : 'to-dos you marked are'} already done. ${wf.code} stays ${wf.state === 'done' ? 'done' : 'open'}. Nothing was sent.`)
+		if (openTodos(wf).length) {
+			const done = doneTodos(wf, undefined, a.todos)
+			store.save(wf)
+			return reply(store, src, a, `${MARK} Marked ${done.length === 1 ? 'your to-do' : `your ${done.length} to-dos`} on ${wf.code} done: ${done.join('; ')}. ${wf.state === 'done' ? `${wf.code} stays done.` : `${wf.code} stays open; say "close ${wf.code}" again to close it.`} Nothing was sent.`)
+		}
 		if (wf.state === 'done') return reply(store, src, a, `${MARK} ${wf.code} is already closed: ${wf.status}`)
 		const why = a.text?.trim() || 'Closed by you'
 		const home = homeOf(store, wf)

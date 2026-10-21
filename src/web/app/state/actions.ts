@@ -37,7 +37,8 @@ export async function refresh() {
 /* ------------------------------ acting ------------------------------ */
 // Sends a command, then waits for its result. kind says how: finish (the item should leave), draft (wait for a new draft),
 // pick, ask, mark, later, keep, row (a list action).
-export async function act(key: string, code: string, cmd: string, kind: Kind, seenAt?: string, by = '') {
+// sent: called once the runner has the command, so a form keeps its words until then (review N2 P2-6).
+export async function act(key: string, code: string, cmd: string, kind: Kind, seenAt?: string, by = '', sent?: () => void) {
 	const io = env.io
 	if (!io || !cmd) return
 	const u = U(key)
@@ -49,6 +50,7 @@ export async function act(key: string, code: string, cmd: string, kind: Kind, se
 		S.offline = true; render(); return
 	}
 	if (!r.ok) { Object.assign(u, { status: kind === 'row' ? 'ready' : 'refused', msg: r.text || `${env.name} could not do that.` }); render(); say(u.msg, false); return }
+	sent?.()
 	// A list action answered on the spot (check now, stop watching) has nothing to wait for.
 	if (kind === 'row' && !r.ids?.length) return finish(key, code, { applied: true, text: r.text }, kind)
 	let o: Result, wait = env.poll, tries = 0

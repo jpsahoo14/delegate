@@ -160,6 +160,7 @@
     ].filter((p) => !!p);
     return { at, parts };
   }
+  var RESULTS = ["Both work", "Issues found", "Blocked"];
 
   // src/web/app/model/find.ts
   function teamsMessage(q) {
@@ -307,7 +308,7 @@
       lost();
     }
   }
-  async function act(key, code, cmd, kind, seenAt, by = "") {
+  async function act(key, code, cmd, kind, seenAt, by = "", sent) {
     const io = env.io;
     if (!io || !cmd) return;
     const u = U(key);
@@ -328,6 +329,7 @@
       say(u.msg, false);
       return;
     }
+    sent?.();
     if (kind === "row" && !r.ids?.length) return finish(key, code, { applied: true, text: r.text }, kind);
     let o, wait = env.poll, tries = 0;
     for (; ; ) {
@@ -1217,8 +1219,9 @@
         e.preventDefault();
         act(`row:${v}`, v, `undo ${v}`, "row");
         break;
+      // data-seen: what the owner saw, for a Mark done (re-review N2 P2-C); other list buttons carry none.
       case "rowact":
-        act(t.dataset.key, v.split(" ")[1], v, "row");
+        act(t.dataset.key, v.split(" ")[1], v, "row", t.dataset.seen);
         break;
       case "newauto":
         S.sheet = "pick";
@@ -1316,6 +1319,11 @@
       render2();
       return;
     }
+    if (t.dataset.result) {
+      U(`result:${t.dataset.result}`).pick = [+t.value];
+      render2();
+      return;
+    }
     const el = t.closest("[data-code]");
     if (!el) return;
     const code = el.dataset.code, c = cardOf(code), u = U(code);
@@ -1388,6 +1396,10 @@
       enable("autocreate", !!t.value.trim());
       return;
     }
+    if (t.dataset.saw) {
+      U(`result:${t.dataset.saw}`).answer = t.value;
+      return;
+    }
     if (t.dataset.tell) {
       U(`tell:${t.dataset.tell}`).answer = t.value;
       const b = document.querySelector(`[data-form=tell][data-code="${t.dataset.tell}"] button[type=submit]`);
@@ -1426,6 +1438,13 @@
       if (!text2) return;
       u.answer = "";
       act(`row:${code}`, code, f.dataset.cmd.replace("{text}", text2), "row");
+      return;
+    }
+    if (form === "result") {
+      e.preventDefault();
+      const code = f.dataset.code, u = U(`result:${code}`), result = RESULTS[u.pick?.[0] ?? -1], saw = u.answer.replace(/\s+/g, " ").trim();
+      if (!result) return;
+      act(`row:${code}`, code, f.dataset.cmd.replace("{result}", () => result).replace(saw ? "{text}" : ": {text}", () => saw), "row", void 0, "", () => Object.assign(u, { pick: null, answer: "" }));
       return;
     }
     if (form === "mark") {
@@ -1847,20 +1866,20 @@
     const k = c.work;
     if (!k) return "";
     const btn = (label, verb, o = {}) => B(label, "rowact", { sm: true, v: `${verb}`, verb, aria: html`data-key="work:${esc(c.code)}"`, ...o });
-    const who = { you: "you", them: "them", me: env.name };
-    const plan = k.plan.length ? html`<ul class="plan" aria-label="Plan">${k.plan.map((p) => html`<li class="${p.done ? raw("done") : ""}"><span aria-hidden="true">${esc(p.done ? "✓" : "○")}</span> ${esc(p.what)} <span class="m">${esc([who[p.who] ?? p.who, p.where, p.build && `build ${p.build}`].filter(Boolean).join(" · "))}</span></li>`)}</ul>` : "";
+    const who2 = { you: "you", them: "them", me: env.name };
+    const plan = k.plan.length ? html`<ul class="plan" aria-label="Plan">${k.plan.map((p) => html`<li class="${p.done ? raw("done") : ""}"><span aria-hidden="true">${esc(p.done ? "✓" : "○")}</span> ${esc(p.what)} <span class="m">${esc([who2[p.who] ?? p.who, p.where, p.build && `build ${p.build}`].filter(Boolean).join(" · "))}</span></li>`)}</ul>` : "";
     return html`<div class="c-sec work" aria-label="This work"><p class="also-line">${I("eye", "sm")}<span><b>${k.proposed ? esc("Track as work?") : k.home ? html`Part of ${esc(k.home)}:` : esc("This work:")}</b> ${esc(k.goal)}${k.waiting ? html` · waiting on ${esc(k.waiting)}` : k.next ? html` · next: ${esc(k.next)}` : ""}</span></p>
 		${plan}<ol class="steps">${k.steps.map((x) => html`<li${x.news ? raw(' class="news"') : ""}><span class="m">${esc(when(x.at))}</span> ${esc(x.what)}</li>`)}</ol>
 		${k.due && !U(`work:${c.code}`).msg ? html`<div class="acts">${btn("Wait 3 days", `wait ${c.code}: 3d`)}${btn("Close", `close ${c.code}`, { ghost: true })}</div>` : ""}${rowState(`work:${c.code}`)}</div>`;
   }
   var debugBlock = (c, u) => c.debug ? html`<div class="c-sec"><details class="why" data-dbg${u.dbgOpen ? raw(" open") : ""}><summary>${I("right", "sm chev")}<span class="rs"><b>Details</b></span></summary><div class="why-b"><pre class="dbg">${esc(c.debug.join("\n"))}</pre>${env.snap ? "" : B("Copy details", "copydebug", { sm: true, ghost: true })}</div></details></div>` : "";
-  function card(c, enter) {
+  function card(c, enter, o = {}) {
     const u = U(c.code), done = S.done.get(c.code);
     if (done) return html`<article class="card" id="card-${esc(c.code)}" data-code="${esc(c.code)}" aria-labelledby="ap-${esc(c.code)}" tabindex="-1"><div class="applied" role="status"><span class="ok">${I("check", "lg")}</span><p id="ap-${esc(c.code)}"><b>${esc(done.msg)}</b><span>${esc(c.who.name)} · ${esc(c.chat.name)}</span></p><span class="code">${esc(c.code)}</span></div>${((r) => r ? html`<div class="c-sec">${markBox(r, u)}</div>` : "")(V.done.find((r) => r.code === c.code && r.notes))}${askThread(sentOf(c), u)}</article>`;
     return html`<article class="card${enter ? raw(" enter") : ""}" id="card-${esc(c.code)}" data-code="${esc(c.code)}" data-rev="${esc(c.rev)}" aria-labelledby="h-${esc(c.code)}" tabindex="-1">
 		${u.stale ? html`<div class="stale" role="status">${I("warn")}<p><b>Changed since you looked.</b> There is a newer version of this item.</p>${B("Show the new version", "shownew", { sm: true })}</div>` : ""}
 		<div class="c-sec">${head(c, u)}${askBlock(c, u)}</div>
-		${workBlock(c)}
+		${o.work === false ? "" : workBlock(c)}
 		<div class="c-sec">${bodyOf(c, u)}</div>
 		${why(c, u)}${debugBlock(c, u)}
 		<div class="c-sec c-foot">${actions(c, u)}</div>
@@ -2266,6 +2285,63 @@
     }
   };
 
+  // src/web/app/view/next/item.ts
+  var who = (o) => o.kind === "you" ? "You" : o.kind === "delegate" ? env.name : o.kind === "others" ? o.text : "Nobody";
+  var onDay = (iso) => {
+    const d = new Date(iso), at = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime(), n = Math.round((at(/* @__PURE__ */ new Date()) - at(d)) / 864e5);
+    return n <= 0 ? "today" : n === 1 ? "yesterday" : `on ${n < 7 ? d.toLocaleDateString([], { weekday: "short" }) : d.toLocaleDateString([], { month: "short", day: "numeric" })}`;
+  };
+  var markDone = (code, seen, named) => {
+    const key = `todo:${code}`, u = peek(key);
+    if (env.snap) return html`<span class="verb">${esc(`close ${code}`)}</span>`;
+    return html`${u.msg ? "" : html`<div class="iacts">${B(named ? `Mark done (${code})` : "Mark done", "rowact", { sm: true, v: `close ${code}`, busy: u.status === "pending", disabled: S.offline, aria: html`data-key="${esc(key)}" data-seen="${esc(seen)}"` })}</div>`}${rowState(key)}`;
+  };
+  function move(r) {
+    const k = r.work, todos = r.todos ?? [];
+    const lines = [];
+    if (k?.yours) {
+      const c = k.yours.check;
+      lines.push(html`<p class="iyours">${esc(k.yours.what.replace(/[.\s]+$/, ""))}.${c ? esc(` ${c.what} done ${when(c.at)} (build ${c.build})`) : ""}</p>`);
+    } else if (k?.then) {
+      const lead = k.then.owner.kind === "delegate" ? `${env.name}: ${k.then.what}` : `Waiting on ${who(k.then.owner)}: ${k.then.what}`;
+      lines.push(html`<p class="ithen">${esc(lead)}${k.then.you ? esc(` · Then you: ${k.then.you}`) : ""}</p>`);
+    }
+    const codes = [...new Set(todos.map((t) => t.code))];
+    if (todos.length) lines.push(html`${codes.map((code) => html`<ul class="itodos" aria-label="${esc(codes.length > 1 ? `Your to-dos on ${code}` : "Your to-dos")}">${todos.filter((t) => t.code === code).map((t) => html`<li><span class="ib" aria-hidden="true"><span class="ring"></span></span><span><b>To do:</b> ${esc(t.text)} <span class="im">${esc(`promised ${onDay(t.at)}${codes.length > 1 ? ` · ${code}` : ""}`)}</span></span></li>`)}</ul>
+		${r.kind === "todo" && code === r.act ? "" : markDone(code, todos.filter((t) => t.code === code).map((t) => t.at).sort().at(-1), codes.length > 1)}`)}`);
+    if (!lines.length) return "";
+    return html`<section class="isec imove" aria-labelledby="im-${esc(r.act)}"><h3 id="im-${esc(r.act)}">${esc(k?.yours || todos.length ? "Your move" : "Next")}</h3>${lines}</section>`;
+  }
+  function checklist(r) {
+    const k = r.work;
+    if (!k?.steps.length) return "";
+    return html`<section class="isec" aria-labelledby="ic-${esc(r.act)}"><h3 id="ic-${esc(r.act)}">Checklist</h3><ol class="icheck">${k.steps.map((s2) => html`<li class="${raw(s2.done ? "done" : s2.now ? "now" : "todo")}"${s2.now ? raw(' aria-current="step"') : ""}>
+		<span class="ib" aria-hidden="true">${s2.done ? I("check", "sm") : s2.now ? I("right", "sm") : raw('<span class="ring"></span>')}</span>
+		<span class="iw">${esc(s2.what)}${s2.done ? html`<span class="sr"> (done)</span>` : s2.now ? html`<span class="sr"> (current step)</span>` : ""}</span>
+		<span class="io">${esc([who(s2.owner), s2.where, s2.build ? `build ${s2.build}` : ""].filter(Boolean).join(" · "))}</span></li>`)}</ol></section>`;
+  }
+  function report2(r) {
+    const cmd = r.work?.report;
+    if (!cmd) return "";
+    if (env.snap) return html`<section class="isec"><h3>Report your result</h3><span class="verb">${esc(cmd.replace("{result}", RESULTS.join(" | ")).replace("{text}", "<what you saw>"))}</span></section>`;
+    const u = peek(`result:${r.act}`), pick2 = u.pick?.[0], busy = peek(`row:${r.act}`).status === "pending";
+    const id = (s2) => `${s2}-${r.act}`;
+    return html`<section class="isec ireport" aria-labelledby="${raw(id("ir"))}"><h3 id="${raw(id("ir"))}">Report your result</h3>
+		<form data-form="result" data-code="${esc(r.act)}" data-cmd="${esc(cmd)}">
+		<fieldset class="ires"><legend class="sr">Result</legend>${RESULTS.map((x, i) => html`<label class="ichoice"><input type="radio" id="${raw(`res-${i}-${r.act}`)}" name="${raw(id("res"))}" data-result="${esc(r.act)}" value="${i}"${pick2 === i ? raw(" checked") : ""}${S.offline ? raw(" disabled") : ""}><span>${esc(x)}</span></label>`)}</fieldset>
+		<label class="sr" for="${raw(id("saw"))}">What you saw</label><textarea id="${raw(id("saw"))}" class="edit" rows="2" data-saw="${esc(r.act)}" placeholder="What you saw: errors, IDs, links"${S.offline ? raw(" disabled") : ""}>${esc(u.answer)}</textarea>
+		<div class="iacts"><button class="btn sm primary" type="submit"${pick2 == null || busy || S.offline ? raw(" disabled") : ""}><span class="bl">Draft my report</span></button><span class="im">Nothing is sent. You see the draft first.</span></div></form></section>`;
+  }
+  function happened(r) {
+    const k = r.work;
+    if (!k?.happened.length) return "";
+    return html`<section class="isec" aria-labelledby="ih-${esc(r.act)}"><h3 id="ih-${esc(r.act)}">What happened, newest first${k.total > k.happened.length ? html`<span class="im">${esc(` · last ${plural(k.happened.length, "step")} of ${k.total}`)}</span>` : ""}</h3><ol class="ihist">${k.happened.map((x) => html`<li${x.news ? raw(' class="news"') : ""}><span class="im">${esc(when(x.at))}</span> ${esc(x.what)}</li>`)}</ol></section>`;
+  }
+  function owned(r, hasCard) {
+    const inner = str(html`${move(r)}${checklist(r)}${report2(r)}${hasCard ? "" : happened(r)}`);
+    return inner ? html`<div class="iown" data-code="${esc(r.act)}">${raw(inner)}</div>` : "";
+  }
+
   // src/web/app/view/next/row.ts
   var ICON = { working: "bolt", scheduled: "clock", watch: "eye", "waiting-delegate": "clock", reminder: "clock", "reminder-new": "clock", catchup: "eye", stopped: "warn" };
   var TONE = { changed: "accent", retrying: "warn", held: "warn", worth: "accent", new: "accent", back: "accent" };
@@ -2291,6 +2367,9 @@
     const f = r.facts, q = f.quote, time2 = f.verb ? `${f.verb} ${when(f.at)}` : "";
     const ownQuote = !!q && q.by === f.who && q.verb === f.verb;
     const parts = [
+      // A to-do: "You promised Rita on Mon · no tool can do it" (R-NEX-07).
+      ...f.promise?.to ? [esc(`You promised ${f.promise.to} ${onDay(f.promise.at)}`)] : [],
+      ...f.promise?.why ? [esc(f.promise.why)] : [],
       ...f.who ? [esc(f.who)] : [],
       ...f.where ? [esc(f.where)] : [],
       ...r.when ? [esc(`starts ${when(r.when)}`)] : [],
@@ -2319,6 +2398,12 @@
     const u = U(`tell:${r.act}`);
     return html`<form class="ntell" data-form="tell" data-code="${esc(r.act)}" data-cmd="${esc(a.command)}" aria-label="${esc(a.label)}"><label class="sr" for="tell-${esc(r.act)}">What you did or found, for ${esc(env.name)}</label><input id="tell-${esc(r.act)}" data-tell="${esc(r.act)}" placeholder="What did you find?" autocomplete="off" value="${esc(u.answer)}"${S.offline ? raw(" disabled") : ""}><button class="btn sm primary" type="submit"${!u.answer.trim() || S.offline ? raw(" disabled") : ""}>${esc(a.label)}</button></form>`;
   }
+  function ncard(r, c) {
+    const own = owned(r, !!c);
+    if (c) return html`${own ? html`<div class="ncard">${own}</div>` : ""}<div class="ncard">${card(c, false, { work: !own })}</div>`;
+    if (own) return html`<div class="ncard">${own}</div>`;
+    return html`<p class="m ncard">${esc(`${r.act} has no card to open here.`)}${r.teams ? html` <a href="${esc(r.teams)}" target="_blank" rel="noopener">Open in Teams</a>` : ""}</p>`;
+  }
   function row3(r, open) {
     const c = open ? cardOf(r.act) : void 0, icon = ICON[r.kind];
     const lead = r.who && !icon ? av(r.who) : html`<span class="ri">${I(icon ?? "clock")}</span>`;
@@ -2333,17 +2418,16 @@
 			${r.draft ? html`<blockquote class="nd">${esc(r.draft)}</blockquote>` : ""}${r.gist ? html`<p class="ng">${esc(r.gist)}</p>` : ""}
 			${r.warn ? html`<div class="nwarn">${I("warn", "sm")}<span>${esc(r.warn)}</span></div>` : ""}
 			${nx ? html`<div class="nn"><span>Next: ${esc(nx)}</span></div>` : ""}
-			${tell(r)}${rowState(`row:${r.act}`)}
+			${open && r.work?.report ? "" : tell(r)}${rowState(`row:${r.act}`)}
 		</div>${acts ? html`<div class="nract">${acts}</div>` : ""}</div>
-		${open ? c ? html`<div class="ncard">${card(c)}</div>` : html`<p class="m ncard">${esc(`${r.act} has no card to open here.`)}${r.teams ? html` <a href="${esc(r.teams)}" target="_blank" rel="noopener">Open in Teams</a>` : ""}</p>` : ""}
+		${open ? ncard(r, c) : ""}
 	</li>`;
   }
 
   // src/web/app/view/next/now.ts
   function section(id, title, count, rows2, extra = "", empty = "", foot = "") {
     if (id !== "move" && !rows2.length) return "";
-    const [, sub] = S.route.split("/"), open = id === "move" || sub === id;
-    const shown = rows2.find((r) => r.act === sub || r.code === sub);
+    const [, sub] = S.route.split("/"), shown = rows2.find((r) => r.act === sub || r.code === sub), open = id === "move" || sub === id || !!shown;
     return html`<section class="nsec${open ? raw(" open") : ""}" id="now-${raw(id)}" aria-labelledby="nh-${raw(id)}">
 		<div class="nsh"><h2 id="nh-${raw(id)}">${esc(title)}<span class="nc">&nbsp;· ${esc(count)}</span></h2><span class="sp"></span>${extra}</div>
 		${rows2.length ? html`<ul class="nrows">${rows2.map((r) => row3(r, r === shown))}</ul>` : empty}${foot}</section>`;
@@ -2372,14 +2456,14 @@
     const v = V.version, chans = V.channels ?? [];
     const channels = chans.length ? html`<details class="nchan" data-chan${S.chanOpen ? raw(" open") : ""}><summary>${esc(`Channels you named (${chans.length})`)}</summary><ul>${chans.map((c, i) => html`<li>${esc(c.name)} ${U(`row:ch${i}`).msg ? "" : B("Stop", "rowact", { sm: true, ghost: true, v: `unwatch ${c.link}`, verb: `unwatch ${c.link}`, aria: html`data-key="row:ch${i}"` })}${rowState(`row:ch${i}`)}</li>`)}</ul></details>` : "";
     const ver = v?.code ? esc(`Version ${v.tag ? `${v.tag} (${v.code})` : v.code}`) : "";
-    const report2 = S.reporting ? html`<form class="markf missf" data-form="report" aria-label="Report a problem"><label class="sr" for="repin">What went wrong</label><textarea id="repin" class="edit" rows="3" placeholder="What went wrong, and what should it have done?"></textarea><div class="markacts"><button class="btn sm primary" type="submit"${S.offline ? raw(" disabled") : ""}>Send to the feedback log</button>${B("Cancel", "reportcancel", { sm: true, ghost: true })}</div></form>` : "";
+    const report3 = S.reporting ? html`<form class="markf missf" data-form="report" aria-label="Report a problem"><label class="sr" for="repin">What went wrong</label><textarea id="repin" class="edit" rows="3" placeholder="What went wrong, and what should it have done?"></textarea><div class="markacts"><button class="btn sm primary" type="submit"${S.offline ? raw(" disabled") : ""}>Send to the feedback log</button>${B("Cancel", "reportcancel", { sm: true, ghost: true })}</div></form>` : "";
     return html`<footer class="nfoot" aria-label="More"><div class="nfl">${join([
       B("+ Remind someone", "tpl", { sm: true, ghost: true, v: "remind" }),
       channels,
       ver,
       B(S.checking ? "Checking…" : "Check for updates", "checkupdate", { sm: true, ghost: true, busy: S.checking }),
       B("Report a problem", "reportopen", { sm: true, ghost: true })
-    ].filter((x) => !!x), raw('<span class="sep" aria-hidden="true"> · </span>'))}</div>${report2}</footer>${S.sheet ? sheet() : ""}`;
+    ].filter((x) => !!x), raw('<span class="sep" aria-hidden="true"> · </span>'))}</div>${report3}</footer>${S.sheet ? sheet() : ""}`;
   }
   function findBox() {
     if (env.snap) return "";

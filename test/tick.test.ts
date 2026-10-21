@@ -5415,6 +5415,83 @@ test('owned work: telemetry read tools only with a telemetry server; the prompt 
 	assert.match(last.prompt, /Telemetry: read it with kusto-kusto_query/)
 })
 
+// N2 (R-NEX-05): the owned-work case end to end on Now. A deploy is done, the owner reports from the opened item, the report is
+// drafted and held for ok, and only ok sends it.
+test('R-NEX-05 owned work on Now: deploy done, "Issues found: 403 on checkout" from Report, the report held for ok, ok sends it', async () => {
+	const { nextView } = await import('../src/web/next.ts')
+	ownSetup()
+	// The item's work: Delegate deploys, then the owner tests and reports. A run after the deploy finds nothing for the owner to approve.
+	const work = { goal: 'Checkout flows 1 and 2 work against the dev instance, or what blocks them is reported', doneWhen: 'the owner posts a verdict', next: { who: 'you' as const, what: 'Test checkout flows 1 and 2 on TEST3' }, plan: [{ what: 'Test checkout flows 1 and 2', who: 'you' as const }, { what: 'Report the result in the chat', who: 'you' as const }] }
+	const deployedRun = (_: string, jobId: string): Report => ({ workflowId: jobId, intent: 'validate', state: 'done', summary: 'TEST3 runs build 9100001; the owner tests next' })
+	const report = (_: string, jobId: string): Report => ({ workflowId: jobId, intent: 'validate', state: 'needs_human', summary: 'Checkout flow 1 returned 403 on TEST3',
+		reply: { text: 'Tested flows 1 and 2 on TEST3 (run 77001). Flow 1: 403 on checkout, correlation 5f2c. Flow 2 works. Next: the payment service owner.', commitment: false, sources: [{ ref: 'run 77001', tier: 'live', origin: 'extracted' }] } })
+	validateJob(proposal(), deployedRun, report)
+	script = (p, id) => ({ ...validateWorker(p, id), work })
+	src.post(CHAT, 'me', `[as Kim] The dev instance is up. Can you validate your flows against it? ${OWN_PR}`); await goOwn(); await goOwn()
+	await okOwn(); await makeDeploy()
+	// A deploy is done: the build check sees it with no AI, and the run after it leaves the next step with the owner.
+	buildNow.set(77001, { status: 'completed', result: 'succeeded' }); store.saveProbeMark({}); await goOwn(); await goOwn()
+	let row = nextView(store).move.find(r => r.act === 'A1')!
+	assert.deepEqual([row.rule, row.work?.yours?.what, row.work?.yours?.check?.what, row.work?.yours?.check?.build, row.work?.report], ['your-step', 'Test checkout flows 1 and 2 on TEST3', 'Deploy', 77001, 'A1: {result}: {text}'])
+	assert.deepEqual(row.work!.steps.map(s => [s.owner.kind, s.done, s.now]), [['you', false, true], ['you', false, false], ['delegate', true, false]])
+	// The owner reports from the opened item, as the page sends it.
+	const sentBefore = src.chats[CHAT].length
+	assert.match(act(store, 'A1: Issues found: 403 on checkout', row.rev, 'page'), /redraft with your answer/)
+	await goOwn()
+	const job = store.job(store.byCode('A1')!.job!)!
+	assert.match(job.asks.at(-1)!, /^Owner: "Issues found: 403 on checkout"\. The owner tested\. Read the results for .* on TEST3 \(run 77001\) and draft the report\.$/)
+	await goOwn(); await goOwn()
+	// Drafted for the home chat and held for the ok: nothing went out.
+	let wf = store.byCode('A1')!
+	assert.deepEqual([wf.state, wf.decision?.action, wf.chat.id], ['needs_human', 'draft', CHAT])
+	assert.match(wf.draft!.text, /403 on checkout[\s\S]*Telemetry was not read/)
+	assert.equal(src.chats[CHAT].length, sentBefore, 'nothing sent before the ok')
+	row = nextView(store).move.find(r => r.act === 'A1')!
+	assert.deepEqual([row.rule, row.kind, row.work?.report], ['needs-you', 'reply', undefined], 'the draft waits in Your move; no second Report')
+	// ok sends it, once, to the chat the work lives in.
+	await see('A1'); src.post('self', 'me', 'ok A1'); await goOwn()
+	wf = store.byCode('A1')!
+	const out = src.chats[CHAT].slice(sentBefore).filter(m => m.from?.id === 'me')
+	assert.equal(out.length, 1)
+	assert.match(out[0].body, /403 on checkout/)
+	assert.equal(wf.sent?.msgId, out[0].id)
+})
+
+// N2 (R-NEX-07): a to-do a sent reply promised stays the owner's across turns, in Your move, until close marks it done.
+test('R-NEX-07 a to-do from a sent reply survives the next turn and stays in Your move until close marks it done', async () => {
+	const { nextView } = await import('../src/web/next.ts')
+	const reply = (text: string, todos?: string[]) => (_: string, workflowId: string): Report => ({ workflowId, intent: 'status_next_step', state: 'needs_human', summary: text, reply: { text, commitment: false, sources: [] }, ...(todos ? { todos } : {}),
+		work: { goal: 'The partner fix ships', doneWhen: 'Rita has the date', next: { who: 'them', what: 'The partner team ships the fix' }, waitingOn: { who: 'The partner team' } } })
+	script = reply('I will ask the partner PM and get back to you.', ['Ping the partner PM on Teams'])
+	src.post(CHAT, 'me', '[as Rita] When does the partner fix ship?'); await go()
+	await see('A1'); src.post('self', 'me', 'ok A1'); await go()
+	let wf = store.byCode('A1')!
+	assert.deepEqual([wf.state, wf.kept?.map(t => [t.text, t.at === wf.sent!.at, !!t.done])], ['open', [['Ping the partner PM on Teams', true, false]]], 'kept when the reply went out, dated by the send')
+	assert.deepEqual(nextView(store).move.map(r => [r.act, r.rule, r.headline]), [['A1', 'todo', 'To do: Ping the partner PM on Teams']])
+	// The next turn: news on the work drafts a new reply without to-dos. The kept one stays.
+	script = reply('No date yet; the partner team is testing.')
+	src.post(CHAT, 'me', '[as Rita] Any news?'); await go()
+	wf = store.byCode('A1')!
+	assert.deepEqual([wf.state, wf.todos, wf.kept?.filter(t => !t.done).length], ['needs_human', undefined, 1])
+	await see('A1'); src.post('self', 'me', 'ok A1'); await go()
+	assert.deepEqual(nextView(store).move.map(r => [r.act, r.rule]), [['A1', 'todo']], 'still the owner\'s after the next send')
+	// Mark done, as the page sends it: the to-do is done, the work stays open, and the row leaves Your move.
+	const { actResult } = await import('../src/mcp/server.ts')
+	const said = actResult(store, 'close A1', undefined, 'page')
+	assert.match(said.text, /A1 will mark its to-do done\. Nothing is sent\./)
+	await go()
+	wf = store.byCode('A1')!
+	assert.deepEqual([wf.state, wf.work?.closed, wf.kept?.every(t => !!t.done)], ['open', undefined, true])
+	assert.match(store.outcome(said.ids[0])!, /Marked your to-do on A1 done: Ping the partner PM on Teams\. A1 stays open; say "close A1" again to close it\. Nothing was sent\./)
+	assert.deepEqual([nextView(store).move.length, nextView(store).waiting.some(r => r.act === 'A1')], [0, true])
+	// A later reply promises something new: kept as a new open to-do beside the done one.
+	script = reply('I will send you the date on Friday.', ['Send Rita the date on Friday'])
+	src.post(CHAT, 'me', '[as Rita] Can you send me the date when you have it?'); await go()
+	await see('A1'); src.post('self', 'me', 'ok A1'); await go()
+	assert.deepEqual(store.byCode('A1')!.kept!.map(t => [t.id, t.text, !!t.done]), [['t1', 'Ping the partner PM on Teams', true], ['t2', 'Send Rita the date on Friday', false]])
+	assert.deepEqual(nextView(store).move.map(r => [r.act, r.headline]), [['A1', 'To do: Send Rita the date on Friday']])
+})
+
 test('owned work: no secrets in chat, knowledge, logs, or prompts', async () => {
 	ownSetup()
 	const jwt = 'eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJyb2JpbiJ9.c2lnbmF0dXJlLXZhbHVl'

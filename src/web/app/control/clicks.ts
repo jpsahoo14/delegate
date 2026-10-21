@@ -73,7 +73,8 @@ export function onClick(e: MouseEvent) {
 		case 'keys': current().keys.open(); break
 		case 'healthfix': A.act('health', '', V.health[0].fix!.command, 'row'); break
 		case 'undo': e.preventDefault(); A.act(`row:${v}`, v, `undo ${v}`, 'row'); break
-		case 'rowact': A.act(t.dataset.key!, v.split(' ')[1], v, 'row'); break
+		// data-seen: what the owner saw, for a Mark done (re-review N2 P2-C); other list buttons carry none.
+		case 'rowact': A.act(t.dataset.key!, v.split(' ')[1], v, 'row', t.dataset.seen); break
 		case 'newauto': S.sheet = 'pick'; render(); document.querySelector<HTMLElement>('.tpl')?.focus(); break
 		case 'tpl':
 			if (v === 'watch') { S.wform = { text: '', by: '', push: false }; S.sheet = 'watch'; S.formErr = ''; render(); focusOn('ws-text'); break }

@@ -1,7 +1,7 @@
 import type { Store } from '../store/state.ts'
-import type { Automation, Job, Workflow } from '../core/types.ts'
+import type { Automation, Job, PlanStep, Workflow } from '../core/types.ts'
 import type { Waiting } from '../core/waiting.ts'
-import { type Facts, type Section, URGENCY, whoseMove } from '../core/whose.ts'
+import { type Facts, rankOf, type Section, URGENCY, whoseMove } from '../core/whose.ts'
 import { clock } from '../core/schedule.ts'
 import { pendingEffects } from '../core/effects.ts'
 import { messageLink } from '../adapters/channels.ts'
@@ -10,6 +10,7 @@ import { DELAYS, MAX_TRIES } from '../runner/retry.ts'
 import { cardType, msgKeys, readingOf, who as whoOf, type Who } from './view.ts'
 import { NAME } from '../brand.ts'
 import { handledThisWeek } from '../store/numbers.ts'
+import { openTodos } from '../runner/work.ts'
 
 // The new experience's placement (dev-spec/new-experience.md §0, phase N0): one thread per home code, in one section, with its Next owner.
 export type Owner = { kind: 'you' } | { kind: 'delegate' } | { kind: 'others'; text: string } | { kind: 'nobody' }
@@ -70,12 +71,14 @@ export function factsOf(s: Snap, sub: Subject): Facts {
 		subject: 'item', state: w.state, runner: s.runner, queue: s.queue.get(w.id),
 		job: j && { state: j.state, watch: !!j.every, retryLater: !!j.retry && Date.parse(j.retry.at) > s.now, slot: s.slots.has(j.id), retry: !!j.retry },
 		// A step for "them" that waits on the owner by name is the owner's step.
-		work: w.work && { open: !w.work.closed, next: w.work.next?.who === 'them' && isMe(s, w.work.waitingOn?.who) ? 'you' : w.work.next?.who },
+		work: w.work && { open: !w.work.closed, next: nextWho(s, w.work) },
+		todos: openTodos(w).length,
 		fyiUnread: !!w.fyi && (w.fyi.at ?? w.updatedAt) > s.catchupSeen,
 	}
 }
 
 const isMe = (s: Snap, who?: string) => !!who && s.me.includes(who.toLowerCase())
+const nextWho = (s: Snap, k: NonNullable<Workflow['work']>) => k.next?.who === 'them' && isMe(s, k.waitingOn?.who) ? 'you' : k.next?.who
 
 const runnerWhy: Record<Exclude<Facts['runner'], 'ok'>, string> = { off: `${NAME} is not reading now`, paused: `${NAME} is paused`, stopped: `${NAME} is stopped`, capped: 'daily limit reached; tomorrow' }
 
@@ -127,7 +130,9 @@ export function place(s: Snap): Placed[] {
 		const f = factsOf(s, x.sub), { section, rule } = whoseMove(f)
 		const code = x.sub.kind === 'item' ? x.sub.wf.code : x.sub.kind === 'waiting' ? x.sub.w.code : x.sub.a.code
 		const have = threads.get(x.home)
-		const wins = !have || URGENCY.indexOf(section) < URGENCY.indexOf(have.section) || (URGENCY.indexOf(section) === URGENCY.indexOf(have.section) && code === x.home)
+		// Same section: the earlier rule in the design's order wins, then the home (review N2 P1-1).
+		const sec = have ? URGENCY.indexOf(section) - URGENCY.indexOf(have.section) : -1, rk = have ? rankOf(rule) - rankOf(have.rule) : -1
+		const wins = !have || sec < 0 || (sec === 0 && (rk < 0 || (rk === 0 && code === x.home)))
 		const placed: Placed = { code: x.home, act: code, section, rule, subjects: [...(have?.subjects ?? []), code], title: titleOf(x.sub).slice(0, 160), who: x.who, chat: x.chat, at: x.at, ...nextOf(s, x.sub, f, section) }
 		if (wins) threads.set(x.home, have ? { ...placed, at: have.at > x.at ? have.at : x.at } : placed)
 		else threads.set(x.home, { ...have, subjects: [...have.subjects, code], at: have.at > x.at ? have.at : x.at })
@@ -162,7 +167,7 @@ export function dryText(rows: Placed[]): string {
 // Each placed thread as the new page draws it (design-spec/new-experience.md §5, reviews/pm-n1a.md). Code builds every word;
 // times stay timestamps. Quotation marks only for words someone wrote, with who wrote them; anything else is unquoted, after a label.
 export type RowKind =
-	| 'reply' | 'holding' | 'question' | 'choice' | 'meeting' | 'review' | 'check-date' | 'track' | 'your-step' | 'stopped' | 'reminder-new'
+	| 'reply' | 'holding' | 'question' | 'choice' | 'meeting' | 'review' | 'check-date' | 'track' | 'your-step' | 'stopped' | 'reminder-new' | 'todo'
 	| 'waiting-person' | 'waiting-others' | 'watch' | 'waiting-delegate' | 'nobody' | 'reminder'
 	| 'working' | 'scheduled'
 	| 'catchup'
@@ -174,7 +179,10 @@ export type RowKind =
 const CARD_MORE = 'ok <code> except <every change> (Send reply only) | <code>: review again (Review again)'
 export const COMMANDS: Record<RowKind, string> = {
 	reply: `ok <code> (whole draft on the row) | card | ${CARD_MORE}`, holding: `ok <code> (whole draft on the row) | card | ${CARD_MORE}`, question: `card | ${CARD_MORE}`, choice: `card | ${CARD_MORE}`, meeting: `card | ${CARD_MORE}`, review: `card | ${CARD_MORE}`,
-	'check-date': '<code>: nudge them', track: 'ok <code>', 'your-step': '<code>: {text}', stopped: '<code>: try again', 'reminder-new': 'ok <code>',
+	'check-date': '<code>: nudge them', track: 'ok <code>', stopped: '<code>: try again', 'reminder-new': 'ok <code>',
+	// N2: Report in the opened item ("<code>: Issues found: 403 on checkout"), and Mark done, which is close with a new meaning
+	// on an item with open to-dos: it marks them done and changes nothing else (R-NEX-05, R-NEX-07).
+	'your-step': '<code>: {text} | <code>: {result}: {text} (Report)', todo: 'close <code> (Mark done)',
 	'waiting-person': 'ok <W code> | <code>: nudge them', 'waiting-others': '<code>: nudge them', watch: 'ok <code> (when changed)', 'waiting-delegate': '', nobody: '<code>: do the next step now', reminder: 'pause <code> | resume <code>',
 	working: '', scheduled: 'later <code>',
 	catchup: 'mine <code>',
@@ -192,7 +200,7 @@ export type NextRow = {
 	code: string; act: string; section: Section; rule: string; kind: RowKind
 	headline: string; who?: Who
 	// who · where · verb when. at is a timestamp, said by the page in the owner's time; no verb, no time shown.
-	facts: { who?: string; where?: string; at: string; verb?: string; quote?: Quote; notes?: Note[]; until?: string; also?: number }
+	facts: { who?: string; where?: string; at: string; verb?: string; quote?: Quote; notes?: Note[]; until?: string; also?: number; promise?: Promise_ }
 	// A time the headline is about: a meeting's start.
 	when?: string
 	// "{at}" in what is next.at, said by the page in the owner's time.
@@ -210,7 +218,27 @@ export type NextRow = {
 	fresh?: { changed?: string; back?: string; born: string }
 	// Every message the thread's items hold, as "chat|msg", so Find knows a pasted link to any of them (review P2-6).
 	msgs?: string[]
+	work?: NextWork; todos?: TodoRow[]
 }
+// "You promised Ravi on Mon · no tool can do it": to whom, when the reply went out, and why it is the owner's (R-NEX-07).
+export type Promise_ = { to?: string; at: string; why?: string }
+// The opened item's owned work (design-spec/new-experience.md §6, N2), from the work record only: its plan, next, waitingOn, steps,
+// and what the build checks read. Plan steps place nothing; they are shown here.
+export type WorkStep = { what: string; owner: Owner; done: boolean; now: boolean; where?: string; build?: number }
+export type NextWork = {
+	goal: string; steps: WorkStep[]
+	// The owner's step, and the newest step a build check saw done: "Deploy done 10:05 (build 991)".
+	yours?: { what: string; check?: { what: 'Deploy' | 'Build'; at: string; build: number } }
+	// Someone else's step, or Delegate's: who, in the AI's words, and the owner's step after it.
+	then?: { owner: Owner; what: string; you?: string }
+	// Report your result: the command, with {result} and {text} filled from the form. Only when the next step is the owner's.
+	report?: string
+	// What happened, newest first, and how many steps there are in all.
+	happened: { at: string; what: string; news: boolean }[]; total: number
+}
+// The to-dos a sent reply left the owner on any item of the thread, for the opened item's list; code: its item, for Mark done.
+export type TodoRow = { id: string; text: string; at: string; code: string }
+
 export type NextView = {
 	move: NextRow[]; working: NextRow[]; waiting: NextRow[]
 	// worth: unread FYIs worth knowing first, for the summary line.
@@ -313,6 +341,7 @@ function itemRow(s: Snap, p: Placed, w: Workflow): Body {
 	}
 	if (p.section === 'move') {
 		if (p.rule === 'stopped') return { ...base, kind: 'stopped', headline: `Couldn't finish ${j?.goal ? gerund(clip(j.goal, 100)) : `this for ${name}`}: try again, or do it yourself`, facts: { ...facts, notes: [{ label: 'Why', text: whyOf(j?.error) }] }, primary: { label: 'Try again', command: `${c}: try again` }, more: [{ label: 'Close', command: `close ${c}` }] }
+		if (p.rule === 'todo') return todoRow(s, base, w)
 		if (p.rule === 'your-step') return { ...base, kind: 'your-step', headline: clip(w.work?.next?.what ?? w.work?.goal, 140), facts: { ...facts, notes: goal(w.work?.goal) }, primary: { label: 'Tell ' + NAME, command: `${c}: {text}` } }
 		const kind = moveKind(w), d = w.draft?.text ?? ''
 		const fits = !!d && d.length <= INLINE_MAX && !pendingEffects(w.effects).length && !w.choices && !mustSee(w)
@@ -356,6 +385,47 @@ function itemRow(s: Snap, p: Placed, w: Workflow): Body {
 	return { ...base, kind: 'waiting-person', headline: `Waiting on ${name} to answer`, facts: { ...facts, quote: undefined, notes: w.decision?.reason ? [{ label: 'Waiting for', text: clip(w.decision.reason, 160) }] : [] }, primary: { label: 'Draft a nudge', command: `${c}: nudge them` } }
 }
 
+// "To do: Update the release checklist": the oldest open to-do a sent reply left, Mark done for all of them (R-NEX-07).
+// Only a to-do the reply promised to someone says "You promised <them>": a change Delegate refused says why, a clone to make
+// says nothing more, and the owner never promised themself (review N2 P2-7).
+const REFUSED = /\.\s*Not made for you:\s*/, CLONE = /^Clone \S+ on \S+ \(git clone /
+function todoRow(s: Snap, base: Omit<Body, 'kind' | 'headline'>, w: Workflow): Body {
+	const open = openTodos(w), t = open[0], [what, why] = t.text.split(REFUSED)
+	const where = w.chat.name && w.chat.name !== w.asker?.name ? w.chat.name : undefined
+	const more = open.length > 1 ? ` (+${open.length - 1} more)` : ''
+	const to = !why && !CLONE.test(t.text) && w.asker?.name && !isMe(s, w.asker.name) && !isMe(s, w.asker.name.split(/\s+/)[0]) ? first(w.asker.name) : undefined
+	const promise: Promise_ = { ...(to ? { to } : {}), at: t.at, ...(why ? { why: clip(why, 140) } : CLONE.test(t.text) ? {} : { why: 'no tool can do it' }) }
+	// Its rev is the newest to-do it shows, so Mark done marks no to-do kept after the page drew it (re-review N2 P2-C).
+	return { ...base, kind: 'todo', rev: open.map(x => x.at).sort().at(-1)!, headline: clip(`To do: ${what.replace(/[.\s]+$/, '')}${more}`, 160), facts: { at: t.at, ...(where ? { where } : {}), promise }, primary: { label: 'Mark done', command: `close ${w.code}` }, more: [{ label: 'Open' }] }
+}
+
+// Who does a plan step: the owner, Delegate, or someone else in the AI's words: the person in the chat of a part of this work the
+// step names (not the owner), or for the step the work waits on (its text is Next's), waitingOn. Never a made-up name (review N2 P1-2).
+function workOf(s: Snap, p: Placed, w: Workflow, home: Workflow): NextWork | undefined {
+	const k = home.work
+	if (!k || k.closed || k.proposed) return undefined
+	const who = nextWho(s, k), plan = k.plan ?? [], items = new Map(s.workflows.map(x => [x.code, x]))
+	const on = k.waitingOn?.who && !isMe(s, k.waitingOn.who) ? k.waitingOn.who : undefined
+	const named = plan.find(x => !x.done && !!k.next && x.what === k.next.what)
+	const cur = named ?? plan.find(x => !x.done && x.who === who) ?? (who ? undefined : plan.find(x => !x.done))
+	const part = (x: PlanStep) => { const it = x.in ? items.get(x.in) : undefined; return it && (it.id === home.id || it.partOf === home.id) ? it : undefined }
+	const person = (x: PlanStep) => { const n = part(x)?.asker?.name; return n && !isMe(s, n) && !isMe(s, n.split(/\s+/)[0]) ? n : undefined }
+	const owner = (x: PlanStep): Owner => x.who === 'you' ? { kind: 'you' } : x.who === 'me' ? { kind: 'delegate' }
+		: { kind: 'others', text: person(x) || (x === named && on) || 'Someone else' }
+	const steps = plan.map(x => ({ what: x.what, owner: owner(x), done: !!x.done, now: x === cur, ...(part(x) ? { where: x.in } : {}), ...(x.probe ? { build: x.probe.build } : {}) }))
+	const seen = plan.filter(x => x.done && x.probe).sort((a, b) => b.done!.localeCompare(a.done!))[0]
+	const check = seen && { what: seen.ring ? 'Deploy' as const : 'Build' as const, at: seen.done!, build: seen.probe!.build }
+	const yourNext = plan.find(x => !x.done && x.who === 'you' && x !== cur)
+	const then = who && who !== 'you' && k.next ? { owner: who === 'me' ? { kind: 'delegate' } as Owner : { kind: 'others', text: on ?? 'Someone else' } as Owner, what: k.next.what, ...(yourNext ? { you: yourNext.what } : {}) } : undefined
+	return {
+		goal: k.goal, steps,
+		...(who === 'you' && k.next ? { yours: { what: k.next.what, ...(check ? { check } : {}) } } : {}),
+		...(then ? { then } : {}),
+		...(p.rule === 'your-step' && w === home ? { report: `${home.code}: {result}: {text}` } : {}),
+		happened: k.steps.slice(-6).reverse().map(x => ({ at: x.at, what: x.what, news: !!x.news })), total: k.steps.length,
+	}
+}
+
 function waitRow(w: Waiting): Body {
 	const to = firsts(w.to)
 	return { kind: 'waiting-person', headline: clip(`You asked ${to}: "${w.text}"`, 160), who: whoOf(w.to[0]), facts: { where: w.chat.name, at: w.at, verb: 'asked' }, chips: [], primary: { label: 'Draft a nudge', command: `ok ${w.code}` }, more: [{ label: 'Close', command: `skip ${w.code}` }], teams: w.msgId ? messageLink(w.chat.id, w.msgId) : undefined }
@@ -384,7 +454,10 @@ export function rowsOf(s: Snap, placed: Placed[]): NextRow[] {
 	return placed.filter(p => p.section !== 'done').map(p => {
 		const w = items.get(p.act), wt = waits.get(p.act), a = autos.get(p.act)
 		const body = w ? itemRow(s, p, w) : wt ? waitRow(wt) : reminderRow(p, a!)
-		return { code: p.code, act: p.act, section: p.section, rule: p.rule, ...body, ...freshOf(p, w, items) }
+		const home = w && ((w.partOf && s.workflows.find(x => x.id === w.partOf)) || w), work = w && workOf(s, p, w, home!)
+		// Every item's open to-dos in the thread, the home's and its parts', each with its own code (review N2 P1-1).
+		const todos = p.subjects.map(c => items.get(c)).filter((x): x is Workflow => !!x).flatMap(x => openTodos(x).map(t => ({ id: t.id, text: t.text, at: t.at, code: x.code })))
+		return { code: p.code, act: p.act, section: p.section, rule: p.rule, ...body, ...freshOf(p, w, items), ...(work ? { work } : {}), ...(todos.length ? { todos } : {}) }
 	})
 }
 

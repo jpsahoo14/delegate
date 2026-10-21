@@ -95,8 +95,25 @@ export function mergePlan(old: PlanStep[], next: NonNullable<WorkReport['plan']>
 
 // The fields of one reply. New input on open work starts a new turn, so its reply is a new send (review P0.1).
 // Ending a turn without new input (wait, skip, close, the owner's own message) keeps the last send for Done and "Not right?".
+// The turn's own to-dos go with it; the ones a sent reply promised (kept) stay until the owner marks them done (R-NEX-07).
 export function newTurn(wf: Workflow, keepSent = false) {
 	Object.assign(wf, { draft: undefined, choices: undefined, question: undefined, effects: undefined, promised: undefined, decision: undefined, approved: undefined, picked: undefined, sendAt: undefined, correction: undefined, todos: undefined, newCount: 0, ...(keepSent ? {} : { sent: undefined }) })
+}
+
+// When a reply goes out, what it promised the owner would do becomes theirs to keep, once per open text (R-NEX-07).
+export function keepTodos(wf: Workflow, at: string) {
+	const kept = wf.kept ?? []
+	let n = kept.reduce((m, t) => Math.max(m, Number(t.id.replace(/\D/g, '')) || 0), 0)
+	const add = [...new Set(wf.todos ?? [])].filter(text => !kept.some(t => !t.done && t.text === text)).map(text => ({ id: `t${++n}`, text, at }))
+	// Always set, even empty: an item with no kept list was written before N2, and only those are migrated (review N2 P2-2).
+	wf.kept = [...kept, ...add]
+}
+export const openTodos = (wf: Workflow) => (wf.kept ?? []).filter(t => !t.done)
+// "Mark done": the open to-dos on the item are done, or only those named (the ones the owner saw). Nothing else about the item changes.
+export function doneTodos(wf: Workflow, at = new Date().toISOString(), only?: string[]): string[] {
+	const open = openTodos(wf).filter(t => !only || only.includes(t.id))
+	wf.kept = (wf.kept ?? []).map(t => (open.includes(t) ? { ...t, done: at } : t))
+	return open.map(t => t.text)
 }
 
 // A report with no reply or question: active work stays open, closed work is done.

@@ -113,3 +113,6 @@ export function sinceOf(v: Pick<View, 'now' | 'since' | 'done' | 'next'>): { at:
 	].filter((p): p is { text: string; href: string } => !!p)
 	return { at, parts }
 }
+
+// Report your result's three results (R-NEX-05). The runner reads a report that starts with one as a result (runner/validate.ts REPORTED).
+export const RESULTS = ['Both work', 'Issues found', 'Blocked'] as const

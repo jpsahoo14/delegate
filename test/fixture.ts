@@ -140,6 +140,39 @@ export function seedNext(store: Store, ui: 'new' | 'classic' | undefined = 'new'
 	return store
 }
 
+// N2 on top of seedNext (R-NEX-05, R-NEX-07): validate work whose next step is the owner's after a deploy a build check saw done
+// (A40), work waiting on Dev's deploy with the owner's step after it (A41), and a sent reply that left the owner a to-do (A42).
+export function seedOwned(store: Store) {
+	const job = (id: string, over: Record<string, unknown>) => store.saveJob({ schema: 1, id, key: `k-${id}`, goal: 'Work', session: { agent: 'copilot', id: `s-${id}` }, state: 'done', purpose: 'work', parents: [], asks: [], createdAt: ago(3000), updatedAt: ago(55), ...over } as never)
+	job('j-a40', { key: 'pr:acme/web/4200002', intent: 'validate', goal: 'Validate PR 4200002 against the new payment service' })
+	item(store, 'A40', 'Pete Hale', 'Checkout sync', {
+		createdAt: ago(3000), state: 'open', status: 'In progress', intent: 'validate', job: 'j-a40', lastAsk: 'Can you test your checkout flows against the new payment service?',
+		work: {
+			goal: 'Checkout flows 1 and 2 work against the new payment service, or what blocks them is reported', doneWhen: 'You post a verdict in Checkout sync', links: ['pr:4200002'],
+			next: { who: 'you', what: 'Test checkout flows 1 and 2 on staging2' },
+			plan: [
+				{ id: 'p1', what: 'Route the staging ring to the dev instance (PR 4200002)', who: 'you', done: ago(2900) },
+				{ id: 'p2', what: 'Deploy build 991 to staging2', who: 'me', done: ago(55), probe: { build: 991, project: 'Globex' }, seen: 'completed:succeeded', ring: { name: 'staging2', pipelineId: 3003, project: 'Globex', run: 991 } },
+				{ id: 'p3', what: 'Test checkout flow 1', who: 'you' },
+				{ id: 'p4', what: 'Test checkout flow 2', who: 'you' },
+				{ id: 'p5', what: 'Report the result in Checkout sync', who: 'you' },
+			],
+			steps: [{ at: ago(3000), what: 'Started: test checkout flows 1 and 2 against the new payment service' }, { at: ago(120), what: 'Deployed: Deploy build 991 to staging2: run 991' }, { at: ago(55), what: 'Build 991 succeeded (Deploy build 991 to staging2)', news: true }],
+		},
+	})
+	item(store, 'A41', 'Kim Lane', 'Payments sync', {
+		createdAt: ago(1500), state: 'open', status: 'In progress', lastAsk: 'Can you test the refund flow once Dev deploys?',
+		work: {
+			goal: 'The refund flow works on staging3', doneWhen: 'You tell Kim the result', links: [], steps: [{ at: ago(1500), what: 'Started: test the refund flow on staging3' }],
+			next: { who: 'them', what: 'Deploy build 992 to staging3' }, waitingOn: { who: 'Dev', since: ago(200) },
+			plan: [{ id: 'p1', what: 'Deploy build 992 to staging3', who: 'them' }, { id: 'p2', what: 'Test both, report by Fri', who: 'you' }],
+		},
+	})
+	const sent = ago(2 * 1440)
+	item(store, 'A42', 'Rita Vale', 'Release sync', { createdAt: ago(2 * 1440 + 30), state: 'done', status: 'Sent: "Yes, I will update the checklist today."', lastAsk: 'Can you update the release checklist?', sent: { msgId: 'm-a42', at: sent, text: 'Yes, I will update the checklist today.' }, todos: ['Update the release checklist in the wiki'], kept: [{ id: 't1', text: 'Update the release checklist in the wiki', at: sent }], updatedAt: sent })
+	return store
+}
+
 // Nothing open: the new page's quiet state. moving adds one ask nobody answered, so Your move is empty while something waits.
 export function seedQuiet(store: Store, moving = false) {
 	store.saveConfig({ schema: 1, owner: { id: 'me', name: 'Robin Park' }, source: { command: [], selfChatId: 'self' }, watch: [], agent: { flavor: 'copilot', command: [], tools: [] } } as never)

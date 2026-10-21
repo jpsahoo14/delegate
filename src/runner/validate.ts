@@ -42,13 +42,16 @@ export const saysTested = (text = '') => {
 	const before = t.slice(0, m.index)
 	return LEAD.test(before)
 }
+// Report your result on Now sends "<code>: Both work | Issues found | Blocked[: what you saw]" (R-NEX-05): a result like "tested".
+export const REPORTED = /^(both work|issues found|blocked)\s*(?::|$)/i
+export const reportsResult = (text = '') => REPORTED.test(text.trim())
 // The window, in the owner's words when they gave one, else from the newest deploy Delegate made (or the work's start) until now.
 export function testedAsk(home: Workflow, text: string, now = new Date()): string {
 	const w = WINDOW.exec(text)
 	const deployed = [...(home.work?.plan ?? [])].reverse().find(p => p.ring)
 	const from = w ? `${w[1]} (your time zone)` : deployed?.done ?? home.work?.steps.find(s => /^Deployed /.test(s.what))?.at ?? home.work?.steps[0]?.at ?? home.createdAt
 	const to = w ? `${w[2]} (your time zone)` : now.toISOString()
-	return `Owner: "${text}". The owner tested. Read the results for ${from} to ${to}${deployed ? ` on ${deployed.ring!.name} (run ${deployed.ring!.run})` : ''} and draft the report.`
+	return `Owner: "${text}". ${/^blocked\b/i.test(text.trim()) ? 'The owner could not finish testing' : 'The owner tested'}. Read the results for ${from} to ${to}${deployed ? ` on ${deployed.ring!.name} (run ${deployed.ring!.run})` : ''} and draft the report.`
 }
 
 // What a run read from the repo's config: test rings to propose, and IDs the repo calls int or production, never allowed after.
