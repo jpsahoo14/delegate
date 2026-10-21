@@ -41686,7 +41686,8 @@ function nextSteps(w) {
   const failed = left.some((e) => e.error || e.maybe), dropped = voteDropped(w.status) && (w.effects ?? []).some((e) => e.off && !e.done && isVote(e.call));
   return {
     // Never while a question is open: every ok is refused then (a stale vote after a change run, a refusedAsk; review chui P2-1).
-    ...left.length && w.draft?.text && !w.sent && !w.question && (failed || dropped) ? { replyOnly: `ok ${w.code} except ${left.map((_, i) => i + 1).join(" ")}` } : {},
+    // Nor on a draft with a blank, which every ok refuses too (re-review N4).
+    ...left.length && w.draft?.text && !/_{3,}/.test(w.draft.text) && !w.sent && !w.question && (failed || dropped) ? { replyOnly: `ok ${w.code} except ${left.map((_, i) => i + 1).join(" ")}` } : {},
     ...asksReviewAgain(w.code, w.question) ? { reviewAgain: reviewAgainCmd(w.code) } : {}
   };
 }
@@ -43373,12 +43374,13 @@ async function applyOne(store2, src, cfg, wf, a, procs, probe) {
       if (a.nums?.length) {
         const r = only(store2, wf, a.nums);
         if (typeof r === "string") return reply(store2, src, a, `${MARK} ${r}`);
-        const unmade = r.some((e) => e.error || e.maybe) || voteDropped(wf.status);
-        if (!pendingEffects(wf.effects).length && wf.draft?.text && (!wf.draft.byOwner || unmade)) {
+        const pr = prTarget(store2, wf), unmade = r.some((e) => e.error || e.maybe || !!refusal(cfg, e, pr)) || voteDropped(wf.status);
+        const rest = pendingEffects(wf.effects).length;
+        if (wf.draft?.text && (rest ? unmade : !wf.draft.byOwner || unmade)) {
           wf.revAt = (/* @__PURE__ */ new Date()).toISOString();
           store2.save(wf);
           store2.markShown([wf]);
-          return reply(store2, src, a, `${MARK} Only the reply goes now, and it says: "${wf.draft.text}" It was written counting on the changes you left out. Say "ok ${wf.code}" to send it as it is, or "edit ${wf.code}: <text>" to change it.`);
+          return reply(store2, src, a, `${MARK} ${rest ? `The reply was written counting on the changes you left out, and it says: "${wf.draft.text}" Say "ok ${wf.code}" to make the rest and send it as it is` : `Only the reply goes now, and it says: "${wf.draft.text}" It was written counting on the changes you left out. Say "ok ${wf.code}" to send it as it is`}, or "edit ${wf.code}: <text>" to change it.`);
         }
       }
       const stale = await recheckPr(store2, wf, probe) ?? await recheckDeploy(store2, wf, probe);
@@ -44663,12 +44665,12 @@ function approveEffects(store2, cfg, wf, again = false) {
   if (maybe && !again) return `${wf.code}'s ${shown(maybe).line} may already have been made. Check it, then say "ok ${wf.code} again" to make it once more, or "ok ${wf.code} except ${left.indexOf(maybe) + 1}" to leave it out.`;
   if (job.purpose === "work" && (job.state === "running" || job.state === "queued")) return `${wf.code} is still working on a new result. I'll show it first.`;
   if (keyOf(job.result?.effects) !== effectsKey(wf)) return `${wf.code}'s changes are out of date. Ask for a fresh review, or skip ${wf.code}.`;
-  if (!cfg.agent.effectTools?.length && !left.every((e) => isDeploy(e.call) && cfg.deploy?.allowed.length)) return `${wf.code} has ${left.length} change(s) to make, but no write tools are set. Add them in setup (the "tools" step, as effectTools), or skip ${wf.code}.`;
   const pr = prTarget(store2, wf);
   for (const e of left) {
     const why = refusal(cfg, e, pr);
-    if (why) return `${wf.code}'s ${shown(e).line} cannot be made: ${why}. ${e.call && !isDeploy(e.call) && !allows(cfg.agent.effectTools, e.call) ? "Turn it on in Settings, or say" : "Say"} "ok ${wf.code} except ${left.indexOf(e) + 1}" to ${left.length === 1 ? "send only the reply" : "leave it out"}.`;
+    if (why) return `${wf.code}'s ${shown(e).line} cannot be made: ${why}. ${e.call && !isDeploy(e.call) && !allows(cfg.agent.effectTools, e.call) ? `Turn on "${switchOf(e.call)}" in Settings, or say` : "Say"} "ok ${wf.code} except ${left.indexOf(e) + 1}" to ${left.length === 1 ? "send only the reply" : "leave it out"}.`;
   }
+  if (!cfg.agent.effectTools?.length && !left.every((e) => isDeploy(e.call) && cfg.deploy?.allowed.length)) return `${wf.code} has ${left.length} change(s) to make, but no write tools are set. Add them in setup (the "tools" step, as effectTools), or skip ${wf.code}.`;
   if (store2.control().paused) return `Paused, so ${wf.code}'s changes were not made. Say "resume", then ok again.`;
   if (maybe) {
     for (const e of left.filter((x) => x.maybe)) clearCalling(store2, e);
@@ -44847,7 +44849,7 @@ function scrubLog(store2, runId) {
 function parentsOf(store2, job) {
   return job.parents.map((id) => store2.workflow(id)).filter((w) => !!w && w.state !== "done" && (w.job === job.id || w.work?.watch === job.id));
 }
-var realProcs, NEVER_RELAY, keyOf, effectsKey, stillApproved, executing, WRAP_UP_MINUTES, WRAP_UP, hhmm3, changeText, TRACKER_SESSION_LIMIT;
+var realProcs, NEVER_RELAY, keyOf, effectsKey, stillApproved, executing, WRAP_UP_MINUTES, WRAP_UP, switchOf, hhmm3, changeText, TRACKER_SESSION_LIMIT;
 var init_jobs = __esm({
   "src/runner/jobs.ts"() {
     "use strict";
@@ -44895,6 +44897,10 @@ var init_jobs = __esm({
     executing = (job) => job.purpose === "execute" && (job.state === "queued" || job.state === "running");
     WRAP_UP_MINUTES = 3;
     WRAP_UP = (id) => `Your time for this job is up. Stop looking further. Call submit_report now with workflowId "${id}": what you found, with sources, and a question for the owner if they must decide something. If the goal is not met yet, set goalMet to false and blocker with kind "budget", what is left, and what you tried, so the next run continues; any reply is then only a holding reply.`;
+    switchOf = (c) => {
+      const one = `${c.tool}:${String(c.args.action ?? "")}`;
+      return changeName(one) !== one ? changeName(one) : changeName(c.tool);
+    };
     hhmm3 = (iso) => new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
     changeText = (e) => changeSays(e).slice(0, 120);
     TRACKER_SESSION_LIMIT = 2 * 1024 * 1024;

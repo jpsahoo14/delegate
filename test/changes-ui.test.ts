@@ -94,10 +94,46 @@ test('changes ui: an ok on a change switched off is refused before a change run,
 	const said = await saveSetting(s, 'change:ado-repo_pull_request_write:vote', 'false')
 	assert.match(said.text, /^PR vote is off: new drafts won't propose it, and an ok on one already shown is refused\./)
 	const held = approveEffects(s, s.config(), s.byCode('A60')!)
-	assert.match(held!, /^A60's Approve PR 4200001 cannot be made: ado-repo_pull_request_write:vote is not one of the changes you allow\. Turn it on in Settings, or say "ok A60 except 1" to send only the reply\.$/)
+	assert.match(held!, /^A60's Approve PR 4200001 cannot be made: ado-repo_pull_request_write:vote is not one of the changes you allow\. Turn on "PR vote" in Settings, or say "ok A60 except 1" to send only the reply\.$/)
 	assert.deepEqual([s.byCode('A60')!.state, s.byCode('A60')!.approved, s.job('j-A60')!.purpose], ['needs_human', undefined, 'work'], 'no change run queued')
 	assert.equal((await saveSetting(s, 'change:ado-repo_pull_request_write:vote', 'true')).text.startsWith('PR vote is on'), true)
 	assert.equal(approveEffects(s, s.config(), s.byCode('A60')!), '', 'on again, the ok queues it')
+})
+
+// re-review N1: with every switch off, the ok gets the same refusal, pointing to Settings, never "add them in setup".
+test('changes ui: with every change switched off, an ok is refused with the switch to turn on', async () => {
+	const s = fresh()
+	for (const k of ['change:ado-repo_pull_request_write:vote', 'change:ado-repo_pull_request_thread_write']) assert.equal((await saveSetting(s, k, 'false')).ok, true)
+	assert.deepEqual(s.config().agent.effectTools, [])
+	const held = approveEffects(s, s.config(), s.byCode('A60')!)
+	assert.match(held!, /cannot be made: .* Turn on "PR vote" in Settings, or say "ok A60 except 1" to send only the reply\.$/)
+	assert.doesNotMatch(held!, /setup/)
+})
+
+// re-review N2, N3: a change refused at ok and then left out is not made, so the reply that counted on it is quoted and waits for a
+// second ok: also with changes still to make, and also in the owner's own words. Leaving out a change by choice stays one ok (S6).
+test('changes ui: leaving out a change refused at ok quotes the reply first, with changes left or not, in any words', async () => {
+	const a63 = (s: S) => { const w = s.byCode('A63')!; const es = w.effects!.map(e => ({ ...e, off: undefined })); s.save({ ...w, status: 'Needs you', effects: es }, false); const j = s.job('j-A63')!; s.saveJob({ ...j, result: { ...j.result!, effects: es.map(e => ({ ...e })) } }) }
+	for (const byOwner of [false, true]) {
+		// N2: the vote is switched off; the comment is still to make.
+		const s = fresh(); a63(s)
+		if (byOwner) { const w = s.byCode('A63')!; s.save({ ...w, draft: { ...w.draft!, text: 'Approved, thanks!', byOwner: true } }, false) }
+		await saveSetting(s, 'change:ado-repo_pull_request_write:vote', 'false')
+		assert.match(approveEffects(s, s.config(), s.byCode('A63')!)!, /say "ok A63 except 1" to leave it out\.$/)
+		const out = await send(s, 'ok A63 except 1', 'A63')
+		assert.match(out, new RegExp(`^The reply was written counting on the changes you left out, and it says: "${s.byCode('A63')!.draft!.text}" Say "ok A63" to make the rest and send it as it is`), out)
+		assert.deepEqual([s.byCode('A63')!.state, s.byCode('A63')!.sent, s.jobs().some(j => j.purpose === 'execute')], ['needs_human', undefined, false], `nothing queued or sent yet (byOwner ${byOwner})`)
+		assert.match(await send(s, 'ok A63', 'A63'), /^Posting A63's comment on PR 4200003 now, then sending the reply\.$/, 'the second ok makes the rest')
+		// N3: the only change is refused at ok; the owner's own words still wait for a second ok.
+		const t = fresh()
+		if (byOwner) { const w = t.byCode('A60')!; t.save({ ...w, draft: { ...w.draft!, text: 'Approved, thanks!', byOwner: true } }, false) }
+		await saveSetting(t, 'change:ado-repo_pull_request_write:vote', 'false')
+		assert.match(await send(t, 'ok A60 except 1', 'A60'), /^Only the reply goes now/)
+		assert.equal(t.byCode('A60')!.sent, undefined, `A60 (byOwner ${byOwner}): nothing sent on the first ok`)
+	}
+	// Leaving out a change that could be made, by choice, is still one ok (design-spec S6).
+	const u = fresh(); a63(u)
+	assert.match(await send(u, 'ok A63 except 1', 'A63'), /^Posting A63's comment on PR 4200003 now, then sending the reply\.$/)
 })
 
 test('changes ui: turning a change off never touches a change already approved', async () => {
@@ -136,6 +172,11 @@ test('changes ui: "Send reply only" is offered when a change failed or was dropp
 	const b62 = t.byCode('A62')!
 	t.save({ ...b62, question: refusedAsk('A62', 1) }, false)
 	assert.equal(cardOf(t, 'A62').replyOnly, undefined)
+	// re-review N4: never on a draft with a blank, which every ok refuses.
+	t.save({ ...b62, question: undefined, draft: { ...b62.draft!, text: 'Left one comment on PR ___.' } }, false)
+	assert.equal(cardOf(t, 'A62').replyOnly, undefined)
+	t.save({ ...b62, question: undefined }, false)
+	assert.equal(cardOf(t, 'A62').replyOnly, 'ok A62 except 1', 'and back once the blank is filled')
 	// "Review again" is the card's main action, since ok is refused while the question is open.
 	const c = cardOf(s, 'A64'), p = primaryOf(c, ui(), 'Delegate')
 	assert.deepEqual([p.label, p.cmd, p.kind], ['Review again', 'A64: review again', 'draft'])

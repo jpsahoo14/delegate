@@ -1,7 +1,7 @@
 import { answerHabit, outcome } from './habits.ts'
 import { membersOf } from './sharing.ts'
 import { active, afterSend, closeWork, homeOf, inWork, newTurn, statusOf, step, wait } from './work.ts'
-import { pendingEffects, sameChange, vet } from '../core/effects.ts'
+import { pendingEffects, refusal, sameChange, vet } from '../core/effects.ts'
 import type { Answer, Config, Effect, Person, Workflow } from '../core/types.ts'
 import { sendGate } from '../core/gate.ts'
 import { classify, htmlToText } from '../core/intake.ts'
@@ -230,11 +230,15 @@ async function applyOne(store: Store, src: Source, cfg: Config, wf: Workflow, a:
 				// Only the reply is left, and it was written counting on the changes left out: it is quoted, and a new ok sends it (review 10-21 P2-10).
 				// The owner's own words too, when a change left out failed, may have been made, or was a vote dropped as not needed: they
 				// still count on it ("Send reply only", review chui P1-1).
-				const unmade = r.some(e => e.error || e.maybe) || voteDropped(wf.status)
-				if (!pendingEffects(wf.effects).length && wf.draft?.text && (!wf.draft.byOwner || unmade)) {
+				// A change refused at ok (switched off in Settings, say) and then left out is not made either (re-review N3).
+				const pr = prTarget(store, wf), unmade = r.some(e => e.error || e.maybe || !!refusal(cfg, e, pr)) || voteDropped(wf.status)
+				// Then the reply is quoted even with other changes still to make, whose run would send it by itself (re-review N2).
+				// A change left out by choice, while others are made, stays one ok (design-spec S6).
+				const rest = pendingEffects(wf.effects).length
+				if (wf.draft?.text && (rest ? unmade : !wf.draft.byOwner || unmade)) {
 					wf.revAt = new Date().toISOString()
 					store.save(wf); store.markShown([wf])
-					return reply(store, src, a, `${MARK} Only the reply goes now, and it says: "${wf.draft.text}" It was written counting on the changes you left out. Say "ok ${wf.code}" to send it as it is, or "edit ${wf.code}: <text>" to change it.`)
+					return reply(store, src, a, `${MARK} ${rest ? `The reply was written counting on the changes you left out, and it says: "${wf.draft.text}" Say "ok ${wf.code}" to make the rest and send it as it is` : `Only the reply goes now, and it says: "${wf.draft.text}" It was written counting on the changes you left out. Say "ok ${wf.code}" to send it as it is`}, or "edit ${wf.code}: <text>" to change it.`)
 				}
 			}
 			// A vote on a pull request is checked against the PR as it is now, after the owner's choice of changes.

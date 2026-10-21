@@ -2,7 +2,7 @@ import { planRetry, retryStatus } from './retry.ts'
 import { homeOf, step, watchNews } from './work.ts'
 import { confidence } from '../core/policy.ts'
 import { uptime } from 'node:os'
-import { allows, changeSays, isVote, unsafeRead, pendingEffects, refusal, refusedAsk, reviewAgain, carryMarks, shown, vet, voteValue } from '../core/effects.ts'
+import { allows, changeName, changeSays, isVote, unsafeRead, pendingEffects, refusal, refusedAsk, reviewAgain, carryMarks, shown, vet, voteValue } from '../core/effects.ts'
 import { prOf, prTarget } from './probe.ts'
 import { cloneFor, cloneTodo, repoRef } from './repos.ts'
 import { deployed, deployRunning, findingNotBlocker, isValidate, proposeTargets, shellInClone, shellTool, telemetryNote, telemetryTools } from './validate.ts'
@@ -14,7 +14,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { scrub } from '../core/secrets.ts'
 import { writeText } from '../store/fs.ts'
 import { isAbsolute, join } from 'node:path'
-import type { Config, Effect, Job, Report, Retry, Workflow } from '../core/types.ts'
+import type { Call, Config, Effect, Job, Report, Retry, Workflow } from '../core/types.ts'
 import { ulid } from '../core/ids.ts'
 import { startAgent, type RunInput } from '../adapters/agent.ts'
 import type { Source } from '../adapters/source.ts'
@@ -378,6 +378,8 @@ export function changesJob(store: Store, cfg: Config, wf: Workflow, effects: Eff
 }
 
 // ok on an item with changes: approve exactly what the owner saw. One change run per job; later oks join it.
+// The Settings switch that allows a call, by its label: its action's ("PR vote"), else its tool's, else the tool's name.
+const switchOf = (c: Call) => { const one = `${c.tool}:${String(c.args.action ?? '')}`; return changeName(one) !== one ? changeName(one) : changeName(c.tool) }
 export function approveEffects(store: Store, cfg: Config, wf: Workflow, again = false): string | undefined {
 	const job = wf.job ? store.job(wf.job) : undefined
 	// No change run and no new result under way: the list the open items agree on is the one ok makes (review 10-21d P2-1).
@@ -390,14 +392,15 @@ export function approveEffects(store: Store, cfg: Config, wf: Workflow, again = 
 	// A new result is being worked out; the shown changes may be replaced (review 01-04 P1-4).
 	if (job.purpose === 'work' && (job.state === 'running' || job.state === 'queued')) return `${wf.code} is still working on a new result. I'll show it first.`
 	if (keyOf(job.result?.effects) !== effectsKey(wf)) return `${wf.code}'s changes are out of date. Ask for a fresh review, or skip ${wf.code}.`
-	// A deploy is allowed by "Where Delegate may deploy", not by the write tools (owned work).
-	if (!cfg.agent.effectTools?.length && !left.every(e => isDeploy(e.call) && cfg.deploy?.allowed.length)) return `${wf.code} has ${left.length} change(s) to make, but no write tools are set. Add them in setup (the "tools" step, as effectTools), or skip ${wf.code}.`
-	// A change refused now, such as one switched off in Settings after it was shown, is never queued (review chui P2-3).
+	// A change refused now, such as one switched off in Settings after it was shown, is never queued (review chui P2-3). It runs before
+	// the empty-list check, so with every switch off the owner is sent to the switch, not to setup (re-review N1).
 	const pr = prTarget(store, wf)
 	for (const e of left) {
 		const why = refusal(cfg, e, pr)
-		if (why) return `${wf.code}'s ${shown(e).line} cannot be made: ${why}. ${e.call && !isDeploy(e.call) && !allows(cfg.agent.effectTools, e.call) ? 'Turn it on in Settings, or say' : 'Say'} "ok ${wf.code} except ${left.indexOf(e) + 1}" to ${left.length === 1 ? 'send only the reply' : 'leave it out'}.`
+		if (why) return `${wf.code}'s ${shown(e).line} cannot be made: ${why}. ${e.call && !isDeploy(e.call) && !allows(cfg.agent.effectTools, e.call) ? `Turn on "${switchOf(e.call)}" in Settings, or say` : 'Say'} "ok ${wf.code} except ${left.indexOf(e) + 1}" to ${left.length === 1 ? 'send only the reply' : 'leave it out'}.`
 	}
+	// A deploy is allowed by "Where Delegate may deploy", not by the write tools (owned work).
+	if (!cfg.agent.effectTools?.length && !left.every(e => isDeploy(e.call) && cfg.deploy?.allowed.length)) return `${wf.code} has ${left.length} change(s) to make, but no write tools are set. Add them in setup (the "tools" step, as effectTools), or skip ${wf.code}.`
 	if (store.control().paused) return `Paused, so ${wf.code}'s changes were not made. Say "resume", then ok again.`
 	// "again" counts only once the change run is queued; a refused ok leaves it unsaid (review 10-21b P2-5).
 	if (maybe) {

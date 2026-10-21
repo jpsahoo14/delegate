@@ -3,7 +3,7 @@
 	"files": {
 		".claude-plugin/plugin.json": "ef46ac9574f806584075951c1b867209ecd5e3ad06ad5937fde5ff76446b6ba8",
 		".mcp.json": "777d2fb1bbc1dee696b6829465777cff3fbb526fd018cda0b9fc4bf06e595266",
-		"dist/delegate.mjs": "782e348d968366a7ad6a48e665b46e25e30ef6447a647897e809379f2ce11c49",
+		"dist/delegate.mjs": "7c42c4ff0b10572a4e8fd3fa278ae1a9b86d99ff7c8548588b1987b4d0d229a9",
 		"dist/ext-apps.js": "fb56376b7583ecafb4820bdebc150abee18feb6258ff84b83c2c944ebd9c3602",
 		"dist/mesh/extension.mjs": "72606e840b669f3316fa663ff0eedaddc44fb5be5fe5d51aa6d3e787f0565407",
 		"dist/mesh/inbox.mjs": "a0fe7454b2269fed108cbdff9fe5d77c88ce36b6f0c49d1b52dccd754424a432",
