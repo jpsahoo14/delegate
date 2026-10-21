@@ -191,7 +191,10 @@ test('dogfood 10-20: holding Send while fresh data arrives still sends on releas
 		const box = await t.page.$eval('#card-A1 [data-act=primary]', (b: Element) => { const r = b.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 } })
 		await t.page.mouse.move(box.x, box.y); await t.page.mouse.down()
 		t.store.save({ ...t.store.byCode('A8')!, status: 'Checks still passing' })
-		await t.page.waitForTimeout(1500); await t.page.mouse.up(); await t.page.waitForTimeout(800)
+		await t.page.waitForTimeout(1500); await t.page.mouse.up()
+		// The send is posted on release; a slow runner can take longer than a fixed pause (CI macOS 10-21).
+		for (let i = 0; i < 50 && !posts.length; i++) await t.page.waitForTimeout(100)
+		await t.page.waitForTimeout(300)
 		assert.deepEqual(posts.map(p => JSON.parse(p).command), ['ok A1'])
 		await t.page.mouse.up()
 		await t.page.goto(t.page.url().replace(/#.*$/, '#ongoing')); await t.page.waitForSelector('#main h1')
