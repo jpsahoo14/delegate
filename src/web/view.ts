@@ -1,0 +1,281 @@
+import { homeOf } from '../runner/work.ts'
+import type { Automation, Choices, Fact, Meeting, Note, Proposal, Workflow } from '../core/types.ts'
+import { meaningOf, pendingEffects, shown } from '../core/effects.ts'
+import { groups, lookLine } from '../core/render.ts'
+import type { Store } from '../store/state.ts'
+import { bootLines, knowledgeOf } from '../runner/proposals.ts'
+import type { Knowledge } from '../knowledge/index.ts'
+import { describe, when } from '../runner/automations.ts'
+import { DEFAULT_UNTIL } from '../runner/track.ts'
+import { isThread, threadLink } from '../adapters/channels.ts'
+import { NAME } from '../brand.ts'
+import type { versionInfo } from '../os/autoupdate.ts'
+import type { settingsView } from './settings.ts'
+import type { UiChoice } from '../store/state.ts'
+import type { NextView } from './next.ts'
+
+// The one shape every surface renders: the browser page, the chat panel, and the synced snapshot (design-spec/data.md).
+// Only what the owner should see: no ids, paths, or raw citations.
+
+export type Who = { name: string; initials: string; hue: number }
+export type SourceRow = { kind: 'Knowledge' | 'In the chat' | 'Private'; label: string; href?: string; stale?: boolean; locked?: boolean }
+// meaning: for a PR change, what Azure DevOps says the PR is and what the change may do (next action)
+export type Change = { n: number; summary: string; target: string; system: string; action: string; detail?: string; meaning?: string }
+export type CardType = 'reply' | 'question' | 'choice' | 'meeting' | 'review'
+
+export type ItemCard = {
+	code: string; type: CardType; rev: string; who: Who; chat: { name: string; group: boolean; guests: boolean }; at: string
+	ask?: string; thread: { who: string; text: string; at: string; owner: boolean }[]; newCount: number; earlier?: string
+	// From the first-setup read: when the ask was sent.
+	before?: string
+	question?: string; draft?: { text: string; commitment: boolean; preview: boolean; holding?: true }
+	choices?: Choices; picked?: number[]; context?: Fact[]; meeting?: Meeting; changes: Change[]; job?: string
+	why: { reason?: string; confidence?: string; sources: SourceRow[]; gaps: string[]; searched?: string[] }
+	notes: Note[]; status: string; openOn?: string; teams?: string
+	todos?: string[]; follow?: { target: string; until: string; everyHours: number }
+	work?: WorkView
+	// Show details (Settings, Advanced): what decided this item, for when something looks wrong.
+	debug?: string[]
+}
+// Open work as the page shows it: the goal, where it stands, and its latest steps (R-WRK-07).
+export type WorkView = { goal: string; next?: string; waiting?: string; due: boolean; steps: { at: string; what: string; news: boolean }[]; plan: { what: string; who: string; done: boolean; where?: string; build?: string }[]; home?: string; proposed: boolean }
+export type KnowledgeCard = { code: string; rev: string; topic: string; home: 'team' | 'personal'; facts: { type: string; text: string; who?: string; date: string; href?: string; private: boolean }[] }
+export type AutomationRow = { code: string; sentence: string; to: string; text: string; when: string; state: Automation['state']; why?: string; next?: string; count: number; rev: string }
+export type DoneRow = { work?: string; code: string; kind: 'reply' | 'review' | 'change' | 'closed' | 'catchup' | 'reminder' | 'learned'; who: Who; sentence: string; high?: boolean; teams?: string; ask?: string; said?: string; inTeams?: boolean; gist?: string; watch?: { target: string; until: string }; watchedAs?: string; own?: boolean; href?: string; by: string; at: string; text?: string; undoUntil?: string; notes?: Note[]; why?: ItemCard['why']; rule?: string; fresh?: boolean }
+export type Tile = { key: string; count: number; label: string; sub?: string }
+
+export type View = {
+	now: string; since?: string; owner: string
+	// When the owner last looked at each Done filter (design-spec/done-v2.md).
+	seen: Record<string, string>
+	// Home's Catch up card: what Delegate read for the owner since they last looked, worth knowing first (design-spec/catch-up.md).
+	catchUp: { count: number; top: DoneRow[] }
+	details?: { runner: string; log: string[] }
+	status: { state: 'on' | 'paused' | 'stopped'; autoSend: boolean; runs: number; cap: number; reading: Reading }
+	health: { key: string; text: string; since: string; fix?: { label: string; command: string } }[]
+	version?: ReturnType<typeof versionInfo>
+	settings?: ReturnType<typeof settingsView>
+	tiles: Tile[]; also: Tile[]
+	needs: ItemCard[]; knowledge: KnowledgeCard[]
+	done: DoneRow[]; running: { code: string; what: string; who?: string; since: string; progress?: number }[]
+	watching: { code: string; what: string; last: string; changedAt?: string; update: boolean; rev: string; every?: number; endsAt?: string; by?: string; nextAt?: string; from?: string }[]
+	progress: { code: string; who: Who; chat: string; goal: string; status: string; last?: { at: string; what: string }; next?: string; checkAt?: string; every?: number; endsAt?: string; rev: string }[]
+	// Channels the owner named to watch (B5); link is the channel link, so stopping goes through the same path as starting.
+	channels: { name: string; link: string }[]
+	waiting: { code: string; to: string; chat: string; text: string; at: string; link?: string }[]
+	automations: AutomationRow[]; people: { name: string; chat: string; group: boolean }[]
+	// The New experience switch on this machine, and the new page's rows, built only when the new page asks (R-NEX-01, R-NEX-02).
+	ui?: UiChoice; next?: NextView
+}
+
+const HUES = [210, 160, 25, 280, 340, 45]
+export function who(name = 'Someone'): Who {
+	const parts = name.trim().split(/\s+/)
+	let h = 0
+	for (const c of name) h = (h * 31 + c.charCodeAt(0)) >>> 0
+	return { name, initials: ((parts[0]?.[0] ?? '?') + (parts.length > 1 ? parts.at(-1)![0] : '')).toUpperCase(), hue: HUES[h % HUES.length] }
+}
+
+// At most 3 on Home: worth knowing first, then newest. The rest is one tap away under Done.
+const catchUpOf = (rows: DoneRow[]) => ({ count: rows.length, top: [...rows].sort((a, b) => Number(!!b.high) - Number(!!a.high) || b.at.localeCompare(a.at)).slice(0, 3) })
+
+// Ids and decisions as plain lines: shown under Show details, and copied as they are into a bug report.
+export function debugLines(w: Workflow): string[] {
+	const d = w.decision
+	return [
+		`${w.code} · ${w.id} · ${w.kind} · ${w.state}${w.startedBy ? ` · started by ${w.startedBy}` : ''}`,
+		`Intent: ${w.intent ?? 'none yet'}`,
+		d ? `Decision: ${d.action}${d.ruleId ? ` by rule ${d.ruleId}` : ''}, ${d.confidence} confidence: ${d.reason}` : 'Decision: none yet',
+		`Chat: ${w.chat.id}${w.chat.group ? ' (group)' : ''}${w.chat.guests ? ' (guests)' : ''}`,
+		`AI session: ${w.session.agent} ${w.session.id}${w.job ? ` · job ${w.job}` : ''}`,
+		...(w.drewOn?.length ? [`Drew on: ${w.drewOn.join(', ')}`] : []),
+		`Updated: ${w.updatedAt}`,
+	]
+}
+const SKIP = new Set(['state', 'outcome'])
+// Bet 1: whether chats are being read, from the last good read (the lease is written even when a read fails).
+export type Reading = { state: 'ok' | 'late' | 'off' | 'never'; machine?: string; at?: string }
+export function readingOf(store: Store, now = Date.now()): Reading {
+	const c = store.chats(), at = c.goodAt ?? c.readAt, machine = store.lease()?.machine
+	if (!at) return { state: 'never', machine }
+	const min = (now - Date.parse(at)) / 60_000
+	return { state: min < 20 ? 'ok' : min < 60 ? 'late' : 'off', machine, at }
+}
+
+function detailsOf(store: Store): { runner: string; log: string[] } {
+	const l = store.lease(), ago = l ? Math.round((Date.now() - Date.parse(l.at)) / 60_000) : undefined
+	const log = store.logs(1).filter(e => !SKIP.has(String(e.event))).slice(-15).reverse().map(e => [String(e.at).slice(11, 16), e.event, e.code, e.reason ?? e.why ?? e.error ?? e.summary].filter(Boolean).map(String).join(' · ').slice(0, 200))
+	return { runner: l ? `${l.machine} reads your chats; last check ${ago} min ago. This machine: ${store.machine}.` : `No machine has checked yet. This machine: ${store.machine}.`, log }
+}
+
+// The page is the owner's own, so a cited fact shows its words and a link to where it was said (B30).
+function source(ref: string, tier: string, stale?: boolean, label?: string, k?: Knowledge): SourceRow {
+	const e = ref.startsWith('card:') ? k?.read(ref) : undefined, fact = e && !Array.isArray(e) ? e : undefined
+	const link = fact?.src.map(x => x.link).find(l => /^https:\/\//.test(l))
+	const priv = fact?.audience === 'private' || tier === 'private'
+	if (fact) return { kind: priv ? 'Private' : 'Knowledge', label: fact.text, href: link, stale, ...(priv ? { locked: true } : {}) }
+	if (tier === 'card') return { kind: 'Knowledge', label: `Your knowledge: ${ref.replace(/^card:/, '').split(/[/#]/)[0].replace(/-/g, ' ')}`, stale }
+	if (tier === 'private') return { kind: 'Private', label: label ?? 'A private chat or file', locked: true, stale, ...(/^https:\/\//.test(ref) ? { href: ref } : {}) }
+	const href = /^https:\/\//.test(ref) ? ref : undefined
+	const short = href ? (() => { const u = new URL(href); return `${u.hostname.replace(/^www\./, '')}${u.pathname.length > 1 ? u.pathname.slice(0, 40) : ''}` })() : ref.slice(0, 60)
+	return { kind: 'In the chat', label: label ? `${short} · ${label}` : short, href, stale }
+}
+
+export function cardType(w: Workflow): CardType {
+	if (w.meeting) return 'meeting'
+	if (w.choices) return 'choice'
+	if (pendingEffects(w.effects).length && w.job && !w.promised) return 'review'
+	if (w.question && !w.draft?.preview) return 'question'
+	return 'reply'
+}
+
+const nextOf = (k: NonNullable<Workflow['work']>) => k.next && `${k.next.who === 'you' ? 'You: ' : k.next.who === 'me' ? '' : ''}${k.next.what}`
+// The Done chip for a reply on work: still in progress (and what is next), or closed (R-WRK-07).
+function workLine(w: Workflow): string | undefined {
+	const k = w.work
+	if (!k) return undefined
+	if (k.closed) return `Closed: ${k.closed.why}`
+	const next = nextOf(k)
+	return `In progress${k.waitingOn ? ` · waiting on ${k.waitingOn.who}` : next ? ` · next: ${next}` : ''}`
+}
+function workView(w: Workflow, home = w): WorkView | undefined {
+	const k = home.work
+	if (!k) return undefined
+	return { goal: k.goal, next: nextOf(k), waiting: k.waitingOn && `${k.waitingOn.who}${k.waitingOn.where ? ` (${k.waitingOn.where})` : ''}`, due: home === w && w.state === 'needs_human' && !w.draft && /^No news/.test(w.status), steps: k.steps.slice(-6).map(x => ({ at: x.at, what: x.what, news: !!x.news })), plan: (k.plan ?? []).map(p => ({ what: p.what, who: p.who, done: !!p.done, ...(p.in ? { where: p.in } : {}), ...(p.probe ? { build: `${p.probe.build}${p.seen ? ` · ${p.seen}` : ''}` } : {}) })), ...(home !== w ? { home: home.code } : {}), proposed: !!k.proposed }
+}
+
+function card(store: Store, w: Workflow): ItemCard {
+	const k = knowledgeOf(store, store.config())
+	const job = w.job ? store.job(w.job) : undefined
+	return {
+		code: w.code, type: cardType(w), rev: w.revAt ?? w.updatedAt, who: who(w.asker?.name), at: w.createdAt,
+		chat: { name: w.chat.name, group: !!w.chat.group, guests: !!w.chat.guests },
+		ask: w.lastAsk, newCount: w.newCount, earlier: w.earlier, before: w.before ? store.thread(w.id).find(m => m.id === w.lastMsgId)?.at ?? w.createdAt : undefined,
+		thread: store.thread(w.id).slice(-12).map(m => ({ who: m.from.name, text: m.text.slice(0, 600), at: m.at, owner: !!m.byOwner })),
+		question: w.question, draft: w.draft?.text && !/^_{3,}$/.test(w.draft.text.trim()) ? { text: w.draft.text, commitment: w.draft.commitment, preview: !!w.draft.preview, ...(w.draft.holding ? { holding: true } : {}) } : undefined,
+		choices: w.choices, picked: w.picked, context: [...(w.shareHold ? [{ label: 'Need to know', text: w.shareHold, tone: 'warn' as const }] : []), ...(w.context ?? [])], meeting: w.meeting, job: job?.goal,
+		// Every field is built from the change's call, never the AI's words about it (review 10-21 P1-1).
+		changes: pendingEffects(w.effects).map((e, i) => { const s = shown(e); return { n: i + 1, summary: s.text, target: s.loc || s.system, system: s.system, action: s.line, detail: s.detail || undefined, ...(meaningOf(e) ? { meaning: meaningOf(e) } : {}) } }),
+		...(store.config().showDetails ? { debug: debugLines(w) } : {}),
+		why: { reason: w.decision?.reason, confidence: w.decision?.confidence, sources: (w.draft?.sources ?? []).map(s => source(s.ref, s.tier, s.stale, s.label, k)), gaps: w.gaps ?? [], searched: (w.looked ?? []).map(lookLine) },
+		work: workView(w, homeOf(store, w)), notes: w.notes ?? [], status: w.status, openOn: w.openOn, todos: w.todos, follow: w.follow && { target: w.follow.target, until: w.follow.until, everyHours: w.follow.everyHours ?? 4 },
+		teams: w.chat.id && w.lastMsgId && !w.chat.test ? (isThread(w.chat.id) ? threadLink(w.chat.id, w.lastMsgId) : `https://teams.microsoft.com/l/message/${encodeURIComponent(w.chat.id)}/${w.lastMsgId}`) : undefined,
+	}
+}
+
+function knowledge(p: Proposal): KnowledgeCard {
+	return { code: p.code, rev: p.revAt, topic: p.title, home: p.home ?? 'personal', facts: p.ops.map(o => ({ type: o.entry.type, text: o.entry.text, who: o.entry.src[0]?.who, date: o.entry.src[0]?.date ?? '', href: /^https:\/\//.test(o.entry.src[0]?.link ?? '') ? o.entry.src[0].link : undefined, private: o.entry.audience === 'private' })) }
+}
+
+const TASK = /task|work ?item|bug/i, PR = /pull|(^|_)pr($|_)|create_pr/i, INVITE = /calendar|invite|event|meeting/i, COMMENT = /comment|review/i
+
+// The Done filters, which "seen" is kept for. Rows of a kind count as new after the owner last looked at its filter.
+export const SEEN_KEYS = ['replies', 'reviews', 'changes', 'reminders', 'learned', 'catchup']
+// The ask on one line, without the greeting, for list rows: "Hi Robin, which date…" reads "which date…".
+const askLine = (t = '') => t.replace(/^\s*(hi|hello|hey|hii+|good (morning|afternoon|evening))\b[^,.!:\n]{0,40}[,.!:]?\s*/i, '').replace(/\s+/g, ' ').trim().slice(0, 160)
+const short = (t = '') => t.replace(/\s+/g, ' ').trim().slice(0, 200)
+const teamsOf = (w: Workflow, msgId = w.lastMsgId) => (w.chat.id && msgId && !w.chat.test ? (isThread(w.chat.id) ? threadLink(w.chat.id, msgId) : `https://teams.microsoft.com/l/message/${encodeURIComponent(w.chat.id)}/${msgId}`) : undefined)
+// Why an item closed with no reply from Delegate. Items from before closedBy was kept are read from their status.
+const closedHow = (w: Workflow) => w.closedBy ?? (/^You replied yourself/.test(w.status) ? 'replied' : /^Skipped by you/.test(w.status) ? 'skipped' : undefined)
+
+function doneRows(store: Store, since: string): DoneRow[] {
+	const rows: DoneRow[] = []
+	for (const w of store.workflows().filter(w => (w.state === 'done' || w.state === 'open' && w.sent) && w.code && (w.intent !== 'none' || w.fyi) && w.updatedAt > since && w.kind !== 'tracker')) {
+		const name = w.asker?.name ?? 'Someone', where = w.chat.group ? ` in ${w.chat.name}` : '', first = name.split(/[\s,(]+/)[0]
+		const made = (w.effects ?? []).filter(e => e.done)
+		const base = { code: w.code, who: who(name), teams: teamsOf(w), ask: w.redacted ? undefined : askLine(w.lastAsk) || undefined }
+		if (w.sent) rows.push({ ...base, kind: made.length && w.intent === 'pr_review' ? 'review' : 'reply', sentence: made.length && w.intent === 'pr_review' ? `Reviewed for ${name} and replied${where}` : `Replied to ${name}${where}`, by: w.sent.byRule ? `by rule ${w.sent.byRule}` : 'by you', at: w.sent.at, text: w.redacted ? undefined : w.sent.text ?? w.draft?.text, said: w.redacted ? undefined : short(w.sent.text ?? w.draft?.text), own: !w.sent.byRule, notes: w.notes ?? [], why: { reason: w.decision?.reason, confidence: w.decision?.confidence, sources: (w.draft?.sources ?? []).map(s => source(s.ref, s.tier, s.stale, s.label)), gaps: w.gaps ?? [] }, rule: w.sent.byRule, undoUntil: w.sent.byRule ? w.sent.undoUntil : undefined, work: workLine(homeOf(store, w)) })
+		else if (w.fyi) rows.push({ ...base, kind: 'catchup', sentence: w.fyi.line, gist: w.fyi.gist ?? base.ask, watch: w.fyi.watch, watchedAs: w.watchedAs, by: `${first}${w.chat.group ? ` · ${w.chat.name}` : ''}`, at: w.fyi.at ?? w.updatedAt, high: w.fyi.weight === 'high' })
+		else if (closedHow(w) === 'replied') {
+			// Answered in Teams by the owner: a reply like any other, with their own words from the thread.
+			const mine = store.thread(w.id).filter(m => m.byOwner).at(-1)
+			rows.push({ ...base, kind: 'reply', sentence: `Replied to ${name}${where}`, by: 'by you in Teams', at: w.updatedAt, said: w.redacted ? undefined : mine ? short(mine.text) : undefined, inTeams: true, own: true, teams: (mine && teamsOf(w, mine.id)) ?? base.teams })
+		}
+		else if (closedHow(w) !== 'skipped') rows.push({ ...base, kind: 'closed', sentence: `${name}: ${w.status.replace(/: ".*$/s, '')}`, by: '', at: w.updatedAt })
+		for (const e of made) if (!(w.intent === 'pr_review' && COMMENT.test(e.action))) rows.push({ code: w.code, kind: 'change', who: who(name), sentence: shown(e).line, by: shown(e).system, at: e.done!.at, own: true, href: /^https:\/\//.test(e.done?.ref ?? '') ? e.done!.ref : undefined })
+	}
+	for (const e of store.logs(7).filter(e => e.event === 'sent' && String(e.approvedBy ?? '').startsWith('automation:') && String(e.at) > since)) {
+		const name = (e.asker as { name?: string })?.name ?? 'someone'
+		rows.push({ code: String(e.code), kind: 'reminder', who: who(name), sentence: `Reminded ${name}`, said: typeof e.text === 'string' ? short(e.text) : undefined, by: String(e.code), at: String(e.at) })
+	}
+	for (const p of store.proposals().filter(p => p.state === 'applied' && p.from !== 'remember' && p.applied && p.applied.at > since)) {
+		const n = p.ops.length
+		rows.push({ code: p.code, kind: 'learned', who: who(p.source ?? 'your chats'), sentence: `Learned ${n} ${n === 1 ? 'fact' : 'facts'} about ${p.title}, from ${p.source ?? 'your chats'}`, gist: p.ops[0]?.entry.text ? short(p.ops[0].entry.text) : undefined, by: `say "undo ${p.code}" to take it back`, at: p.applied!.at })
+	}
+	return rows.sort((a, b) => b.at.localeCompare(a.at))
+}
+
+// Home tiles count only what happened since the owner last looked; a zero tile is hidden (design-spec/home.md).
+function tiles(store: Store, since: string, needs: number, done: DoneRow[]): Tile[] {
+	const replies = done.filter(r => r.kind === 'reply' || r.kind === 'review')
+	const people = new Set(replies.map(r => r.who.name))
+	const byRule = replies.filter(r => r.by.startsWith('by rule')).length
+	const reviews = store.jobs().filter(j => j.intent === 'pr_review' && j.result && j.updatedAt > since).length
+	const effects = store.workflows().flatMap(w => (w.effects ?? []).filter(e => e.done && e.done.at > since))
+	const count = (re: RegExp) => effects.filter(e => re.test(`${e.system} ${e.action}`)).length
+	const tasks = count(TASK), prs = effects.filter(e => PR.test(e.action)).length, invites = count(INVITE)
+	const comments = effects.filter(e => COMMENT.test(e.action)).length
+	const reminders = done.filter(r => r.kind === 'reminder').length
+	const learned = store.proposals().filter(p => p.state === 'applied' && p.from !== 'remember' && p.applied && p.applied.at > since).reduce((n, p) => n + p.ops.length, 0)
+	const t: Tile[] = [
+		{ key: 'needs', count: needs, label: needs === 1 ? 'needs you' : 'need you' },
+		{ key: 'replies', count: people.size, label: people.size === 1 ? 'Replied to 1 person' : `Replied to ${people.size} people`, sub: replies.length ? `${replies.length - byRule} by you, ${byRule} by your rules` : undefined },
+		{ key: 'reviews', count: reviews, label: reviews === 1 ? 'Reviewed 1 PR' : `Reviewed ${reviews} PRs`, sub: comments ? `${comments} comment${comments === 1 ? '' : 's'} posted` : undefined },
+		{ key: 'tasks', count: tasks, label: tasks === 1 ? 'Created 1 task' : `Created ${tasks} tasks` },
+		{ key: 'prs', count: prs, label: prs === 1 ? 'Created 1 PR' : `Created ${prs} PRs` },
+		{ key: 'invites', count: invites, label: invites === 1 ? 'Sent 1 invite' : `Sent ${invites} invites` },
+		{ key: 'reminders', count: reminders, label: reminders === 1 ? 'Sent 1 reminder' : `Sent ${reminders} reminders` },
+		{ key: 'learned', count: learned, label: learned === 1 ? 'Learned 1 fact' : `Learned ${learned} facts` },
+	]
+	return t.filter(x => x.key === 'needs' || x.count > 0)
+}
+
+export function view(store: Store, since: string | undefined, now = new Date()): View {
+	const cfg = store.config(), c = store.control()
+	const from = since ?? new Date(now.getTime() - 86_400_000).toISOString()
+	const wfs = store.workflows()
+	const g = groups(wfs, from)
+	// A tracker needs the owner only when it proposes changes or asks something; otherwise it lives under Ongoing.
+	const needs = g.needs.filter(w => w.kind !== 'tracker' || pendingEffects(w.effects).length || w.question).map(w => card(store, w))
+	const kp = store.proposals().filter(p => p.state === 'needs_human').sort((a, b) => a.createdAt.localeCompare(b.createdAt)).map(knowledge)
+	// Done keeps a week of history; only what is new since the owner last looked counts on Home (dogfood: replies vanished after a restart).
+	const week = new Date(now.getTime() - 7 * 86_400_000).toISOString()
+	const done = doneRows(store, from < week ? from : week).map(r => ({ ...r, fresh: r.at > from }))
+	const autos = store.automations().filter(a => a.state !== 'ended').map(a => ({ code: a.code, sentence: describe(a).replace(/^R\d+ · /, ''), to: a.to.name, text: a.text, when: when(a.schedule), state: a.state, why: a.why, next: a.next, count: a.count, rev: a.updatedAt }))
+	const watching = g.watching.map(w => ({ code: w.code, what: (w.lastAsk ?? '').replace(/^Watch /, '').replace(` until ${DEFAULT_UNTIL}`, ''), last: w.status, changedAt: w.changedAt, update: !!w.changedAt && w.changedAt > from && (!w.ackAt || w.changedAt > w.ackAt), rev: w.revAt ?? w.updatedAt , every: (w.job ? store.job(w.job) : undefined)?.every, endsAt: (w.job ? store.job(w.job) : undefined)?.endsAt, by: w.watchBy, nextAt: (w.job ? store.job(w.job) : undefined)?.nextAt, from: w.watchFrom === 'catchup' ? wfs.find(x => x.watchedAs === w.code)?.code : undefined }))
+	const progress = wfs.filter(w => w.state === 'open' && w.work).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map(w => {
+		const k = w.work!, job = k.watch ? store.job(k.watch) : undefined, last = k.steps.at(-1)
+		return { code: w.code, who: who(w.asker?.name), chat: w.chat.name, goal: k.goal, status: w.status, last: last && { at: last.at, what: last.what }, next: nextOf(k), checkAt: k.checkAt, every: job?.every, endsAt: job?.every ? job.endsAt : undefined, rev: w.updatedAt }
+	})
+	const running = [...g.running.map(w => ({ code: w.code, what: w.status, who: w.asker?.name, since: w.waitingSince ?? w.updatedAt })), ...bootLines(store).map(b => ({ code: '', what: b.what, since: b.since, ...(b.total ? { progress: (b.done ?? 0) / b.total } : {}) }))]
+	const state = c.stopped ? 'stopped' : c.paused || cfg.paused ? 'paused' : 'on'
+	const health = Object.entries(store.health()).map(([key, h]) => ({ key, text: h.text, since: h.since, fix: key === 'source' ? { label: 'Try again', command: 'retry' } : undefined }))
+	if (state !== 'on') health.unshift({ key: 'paused', text: state === 'stopped' ? `${NAME} is stopped. It is not reading your chats.` : `${NAME} is paused. It keeps drafting, and sends nothing.`, since: '', fix: { label: 'Resume', command: 'resume' } })
+	const people = new Map<string, { chat: string; group: boolean }>()
+	for (const w of wfs) if (!w.chat.test && w.asker && !isThread(w.chat.id)) people.set(w.chat.group ? w.chat.name : w.asker.name, { chat: w.chat.id, group: !!w.chat.group })
+	// The owner's asks nobody answered for followUpHours (default 24) (design: Waiting on others).
+	const due = now.getTime() - (cfg.followUpHours ?? 24) * 3_600_000
+	// A wait with an open follow-up item is shown as that item; once the item closes, it returns after another followUpHours.
+	const quietSince = (w: ReturnType<Store['waiting']>[number]) => { const f = w.item ? store.byCode(w.item) : undefined; return f ? (f.state === 'done' ? Date.parse(f.updatedAt) : Infinity) : Date.parse(w.at) }
+	const waiting = store.waiting().filter(w => w.state === 'waiting' && quietSince(w) < due).map(w => ({ code: w.code, to: w.to.join(', '), chat: w.chat.name, text: w.text, at: w.at, link: w.msgId ? `https://teams.microsoft.com/l/message/${encodeURIComponent(w.chat.id)}/${w.msgId}` : undefined }))
+	const updates = watching.filter(w => w.update).length
+	return {
+		now: now.toISOString(), since, owner: cfg.owner.name,
+		status: { state, autoSend: !!c.autoSend, runs: store.runsToday(), cap: cfg.dailyRuns ?? 200, reading: readingOf(store) },
+		health, tiles: tiles(store, from, needs.length, done.filter(r => r.fresh)),
+		also: [
+			{ key: 'knowledge', count: kp.length, label: kp.length === 1 ? 'to learn' : 'to learn' },
+			{ key: 'watching', count: updates, label: updates === 1 ? 'update' : 'updates', sub: [`${watching.length} watched`, ...(progress.length ? [`${progress.length} in progress`] : [])].join(' · ') },
+			{ key: 'waiting', count: waiting.length, label: 'waiting on others', sub: waiting[0] ? `${waiting[0].to}, since ${new Date(waiting[0].at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}` : undefined },
+			{ key: 'suggestions', count: store.habits().filter(h => h.state === 'suggested').length, label: 'suggestion', sub: 'From what you usually do' },
+			{ key: 'running', count: running.length, label: 'running' },
+			{ key: 'automations', count: autos.filter(a => a.state !== 'paused').length, label: autos.length === 1 ? 'automation' : 'automations', sub: autos.find(a => a.next) ? `Next: ${autos.find(a => a.next)!.to}` : undefined },
+		].filter(t => t.count > 0 || (t.key === 'watching' && watching.length + progress.length > 0)),
+		seen: store.seen(),
+		catchUp: catchUpOf(done.filter(r => r.kind === 'catchup' && r.at > (store.seen().catchup ?? from))),
+		needs, knowledge: kp, done, running, watching, progress, waiting, automations: autos,
+		...(cfg.showDetails ? { details: detailsOf(store) } : {}),
+		channels: (store.config()?.channels || []).map(c => ({ name: c.name, link: `https://teams.microsoft.com/l/channel/${encodeURIComponent(c.channelId)}/${encodeURIComponent(c.name)}?groupId=${c.teamId}` })),
+		people: [...people].map(([name, p]) => ({ name, ...p })).sort((a, b) => a.name.localeCompare(b.name)),
+	}
+}

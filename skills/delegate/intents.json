@@ -1,0 +1,12 @@
+[
+	{ "id": "pr_review", "when": "Asks the owner to review a pull request. Usually a job keyed pr:<org>/<repo>/<number>." },
+	{ "id": "status_next_step", "when": "Asks where something stands or what happens next." },
+	{ "id": "feature_knowledge", "when": "Asks how a feature works, or why it was built that way." },
+	{ "id": "user_issue", "when": "Reports a problem a user or customer has. Often a job keyed incident:<id> or workItem:<id>." },
+	{ "id": "validate", "when": "Asks the owner to test or validate a change they own (a PR, a deployment to a test ring, a dev instance) and report back. Usually a job keyed pr:<org>/<repo>/<number>.", "playbook": "validate.md" },
+	{ "id": "release_deploy", "when": "Asks about a release, a rollout, a flag, or a deployment." },
+	{ "id": "commitment_decision", "when": "Asks the owner to decide, approve, or commit to a date. Always a draft." },
+	{ "id": "personal_social", "when": "Personal or social talk that still needs a reply." },
+	{ "id": "other", "when": "Needs a reply, and fits nothing above." },
+	{ "id": "none", "when": "Needs nothing from the owner: thanks, FYI, emoji, small talk." }
+]

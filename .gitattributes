@@ -1,0 +1,2 @@
+# The release is checked by hash; keep text files LF on every OS.
+* text=auto eol=lf

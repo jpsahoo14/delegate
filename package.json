@@ -1,0 +1,43 @@
+{
+  "name": "delegate",
+  "version": "0.2.0",
+  "description": "An AI stand-in that drafts and answers your chat messages while you are away.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "bin": {
+    "delegate": "src/cli.ts"
+  },
+  "scripts": {
+    "test": "node --env-file-if-exists=.env.local --test test/*.test.ts",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p src/web/app && tsc --noEmit -p test",
+    "trace": "node scripts/trace.ts",
+    "build": "node scripts/build.ts",
+    "eval:real": "DELEGATE_LOCAL=$(mktemp -d) scripts/limit.sh 1800 node scripts/eval.ts",
+    "release": "node scripts/release.ts",
+    "publish:github": "node scripts/publish.ts --to https://github.com/jpsahoo14/delegate.git",
+    "publish:check": "node scripts/publish.ts --check"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/ext-apps": "^2.0.3",
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "esbuild": "^0.28.2",
+    "playwright-core": "^1.57.0",
+    "typescript": "^5.9.0"
+  },
+  "author": "jpsahoo14",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jpsahoo14/delegate.git"
+  },
+  "homepage": "https://github.com/jpsahoo14/delegate#readme",
+  "bugs": {
+    "url": "https://github.com/jpsahoo14/delegate/issues"
+  }
+}

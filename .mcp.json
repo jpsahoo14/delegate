@@ -1,0 +1,5 @@
+{
+	"mcpServers": {
+		"delegate": { "type": "local", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/dist/delegate.mjs", "mcp"], "tools": ["*"] }
+	}
+}

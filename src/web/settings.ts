@@ -1,0 +1,195 @@
+import { DEFAULT_POLICY, signatureOf, signsApproved } from '../core/policy.ts'
+import { DEFAULT_POLL, validTz } from '../core/schedule.ts'
+import { LEVEL_SAYS } from '../core/levels.ts'
+import { changeName } from '../core/effects.ts'
+import { NEVER_RING, parseTargets, targetsText } from '../core/deploy.ts'
+import type { BuildProbe } from '../runner/probe.ts'
+import { remoteOf } from '../runner/repos.ts'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+import type { Config, DeployTarget, Rule } from '../core/types.ts'
+import type { Store } from '../store/state.ts'
+import { here } from '../store/state.ts'
+import { CMD, NAME } from '../brand.ts'
+import { UPDATE_EVERY_MIN } from '../os/autoupdate.ts'
+
+// The settings the page can change, in one table: how each is shown, read, checked, and saved (B13).
+// Each saves to the shared config (or profile.md) in the storage folder, so every machine and the next cycle use it.
+type Kind = 'text' | 'line' | 'list' | 'number' | 'choice' | 'bool' | 'time'
+// Settings are grouped by what the owner is trying to do (design-spec/settings-v2.md); advanced rows sit under More in the last one.
+export type Section = 'learned' | 'you' | 'replies' | 'timing' | 'system'
+type Spec = {
+	key: string; label: string; help: string | ((cfg: Config) => string); kind: Kind; section: Section; options?: { value: string; label: string }[]; advanced?: true
+	read: (cfg: Config, store: Store) => string
+	parse: (raw: string, store: Store) => Parsed
+	// A setting that must be checked against another system before it is saved (owned work: a deploy target).
+	check?: (raw: string, store: Store, deps: SaveDeps) => Promise<Parsed>
+}
+type Parsed = { ok: true; save: (cfg: Config, store: Store) => Config } | { ok: false; why: string }
+export type SaveDeps = { probe?: BuildProbe }
+
+const set = (patch: Partial<Config>) => ({ ok: true as const, save: (cfg: Config) => ({ ...cfg, ...patch }) })
+const list = (raw: string) => raw.split(/[,\n]/).map(s => s.trim()).filter(Boolean)
+const num = (raw: string, min: number, max: number, key: keyof Config) => {
+	const n = Number(raw)
+	return Number.isInteger(n) && n >= min && n <= max ? set({ [key]: n } as Partial<Config>) : { ok: false as const, why: `Give a whole number from ${min} to ${max}.` }
+}
+
+// A whole number in range, saved by a function of the config, for the settings that live inside an object (policy, poll).
+const numTo = (raw: string, min: number, max: number, save: (cfg: Config, n: number) => Config) => {
+	const n = Number(raw.trim())
+	return Number.isInteger(n) && n >= min && n <= max ? { ok: true as const, save: (cfg: Config) => save(cfg, n) } : { ok: false as const, why: `Give a whole number from ${min} to ${max}.` }
+}
+const pol = (cfg: Config) => ({ ...DEFAULT_POLICY, ...cfg.policy })
+const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/
+const EVERY: [number, string][] = [[10, 'Every 10 minutes'], [60, 'Every hour'], [UPDATE_EVERY_MIN, 'Once a day']]
+
+export const SETTINGS: Spec[] = [
+	{ key: 'profile', label: 'About you', help: `A few lines ${NAME} reads before every draft: what you do and how you write.`, kind: 'text', section: 'you',
+		read: (_c, s) => (existsSync(join(s.root, 'profile.md')) ? readFileSync(join(s.root, 'profile.md'), 'utf8') : ''),
+		parse: raw => (raw.trim().length < 20 ? { ok: false, why: 'Write at least a sentence about yourself.' } : { ok: true, save: (cfg, s) => { writeFileSync(join(s.root, 'profile.md'), raw.trim() + '\n'); return cfg } }) },
+	{ key: 'aliases', label: 'Names people call you', help: 'Besides your first name, such as initials. A group message that uses one is for you.', kind: 'list', section: 'you',
+		read: c => (c.aliases ?? []).join(', '), parse: raw => set({ aliases: list(raw).filter(a => a.length >= 2) }) },
+	{ key: 'knowledge', label: 'Notes folders', help: 'Folders of your notes, relative to the storage folder or absolute. Drafts search them.', kind: 'list', section: 'you',
+		read: c => (c.knowledge ?? []).join(', '),
+		parse: (raw, s) => { const fs = list(raw), missing = fs.filter(f => !existsSync(here(s.root, f))); return missing.length ? { ok: false, why: `Not found on this machine: ${missing.join(', ')}` } : set({ knowledge: fs }) } },
+	// Owned work (eng-owned-work.md §a): the repos bound what may be changed; each machine finds its own clones, never synced.
+	{ key: 'repos', label: 'Repos you work in', help: 'A name and its remote each, such as Acme-Web https://dev.azure.com/acme/Web/_git/Acme-Web. Each machine finds its own copy.', kind: 'list', section: 'you',
+		read: c => (c.repos ?? []).map(r => `${r.name} ${r.remote}`).join(', '),
+		parse: raw => { const out: { name: string; remote: string }[] = []; for (const part of list(raw)) { const words = part.split(/\s+/), url = words.at(-1)!, r = remoteOf(url); if (!r) return { ok: false, why: `Not a repo remote: ${url}. Give its clone or web link.` }; out.push({ name: words.slice(0, -1).join(' ') || r.split('/').at(-1)!, remote: url }) } return set({ repos: out }) } },
+	// An authority boundary, by pipeline ID: a deploy to any other is a to-do; int and production never (owned work).
+	{ key: 'deployTo', label: `Where ${NAME} may deploy`, kind: 'list', section: 'you',
+		help: c => `Test rings, each with its project and pipeline ID, such as TEST3 Globex/3003, and any parameters a run may carry (Debug=False). ${NAME} deploys a PR's build only to these, each time after your ok; never int or production. Each is checked in Azure DevOps when you save.${c.deploy?.proposed?.length ? ` Proposed from your repo: ${c.deploy.proposed.map(t => `${targetsText([t])} (${t.real ? `"${t.real.name}"${t.project ? ` in ${t.project}` : ''}` : 'not checked in Azure DevOps yet'})`).join(', ')}. Save the ones you allow.` : ''}`,
+		read: c => targetsText(c.deploy?.allowed),
+		parse: () => ({ ok: false, why: 'Each pipeline is checked in Azure DevOps before it is saved.' }),
+		check: (raw, s, deps) => checkTargets(raw, s, deps) },
+	{ key: 'summaryAt', label: 'Daily summary', help: 'When the day\'s summary arrives in your self-chat, or off.', kind: 'time', section: 'timing',
+		read: c => c.summaryAt ?? '18:00', parse: raw => (/^(off|([01]\d|2[0-3]):[0-5]\d)$/.test(raw.trim()) ? set({ summaryAt: raw.trim() }) : { ok: false, why: 'Give a time such as 18:00, or off.' }) },
+	{ key: 'quietHours', label: 'Follow-ups join the item for', help: 'Hours. A message within this time continues the same item.', kind: 'number', section: 'timing',
+		read: c => String(c.quietHours ?? 48), parse: raw => num(raw, 1, 336, 'quietHours') },
+	{ key: 'dailyRuns', label: 'AI runs per day, at most', help: 'Counted on this machine\'s local day.', kind: 'number', section: 'system',
+		read: c => String(c.dailyRuns ?? 200), parse: raw => num(raw, 1, 2000, 'dailyRuns') },
+	{ key: 'autoUpdate', label: 'Updates', help: 'What a git install follows by itself.', kind: 'choice', section: 'system',
+		options: [{ value: 'default', label: 'Releases (or every change for the dogfood bundle)' }, { value: 'release', label: 'Releases only' }, { value: 'main', label: 'Every change' }, { value: 'off', label: `Off: run "${CMD} update" yourself` }],
+		read: c => (c.autoUpdate === false ? 'off' : c.autoUpdate === 'main' || c.autoUpdate === 'release' ? c.autoUpdate : 'default'),
+		parse: raw => (raw === 'off' ? set({ autoUpdate: false }) : raw === 'main' || raw === 'release' ? set({ autoUpdate: raw }) : raw === 'default' ? set({ autoUpdate: undefined }) : { ok: false, why: 'Pick one of the choices.' }) },
+	{ key: 'updateEvery', label: 'Look for updates', help: 'How often it checks for a new version. Check for updates on Home takes one at once.', kind: 'choice', section: 'system',
+		options: EVERY.map(([v, label]) => ({ value: String(v), label })),
+		read: c => String(EVERY.find(([v]) => v === c.updateEveryMin)?.[0] ?? UPDATE_EVERY_MIN),
+		parse: raw => (EVERY.some(([v]) => String(v) === raw) ? set({ updateEveryMin: Number(raw) === UPDATE_EVERY_MIN ? undefined : Number(raw) }) : { ok: false, why: 'Pick one of the choices.' }) },
+	{ key: 'signature', label: 'Signature', help: `The line under replies ${NAME} wrote. {first} becomes your first name. Automatic replies always carry it.`, kind: 'text', section: 'you',
+		read: c => signatureOf(c), parse: raw => (raw.trim().length < 3 || raw.trim().length > 80 ? { ok: false, why: 'Write 3 to 80 characters, such as "Responded via AI".' } : set({ signature: raw.trim() })) },
+	{ key: 'signApproved', label: 'Sign replies you approve', help: 'On: replies the AI wrote carry the signature even when you approved them. On by default once you write your own signature. Words you typed or edited never do.', kind: 'bool', section: 'you',
+		read: c => String(signsApproved(c)), parse: raw => set({ signApproved: raw === 'true' ? true : raw === 'false' ? false : undefined }) },
+	{ key: 'noticeHabits', label: 'Notice my habits', help: 'On: when you handle the same kind of message the same way again and again, it suggests a standing instruction. Nothing changes until you turn one on.', kind: 'bool', section: 'learned',
+		read: c => String(c.noticeHabits !== false), parse: raw => set({ noticeHabits: raw === 'false' ? false : undefined }) },
+	{ key: 'reviewLearning', label: 'Approve learned facts first', help: 'Off: facts are saved at once, with an undo. On: each waits under To learn.', kind: 'bool', section: 'learned',
+		read: c => String(!!c.reviewLearning), parse: raw => set({ reviewLearning: raw === 'true' || undefined }) },
+	// Advanced: folded on the page. Safety checks (guests, private sources, commitments) are not settings.
+	{ key: 'delayMin', label: 'Wait before an automatic reply goes out', help: 'Minutes. You can stop it in this time.', kind: 'number', section: 'replies',
+		read: c => String(pol(c).delayMin), parse: raw => numTo(raw, 0, 120, (c, n) => ({ ...c, policy: { ...pol(c), delayMin: n } })) },
+	{ key: 'undoMin', label: 'Undo window after an automatic reply', help: 'Minutes.', kind: 'number', section: 'replies',
+		read: c => String(pol(c).undoMin), parse: raw => numTo(raw, 1, 60, (c, n) => ({ ...c, policy: { ...pol(c), undoMin: n } })) },
+	{ key: 'maxAutoPerChatHour', label: 'Automatic replies per chat per hour, at most', help: 'More wait for you.', kind: 'number', section: 'replies',
+		read: c => String(pol(c).maxAutoPerChatHour), parse: raw => numTo(raw, 1, 20, (c, n) => ({ ...c, policy: { ...pol(c), maxAutoPerChatHour: n } })) },
+	{ key: 'quiet', label: 'No reminders between', help: `${NAME} does not post reminders to your self-chat in these hours. Such as 20:00-08:00.`, kind: 'line', section: 'timing',
+		read: c => `${c.quiet?.from ?? '20:00'}-${c.quiet?.to ?? '08:00'}`,
+		parse: raw => { const [from, to] = raw.trim().split(/\s*-\s*/); return HHMM.test(from ?? '') && HHMM.test(to ?? '') ? set({ quiet: { from, to } }) : { ok: false, why: 'Give two times, such as 20:00-08:00.' } } },
+	{ key: 'tz', label: 'Your time zone', help: 'For work hours (Monday to Friday, 9:00 to 18:00) and the times in notices. Such as Asia/Kolkata.', kind: 'line', section: 'timing',
+		read: c => c.tz ?? Intl.DateTimeFormat().resolvedOptions().timeZone, parse: raw => (validTz(raw.trim()) ? set({ tz: raw.trim() }) : { ok: false, why: 'Give a time zone name, such as Asia/Kolkata or Europe/London.' }) },
+	{ key: 'pollIdle', label: 'Check Teams every', help: 'Minutes, when nothing is happening; during work hours at least every 5. After activity it checks every minute for a while.', kind: 'number', section: 'system', advanced: true,
+		read: c => String((c.poll ?? DEFAULT_POLL).idleMin), parse: raw => numTo(raw, 1, 60, (c, n) => ({ ...c, poll: { ...(c.poll ?? DEFAULT_POLL), idleMin: n } })) },
+	{ key: 'maxParallel', label: 'AI runs at once', help: 'Drafts and jobs running side by side on the runner machine.', kind: 'number', section: 'system', advanced: true,
+		read: c => String(c.maxParallel ?? 3), parse: raw => num(raw, 1, 6, 'maxParallel') },
+	{ key: 'retentionDays', label: 'Keep message text for', help: 'Days. After that, items keep codes, people, and times only.', kind: 'number', section: 'system', advanced: true,
+		read: c => String(c.retentionDays ?? 30), parse: raw => num(raw, 7, 365, 'retentionDays') },
+	{ key: 'followUpHours', label: 'Your unanswered asks show under Waiting on others after', help: 'Hours.', kind: 'number', section: 'timing',
+		read: c => String(c.followUpHours ?? 24), parse: raw => num(raw, 1, 168, 'followUpHours') },
+	{ key: 'model', label: 'AI model', help: 'Empty uses your AI CLI\'s default. Otherwise a model name your CLI accepts.', kind: 'line', section: 'system', advanced: true,
+		read: c => c.agent.model ?? '', parse: raw => (/^[\w.:-]{0,60}$/.test(raw.trim()) ? { ok: true, save: (c: Config) => ({ ...c, agent: { ...c.agent, model: raw.trim() || undefined } }) } : { ok: false, why: 'Letters, digits, dots, and dashes only.' }) },
+	{ key: 'showDetails', label: 'Show details', help: 'For when something looks wrong: each card shows the rule, the reason, and ids, and Settings shows the runner and the recent log.', kind: 'bool', section: 'system', advanced: true,
+		read: c => String(!!c.showDetails), parse: raw => set({ showDetails: raw === 'true' || undefined }) },
+]
+
+export type SettingRow = { key: string; label: string; help: string; kind: Kind; section: Section; value: string; options?: { value: string; label: string }[]; advanced?: true }
+export type ReadOnlyRow = { label: string; value: string; how: string }
+
+// What Delegate knows about the owner and acts on, in one place (R-HAB-03): standing instructions, said or learned, and suggestions.
+export type AboutView = {
+	profile: string
+	rules: { text: string; who: string; learned?: string; held: boolean; code?: string }[]
+	suggestions: { code: string; text: string; does: string; evidence: string }[]
+	chats: { name: string; says: string }[]
+}
+// Who a rule covers, by name, so a rule that says "approved accounts" shows which ones (dogfood 10-20).
+export function whoOf(r: Rule): string {
+	const names = (r.who.accounts ?? []).map(a => a.name).filter(Boolean)
+	if (!names.length) return r.who.group ? `Anyone in ${r.who.group === 'team' ? 'your team' : r.who.group === 'org' ? 'your organization' : 'other companies'}` : ''
+	return names.length <= 8 ? names.join(', ') : `${names.slice(0, 8).join(', ')}, and ${names.length - 8} more`
+}
+
+export function aboutView(store: Store): AboutView {
+	const habits = store.habits(), held = store.heldRules(), cfg = store.config()
+	return {
+		profile: existsSync(join(store.root, 'profile.md')) ? readFileSync(join(store.root, 'profile.md'), 'utf8').trim() : '',
+		rules: store.rules().map(r => ({ text: r.text.replace(/^Learned: /, ''), who: whoOf(r), ...(r.learned ? { learned: `Learned ${r.learned.at.slice(0, 10)} from ${r.learned.evidence}` } : {}), held: !!held[r.id], ...(r.learned ? { code: habits.find(h => h.key === r.learned!.key)?.code } : {}) })),
+		suggestions: habits.filter(h => h.state === 'suggested').map(h => ({ code: h.code, text: h.text, does: h.does, evidence: `${h.evidence.count} unedited replies on ${h.evidence.days} days, out of ${h.evidence.total}` })),
+		chats: Object.values(cfg.chatLevels ?? {}).map(c => ({ name: c.name, says: LEVEL_SAYS[c.level] })),
+	}
+}
+
+// The same, as text for the AI chat ("what do you know about me?").
+export function aboutText(store: Store): string {
+	const a = aboutView(store), cfg = store.config()
+	return [
+		'## About you', a.profile || 'Nothing yet. Settings, About you.',
+		'', '## Standing instructions', ...(a.rules.length ? a.rules.map(r => `- ${r.text}${r.who ? ` · For: ${r.who}` : ''}${r.learned ? ` (${r.learned}${r.code ? `; "never ${r.code}" turns it off` : ''})` : ' (you said)'}${r.held ? ' · on hold' : ''}`) : ['None: every reply waits for your ok.']),
+		...(a.chats.length ? ['', '## Chats you marked', ...a.chats.map(c => `- ${c.name}: ${c.says}. "${c.name} is normal again" undoes it.`)] : []),
+		...(a.suggestions.length ? ['', '## Suggestions', ...a.suggestions.map(x => `- ${x.code}: ${x.text} (${x.evidence}). "ok ${x.code}" turns it on.`)] : []),
+		'', '## Learning', `- Notice my habits: ${cfg.noticeHabits === false ? 'off' : 'on'}`, `- Learned facts: ${cfg.reviewLearning ? 'wait for your ok' : 'saved at once, with an undo'}`, `- Signature: ${signatureOf(cfg)}${signsApproved(cfg) ? ', also on replies you approve' : ', only on automatic replies'}`,
+	].join('\n')
+}
+
+export function settingsView(store: Store): { rows: SettingRow[]; fixed: ReadOnlyRow[]; about: AboutView } {
+	const cfg = store.config()
+	// The new experience names its places differently: Waiting, and the foot of Now (PM review of N1a, 7).
+	const words = (t: string) => store.ui().ui === 'new' ? t.replace('Waiting on others', 'Waiting').replace('Check for updates on Home', 'Check for updates at the foot of Now') : t
+	return {
+		rows: SETTINGS.map(s => ({ key: s.key, label: words(s.label), help: words(typeof s.help === 'function' ? s.help(cfg) : s.help), kind: s.kind, section: s.section, value: s.read(cfg, store), options: s.options, ...(s.advanced ? { advanced: true as const } : {}) })),
+		about: aboutView(store),
+		fixed: [
+			{ label: 'Tools drafts may read', value: cfg.agent.tools.filter(t => !['view', 'glob', 'grep'].includes(t)).join(', ') || 'none', how: `Say "set up ${CMD}" and change the tools step.` },
+			{ label: 'Changes it may propose (each after your ok)', value: (cfg.agent.effectTools ?? []).map(changeName).join('; ') || 'none', how: `Say "set up ${CMD}" and change the tools step.` },
+			{ label: 'Reads your chats from', value: cfg.runner ?? 'the machine where setup last finished', how: `On another machine, say "move ${NAME} here".` },
+		],
+	}
+}
+
+export async function saveSetting(store: Store, key: string, raw: string, deps: SaveDeps = {}): Promise<{ ok: boolean; text: string }> {
+	const spec = SETTINGS.find(s => s.key === key)
+	if (!spec) return { ok: false, text: 'That setting cannot be changed here.' }
+	const r = spec.check ? await spec.check(String(raw ?? ''), store, deps) : spec.parse(String(raw ?? ''), store)
+	if (!r.ok) return { ok: false, text: r.why }
+	store.saveConfig(r.save(store.config(), store))
+	store.log({ event: 'setting', key })
+	return { ok: true, text: `Saved ${spec.label.toLowerCase()}. It applies from the next cycle, on every machine.` }
+}
+
+// Each target is read from Azure DevOps before it is saved: its project must hold that pipeline ID, and its real name must not be
+// int or production. The real name is kept, so the card and the gate never rest on the repo's words alone (review 10-21 P1-2, P2-7).
+async function checkTargets(raw: string, store: Store, { probe }: SaveDeps): Promise<Parsed> {
+	const r = parseTargets(raw, store.config())
+	if (!r.ok) return r
+	const bare = r.targets.find(t => !t.project)
+	if (bare) return { ok: false, why: `Name the project of ${bare.ring}, such as ${bare.ring} Globex/${bare.pipelineId}.` }
+	if (r.targets.length && !probe?.definition) return { ok: false, why: `Each pipeline is checked in Azure DevOps before it is saved, and ${NAME} has no Azure DevOps tool server set up.` }
+	const out: DeployTarget[] = []
+	for (const t of r.targets) {
+		let d: { name: string; path?: string } | undefined
+		try { d = await probe!.definition!(t.project!, t.pipelineId) } catch (e) { return { ok: false, why: `Could not read pipeline ${t.pipelineId} in ${t.project}: ${String(e).slice(0, 120)}` } }
+		if (!d) return { ok: false, why: `There is no pipeline ${t.pipelineId} in ${t.project}.` }
+		if (NEVER_RING.test(d.name) || NEVER_RING.test(d.path ?? '')) return { ok: false, why: `${t.ring} (${t.pipelineId}) is "${d.name}" in Azure DevOps, a shared or production ring. ${NAME} never deploys there.` }
+		out.push({ ...t, project: t.project!, name: d.name })
+	}
+	return { ok: true, save: c => ({ ...c, deploy: { ...c.deploy, allowed: out, proposed: (c.deploy?.proposed ?? []).filter(p => !out.some(t => t.pipelineId === p.pipelineId)) } }) }
+}

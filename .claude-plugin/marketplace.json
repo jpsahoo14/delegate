@@ -1,0 +1,13 @@
+{
+	"name": "delegate",
+	"owner": {
+		"name": "jpsahoo14"
+	},
+	"plugins": [
+		{
+			"name": "delegate",
+			"source": "./",
+			"description": "Your AI stand-in for chat."
+		}
+	]
+}
