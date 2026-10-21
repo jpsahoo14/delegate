@@ -43,13 +43,13 @@ export function seedFresh(s: S): S {
 	return s
 }
 
-async function open(hash = '#now', seed: (s: S) => S = seedFresh, o: { viewport?: { width: number; height: number } } = {}) {
+async function open(hash = '#now', seed: (s: S) => S = seedFresh, o: { viewport?: { width: number; height: number }; init?: string } = {}) {
 	const store = seed(new Store({ root: mkdtempSync(join(tmpdir(), 'delegate-n1bbroot-')), machine: 'mac' }))
 	const { url, server } = await serveInbox(() => store)
 	let busy = false
 	const runner = setInterval(async () => { if (busy) return; busy = true; try { await applyAnswers(store, stub, store.config(), procs as never) } finally { busy = false } }, 50)
 	const ctx = await browser.newContext({ viewport: o.viewport ?? { width: 1280, height: 900 }, reducedMotion: 'reduce', locale: 'en-US' })
-	await ctx.addInitScript('window.DELEGATE_POLL_MS = 60;')
+	await ctx.addInitScript(`window.DELEGATE_POLL_MS = 60;${o.init ?? ''}`)
 	const page: Page = await ctx.newPage()
 	const errors: string[] = [], posted: string[] = [], seen: string[][] = []
 	page.on('pageerror', (e: Error) => errors.push(e.message))
@@ -91,14 +91,15 @@ test('N1b New and Back to you: they show on what changed since the owner looked,
 })
 
 test('N1b New: opening a row marks it seen at once; a look that ends at once marks nothing', { skip }, async () => {
-	const t = await open('#now/A20')
+	// The moment is long here, so a slow machine still leaves before it passes (CI 10-21: macOS took over 1.5 s to get here).
+	const t = await open('#now/A20', seedFresh, { init: 'window.DELEGATE_LOOK_MS = 4000;' })
 	try {
 		await until(() => !!t.store.seen()['item:A20'], 1200)
 		assert.equal(t.store.seen()['item:A23'], undefined, 'the rest wait their moment')
 		// Away before the moment passes: A23 was never really looked at.
 		await t.page.click('#tabs a[href="#done"]')
 		// Nothing to wait for: the check is that nothing is sent once the moment has passed.
-		await new Promise(r => setTimeout(r, 1800))
+		await new Promise(r => setTimeout(r, 4300))
 		assert.equal(t.store.seen()['item:A23'], undefined)
 	} finally { await t.close() }
 	// Nor does a look that turns into a Find at once: the rows were never really looked at.

@@ -364,9 +364,12 @@ test('next first screen: at 1280×800 and 400×860 the summary line and the firs
 	for (const [width, height, rows] of [[1280, 800, ['A1', 'A2', 'A3', 'A4', 'A5', 'A6']], [400, 860, ['A1']]] as const) {
 		const t = await open('#now', s => seedNext(s), { viewport: { width, height } })
 		try {
+			const box = async (sel: string) => JSON.stringify(await t.page.locator(sel).boundingBox())
 			const inside = async (sel: string) => { const b = await t.page.locator(sel).boundingBox(); return !!b && b.y >= 0 && b.y + b.height <= height && b.x >= 0 && b.x + b.width <= width }
+			// Measured once layout has settled: fonts loaded and two frames drawn (CI 10-21, one macOS run measured too early).
+			await t.page.evaluate(() => document.fonts.ready.then(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))))
 			assert.equal(await t.page.evaluate(() => window.scrollY), 0)
-			assert.equal(await inside('#nsum'), true, `${width}: the summary line is in the window`)
+			assert.equal(await inside('#nsum'), true, `${width}: the summary line is in the window: ${await box('#nsum')}`)
 			for (const c of rows) assert.equal(await inside(`#now-${c} .nmain`), true, `${width}: ${c} is in the window`)
 			if (width === 1280) assert.equal(await inside('#now-A6 .nn'), true, "Vikram's Next line is on the first screen")
 		} finally { await t.close() }

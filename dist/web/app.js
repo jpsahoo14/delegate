@@ -441,7 +441,7 @@
       (again ? now : later).push(.../* @__PURE__ */ new Set([`item:${r.act}`, `item:${r.code}`]));
     }
     if (now.length) markItems(now, 0);
-    if (later.length) markItems(later, 1500);
+    if (later.length) markItems(later, window.DELEGATE_LOOK_MS || 1500);
   }
   var itemT;
   var itemKeys = /* @__PURE__ */ new Set();

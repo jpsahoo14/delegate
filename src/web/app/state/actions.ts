@@ -128,7 +128,7 @@ function viewingNow(sub?: string) {
 		;(again ? now : later).push(...new Set([`item:${r.act}`, `item:${r.code}`]))
 	}
 	if (now.length) markItems(now, 0)
-	if (later.length) markItems(later, 1500)
+	if (later.length) markItems(later, window.DELEGATE_LOOK_MS || 1500)
 }
 let itemT: ReturnType<typeof setTimeout> | undefined
 const itemKeys = new Set<string>(), sending = new Set<string>()

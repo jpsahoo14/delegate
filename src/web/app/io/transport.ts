@@ -18,7 +18,7 @@ export type IO = {
 }
 
 declare global {
-	interface Window { DELEGATE: Boot; DELEGATE_IO: IO | null; DELEGATE_POLL_MS?: number }
+	interface Window { DELEGATE: Boot; DELEGATE_IO: IO | null; DELEGATE_POLL_MS?: number; DELEGATE_LOOK_MS?: number }
 }
 
 export const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
