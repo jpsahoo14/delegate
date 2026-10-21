@@ -1,14 +1,14 @@
 // The card around every item: who and where, the ask and its thread, open work, the type's body, why, the action,
 // and the Ask thread. A card handled this visit stays as a short line, with Not right and Ask still there.
 import { primaryOf } from '../../model/derive.ts'
-import { doing, first, plural, refusalOf, sourceChip, when } from '../../model/format.ts'
+import { doing, first, plural, refusalOf, sourceChip, when, forPage } from '../../model/format.ts'
 import { MARKS } from '../../model/forms.ts'
 import type { CardUi, DoneRow, ItemCard, Who } from '../../model/types.ts'
 import { S, U, V, env } from '../../state/store.ts'
 import { esc, html, join, raw, type H } from '../html.ts'
 import { I } from '../icons.ts'
 import { bodyOf } from './cards/index.ts'
-import { B, av, kbd, rowState } from './parts.ts'
+import { B, av, rowState } from './parts.ts'
 
 // What an Ask thread needs: a live card, or a sent one from Done.
 type Asked = Pick<ItemCard, 'code' | 'notes'> & { sent?: boolean; draft?: ItemCard['draft']; type?: ItemCard['type'] }
@@ -55,8 +55,8 @@ export function stateLine(u: CardUi, verb: string): H {
 	if (u.status === 'pending') return u.lost
 		? html`<div class="state lost" role="status">${I('off')}<p><b>Lost connection. Retrying…</b> ${esc(env.name)} has your action. It will not be sent twice.</p></div>`
 		: html`<div class="state pending" role="status"><span class="spin" aria-hidden="true"></span><p>${esc(doing(verb, env.name))} Usually under a minute. You can move on.</p></div>`
-	if (u.status === 'refused') { const r = refusalOf(u.msg); return html`<div class="state ${r.cls}" role="alert">${I(r.cls === 'check' ? 'info' : 'warn')}<p><b>${r.label}</b> ${esc(u.msg)}</p></div>` }
-	if (u.msg) return html`<div class="state ${raw(u.lost ? 'lost' : 'info')}" role="status">${I(u.lost ? 'off' : 'info')}<p>${esc(u.msg)}</p></div>`
+	if (u.status === 'refused') { const r = refusalOf(u.msg); return html`<div class="state ${raw(r.cls)}" role="alert">${I(r.cls === 'check' ? 'info' : 'warn')}<p><b>${esc(r.label)}</b> ${esc(forPage(u.msg))}</p></div>` }
+	if (u.msg) return html`<div class="state ${raw(u.lost ? 'lost' : 'info')}" role="status">${I(u.lost ? 'off' : 'info')}<p>${esc(forPage(u.msg))}</p></div>`
 	return ''
 }
 function actions(c: ItemCard, u: CardUi): H {
@@ -68,7 +68,7 @@ function actions(c: ItemCard, u: CardUi): H {
 	// A change failed or was dropped: the reply alone, quoted by the runner first, so nothing goes until a second ok (next action).
 	const only = c.replyOnly && !u.editing ? B('Send reply only', 'replyonly', { verb: c.replyOnly, busy: u.status === 'pending' && u.verb === c.replyOnly, busyLabel: 'Checking…' }) : ''
 	const sec = [u.editing ? B('Cancel edit', 'canceledit', { cls: 'sec-hide' }) : '', only, B('Later', 'later', { ghost: true, verb: `later ${c.code}` })]
-	const foot = env.snap ? '' : p.hint ? html`<p class="vh">${esc(p.hint)}</p>` : verb ? html`<p class="vh">or type ${kbd(verb.length > 40 ? verb.slice(0, 38) + '…' : verb)} in Teams or your AI chat</p>` : ''
+	const foot = env.snap ? '' : p.hint ? html`<p class="vh">${esc(p.hint)}</p>` : ''
 	return html`${stateLine(u, u.verb || verb)}<div class="acts">${B(p.label, 'primary', { primary: true, id: `pri-${c.code}`, disabled: p.disabled || u.stale, busy: pending, busyLabel, verb })}${sec}</div>${foot}`
 }
 function noteHtml(c: Asked, n: Note, i: number): H {

@@ -117,7 +117,7 @@ test('changes ui page: "Send reply only" quotes the reply and sends nothing unti
 		assert.equal(await t.page.$('#card-A60 [data-act=replyonly]'), null)
 		await t.page.click('#card-A62 [data-act=replyonly]')
 		await t.page.waitForFunction(() => /Only the reply goes now/.test(document.querySelector('#card-A62 .state')?.textContent ?? ''))
-		assert.match(await text(t.page, '#card-A62 .state'), /Only the reply goes now, and it says: "Left one comment on PR 4200004: the retry limit should come from config\." It was written counting on the changes you left out\. Say "ok A62" to send it as it is/)
+		assert.match(await text(t.page, '#card-A62 .state'), /Only the reply goes now, and it says: "Left one comment on PR 4200004: the retry limit should come from config\." It was written counting on the changes you left out\.$/)
 		assert.ok(await t.page.$('#card-A62 .state.info'), 'a result line, not "Not done"')
 		assert.deepEqual(t.posted, ['ok A62 except 1'])
 		assert.deepEqual([t.store.byCode('A62')!.sent, t.store.byCode('A62')!.state], [undefined, 'needs_human'], 'nothing sent on the first ok')

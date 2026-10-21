@@ -1,5 +1,5 @@
 // Home: what happened while the owner was away, what needs them, Catch up, a missed-message box, and the version.
-import { first, plural, when } from '../../../model/format.ts'
+import { first, plural, when, forPage } from '../../../model/format.ts'
 import type { Tile } from '../../../model/types.ts'
 import { S, V, env, openCards } from '../../../state/store.ts'
 import { esc, html, raw, type H } from '../../html.ts'
@@ -38,7 +38,7 @@ export function home(): H {
 	const handled = tiles.reduce((n, t) => n + t.count, 0)
 	const need = o.length ? html`<div class="tile need" role="group" aria-labelledby="need-h">
 			<div class="need-head"><span class="big tnum">${o.length}</span><span class="lbl" id="need-h">${esc(o.length === 1 ? 'needs you' : 'need you')}</span></div>
-			<ul class="peek">${o.slice(0, 4).map(c => html`<li><a href="#focus/${esc(c.code)}">${av(c.who, 'sm')}<span class="nm">${esc(first(c.who.name))}</span><span class="ps">${esc(c.question || c.ask || c.job || '')}</span></a></li>`)}</ul>
+			<ul class="peek">${o.slice(0, 4).map(c => html`<li><a href="#focus/${esc(c.code)}">${av(c.who, 'sm')}<span class="nm">${esc(first(c.who.name))}</span><span class="ps">${esc(forPage(c.question) || c.ask || c.job || '')}</span></a></li>`)}</ul>
 			<div class="foot">${env.snap ? '' : html`<a class="btn primary" href="#focus/${esc(o[0].code)}">Start with ${esc(first(o[0].who.name))} ${I('arrow')}</a>`}<span class="more">${o.length > 4 ? html`and ${o.length - 4} more` : ''}</span></div></div>`
 		: html`<div class="tile need" role="group"><span class="ti" style="background:var(--success-soft);color:var(--success)">${I('check')}</span><span class="big" style="font-size:22px">All clear</span><span class="lbl">Nothing needs you.</span></div>`
 	return html`${banners()}

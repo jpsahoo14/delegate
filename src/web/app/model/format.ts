@@ -56,3 +56,7 @@ export function sourceChip(s: { ref: string; label?: string }): string {
 }
 // An ok the runner did not act on: a check to read first ("Before you ok …"), or a change not made (bug 10-21 A12).
 export const refusalOf = (msg: string) => (/^Before you ok\b/.test(msg) ? { label: 'Check this first.', cls: 'check' } : { label: 'Not done.', cls: 'refused' })
+// The runner's words are shared with the chat, where commands are typed. On the page the buttons act, so a sentence that tells
+// the owner to type a command (a quoted command naming an item, such as "ok A1") is left out (owner 10-21).
+const typed = /"[^"]*\b[A-Z]\d{1,3}\b[^"]*"/
+export const forPage = (text = '') => text.replace(/^Before you ok [A-Z]\d{1,3}:/, 'Before it goes ahead:').split(/(?<=[.?!])\s+(?=[A-Z])/).filter(s => !typed.test(s)).join(' ').trim()

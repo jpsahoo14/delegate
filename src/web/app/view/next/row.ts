@@ -1,7 +1,7 @@
 // One row on Now (design-spec/new-experience.md §5): the headline, the facts, "Next:", its markers, and its one action.
 // The server built every word (src/web/next.ts); this draws it and says times in the owner's time.
 import { FRESH_TEXT, freshOf, rowMark } from '../../model/derive.ts'
-import { plural, when } from '../../model/format.ts'
+import { plural, when, forPage } from '../../model/format.ts'
 import type { NextRow, Owner } from '../../model/types.ts'
 import { S, U, V, cardOf, env } from '../../state/store.ts'
 import { card } from '../classic/card.ts'
@@ -44,7 +44,7 @@ function facts(r: NextRow): H {
 		// One time with its verb: "asked 9:10 AM: …" for the person on the row, "You said 9:10 AM: …" for someone else.
 		...(ownQuote ? [html`${esc(time)}: <span class="nquo">"${esc(q!.text)}"</span>`] : q && q.verb === f.verb ? [] : time ? [esc(time)] : []),
 		...(q && !ownQuote ? [html`${esc(`${q.by} ${q.verb}${q.verb === f.verb && time ? ` ${when(f.at)}` : ''}`)}: <span class="nquo">"${esc(q.text)}"</span>`] : []),
-		...(f.notes ?? []).map(n => html`<span class="nl2">${esc(n.label)}${n.at ? esc(` ${when(n.at)}`) : ''}:</span> ${esc(n.text)}${n.since ? esc(` since ${day(n.since)}`) : ''}`),
+		...(f.notes ?? []).map(n => html`<span class="nl2">${esc(n.label)}${n.at ? esc(` ${when(n.at)}`) : ''}:</span> ${esc(forPage(n.text))}${n.since ? esc(` since ${day(n.since)}`) : ''}`),
 		...(f.until ? [esc(until(f.until))] : []),
 		...(f.also ? [esc(`+${plural(f.also, 'chat')}`)] : []),
 	]
@@ -90,7 +90,7 @@ export function row(r: NextRow, open: boolean): H {
 	const acts = U(`row:${r.act}`).msg ? '' : html`${r.primary ? action(r, r.primary, true, open) : ''}${(r.more ?? []).map(m => action(r, m, false, false))}`
 	return html`<li class="nrow k-${raw(r.kind)}${open ? raw(' open') : ''}" id="now-${esc(r.act)}" data-code="${esc(r.act)}"${r.rev ? html` data-rev="${esc(r.rev)}"` : ''}>
 		<div class="nmain">${lead}<div class="nrbody">
-			<div class="nh"><b class="nt">${esc(r.headline)}</b>${chips}<span class="code">${esc(r.act)}</span></div>
+			<div class="nh"><b class="nt">${esc(forPage(r.headline))}</b>${chips}<span class="code">${esc(r.act)}</span></div>
 			${facts(r)}
 			${r.draft ? html`<blockquote class="nd">${esc(r.draft)}</blockquote>` : ''}${r.gist ? html`<p class="ng">${esc(r.gist)}</p>` : ''}
 			${r.warn ? html`<div class="nwarn">${I('warn', 'sm')}<span>${esc(r.warn)}</span></div>` : ''}

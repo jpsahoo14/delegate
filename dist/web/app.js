@@ -59,6 +59,8 @@
     return u.hostname.replace(/^www\./, "");
   }
   var refusalOf = (msg) => /^Before you ok\b/.test(msg) ? { label: "Check this first.", cls: "check" } : { label: "Not done.", cls: "refused" };
+  var typed = /"[^"]*\b[A-Z]\d{1,3}\b[^"]*"/;
+  var forPage = (text2 = "") => text2.replace(/^Before you ok [A-Z]\d{1,3}:/, "Before it goes ahead:").split(/(?<=[.?!])\s+(?=[A-Z])/).filter((s2) => !typed.test(s2)).join(" ").trim();
 
   // src/web/app/io/transport.ts
   var sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -1766,21 +1768,21 @@
   var promiseLines = (c) => html`${c.todos?.length ? html`<p class="also-line">${I("warn", "sm")}<span><b>Yours to do:</b> ${esc(c.todos.join("; "))}</span></p>` : ""}${c.follow ? html`<p class="also-line">${I("eye", "sm")}<span><b>Then:</b> watch ${esc(c.follow.target)} every ${c.follow.everyHours} h until ${esc(c.follow.until)}, for up to 7 days. Change it under Watching.</span></p>` : ""}`;
 
   // src/web/app/view/classic/cards/choice.ts
-  var body = (c, u) => html`<p class="q">${esc(c.choices.prompt || c.question)}</p>${ctx(c)}${options(c, u)}${preview(c, u)}`;
+  var body = (c, u) => html`<p class="q">${esc(forPage(c.choices.prompt || c.question))}</p>${ctx(c)}${options(c, u)}${preview(c, u)}`;
 
   // src/web/app/view/classic/cards/meeting.ts
   var body2 = (c, u) => html`${meetingStrip(c)}${c.question || c.choices?.prompt ? html`<p class="q">${esc(c.question || c.choices.prompt)}</p>` : ""}${ctx(c)}${c.choices ? options(c, u) : ""}${preview(c, u)}`;
 
   // src/web/app/view/classic/cards/question.ts
-  var body3 = (c, u) => html`<p class="q">${esc(c.question)}</p>${ctx(c)}<label class="sr" for="ans-${esc(c.code)}">Your answer</label><input class="field" id="ans-${esc(c.code)}" data-input="answer" placeholder="Your answer" value="${esc(u.answer)}" autocomplete="off">`;
+  var body3 = (c, u) => html`<p class="q">${esc(forPage(c.question))}</p>${ctx(c)}<label class="sr" for="ans-${esc(c.code)}">Your answer</label><input class="field" id="ans-${esc(c.code)}" data-input="answer" placeholder="Your answer" value="${esc(u.answer)}" autocomplete="off">`;
 
   // src/web/app/view/classic/cards/reply.ts
-  var body4 = (c, u) => html`${saidLine(c)}${c.question && !c.draft?.preview ? html`<p class="q">${esc(c.question)}</p>` : ""}${ctx(c)}${draftBlock(c, u)}${alsoLine(c, "task")}${promiseLines(c)}`;
+  var body4 = (c, u) => html`${saidLine(c)}${c.question && !c.draft?.preview ? html`<p class="q">${esc(forPage(c.question))}</p>` : ""}${ctx(c)}${draftBlock(c, u)}${alsoLine(c, "task")}${promiseLines(c)}`;
 
   // src/web/app/view/classic/cards/review.ts
   function body5(c, u) {
     const on = u.cmts ?? new Set(c.changes.map((x) => x.n));
-    return html`${saidLine(c)}${c.question ? html`<p class="q">${esc(c.question)}</p>` : ""}${c.job && !c.promise ? html`<p class="rv-sum">${I("pr", "sm")}<b>${esc(c.job)}</b><span>· ${esc(plural(c.changes.length, "finding"))}</span></p>` : ""}
+    return html`${saidLine(c)}${c.question ? html`<p class="q">${esc(forPage(c.question))}</p>` : ""}${c.job && !c.promise ? html`<p class="rv-sum">${I("pr", "sm")}<b>${esc(c.job)}</b><span>· ${esc(plural(c.changes.length, "finding"))}</span></p>` : ""}
 			<div class="lbl-row"><span>Changes to make</span><span class="sp"></span><span style="text-transform:none;letter-spacing:0;font-weight:500">${on.size} of ${c.changes.length} selected</span></div>
 			<ul class="cmts">${c.changes.map((x) => html`<li><label class="cmt"><input type="checkbox" id="cm-${esc(c.code)}-${x.n}" data-cmt="${x.n}"${on.has(x.n) ? raw(" checked") : ""}${env.snap ? raw(" disabled") : ""}><span class="mk">${I("check")}</span><span class="cb"><span class="loc">${esc(x.target)}<span class="tag">${esc(x.system)}</span></span><p>${esc(x.summary)}</p>${meaningLine(x.meaning)}${x.detail ? html`<pre>${esc(x.detail)}</pre>` : ""}</span></label></li>`)}</ul>${draftBlock(c, u)}`;
   }
@@ -1829,9 +1831,9 @@
     if (u.status === "pending") return u.lost ? html`<div class="state lost" role="status">${I("off")}<p><b>Lost connection. Retrying…</b> ${esc(env.name)} has your action. It will not be sent twice.</p></div>` : html`<div class="state pending" role="status"><span class="spin" aria-hidden="true"></span><p>${esc(doing(verb, env.name))} Usually under a minute. You can move on.</p></div>`;
     if (u.status === "refused") {
       const r = refusalOf(u.msg);
-      return html`<div class="state ${r.cls}" role="alert">${I(r.cls === "check" ? "info" : "warn")}<p><b>${r.label}</b> ${esc(u.msg)}</p></div>`;
+      return html`<div class="state ${raw(r.cls)}" role="alert">${I(r.cls === "check" ? "info" : "warn")}<p><b>${esc(r.label)}</b> ${esc(forPage(u.msg))}</p></div>`;
     }
-    if (u.msg) return html`<div class="state ${raw(u.lost ? "lost" : "info")}" role="status">${I(u.lost ? "off" : "info")}<p>${esc(u.msg)}</p></div>`;
+    if (u.msg) return html`<div class="state ${raw(u.lost ? "lost" : "info")}" role="status">${I(u.lost ? "off" : "info")}<p>${esc(forPage(u.msg))}</p></div>`;
     return "";
   }
   function actions(c, u) {
@@ -1840,7 +1842,7 @@
     const busyLabel = /^pick\b/i.test(u.verb || "") && u.by !== "primary" ? "Preparing…" : p.kind === "draft" ? "Drafting…" : /^(Post|Make|Approve|Reject|Check)\b/.test(p.label) ? `${p.label.split(" and ")[0].replace(/^Post/, "Posting").replace(/^Make/, "Making").replace(/^Approve/, "Approving").replace(/^Reject/, "Rejecting").replace(/^Check/, "Checking")}…` : "Sending…";
     const only = c.replyOnly && !u.editing ? B("Send reply only", "replyonly", { verb: c.replyOnly, busy: u.status === "pending" && u.verb === c.replyOnly, busyLabel: "Checking…" }) : "";
     const sec = [u.editing ? B("Cancel edit", "canceledit", { cls: "sec-hide" }) : "", only, B("Later", "later", { ghost: true, verb: `later ${c.code}` })];
-    const foot = env.snap ? "" : p.hint ? html`<p class="vh">${esc(p.hint)}</p>` : verb ? html`<p class="vh">or type ${kbd(verb.length > 40 ? verb.slice(0, 38) + "…" : verb)} in Teams or your AI chat</p>` : "";
+    const foot = env.snap ? "" : p.hint ? html`<p class="vh">${esc(p.hint)}</p>` : "";
     return html`${stateLine(u, u.verb || verb)}<div class="acts">${B(p.label, "primary", { primary: true, id: `pri-${c.code}`, disabled: p.disabled || u.stale, busy: pending, busyLabel, verb })}${sec}</div>${foot}`;
   }
   function noteHtml(c, n, i) {
@@ -1991,7 +1993,7 @@
     const handled = tiles.reduce((n, t) => n + t.count, 0);
     const need = o.length ? html`<div class="tile need" role="group" aria-labelledby="need-h">
 			<div class="need-head"><span class="big tnum">${o.length}</span><span class="lbl" id="need-h">${esc(o.length === 1 ? "needs you" : "need you")}</span></div>
-			<ul class="peek">${o.slice(0, 4).map((c) => html`<li><a href="#focus/${esc(c.code)}">${av(c.who, "sm")}<span class="nm">${esc(first(c.who.name))}</span><span class="ps">${esc(c.question || c.ask || c.job || "")}</span></a></li>`)}</ul>
+			<ul class="peek">${o.slice(0, 4).map((c) => html`<li><a href="#focus/${esc(c.code)}">${av(c.who, "sm")}<span class="nm">${esc(first(c.who.name))}</span><span class="ps">${esc(forPage(c.question) || c.ask || c.job || "")}</span></a></li>`)}</ul>
 			<div class="foot">${env.snap ? "" : html`<a class="btn primary" href="#focus/${esc(o[0].code)}">Start with ${esc(first(o[0].who.name))} ${I("arrow")}</a>`}<span class="more">${o.length > 4 ? html`and ${o.length - 4} more` : ""}</span></div></div>` : html`<div class="tile need" role="group"><span class="ti" style="background:var(--success-soft);color:var(--success)">${I("check")}</span><span class="big" style="font-size:22px">All clear</span><span class="lbl">Nothing needs you.</span></div>`;
     return html`${banners()}
 	<section class="hello" aria-labelledby="hello-h"><h1 id="hello-h">Since you were away</h1><p>${V.since ? html`You left ${esc(when(V.since))}` : esc("In the last day")}${handled ? html` · ${esc(env.name)} handled ${esc(plural(handled, "thing"))} for you` : ""}</p></section>
@@ -2381,7 +2383,7 @@
       // One time with its verb: "asked 9:10 AM: …" for the person on the row, "You said 9:10 AM: …" for someone else.
       ...ownQuote ? [html`${esc(time2)}: <span class="nquo">"${esc(q.text)}"</span>`] : q && q.verb === f.verb ? [] : time2 ? [esc(time2)] : [],
       ...q && !ownQuote ? [html`${esc(`${q.by} ${q.verb}${q.verb === f.verb && time2 ? ` ${when(f.at)}` : ""}`)}: <span class="nquo">"${esc(q.text)}"</span>`] : [],
-      ...(f.notes ?? []).map((n) => html`<span class="nl2">${esc(n.label)}${n.at ? esc(` ${when(n.at)}`) : ""}:</span> ${esc(n.text)}${n.since ? esc(` since ${day(n.since)}`) : ""}`),
+      ...(f.notes ?? []).map((n) => html`<span class="nl2">${esc(n.label)}${n.at ? esc(` ${when(n.at)}`) : ""}:</span> ${esc(forPage(n.text))}${n.since ? esc(` since ${day(n.since)}`) : ""}`),
       ...f.until ? [esc(until(f.until))] : [],
       ...f.also ? [esc(`+${plural(f.also, "chat")}`)] : []
     ];
@@ -2418,7 +2420,7 @@
     const acts = U(`row:${r.act}`).msg ? "" : html`${r.primary ? action(r, r.primary, true, open) : ""}${(r.more ?? []).map((m) => action(r, m, false, false))}`;
     return html`<li class="nrow k-${raw(r.kind)}${open ? raw(" open") : ""}" id="now-${esc(r.act)}" data-code="${esc(r.act)}"${r.rev ? html` data-rev="${esc(r.rev)}"` : ""}>
 		<div class="nmain">${lead}<div class="nrbody">
-			<div class="nh"><b class="nt">${esc(r.headline)}</b>${chips}<span class="code">${esc(r.act)}</span></div>
+			<div class="nh"><b class="nt">${esc(forPage(r.headline))}</b>${chips}<span class="code">${esc(r.act)}</span></div>
 			${facts(r)}
 			${r.draft ? html`<blockquote class="nd">${esc(r.draft)}</blockquote>` : ""}${r.gist ? html`<p class="ng">${esc(r.gist)}</p>` : ""}
 			${r.warn ? html`<div class="nwarn">${I("warn", "sm")}<span>${esc(r.warn)}</span></div>` : ""}

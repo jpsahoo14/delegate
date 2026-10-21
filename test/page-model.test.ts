@@ -142,3 +142,24 @@ test('bug 10-21 A12: a "Before you ok" answer is a check, not a failure', async 
 		refusalOf('A1\'s changes are out of date. Ask for a fresh review, or skip A1.'),
 	], [{ label: 'Check this first.', cls: 'check' }, { label: 'Not done.', cls: 'refused' }])
 })
+
+test('owner 10-21: the page never tells you to type a command; buttons do it, and the rest of the sentence stays', async () => {
+	const { forPage } = await import('../src/web/app/model/format.ts')
+	assert.deepEqual([
+		forPage('Before you ok A12: Approve PR 4200001 ("Fix the banner" by Dev Rao). Say "ok A12" to go ahead.'),
+		forPage('Changes made. The reply was not sent. Reply "ok A1" to send it'),
+		forPage('Made 1 of 2 changes. Not done: comment on PR 4200001. Reply "ok A1" to retry, or "ok A1 except 2" to send only the reply'),
+		forPage('The reply counts on 4 changes Delegate cannot make, listed as yours to do. Change the reply with "edit A36: <your text>", or skip A36.'),
+		forPage('A1 has changes 1 to 3.'),
+		forPage('PR 4200001 changed since your review (new commits). Review again? Reply "A1: review again", or "skip A1".'),
+		forPage('Kim said "ok, ship it" yesterday.'),
+	], [
+		'Before it goes ahead: Approve PR 4200001 ("Fix the banner" by Dev Rao).',
+		'Changes made. The reply was not sent.',
+		'Made 1 of 2 changes. Not done: comment on PR 4200001.',
+		'The reply counts on 4 changes Delegate cannot make, listed as yours to do.',
+		'A1 has changes 1 to 3.',
+		'PR 4200001 changed since your review (new commits). Review again?',
+		'Kim said "ok, ship it" yesterday.',
+	])
+})
