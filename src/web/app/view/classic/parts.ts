@@ -1,6 +1,6 @@
 // Small pieces every tab uses: the button, a key, an avatar, a list's heading, and a row's working state.
 import type { Who } from '../../model/types.ts'
-import { S, U, env } from '../../state/store.ts'
+import { S, env, peek } from '../../state/store.ts'
 import { esc, html, raw, type H } from '../html.ts'
 import { I } from '../icons.ts'
 
@@ -16,6 +16,6 @@ export const kbd = (v: string) => html`<kbd>${esc(v)}</kbd>`
 export const av = (w: Who, cls = '') => html`<span class="av hue ${raw(cls)}" style="--hue:${w.hue}" aria-hidden="true">${esc(w.initials)}</span>`
 export const listHead = (title: string, sub: string, extra: H = '') => html`<div class="lh"><div><h1>${esc(title)}</h1>${sub ? html`<p>${esc(sub)}</p>` : ''}</div><span class="sp"></span>${extra}</div>`
 // A list row's action on its way, or what came back.
-export const rowState = (key: string): H => { const u = U(key); return u.status === 'pending' ? html`<span class="m">${esc(u.lost ? 'Lost connection. Retrying…' : 'Working…')}</span>` : u.msg ? html`<span class="m" role="status">${esc(u.msg)}</span>` : '' }
+export const rowState = (key: string): H => { const u = peek(key); return u.status === 'pending' ? html`<span class="m">${esc(u.lost ? 'Lost connection. Retrying…' : 'Working…')}</span>` : u.msg ? html`<span class="m" role="status">${esc(u.msg)}</span>` : '' }
 // Asks the runner to look again now; on the health banner and in Settings.
 export const checkNow = () => env.snap ? '' : B('Check now', 'rowact', { sm: true, v: 'retry', verb: 'retry', aria: raw('data-key="row:retry"') })

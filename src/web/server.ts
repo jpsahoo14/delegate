@@ -13,7 +13,7 @@ import { versionInfo } from '../os/autoupdate.ts'
 import { saveSetting, settingsView } from './settings.ts'
 import { adoProbe, type BuildProbe } from '../runner/probe.ts'
 import type { Config } from '../core/types.ts'
-import { numbersOf } from '../store/numbers.ts'
+import { numbersPage } from './numbers.ts'
 import { WINDOWS, type WindowKey } from '../core/numbers.ts'
 import { nextView } from './next.ts'
 
@@ -73,10 +73,11 @@ export function serveInbox(get: () => Store, port = 0, token = randomBytes(16).t
 			return
 		}
 		// The Numbers tab is its own call, not part of /data: it adds up weeks of logs, and the page asks only when the tab opens (R-NEX-11).
+		// It brings the rows each number counted, in Done's format.
 		if (req.method === 'GET' && u.pathname === '/numbers') {
 			const key = u.searchParams.get('window') ?? 'this'
 			if (!(WINDOWS as string[]).includes(key)) { res.writeHead(400, { 'content-type': 'application/json' }).end(JSON.stringify({ ok: false, text: `window is one of ${WINDOWS.join(', ')}` })); return }
-			res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' }).end(JSON.stringify(numbersOf(get(), key as WindowKey)))
+			res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' }).end(JSON.stringify(numbersPage(get(), key as WindowKey)))
 			return
 		}
 		if (req.method === 'POST' && u.pathname === '/seen') {

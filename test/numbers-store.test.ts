@@ -11,7 +11,9 @@ const { Store } = await import('../src/store/state.ts')
 const { counted, numbersOf, saveWeeks } = await import('../src/store/numbers.ts')
 const { daily, summaryText } = await import('../src/runner/daily.ts')
 const { serveInbox } = await import('../src/web/server.ts')
-const { item, stub } = await import('./fixture.ts')
+const { item, stub, seedNumbers } = await import('./fixture.ts')
+const { numbersPage } = await import('../src/web/numbers.ts')
+const { listsOf } = await import('../src/web/app/model/numbers.ts')
 
 // The Numbers tab's files and surfaces (R-NEX-11). Wednesday 2026-10-21, the owner in UTC.
 const NOW = new Date('2026-10-21T12:00:00Z')
@@ -187,4 +189,46 @@ test('R-NEX-11 delegate numbers prints the tab as text, and refuses an unknown w
 	assert.match(out, /See all 1: A1/)
 	assert.match(out, /median 26 min/)
 	assert.throws(() => execFileSync(process.execPath, ['src/cli.ts', 'numbers', '--window', 'year'], { env: { ...process.env, DELEGATE_ROOT: store.root }, stdio: 'pipe' }), /Usage: delegate numbers \[--window this\|last\|4w\|all\]/)
+})
+
+test('R-NEX-11 every number brings its rows: /numbers and the panel\'s numbers_view return each counted item in Done\'s row format, and a message pointed at with no item as its Teams link', async () => {
+	const store = seedNumbers(setup())
+	const { url, server } = await serveInbox(() => store)
+	try {
+		const v = await (await fetch(`${url.replace('/?', '/numbers?')}&window=4w`)).json()
+		const codes = [...new Set(Object.values(listsOf(v) as Record<string, { groups: { codes: string[] }[] }>).flatMap(l => l.groups.flatMap(g => g.codes)))]
+		assert.ok(codes.length > 40)
+		assert.deepEqual(codes.filter(c => !v.rows[c] && !v.missed[c]), [], 'every code a number counts can be opened')
+		const opened = Object.values(listsOf(v)).flatMap(l => l.groups.flatMap(g => g.codes))
+		assert.deepEqual(opened.filter(c => !v.rows[c] && !v.missed[c]), [], 'every list the page opens has its rows')
+		assert.ok(v.now.missed.asks.length > 10 && v.corrections.sent.length > 10)
+		const lost = v.now.missed.pointed.find((c: string) => c.startsWith('missed:'))
+		assert.equal(lost, 'missed:1760000000001')
+		assert.equal(v.rows[lost], undefined, 'no item was made for it')
+		assert.equal(v.missed[lost].teams, 'https://teams.microsoft.com/l/message/19%3Aglobexsync%40thread.v2/1760000000001')
+		const r = v.rows[v.handled.reply[0]]
+		assert.deepEqual([r.kind, r.by, typeof r.ask, typeof r.said], ['reply', 'by you', 'string', 'string'], 'a reply reads as the exchange, as in Done')
+		assert.equal(v.rows[v.handled.nothing[0]].kind, 'closed')
+		assert.match(v.rows[v.handled.nothing[0]].sentence, /Nothing needed/)
+		assert.equal(v.rows[v.now.replies.teams[0]].by, 'by you in Teams')
+		// Review P2-2: rows only for the lists this window can open, and without what a Numbers list never shows.
+		assert.deepEqual(Object.keys(v.rows).sort(), codes.filter(c => !c.startsWith('missed:')).sort(), 'only the rows its lists open')
+		assert.deepEqual(Object.values(v.rows as Record<string, Record<string, unknown>>).filter(r => 'text' in r || 'why' in r || 'notes' in r), [], 'no sent text, why, or notes: the list never expands')
+		assert.ok(v.rows[v.handled.reply[0]].said, 'what was said still reads on the row')
+	} finally { server.close() }
+	// The chat panel reaches the same numbers through its own tool.
+	const { build } = await import('../src/mcp/server.ts')
+	const { Client } = await import('@modelcontextprotocol/sdk/client/index.js')
+	const { InMemoryTransport } = await import('@modelcontextprotocol/sdk/inMemory.js')
+	const [x, y] = InMemoryTransport.createLinkedPair()
+	await build(() => store).connect(x)
+	const c = new Client({ name: 't', version: '1' }); await c.connect(y)
+	try {
+		const r = await c.callTool({ name: 'numbers_view', arguments: { window: 'last' } }) as unknown as { structuredContent: { window: { key: string }; handled: { codes: string[] }; rows: Record<string, unknown> } }
+		assert.equal(r.structuredContent.window.key, 'last')
+		assert.deepEqual(r.structuredContent.handled.codes, numbersPage(store, 'last').handled.codes)
+		assert.ok(r.structuredContent.handled.codes.every(k => r.structuredContent.rows[k]))
+		const bad = await c.callTool({ name: 'numbers_view', arguments: { window: 'year' } }) as { isError?: boolean }
+		assert.equal(bad.isError, true, 'an unknown window is refused')
+	} finally { await c.close() }
 })

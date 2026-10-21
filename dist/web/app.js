@@ -20,11 +20,11 @@
     if (Math.abs(diff) < 7) return `${d.toLocaleDateString([], { weekday: "short" })} ${time(d)}`;
     return d.toLocaleDateString([], { month: "short", day: "numeric" });
   }
-  var clock = (s) => {
-    const [h, m] = s.split(":").map(Number);
+  var clock = (s2) => {
+    const [h, m] = s2.split(":").map(Number);
     return time(new Date(2e3, 0, 1, h, m));
   };
-  var mmss = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+  var mmss = (s2) => `${Math.floor(s2 / 60)}:${String(s2 % 60).padStart(2, "0")}`;
   function byDate(k) {
     const d = /* @__PURE__ */ new Date();
     if (k === "fri") d.setDate(d.getDate() + ((5 - d.getDay() + 7) % 7 || 7));
@@ -79,7 +79,7 @@
     return next2.sort((a, b) => (later(a) ? 1 : 0) - (later(b) ? 1 : 0));
   }
   var dirty = (u) => u.touched || u.editing || !!u.answer || !!u.other || !!u.ask;
-  var tabsOf = (v, snap) => [["home", "Home"], ["focus", "Needs you"], ["done", "Done", snap ? 0 : newCount(v)], ["ongoing", "Ongoing"], ...v.knowledge.length ? [["knowledge", "To learn"]] : [], ...v.settings ? [["settings", "Settings"]] : []];
+  var tabsOf = (v, snap, numbers = false) => [["home", "Home"], ["focus", "Needs you"], ["done", "Done", snap ? 0 : newCount(v)], ["ongoing", "Ongoing"], ...v.knowledge.length ? [["knowledge", "To learn"]] : [], ...numbers && !snap ? [["numbers", "Numbers"]] : [], ...v.settings ? [["settings", "Settings"]] : []];
   function changeLabel(c, n, reply) {
     if (c.type === "meeting" && n) return "Send and create invite";
     const comments = c.changes.length && c.changes.every((x) => /comment|review/i.test(x.action));
@@ -141,7 +141,7 @@
   // src/web/app/state/store.ts
   var env = { snap: false, name: "", cmd: "", start: void 0, io: null, poll: 2e3, ui: "classic", panel: false };
   var V;
-  var S = { route: "home", cur: null, ui: {}, fresh: {}, order: [], done: /* @__PURE__ */ new Map(), later: /* @__PURE__ */ new Set(), offline: false, deferred: false, sheet: null, form: null, formBusy: false, formErr: "", newAuto: null, set: {} };
+  var S = { route: "home", cur: null, ui: {}, fresh: {}, order: [], done: /* @__PURE__ */ new Map(), later: /* @__PURE__ */ new Set(), offline: false, deferred: false, sheet: null, form: null, formBusy: false, formErr: "", newAuto: null, set: {}, num: { win: "this", busy: false, failed: false, seq: 0, how: /* @__PURE__ */ new Set() } };
   function init(boot3, io, poll2) {
     Object.assign(env, { snap: boot3.mode === "snapshot", panel: boot3.mode === "panel", name: boot3.name, cmd: boot3.cmd, start: boot3.view.version?.code, io, poll: poll2 });
     V = boot3.view;
@@ -152,6 +152,8 @@
   function U(code) {
     return S.ui[code] ??= { status: "ready", msg: "", lost: false, stale: false, touched: false, pick: null, otherOn: false, other: "", editing: false, text: null, answer: "", ask: "", cmts: null, facts: null, threadOpen: false, whyOpen: false, dbgOpen: false, menu: false };
   }
+  var IDLE = Object.freeze({ status: "ready", msg: "", lost: false, stale: false, touched: false, pick: null, otherOn: false, other: "", editing: false, text: null, answer: "", ask: "", cmts: null, facts: null, threadOpen: false, whyOpen: false, dbgOpen: false, menu: false });
+  var peek = (code) => S.ui[code] ?? IDLE;
   var cardOf = (code) => V.needs.find((c) => c.code === code) || V.knowledge.find((c) => c.code === code);
   function syncOrder() {
     S.order = orderOf(S.order, V.needs, (c) => S.done.has(c), (c) => S.later.has(c));
@@ -159,9 +161,9 @@
   var queue = () => S.order.map((c) => V.needs.find((x) => x.code === c) || S.done.get(c)?.card).filter((c) => !!c);
   var openCards = () => queue().filter((c) => !S.done.has(c.code));
   function replaceCard(c) {
-    const list = /^K/.test(c.code) ? V.knowledge : V.needs, i = list.findIndex((x) => x.code === c.code);
-    if (i >= 0) list[i] = c;
-    else list.push(c);
+    const list2 = /^K/.test(c.code) ? V.knowledge : V.needs, i = list2.findIndex((x) => x.code === c.code);
+    if (i >= 0) list2[i] = c;
+    else list2.push(c);
     syncOrder();
   }
   var hooks = {
@@ -582,13 +584,13 @@
     if (snap) return "classic";
     const h = hashUi(hash);
     if (h) return h;
-    const s = v?.ui;
-    if (s && cached2 && (cached2.at ?? "") > (s.at ?? "")) return cached2.ui;
-    return s?.ui ?? cached2?.ui ?? "classic";
+    const s2 = v?.ui;
+    if (s2 && cached2 && (cached2.at ?? "") > (s2.at ?? "")) return cached2.ui;
+    return s2?.ui ?? cached2?.ui ?? "classic";
   }
   function newRoute(h) {
     const [base, sub] = h.split("/");
-    if (base === "now" || base === "done" || base === "settings" || base === "knowledge") return h;
+    if (base === "now" || base === "done" || base === "numbers" || base === "settings" || base === "knowledge") return h;
     if (base === "focus") return sub ? `now/${sub}` : "now";
     if (base === "ongoing" || base === "watching" || base === "automations") return sub === "running" ? "now/working" : "now/waiting";
     if (base === "running") return "now/working";
@@ -661,6 +663,180 @@
     render2();
   }
 
+  // src/web/app/model/numbers.ts
+  var SMALL = 10;
+  var WINDOWS = ["this", "last", "4w", "all"];
+  var WINDOW_LABEL = { this: "This week", last: "Last week", "4w": "Last 4 weeks", all: "Since you started" };
+  var WHEN = { this: "this week", last: "last week", "4w": "in the last 4 weeks", all: "since you started" };
+  var PRIOR = { this: "last week", last: "the week before", "4w": "the 4 weeks before" };
+  var FIRST_WEEK = "Your first week. Trends start next week.";
+  var RULES = (name) => ({
+    handled: `An ask counts once, in the week it first closed with at most one approval of unedited work: a reply sent exactly as ${name} drafted it (your ok, a picked option, or a rule), proposed changes applied with none removed, or a job's "Nothing needed". It leaves the count if, within 7 days, the reply is undone or marked wrong, incomplete, or unneeded, you say it needed you, or a missed message turns out to be part of it.`,
+    bars: "One bar per week, Monday to Sunday, counted as Handled for you. A hatched bar had days when no machine was reading your chats, so a quiet week is not mistaken for a good one. Weeks before you started are dotted.",
+    check: "An item stays in its 7-day check for 7 days after it counted. A correction in that time takes it out, so past weeks can still go down.",
+    replies: `Replies that went out exactly as ${name} drafted them, out of every reply to an ask ${name} found: sent as drafted, edited before sending, or typed by you in Teams (each item once). Holding replies are left out.`,
+    missed: `Asks you had to point at with "missed", or move from Catch up to Needs me, out of every ask: items made (not watches, and not messages that needed no reply) and the messages you pointed at. Each counts once.`,
+    wait: "From when the ask was sent to the first reply in that thread, yours or a draft you sent, for asks that needed you. The middle value (median), the shortest, and the longest. Measured from message times; nothing is estimated.",
+    corrections: "Items you corrected (undone, or marked wrong, incomplete, or unneeded), each once, per 100 replies sent in the last 4 weeks. Holding replies, which say the answer is coming, are not counted as sent. Keep it under 2.",
+    unknown: "A reply sent before sends recorded whether they were edited, whose words were cleared after 30 days, cannot be checked. It counts as neither drafted nor edited.",
+    promises: "Your dated promises closed or updated by their date, out of those due. It starts once work records its due dates."
+  });
+  var share = (n, of, pct) => of >= SMALL && pct !== void 0 ? `${n} of ${of} (${pct}%)` : `${n} of ${of}`;
+  var brief = (n, of, pct) => of >= SMALL && pct !== void 0 ? `${pct}%` : `${n} of ${of}`;
+  var dur = (min) => min < 60 ? `${min} min` : min < 48 * 60 ? `${Math.round(min / 60)} h` : `${Math.round(min / 1440)} d`;
+  var MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  var DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  var md = (day2) => `${MONTHS[Number(day2.slice(5, 7)) - 1]} ${Number(day2.slice(8, 10))}`;
+  var dmd = (day2) => `${DAYS[(/* @__PURE__ */ new Date(`${day2}T00:00:00Z`)).getUTCDay()]} ${md(day2)}`;
+  var addDays = (day2, n) => new Date(Date.parse(`${day2}T00:00:00Z`) + n * 864e5).toISOString().slice(0, 10);
+  var s = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+  var L = (text2, key, n) => n > 0 ? { text: text2, key } : { text: text2 };
+  function listsOf(d) {
+    const w = WHEN[d.window.key], h = d.handled, r = d.now.replies, m = d.now.missed, f = d.four;
+    const one = (title, codes) => ({ title, groups: [{ codes }] });
+    const replies = (x) => [{ title: "As drafted", codes: x.drafted }, { title: "Edited before sending", codes: x.edited }, { title: "You typed in Teams", codes: x.teams }];
+    const missed2 = (x) => [{ title: "You pointed at", codes: x.pointed }, { title: "Moved to Needs me", codes: x.mine }];
+    return {
+      handled: one(`Handled for you ${w}`, h.codes),
+      reply: one(`Replies as drafted, handled ${w}`, h.reply),
+      changes: one(`Applied as proposed, handled ${w}`, h.changes),
+      nothing: one(`"Nothing needed", handled ${w}`, h.nothing),
+      check: one("Still in their 7-day check", h.provisional),
+      ...Object.fromEntries(d.bars.map((b) => [`week:${b.week}`, one(`Handled in the week of ${md(b.week)}`, b.codes)])),
+      replies: { title: `Replies to asks ${w}`, groups: replies(r) },
+      drafted: one(`Replies as drafted ${w}`, r.drafted),
+      edited: one(`Replies edited before sending ${w}`, r.edited),
+      teams: one(`Replies you typed in Teams ${w}`, r.teams),
+      unknown: one(`Sends that can no longer be checked, ${w}`, r.unknown),
+      "four-replies": { title: "Replies to asks in the last 4 weeks", groups: replies(f.replies) },
+      missed: { title: `Missed ${w}`, groups: missed2(m) },
+      pointed: one(`Messages you pointed at ${w}`, m.pointed),
+      mine: one(`Moved to Needs me ${w}`, m.mine),
+      asks: one(`Every ask ${w}`, m.asks),
+      "four-missed": { title: "Missed in the last 4 weeks", groups: missed2(f.missed) },
+      wait: one(`Timed replies ${w}, shortest wait first`, d.now.wait.codes),
+      "four-wait": one("Timed replies in the last 4 weeks, shortest wait first", f.wait.codes),
+      corrections: one("Corrected in the last 4 weeks", d.corrections.codes),
+      sends: one("Sent in the last 4 weeks", d.corrections.sent)
+    };
+  }
+  function trendOf(d) {
+    const h = d.handled, prior = PRIOR[d.window.key];
+    if (d.firstWeek) return { text: FIRST_WEEK };
+    if (!prior || h.before === void 0) return void 0;
+    const span = d.window.key === "this" ? d.bars.slice(6, 7) : d.window.key === "last" ? d.bars.slice(5, 6) : d.bars.slice(0, 4);
+    if (span.length && span.every((b) => b.before)) return void 0;
+    if (h.arrow && h.n >= SMALL && h.before >= SMALL) {
+      if (h.n > h.before) return { text: `▲ ${h.n - h.before} more than ${prior} (${h.before})`, dir: "up" };
+      if (h.n < h.before) return { text: `▼ ${h.before - h.n} fewer than ${prior} (${h.before})`, dir: "down" };
+      return { text: `The same as ${prior} (${h.before})`, dir: "same" };
+    }
+    return { text: `${prior[0].toUpperCase()}${prior.slice(1)}: ${h.before}` };
+  }
+  function barsOf(d) {
+    const top = Math.max(1, ...d.bars.map((b) => b.n));
+    return d.bars.map((b, i) => {
+      const now = i === d.bars.length - 1;
+      const alt = [`Week of ${md(b.week)}: ${b.before ? "before you started" : `${s(b.n, "handled", "handled")}${now ? " so far" : ""}`}`, ...b.gaps.length ? [`no machine was reading on ${b.gaps.map(dmd).join(", ")}`] : []].join("; ");
+      return { week: b.week, label: md(b.week), n: b.n, height: b.before ? 0 : Math.round(b.n / top * 100), gaps: b.gaps, days: Array.from({ length: 7 }, (_, k) => b.gaps.includes(addDays(b.week, k))), before: b.before, now, alt, ...b.n > 0 ? { key: `week:${b.week}` } : {} };
+    });
+  }
+  function numbersModel(d, name) {
+    const w = WHEN[d.window.key], h = d.handled, r = d.now.replies, m = d.now.missed, t = d.now.wait, f = d.four, c = d.corrections;
+    const gaps = d.bars.flatMap((b) => b.gaps);
+    const repliesCard = {
+      rule: "replies",
+      title: "Replies as drafted",
+      main: r.of ? L(`${share(r.n, r.of, r.pct)} ${w}`, "replies", r.of) : { text: `No replies to asks ${w}` },
+      // A share bar only from 10: below that it would be a percentage in pictures.
+      ...r.of >= SMALL ? { meter: { n: r.n, of: r.of } } : {},
+      lines: [[L(`${r.drafted.length} as drafted`, "drafted", r.drafted.length), L(`${r.edited.length} edited`, "edited", r.edited.length)], [L(`${r.teams.length} you typed in Teams`, "teams", r.teams.length)]],
+      four: L(`4 weeks: ${f.replies.of ? brief(f.replies.n, f.replies.of, f.replies.pct) : "none yet"}`, "four-replies", f.replies.of)
+    };
+    const missedCard = {
+      rule: "missed",
+      title: "Missed",
+      main: m.of ? L(`${share(m.n, m.of, m.pct)} asks`, "missed", m.n) : { text: `No asks ${w}` },
+      lines: [[L(`you pointed at ${m.pointed.length}`, "pointed", m.pointed.length)], [L(`moved ${m.mine.length} to Needs me`, "mine", m.mine.length)], [L(s(m.of, "ask", "asks") + " in all", "asks", m.of)]],
+      four: L(`4 weeks: ${f.missed.of ? brief(f.missed.n, f.missed.of, f.missed.pct) : "none yet"}`, "four-missed", f.missed.n)
+    };
+    const waitCard = {
+      rule: "wait",
+      title: "Asker wait",
+      main: t.median !== void 0 ? L(`median ${dur(t.median)}`, "wait", t.n) : { text: "No timed replies yet" },
+      lines: [[{ text: "from ask to first reply" }], ...t.median !== void 0 ? [[{ text: `range ${dur(t.min)} to ${dur(t.max)}` }], [L(s(t.n, "timed reply", "timed replies"), "wait", t.n)]] : []],
+      four: L(`4 weeks: ${f.wait.median !== void 0 ? dur(f.wait.median) : "none timed yet"}`, "four-wait", f.wait.n)
+    };
+    const per = c.per100 !== void 0 && c.sends >= SMALL;
+    const model = {
+      window: { key: d.window.key, label: d.window.label },
+      handled: {
+        main: L(`${s(h.n, "ask", "asks")} ${w}`, "handled", h.n),
+        trend: trendOf(d),
+        kinds: [L(s(h.reply.length, "reply as drafted", "replies as drafted"), "reply", h.reply.length), L(`${h.changes.length} applied as proposed`, "changes", h.changes.length), L(`${h.nothing.length} "nothing needed"`, "nothing", h.nothing.length)],
+        ...h.provisional.length ? { check: L(`${h.provisional.length} still in ${h.provisional.length === 1 ? "its" : "their"} 7-day check`, "check", h.provisional.length) } : {},
+        ...h.n ? { all: L(`See all ${h.n}`, "handled", h.n) } : {}
+      },
+      bars: barsOf(d),
+      ...gaps.length ? { gapNote: `Hatched: no machine was reading on ${gaps.map(md).join(", ")}` } : {},
+      cards: [repliesCard, missedCard, waitCard],
+      ...r.unknown.length ? { unknown: L(`${s(r.unknown.length, "send is", "sends are")} too old to check, so ${r.unknown.length === 1 ? "it is" : "they are"} left out`, "unknown", r.unknown.length) } : {},
+      corrections: per ? [L(`${c.per100} per 100 sends`, "corrections", c.n), { text: " over 4 weeks (" }, L(`${c.n} of ${c.sends}`, "sends", c.sends), { text: "; keep it under 2)" }] : [L(s(c.n, "correction", "corrections"), "corrections", c.n), { text: " in " }, L(s(c.sends, "send", "sends"), "sends", c.sends), { text: " over 4 weeks (keep it under 2 per 100)" }],
+      promises: "Promises kept on time: starts once work records its due dates.",
+      summary: ""
+    };
+    model.summary = summaryOf(d, model, name);
+    return model;
+  }
+  function summaryOf(d, m, name) {
+    const h = d.handled, r = d.now.replies, x = d.now.missed, t = d.now.wait, f = d.four;
+    return [
+      `${name} numbers · ${d.window.label}`,
+      `Handled for you: ${h.n}${m.handled.trend ? ` · ${m.handled.trend.text}` : ""}`,
+      `  ${m.handled.kinds.map((k) => k.text).join(" · ")}${m.handled.check ? ` · ${m.handled.check.text}` : ""}`,
+      `  Last 8 weeks: ${d.bars.map((b) => b.before ? "-" : String(b.n)).join(", ")}`,
+      `Replies as drafted: ${r.of ? share(r.n, r.of, r.pct) : "none yet"} · 4 weeks: ${f.replies.of ? brief(f.replies.n, f.replies.of, f.replies.pct) : "none yet"}`,
+      ...r.unknown.length ? [`  ${r.unknown.length} left out as too old to check`] : [],
+      `Missed: ${x.of ? `${share(x.n, x.of, x.pct)} asks` : "no asks"} · 4 weeks: ${f.missed.of ? brief(f.missed.n, f.missed.of, f.missed.pct) : "none yet"}`,
+      `Asker wait: ${t.median !== void 0 ? `median ${dur(t.median)}, ${dur(t.min)} to ${dur(t.max)}` : "none timed yet"} · 4 weeks: ${f.wait.median !== void 0 ? dur(f.wait.median) : "none timed yet"}`,
+      `Corrections: ${m.corrections.map((l) => l.text).join("")}`
+    ].join("\n");
+  }
+
+  // src/web/app/state/numbers.ts
+  var draw = () => S.route.split("/")[0] === "numbers" ? hooks.render() : hooks.renderSoon();
+  var hasNumbers = () => !!env.io?.numbers;
+  async function loadNumbers(win = S.num.win) {
+    const io = env.io;
+    if (!io?.numbers) return;
+    const seq = ++S.num.seq;
+    if (win !== S.num.win) S.num.data = void 0;
+    Object.assign(S.num, { win, busy: true, failed: false });
+    draw();
+    try {
+      const d = await io.numbers(win);
+      if (seq !== S.num.seq) return;
+      Object.assign(S.num, { data: d, busy: false });
+    } catch {
+      if (seq !== S.num.seq) return;
+      Object.assign(S.num, { busy: false, failed: true });
+    }
+    draw();
+  }
+  function copySummary() {
+    const d = S.num.data;
+    if (!d) return;
+    const text2 = numbersModel(d, env.name).summary;
+    const failed = () => hooks.say('Could not copy. Open "See what is copied" and copy it yourself.', false);
+    try {
+      const p = navigator.clipboard?.writeText(text2);
+      if (p) p.then(() => hooks.say("Summary copied: numbers only, no names and no message text."), failed);
+      else failed();
+    } catch {
+      failed();
+    }
+  }
+
   // src/web/app/control/route.ts
   function route() {
     const ui = env.snap || env.panel ? void 0 : hashUi(location.hash);
@@ -671,9 +847,10 @@
         return;
       }
     }
-    const h0 = decodeURIComponent(location.hash.slice(1)) || "home", h = current().alias?.(h0) ?? h0;
+    const h0 = decodeURIComponent(location.hash.slice(1)) || "home", h = current().alias?.(h0) ?? h0, was = S.route.split("/")[0];
     S.route = h.startsWith("focus") ? "focus" : { running: "ongoing/running", watching: "ongoing", automations: "ongoing/automations", "automations/new": "ongoing" }[h] || h;
     if (!S.route.startsWith("done")) S.seenFor = null;
+    if (S.route.split("/")[0] === "numbers" && was !== "numbers") void loadNumbers();
     if (h === "automations/new") S.sheet = "pick";
     if (S.route === "focus") {
       const code = h.split("/")[1] || S.cur || openCards()[0]?.code;
@@ -683,7 +860,7 @@
     if (row4?.advanced) S.advOpen = true;
     viewing();
     render2(S.route === "focus");
-    const at = S.route.startsWith("ongoing/") ? document.getElementById(S.route.split("/")[1]) : S.route.startsWith("now/") ? document.getElementById(`now-${S.route.split("/")[1]}`) : row4 ? document.querySelector(`[data-code="set:${row4.key}"]`) : sub && document.getElementById(`setsec-${sub}`);
+    const at = S.route.startsWith("numbers/") ? document.getElementById("num-list") : S.route.startsWith("ongoing/") ? document.getElementById(S.route.split("/")[1]) : S.route.startsWith("now/") ? document.getElementById(`now-${S.route.split("/")[1]}`) : row4 ? document.querySelector(`[data-code="set:${row4.key}"]`) : sub && document.getElementById(`setsec-${sub}`);
     if (at) {
       at.scrollIntoView();
       const f = row4 && document.getElementById(`set-${row4.key}`);
@@ -941,6 +1118,12 @@
       case "autocreate":
         createAutomation();
         break;
+      case "numretry":
+        void loadNumbers();
+        break;
+      case "numcopy":
+        copySummary();
+        break;
     }
   }
 
@@ -961,6 +1144,10 @@
       act(`row:${code2}`, code2, `every ${code2}: ${t.value}`, "row");
       return;
     }
+    if (t.dataset.numwin != null) {
+      void loadNumbers(t.value);
+      return;
+    }
     if (t.dataset.f) {
       S.form[t.dataset.f] = t.value;
       render2();
@@ -979,10 +1166,10 @@
       const n = +t.dataset.opt;
       u.otherOn = false;
       if (c.choices.multi) {
-        const s = new Set(u.pick ?? c.picked ?? []);
-        if (s.has(n)) s.delete(n);
-        else s.add(n);
-        u.pick = [...s];
+        const s2 = new Set(u.pick ?? c.picked ?? []);
+        if (s2.has(n)) s2.delete(n);
+        else s2.add(n);
+        u.pick = [...s2];
         u.touched = true;
         render2();
         return;
@@ -992,16 +1179,16 @@
       return;
     }
     if (t.dataset.cmt) {
-      const s = u.cmts ??= new Set(c.changes.map((x) => x.n));
-      if (t.checked) s.add(+t.dataset.cmt);
-      else s.delete(+t.dataset.cmt);
+      const s2 = u.cmts ??= new Set(c.changes.map((x) => x.n));
+      if (t.checked) s2.add(+t.dataset.cmt);
+      else s2.delete(+t.dataset.cmt);
       u.touched = true;
       render2();
     }
     if (t.dataset.fact) {
-      const k = c, s = u.facts ??= new Set(k.facts.map((_, i) => i + 1));
-      if (t.checked) s.add(+t.dataset.fact);
-      else s.delete(+t.dataset.fact);
+      const k = c, s2 = u.facts ??= new Set(k.facts.map((_, i) => i + 1));
+      if (t.checked) s2.add(+t.dataset.fact);
+      else s2.delete(+t.dataset.fact);
       u.touched = true;
       render2();
     }
@@ -1095,9 +1282,9 @@
         return;
       }
       if (inField) {
-        const active = document.activeElement, card2 = active.closest("article.card");
+        const active = document.activeElement, card3 = active.closest("article.card");
         active.blur();
-        card2?.focus({ preventScroll: true });
+        card3?.focus({ preventScroll: true });
         return;
       }
       if (S.route === "focus") location.hash = "#home";
@@ -1183,6 +1370,10 @@
       }
       if (d.dataset?.adv != null) S.advOpen = open;
       if (d.dataset?.chan != null) S.chanOpen = open;
+      if (d.dataset?.how != null) {
+        if (open) S.num.how.add(d.dataset.how);
+        else S.num.how.delete(d.dataset.how);
+      }
     };
     document.addEventListener("click", (e) => {
       const sm = e.target?.closest?.("summary");
@@ -1193,9 +1384,9 @@
     window.addEventListener("hashchange", route);
     setInterval(() => {
       document.querySelectorAll("[data-until]").forEach((el) => {
-        const s = Math.round((Date.parse(el.dataset.until) - Date.now()) / 1e3);
-        if (s <= 0) renderSoon2();
-        else el.textContent = mmss(s);
+        const s2 = Math.round((Date.parse(el.dataset.until) - Date.now()) / 1e3);
+        if (s2 <= 0) renderSoon2();
+        else el.textContent = mmss(s2);
       });
     }, 1e3);
     poll(env.io, env.poll, { since: () => V.since, ui: () => env.ui, waiting: () => [...V.needs, ...V.done].some((c) => c.notes?.some((n) => !n.a)), got: connected, lost });
@@ -1204,18 +1395,18 @@
   // src/web/app/view/html.ts
   var Html = class {
     s;
-    constructor(s) {
-      this.s = s;
+    constructor(s2) {
+      this.s = s2;
     }
     toString() {
       return this.s;
     }
   };
   var ENT = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
-  var text = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ENT[c]);
+  var text = (s2) => String(s2 ?? "").replace(/[&<>"']/g, (c) => ENT[c]);
   var part = (v) => v instanceof Html ? v.s : Array.isArray(v) ? v.map(part).join("") : typeof v === "string" ? text(v) : String(v);
-  var raw = (s) => s ? new Html(s) : "";
-  var esc = (s) => raw(text(s));
+  var raw = (s2) => s2 ? new Html(s2) : "";
+  var esc = (s2) => raw(text(s2));
   function html(strings, ...parts) {
     let out = strings[0];
     for (let i = 0; i < parts.length; i++) out += part(parts[i]) + strings[i + 1];
@@ -1278,7 +1469,7 @@
   var av = (w, cls = "") => html`<span class="av hue ${raw(cls)}" style="--hue:${w.hue}" aria-hidden="true">${esc(w.initials)}</span>`;
   var listHead = (title, sub, extra = "") => html`<div class="lh"><div><h1>${esc(title)}</h1>${sub ? html`<p>${esc(sub)}</p>` : ""}</div><span class="sp"></span>${extra}</div>`;
   var rowState = (key) => {
-    const u = U(key);
+    const u = peek(key);
     return u.status === "pending" ? html`<span class="m">${esc(u.lost ? "Lost connection. Retrying…" : "Working…")}</span>` : u.msg ? html`<span class="m" role="status">${esc(u.msg)}</span>` : "";
   };
   var checkNow = () => env.snap ? "" : B("Check now", "rowact", { sm: true, v: "retry", verb: "retry", aria: raw('data-key="row:retry"') });
@@ -1294,7 +1485,7 @@
   }
   var TEMPLATES = [["remind", "clock", "Remind someone", "Send a person the same message on a schedule."], ["watch", "eye", "Watch something", "Make sure something gets done: a PR, an ask to someone, a decision."], ["summary", "sum", "Daily summary", 'Say it in chat: "send me a summary at 6 pm".']];
   var errLine = () => S.formErr ? html`<div class="state refused" role="alert">${I("warn")}<p>${esc(S.formErr)}</p></div>` : "";
-  var pick = () => html`<div class="tpls">${TEMPLATES.map(([k, ic, t, s]) => html`<button class="tpl" data-act="tpl" data-v="${esc(k)}"><span class="ti">${I(ic)}</span><span><b>${esc(t)}</b><span>${esc(s)}</span></span></button>${k === "remind" && V.people.length ? html`<div class="chips" role="group" aria-label="Remind someone you talk to" style="margin:-4px 0 8px 52px">${peopleOf(V).slice(0, 4).map((p) => html`<button type="button" class="chip" data-act="tplto" data-v="${esc(p.name)}" style="display:inline-flex;gap:6px;align-items:center;padding-left:4px">${av(whoOf(p.name), "xs")}${p.group ? html`Post in ${esc(p.name)}` : html`Remind ${esc(p.name.split(" ")[0])}`}</button>`)}</div>` : ""}`)}</div>`;
+  var pick = () => html`<div class="tpls">${TEMPLATES.map(([k, ic, t, s2]) => html`<button class="tpl" data-act="tpl" data-v="${esc(k)}"><span class="ti">${I(ic)}</span><span><b>${esc(t)}</b><span>${esc(s2)}</span></span></button>${k === "remind" && V.people.length ? html`<div class="chips" role="group" aria-label="Remind someone you talk to" style="margin:-4px 0 8px 52px">${peopleOf(V).slice(0, 4).map((p) => html`<button type="button" class="chip" data-act="tplto" data-v="${esc(p.name)}" style="display:inline-flex;gap:6px;align-items:center;padding-left:4px">${av(whoOf(p.name), "xs")}${p.group ? html`Post in ${esc(p.name)}` : html`Remind ${esc(p.name.split(" ")[0])}`}</button>`)}</div>` : ""}`)}</div>`;
   function watch() {
     const f = S.wform;
     return [
@@ -1340,20 +1531,20 @@
   function options(c, u) {
     const ch = c.choices, multi = !!ch.multi, nm = `o-${c.code}`;
     const sel = u.pick ?? c.picked ?? [];
-    const rows = ch.options.map((o, i) => {
+    const rows2 = ch.options.map((o, i) => {
       const n = i + 1, on = sel.includes(n) && !u.otherOn, warn = /conflict/i.test(o.note || "");
       return html`<label class="opt ${multi ? raw("multi") : ""}"><input type="${raw(multi ? "checkbox" : "radio")}" name="${esc(nm)}" id="${esc(nm)}-${n}" data-opt="${n}"${on ? raw(" checked") : ""}${env.snap || u.status === "pending" ? raw(" disabled") : ""}><span class="mk">${I("check")}</span>
 			<span class="ol"><b>${esc(o.label)}</b>${o.note ? html`<span class="${warn ? raw("warn") : ""}">${warn ? html`${I("warn", "sm")} ` : ""}${esc(o.note)}</span>` : ""}</span><span class="k" aria-hidden="true">${n}</span></label>`;
     });
     const other = ch.other !== false && !env.snap ? html`<label class="opt"><input type="radio" name="${esc(nm)}" id="${esc(nm)}-o" data-opt="other"${u.otherOn ? raw(" checked") : ""}><span class="mk"></span><span class="ol"><b>Other answer…</b><span>Say it in your words. ${esc(env.name)} drafts the reply.</span></span></label>` : "";
     const field2 = u.otherOn ? html`<div style="margin-top:10px"><label class="sr" for="oth-${esc(c.code)}">Your answer</label><input class="field" id="oth-${esc(c.code)}" data-input="other" placeholder="Say it in your words" value="${esc(u.other)}" autocomplete="off"></div>` : "";
-    return html`<fieldset class="opts"><legend class="sr">${esc(ch.prompt || c.question || "Options")}</legend>${rows}${other}</fieldset>${field2}`;
+    return html`<fieldset class="opts"><legend class="sr">${esc(ch.prompt || c.question || "Options")}</legend>${rows2}${other}</fieldset>${field2}`;
   }
   function meetingStrip(c) {
-    const m = c.meeting, s = new Date(m.start), e = new Date(s.getTime() + m.minutes * 6e4);
-    const day2 = Math.round((new Date(s.getFullYear(), s.getMonth(), s.getDate()).getTime() - new Date((/* @__PURE__ */ new Date()).setHours(0, 0, 0, 0)).getTime()) / 864e5);
-    const dl = day2 === 0 ? "Today" : day2 === 1 ? "Tomorrow" : s.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
-    return html`<div class="mtg"><span class="cal" aria-hidden="true"><small>${esc(s.toLocaleDateString([], { month: "short" }))}</small><b>${s.getDate()}</b></span><div class="mt"><b>${esc(m.subject)}</b><span>${esc(dl)} ${esc(time(s))} to ${esc(time(e))}</span></div><span class="stack">${m.attendees.slice(0, 3).map((a) => av(whoOf(a), "sm"))}</span></div>`;
+    const m = c.meeting, s2 = new Date(m.start), e = new Date(s2.getTime() + m.minutes * 6e4);
+    const day2 = Math.round((new Date(s2.getFullYear(), s2.getMonth(), s2.getDate()).getTime() - new Date((/* @__PURE__ */ new Date()).setHours(0, 0, 0, 0)).getTime()) / 864e5);
+    const dl = day2 === 0 ? "Today" : day2 === 1 ? "Tomorrow" : s2.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
+    return html`<div class="mtg"><span class="cal" aria-hidden="true"><small>${esc(s2.toLocaleDateString([], { month: "short" }))}</small><b>${s2.getDate()}</b></span><div class="mt"><b>${esc(m.subject)}</b><span>${esc(dl)} ${esc(time(s2))} to ${esc(time(e))}</span></div><span class="stack">${m.attendees.slice(0, 3).map((a) => av(whoOf(a), "sm"))}</span></div>`;
   }
   var alsoLine = (c, ic) => c.changes.length ? html`<p class="also-line">${I(ic, "sm")}<span><b>Also:</b> ${esc(c.changes.map((x) => x.summary).join("; "))}</span></p>` : "";
   var preview = (c, u) => c.draft?.preview && !u.otherOn ? html`<div class="preview">${draftBlock(c, u)}${alsoLine(c, c.type === "meeting" ? "cal" : "task")}</div>` : "";
@@ -1389,11 +1580,11 @@
     const w = c.why, n = w.sources.length;
     const sr = w.searched ?? [];
     if (!w.reason && !n && !w.gaps.length && !sr.length) return "";
-    const rows = w.sources.map((s) => html`<div class="src"><span class="k">${esc(s.kind)}</span><span>${s.href && !env.snap ? html`<a href="${esc(s.href)}" target="_blank" rel="noopener">${esc(s.label)}</a>` : esc(s.label)}</span><span class="x">${s.stale ? raw('<span class="tag warn">May be out of date</span>') : ""}${s.locked ? html`${I("lock", "sm")}Not visible to ${esc(first(c.who.name))}` : s.kind === "In the chat" ? html`Visible to ${esc(first(c.who.name))}` : ""}</span></div>`);
+    const rows2 = w.sources.map((s2) => html`<div class="src"><span class="k">${esc(s2.kind)}</span><span>${s2.href && !env.snap ? html`<a href="${esc(s2.href)}" target="_blank" rel="noopener">${esc(s2.label)}</a>` : esc(s2.label)}</span><span class="x">${s2.stale ? raw('<span class="tag warn">May be out of date</span>') : ""}${s2.locked ? html`${I("lock", "sm")}Not visible to ${esc(first(c.who.name))}` : s2.kind === "In the chat" ? html`Visible to ${esc(first(c.who.name))}` : ""}</span></div>`);
     const looked = sr.length ? html`<div class="src"><span class="k">Looked up</span><span>${join(sr.map((x) => esc(x)), raw("<br>"))}</span></div>` : "";
     const gaps = w.gaps.length ? html`<div class="src"><span class="k">Could not read</span><span>${esc(w.gaps.join(", "))}</span></div>` : "";
     const conf = w.confidence ? html`<span class="tag">${esc(w.confidence[0].toUpperCase() + w.confidence.slice(1))} confidence</span>` : "";
-    return html`<div class="c-sec" style="padding-top:12px;padding-bottom:12px"><details class="why" data-why${u.whyOpen ? raw(" open") : ""}><summary>${I("right", "sm chev")}<span class="rs"><b>Why:</b> ${esc(w.reason || "The sources behind this draft")}</span>${conf}${n ? html`<span class="tag">${esc(plural(n, "source"))}</span>` : ""}</summary><div class="why-b">${rows}${looked}${gaps}</div></details></div>`;
+    return html`<div class="c-sec" style="padding-top:12px;padding-bottom:12px"><details class="why" data-why${u.whyOpen ? raw(" open") : ""}><summary>${I("right", "sm chev")}<span class="rs"><b>Why:</b> ${esc(w.reason || "The sources behind this draft")}</span>${conf}${n ? html`<span class="tag">${esc(plural(n, "source"))}</span>` : ""}</summary><div class="why-b">${rows2}${looked}${gaps}</div></details></div>`;
   }
   function menu(c, u) {
     if (env.snap) return "";
@@ -1436,7 +1627,7 @@
   function noteHtml(c, n, i) {
     if (!n.a) return html`<li class="nq">${esc(n.q)}</li><li class="na"><span class="bot" aria-hidden="true">${I("spark", "sm")}</span><div class="nb"><span class="typing" aria-hidden="true"><i></i><i></i><i></i></span><span class="wait"> ${esc(env.name)} is looking into it.</span></div></li>`;
     return html`<li class="nq">${esc(n.q)}</li><li class="na"><span class="bot" aria-hidden="true">${I("spark", "sm")}</span><div class="nb"><span class="sr">${esc(env.name)}:</span><p>${esc(n.a)}</p>
-		${n.sources?.length ? html`<div class="nsrc">${n.sources.map((s) => html`<span class="tag">${s.tier === "private" ? I("lock", "sm") : ""}${esc(s.label || s.ref.replace(/^card:/, "").split(/[/#]/)[0])}</span>`)}</div>` : ""}
+		${n.sources?.length ? html`<div class="nsrc">${n.sources.map((s2) => html`<span class="tag">${s2.tier === "private" ? I("lock", "sm") : ""}${esc(s2.label || s2.ref.replace(/^card:/, "").split(/[/#]/)[0])}</span>`)}</div>` : ""}
 		${env.snap ? "" : html`<div class="nacts">${c.draft || c.type === "question" ? B("Use this in the reply", "usenote", { sm: true, ic: "spark", v: i }) : ""}${B("Ask more", "askmore", { sm: true, ghost: true })}</div>`}</div></li>`;
   }
   function markBox(r, u) {
@@ -1509,7 +1700,7 @@
   var DONE_ICON = { reply: "reply", review: "pr", change: "task", reminder: "clock", learned: "book", closed: "check", catchup: "eye" };
   var seenOf = (k) => S.seenOpen?.[k] ?? V.seen?.[k] ?? V.since ?? "";
   function cuRow(r, home2 = false) {
-    const key = `row:${r.code}`, u = U(key), w = S.watchOpen === r.code;
+    const key = `row:${r.code}`, u = peek(key), w = S.watchOpen === r.code;
     const meta = html`<span class="m">${join([r.by, when(r.at)].filter(Boolean).map((x) => esc(x)), raw(" · "))}${r.watchedAs ? html` · <span class="tag ok">Watching as ${esc(r.watchedAs)}</span>` : ""}</span>`;
     const text2 = html`<b>${esc(r.sentence)}</b>${r.gist ? html`<span class="gist">${esc(r.gist)}</span>` : ""}${meta}`;
     const body6 = r.teams && !env.snap ? html`<a class="rt rlink" href="${esc(r.teams)}" target="_blank" rel="noopener" data-act="cuopen" data-v="${esc(r.code)}" title="Open in Teams">${text2}</a>` : html`<div class="rt">${text2}</div>`;
@@ -1525,7 +1716,7 @@
   }
   function row(r) {
     if (r.kind === "catchup") return cuRow(r);
-    const key = `row:${r.code}`, left = r.undoUntil ? Math.round((Date.parse(r.undoUntil) - Date.now()) / 1e3) : 0, u = U(key);
+    const key = `row:${r.code}`, left = r.undoUntil ? Math.round((Date.parse(r.undoUntil) - Date.now()) / 1e3) : 0, u = peek(key), ru = peek(r.code);
     const undo = left > 0 && !u.msg ? raw(String(B("Undo", "undo", { v: r.code, busy: u.status === "pending", busyLabel: "Taking it back…", verb: `undo ${r.code}`, aria: html`aria-label="Undo the reply to ${esc(first(r.who.name))}"` })).replace('<span class="bl">Undo</span>', String(html`${I("undo", "sm")}<span class="bl">Undo <span class="tnum" data-until="${esc(r.undoUntil)}" style="color:var(--text-3);font-weight:500">${esc(mmss(left))}</span></span>`))) : "";
     const link = r.teams || r.href;
     const reply = r.kind === "reply" || r.kind === "review", where = r.sentence.match(/ in (.+)$/);
@@ -1533,20 +1724,20 @@
     const work = r.work ? html`<span class="tag${/^Closed/.test(r.work) ? raw(" ok") : ""}">${esc(r.work)}</span>` : "";
     const lead = reply ? av(r.who) : html`<span class="ri">${I(DONE_ICON[r.kind])}</span>`;
     const lines = reply && (r.ask || r.said) ? html`${r.ask ? html`<span class="qa"><b>${esc(first(r.who.name))} asked:</b> ${esc(r.ask)}</span>` : html`<b>${esc(r.sentence)}</b>`}${r.said ? html`<span class="qa you"><b>You${esc(r.inTeams ? " (in Teams)" : "")}:</b> ${esc(r.said)}</span>` : ""}` : html`<b>${esc(r.sentence)}</b>${r.gist ? html`<span class="gist">${esc(r.gist)}</span>` : r.said ? html`<span class="gist">“${esc(r.said)}”</span>` : ""}`;
-    const main = html`${lead}<div class="rt">${lines}${meta}${work}${rowState(key)}</div>`;
-    if (r.text && !undo) return html`<li data-code="${esc(r.code)}"><details class="rowx" data-row${U(r.code).open || U(r.code).marking || r.notes?.some((n) => !n.a) ? raw(" open") : ""}><summary class="row">${main}${I("right", "sm")}</summary><div class="sent">${esc(r.text)}</div>${r.why ? why({ why: r.why, who: r.who }, U(r.code)) : ""}${r.notes ? html`<div class="c-sec">${markBox(r, U(r.code))}</div>` : ""}${r.notes ? askThread({ code: r.code, sent: true, notes: r.notes }, U(r.code)) : ""}</details></li>`;
-    return html`<li class="row${undo ? raw(" undo-row") : ""}">${main}${undo}</li>`;
+    const main2 = html`${lead}<div class="rt">${lines}${meta}${work}${rowState(key)}</div>`;
+    if (r.text && !undo) return html`<li data-code="${esc(r.code)}"><details class="rowx" data-row${ru.open || ru.marking || r.notes?.some((n) => !n.a) ? raw(" open") : ""}><summary class="row">${main2}${I("right", "sm")}</summary><div class="sent">${esc(r.text)}</div>${r.why ? why({ why: r.why, who: r.who }, ru) : ""}${r.notes ? html`<div class="c-sec">${markBox(r, ru)}</div>` : ""}${r.notes ? askThread({ code: r.code, sent: true, notes: r.notes }, ru) : ""}</details></li>`;
+    return html`<li class="row${undo ? raw(" undo-row") : ""}">${main2}${undo}</li>`;
   }
   function doneList(f) {
     if (f === "closed") f = "catchup";
     const shown = (r) => r.kind !== "closed";
-    const rows = V.done.filter((r) => shown(r) && (f === "all" || DONE_KINDS[f]?.includes(r.kind)));
+    const rows2 = V.done.filter((r) => shown(r) && (f === "all" || DONE_KINDS[f]?.includes(r.kind)));
     const chips = [["all", "All", V.done.filter(shown).length, newCount(V)], ...Object.entries(DONE_KINDS).map(([k, ks]) => [k, CHIP_LABEL[k] ?? k[0].toUpperCase() + k.slice(1), V.done.filter((r) => ks.includes(r.kind)).length, V.done.filter((r) => ks.includes(r.kind) && isNew(r, seenIn(V))).length])].filter((x) => x[2]);
-    const fresh = rows.filter((r) => isNew(r, seenOf)), earlier = rows.filter((r) => !isNew(r, seenOf));
-    const list = (h, rs) => rs.length ? html`${h ? html`<h2 class="section-h">${esc(h)}</h2>` : ""}<ul class="rows">${rs.map(row)}</ul>` : "";
+    const fresh = rows2.filter((r) => isNew(r, seenOf)), earlier = rows2.filter((r) => !isNew(r, seenOf));
+    const list2 = (h, rs) => rs.length ? html`${h ? html`<h2 class="section-h">${esc(h)}</h2>` : ""}<ul class="rows">${rs.map(row)}</ul>` : "";
     const quiet = f === "catchup" ? V.done.filter((r) => r.kind === "closed") : [];
     const foot = quiet.length ? html`<details class="quiet"><summary class="m">Also closed ${quiet.length} with nothing to know · Show</summary><ul class="rows">${quiet.map((r) => html`<li class="row"><span class="ri">${I("check")}</span><div class="rt"><b>${esc(r.sentence)}</b><span class="m">${esc(when(r.at))}${r.teams && !env.snap ? html` · <a class="ext-in" href="${esc(r.teams)}" target="_blank" rel="noopener">Open in Teams↗</a>` : ""}</span></div></li>`)}</ul></details>` : "";
-    const body6 = rows.length ? html`${list(fresh.length && earlier.length ? "New" : "", fresh)}${list(fresh.length ? "Earlier this week" : "", earlier)}` : html`<p class="empty">${esc(f === "catchup" ? "Nothing to catch up on in the last 7 days." : "Nothing in the last 7 days.")}</p>`;
+    const body6 = rows2.length ? html`${list2(fresh.length && earlier.length ? "New" : "", fresh)}${list2(fresh.length ? "Earlier this week" : "", earlier)}` : html`<p class="empty">${esc(f === "catchup" ? "Nothing to catch up on in the last 7 days." : "Nothing in the last 7 days.")}</p>`;
     const sub = f === "catchup" ? `What ${env.name} read for you and closed with no reply. Click a row to open it in Teams.` : "The last 7 days. Open a reply to see what was sent and why.";
     return html`${banners()}<div style="max-width:880px">${listHead("Done", sub)}
 		<div class="filters" role="group" aria-label="Filter">${chips.map(([k, l, n, nw]) => html`<a class="chip" href="#done/${esc(k)}" aria-pressed="${f === k}" style="display:inline-flex;align-items:center;gap:6px">${esc(l)}<span class="tnum" style="color:var(--text-3)">${n}</span>${nw ? html`<span class="newpill">${nw} new</span>` : ""}</a>`)}</div>${body6}${foot}</div>`;
@@ -1567,8 +1758,8 @@
     const v = V.version;
     if (!v?.code || env.snap) return "";
     const st = S.checking ? "" : v.failed ? `Could not check: ${v.failed}` : v.last?.rolledBack && v.last.to !== v.code ? `${v.last.to} did not start, so this stays on ${v.code}` : v.checkedAt ? `Up to date, checked ${when(v.checkedAt)}` : "Not checked yet";
-    const how = v.channel === "off" ? "Updates when you check" : `${v.channel === "release" ? "Updates to each release" : "Updates to every change"}, ${v.everyMin >= 1440 ? "checked once a day" : v.everyMin >= 60 ? "checked every hour" : `checked every ${v.everyMin || 10} minutes`}`;
-    return html`<p class="ver"><span>Version ${esc(v.tag ? `${v.tag} (${v.code})` : v.code)}</span><span>${esc(how)}</span>${st ? html`<span>${esc(st)}</span>` : ""}${B(S.checking ? "Checking…" : "Check for updates", "checkupdate", { sm: true, ghost: true, busy: S.checking })}${B("Report a problem", "reportopen", { sm: true, ghost: true })}</p>${S.reporting ? html`<form class="markf missf" data-form="report" aria-label="Report a problem"><label class="sr" for="repin">What went wrong</label><textarea id="repin" class="edit" rows="3" placeholder="What went wrong, and what should it have done?"></textarea><div class="markacts"><button class="btn sm primary" type="submit"${S.offline ? raw(" disabled") : ""}>Send to the feedback log</button>${B("Cancel", "reportcancel", { sm: true, ghost: true })}</div></form>` : ""}`;
+    const how2 = v.channel === "off" ? "Updates when you check" : `${v.channel === "release" ? "Updates to each release" : "Updates to every change"}, ${v.everyMin >= 1440 ? "checked once a day" : v.everyMin >= 60 ? "checked every hour" : `checked every ${v.everyMin || 10} minutes`}`;
+    return html`<p class="ver"><span>Version ${esc(v.tag ? `${v.tag} (${v.code})` : v.code)}</span><span>${esc(how2)}</span>${st ? html`<span>${esc(st)}</span>` : ""}${B(S.checking ? "Checking…" : "Check for updates", "checkupdate", { sm: true, ghost: true, busy: S.checking })}${B("Report a problem", "reportopen", { sm: true, ghost: true })}</p>${S.reporting ? html`<form class="markf missf" data-form="report" aria-label="Report a problem"><label class="sr" for="repin">What went wrong</label><textarea id="repin" class="edit" rows="3" placeholder="What went wrong, and what should it have done?"></textarea><div class="markacts"><button class="btn sm primary" type="submit"${S.offline ? raw(" disabled") : ""}>Send to the feedback log</button>${B("Cancel", "reportcancel", { sm: true, ghost: true })}</div></form>` : ""}`;
   }
   function catchUpCard() {
     const c = V.catchUp;
@@ -1601,12 +1792,12 @@
     const cur = q.find((c) => c.code === S.cur) || o[0];
     if (!cur) return html`${banners()}<div class="stage" style="margin:40px auto"><div class="alldone"><div class="ok">${I("check", "lg")}</div><h2>That’s everything</h2><p>${S.done.size ? html`${S.done.size} handled. ` : ""}Nothing else needs you.</p><div class="acts" style="justify-content:center"><a class="btn primary" href="#home">Back to Home</a><a class="btn" href="#done">See what was done</a></div></div></div>`;
     const pos = o.indexOf(cur), n = o.length;
-    const rows = q.map((c) => {
+    const rows2 = q.map((c) => {
       const d = S.done.has(c.code);
       return html`<li><button class="qrow${d ? raw(" done") : ""}" data-act="goto" data-v="${esc(c.code)}" aria-current="${c.code === cur.code}">${d ? html`<span class="chk">${I("check", "sm")}</span>` : av(c.who, "sm")}<span class="qt"><span class="qn">${esc(first(c.who.name))}<span class="code">${esc(c.code)}</span></span><span class="qs">${esc(c.question || c.ask || "")}</span></span></button></li>`;
     });
     return html`${banners()}<div class="focus">
-		<nav class="queue" aria-label="Needs you queue"><h2><span>Needs you</span><span class="tnum">${n}</span></h2><ol>${rows}</ol></nav>
+		<nav class="queue" aria-label="Needs you queue"><h2><span>Needs you</span><span class="tnum">${n}</span></h2><ol>${rows2}</ol></nav>
 		<div class="stage"><div class="pager">
 			<a class="btn ghost sm icon" href="#home" aria-label="Back to Home">${I("back")}</a><span class="sp"></span>
 			<button class="btn sm" data-act="prev" aria-label="Previous item"${pos <= 0 ? raw(" disabled") : ""}>${I("left")}<span class="lbl-txt">Previous</span></button>
@@ -1634,7 +1825,7 @@
     const ups = V.watching.filter((w) => w.update), rest = V.watching.filter((w) => !w.update);
     const btn = (w, label, verb, o = {}) => B(label, "rowact", { sm: true, v: `${verb} ${w.code}`, verb: `${verb} ${w.code}`, aria: html`data-key="row:${esc(w.code)}"`, ...o });
     const plan = (w) => [w.by ? `By ${(/* @__PURE__ */ new Date(`${w.by}T12:00:00`)).toLocaleDateString(void 0, { weekday: "short", month: "short", day: "numeric" })}` : "", w.nextAt && Date.parse(w.nextAt) > Date.now() ? `next check ${when(w.nextAt)}` : "", w.from ? `from ${w.from}` : ""].filter(Boolean).join(" · ");
-    const card2 = (w) => html`<article class="wcard" aria-labelledby="w-${esc(w.code)}"><div class="c-head"><span class="ri" style="width:32px;height:32px;border-radius:9px;display:grid;place-items:center;background:var(--surface-2);color:var(--text-2)">${I("eye")}</span><div class="c-who"><h3 id="w-${esc(w.code)}">${esc(w.what)}</h3><span class="m">${esc([w.changedAt ? `Changed ${when(w.changedAt)}` : "", plan(w)].filter(Boolean).join(" · "))}</span></div><span class="code">${esc(w.code)}</span></div>
+    const card3 = (w) => html`<article class="wcard" aria-labelledby="w-${esc(w.code)}"><div class="c-head"><span class="ri" style="width:32px;height:32px;border-radius:9px;display:grid;place-items:center;background:var(--surface-2);color:var(--text-2)">${I("eye")}</span><div class="c-who"><h3 id="w-${esc(w.code)}">${esc(w.what)}</h3><span class="m">${esc([w.changedAt ? `Changed ${when(w.changedAt)}` : "", plan(w)].filter(Boolean).join(" · "))}</span></div><span class="code">${esc(w.code)}</span></div>
 		<div class="chg"><span class="tag ok">${esc(w.last)}</span></div>
 		${timing(w)}<div class="acts">${U(`row:${w.code}`).msg ? "" : html`${btn(w, "Got it", "ok", { primary: true })}${btn(w, "Stop watching", "skip", { ghost: true })}`}</div>${rowState(`row:${w.code}`)}</article>`;
     const wait = html`${(V.waiting || []).map((w) => html`<article class="wcard" aria-labelledby="wt-${esc(w.code)}"><div class="c-head"><span class="ri" style="width:32px;height:32px;border-radius:9px;display:grid;place-items:center;background:var(--surface-2);color:var(--text-2)">${I("clock")}</span><div class="c-who"><h3 id="wt-${esc(w.code)}">You asked ${esc(w.to)}</h3><span class="m">${esc(w.chat)} · ${esc(when(w.at))}${w.link ? html` · <a href="${esc(w.link)}" target="_blank" rel="noopener">Open in Teams</a>` : ""}</span></div><span class="code">${esc(w.code)}</span></div>
@@ -1645,7 +1836,7 @@
     return html`${banners()}${listHead("Ongoing", `Work still in progress, your asks nobody has answered, what ${env.name} watches or is doing now, and your reminders.`, env.snap ? "" : B("New automation", "newauto", { ghost: true, ic: "plus" }))}
 		${prog ? html`<h2 class="section-h" style="margin-top:6px">In progress</h2><p class="m" style="margin:-4px 0 10px">Replied, and the work goes on. News comes back to the same item.</p><ul class="rows">${prog}</ul>` : ""}
 		${wait ? html`<h2 class="section-h" style="margin-top:6px">Waiting on others</h2><p class="m" style="margin:-4px 0 10px">No answer for a day. Follow up drafts a short nudge for you to check first.</p><div class="grid2">${wait}</div>` : ""}
-		${ups.length ? html`<h2 class="section-h" style="margin-top:6px">${esc(plural(ups.length, "update"))}</h2><div class="grid2">${ups.map(card2)}</div>` : ""}
+		${ups.length ? html`<h2 class="section-h" style="margin-top:6px">${esc(plural(ups.length, "update"))}</h2><div class="grid2">${ups.map(card3)}</div>` : ""}
 		${rest.length ? html`<h2 class="section-h">No change</h2><ul class="rows">${rest.map((w) => html`<li class="row"><span class="ri">${I("eye")}</span><div class="rt"><b>${esc(w.what)}</b><span class="m">${esc(w.last)}</span>${plan(w) ? html`<span class="m">${esc(plan(w))}</span>` : ""}${timing(w)}${rowState(`row:${w.code}`)}</div><span class="code">${esc(w.code)}</span>${U(`row:${w.code}`).msg ? "" : btn(w, "Stop watching", "skip", { ghost: true })}</li>`)}</ul>` : ""}
 		${(V.channels || []).length ? html`<h2 class="section-h">Channels</h2><ul class="rows">${V.channels.map((c, i) => html`<li class="row"><span class="ri">${I("eye")}</span><div class="rt"><b>${esc(c.name)}</b><span class="m">Threads you start, post in, or are mentioned in</span>${rowState(`row:ch${i}`)}</div>${U(`row:ch${i}`).msg ? "" : B("Stop watching", "rowact", { sm: true, ghost: true, v: `unwatch ${c.link}`, verb: `unwatch ${c.link}`, aria: html`data-key="row:ch${i}"` })}</li>`)}</ul>` : ""}
 		${run ? html`<h2 class="section-h" id="running">Running</h2><p class="m" style="margin:-4px 0 10px">Long work ${esc(env.name)} is doing now. It tells you when each one is ready.</p><div class="grid2">${run}</div>` : ""}
@@ -1678,20 +1869,94 @@
     const sugg = html`${ab.suggestions.map((x) => html`<li class="setrow" data-code="${esc(x.code)}"><b>${esc(x.text)}</b><span class="m">${esc(x.does)}</span><span class="m">Evidence: ${esc(x.evidence)}</span>${U(`row:${x.code}`).msg ? "" : html`<div class="markacts">${act2("Turn on", `ok ${x.code}`, { primary: true })}${act2("Not now", `skip ${x.code}`, { ghost: true })}${act2("Never", `never ${x.code}`, { ghost: true })}</div>`}${rowState(`row:${x.code}`)}</li>`)}`;
     const rules = html`${ab.rules.map((r) => html`<li class="setrow"><b>${esc(r.text)}</b>${r.who ? html`<span class="m">For: ${esc(r.who)}</span>` : ""}<span class="m">${esc(r.learned ?? "You said this.")}${r.held ? raw(" · On hold") : ""}</span>${r.code && !U(`row:${r.code}`).msg ? html`<div class="markacts">${act2("Remove", `never ${r.code}`, { ghost: true })}</div>` : ""}${r.code ? rowState(`row:${r.code}`) : ""}</li>`)}` || raw('<li class="setrow"><span class="m">None: every reply waits for your ok.</span></li>');
     const fixed = st.fixed.map((f) => html`<li class="setrow"><b>${esc(f.label)}</b><span class="sent">${esc(f.value)}</span><span class="m">${esc(f.how)}</span></li>`);
-    const rows = (sec, adv = false) => st.rows.filter((r) => r.section === sec && !!r.advanced === adv).map(row2);
+    const rows2 = (sec, adv = false) => st.rows.filter((r) => r.section === sec && !!r.advanced === adv).map(row2);
     const unsaved = (sec) => st.rows.some((r) => r.section === sec && S.set[r.key] !== void 0 && S.set[r.key] !== r.value);
     const body6 = {
-      learned: html`${sugg ? html`<h3 class="section-h">Suggestions</h3><ul class="rows setrows">${sugg}</ul>` : ""}<h3 class="section-h">Standing instructions</h3><ul class="rows setrows">${rules}</ul>${ab.chats?.length ? html`<h3 class="section-h">Chats you marked</h3><ul class="rows setrows">${ab.chats.map((c) => html`<li class="setrow"><b>${esc(c.name)}</b><span class="m">${esc(c.says[0].toUpperCase() + c.says.slice(1))}. Say "${esc(c.name)} is normal again" to undo.</span></li>`)}</ul>` : ""}<h3 class="section-h">Learning</h3><ul class="rows setrows">${rows("learned")}</ul>`,
-      you: html`<ul class="rows setrows">${rows("you")}</ul>`,
-      replies: html`<p class="m" style="margin:-4px 0 10px">Replies go out by themselves only for your <a href="#settings/learned">standing instructions</a>. These limits apply to every one.</p><ul class="rows setrows">${rows("replies")}</ul>`,
-      timing: html`<ul class="rows setrows">${rows("timing")}</ul>`,
-      system: html`<ul class="rows setrows">${rows("system")}</ul><details class="adv" data-adv${S.advOpen ? raw(" open") : ""}><summary class="section-h">More</summary><ul class="rows setrows">${rows("system", true)}</ul>${V.details ? detailsPanel() : ""}<h3 class="section-h">Changed by setup</h3><ul class="rows setrows">${fixed}</ul></details>`
+      learned: html`${sugg ? html`<h3 class="section-h">Suggestions</h3><ul class="rows setrows">${sugg}</ul>` : ""}<h3 class="section-h">Standing instructions</h3><ul class="rows setrows">${rules}</ul>${ab.chats?.length ? html`<h3 class="section-h">Chats you marked</h3><ul class="rows setrows">${ab.chats.map((c) => html`<li class="setrow"><b>${esc(c.name)}</b><span class="m">${esc(c.says[0].toUpperCase() + c.says.slice(1))}. Say "${esc(c.name)} is normal again" to undo.</span></li>`)}</ul>` : ""}<h3 class="section-h">Learning</h3><ul class="rows setrows">${rows2("learned")}</ul>`,
+      you: html`<ul class="rows setrows">${rows2("you")}</ul>`,
+      replies: html`<p class="m" style="margin:-4px 0 10px">Replies go out by themselves only for your <a href="#settings/learned">standing instructions</a>. These limits apply to every one.</p><ul class="rows setrows">${rows2("replies")}</ul>`,
+      timing: html`<ul class="rows setrows">${rows2("timing")}</ul>`,
+      system: html`<ul class="rows setrows">${rows2("system")}</ul><details class="adv" data-adv${S.advOpen ? raw(" open") : ""}><summary class="section-h">More</summary><ul class="rows setrows">${rows2("system", true)}</ul>${V.details ? detailsPanel() : ""}<h3 class="section-h">Changed by setup</h3><ul class="rows setrows">${fixed}</ul></details>`
     };
     const intro = { learned: `Ask your AI chat "what do you know about me?" for the same list. To change a rule you wrote, say "change my rules" there.` };
     const sub = S.route.split("/")[1], here = st.rows.find((r) => r.key === sub)?.section ?? sub;
     const nav = html`<nav class="setnav" aria-label="Settings sections">${SECTIONS().map(([id, l]) => html`<a class="chip" href="#settings/${esc(id)}"${here === id ? raw(' aria-current="location"') : ""}>${esc(l)}${id === "learned" && ab.suggestions.length ? html`<span class="newpill">${ab.suggestions.length}</span>` : ""}${unsaved(id) ? raw('<span class="dot" title="Not saved yet"></span>') : ""}</a>`)}</nav>`;
     const sections = SECTIONS().map(([id, l, h]) => html`<section class="setsec" id="setsec-${esc(id)}" aria-labelledby="setsec-${esc(id)}-h"><h2 class="section-h" id="setsec-${esc(id)}-h">${esc(h ?? l)}</h2>${intro[id] ? html`<p class="m" style="margin:-4px 0 10px">${esc(intro[id])}</p>` : ""}${body6[id]}</section>`);
     return html`${banners()}<div style="max-width:760px">${listHead("Settings", "Saved to the config in your storage folder, so every machine uses them from the next cycle.")}${nav}${sections}</div>`;
+  }
+
+  // src/web/app/view/classic/tabs/numbers.ts
+  var num = (l, cls = "") => l.key ? html`<a class="num-link ${raw(cls)}" href="#numbers/${esc(l.key)}">${esc(l.text)}</a>` : html`<span class="${raw(cls)}">${esc(l.text)}</span>`;
+  var line = (ls) => join(ls.map((l) => num(l)), raw(" · "));
+  var how = (k) => html`<details class="num-how" data-how="${raw(k)}"${S.num.how.has(k) ? raw(" open") : ""}><summary>How is this counted?</summary><p>${esc(RULES(env.name)[k])}</p></details>`;
+  function bar(b) {
+    const cls = ["num-bar", b.before && "before", b.gaps.length && "gap", b.now && "now"].filter(Boolean).join(" ");
+    const days = html`<span class="num-days" aria-hidden="true">${b.days.map((off) => html`<i${off ? raw(' class="off"') : ""}></i>`)}</span>`;
+    const inner = html`<span class="num-bn" aria-hidden="true">${b.before ? "" : b.n}</span><span class="num-col" aria-hidden="true"><span class="num-fill" style="height:${b.height}%"></span></span>${days}<span class="num-bw" aria-hidden="true">${esc(b.label)}</span>`;
+    return html`<li class="${raw(cls)}">${b.key ? html`<a class="num-bin" href="#numbers/${esc(b.key)}" aria-label="${esc(b.alt)}">${inner}</a>` : html`<span class="num-bin" role="img" aria-label="${esc(b.alt)}">${inner}</span>`}</li>`;
+  }
+  function card2(c) {
+    const pct = c.meter ? Math.round(c.meter.n / c.meter.of * 100) : 0;
+    return html`<section class="num-card" aria-labelledby="numh-${raw(c.rule)}"><h3 class="num-t" id="numh-${raw(c.rule)}">${esc(c.title)}</h3>
+		<p class="num-main">${num(c.main)}</p>${c.meter ? html`<div class="num-meter" role="img" aria-label="${esc(`${c.meter.n} of ${c.meter.of} as drafted`)}"><i style="width:${pct}%"></i></div>` : ""}
+		<ul class="num-lines">${c.lines.map((l) => html`<li>${line(l)}</li>`)}<li class="num-four">${num(c.four)}</li></ul>${how(c.rule)}</section>`;
+  }
+  function main(m) {
+    const h = m.handled;
+    return html`<section class="num-card num-hero" aria-labelledby="numh-handled">
+		<h2 class="num-t" id="numh-handled">Handled for you</h2>
+		<div class="num-head"><span class="num-big">${num(h.main)}</span>${h.trend ? html`<span class="num-trend${h.trend.dir ? raw(` ${h.trend.dir}`) : ""}">${esc(h.trend.text)}</span>` : ""}</div>
+		${how("handled")}
+		<ol class="num-bars" aria-label="Handled for you per week, the last 8 weeks">${m.bars.map(bar)}</ol>
+		<p class="num-note">The last 8 weeks${m.gapNote ? html` · <span class="num-hatch" aria-hidden="true"></span> ${esc(m.gapNote)}` : ""}</p>
+		${how("bars")}
+		<p class="num-kinds">${line(h.kinds)}</p>
+		${h.check || h.all ? html`<p class="num-row">${h.check ? num(h.check) : ""}<span class="sp"></span>${h.all ? html`<a class="num-link num-all" href="#numbers/${esc(h.all.key)}">${esc(h.all.text)} ${I("right", "sm")}</a>` : ""}</p>${h.check ? how("check") : ""}` : ""}
+	</section>
+	<div class="num-cards">${m.cards.map(card2)}</div>
+	<section class="num-card num-foot" aria-label="Guardrails">
+		<p><b>Corrections:</b> ${join(m.corrections.map((l) => num(l)), "")}</p>${how("corrections")}
+		${m.unknown ? html`<p>${num(m.unknown)}</p>${how("unknown")}` : ""}
+		<p>${esc(m.promises)}</p>${how("promises")}
+		<div class="num-copy">${B("Copy a summary", "numcopy", { sm: true })}<span class="m">numbers only, no names and no message text</span></div>
+		<details class="num-how" data-how="copy"${S.num.how.has("copy") ? raw(" open") : ""}><summary>See what is copied</summary><pre class="num-sum">${esc(m.summary)}</pre></details>
+	</section>`;
+  }
+  function rows(d, codes) {
+    const times = /* @__PURE__ */ new Map();
+    for (const c of codes) times.set(c, (times.get(c) ?? 0) + 1);
+    const one = (c) => {
+      const r = d.rows[c], x = d.missed[c], n = times.get(c);
+      const more = n > 1 ? html`<span class="m">Counted ${n} times: once for each send.</span>` : "";
+      if (r) {
+        const h = String(row(r)), coded = h.startsWith("<li data-code") ? h : h.replace(/^<li/, `<li data-code="${String(esc(c))}"`);
+        return raw(n > 1 ? coded.replace(/<\/li>$/, `${more}</li>`) : coded);
+      }
+      if (c.startsWith("missed:")) return html`<li class="row" data-code="${esc(c)}"><span class="ri">${I("eye")}</span><div class="rt"><b>You pointed at this message. No item was made for it.</b><span class="m">${esc(x ? when(x.at) : "")}${x?.teams && !env.snap ? html` · <a class="ext-in" href="${esc(x.teams)}" target="_blank" rel="noopener">Open in Teams↗</a>` : ""}</span>${more}</div></li>`;
+      return html`<li class="row" data-code="${esc(c)}"><span class="ri">${I("check")}</span><div class="rt"><b>${esc(c)} is no longer on file</b><span class="m">Its line in the log still counts.</span>${more}</div></li>`;
+    };
+    return html`<ul class="rows">${[...times.keys()].map(one)}</ul>`;
+  }
+  function list(d, key, l) {
+    const back = html`<a class="num-back" href="#numbers">${I("left", "sm")}<span>All numbers</span></a>`;
+    if (!l) return html`${back}<p class="empty">That list is not on this tab.</p>`;
+    const all = l.groups.flatMap((g) => g.codes), shown = l.groups.filter((g) => g.codes.length);
+    const body6 = !all.length ? html`<p class="empty">Nothing counted here ${esc(WINDOW_LABEL[d.window.key].toLowerCase())}.</p>` : l.groups.length > 1 ? join(shown.map((g) => html`<h3 class="section-h">${esc(g.title ?? "")} · ${g.codes.length}</h3>${rows(d, g.codes)}`), "") : rows(d, all);
+    return html`${back}<h2 class="num-list-h" id="num-list" tabindex="-1" data-list="${esc(key)}">${esc(l.title)} <span class="tnum">${all.length}</span></h2>${body6}`;
+  }
+  function numbersView() {
+    const name = env.name;
+    if (!hasNumbers()) return html`${listHead("Numbers", "")}<p class="empty">The numbers open on the live page, not in this copy.</p>`;
+    const n = S.num, d = n.data, sub = S.route.split("/").slice(1).join("/");
+    const range = d && d.window.key === n.win ? /\(([^)]*)\)$/.exec(d.window.label)?.[1] ?? "" : "";
+    const pick2 = html`<label class="num-win"><span class="sr">Window</span><select class="field" id="numwin" data-numwin>${WINDOWS.map((k) => html`<option value="${raw(k)}"${k === n.win ? raw(" selected") : ""}>${esc(WINDOW_LABEL[k])}</option>`)}</select></label>${range ? html`<span class="num-range m">${esc(range)}</span>` : ""}`;
+    const head2 = listHead("Numbers", `Counted from ${name}'s own log on all your machines. Nothing is estimated.`, html`<span class="num-pick">${pick2}</span>`);
+    const state = n.failed ? "failed" : d && !n.busy ? "ready" : "loading";
+    const body6 = n.failed ? html`<div class="empty num-fail" role="alert"><p><b>Could not load the numbers.</b> ${esc(name)} could not be reached from this page, so nothing was counted. Nothing is lost: they load when you open this tab or change the window.</p>${B("Try again", "numretry", { sm: true })}</div>` : !d ? html`<p class="empty" role="status">Counting…</p>` : sub ? (() => {
+      const lists = listsOf(d);
+      return list(d, sub, Object.hasOwn(lists, sub) ? lists[sub] : void 0);
+    })() : main(numbersModel(d, name));
+    return html`<div class="numbers" data-state="${raw(state)}"${n.busy ? raw(' aria-busy="true"') : ""}>${head2}${body6}</div>`;
   }
 
   // src/web/app/view/next/switch.ts
@@ -1702,7 +1967,7 @@
   }
 
   // src/web/app/view/classic/index.ts
-  var $ = (s) => document.querySelector(s);
+  var $ = (s2) => document.querySelector(s2);
   var keysOf = (name) => [["Next item", "j →"], ["Previous item", "k ←"], ["Primary action", "⌘ Enter"], ["Pick option or toggle change", "1 to 9"], ["Edit the reply", "e"], [`Ask ${name} about this`, "a"], ["Later", "l"], ["Undo the last automatic reply", "u"], ["Home", "g h"], ["Leave a field, then go back", "Esc"], ["This list", "?"]];
   function boot(app) {
     document.body.insertAdjacentHTML("afterbegin", str(html`${sprite}<a class="skip" href="#main">Skip to content</a>`));
@@ -1733,12 +1998,13 @@
     done: () => doneList(S.route.split("/")[1] || "all"),
     ongoing: ongoingView,
     knowledge: knowledgeList,
+    numbers: numbersView,
     settings: settingsView
   };
-  function draw(enter) {
+  function draw2(enter) {
     const base = S.route.split("/")[0];
     const ups = V.watching.filter((w) => w.update).length, n = openCards().length;
-    const TABS = tabsOf(V, env.snap);
+    const TABS = tabsOf(V, env.snap, hasNumbers());
     $("#tabs").innerHTML = str(html`${TABS.map(([h, l, c]) => html`<a href="#${raw(h)}"${h === base ? raw(' aria-current="page"') : ""}${h === "done" && c ? html` aria-label="Done, ${c} new"` : ""}>${esc(l)}${h === "done" && c ? html`<span class="count muted">${c}</span>` : h === "focus" && n ? html`<span class="count">${n}</span>` : h === "ongoing" && ups ? html`<span class="count muted">${ups}</span>` : h === "knowledge" && V.knowledge.length ? html`<span class="count muted">${V.knowledge.length}</span>` : ""}</a>`)}${uiSwitch("menu")}`);
     const st = V.status, bad = st.state !== "on" || V.health.length || S.offline;
     $("#status").className = `pill${bad ? " warn" : ""}`;
@@ -1771,7 +2037,7 @@
   }
   var classic = {
     boot,
-    draw,
+    draw: draw2,
     say: say3,
     theme: theme2,
     keys: { open: () => $("#keys").showModal(), isOpen: () => $("#keys").open },
@@ -1835,15 +2101,15 @@
     ];
     return html`<div class="nf">${join(parts, raw(" · "))}${r.teams && !env.snap ? html` <a class="ext" href="${esc(r.teams)}" target="_blank" rel="noopener" aria-label="Open in Teams">${I("ext", "sm")}</a>` : ""}</div>`;
   }
-  function action(r, a, main, open) {
-    const primary2 = main && r.section === "move";
+  function action(r, a, main2, open) {
+    const primary2 = main2 && r.section === "move";
     const busy = U(`row:${r.act}`).status === "pending";
     if (!a.command) return env.snap ? "" : html`<a class="btn sm${primary2 && !open ? raw(" primary") : ""}" href="${open ? raw("#now") : html`#now/${esc(r.act)}`}"${open ? raw(' aria-expanded="true"') : raw(' aria-expanded="false"')}>${esc(open ? "Hide" : a.label)}</a>`;
     if (a.command.includes("{text}")) return "";
     if (env.snap) return html`<span class="verb${primary2 ? raw(" primary") : ""}">${esc(a.command)}</span>`;
-    const held = !!V.next?.paused && main && (r.kind === "reply" || r.kind === "holding") && /^ok /.test(a.command);
+    const held = !!V.next?.paused && main2 && (r.kind === "reply" || r.kind === "holding") && /^ok /.test(a.command);
     if (held) return html`<button class="btn sm" disabled aria-label="${esc(`${a.label}: paused, nothing is sent`)}"><span class="bl">Paused</span></button>`;
-    return html`<button class="btn sm${primary2 ? raw(" primary") : main ? "" : raw(" ghost")}" data-act="nact" data-v="${esc(a.command)}"${busy || primary2 && S.offline ? raw(" disabled") : ""}><span class="bl">${esc(a.label)}</span></button>`;
+    return html`<button class="btn sm${primary2 ? raw(" primary") : main2 ? "" : raw(" ghost")}" data-act="nact" data-v="${esc(a.command)}"${busy || primary2 && S.offline ? raw(" disabled") : ""}><span class="bl">${esc(a.label)}</span></button>`;
   }
   function tell(r) {
     const a = r.primary;
@@ -1871,13 +2137,13 @@
   }
 
   // src/web/app/view/next/now.ts
-  function section(id, title, count, rows, extra = "", empty = "", foot = "") {
-    if (id !== "move" && !rows.length) return "";
+  function section(id, title, count, rows2, extra = "", empty = "", foot = "") {
+    if (id !== "move" && !rows2.length) return "";
     const [, sub] = S.route.split("/"), open = id === "move" || sub === id;
-    const shown = rows.find((r) => r.act === sub || r.code === sub);
+    const shown = rows2.find((r) => r.act === sub || r.code === sub);
     return html`<section class="nsec${open ? raw(" open") : ""}" id="now-${raw(id)}" aria-labelledby="nh-${raw(id)}">
 		<div class="nsh"><h2 id="nh-${raw(id)}">${esc(title)}<span class="nc">&nbsp;· ${esc(count)}</span></h2><span class="sp"></span>${extra}</div>
-		${rows.length ? html`<ul class="nrows">${rows.map((r) => row3(r, r === shown))}</ul>` : empty}${foot}</section>`;
+		${rows2.length ? html`<ul class="nrows">${rows2.map((r) => row3(r, r === shown))}</ul>` : empty}${foot}</section>`;
   }
   function summary() {
     const n = V.next, changed = n.waiting.filter((r) => r.chips.some((c) => c.kind === "changed")).length;
@@ -1928,7 +2194,7 @@
   }
 
   // src/web/app/view/next/index.ts
-  var $2 = (s) => document.querySelector(s);
+  var $2 = (s2) => document.querySelector(s2);
   var KEYS = [["Now", "g h"], ["Undo the last automatic reply", "u"], ["Leave a field", "Esc"], ["This list", "?"]];
   function boot2(app) {
     document.body.insertAdjacentHTML("afterbegin", str(html`${sprite}<a class="skip" href="#main">Skip to content</a>`));
@@ -1957,7 +2223,7 @@
     const n = V.next?.move.length ?? 0, d = newCount(V);
     const tab = (h, label, count) => html`<a href="#${raw(h)}"${h === base ? raw(' aria-current="page"') : ""}>${esc(label)}${count}</a>`;
     const t = theme();
-    return html`${tab("now", "Now", n ? html`<span class="count">${n}</span>` : "")}${tab("done", "Done", d ? html`<span class="count muted" aria-label="${d} new">${d}</span>` : "")}${V.settings ? tab("settings", "Settings", "") : ""}${uiSwitch("menu")}<button class="menu-only themeitem" type="button" data-act="theme">${I(t === "dark" ? "moon" : t === "light" ? "sun" : "auto")}<span>Theme: ${esc(THEME_LABEL[t])}</span></button>`;
+    return html`${tab("now", "Now", n ? html`<span class="count">${n}</span>` : "")}${tab("done", "Done", d ? html`<span class="count muted" aria-label="${d} new">${d}</span>` : "")}${hasNumbers() ? tab("numbers", "Numbers", "") : ""}${V.settings ? tab("settings", "Settings", "") : ""}${uiSwitch("menu")}<button class="menu-only themeitem" type="button" data-act="theme">${I(t === "dark" ? "moon" : t === "light" ? "sun" : "auto")}<span>Theme: ${esc(THEME_LABEL[t])}</span></button>`;
   }
   function status() {
     if (S.offline) return "Offline";
@@ -1966,9 +2232,9 @@
     if (r.state === "never") return "Not checked yet";
     return r.state === "off" ? `Not checked since ${when(r.at)}` : `Checked ${when(r.at)}`;
   }
-  var VIEWS2 = { now: nowView, done: () => doneList(S.route.split("/")[1] || "all"), settings: settingsView, knowledge: knowledgeList };
-  var LABEL = { now: "Now", done: "Done", settings: "Settings", knowledge: "To learn" };
-  function draw2() {
+  var VIEWS2 = { now: nowView, done: () => doneList(S.route.split("/")[1] || "all"), numbers: numbersView, settings: settingsView, knowledge: knowledgeList };
+  var LABEL = { now: "Now", done: "Done", numbers: "Numbers", settings: "Settings", knowledge: "To learn" };
+  function draw3() {
     const base = VIEWS2[S.route.split("/")[0]] ? S.route.split("/")[0] : "now";
     $2("#tabs").innerHTML = str(tabs(base));
     const d = newCount(V);
@@ -2008,7 +2274,7 @@
   }
   var next = {
     boot: boot2,
-    draw: draw2,
+    draw: draw3,
     say: say4,
     theme: theme3,
     alias: newRoute,

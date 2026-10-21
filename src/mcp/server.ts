@@ -22,6 +22,8 @@ import { adoProbe } from '../runner/probe.ts'
 import { actOutcome, automateFromPage, saveUiFrom, serveInbox, withUi } from '../web/server.ts'
 import { renderApp } from '../web/shell.ts'
 import { view } from '../web/view.ts'
+import { numbersPage } from '../web/numbers.ts'
+import { WINDOWS, type WindowKey } from '../core/numbers.ts'
 import { registerAppResource, registerAppTool, RESOURCE_MIME_TYPE } from '@modelcontextprotocol/ext-apps/server'
 import { existsSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
@@ -247,6 +249,12 @@ function registerOwner(server: McpServer, get: () => Store) {
 		inputSchema: { to: z.string(), chatId: z.string().optional(), text: z.string(), every: z.enum(['day', 'weekday', 'week']), at: z.string(), day: z.number().optional(), until: z.string().optional() },
 		_meta: { ui: { resourceUri: PANEL_URI, visibility: ['app'] } },
 	}, async (i: AutomateInput) => { const r = automateFromPage(get(), i); return { ...text(r.text), structuredContent: r } })
+	// Only the panel calls this: the Numbers tab, when it opens and when its window changes, as the page's GET /numbers (R-NEX-11).
+	registerAppTool(server, 'numbers_view', {
+		description: 'For the inbox panel only: the Numbers tab for one window, with the rows each number counted.',
+		inputSchema: { window: z.enum(WINDOWS as [WindowKey, ...WindowKey[]]).optional() },
+		_meta: { ui: { resourceUri: PANEL_URI, visibility: ['app'] } },
+	}, async ({ window }: { window?: WindowKey }) => ({ ...text('ok'), structuredContent: numbersPage(get(), window ?? 'this') as unknown as Record<string, unknown> }))
 	// Only the panel calls this: what its action really did, and the item's fresh card (final review P1-1, P1-2).
 	registerAppTool(server, 'act_result', {
 		description: 'For the inbox panel only: the applied result of its last action.',

@@ -20894,9 +20894,9 @@ function parseThread(id) {
   const [, teamId, channelId, rootId] = id.split("|");
   return { teamId, channelId, rootId };
 }
-function parseChannelLink(link) {
+function parseChannelLink(link2) {
   try {
-    const u = new URL(link), parts2 = u.pathname.split("/").map(decodeURIComponent), teamId = u.searchParams.get("groupId");
+    const u = new URL(link2), parts2 = u.pathname.split("/").map(decodeURIComponent), teamId = u.searchParams.get("groupId");
     const i = parts2.findIndex((p) => p === "channel" || p === "message");
     if (!teamId || i < 0 || !parts2[i + 1]?.startsWith("19:")) return void 0;
     return { teamId, channelId: parts2[i + 1], name: u.searchParams.get("channelName") ?? (parts2[i] === "channel" ? parts2[i + 2] : void 0) ?? "channel" };
@@ -20904,9 +20904,9 @@ function parseChannelLink(link) {
     return void 0;
   }
 }
-function parseMessageLink(link) {
+function parseMessageLink(link2) {
   try {
-    const u = new URL(link.trim()), parts2 = u.pathname.split("/").map(decodeURIComponent), i = parts2.indexOf("message");
+    const u = new URL(link2.trim()), parts2 = u.pathname.split("/").map(decodeURIComponent), i = parts2.indexOf("message");
     const id = parts2[i + 1], msgId = parts2[i + 2], teamId = u.searchParams.get("groupId");
     if (i < 0 || !id?.startsWith("19:") || !/^\d+$/.test(msgId ?? "")) return void 0;
     if (teamId && isChannel(id)) {
@@ -39373,8 +39373,8 @@ ${statusLine(wf, now)}`;
   const work = wf.work ? ["", `This work: ${wf.work.goal}. Done when ${wf.work.doneWhen}.`, ...(wf.work.plan ?? []).map((p) => `${p.done ? "[x]" : "[ ]"} ${p.what} (${p.who}${p.in ? `, ${p.in}` : ""}${p.probe ? `, build ${p.probe.build}${p.seen ? ` ${p.seen}` : ""}` : ""})`), ...wf.work.steps.slice(-8).map((x) => `- ${x.at.slice(5, 16).replace("T", " ")} ${clip(oneLine(x.what), 160)}`)] : [];
   return [head, ...work, "", ...card2.length ? card2 : ["Draft: none"], ...notes.length ? ["", "You asked:", ...notes] : [], ...changes.length ? ["", okWill(wf), ...changes] : [], "", "Sources:", ...src.length ? src : ["- none"], ...wf.looked?.length ? ["", "Looked up:", ...wf.looked.map((x) => `- ${lookLine(x)}`)] : [], "", "Thread:", ...t2].join("\n");
 }
-function plain(md2) {
-  return md2.replace(/\*\*/g, "").replace(/^### /gm, "");
+function plain(md3) {
+  return md3.replace(/\*\*/g, "").replace(/^### /gm, "");
 }
 var MARK, clip, oneLine, hhmm2, hitCount, lookLine;
 var init_render = __esm({
@@ -40116,8 +40116,8 @@ import { existsSync as existsSync9, readFileSync as readFileSync8, writeFileSync
 import { join as join11 } from "node:path";
 function outcome(store2, wf, how, o = {}) {
   const edited = how === "sent" && !!o.draft && !!o.sent && norm(o.draft) !== norm(o.sent);
-  const link = o.msgId ? `https://teams.microsoft.com/l/message/${encodeURIComponent(wf.chat.id)}/${o.msgId}` : void 0;
-  store2.log({ event: "outcome", how, chat: wf.chat.id, group: !!wf.chat.group, guests: wf.chat.guests, asker: wf.asker, intent: wf.intent, edited, approvedBy: o.approvedBy, ...link ? { link } : {} });
+  const link2 = o.msgId ? `https://teams.microsoft.com/l/message/${encodeURIComponent(wf.chat.id)}/${o.msgId}` : void 0;
+  store2.log({ event: "outcome", how, chat: wf.chat.id, group: !!wf.chat.group, guests: wf.chat.guests, asker: wf.asker, intent: wf.intent, edited, approvedBy: o.approvedBy, ...link2 ? { link: link2 } : {} });
 }
 function noticeHabits(store2, cfg, now = Date.now()) {
   if (cfg.noticeHabits === false) return void 0;
@@ -40196,11 +40196,11 @@ function setRules(store2, rules) {
   const file2 = join11(store2.root, "rules.compiled.json");
   const cur = existsSync9(file2) ? JSON.parse(readFileSync8(file2, "utf8")) : { schema: 1 };
   writeFileSync3(file2, JSON.stringify({ ...cur, rules }, null, "	") + "\n");
-  const md2 = join11(store2.root, "rules.md");
-  const text2 = existsSync9(md2) ? readFileSync8(md2, "utf8") : "";
+  const md3 = join11(store2.root, "rules.md");
+  const text2 = existsSync9(md3) ? readFileSync8(md3, "utf8") : "";
   const own3 = text2.replace(new RegExp(`\\n*${BEGIN}[\\s\\S]*?${END}\\n*`), "\n").trimEnd();
   const learned = rules.filter((r) => r.learned).map((r) => `- ${r.text.replace(/^Learned: /, "")} (learned ${r.learned.at.slice(0, 10)} from ${r.learned.evidence})`);
-  writeFileSync3(md2, `${own3}${learned.length ? `
+  writeFileSync3(md3, `${own3}${learned.length ? `
 
 ${BEGIN}
 ## Learned
@@ -40369,8 +40369,8 @@ var init_intake = __esm({
 });
 
 // src/core/format.ts
-function mdToHtml(md2) {
-  return esc2(md2).replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2">$1</a>').replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>").replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\n/g, "<br>");
+function mdToHtml(md3) {
+  return esc2(md3).replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2">$1</a>').replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>").replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\n/g, "<br>");
 }
 var esc2;
 var init_format = __esm({
@@ -40400,8 +40400,8 @@ function parseLine(line2, card2) {
     if (kind === "review") review = day(body) || void 0;
     else if (kind === "audience") audience = body === "team" ? "team" : "private";
     else {
-      const [link, date5, ...who2] = body.split(/,\s*/);
-      src.unshift({ link: link.trim(), date: day(date5 ?? ""), who: who2.join(", ").trim() || void 0 });
+      const [link2, date5, ...who2] = body.split(/,\s*/);
+      src.unshift({ link: link2.trim(), date: day(date5 ?? ""), who: who2.join(", ").trim() || void 0 });
     }
     rest = rest.slice(0, g.index);
   }
@@ -40977,9 +40977,9 @@ function watchItem(store2, wf, body) {
   const live2 = wf.watchedAs ? store2.byCode(wf.watchedAs) : void 0;
   if (live2 && live2.state !== "done") return { text: `${wf.code} is already watched as ${live2.code}.`, accepted: true, code: live2.code };
   const w = parseWatch(body);
-  const link = teamsLink(wf);
+  const link2 = teamsLink(wf);
   const target2 = w.target ?? wf.fyi.watch?.target ?? wf.fyi.line;
-  const r = started(store2, { target: target2, until: w.until ?? wf.fyi.watch?.until, by: w.by, endsAt: w.by ? void 0 : weekOut(), shepherd: w.push || void 0, from: "catchup", link });
+  const r = started(store2, { target: target2, until: w.until ?? wf.fyi.watch?.until, by: w.by, endsAt: w.by ? void 0 : weekOut(), shepherd: w.push || void 0, from: "catchup", link: link2 });
   if (r.code) {
     const src = store2.byCode(wf.code);
     src.watchedAs = r.code;
@@ -41249,7 +41249,7 @@ function inputs(evs, items2, inSpan, notAsks) {
   const pointed = uniq(here3.filter((e) => e.event === "missed").map(itemOf)), mine = uniq(here3.filter((e) => e.event === "notfyi").map((e) => e.code));
   const watch = new Set(items2.filter((w) => w.kind === "tracker").map((w) => w.code));
   const asks = /* @__PURE__ */ new Set([...here3.filter((e) => e.event === "made" && !watch.has(e.code) && !notAsks.has(e.code)).map((e) => e.code), ...pointed, ...mine]);
-  const missed = { pointed, mine, n: pointed.length + mine.length, of: asks.size };
+  const missed = { pointed, mine, asks: [...asks], n: pointed.length + mine.length, of: asks.size };
   const waits = [
     ...answered.filter((e) => e.askAt).map((e) => ({ code: e.code, min: (Date.parse(e.at) - Date.parse(e.askAt)) / 6e4 })),
     ...teams.filter((e) => e.askAt && e.replyAt).map((e) => ({ code: e.code, min: (Date.parse(e.replyAt) - Date.parse(e.askAt)) / 6e4 }))
@@ -41291,7 +41291,7 @@ function numbers(raw, items2, now, tz, key = "this") {
     return { week: w, n: codes.length, codes, gaps, before: ws.to < first2 };
   });
   const four = within(spans["4w"]);
-  const sends = evs.filter((e) => e.event === "sent" && four(e)).length;
+  const sent = evs.filter((e) => e.event === "sent" && !e.holding && four(e)).map((e) => e.code), sends = sent.length;
   const fixes = uniq(evs.filter((e) => (e.event === "marked" || e.event === "undo") && four(e)).map((e) => e.code));
   return {
     window: { key, ...span, label: `${LABEL[key]} (${dmd(span.from)} to ${span.to === today ? "today" : dmd(span.to)})` },
@@ -41300,7 +41300,7 @@ function numbers(raw, items2, now, tz, key = "this") {
     bars,
     now: inputs(evs, items2, within(span), notAsks),
     four: inputs(evs, items2, four, notAsks),
-    corrections: { n: fixes.length, sends, codes: fixes, ...sends >= SMALL ? { per100: Math.round(fixes.length / sends * 1e3) / 10 } : {} }
+    corrections: { n: fixes.length, sends, codes: fixes, sent, ...sends >= SMALL ? { per100: Math.round(fixes.length / sends * 1e3) / 10 } : {} }
   };
 }
 function numbersText(n) {
@@ -41619,9 +41619,9 @@ function detailsOf(store2) {
 }
 function source(ref, tier, stale, label2, k) {
   const e = ref.startsWith("card:") ? k?.read(ref) : void 0, fact = e && !Array.isArray(e) ? e : void 0;
-  const link = fact?.src.map((x) => x.link).find((l) => /^https:\/\//.test(l));
+  const link2 = fact?.src.map((x) => x.link).find((l) => /^https:\/\//.test(l));
   const priv = fact?.audience === "private" || tier === "private";
-  if (fact) return { kind: priv ? "Private" : "Knowledge", label: fact.text, href: link, stale, ...priv ? { locked: true } : {} };
+  if (fact) return { kind: priv ? "Private" : "Knowledge", label: fact.text, href: link2, stale, ...priv ? { locked: true } : {} };
   if (tier === "card") return { kind: "Knowledge", label: `Your knowledge: ${ref.replace(/^card:/, "").split(/[/#]/)[0].replace(/-/g, " ")}`, stale };
   if (tier === "private") return { kind: "Private", label: label2 ?? "A private chat or file", locked: true, stale, .../^https:\/\//.test(ref) ? { href: ref } : {} };
   const href = /^https:\/\//.test(ref) ? ref : void 0;
@@ -41691,19 +41691,30 @@ function card(store2, w) {
 function knowledge(p) {
   return { code: p.code, rev: p.revAt, topic: p.title, home: p.home ?? "personal", facts: p.ops.map((o) => ({ type: o.entry.type, text: o.entry.text, who: o.entry.src[0]?.who, date: o.entry.src[0]?.date ?? "", href: /^https:\/\//.test(o.entry.src[0]?.link ?? "") ? o.entry.src[0].link : void 0, private: o.entry.audience === "private" })) };
 }
+function itemRow(store2, w) {
+  const name = w.asker?.name ?? "Someone", where = w.chat.group ? ` in ${w.chat.name}` : "", first2 = name.split(/[\s,(]+/)[0];
+  const made = (w.effects ?? []).filter((e) => e.done);
+  const base = { code: w.code, who: who(name), teams: teamsOf(w), ask: w.redacted ? void 0 : askLine(w.lastAsk) || void 0 };
+  if (w.sent) return { ...base, kind: made.length && w.intent === "pr_review" ? "review" : "reply", sentence: made.length && w.intent === "pr_review" ? `Reviewed for ${name} and replied${where}` : `Replied to ${name}${where}`, by: w.sent.byRule ? `by rule ${w.sent.byRule}` : "by you", at: w.sent.at, text: w.redacted ? void 0 : w.sent.text ?? w.draft?.text, said: w.redacted ? void 0 : short2(w.sent.text ?? w.draft?.text), own: !w.sent.byRule, notes: w.notes ?? [], why: { reason: w.decision?.reason, confidence: w.decision?.confidence, sources: (w.draft?.sources ?? []).map((s2) => source(s2.ref, s2.tier, s2.stale, s2.label)), gaps: w.gaps ?? [] }, rule: w.sent.byRule, undoUntil: w.sent.byRule ? w.sent.undoUntil : void 0, work: workLine(homeOf(store2, w)) };
+  if (w.fyi) return { ...base, kind: "catchup", sentence: w.fyi.line, gist: w.fyi.gist ?? base.ask, watch: w.fyi.watch, watchedAs: w.watchedAs, by: `${first2}${w.chat.group ? ` \xB7 ${w.chat.name}` : ""}`, at: w.fyi.at ?? w.updatedAt, high: w.fyi.weight === "high" };
+  if (closedHow(w) === "replied") {
+    const mine = store2.thread(w.id).filter((m) => m.byOwner).at(-1);
+    return { ...base, kind: "reply", sentence: `Replied to ${name}${where}`, by: "by you in Teams", at: w.updatedAt, said: w.redacted ? void 0 : mine ? short2(mine.text) : void 0, inTeams: true, own: true, teams: (mine && teamsOf(w, mine.id)) ?? base.teams };
+  }
+  if (closedHow(w) !== "skipped") return { ...base, kind: "closed", sentence: `${name}: ${w.status.replace(/: ".*$/s, "")}`, by: "", at: w.updatedAt };
+  return void 0;
+}
+function itemRows(store2, codes, wfs = store2.workflows()) {
+  const want = new Set(codes), out = {};
+  for (const w of wfs) if (w.code && want.has(w.code)) out[w.code] = itemRow(store2, w) ?? { code: w.code, kind: "closed", who: who(w.asker?.name), sentence: `${w.asker?.name ?? "Someone"}: ${w.status.replace(/: ".*$/s, "")}`, by: "", at: w.updatedAt, teams: teamsOf(w) };
+  return out;
+}
 function doneRows(store2, since) {
   const rows = [];
   for (const w of store2.workflows().filter((w2) => (w2.state === "done" || w2.state === "open" && w2.sent) && w2.code && (w2.intent !== "none" || w2.fyi) && w2.updatedAt > since && w2.kind !== "tracker")) {
-    const name = w.asker?.name ?? "Someone", where = w.chat.group ? ` in ${w.chat.name}` : "", first2 = name.split(/[\s,(]+/)[0];
-    const made = (w.effects ?? []).filter((e) => e.done);
-    const base = { code: w.code, who: who(name), teams: teamsOf(w), ask: w.redacted ? void 0 : askLine(w.lastAsk) || void 0 };
-    if (w.sent) rows.push({ ...base, kind: made.length && w.intent === "pr_review" ? "review" : "reply", sentence: made.length && w.intent === "pr_review" ? `Reviewed for ${name} and replied${where}` : `Replied to ${name}${where}`, by: w.sent.byRule ? `by rule ${w.sent.byRule}` : "by you", at: w.sent.at, text: w.redacted ? void 0 : w.sent.text ?? w.draft?.text, said: w.redacted ? void 0 : short2(w.sent.text ?? w.draft?.text), own: !w.sent.byRule, notes: w.notes ?? [], why: { reason: w.decision?.reason, confidence: w.decision?.confidence, sources: (w.draft?.sources ?? []).map((s2) => source(s2.ref, s2.tier, s2.stale, s2.label)), gaps: w.gaps ?? [] }, rule: w.sent.byRule, undoUntil: w.sent.byRule ? w.sent.undoUntil : void 0, work: workLine(homeOf(store2, w)) });
-    else if (w.fyi) rows.push({ ...base, kind: "catchup", sentence: w.fyi.line, gist: w.fyi.gist ?? base.ask, watch: w.fyi.watch, watchedAs: w.watchedAs, by: `${first2}${w.chat.group ? ` \xB7 ${w.chat.name}` : ""}`, at: w.fyi.at ?? w.updatedAt, high: w.fyi.weight === "high" });
-    else if (closedHow(w) === "replied") {
-      const mine = store2.thread(w.id).filter((m) => m.byOwner).at(-1);
-      rows.push({ ...base, kind: "reply", sentence: `Replied to ${name}${where}`, by: "by you in Teams", at: w.updatedAt, said: w.redacted ? void 0 : mine ? short2(mine.text) : void 0, inTeams: true, own: true, teams: (mine && teamsOf(w, mine.id)) ?? base.teams });
-    } else if (closedHow(w) !== "skipped") rows.push({ ...base, kind: "closed", sentence: `${name}: ${w.status.replace(/: ".*$/s, "")}`, by: "", at: w.updatedAt });
-    for (const e of made) if (!(w.intent === "pr_review" && COMMENT.test(e.action))) rows.push({ code: w.code, kind: "change", who: who(name), sentence: shown(e).line, by: shown(e).system, at: e.done.at, own: true, href: /^https:\/\//.test(e.done?.ref ?? "") ? e.done.ref : void 0 });
+    const r = itemRow(store2, w), name = w.asker?.name ?? "Someone";
+    if (r) rows.push(r);
+    for (const e of (w.effects ?? []).filter((e2) => e2.done)) if (!(w.intent === "pr_review" && COMMENT.test(e.action))) rows.push({ code: w.code, kind: "change", who: who(name), sentence: shown(e).line, by: shown(e).system, at: e.done.at, own: true, href: /^https:\/\//.test(e.done?.ref ?? "") ? e.done.ref : void 0 });
   }
   for (const e of store2.logs(7).filter((e2) => e2.event === "sent" && String(e2.approvedBy ?? "").startsWith("automation:") && String(e2.at) > since)) {
     const name = e.asker?.name ?? "someone";
@@ -41962,8 +41973,8 @@ var init_knowledge = __esm({
         }
         return [...by.values()].sort((a, b) => a.topic.localeCompare(b.topic));
       }
-      bySource(link) {
-        return this.cards().flatMap((c) => c.entries).find((e) => e.src.some((s2) => s2.link === link));
+      bySource(link2) {
+        return this.cards().flatMap((c) => c.entries).find((e) => e.src.some((s2) => s2.link === link2));
       }
       path(topic, card2) {
         return join16(this.root, "topics", topic, `${card2}.md`);
@@ -42041,8 +42052,8 @@ var init_knowledge = __esm({
         const own3 = this.mine.topics();
         return [...own3, ...this.team.topics().filter((t2) => !own3.some((o) => o.topic === t2.topic))];
       }
-      bySource(link) {
-        return this.mine.bySource(link) ?? this.team.bySource(link);
+      bySource(link2) {
+        return this.mine.bySource(link2) ?? this.team.bySource(link2);
       }
       // Each step uses the proposal's destination, so a private fact under a team topic saves to the owner's own folder (review 085 P1-3).
       cardHash(topic, card2, home) {
@@ -42377,9 +42388,9 @@ var init_proposals = __esm({
     init_channels();
     init_secrets();
     knowledgeOf = (store2, cfg) => openKnowledge(cfg.cards?.root ?? join17(store2.root, "knowledge"), store2.machine, cfg.cards?.team);
-    privateLink = (link) => {
-      const chat = link.match(/teams\.microsoft\.com\/l\/message\/([^/]+)\//)?.[1];
-      return !!chat && kindOf(decodeURIComponent(chat)) === "oneOnOne" || /outlook\.|mailto:/i.test(link);
+    privateLink = (link2) => {
+      const chat = link2.match(/teams\.microsoft\.com\/l\/message\/([^/]+)\//)?.[1];
+      return !!chat && kindOf(decodeURIComponent(chat)) === "oneOnOne" || /outlook\.|mailto:/i.test(link2);
     };
     audienceOf = (c) => c.audience === "private" || c.src.some((s2) => privateLink(s2.link)) ? "private" : "team";
     mergeSrc = (a, b) => [...a, ...b.filter((s2) => !a.some((x) => x.link === s2.link))];
@@ -43097,8 +43108,8 @@ import { randomUUID as randomUUID5 } from "node:crypto";
 function learnFrom(store2, cfg, wf, draft, sent) {
   if (offRecord(cfg, wf.chat.id)) return;
   const now = (/* @__PURE__ */ new Date()).toISOString();
-  const link = wf.sent?.msgId ? `https://teams.microsoft.com/l/message/${encodeURIComponent(wf.chat.id)}/${wf.sent.msgId}` : "";
-  const goal = [`Draft: "${draft}"`, `Sent by the owner: "${sent}"`, `Sent message: ${link || "no link"}, ${now.slice(0, 10)}, ${cfg.owner.name}`, `Chat: ${wf.chat.name}. Asker: ${wf.asker?.name ?? "unknown"}.`].join("\n");
+  const link2 = wf.sent?.msgId ? `https://teams.microsoft.com/l/message/${encodeURIComponent(wf.chat.id)}/${wf.sent.msgId}` : "";
+  const goal = [`Draft: "${draft}"`, `Sent by the owner: "${sent}"`, `Sent message: ${link2 || "no link"}, ${now.slice(0, 10)}, ${cfg.owner.name}`, `Chat: ${wf.chat.name}. Asker: ${wf.asker?.name ?? "unknown"}.`].join("\n");
   store2.saveJob({ schema: 1, id: ulid3(), key: `learn:${wf.id}:${ulid3()}`, goal, label: `your edit of ${wf.code}`, session: { agent: cfg.agent.flavor, id: randomUUID5() }, state: "queued", purpose: "work", parents: [], asks: [], createdAt: now, updatedAt: now });
 }
 var init_learn = __esm({
@@ -45205,7 +45216,7 @@ function delegateNext(s2, p, j2) {
   if (s2.runner === "off") return { what: "starts when a machine reads your chats again" };
   return { what: "starts next cycle" };
 }
-function itemRow(s2, p, w) {
+function itemRow2(s2, p, w) {
   const j2 = w.job ? s2.jobs.get(w.job) : void 0, name = first(w.asker?.name), c = w.code;
   const where = w.chat.name && w.chat.name !== w.asker?.name && w.chat.name !== name ? w.chat.name : void 0;
   const chats = new Set(p.subjects.map((c2) => s2.workflows.find((x) => x.code === c2)).filter((x) => x && x.partOf === w.id && x.chat.id !== w.chat.id).map((x) => x.chat.id)).size;
@@ -45278,7 +45289,7 @@ function rowsOf(s2, placed) {
   const items2 = new Map(s2.workflows.map((w) => [w.code, w])), waits = new Map(s2.waiting.map((w) => [w.code, w])), autos = new Map(s2.automations.map((a) => [a.code, a]));
   return placed.filter((p) => p.section !== "done").map((p) => {
     const w = items2.get(p.act), wt = waits.get(p.act), a = autos.get(p.act);
-    const body = w ? itemRow(s2, p, w) : wt ? waitRow(wt) : reminderRow(p, a);
+    const body = w ? itemRow2(s2, p, w) : wt ? waitRow(wt) : reminderRow(p, a);
     return { code: p.code, act: p.act, section: p.section, rule: p.rule, ...body };
   });
 }
@@ -45548,7 +45559,7 @@ var SharePointDocs = class {
 // src/adapters/media.ts
 init_mcp_client();
 var HOSTED = /^https:\/\/graph\.microsoft\.com\/v1\.0(\/(?:chats|teams)\/[^?#\s]+\/hostedContents\/[^/?#\s]+\/\$value)$/;
-var hostedPath = (link) => HOSTED.exec(link)?.[1];
+var hostedPath = (link2) => HOSTED.exec(link2)?.[1];
 var HostedImages = class {
   mcp;
   tool;
@@ -45556,8 +45567,8 @@ var HostedImages = class {
     this.mcp = mcp;
     this.tool = tool;
   }
-  async read(link) {
-    const path = hostedPath(link);
+  async read(link2) {
+    const path = hostedPath(link2);
     if (!path) return "Only images pasted into a Teams message can be opened.";
     const r = await this.mcp.call(this.tool, { path });
     if (!r.base64Content) return `The image could not be downloaded (status ${r.statusCode ?? "unknown"}).`;
@@ -48324,6 +48335,7 @@ call:async(command,seenAt)=>{const r=await fetch('/act?t='+T,{method:'POST',head
 result:async(ids,code)=>J(await fetch('/result?t='+T+'&code='+encodeURIComponent(code)+'&ids='+ids.join(','))),
 data:async(since,ui)=>J(await fetch('/data?t='+T+(since?'&since='+encodeURIComponent(since):'')+(ui==='new'?'&ui=new':''))),
 ui:async(b)=>J(await fetch('/ui?t='+T,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(b)})),
+numbers:async(w)=>{const r=await fetch('/numbers?t='+T+'&window='+encodeURIComponent(w));if(!r.ok)throw new Error('offline');return J(r)},
 automate:async(input)=>{const r=await fetch('/automate?t='+T,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(input)});return J(r)},
 settings:async(key,value)=>{const r=await fetch('/settings?t='+T,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({key,value})});return J(r)},
 seen:async(filters,at)=>{await fetch('/seen?t='+T,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({filters,at})})}};`,
@@ -48334,6 +48346,7 @@ call:async(command,seenAt)=>{const r=await tool('act',{command,seenAt});return{o
 result:async(ids,code)=>(await tool('act_result',{ids,code})).structuredContent||{applied:false},
 data:async(since,ui)=>(await tool('inbox_view',{...(since?{since}:{}),...(ui==='new'?{ui}:{})})).structuredContent,
 ui:async(b)=>(await tool('ui_save',b)).structuredContent,
+numbers:async(w)=>{const r=await tool('numbers_view',{window:w});if(r.isError||!r.structuredContent)throw new Error('offline');return r.structuredContent},
 automate:async(input)=>(await tool('automate_now',input)).structuredContent};`,
   snapshot: "window.DELEGATE_IO=null;"
 };
@@ -48367,6 +48380,63 @@ ${TRANSPORT[mode]}</script><script>${app}</script>`;
 
 // src/mcp/server.ts
 init_view();
+
+// src/web/numbers.ts
+init_numbers2();
+init_numbers();
+init_channels();
+
+// src/web/app/model/numbers.ts
+var WHEN2 = { this: "this week", last: "last week", "4w": "in the last 4 weeks", all: "since you started" };
+var MONTHS2 = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+var md2 = (day3) => `${MONTHS2[Number(day3.slice(5, 7)) - 1]} ${Number(day3.slice(8, 10))}`;
+function listsOf(d) {
+  const w = WHEN2[d.window.key], h = d.handled, r = d.now.replies, m = d.now.missed, f = d.four;
+  const one = (title, codes) => ({ title, groups: [{ codes }] });
+  const replies = (x) => [{ title: "As drafted", codes: x.drafted }, { title: "Edited before sending", codes: x.edited }, { title: "You typed in Teams", codes: x.teams }];
+  const missed = (x) => [{ title: "You pointed at", codes: x.pointed }, { title: "Moved to Needs me", codes: x.mine }];
+  return {
+    handled: one(`Handled for you ${w}`, h.codes),
+    reply: one(`Replies as drafted, handled ${w}`, h.reply),
+    changes: one(`Applied as proposed, handled ${w}`, h.changes),
+    nothing: one(`"Nothing needed", handled ${w}`, h.nothing),
+    check: one("Still in their 7-day check", h.provisional),
+    ...Object.fromEntries(d.bars.map((b) => [`week:${b.week}`, one(`Handled in the week of ${md2(b.week)}`, b.codes)])),
+    replies: { title: `Replies to asks ${w}`, groups: replies(r) },
+    drafted: one(`Replies as drafted ${w}`, r.drafted),
+    edited: one(`Replies edited before sending ${w}`, r.edited),
+    teams: one(`Replies you typed in Teams ${w}`, r.teams),
+    unknown: one(`Sends that can no longer be checked, ${w}`, r.unknown),
+    "four-replies": { title: "Replies to asks in the last 4 weeks", groups: replies(f.replies) },
+    missed: { title: `Missed ${w}`, groups: missed(m) },
+    pointed: one(`Messages you pointed at ${w}`, m.pointed),
+    mine: one(`Moved to Needs me ${w}`, m.mine),
+    asks: one(`Every ask ${w}`, m.asks),
+    "four-missed": { title: "Missed in the last 4 weeks", groups: missed(f.missed) },
+    wait: one(`Timed replies ${w}, shortest wait first`, d.now.wait.codes),
+    "four-wait": one("Timed replies in the last 4 weeks, shortest wait first", f.wait.codes),
+    corrections: one("Corrected in the last 4 weeks", d.corrections.codes),
+    sends: one("Sent in the last 4 weeks", d.corrections.sent)
+  };
+}
+
+// src/web/numbers.ts
+init_view();
+var link = (chat, msgId) => isThread(chat) ? threadLink(chat, msgId) : `https://teams.microsoft.com/l/message/${encodeURIComponent(chat)}/${msgId}`;
+function numbersPage(store2, key = "this", now = /* @__PURE__ */ new Date()) {
+  const evs = counted(store2), wfs = store2.workflows(), n = numbers(evs, wfs, now, store2.config()?.tz, key);
+  const codes = new Set(Object.values(listsOf({ ...n, rows: {}, missed: {} })).flatMap((l) => l.groups.flatMap((g) => g.codes)));
+  const missed = {};
+  for (const e of evs) if (e.event === "missed") {
+    const code = `missed:${e.msgId ?? e.at}`;
+    if (codes.has(code) && !missed[code]) missed[code] = { at: e.at, ...e.chat && e.msgId ? { teams: link(e.chat, e.msgId) } : {} };
+  }
+  const rows = Object.fromEntries(Object.entries(itemRows(store2, [...codes].filter((c) => !c.startsWith("missed:")), wfs)).map(([c, { text: _t, why: _w, notes: _n, ...r }]) => [c, r]));
+  return { ...n, rows, missed };
+}
+
+// src/mcp/server.ts
+init_numbers();
 
 // node_modules/@modelcontextprotocol/ext-apps/dist/src/server/index.js
 var D = "ui/resourceUri";
@@ -48434,11 +48504,11 @@ function registerKnowledgeReads(server, get) {
   server.registerTool("image_read", {
     description: "Look at an image pasted into a message. Pass the link from its [image ...] line. Use it whenever the ask may depend on what the image shows.",
     inputSchema: { link: external_exports.string().describe("The https://graph.microsoft.com/... link from the [image ...] line") }
-  }, async ({ link }) => {
+  }, async ({ link: link2 }) => {
     const m = imagesFor(get().config());
     if (!m) return text("This setup cannot open images.");
     try {
-      const r = await m.read(link);
+      const r = await m.read(link2);
       return typeof r === "string" ? { ...text(r), isError: true } : { content: [{ type: "image", data: r.data, mimeType: r.type }] };
     } catch (e) {
       return { ...text(`Could not open it: ${String(e).slice(0, 200)}`), isError: true };
@@ -48523,7 +48593,7 @@ function registerOwner(server, get) {
   server.registerTool("watch_channel", {
     description: "Watch a Teams channel for threads the owner starts, posts in, or is @mentioned in. Pass a channel link or any message link from that channel. Show the returned text exactly.",
     inputSchema: { link: external_exports.string(), stop: external_exports.boolean().optional() }
-  }, async ({ link, stop }) => text(watchChannel(get(), link, !!stop)));
+  }, async ({ link: link2, stop }) => text(watchChannel(get(), link2, !!stop)));
   server.registerTool("track", {
     description: `Watch something until it is done and tell the owner only when it changes, is done, or needs them, such as "PR 1601234 checks" or "Ana sends the trace IDs". Use for "make sure X gets done", "watch X until Y", "keep an eye on X", "tell me when X". For the owner's own PR, set shepherd to propose fixes for comments and failed builds. Show the result exactly.`,
     inputSchema: {
@@ -48629,6 +48699,11 @@ function registerOwner(server, get) {
     const r = automateFromPage(get(), i);
     return { ...text(r.text), structuredContent: r };
   });
+  j(server, "numbers_view", {
+    description: "For the inbox panel only: the Numbers tab for one window, with the rows each number counted.",
+    inputSchema: { window: external_exports.enum(WINDOWS).optional() },
+    _meta: { ui: { resourceUri: PANEL_URI, visibility: ["app"] } }
+  }, async ({ window }) => ({ ...text("ok"), structuredContent: numbersPage(get(), window ?? "this") }));
   j(server, "act_result", {
     description: "For the inbox panel only: the applied result of its last action.",
     inputSchema: { ids: external_exports.array(external_exports.string()), code: external_exports.string() },
@@ -48654,8 +48729,8 @@ function registerSetup(server) {
 function installService() {
   return install({ node: process.execPath, cli: CLI, local: LOCAL_DIR, pathEnv: process.env.PATH ?? "" });
 }
-function watchChannel(store2, link, stop = false) {
-  const ch = parseChannelLink(link);
+function watchChannel(store2, link2, stop = false) {
+  const ch = parseChannelLink(link2);
   if (!ch) return 'That is not a channel link. In Teams, use "Copy link" on the channel, or on any message in it.';
   const cfg = store2.config(), list2 = (cfg.channels || []).filter((c) => c.channelId !== ch.channelId);
   store2.saveConfig({ ...cfg, channels: stop ? list2 : [...list2, ch] });
@@ -48826,7 +48901,6 @@ init_view();
 init_automations();
 init_brand();
 init_probe();
-init_numbers2();
 init_numbers();
 init_next();
 function actOutcome(store2, ids, code) {
@@ -48887,7 +48961,7 @@ function serveInbox(get, port = 0, token = randomBytes3(16).toString("hex"), pro
         res.writeHead(400, { "content-type": "application/json" }).end(JSON.stringify({ ok: false, text: `window is one of ${WINDOWS.join(", ")}` }));
         return;
       }
-      res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" }).end(JSON.stringify(numbersOf(get(), key)));
+      res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" }).end(JSON.stringify(numbersPage(get(), key)));
       return;
     }
     if (req.method === "POST" && u.pathname === "/seen") {
@@ -49360,14 +49434,14 @@ Fix the first one you use (for most people: run it once and type /login), then r
       return `${folders.length} knowledge folder(s)`;
     }
     case "profile": {
-      const { markdown: md2, aliases } = v;
+      const { markdown: md3, aliases } = v;
       if (aliases?.length) store2.saveConfig({ ...store2.config(), aliases });
       const called = aliases?.length ? `; people also call you ${aliases.join(", ")}` : "";
-      if (!md2) {
+      if (!md3) {
         if (existsSync27(join29(store2.root, "profile.md"))) return `profile kept${called}`;
         throw new Error("Draft the profile yourself instead of asking: the owner's name and job title (from Teams or the company directory), and how they write (greeting, length, tone) from a few of their own recent messages. Leave out other people and any facts. Save it as markdown; the owner can change it in Settings. Add aliases only if the owner tells you one.");
       }
-      writeFileSync13(join29(store2.root, "profile.md"), md2);
+      writeFileSync13(join29(store2.root, "profile.md"), md3);
       return `profile saved${called}`;
     }
     case "rules": {
@@ -49496,18 +49570,18 @@ function install2() {
   }
   for (const dir of [join30(COPILOT, "skills"), join30(homedir9(), ".claude", "skills")]) {
     if (!existsSync28(dirname9(dir))) continue;
-    const link = join30(dir, "delegate");
+    const link2 = join30(dir, "delegate");
     assertTestSafe(dir);
     mkdirSync11(dir, { recursive: true });
-    if ((existsSync28(link) || isLink(link)) && !ours3(link)) {
-      out.push(`Left ${link} alone: it is not ${NAME}'s. Rename it to use ${NAME} there.`);
+    if ((existsSync28(link2) || isLink(link2)) && !ours3(link2)) {
+      out.push(`Left ${link2} alone: it is not ${NAME}'s. Rename it to use ${NAME} there.`);
       continue;
     }
-    if (existsSync28(link) || isLink(link)) rmSync7(link, { recursive: true, force: true });
+    if (existsSync28(link2) || isLink(link2)) rmSync7(link2, { recursive: true, force: true });
     try {
-      symlinkSync(SKILL_DIR, link, "junction");
+      symlinkSync(SKILL_DIR, link2, "junction");
     } catch {
-      cpSync2(SKILL_DIR, link, { recursive: true });
+      cpSync2(SKILL_DIR, link2, { recursive: true });
     }
     out.push(`Linked the skill into ${dir}.`);
   }
@@ -49679,10 +49753,10 @@ function uninstall2(purge) {
       out.push(`Removed ${lp}.`);
     }
   }
-  for (const link of [join30(COPILOT, "skills", "delegate"), join30(homedir9(), ".claude", "skills", "delegate")]) if ((existsSync28(link) || isLink(link)) && ours3(link)) {
-    assertTestSafe(link);
-    rmSync7(link, { recursive: true, force: true });
-    out.push(`Removed ${link}.`);
+  for (const link2 of [join30(COPILOT, "skills", "delegate"), join30(homedir9(), ".claude", "skills", "delegate")]) if ((existsSync28(link2) || isLink(link2)) && ours3(link2)) {
+    assertTestSafe(link2);
+    rmSync7(link2, { recursive: true, force: true });
+    out.push(`Removed ${link2}.`);
   }
   if (has("copilot") && pluginListed()) {
     spawnSync5("copilot", ["plugin", "uninstall", "delegate"], { stdio: "ignore", windowsHide: true });

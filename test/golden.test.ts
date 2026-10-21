@@ -16,7 +16,7 @@ process.env.DELEGATE_LOCAL = mkdtempSync(join(tmpdir(), 'delegate-glocal-'))
 process.env.DELEGATE_NO_KICK = '1'
 const { Store } = await import('../src/store/state.ts')
 const { serveInbox, writeSnapshot } = await import('../src/web/server.ts')
-const { seedInbox, seedNext, seedQuiet, pauseNext } = await import('./fixture.ts')
+const { seedInbox, seedNext, seedNumbers, seedQuiet, pauseNext } = await import('./fixture.ts')
 
 const PW = process.env.PLAYWRIGHT_CORE ?? (() => { try { return createRequire(import.meta.url).resolve('playwright-core').replace(/index\.js$/, 'index.mjs') } catch { return '' } })()
 const skip = existsSync(PW) ? false : 'playwright-core not found (set PLAYWRIGHT_CORE)'
@@ -163,6 +163,28 @@ const NEXT: typeof STATES = [
 const NEXT_EMPTY: typeof STATES = [['next-quiet', '#now']]
 const NEXT_MOVING: typeof STATES = [['next-nothing-for-you', '#now']]
 const NEXT_PAUSED: typeof STATES = [['next-paused', '#now']]
+
+// The Numbers tab (R-NEX-11), on eight weeks of made-up log: this week, another window, a How line open, the rows two numbers
+// counted, offline, and week one; then the new experience's tab and a list there. Each waits for the numbers to arrive.
+const ready = (p: Page) => p.waitForSelector('.numbers[data-state=ready]')
+const NUMBERS: typeof STATES = [
+	['numbers', '#numbers', ready],
+	['numbers-4w', '#numbers', async p => { await ready(p); await p.selectOption('#numwin', '4w'); await ready(p) }],
+	['numbers-how', '#numbers', async p => { await ready(p); await p.click('.num-hero .num-how summary') }],
+	['numbers-rows-handled', '#numbers/handled', ready],
+	['numbers-rows-missed', '#numbers/missed', ready],
+	['numbers-offline', '#numbers', async p => { await ready(p); await p.route('**/numbers?**', (r: { abort(): Promise<void> }) => r.abort()); await p.selectOption('#numwin', 'last'); await p.waitForSelector('.numbers[data-state=failed]') }],
+]
+const NUMBERS_FIRST: typeof STATES = [['numbers-first-week', '#numbers', ready]]
+const NEXT_NUMBERS: typeof STATES = [['next-numbers', '#numbers', ready], ['next-numbers-rows-replies', '#numbers/replies', ready]]
+
+test('golden: the Numbers tab draws its numbers, lists, offline, and first week in both experiences, light and dark', { skip }, async () => {
+	for (const theme of ['light', 'dark']) {
+		await draw(theme, s => seedNumbers(s), NUMBERS, false)
+		await draw(theme, s => seedNumbers(s, new Date(), true), NUMBERS_FIRST, false)
+		await draw(theme, s => seedNumbers(s), NEXT_NUMBERS, false, s => seedNext(s, 'new'))
+	}
+})
 
 for (const theme of ['light', 'dark']) {
 	test(`golden: every tab, card, and sheet draws exactly as before (${theme})`, { skip }, () => draw(theme, s => s, STATES, true))

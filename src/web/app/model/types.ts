@@ -3,8 +3,10 @@ import type { AutomationRow, DoneRow, ItemCard, KnowledgeCard, Tile, View, Who }
 import type { Mode } from '../../shell.ts'
 import type { Chip, NextRow, NextView, Owner, RowAction, RowKind } from '../../next.ts'
 import type { UiChoice } from '../../../store/state.ts'
+import type { NumbersPage } from '../../numbers.ts'
+import type { WindowKey } from '../../../core/numbers.ts'
 
-export type { AutomationRow, Chip, DoneRow, ItemCard, KnowledgeCard, Mode, NextRow, NextView, Owner, RowAction, RowKind, Tile, UiChoice, View, Who }
+export type { AutomationRow, Chip, DoneRow, ItemCard, KnowledgeCard, Mode, NextRow, NextView, NumbersPage, Owner, RowAction, RowKind, Tile, UiChoice, View, Who, WindowKey }
 
 // What the shell puts on the page before the script runs (src/web/shell.ts).
 export type Boot = { mode: Mode; view: View; name: string; cmd: string }

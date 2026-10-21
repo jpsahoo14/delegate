@@ -227,8 +227,9 @@ test('N1a sections: every open thread once, Catch up shows 3 of its count, and W
 	assert.deepEqual(new Set(open), new Set(rowsOf(snapshot(store), place(snapshot(store))).filter(r => r.section !== 'catchup').flatMap(r => place(snapshot(store)).find(p => p.code === r.code)!.subjects)))
 	assert.deepEqual(v.minute, { facts: 1, suggestions: 0 })
 	assert.equal(v.off, undefined)
-	// Your move: the oldest ask first.
-	assert.deepEqual(v.move.map(r => r.facts.at), [...v.move.map(r => r.facts.at)].sort())
+	// Meetings that start within 2 hours lead; the rest are oldest first. The fixture's meeting is at 15:00 today, so which applies depends on the clock.
+	const soon = (r: (typeof v.move)[number]) => r.kind === 'meeting' && !!r.when && Date.parse(r.when) - Date.now() < 2 * 3_600_000
+	assert.deepEqual(v.move.map(r => r.act), [...v.move.filter(soon), ...v.move.filter(r => !soon(r)).sort((a, b) => a.facts.at.localeCompare(b.facts.at))].map(r => r.act))
 	assert.equal(v.catchup.rows[0].act, 'A30', 'worth knowing first')
 	assert.deepEqual([v.catchup.worth, v.paused], [1, undefined])
 	// Paused: drafts go on, so the queued draft stays in Working; a rule send is held for the owner, never promised

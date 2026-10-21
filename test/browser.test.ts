@@ -321,7 +321,7 @@ test('round 3 #4 five tabs: Running, Watching, and Automations are sections of O
 	const t = await open('#running')
 	try {
 		const tabs = () => t.page.$$eval('#tabs a', (as: Element[]) => as.map(a => `${a.firstChild?.textContent}${a.getAttribute('aria-current') ? '*' : ''}`))
-		assert.deepEqual(await tabs(), ['Home', 'Needs you', 'Done', 'Ongoing*', 'To learn', 'Settings'], 'a fact waits for an ok in the fixture')
+		assert.deepEqual(await tabs(), ['Home', 'Needs you', 'Done', 'Ongoing*', 'To learn', 'Numbers', 'Settings'], 'a fact waits for an ok in the fixture; Numbers is last before Settings (R-NEX-11)')
 		assert.deepEqual(await t.page.$$eval('#main h2.section-h', (hs: Element[]) => hs.map(h => h.id || h.textContent)), ['1 update', 'running', 'automations'], 'watches, then Running and Automations as sections')
 		assert.ok(await t.page.evaluate(() => { const r = document.getElementById('running')!.getBoundingClientRect(); return r.top >= 0 && r.top < innerHeight }), '#running lands on its section')
 		await t.page.goto(t.page.url().replace(/#.*$/, '#automations/new'))
@@ -329,7 +329,7 @@ test('round 3 #4 five tabs: Running, Watching, and Automations are sections of O
 		assert.equal(await t.page.$eval('#tabs a[aria-current]', (a: Element) => a.firstChild?.textContent), 'Ongoing', '#automations/new opens the form on Ongoing')
 		for (const p of t.store.proposals()) t.store.saveProposal({ ...p, state: 'dropped' })
 		await t.page.waitForFunction(() => ![...document.querySelectorAll('#tabs a')].some(a => a.firstChild?.textContent === 'To learn'))
-		assert.deepEqual(await tabs(), ['Home', 'Needs you', 'Done', 'Ongoing*', 'Settings'], 'nothing waits: no To learn tab')
+		assert.deepEqual(await tabs(), ['Home', 'Needs you', 'Done', 'Ongoing*', 'Numbers', 'Settings'], 'nothing waits: no To learn tab')
 	} finally { await t.close() }
 })
 

@@ -178,21 +178,35 @@ const teamsOf = (w: Workflow, msgId = w.lastMsgId) => (w.chat.id && msgId && !w.
 // Why an item closed with no reply from Delegate. Items from before closedBy was kept are read from their status.
 const closedHow = (w: Workflow) => w.closedBy ?? (/^You replied yourself/.test(w.status) ? 'replied' : /^Skipped by you/.test(w.status) ? 'skipped' : undefined)
 
+// An item's own Done row: its reply, its Catch up line, the owner's reply in Teams, or how it closed. Skipped items have none.
+function itemRow(store: Store, w: Workflow): DoneRow | undefined {
+	const name = w.asker?.name ?? 'Someone', where = w.chat.group ? ` in ${w.chat.name}` : '', first = name.split(/[\s,(]+/)[0]
+	const made = (w.effects ?? []).filter(e => e.done)
+	const base = { code: w.code, who: who(name), teams: teamsOf(w), ask: w.redacted ? undefined : askLine(w.lastAsk) || undefined }
+	if (w.sent) return { ...base, kind: made.length && w.intent === 'pr_review' ? 'review' : 'reply', sentence: made.length && w.intent === 'pr_review' ? `Reviewed for ${name} and replied${where}` : `Replied to ${name}${where}`, by: w.sent.byRule ? `by rule ${w.sent.byRule}` : 'by you', at: w.sent.at, text: w.redacted ? undefined : w.sent.text ?? w.draft?.text, said: w.redacted ? undefined : short(w.sent.text ?? w.draft?.text), own: !w.sent.byRule, notes: w.notes ?? [], why: { reason: w.decision?.reason, confidence: w.decision?.confidence, sources: (w.draft?.sources ?? []).map(s => source(s.ref, s.tier, s.stale, s.label)), gaps: w.gaps ?? [] }, rule: w.sent.byRule, undoUntil: w.sent.byRule ? w.sent.undoUntil : undefined, work: workLine(homeOf(store, w)) }
+	if (w.fyi) return { ...base, kind: 'catchup', sentence: w.fyi.line, gist: w.fyi.gist ?? base.ask, watch: w.fyi.watch, watchedAs: w.watchedAs, by: `${first}${w.chat.group ? ` · ${w.chat.name}` : ''}`, at: w.fyi.at ?? w.updatedAt, high: w.fyi.weight === 'high' }
+	if (closedHow(w) === 'replied') {
+		// Answered in Teams by the owner: a reply like any other, with their own words from the thread.
+		const mine = store.thread(w.id).filter(m => m.byOwner).at(-1)
+		return { ...base, kind: 'reply', sentence: `Replied to ${name}${where}`, by: 'by you in Teams', at: w.updatedAt, said: w.redacted ? undefined : mine ? short(mine.text) : undefined, inTeams: true, own: true, teams: (mine && teamsOf(w, mine.id)) ?? base.teams }
+	}
+	if (closedHow(w) !== 'skipped') return { ...base, kind: 'closed', sentence: `${name}: ${w.status.replace(/: ".*$/s, '')}`, by: '', at: w.updatedAt }
+	return undefined
+}
+
+// The rows a number on the Numbers tab counted, in Done's format, however long ago they closed (R-NEX-11). Keyed by item code.
+export function itemRows(store: Store, codes: Iterable<string>, wfs: Workflow[] = store.workflows()): Record<string, DoneRow> {
+	const want = new Set(codes), out: Record<string, DoneRow> = {}
+	for (const w of wfs) if (w.code && want.has(w.code)) out[w.code] = itemRow(store, w) ?? { code: w.code, kind: 'closed', who: who(w.asker?.name), sentence: `${w.asker?.name ?? 'Someone'}: ${w.status.replace(/: ".*$/s, '')}`, by: '', at: w.updatedAt, teams: teamsOf(w) }
+	return out
+}
+
 function doneRows(store: Store, since: string): DoneRow[] {
 	const rows: DoneRow[] = []
 	for (const w of store.workflows().filter(w => (w.state === 'done' || w.state === 'open' && w.sent) && w.code && (w.intent !== 'none' || w.fyi) && w.updatedAt > since && w.kind !== 'tracker')) {
-		const name = w.asker?.name ?? 'Someone', where = w.chat.group ? ` in ${w.chat.name}` : '', first = name.split(/[\s,(]+/)[0]
-		const made = (w.effects ?? []).filter(e => e.done)
-		const base = { code: w.code, who: who(name), teams: teamsOf(w), ask: w.redacted ? undefined : askLine(w.lastAsk) || undefined }
-		if (w.sent) rows.push({ ...base, kind: made.length && w.intent === 'pr_review' ? 'review' : 'reply', sentence: made.length && w.intent === 'pr_review' ? `Reviewed for ${name} and replied${where}` : `Replied to ${name}${where}`, by: w.sent.byRule ? `by rule ${w.sent.byRule}` : 'by you', at: w.sent.at, text: w.redacted ? undefined : w.sent.text ?? w.draft?.text, said: w.redacted ? undefined : short(w.sent.text ?? w.draft?.text), own: !w.sent.byRule, notes: w.notes ?? [], why: { reason: w.decision?.reason, confidence: w.decision?.confidence, sources: (w.draft?.sources ?? []).map(s => source(s.ref, s.tier, s.stale, s.label)), gaps: w.gaps ?? [] }, rule: w.sent.byRule, undoUntil: w.sent.byRule ? w.sent.undoUntil : undefined, work: workLine(homeOf(store, w)) })
-		else if (w.fyi) rows.push({ ...base, kind: 'catchup', sentence: w.fyi.line, gist: w.fyi.gist ?? base.ask, watch: w.fyi.watch, watchedAs: w.watchedAs, by: `${first}${w.chat.group ? ` · ${w.chat.name}` : ''}`, at: w.fyi.at ?? w.updatedAt, high: w.fyi.weight === 'high' })
-		else if (closedHow(w) === 'replied') {
-			// Answered in Teams by the owner: a reply like any other, with their own words from the thread.
-			const mine = store.thread(w.id).filter(m => m.byOwner).at(-1)
-			rows.push({ ...base, kind: 'reply', sentence: `Replied to ${name}${where}`, by: 'by you in Teams', at: w.updatedAt, said: w.redacted ? undefined : mine ? short(mine.text) : undefined, inTeams: true, own: true, teams: (mine && teamsOf(w, mine.id)) ?? base.teams })
-		}
-		else if (closedHow(w) !== 'skipped') rows.push({ ...base, kind: 'closed', sentence: `${name}: ${w.status.replace(/: ".*$/s, '')}`, by: '', at: w.updatedAt })
-		for (const e of made) if (!(w.intent === 'pr_review' && COMMENT.test(e.action))) rows.push({ code: w.code, kind: 'change', who: who(name), sentence: shown(e).line, by: shown(e).system, at: e.done!.at, own: true, href: /^https:\/\//.test(e.done?.ref ?? '') ? e.done!.ref : undefined })
+		const r = itemRow(store, w), name = w.asker?.name ?? 'Someone'
+		if (r) rows.push(r)
+		for (const e of (w.effects ?? []).filter(e => e.done)) if (!(w.intent === 'pr_review' && COMMENT.test(e.action))) rows.push({ code: w.code, kind: 'change', who: who(name), sentence: shown(e).line, by: shown(e).system, at: e.done!.at, own: true, href: /^https:\/\//.test(e.done?.ref ?? '') ? e.done!.ref : undefined })
 	}
 	for (const e of store.logs(7).filter(e => e.event === 'sent' && String(e.approvedBy ?? '').startsWith('automation:') && String(e.at) > since)) {
 		const name = (e.asker as { name?: string })?.name ?? 'someone'

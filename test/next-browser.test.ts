@@ -198,7 +198,7 @@ test('next Now: the summary line, every row kind on its fixture, attributed word
 		assert.equal(await flat('#nsum'), 'Delegate is working on 3 · Waiting 8, 2 changed · Catch up 4, 1 worth a look')
 		assert.deepEqual(await t.page.locator('#nsum a').evaluateAll((l: Element[]) => l.map(a => a.getAttribute('href'))), ['#now/working', '#now/waiting', '#now/catchup'], 'each part opens its section')
 		assert.deepEqual(await Promise.all(['move', 'working', 'waiting', 'catchup'].map(id => flat(`#now-${id} .nsh h2`))), ['YOUR MOVE · 13', 'DELEGATE IS WORKING · 3', 'WAITING · 8', 'CATCH UP · 4 UNREAD'])
-		assert.deepEqual((await t.page.locator('#tabs a').allInnerTexts()).map((x: string) => x.replace(/\s+/g, ' ')), ['Now 13', 'Done 5', 'Settings'])
+		assert.deepEqual((await t.page.locator('#tabs a').allInnerTexts()).map((x: string) => x.replace(/\s+/g, ' ')), ['Now 13', 'Done 5', 'Numbers', 'Settings'])
 		assert.match(await flat('#status'), /^Checked \d/)
 		const kinds: Record<string, string> = { A20: 'reply', A21: 'holding', A2: 'question', A3: 'choice', A5: 'meeting', A6: 'review', A34: 'check-date', A37: 'track', A23: 'your-step', A22: 'stopped', A24: 'working', A36: 'scheduled', A29: 'watch', R1: 'reminder', A25: 'waiting-delegate', A28: 'waiting-person', W2: 'waiting-person', A26: 'nobody', A27: 'waiting-others', A30: 'catchup' }
 		for (const [code, kind] of Object.entries(kinds)) assert.equal(await t.page.locator(`#now-${code}.k-${kind}`).count(), 1, `${code} draws as ${kind}`)
@@ -347,7 +347,7 @@ test('next narrow panel: Your move leads, the summary line opens the other secti
 		assert.equal(await visible('#now-working'), false)
 		await t.page.click('#navbtn')
 		await t.page.waitForSelector('#tabs.open .uisw-menu', { state: 'visible' })
-		assert.deepEqual((await t.page.locator('#tabs a').allInnerTexts()).map((x: string) => x.replace(/\s+/g, ' ')), ['Now 13', 'Done 5', 'Settings'])
+		assert.deepEqual((await t.page.locator('#tabs a').allInnerTexts()).map((x: string) => x.replace(/\s+/g, ' ')), ['Now 13', 'Done 5', 'Numbers', 'Settings'])
 		assert.equal(await visible('#tabs .themeitem'), true)
 		await Promise.all([t.page.waitForEvent('load'), t.page.click('#tabs .uisw-menu')])
 		await t.page.waitForSelector('#app:not([data-ui=next]) #main :first-child')

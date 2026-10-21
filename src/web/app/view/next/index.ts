@@ -1,4 +1,4 @@
-// The new experience (R-NEX-02): Now, Done, and Settings. Now sorts every open thread by whose move it is; Done, Settings,
+// The new experience (R-NEX-02): Now, Done, Numbers, and Settings. Now sorts every open thread by whose move it is; Done, Settings,
 // and To learn are the classic views as they are. Behind the "New experience" switch. See view/experience.ts for the contract.
 import { newCount } from '../../model/derive.ts'
 import { when } from '../../model/format.ts'
@@ -14,6 +14,8 @@ import { formSentence } from '../classic/sheet.ts'
 import { doneList } from '../classic/tabs/done.ts'
 import { knowledgeList } from '../classic/tabs/learn.ts'
 import { markUnsaved, settingsView } from '../classic/tabs/settings.ts'
+import { numbersView } from '../classic/tabs/numbers.ts'
+import { hasNumbers } from '../../state/numbers.ts'
 import { nowView } from './now.ts'
 import { uiSwitch } from './switch.ts'
 
@@ -36,12 +38,12 @@ function boot(app: HTMLElement) {
 	$('#tabs').addEventListener('click', () => { $('#tabs').classList.remove('open'); $('#navbtn').setAttribute('aria-expanded', 'false') })
 }
 
-// The tabs: Now with the Your move count, Done with its new rows, Settings. The narrow menu also holds the switch and the theme.
+// The tabs: Now with the Your move count, Done with its new rows, Numbers (no count), Settings. The narrow menu also holds the switch and the theme.
 function tabs(base: string): H {
 	const n = V.next?.move.length ?? 0, d = newCount(V)
 	const tab = (h: string, label: string, count: H) => html`<a href="#${raw(h)}"${h === base ? raw(' aria-current="page"') : ''}>${esc(label)}${count}</a>`
 	const t = themeNow()
-	return html`${tab('now', 'Now', n ? html`<span class="count">${n}</span>` : '')}${tab('done', 'Done', d ? html`<span class="count muted" aria-label="${d} new">${d}</span>` : '')}${V.settings ? tab('settings', 'Settings', '') : ''}${uiSwitch('menu')}<button class="menu-only themeitem" type="button" data-act="theme">${I(t === 'dark' ? 'moon' : t === 'light' ? 'sun' : 'auto')}<span>Theme: ${esc(THEME_LABEL[t])}</span></button>`
+	return html`${tab('now', 'Now', n ? html`<span class="count">${n}</span>` : '')}${tab('done', 'Done', d ? html`<span class="count muted" aria-label="${d} new">${d}</span>` : '')}${hasNumbers() ? tab('numbers', 'Numbers', '') : ''}${V.settings ? tab('settings', 'Settings', '') : ''}${uiSwitch('menu')}<button class="menu-only themeitem" type="button" data-act="theme">${I(t === 'dark' ? 'moon' : t === 'light' ? 'sun' : 'auto')}<span>Theme: ${esc(THEME_LABEL[t])}</span></button>`
 }
 
 function status(): string {
@@ -52,8 +54,8 @@ function status(): string {
 	return r.state === 'off' ? `Not checked since ${when(r.at)}` : `Checked ${when(r.at)}`
 }
 
-const VIEWS: Record<string, () => H> = { now: nowView, done: () => doneList(S.route.split('/')[1] || 'all'), settings: settingsView, knowledge: knowledgeList }
-const LABEL: Record<string, string> = { now: 'Now', done: 'Done', settings: 'Settings', knowledge: 'To learn' }
+const VIEWS: Record<string, () => H> = { now: nowView, done: () => doneList(S.route.split('/')[1] || 'all'), numbers: numbersView, settings: settingsView, knowledge: knowledgeList }
+const LABEL: Record<string, string> = { now: 'Now', done: 'Done', numbers: 'Numbers', settings: 'Settings', knowledge: 'To learn' }
 function draw() {
 	const base = VIEWS[S.route.split('/')[0]] ? S.route.split('/')[0] : 'now'
 	$('#tabs').innerHTML = str(tabs(base))

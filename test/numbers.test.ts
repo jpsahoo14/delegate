@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { askAtOf, numbers, numbersText, slim, weekLine, weekOf, type Ev, type Item } from '../src/core/numbers.ts'
+import { listsOf } from '../src/web/app/model/numbers.ts'
 import { dayIn } from '../src/core/schedule.ts'
 
 // Numbers tab (R-NEX-11, design-spec/north-star-tab.md). A fixed clock: Wednesday 2026-10-21 12:00 UTC, the owner in UTC.
@@ -223,6 +224,7 @@ test('R-NEX-11 missed: messages the owner pointed at and Catch up lines moved to
 	assert.deepEqual(n.now.missed.mine, ['A6', 'A2'])
 	assert.equal(n.now.missed.n, 5)
 	assert.equal(n.now.missed.of, 7, 'A0 A1 A2 A4, A6 made last week, and the two links: a watch, a close, and A3 (no reply needed) are not asks; A2 and A4 count once')
+	assert.deepEqual([...n.now.missed.asks].sort(), ['A0', 'A1', 'A2', 'A4', 'A6', 'missed:gone', 'missed:gone2'], 'the page opens exactly the asks it divided by')
 })
 
 test('R-NEX-11 asker wait: median, shortest, and longest from the ask to the first reply, from sends and Teams replies alike', () => {
@@ -256,7 +258,7 @@ test('R-NEX-11 corrections per 100 sends over 4 weeks, each item once', () => {
 		{ at: at('2026-10-20'), event: 'marked', code: 'A2', kind: 'wrong' },
 		{ at: at('2026-09-20'), event: 'marked', code: 'A0', kind: 'wrong' },
 	])
-	assert.deepEqual(n.corrections, { codes: ['A1', 'A2'], n: 2, sends: 50, per100: 4 })
+	assert.deepEqual(n.corrections, { codes: ['A1', 'A2'], n: 2, sends: 50, per100: 4, sent: sends.map(e => e.code) })
 	assert.match(numbersText(n), /Corrections: 4 per 100 sends over 4 weeks \(2 of 50; keep it under 2\)/)
 	assert.match(numbersText(run([...ticks(...WEEK), sent('A1', at('2026-10-20')), { at: at('2026-10-20'), event: 'undo', code: 'A1' }])), /Corrections: 1 of 1 sends over 4 weeks/)
 })
@@ -321,4 +323,25 @@ test('R-NEX-11 months of log count in well under a second: corrections and misse
 	for (const key of ['this', 'all'] as const) numbers(ev, items, NOW, TZ, key)
 	// Linear: about 0.5 s here and up to ~6 s on a loaded CI runner (10-21). Scanning every event per close took minutes at this size.
 	assert.ok(performance.now() - start < 20_000, `took ${Math.round(performance.now() - start)} ms`)
+})
+
+// Review P1-2: "1 of 24 sends" opened a list of 12, because an item that sent twice was listed once. And holding replies say the
+// answer is coming: they are not replies sent, so "per 100 replies sent" leaves them out.
+test('R-NEX-11 corrections: the sends list is every send counted, an item that sent twice twice, and holding replies are not sends', () => {
+	const n = run([
+		...ticks(...WEEK),
+		// A1 answered, then followed up: two replies sent. A2 sent a holding reply, then the real one. A3 sent once.
+		sent('A1', at('2026-10-19', '10:00')), sent('A1', at('2026-10-20', '10:00')),
+		sent('A2', at('2026-10-19', '11:00'), { holding: true }), sent('A2', at('2026-10-19', '15:00')),
+		sent('A3', at('2026-10-20', '11:00')),
+		{ at: at('2026-10-20', '12:00'), event: 'marked', code: 'A3', kind: 'wrong' },
+	])
+	assert.equal(n.corrections.sends, 4, 'A1 twice, A2 once (not its holding reply), A3 once')
+	assert.deepEqual([...n.corrections.sent].sort(), ['A1', 'A1', 'A2', 'A3'])
+	const d = { ...n, rows: {}, missed: {} }
+	assert.equal(listsOf(d).sends.groups.flatMap(g => g.codes).length, n.corrections.sends, 'the list a count opens is as long as the count')
+	assert.match(numbersText(n), /Corrections: 1 of 4 sends over 4 weeks/)
+	// Ten items with a holding reply each, then the real one: 10 sends, not 20.
+	const many = run([...ticks(...WEEK), ...Array.from({ length: 10 }, (_, i) => [sent(`B${i}`, at('2026-10-20', `0${i}:00`), { holding: true }), sent(`B${i}`, at('2026-10-20', `1${i}:00`))]).flat(), { at: at('2026-10-20', '21:00'), event: 'marked', code: 'B1', kind: 'wrong' }])
+	assert.deepEqual([many.corrections.sends, many.corrections.per100], [10, 10])
 })

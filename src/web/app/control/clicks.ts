@@ -9,6 +9,7 @@ import { THEME_LABEL, nextTheme, theme } from '../view/theme.ts'
 import { route } from './route.ts'
 import { focusOn, say, setTheme } from './ui.ts'
 import { closeNote, switchUi } from './switch.ts'
+import { copySummary, loadNumbers } from '../state/numbers.ts'
 
 export function onClick(e: MouseEvent) {
 	const target = e.target as HTMLElement
@@ -85,6 +86,8 @@ export function onClick(e: MouseEvent) {
 		case 'closesheet': S.sheet = null; render(); break
 		case 'sheetbg': if (e.target === t) { S.sheet = null; render() } break
 		case 'autocreate': A.createAutomation(); break
+		case 'numretry': void loadNumbers(); break
+		case 'numcopy': copySummary(); break
 	}
 }
 

@@ -25,8 +25,9 @@ export function orderOf(order: string[], needs: ItemCard[], handled: (code: stri
 // A card the owner has started on: a redraw from fresh data must not throw away what they typed or picked.
 export const dirty = (u: CardUi) => u.touched || u.editing || !!u.answer || !!u.other || !!u.ask
 
-// The tabs and their order. To learn is a tab only while facts wait for the owner's ok.
-export const tabsOf = (v: View, snap: boolean): [string, string, number?][] => [['home', 'Home'], ['focus', 'Needs you'], ['done', 'Done', snap ? 0 : newCount(v)], ['ongoing', 'Ongoing'], ...(v.knowledge.length ? [['knowledge', 'To learn'] as [string, string]] : []), ...(v.settings ? [['settings', 'Settings'] as [string, string]] : [])]
+// The tabs and their order. To learn is a tab only while facts wait for the owner's ok. Numbers, last before Settings, has no
+// count, and only where it can be asked for (not the snapshot) (R-NEX-11).
+export const tabsOf = (v: View, snap: boolean, numbers = false): [string, string, number?][] => [['home', 'Home'], ['focus', 'Needs you'], ['done', 'Done', snap ? 0 : newCount(v)], ['ongoing', 'Ongoing'], ...(v.knowledge.length ? [['knowledge', 'To learn'] as [string, string]] : []), ...(numbers && !snap ? [['numbers', 'Numbers'] as [string, string]] : []), ...(v.settings ? [['settings', 'Settings'] as [string, string]] : [])]
 
 /* ------------------------------ primary actions ------------------------------ */
 export function changeLabel(c: ItemCard, n: number, reply: boolean): string {

@@ -1,6 +1,6 @@
 // How the page reaches Delegate: the shell defines window.DELEGATE_IO per mode (src/web/shell.ts, design-spec/client-contract.md).
 // The snapshot has none; the chat panel has no settings or seen marks.
-import type { Boot, ItemCard, KnowledgeCard, UiChoice, View } from '../model/types.ts'
+import type { Boot, ItemCard, KnowledgeCard, NumbersPage, UiChoice, View, WindowKey } from '../model/types.ts'
 
 export type Called = { ok: boolean; text: string; ids: string[] }
 export type Result = { applied: boolean; card?: ItemCard | KnowledgeCard; text?: string; state?: string }
@@ -13,6 +13,8 @@ export type IO = {
 	seen?(filters: string[], at: string): Promise<void>
 	// The New experience switch on this machine (R-NEX-01), or that its first-time note was closed. The snapshot has none.
 	ui?(b: { ui?: 'new' | 'classic'; noted?: boolean }): Promise<{ ok: boolean; ui?: UiChoice }>
+	// The Numbers tab, asked for only when it opens and when its window changes (R-NEX-11). The snapshot has none.
+	numbers?(window: WindowKey): Promise<NumbersPage>
 }
 
 declare global {

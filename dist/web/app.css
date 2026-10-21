@@ -664,3 +664,81 @@ label.chk{display:flex;gap:8px;align-items:flex-start;font-size:13px;color:var(-
   #app[data-ui=next] .row.cu .rt{flex:1 1 calc(100% - 90px)}
 }
 #app[data-ui=next] .nrow,#app[data-ui=next] .nsec{scroll-margin-top:72px}
+
+/* Numbers (R-NEX-11, design-spec/north-star-tab.md). Every number is a link to the rows it counted. */
+.numbers{max-width:880px}
+.numbers .lh{align-items:flex-end}
+.num-pick{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.num-pick select.field{height:32px}
+.num-range{font-size:12.5px;color:var(--text-3)}
+.num-card{background:var(--surface);border-radius:var(--r-lg);box-shadow:var(--shadow-1);padding:18px 20px;min-width:0}
+.num-card .num-t{font-size:12px;font-weight:650;color:var(--text-3);text-transform:uppercase;letter-spacing:.06em;margin:0 0 8px}
+.num-link{color:inherit;text-decoration:none;border-bottom:1px dashed var(--border-strong)}
+.num-link:hover{color:var(--accent-text);border-bottom-color:var(--accent)}
+.num-link:focus-visible,.num-bin:focus-visible{outline:2px solid var(--focus);outline-offset:2px;border-radius:4px}
+.num-head{display:flex;align-items:baseline;gap:8px 16px;flex-wrap:wrap}
+.num-big{font-size:26px;font-weight:650;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.num-trend{color:var(--text-2);font-size:13.5px}
+.num-trend.up{color:var(--success)}
+.num-trend.down{color:var(--warn)}
+.num-how{margin:2px 0 6px;font-size:12.5px;color:var(--text-3)}
+.num-how summary{cursor:pointer;width:max-content;max-width:100%;list-style:none}
+.num-how summary::-webkit-details-marker{display:none}
+.num-how summary::before{content:'›';display:inline-block;margin-right:5px;transition:transform .12s}
+.num-how[open] summary::before{transform:rotate(90deg)}
+.num-how p{margin:4px 0 0;color:var(--text-2);max-width:70ch}
+.num-bars{list-style:none;margin:14px 0 4px;padding:0;display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:8px;align-items:end}
+.num-bin{display:flex;flex-direction:column;align-items:center;gap:4px;color:inherit;text-decoration:none;padding:2px 0}
+.num-bn{font-size:12px;font-weight:600;color:var(--text-2);font-variant-numeric:tabular-nums;min-height:18px}
+.num-col{position:relative;display:block;width:100%;max-width:44px;height:84px;border-radius:6px 6px 2px 2px;background:var(--surface-2);overflow:hidden}
+.num-fill{position:absolute;left:0;right:0;bottom:0;background:var(--accent);border-radius:6px 6px 0 0;min-height:0}
+.num-bar.now .num-fill{background:var(--accent);opacity:.7}
+.num-bar.before .num-col{background:none;border:1px dashed var(--border-strong)}
+.num-bar.gap .num-col{background:repeating-linear-gradient(135deg,var(--surface-3) 0 3px,transparent 3px 7px),var(--surface-2)}
+.num-days{display:flex;gap:2px}
+.num-days i{display:block;width:4px;height:4px;border-radius:1px;background:var(--border-strong)}
+.num-days i.off{background:none;outline:1px solid var(--warn);outline-offset:-1px}
+.num-bar.before .num-days i{background:none;outline:none}
+.num-bw{font-size:11.5px;color:var(--text-3);white-space:nowrap}
+a.num-bin:hover .num-fill{background:var(--accent-hover)}
+a.num-bin:hover .num-bw{color:var(--accent-text)}
+.num-note{margin:4px 0 2px;font-size:12.5px;color:var(--text-3);display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.num-hatch{display:inline-block;width:14px;height:12px;border-radius:3px;background:repeating-linear-gradient(135deg,var(--surface-3) 0 3px,transparent 3px 7px),var(--surface-2);box-shadow:0 0 0 1px var(--border-strong)}
+.num-kinds{margin:12px 0 4px;color:var(--text-2)}
+.num-row{display:flex;align-items:center;gap:10px;margin:6px 0 2px;color:var(--text-2);flex-wrap:wrap}
+.num-row .sp{flex:1}
+.num-all{display:inline-flex;align-items:center;gap:2px;font-weight:550;border-bottom:0;color:var(--accent-text)}
+.num-cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin:14px 0}
+.num-main{margin:0 0 6px;font-size:18px;font-weight:620;font-variant-numeric:tabular-nums}
+.num-meter{height:6px;border-radius:3px;background:var(--surface-3);overflow:hidden;margin:2px 0 8px}
+.num-meter i{display:block;height:100%;background:var(--success);border-radius:3px}
+.num-lines{list-style:none;margin:0 0 4px;padding:0;color:var(--text-2);font-size:13px;line-height:1.7}
+.num-lines .num-four{color:var(--text-3)}
+.num-foot p{margin:0 0 2px;color:var(--text-2)}
+.num-foot p b{color:var(--text);font-weight:600}
+.num-copy{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:12px;padding-top:12px;border-top:1px solid var(--border)}
+.num-copy .m{font-size:12.5px;color:var(--text-3)}
+.num-sum{white-space:pre-wrap;font:12px/1.5 var(--mono);background:var(--surface-2);border-radius:var(--r-sm);padding:10px 12px;margin:6px 0 0;color:var(--text-2)}
+.num-back{display:inline-flex;align-items:center;gap:4px;color:var(--accent-text);text-decoration:none;font-weight:550;margin:0 0 8px}
+.num-list-h{font-size:18px;margin:4px 0 12px;font-weight:620}
+.num-list-h .tnum{color:var(--text-3);font-weight:500;margin-left:4px}
+.num-list-h:focus{outline:none}
+.num-fail{display:flex;flex-direction:column;align-items:center;gap:10px}
+.num-fail p{margin:0;max-width:60ch}
+.numbers[aria-busy=true] .num-card{opacity:.6}
+@container app (max-width:760px){
+  .numbers .lh .sp{display:none}
+  .num-pick{width:100%}
+  .num-cards{grid-template-columns:1fr}
+  .num-bars{gap:4px}
+  .num-col{height:64px}
+  .num-bw{font-size:10.5px}
+  .num-big{font-size:22px}
+  .num-card{padding:14px 16px}
+}
+@media (forced-colors:active){
+  .num-fill,.num-meter i{background:Highlight;forced-color-adjust:none}
+  .num-col,.num-meter{border:1px solid CanvasText}
+  .num-days i{background:CanvasText}
+  .num-days i.off{background:Canvas;outline-color:CanvasText}
+}

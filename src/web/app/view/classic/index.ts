@@ -16,6 +16,8 @@ import { home } from './tabs/home.ts'
 import { knowledgeList } from './tabs/learn.ts'
 import { ongoingView } from './tabs/ongoing.ts'
 import { markUnsaved, settingsView } from './tabs/settings.ts'
+import { numbersView } from './tabs/numbers.ts'
+import { hasNumbers } from '../../state/numbers.ts'
 import { uiSwitch } from '../next/switch.ts'
 
 const $ = <T extends HTMLElement = HTMLElement>(s: string) => document.querySelector(s) as T
@@ -39,12 +41,12 @@ function boot(app: HTMLElement) {
 
 // Each route's first part and its tab. An unknown address shows Home.
 const VIEWS: Record<string, (enter: boolean) => H> = {
-	home, focus: enter => focus(enter), done: () => doneList(S.route.split('/')[1] || 'all'), ongoing: ongoingView, knowledge: knowledgeList, settings: settingsView,
+	home, focus: enter => focus(enter), done: () => doneList(S.route.split('/')[1] || 'all'), ongoing: ongoingView, knowledge: knowledgeList, numbers: numbersView, settings: settingsView,
 }
 function draw(enter: boolean) {
 	const base = S.route.split('/')[0]
 	const ups = V.watching.filter(w => w.update).length, n = openCards().length
-	const TABS = tabsOf(V, env.snap)
+	const TABS = tabsOf(V, env.snap, hasNumbers())
 	$('#tabs').innerHTML = str(html`${TABS.map(([h, l, c]) => html`<a href="#${raw(h)}"${h === base ? raw(' aria-current="page"') : ''}${h === 'done' && c ? html` aria-label="Done, ${c} new"` : ''}>${esc(l)}${h === 'done' && c ? html`<span class="count muted">${c}</span>` : h === 'focus' && n ? html`<span class="count">${n}</span>` : h === 'ongoing' && ups ? html`<span class="count muted">${ups}</span>` : h === 'knowledge' && V.knowledge.length ? html`<span class="count muted">${V.knowledge.length}</span>` : ''}</a>`)}${uiSwitch('menu')}`)
 	const st = V.status, bad = st.state !== 'on' || V.health.length || S.offline
 	$('#status').className = `pill${bad ? ' warn' : ''}`

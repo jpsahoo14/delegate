@@ -8,6 +8,8 @@
 //   data-opt / data-cmt / data-fact (picks), data-every (watch timing); forms carry data-form (ask, mark, report, missed).
 // - Ids app.ts focuses: card-<code>, pri-<code>, ed-<code>, askin-<code>, mk-<code>, oth-<code>, wt-<code>, o-<code>-<n>,
 //   cm-<code>-<n>, set-<key>, setsec-<section>, ws-text, repin, missin, and sections #running and #automations.
+// - Numbers (R-NEX-11): the window field carries data-numwin; a "How is this counted?" <details> carries data-how; #num-list
+//   heads a list a number opened.
 //
 // What an experience must not do: change page state while drawing. It reads V and S and reports what it drew (the markup
 // above), nothing more. Before every draw, state/actions.ts viewing() settles what the page shows, so every experience gets it:

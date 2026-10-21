@@ -85,7 +85,8 @@ type Close = { code: string; at: string; how: 'reply' | 'changes' | 'nothing'; m
 export type Bar = { week: string; n: number; codes: string[]; gaps: string[]; before: boolean }
 // unknown: sends an old line can no longer prove either way; they are in neither drafted nor of.
 export type Replies = { drafted: string[]; edited: string[]; teams: string[]; unknown: string[]; n: number; of: number; pct?: number }
-export type Missed = { pointed: string[]; mine: string[]; n: number; of: number; pct?: number }
+// asks: the codes of every ask counted in of, so the page can open them.
+export type Missed = { pointed: string[]; mine: string[]; asks: string[]; n: number; of: number; pct?: number }
 export type Wait = { n: number; median?: number; min?: number; max?: number; codes: string[] }
 export type Inputs = { replies: Replies; missed: Missed; wait: Wait }
 export type Numbers = {
@@ -95,7 +96,7 @@ export type Numbers = {
 	bars: Bar[]
 	// The chosen window, and the last 4 weeks beside it.
 	now: Inputs; four: Inputs
-	corrections: { n: number; sends: number; per100?: number; codes: string[] }
+	corrections: { n: number; sends: number; per100?: number; codes: string[]; sent: string[] }
 }
 
 const CORRECTS = new Set(['undo', 'marked', 'notfyi', 'correction'])
@@ -151,7 +152,7 @@ function inputs(evs: Ev[], items: Item[], inSpan: (e: Ev) => boolean, notAsks: S
 	const watch = new Set(items.filter(w => w.kind === 'tracker').map(w => w.code))
 	// Asks: items made, but not watches, nor items closed with no reply needed and never answered; plus every message the owner had to point at.
 	const asks = new Set([...here.filter(e => e.event === 'made' && !watch.has(e.code!) && !notAsks.has(e.code!)).map(e => e.code!), ...pointed, ...mine])
-	const missed = { pointed, mine, n: pointed.length + mine.length, of: asks.size }
+	const missed = { pointed, mine, asks: [...asks], n: pointed.length + mine.length, of: asks.size }
 	const waits = [
 		...answered.filter(e => e.askAt).map(e => ({ code: e.code!, min: (Date.parse(e.at) - Date.parse(e.askAt!)) / 60_000 })),
 		...teams.filter(e => e.askAt && e.replyAt).map(e => ({ code: e.code!, min: (Date.parse(e.replyAt!) - Date.parse(e.askAt!)) / 60_000 })),
@@ -196,7 +197,9 @@ export function numbers(raw: Ev[], items: Item[], now: Date, tz?: string, key: W
 		return { week: w, n: codes.length, codes, gaps, before: ws.to < first }
 	})
 	const four = within(spans['4w'])
-	const sends = evs.filter(e => e.event === 'sent' && four(e)).length
+	// Every reply sent counts, an item that sent twice twice, so the list a count opens is as long as the count. A holding reply
+	// says the answer is coming: it is not a reply sent.
+	const sent = evs.filter(e => e.event === 'sent' && !e.holding && four(e)).map(e => e.code!), sends = sent.length
 	const fixes = uniq(evs.filter(e => (e.event === 'marked' || e.event === 'undo') && four(e)).map(e => e.code!))
 	return {
 		window: { key, ...span, label: `${LABEL[key]} (${dmd(span.from)} to ${span.to === today ? 'today' : dmd(span.to)})` },
@@ -204,7 +207,7 @@ export function numbers(raw: Ev[], items: Item[], now: Date, tz?: string, key: W
 		handled: { n: counted.length, codes: counted.map(c => c.code), reply: of('reply'), changes: of('changes'), nothing: of('nothing'), provisional: counted.filter(c => now.getTime() - Date.parse(c.at) < 7 * DAY).map(c => c.code), ...(before !== undefined ? { before } : {}), ...(arrow ? { arrow } : {}) },
 		bars,
 		now: inputs(evs, items, within(span), notAsks), four: inputs(evs, items, four, notAsks),
-		corrections: { n: fixes.length, sends, codes: fixes, ...(sends >= SMALL ? { per100: Math.round((fixes.length / sends) * 1000) / 10 } : {}) },
+		corrections: { n: fixes.length, sends, codes: fixes, sent, ...(sends >= SMALL ? { per100: Math.round((fixes.length / sends) * 1000) / 10 } : {}) },
 	}
 }
 

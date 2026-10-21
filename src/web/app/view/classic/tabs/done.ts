@@ -3,7 +3,7 @@ import { CHIP_LABEL, DONE_KINDS, isNew, newCount, seenIn } from '../../../model/
 import { first, mmss, when } from '../../../model/format.ts'
 import { BY, rowWatchOf } from '../../../model/forms.ts'
 import type { DoneRow } from '../../../model/types.ts'
-import { S, U, V, env } from '../../../state/store.ts'
+import { S, V, env, peek } from '../../../state/store.ts'
 import { esc, html, join, raw, type H } from '../../html.ts'
 import { I } from '../../icons.ts'
 import { banners } from '../banners.ts'
@@ -16,7 +16,7 @@ const seenOf = (k: string) => S.seenOpen?.[k] ?? V.seen?.[k] ?? V.since ?? ''
 
 // A Catch up row reads on its own: headline, what changed, who and where; the row opens Teams.
 export function cuRow(r: DoneRow, home = false): H {
-	const key = `row:${r.code}`, u = U(key), w = S.watchOpen === r.code
+	const key = `row:${r.code}`, u = peek(key), w = S.watchOpen === r.code
 	const meta = html`<span class="m">${join([r.by, when(r.at)].filter(Boolean).map(x => esc(x)), raw(' · '))}${r.watchedAs ? html` · <span class="tag ok">Watching as ${esc(r.watchedAs)}</span>` : ''}</span>`
 	const text = html`<b>${esc(r.sentence)}</b>${r.gist ? html`<span class="gist">${esc(r.gist)}</span>` : ''}${meta}`
 	const body = r.teams && !env.snap ? html`<a class="rt rlink" href="${esc(r.teams)}" target="_blank" rel="noopener" data-act="cuopen" data-v="${esc(r.code)}" title="Open in Teams">${text}</a>` : html`<div class="rt">${text}</div>`
@@ -31,9 +31,10 @@ function watchForm(r: DoneRow): H {
 		<div class="seg" role="group" aria-label="Done by">${BY.map(([k, l]) => html`<button type="button" data-act="wby" data-v="${esc(k)}" aria-pressed="${f.by === k}">${esc(l)}</button>`)}</div>
 		<div class="acts">${B('Start watching', 'watchgo', { primary: true, sm: true, v: r.code, disabled: !f.target.trim() })}${B('Cancel', 'watchcancel', { sm: true, ghost: true })}</div></div>`
 }
-function row(r: DoneRow): H {
+// One Done row; the Numbers tab draws the rows a number counted with it too (R-NEX-11).
+export function row(r: DoneRow): H {
 	if (r.kind === 'catchup') return cuRow(r)
-	const key = `row:${r.code}`, left = r.undoUntil ? Math.round((Date.parse(r.undoUntil) - Date.now()) / 1000) : 0, u = U(key)
+	const key = `row:${r.code}`, left = r.undoUntil ? Math.round((Date.parse(r.undoUntil) - Date.now()) / 1000) : 0, u = peek(key), ru = peek(r.code)
 	// Undo counts down in place (app.ts ticks [data-until] every second).
 	const undo = left > 0 && !u.msg ? raw(String(B('Undo', 'undo', { v: r.code, busy: u.status === 'pending', busyLabel: 'Taking it back…', verb: `undo ${r.code}`, aria: html`aria-label="Undo the reply to ${esc(first(r.who.name))}"` })).replace('<span class="bl">Undo</span>', String(html`${I('undo', 'sm')}<span class="bl">Undo <span class="tnum" data-until="${esc(r.undoUntil)}" style="color:var(--text-3);font-weight:500">${esc(mmss(left))}</span></span>`))) : ''
 	const link = r.teams || r.href
@@ -46,7 +47,7 @@ function row(r: DoneRow): H {
 		? html`${r.ask ? html`<span class="qa"><b>${esc(first(r.who.name))} asked:</b> ${esc(r.ask)}</span>` : html`<b>${esc(r.sentence)}</b>`}${r.said ? html`<span class="qa you"><b>You${esc(r.inTeams ? ' (in Teams)' : '')}:</b> ${esc(r.said)}</span>` : ''}`
 		: html`<b>${esc(r.sentence)}</b>${r.gist ? html`<span class="gist">${esc(r.gist)}</span>` : r.said ? html`<span class="gist">“${esc(r.said)}”</span>` : ''}`
 	const main = html`${lead}<div class="rt">${lines}${meta}${work}${rowState(key)}</div>`
-	if (r.text && !undo) return html`<li data-code="${esc(r.code)}"><details class="rowx" data-row${U(r.code).open || U(r.code).marking || r.notes?.some(n => !n.a) ? raw(' open') : ''}><summary class="row">${main}${I('right', 'sm')}</summary><div class="sent">${esc(r.text)}</div>${r.why ? why({ why: r.why, who: r.who }, U(r.code)) : ''}${r.notes ? html`<div class="c-sec">${markBox(r, U(r.code))}</div>` : ''}${r.notes ? askThread({ code: r.code, sent: true, notes: r.notes }, U(r.code)) : ''}</details></li>`
+	if (r.text && !undo) return html`<li data-code="${esc(r.code)}"><details class="rowx" data-row${ru.open || ru.marking || r.notes?.some(n => !n.a) ? raw(' open') : ''}><summary class="row">${main}${I('right', 'sm')}</summary><div class="sent">${esc(r.text)}</div>${r.why ? why({ why: r.why, who: r.who }, ru) : ''}${r.notes ? html`<div class="c-sec">${markBox(r, ru)}</div>` : ''}${r.notes ? askThread({ code: r.code, sent: true, notes: r.notes }, ru) : ''}</details></li>`
 	return html`<li class="row${undo ? raw(' undo-row') : ''}">${main}${undo}</li>`
 }
 export function doneList(f: string): H {

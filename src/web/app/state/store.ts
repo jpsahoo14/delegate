@@ -2,7 +2,7 @@
 // through setView and the actions in state/actions.ts. Lives for one page load.
 import { orderOf } from '../model/derive.ts'
 import type { IO } from '../io/transport.ts'
-import type { AutoForm, Boot, CardUi, ItemCard, KnowledgeCard, RowWatch, SheetWatch, View } from '../model/types.ts'
+import type { AutoForm, Boot, CardUi, ItemCard, KnowledgeCard, NumbersPage, RowWatch, SheetWatch, View, WindowKey } from '../model/types.ts'
 
 export type PageState = {
 	// The address after '#', and the card the queue is on.
@@ -24,12 +24,15 @@ export type PageState = {
 	// Now's footer: whether the list of channels the owner named is open.
 	chanOpen?: boolean
 	missedLink?: string; missing?: boolean; checking?: boolean; reporting?: boolean
+	// The Numbers tab (R-NEX-11): its window, the last answer for it, whether one is on its way or could not be had, which
+	// "How is this counted?" lines are open, and a counter so an older answer never replaces a newer one.
+	num: { win: WindowKey; data?: NumbersPage; busy: boolean; failed: boolean; seq: number; how: Set<string> }
 }
 
 // What the shell said about this page: snapshot or live, the brand words, the version it started on, and how it acts.
 export const env = { snap: false, name: '', cmd: '', start: undefined as string | undefined, io: null as IO | null, poll: 2000, ui: 'classic' as 'new' | 'classic', panel: false }
 export let V: View
-export const S: PageState = { route: 'home', cur: null, ui: {}, fresh: {}, order: [], done: new Map(), later: new Set(), offline: false, deferred: false, sheet: null, form: null, formBusy: false, formErr: '', newAuto: null, set: {} }
+export const S: PageState = { route: 'home', cur: null, ui: {}, fresh: {}, order: [], done: new Map(), later: new Set(), offline: false, deferred: false, sheet: null, form: null, formBusy: false, formErr: '', newAuto: null, set: {}, num: { win: 'this', busy: false, failed: false, seq: 0, how: new Set() } }
 
 export function init(boot: Boot, io: IO | null, poll: number) {
 	Object.assign(env, { snap: boot.mode === 'snapshot', panel: boot.mode === 'panel', name: boot.name, cmd: boot.cmd, start: boot.view.version?.code, io, poll })
@@ -40,6 +43,9 @@ export const setView = (v: View) => { V = v }
 export function U(code: string): CardUi {
 	return S.ui[code] ??= { status: 'ready', msg: '', lost: false, stale: false, touched: false, pick: null, otherOn: false, other: '', editing: false, text: null, answer: '', ask: '', cmts: null, facts: null, threadOpen: false, whyOpen: false, dbgOpen: false, menu: false }
 }
+// A card's or row's state for drawing: what is there, or the defaults, without creating an entry (drawing writes no state).
+const IDLE: CardUi = Object.freeze({ status: 'ready', msg: '', lost: false, stale: false, touched: false, pick: null, otherOn: false, other: '', editing: false, text: null, answer: '', ask: '', cmts: null, facts: null, threadOpen: false, whyOpen: false, dbgOpen: false, menu: false }) as CardUi
+export const peek = (code: string): CardUi => S.ui[code] ?? IDLE
 export const cardOf = (code: string): ItemCard | KnowledgeCard | undefined => V.needs.find(c => c.code === code) || V.knowledge.find(c => c.code === code)
 export function syncOrder() {
 	S.order = orderOf(S.order, V.needs, c => S.done.has(c), c => S.later.has(c))

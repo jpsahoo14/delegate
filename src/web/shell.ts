@@ -15,6 +15,7 @@ call:async(command,seenAt)=>{const r=await fetch('/act?t='+T,{method:'POST',head
 result:async(ids,code)=>J(await fetch('/result?t='+T+'&code='+encodeURIComponent(code)+'&ids='+ids.join(','))),
 data:async(since,ui)=>J(await fetch('/data?t='+T+(since?'&since='+encodeURIComponent(since):'')+(ui==='new'?'&ui=new':''))),
 ui:async(b)=>J(await fetch('/ui?t='+T,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(b)})),
+numbers:async(w)=>{const r=await fetch('/numbers?t='+T+'&window='+encodeURIComponent(w));if(!r.ok)throw new Error('offline');return J(r)},
 automate:async(input)=>{const r=await fetch('/automate?t='+T,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(input)});return J(r)},
 settings:async(key,value)=>{const r=await fetch('/settings?t='+T,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({key,value})});return J(r)},
 seen:async(filters,at)=>{await fetch('/seen?t='+T,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({filters,at})})}};`,
@@ -25,6 +26,7 @@ call:async(command,seenAt)=>{const r=await tool('act',{command,seenAt});return{o
 result:async(ids,code)=>(await tool('act_result',{ids,code})).structuredContent||{applied:false},
 data:async(since,ui)=>(await tool('inbox_view',{...(since?{since}:{}),...(ui==='new'?{ui}:{})})).structuredContent,
 ui:async(b)=>(await tool('ui_save',b)).structuredContent,
+numbers:async(w)=>{const r=await tool('numbers_view',{window:w});if(r.isError||!r.structuredContent)throw new Error('offline');return r.structuredContent},
 automate:async(input)=>(await tool('automate_now',input)).structuredContent};`,
 	snapshot: 'window.DELEGATE_IO=null;',
 }

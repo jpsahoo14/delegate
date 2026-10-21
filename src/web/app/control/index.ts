@@ -30,6 +30,7 @@ export function listen() {
 		if (d.dataset?.dbg != null) { const c = code(); if (c) U(c).dbgOpen = open }
 		if (d.dataset?.adv != null) S.advOpen = open
 		if (d.dataset?.chan != null) S.chanOpen = open
+		if (d.dataset?.how != null) { if (open) S.num.how.add(d.dataset.how); else S.num.how.delete(d.dataset.how) }
 	}
 	document.addEventListener('click', e => { const sm = (e.target as Element | null)?.closest?.('summary'); const d = sm?.parentElement; if (d instanceof HTMLDetailsElement && sm === d.querySelector(':scope > summary')) remember(d, !d.open) }, true)
 	document.addEventListener('toggle', e => remember(e.target as HTMLDetailsElement, (e.target as HTMLDetailsElement).open), true)

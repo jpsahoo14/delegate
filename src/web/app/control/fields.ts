@@ -5,6 +5,8 @@ import * as A from '../state/actions.ts'
 import { S, U, cardOf, env } from '../state/store.ts'
 import { current, render } from '../view/render.ts'
 import { focusOn } from './ui.ts'
+import { loadNumbers } from '../state/numbers.ts'
+import type { WindowKey } from '../model/types.ts'
 
 export function onChange(e: Event) {
 	const t = e.target as HTMLInputElement
@@ -12,6 +14,8 @@ export function onChange(e: Event) {
 	// No re-render: leaving a field fires change on the way to its Save button, and a redraw would drop that click.
 	if (t.dataset.set) { S.set[t.dataset.set] = t.value; current().patch.unsaved(t); return }
 	if (t.dataset.every) { const code = t.dataset.every; A.act(`row:${code}`, code, `every ${code}: ${t.value}`, 'row'); return }
+	// The Numbers tab's window: its numbers are asked for again.
+	if (t.dataset.numwin != null) { void loadNumbers(t.value as WindowKey); return }
 	if (t.dataset.f) { (S.form as Record<string, unknown>)[t.dataset.f] = t.value; render(); return }
 	const el = t.closest<HTMLElement>('[data-code]'); if (!el) return
 	const code = el.dataset.code!, c = cardOf(code) as ItemCard, u = U(code)

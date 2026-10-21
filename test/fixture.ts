@@ -1,4 +1,6 @@
 // A store with one of every card, list row, and Home tile, for the browser test and screenshots (design-spec/scenarios.md).
+import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import type { Store } from '../src/store/state.ts'
 import type { Workflow } from '../src/core/types.ts'
 import { knowledgeOf, propose } from '../src/runner/proposals.ts'
@@ -149,5 +151,72 @@ export function seedQuiet(store: Store, moving = false) {
 export function pauseNext(store: Store) {
 	store.saveControl({ ...store.control(), paused: true, stopped: false })
 	for (const w of store.workflows().filter(w => w.state === 'scheduled')) store.save({ ...w, state: 'needs_human', sendAt: undefined, held: 'paused', status: 'Held: you paused' }, false)
+	return store
+}
+
+// The Numbers tab (R-NEX-11): eight weeks of Delegate's own log on a second machine ('pc'), and the items it names, all made up.
+// Handled per week, oldest first: 0 (before the first read), 3, 5, 8, 11, 9, 12, and this week 4, so This week is a small
+// sample (counts, no arrow) and Last 4 weeks has an arrow. The Saturday and Sunday two weeks ago had no read. This week also has
+// an edited reply, two replies typed in Teams, a send too old to check, a reply marked wrong, a message the owner pointed at
+// that became an item, one that never did, and a Catch up line moved to Needs me. Items are written without a state line, so
+// the log holds only what is seeded here. first: only this week, for "Your first week".
+export function seedNumbers(store: Store, now = new Date(), first = false) {
+	store.saveConfig({ ...store.config(), tz: 'UTC' } as never)
+	const DAY = 86_400_000, MIN = 60_000, t0 = now.getTime(), today = Date.parse(now.toISOString().slice(0, 10))
+	const week = today - ((new Date(today).getUTCDay() + 6) % 7) * DAY
+	const iso = (ms: number) => new Date(ms).toISOString()
+	const lines: Record<string, unknown>[] = []
+	const log = (ms: number, line: Record<string, unknown>) => { if (ms <= t0) lines.push({ at: iso(ms), ...line }) }
+	const PEOPLE = ['Kim Lane', 'Rita Vale', 'Dev Moss', 'Alex Fern', 'Pete Hale', 'Lin Brook'], CHATS = ['Acme launch', 'Globex sync', 'Team chat']
+	const ASKS = ['Is the build green for the Acme release?', 'Can you confirm the Globex demo is on Thursday?', 'Can you review PR 2210?', 'Where are the release notes?', 'Did the config change go out?', 'Can you share the test plan?']
+	const SAID = ['Yes, build 512 is green.', 'Confirmed: Thursday at 10.', 'Reviewed it and left two comments.', 'They are on the release wiki page, section 3.', 'Yes, it went out this morning.', 'Shared it in the channel just now.']
+	let n = 60
+	const dir = join(store.root, 'state', 'workflows'); mkdirSync(dir, { recursive: true })
+	const make = (ms: number, over: Partial<Workflow> = {}) => {
+		const i = n, code = `A${n++}`, name = PEOPLE[i % PEOPLE.length], chat = CHATS[i % CHATS.length]
+		const wf = { schema: 1, id: `w-${code}`, code, kind: 'reply', state: 'done', intent: 'status_next_step', key: { type: 'thread', id: `t-${code}` }, chat: { id: `19:${chat.replace(/\W/g, '').toLowerCase()}@thread.v2`, name: chat, test: false, group: true }, asker: { id: name.toLowerCase(), name }, session: { agent: 'copilot', id: `s-${code}` }, lastMsgId: `m-${code}`, pending: [], msgIds: [`m-${code}`], newCount: 0, status: 'Sent', lastAsk: ASKS[i % ASKS.length], createdAt: iso(ms - 30 * MIN), updatedAt: iso(ms), revAt: iso(ms), ...over } as Workflow
+		writeFileSync(join(dir, `${wf.id}.json`), JSON.stringify(wf))
+		log(ms - 30 * MIN, { event: 'state', workflowId: wf.id, code, from: 'new', to: 'running' })
+		return { code, text: SAID[i % SAID.length], wf }
+	}
+	const ask = (ms: number, k: number) => iso(ms - (6 + k * 9) * MIN)
+	const reply = (ms: number, k: number, edited = false) => { const x = make(ms); writeFileSync(join(dir, `${x.wf.id}.json`), JSON.stringify({ ...x.wf, draft: { text: x.text, commitment: false, sources: [] }, sent: { msgId: `s-${x.code}`, at: iso(ms), text: x.text } })); log(ms, { event: 'sent', code: x.code, approvedBy: 'owner', v: 2, unchanged: !edited, edited, msgId: `s-${x.code}`, askAt: ask(ms, k) }); return x }
+	const handled = (ms: number, k: number) => {
+		if (k % 4 === 1) {
+			const x = make(ms, { intent: 'pr_review', effects: [{ system: 'ado', action: 'comment', target: 'PR 2210', summary: 'Two comments on PR 2210', done: { at: iso(ms) } }] as never, sent: { msgId: `s-${n - 1}`, at: iso(ms + MIN), text: 'Reviewed PR 2210 and left two comments.' } })
+			log(ms, { event: 'job-executed', items: [x.code], kept: 2, removed: 0, left: 0 })
+			log(ms + MIN, { event: 'sent', code: x.code, approvedBy: 'owner', v: 2, unchanged: true, edited: false, msgId: `s-${n - 1}`, askAt: ask(ms, k) })
+		} else if (k % 4 === 3) {
+			const x = make(ms, { closedBy: 'job', status: 'Nothing needed: the PR merged before the review' } as never)
+			log(ms, { event: 'state', code: x.code, from: 'running', to: 'done', closedBy: 'job' })
+		} else reply(ms, k)
+	}
+	const teams = (ms: number, k: number) => { const x = make(ms, { closedBy: 'replied', status: 'You replied yourself' } as never); log(ms, { event: 'state', code: x.code, from: 'needs_human', to: 'done', closedBy: 'replied', askAt: ask(ms, k + 3), replyAt: iso(ms - 2 * MIN) }) }
+	const COUNTS = first ? [0, 0, 0, 0, 0, 0, 0, 4] : [0, 3, 5, 8, 11, 9, 12, 4]
+	const start = week - (7 - COUNTS.findIndex(c => c > 0)) * 7 * DAY
+	// A read every day from the first week on, but for the gap two weeks ago.
+	for (let d = start; d <= today; d += DAY) if (first || !(d === week - 9 * DAY || d === week - 8 * DAY)) log(Math.min(d + 8 * 3_600_000, t0 - MIN), { event: 'tick' })
+	COUNTS.forEach((c, i) => {
+		const ws = week - (7 - i) * 7 * DAY, last = i === 7, span = t0 - ws
+		const at = (k: number, of: number) => (last ? ws + Math.floor(span * (k + 1) / (of + 2)) : ws + (k % 5) * DAY + 10 * 3_600_000 + k * 13 * MIN)
+		for (let k = 0; k < c; k++) handled(at(k, c + 6), k)
+		if (last || (!first && c && i >= 4)) {
+			reply(at(c, c + 6), c, true)
+			teams(at(c + 1, c + 6), c)
+		}
+		if (last) {
+			teams(at(c + 2, c + 6), c + 1)
+			// A send from before sends said whether they were edited, whose words are gone: it can no longer be checked.
+			const old = make(at(c + 3, c + 6)); log(at(c + 3, c + 6), { event: 'sent', code: old.code, approvedBy: 'owner', unchanged: true, msgId: `s-${old.code}` })
+			// A reply that went out as drafted, then marked wrong: not handled, and a correction.
+			const wrong = reply(at(c + 4, c + 6), c + 2); log(at(c + 5, c + 6), { event: 'marked', code: wrong.code, kind: 'wrong', sentId: `s-${wrong.code}` })
+			// Missed: a message the owner pointed at that became an item, one that never did, and a Catch up line moved to Needs me.
+			const seen = make(at(c + 5, c + 6), { state: 'needs_human', status: 'Needs you', msgIds: ['m-pointed'] }); log(at(c + 5, c + 6), { event: 'missed', chat: seen.wf.chat.id, msgId: 'm-pointed' })
+			log(at(c + 5, c + 6), { event: 'missed', chat: '19:globexsync@thread.v2', msgId: '1760000000001' })
+			const fyi = make(at(c + 2, c + 6), { state: 'needs_human', status: 'Needs you', intent: 'fyi' }); log(at(c + 5, c + 6), { event: 'notfyi', code: fyi.code })
+		}
+	})
+	mkdirSync(join(store.root, 'state', 'log'), { recursive: true })
+	for (const l of lines) appendFileSync(join(store.root, 'state', 'log', `${String(l.at).slice(0, 10)}-pc.jsonl`), JSON.stringify(l) + '\n')
 	return store
 }

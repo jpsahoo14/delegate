@@ -17,7 +17,7 @@ export function pickUi(v: Pick<View, 'ui'> | undefined, hash: string, cached?: {
 // The classic addresses, opened in the new experience (design-spec/new-experience.md §2). Done and Settings stay; the rest is Now.
 export function newRoute(h: string): string {
 	const [base, sub] = h.split('/')
-	if (base === 'now' || base === 'done' || base === 'settings' || base === 'knowledge') return h
+	if (base === 'now' || base === 'done' || base === 'numbers' || base === 'settings' || base === 'knowledge') return h
 	if (base === 'focus') return sub ? `now/${sub}` : 'now'
 	if (base === 'ongoing' || base === 'watching' || base === 'automations') return sub === 'running' ? 'now/working' : 'now/waiting'
 	if (base === 'running') return 'now/working'
