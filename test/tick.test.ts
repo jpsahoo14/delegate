@@ -4346,7 +4346,7 @@ test('next action: the executor cannot run an unapproved call', async () => {
 	const down = async () => { throw new Error('ADO 503') }
 	// The PR now shows the vote cast. A vote is a state, so the PR read answers, not the ledger (slice 3 re-review P2-4).
 	prNow = { ...prNow, votes: [{ name: 'Robin Park', vote: 10 }] }
-	assert.deepEqual([await makeChange(store, job().id, 'r1', 0, down, prProbe), await makeChange(store, job().id, 'r1', 0, ado, prProbe)], [{ ref: 'vote-1' }, { ref: 'vote-1' }], 'a later run never casts a vote the PR shows as cast (review 10-21e P1)')
+	assert.deepEqual([await makeChange(store, job().id, 'r1', 0, down, prProbe), await makeChange(store, job().id, 'r1', 0, ado, prProbe)], [{ ref: 'already on the PR' }, { ref: 'already on the PR' }], 'a later run never casts a vote the PR shows as cast (review 10-21e P1)')
 	assert.equal(calls.length, 1)
 	const j = job()
 	store.saveJob({ ...j, result: { ...j.result!, effects: j.result!.effects.map((e, i) => i === 0 ? { ...e, call: { ...e.call!, args: { ...e.call!.args, vote: 'Rejected' } } } : e) } })
@@ -6279,6 +6279,18 @@ test('slice 3b P2-4: a vote is a state: the PR read decides, so a vote reset by 
 	calls.length = 0
 	src.post('self', 'me', `ok ${code}`); await goPr()
 	const job = store.jobs().find(j => j.purpose === 'execute' && j.run)
-	if (job) { await makeChanges([0]); await goPr() }
-	assert.equal(calls.length, 0, 'never a vote the PR already shows')
+	assert.ok(job, 'the ok queued a change run')
+	const runId = job.run!.id
+	await makeChanges([0]); await goPr()
+	assert.deepEqual([calls.length, store.changes(job.id, runId)[0]?.state], [0, 'done'], 'never a vote the PR already shows')
+})
+
+test('slice 3c P2-a: with no owner name set, a reviewer with an empty name is never taken for the owner, so the approved vote is cast', async () => {
+	await prReviewed(); script = mapped()
+	store.saveConfig({ ...store.config(), owner: { ...store.config().owner, name: '' } })
+	src.post('self', 'me', "send A1: Looks good. I'll approve the PR."); await goPr()
+	prNow = { ...prNow, votes: [{ name: '', vote: 10 }] }
+	src.post('self', 'me', 'ok A1'); await goPr()
+	await makeChanges([0]); await goPr()
+	assert.deepEqual(calls.map(c => c.args.vote), ['Approved'])
 })

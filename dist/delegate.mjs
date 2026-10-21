@@ -49086,7 +49086,7 @@ async function makeChange(store2, jobId, runId, index, call, probe) {
   }
   const moved = isVote(e.call) ? await voteMoved(store2, owner, e, probe) : isDeploy(e.call) ? await deployMoved(store2, owner, e, probe).then((error62) => error62 ? { error: error62, stale: void 0 } : void 0) : void 0;
   if (moved && "cast" in moved) {
-    const ref = store2.callRec(callKey(e.call))?.ref ?? "already cast";
+    const ref = "already on the PR";
     store2.saveChange(jobId, runId, index, { call: key, state: "done", ref, at: at3() });
     return { ref };
   }
@@ -49117,7 +49117,7 @@ async function voteMoved(store2, wf, e, probe) {
     const st = await probe.pr(ref.project, ref.repo, ref.id), why = prMoved(st, e);
     if (why.length) return { error: `PR ${ref.id} changed since your review (${why.join(", ")}).`, stale: true };
     const me = store2.config().owner.name.trim().toLowerCase(), mine = st.votes.filter((v) => v.name.trim().toLowerCase() === me);
-    return mine.length === 1 && sameVote(mine[0].vote, voteValue(c)) ? { cast: true } : void 0;
+    return me && mine.length === 1 && sameVote(mine[0].vote, voteValue(c)) ? { cast: true } : void 0;
   } catch (err) {
     return { error: `Could not read PR ${ref.id} right before the vote (${String(err).slice(0, 120)}).` };
   }

@@ -48,7 +48,7 @@ export async function makeChange(store: Store, jobId: string, runId: string, ind
 	// A deploy reads its ring and PR again right before the call, as a vote reads its PR (owned work).
 	const moved = isVote(e.call) ? await voteMoved(store, owner, e, probe) : isDeploy(e.call) ? await deployMoved(store, owner, e, probe).then(error => (error ? { error, stale: undefined } : undefined)) : undefined
 	if (moved && 'cast' in moved) {
-		const ref = store.callRec(callKey(e.call!))?.ref ?? 'already cast'
+		const ref = 'already on the PR'
 		store.saveChange(jobId, runId, index, { call: key, state: 'done', ref, at: at() })
 		return { ref }
 	}
@@ -77,7 +77,8 @@ async function voteMoved(store: Store, wf: Workflow, e: Effect, probe?: BuildPro
 		const st = await probe.pr(ref.project, ref.repo, ref.id), why = prMoved(st, e)
 		if (why.length) return { error: `PR ${ref.id} changed since your review (${why.join(', ')}).`, stale: true }
 		const me = store.config().owner.name.trim().toLowerCase(), mine = st.votes.filter(v => v.name.trim().toLowerCase() === me)
-		return mine.length === 1 && sameVote(mine[0].vote, voteValue(c)) ? { cast: true } : undefined
+		// An unset name matches no one: a vote the owner approved is never skipped for someone else's (re-review 3c P2-a).
+		return me && mine.length === 1 && sameVote(mine[0].vote, voteValue(c)) ? { cast: true } : undefined
 	} catch (err) { return { error: `Could not read PR ${ref.id} right before the vote (${String(err).slice(0, 120)}).` } }
 }
 
