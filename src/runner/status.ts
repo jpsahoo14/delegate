@@ -3,6 +3,7 @@ import type { Store } from '../store/state.ts'
 import { age } from '../core/render.ts'
 import * as scheduler from '../os/scheduler.ts'
 import { NAME } from '../brand.ts'
+import { modelsLine } from '../core/runinfo.ts'
 
 // "status": on or off, the last run, and today's counts (R-SET-02).
 export function statusText(store: Store, now = new Date()): string {
@@ -15,6 +16,7 @@ export function statusText(store: Store, now = new Date()): string {
 	return [
 		`${NAME} is ${state} · auto-send ${c.autoSend ? 'on' : 'off'} · runner: ${cfg.runner ?? store.machine}${scheduler.status() ? ', in the background' : ', only when asked'}`,
 		`Last check: ${lastTick ? `${age(lastTick, now)} ago` : 'not today'} · Today: ${n('sent')} sent (${n('sent', e => String(e.approvedBy ?? '').startsWith('rule:'))} by your rules), ${n('worker')} drafted, ${store.runsToday()} of ${cfg.dailyRuns ?? 200} AI runs (resets at local midnight)`,
+		modelsLine(today),
 		...suggestions(store),
 	].join('\n')
 }

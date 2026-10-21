@@ -1,13 +1,15 @@
 import { site } from '../core/site.ts'
 import { spawn, spawnSync } from 'node:child_process'
-import { closeSync, existsSync, openSync, readdirSync } from 'node:fs'
+import { closeSync, existsSync, openSync, readdirSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { NAME } from '../brand.ts'
 import type { Config } from '../core/types.ts'
+import { readRun, type RunUse } from '../core/runinfo.ts'
 
 export type RunInput = { sessionId: string; prompt: string; cwd: string; mcpConfigPath: string; extraTools: string[]; dirs?: string[] }
-export type RunResult = { exitCode: number; ms: number; summary?: string; error?: string }
+// used: what the run used and where its time went, when the AI CLI said so (R-SET-14).
+export type RunResult = { exitCode: number; ms: number; summary?: string; error?: string; used?: RunUse }
 
 const ALWAYS = ['task_complete']
 
@@ -46,6 +48,12 @@ export function buildArgs(cfg: Config['agent'], i: RunInput, hasSession: (id: st
 		'--output-format', 'json',
 		...(cfg.model ? ['--model', cfg.model] : []),
 		...(cfg.maxCredits ? ['--max-ai-credits', String(cfg.maxCredits)] : [])]
+}
+
+// Copilot's own log of a session, where each model call is recorded (R-SET-14). Empty when there is none.
+export function sessionLog(flavor: string, id: string): string {
+	if (flavor === 'claude') return ''
+	try { return readFileSync(join(process.env.COPILOT_HOME ?? join(homedir(), '.copilot'), 'session-state', id, 'events.jsonl'), 'utf8') } catch { return '' }
 }
 
 // Continue: the same session, interactive, with every owner tool, opening with an orientation prompt (R-HIL-08, R-HIL-17).
@@ -118,7 +126,11 @@ export function runAgent(cfg: Config['agent'], i: RunInput, timeoutMs = 10 * 60_
 		const timer = setTimeout(() => { timedOut = true; if (p.pid) { stopGroup(p.pid, false); force = setTimeout(() => stopGroup(p.pid!, true), graceMs) } }, timeoutMs)
 		// A missing command fails asynchronously; without a listener that error would crash the tick (review R3).
 		p.on('error', e => finish({ exitCode: -1, ms: Date.now() - t0, error: `Could not start ${cmd}: ${e.message}` }))
-		p.on('close', code => finish({ exitCode: code ?? -1, ms: Date.now() - t0, summary: summaryOf(out), error: code !== 0 ? err.slice(-500) || `${cmd} stopped` : undefined }))
+		p.on('close', code => {
+			// Read whatever the run printed, also when its time ran out.
+			const used = readRun(out, t0, process.env, sessionLog(cfg.flavor, i.sessionId), Date.now()).use
+			finish({ exitCode: code ?? -1, ms: Date.now() - t0, summary: summaryOf(out), error: code !== 0 ? err.slice(-500) || `${cmd} stopped` : undefined, ...(Object.keys(used).length ? { used } : {}) })
+		})
 	})
 }
 

@@ -98,9 +98,236 @@ var init_brand = __esm({
   }
 });
 
+// src/core/secrets.ts
+function scrub(text2) {
+  let out = text2;
+  for (const [re, to] of PATTERNS) out = out.replace(re, to);
+  return out;
+}
+function scrubDeep(v) {
+  if (typeof v === "string") return scrub(v);
+  if (Array.isArray(v)) return v.map(scrubDeep);
+  if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, scrubDeep(x)]));
+  return v;
+}
+var HIDDEN, PATTERNS;
+var init_secrets = __esm({
+  "src/core/secrets.ts"() {
+    "use strict";
+    HIDDEN = "[hidden]";
+    PATTERNS = [
+      // A private key, whole (review 10-21 P2-6).
+      [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g, `${HIDDEN} private key`],
+      // A URL with a user and password in it: https://user:secret@host.
+      [/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/:@"'\\]+:[^\s/@"'\\]+@/gi, (_, scheme) => `${scheme}${HIDDEN}@`],
+      // GitHub tokens, AWS access keys, Azure DevOps tokens (52 lower-case letters and digits, or 84 with "AZDO"), a bare 88-character storage key.
+      [/\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,})\b/g, HIDDEN],
+      [/\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g, HIDDEN],
+      [/(?<![A-Za-z0-9])(?=[a-z0-9]*\d)(?=[a-z0-9]*[a-z])[a-z0-9]{52}(?![A-Za-z0-9])/g, HIDDEN],
+      [/(?<![A-Za-z0-9])[A-Za-z0-9]{76}AZDO[A-Za-z0-9]{4}(?![A-Za-z0-9])/g, HIDDEN],
+      [/(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{86}==(?![A-Za-z0-9+/=])/g, HIDDEN],
+      // An auth header or a bearer token, with or without its header name.
+      [/\b(bearer|basic)\s+[A-Za-z0-9\-._~+/]{12,}=*/gi, (_, kind) => `${kind} ${HIDDEN}`],
+      // A JSON web token: three base64url parts, the first starting with {"…
+      [/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}/g, HIDDEN],
+      // A storage or SAS signature, an account key, a connection string's key.
+      [/\b(sig|AccountKey|SharedAccessKey|SharedAccessSignature)=[^\s&;"']{8,}/gi, (_, k) => `${k}=${HIDDEN}`],
+      // A named secret: "access_token": "…", api-key=…, client_secret: …, password = …, x-ms-…-token: …
+      [/\b((?:access|refresh|id|auth|session)[_-]?token|api[_-]?key|client[_-]?secret|password|passwd|pwd|x-ms-[\w-]*token|authorization|cookie)("?\s*[:=]\s*"?)(?!\[hidden\]|bearer\b|basic\b)[^\s"',;}]{6,}/gi, (_, k, sep) => `${k}${sep}${HIDDEN}`]
+    ];
+  }
+});
+
+// src/core/runinfo.ts
+function nameOf(v, re, secrets) {
+  if (typeof v !== "string") return void 0;
+  const t2 = v.trim();
+  if (!re.test(t2) || t2.split(" ").length > 5 || scrub(t2) !== t2 || secrets.some((s2) => t2.includes(s2))) return void 0;
+  return t2;
+}
+function eventsOf(out) {
+  const t2 = out.trim();
+  if (!t2) return [];
+  if (t2.startsWith("{")) try {
+    const one = JSON.parse(t2);
+    if (one && typeof one === "object" && !Array.isArray(one)) return [one];
+  } catch {
+  }
+  return t2.split("\n").flatMap((l) => {
+    try {
+      const e = JSON.parse(l);
+      return e && typeof e === "object" && !Array.isArray(e) ? [e] : [];
+    } catch {
+      return [];
+    }
+  });
+}
+function sessionEvents(log, since, until = Infinity) {
+  return log.split("\n").filter((l) => WANTED.test(l)).flatMap((l) => {
+    try {
+      const e = JSON.parse(l), at3 = Date.parse(e.timestamp);
+      return at3 >= since && at3 <= until ? [e] : [];
+    } catch {
+      return [];
+    }
+  });
+}
+function tidy(u) {
+  const out = {};
+  for (const [k, v] of Object.entries(u)) if (Array.isArray(v) ? v.length : v !== void 0) out[k] = typeof v === "number" ? Math.round(v) : v;
+  return out;
+}
+function readRun(out, startedAt, env = process.env, session = "", until) {
+  try {
+    const secrets = envSecrets(env), seen = /* @__PURE__ */ new Set();
+    const events = [...session && startedAt !== void 0 ? sessionEvents(session, startedAt, until) : [], ...eventsOf(out)].filter((e) => typeof e.id !== "string" || !seen.has(e.id) && !!seen.add(e.id));
+    const models = [], weight = /* @__PURE__ */ new Map();
+    const add = (id, name, w = 0) => {
+      const i = nameOf(id, ID, secrets), n = nameOf(name, NAME2, secrets);
+      if (!i) return;
+      const m = models.find((x) => x.id === i);
+      if (!m) models.push(n ? { id: i, name: n } : { id: i });
+      else if (n && !m.name) m.name = n;
+      weight.set(i, (weight.get(i) ?? 0) + w);
+    };
+    const ranked = () => [...models].sort((a, b) => weight.get(b.id) - weight.get(a.id));
+    const result = events.find((e) => e.type === "result" && (Object.keys(obj(e.modelUsage)).length || typeof obj(e.usage).input_tokens === "number"));
+    if (result) {
+      const mu = obj(result.modelUsage), u = obj(result.usage), per = Object.values(mu).map(obj);
+      for (const [id, m] of Object.entries(mu)) add(id, void 0, num(obj(m).outputTokens) ?? 0);
+      const tokensIn2 = sum(u.input_tokens, u.cache_creation_input_tokens, u.cache_read_input_tokens) ?? sum(...per.flatMap((m) => [m.inputTokens, m.cacheReadInputTokens, m.cacheCreationInputTokens]));
+      const tokensOut2 = num(u.output_tokens) ?? sum(...per.map((m) => m.outputTokens));
+      return { use: tidy({ models: ranked(), modelCalls: num(result.num_turns), modelMs: num(result.duration_api_ms), tokensIn: tokensIn2, tokensOut: tokensOut2 }) };
+    }
+    let calls = 0, selected, timed = false, lastAt, firstCall;
+    let modelMs, tokensIn, tokensOut;
+    const tools = /* @__PURE__ */ new Map();
+    let anon = 0, apiMs;
+    const records2 = events.some((e) => typeof e.type === "string" && e.type.endsWith(".usage_record"));
+    for (const e of events) {
+      const type = typeof e.type === "string" ? e.type : "", d = obj(e.data);
+      const at3 = typeof e.timestamp === "string" ? Date.parse(e.timestamp) : NaN;
+      if (type === "result") apiMs = num(obj(e.usage).totalApiDurationMs);
+      if (!/^(session|assistant|tool|user)\./.test(type)) continue;
+      if (Number.isFinite(at3)) {
+        timed = true;
+        lastAt = Math.max(lastAt ?? at3, at3);
+      }
+      if (type === "session.start" || type === "session.resume") selected ??= d.selectedModel;
+      else if (type.endsWith(".usage_record") || type === "assistant.usage" && !records2) {
+        const u = obj(d.usage ?? d);
+        if (typeof u.model !== "string") continue;
+        calls++;
+        add(u.model, u.modelDisplayName, 1);
+        const ms = num(u.duration);
+        if (ms !== void 0) modelMs = (modelMs ?? 0) + ms;
+        if (num(u.inputTokens) !== void 0) tokensIn = (tokensIn ?? 0) + num(u.inputTokens);
+        if (num(u.outputTokens) !== void 0) tokensOut = (tokensOut ?? 0) + num(u.outputTokens);
+        if (Number.isFinite(at3)) {
+          const s2 = at3 - (ms ?? 0);
+          firstCall = Math.min(firstCall ?? s2, s2);
+        }
+      } else if (type === "tool.execution_start" || type === "tool.execution_complete") {
+        const id = typeof d.toolCallId === "string" ? d.toolCallId : type === "tool.execution_start" ? `#${anon++}` : void 0;
+        if (!id) continue;
+        const t2 = tools.get(id) ?? {};
+        if (Number.isFinite(at3)) t2[type === "tool.execution_start" ? "s" : "e"] = at3;
+        tools.set(id, t2);
+      }
+    }
+    if (!calls) add(selected);
+    modelMs ??= apiMs;
+    const did = calls > 0 || tools.size > 0;
+    let toolMs;
+    if (timed && did) {
+      const spans = [...tools.values()].filter((t2) => t2.s !== void 0).map((t2) => [t2.s, Math.max(t2.s, t2.e ?? lastAt ?? t2.s)]).sort((a, b) => a[0] - b[0]);
+      toolMs = 0;
+      let end = -Infinity;
+      for (const [s2, e] of spans) {
+        if (e <= end) continue;
+        toolMs += e - Math.max(s2, end);
+        end = e;
+      }
+    }
+    const startMs = firstCall !== void 0 && startedAt !== void 0 && firstCall >= startedAt ? firstCall - startedAt : void 0;
+    return { use: tidy({ models: ranked(), modelCalls: calls || void 0, modelMs, tokensIn, tokensOut, toolCalls: did ? tools.size : void 0, toolMs, startMs }), lastAt };
+  } catch {
+    return { use: {} };
+  }
+}
+function ran(kind, use) {
+  return use && Object.keys(use).length ? { ...use, runKind: kind } : {};
+}
+function runsOf(events) {
+  const out = /* @__PURE__ */ new Map();
+  events.forEach((e, i) => {
+    const kind = KINDS.find(([k]) => k === e.runKind)?.[0];
+    const models = Array.isArray(e.models) ? e.models.map(obj).filter((m) => typeof m.id === "string").map((m) => ({ id: String(m.id), ...typeof m.name === "string" ? { name: m.name } : {} })) : [];
+    if (!kind || !models.length) return;
+    out.set(typeof e.runId === "string" ? e.runId : `#${i}`, { runId: e.runId, kind, models, ms: num(e.ms), modelMs: num(e.modelMs), toolMs: num(e.toolMs), startMs: num(e.startMs) });
+  });
+  return [...out.values()];
+}
+function modelCounts(runs) {
+  const names = /* @__PURE__ */ new Map(), n = /* @__PURE__ */ new Map();
+  for (const r of runs) for (const m of r.models) {
+    if (m.name) names.set(m.id, m.name);
+    n.set(m.id, (n.get(m.id) ?? 0) + 1);
+  }
+  return [...n.entries()].sort((a, b) => b[1] - a[1]).map(([id, c]) => [names.get(id) ?? id, c]);
+}
+function nameFor(events, id) {
+  return runsOf(events).flatMap((r) => r.models).find((m) => m.id === id && m.name)?.name;
+}
+function runLines(events) {
+  const runs = runsOf(events);
+  return KINDS.flatMap(([kind, label2]) => {
+    const rs = runs.filter((r) => r.kind === kind);
+    if (!rs.length) return [];
+    const ms = modelCounts(rs), who2 = ms.length === 1 ? ms[0][0] : ms.map(([m, c]) => `${m} (${c})`).join(", ");
+    const typical = median(rs.map((r) => r.ms));
+    const share = (f) => median(rs.map((r) => r.ms && f(r) !== void 0 ? Math.min(1, f(r) / r.ms) : void 0));
+    const shares = [["model", share((r) => r.modelMs)], ["tools", share((r) => r.toolMs)], ["start-up", share((r) => r.startMs)]].filter(([, v]) => v !== void 0);
+    const whole = Math.max(1, shares.reduce((a, [, v]) => a + v, 0));
+    const parts2 = typical === void 0 ? [] : shares.map(([l, v]) => [l, Math.round(v / whole * typical / 1e3) * 1e3]);
+    const other = typical === void 0 || !parts2.length ? 0 : Math.round(typical / 1e3) * 1e3 - parts2.reduce((a, [, v]) => a + v, 0);
+    const split2 = [...parts2, ...other >= 1e3 ? [["other", other]] : []].map(([l, v]) => `${l} ${secs(v)}`);
+    return [`${label2}: ${who2}, ${plural(rs.length, "run")}${typical !== void 0 ? `, typical ${secs(typical)}` : ""}${split2.length ? ` (${split2.join(", ")})` : ""}`];
+  });
+}
+function modelsLine(events) {
+  const ms = modelCounts(runsOf(events));
+  return `AI models today: ${ms.length ? ms.map(([m, c]) => `${m} (${plural(c, "run")})`).join(", ") : "none recorded yet"}`;
+}
+var ID, NAME2, SECRET_ENV, envSecrets, num, sum, obj, WANTED, KINDS, median, secs, plural;
+var init_runinfo = __esm({
+  "src/core/runinfo.ts"() {
+    "use strict";
+    init_secrets();
+    ID = /^[A-Za-z0-9][\w.:/@+-]{0,79}$/;
+    NAME2 = /^[A-Za-z0-9][\w .:/@()+-]{0,39}$/;
+    SECRET_ENV = /TOKEN|KEY|SECRET|PASS|PAT$|AUTH|CREDENTIAL|COOKIE/i;
+    envSecrets = (env) => Object.entries(env).filter(([k, v]) => SECRET_ENV.test(k) && v && v.length >= 8).map(([, v]) => v);
+    num = (v) => typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : void 0;
+    sum = (...vs) => {
+      const ns = vs.map(num).filter((n) => n !== void 0);
+      return ns.length ? ns.reduce((a, b) => a + b, 0) : void 0;
+    };
+    obj = (v) => v && typeof v === "object" && !Array.isArray(v) ? v : {};
+    WANTED = /"type":"(session\.(start|resume|usage_record)|assistant\.usage|tool\.execution_(start|complete))"/;
+    KINDS = [["draft", "Drafts"], ["review", "Reviews"], ["ask", "Asks"], ["change", "Changes you approved"], ["job", "Tracking and other jobs"], ["reminder", "Replies to your reminders"]];
+    median = (ns) => {
+      const s2 = ns.filter((n) => n !== void 0).sort((a, b) => a - b);
+      return s2.length ? s2.length % 2 ? s2[(s2.length - 1) / 2] : (s2[s2.length / 2 - 1] + s2[s2.length / 2]) / 2 : void 0;
+    };
+    secs = (ms) => ms < 1e3 ? "under 1 s" : `${Math.round(ms / 1e3)} s`;
+    plural = (n, one) => `${n} ${one}${n === 1 ? "" : "s"}`;
+  }
+});
+
 // src/adapters/agent.ts
 import { spawn, spawnSync } from "node:child_process";
-import { closeSync, existsSync as existsSync2, openSync, readdirSync } from "node:fs";
+import { closeSync, existsSync as existsSync2, openSync, readdirSync, readFileSync as readFileSync2 } from "node:fs";
 import { homedir as homedir2 } from "node:os";
 import { join as join2 } from "node:path";
 function claudeTool(t2) {
@@ -157,6 +384,14 @@ function buildArgs(cfg, i, hasSession = claudeSessionExists) {
     ...cfg.model ? ["--model", cfg.model] : [],
     ...cfg.maxCredits ? ["--max-ai-credits", String(cfg.maxCredits)] : []
   ];
+}
+function sessionLog(flavor, id) {
+  if (flavor === "claude") return "";
+  try {
+    return readFileSync2(join2(process.env.COPILOT_HOME ?? join2(homedir2(), ".copilot"), "session-state", id, "events.jsonl"), "utf8");
+  } catch {
+    return "";
+  }
 }
 function interactiveCommand(cfg, sessionId, prompt, mcpConfigPath) {
   if (cfg.flavor === "claude") return [...cfg.command, "--resume", sessionId, "--mcp-config", mcpConfigPath, prompt];
@@ -228,7 +463,10 @@ function runAgent(cfg, i, timeoutMs = 10 * 6e4, graceMs = 5e3) {
       }
     }, timeoutMs);
     p.on("error", (e) => finish({ exitCode: -1, ms: Date.now() - t0, error: `Could not start ${cmd2}: ${e.message}` }));
-    p.on("close", (code) => finish({ exitCode: code ?? -1, ms: Date.now() - t0, summary: summaryOf(out), error: code !== 0 ? err.slice(-500) || `${cmd2} stopped` : void 0 }));
+    p.on("close", (code) => {
+      const used = readRun(out, t0, process.env, sessionLog(cfg.flavor, i.sessionId), Date.now()).use;
+      finish({ exitCode: code ?? -1, ms: Date.now() - t0, summary: summaryOf(out), error: code !== 0 ? err.slice(-500) || `${cmd2} stopped` : void 0, ...Object.keys(used).length ? { used } : {} });
+    });
   });
 }
 function summaryOf(jsonl) {
@@ -247,6 +485,7 @@ var init_agent = __esm({
     "use strict";
     init_site();
     init_brand();
+    init_runinfo();
     ALWAYS = ["task_complete"];
     CLAUDE_BUILTIN = { view: "Read", glob: "Glob", grep: "Grep", edit: "Edit", create: "Write", bash: "Bash", web_fetch: "WebFetch" };
     workerEnv = (env) => ({ ...cleanEnv(env), DELEGATE_WORKER: "1" });
@@ -404,8 +643,8 @@ function defineLazy(object3, key, getter) {
     configurable: true
   });
 }
-function objectClone(obj2) {
-  return Object.create(Object.getPrototypeOf(obj2), Object.getOwnPropertyDescriptors(obj2));
+function objectClone(obj3) {
+  return Object.create(Object.getPrototypeOf(obj3), Object.getOwnPropertyDescriptors(obj3));
 }
 function assignProp(target2, prop, value) {
   Object.defineProperty(target2, prop, {
@@ -476,10 +715,10 @@ function mergeDefs(...defs) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj2, path) {
+function getElementAtPath(obj3, path) {
   if (!path)
-    return obj2;
-  return path.reduce((acc, key) => acc?.[key], obj2);
+    return obj3;
+  return path.reduce((acc, key) => acc?.[key], obj3);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -821,9 +1060,9 @@ function parsedType(data) {
       if (Array.isArray(data)) {
         return "array";
       }
-      const obj2 = data;
-      if (obj2 && Object.getPrototypeOf(obj2) !== Object.prototype && "constructor" in obj2 && obj2.constructor) {
-        return obj2.constructor.name;
+      const obj3 = data;
+      if (obj3 && Object.getPrototypeOf(obj3) !== Object.prototype && "constructor" in obj3 && obj3.constructor) {
+        return obj3.constructor.name;
       }
     }
   }
@@ -841,8 +1080,8 @@ function issue(...args2) {
   }
   return { ...iss };
 }
-function cleanEnum(obj2) {
-  return Object.entries(obj2).filter(([k, _]) => {
+function cleanEnum(obj3) {
+  return Object.entries(obj3).filter(([k, _]) => {
     return Number.isNaN(Number.parseInt(k, 10));
   }).map((el) => el[1]);
 }
@@ -1239,15 +1478,15 @@ function _getMessage() {
 function _setMessage(value) {
   this._zod.message = value;
 }
-function node(obj2, key, make) {
-  if (!Object.prototype.hasOwnProperty.call(obj2, key)) {
+function node(obj3, key, make) {
+  if (!Object.prototype.hasOwnProperty.call(obj3, key)) {
     if (key === "__proto__") {
-      Object.defineProperty(obj2, key, { value: make(), writable: true, enumerable: true, configurable: true });
+      Object.defineProperty(obj3, key, { value: make(), writable: true, enumerable: true, configurable: true });
     } else {
-      obj2[key] = make();
+      obj3[key] = make();
     }
   }
-  return obj2[key];
+  return obj3[key];
 }
 function flattenError(error62, mapper = (issue2) => issue2.message) {
   const fieldErrors = {};
@@ -2423,13 +2662,13 @@ function isValidBase64URL(data) {
 function isLuhnAlgo(digits) {
   let length = digits.length;
   let bit = 1;
-  let sum = 0;
+  let sum2 = 0;
   while (length) {
     const value = digits.charCodeAt(--length) - 48;
     bit ^= 1;
-    sum += bit ? [0, 2, 4, 6, 8, 1, 3, 5, 7, 9][value] : value;
+    sum2 += bit ? [0, 2, 4, 6, 8, 1, 3, 5, 7, 9][value] : value;
   }
-  return sum % 10 === 0;
+  return sum2 % 10 === 0;
 }
 function isValidCreditCard(input2) {
   if (!creditCard.test(input2))
@@ -10610,8 +10849,8 @@ var init_pt = __esm({
           case "not_multiple_of":
             return `N\xFAmero inv\xE1lido: deve ser m\xFAltiplo de ${issue2.divisor}`;
           case "unrecognized_keys": {
-            const plural2 = issue2.keys.length > 1 ? "s" : "";
-            return `Chave${plural2} inv\xE1lida${plural2}: ${joinValues(issue2.keys, ", ")}`;
+            const plural3 = issue2.keys.length > 1 ? "s" : "";
+            return `Chave${plural3} inv\xE1lida${plural3}: ${joinValues(issue2.keys, ", ")}`;
           }
           case "invalid_key":
             return `Entrada inv\xE1lida n${translateOriginWithArticle(issue2.origin, "definite")}`;
@@ -10761,8 +11000,8 @@ var init_pt_BR = __esm({
           case "not_multiple_of":
             return `N\xFAmero inv\xE1lido: deve ser m\xFAltiplo de ${issue2.divisor}`;
           case "unrecognized_keys": {
-            const plural2 = issue2.keys.length > 1 ? "s" : "";
-            return `Chave${plural2} inv\xE1lida${plural2}: ${joinValues(issue2.keys, ", ")}`;
+            const plural3 = issue2.keys.length > 1 ? "s" : "";
+            return `Chave${plural3} inv\xE1lida${plural3}: ${joinValues(issue2.keys, ", ")}`;
           }
           case "invalid_key":
             return `Entrada inv\xE1lida n${translateOriginWithArticle(issue2.origin, "definite")}`;
@@ -19471,7 +19710,7 @@ function containsRef(value) {
     return Object.values(sub).some(containsRef);
   });
 }
-function plural(n) {
+function plural2(n) {
   return n === 1 ? "element" : "elements";
 }
 function checkArrayGuards(arraySchema, guards) {
@@ -19510,7 +19749,7 @@ function checkArrayGuards(arraySchema, guards) {
       if (matches2 < minContains) {
         payload.issues.push({
           code: "custom",
-          message: `Array must contain at least ${minContains} matching ${plural(minContains)}; found ${matches2}`,
+          message: `Array must contain at least ${minContains} matching ${plural2(minContains)}; found ${matches2}`,
           input: items2,
           continue: true
         });
@@ -19518,7 +19757,7 @@ function checkArrayGuards(arraySchema, guards) {
       if (guards.maxContains !== void 0 && matches2 > guards.maxContains) {
         payload.issues.push({
           code: "custom",
-          message: `Array must contain at most ${guards.maxContains} matching ${plural(guards.maxContains)}`,
+          message: `Array must contain at most ${guards.maxContains} matching ${plural2(guards.maxContains)}`,
           input: items2,
           continue: true
         });
@@ -20617,11 +20856,11 @@ var init_zod = __esm({
 // src/core/deploy.ts
 function buildOf(c) {
   const r = c?.args.resources;
-  if (!obj(r) || Object.keys(r).length !== 1) return void 0;
+  if (!obj2(r) || Object.keys(r).length !== 1) return void 0;
   const [kind, aliases] = Object.entries(r)[0];
-  if (!obj(aliases) || Object.keys(aliases).length !== 1) return void 0;
+  if (!obj2(aliases) || Object.keys(aliases).length !== 1) return void 0;
   const ref = Object.values(aliases)[0];
-  if (!obj(ref) || Object.keys(ref).length !== 1) return void 0;
+  if (!obj2(ref) || Object.keys(ref).length !== 1) return void 0;
   const [k, v] = Object.entries(ref)[0];
   return kind === "pipelines" && k === "runId" || kind === "builds" && (k === "id" || k === "version") ? int2(v) : void 0;
 }
@@ -20637,7 +20876,7 @@ function deployRefusal(cfg, e, pr) {
   if (extra.length) return `a deploy runs the pipeline as it is; ${extra.join(", ")} is not allowed`;
   const tp = c.args.templateParameters;
   if (tp !== void 0) {
-    if (!obj(tp)) return "templateParameters must be names and values";
+    if (!obj2(tp)) return "templateParameters must be names and values";
     const off = Object.entries(tp).find(([k, v]) => t2.params?.[k] === void 0 || typeof v !== "string" || v !== t2.params[k]);
     if (off) return `templateParameters ${off[0]} is not one you confirmed for ${t2.ring}`;
   }
@@ -20681,7 +20920,7 @@ function parseTargets(raw, cfg) {
   }
   return { ok: true, targets: out };
 }
-var DEPLOY, isPipelineTool, isDeploy, int2, pipelineOf, obj, NEVER_RING, KEYS, targetOf, neverId, same, hhmm, runLine, ringParts, ringMeaning, paramText, targetsText;
+var DEPLOY, isPipelineTool, isDeploy, int2, pipelineOf, obj2, NEVER_RING, KEYS, targetOf, neverId, same, hhmm, runLine, ringParts, ringMeaning, paramText, targetsText;
 var init_deploy = __esm({
   "src/core/deploy.ts"() {
     "use strict";
@@ -20691,7 +20930,7 @@ var init_deploy = __esm({
     isDeploy = (c) => isPipelineTool(c) && /^run_?pipeline$/i.test(String(c.args.action ?? ""));
     int2 = (v) => typeof v === "number" && Number.isInteger(v) && v > 0 ? v : typeof v === "string" && /^\d+$/.test(v) ? Number(v) : void 0;
     pipelineOf = (c) => int2(c?.args.pipelineId);
-    obj = (v) => !!v && typeof v === "object" && !Array.isArray(v);
+    obj2 = (v) => !!v && typeof v === "object" && !Array.isArray(v);
     NEVER_RING = /(^|[^a-z0-9])(int|integration|prod|production|ppe|pre-?prod|live|canary|msit|dogfood)\d*([^a-z0-9]|$)/i;
     KEYS = /* @__PURE__ */ new Set(["action", "project", "pipelineId", "resources"]);
     targetOf = (cfg, id) => id ? cfg.deploy?.allowed.find((t2) => t2.pipelineId === id) : void 0;
@@ -21063,7 +21302,7 @@ var init_channels = __esm({
 });
 
 // src/store/fs.ts
-import { appendFileSync, existsSync as existsSync3, mkdirSync, readdirSync as readdirSync2, readFileSync as readFileSync2, renameSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync as existsSync3, mkdirSync, readdirSync as readdirSync2, readFileSync as readFileSync3, renameSync, writeFileSync } from "node:fs";
 import { basename, dirname, join as join3, resolve as resolve2 } from "node:path";
 import { tmpdir } from "node:os";
 function assertTestSafe(path) {
@@ -21072,7 +21311,7 @@ function assertTestSafe(path) {
 }
 function readJson(path, fallback) {
   if (!existsSync3(path)) return fallback;
-  return JSON.parse(readFileSync2(path, "utf8").replace(/^\uFEFF/, ""));
+  return JSON.parse(readFileSync3(path, "utf8").replace(/^\uFEFF/, ""));
 }
 function writeJson(path, value, machine2) {
   writeText(path, JSON.stringify(value, null, "	") + "\n", machine2);
@@ -21175,7 +21414,7 @@ var init_process = __esm({
 });
 
 // src/paths.ts
-import { existsSync as existsSync4, readFileSync as readFileSync3 } from "node:fs";
+import { existsSync as existsSync4, readFileSync as readFileSync4 } from "node:fs";
 import { dirname as dirname2, join as join4 } from "node:path";
 import { fileURLToPath } from "node:url";
 function up(rel) {
@@ -21190,7 +21429,7 @@ var init_paths = __esm({
     ROOT = dirname2(up("package.json"));
     VERSION = (() => {
       try {
-        return JSON.parse(readFileSync3(join4(ROOT, "package.json"), "utf8")).version;
+        return JSON.parse(readFileSync4(join4(ROOT, "package.json"), "utf8")).version;
       } catch {
         return "0.0.0";
       }
@@ -21265,48 +21504,8 @@ var init_feedback = __esm({
   }
 });
 
-// src/core/secrets.ts
-function scrub(text2) {
-  let out = text2;
-  for (const [re, to] of PATTERNS) out = out.replace(re, to);
-  return out;
-}
-function scrubDeep(v) {
-  if (typeof v === "string") return scrub(v);
-  if (Array.isArray(v)) return v.map(scrubDeep);
-  if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, scrubDeep(x)]));
-  return v;
-}
-var HIDDEN, PATTERNS;
-var init_secrets = __esm({
-  "src/core/secrets.ts"() {
-    "use strict";
-    HIDDEN = "[hidden]";
-    PATTERNS = [
-      // A private key, whole (review 10-21 P2-6).
-      [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g, `${HIDDEN} private key`],
-      // A URL with a user and password in it: https://user:secret@host.
-      [/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/:@"'\\]+:[^\s/@"'\\]+@/gi, (_, scheme) => `${scheme}${HIDDEN}@`],
-      // GitHub tokens, AWS access keys, Azure DevOps tokens (52 lower-case letters and digits, or 84 with "AZDO"), a bare 88-character storage key.
-      [/\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,})\b/g, HIDDEN],
-      [/\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g, HIDDEN],
-      [/(?<![A-Za-z0-9])(?=[a-z0-9]*\d)(?=[a-z0-9]*[a-z])[a-z0-9]{52}(?![A-Za-z0-9])/g, HIDDEN],
-      [/(?<![A-Za-z0-9])[A-Za-z0-9]{76}AZDO[A-Za-z0-9]{4}(?![A-Za-z0-9])/g, HIDDEN],
-      [/(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{86}==(?![A-Za-z0-9+/=])/g, HIDDEN],
-      // An auth header or a bearer token, with or without its header name.
-      [/\b(bearer|basic)\s+[A-Za-z0-9\-._~+/]{12,}=*/gi, (_, kind) => `${kind} ${HIDDEN}`],
-      // A JSON web token: three base64url parts, the first starting with {"…
-      [/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}/g, HIDDEN],
-      // A storage or SAS signature, an account key, a connection string's key.
-      [/\b(sig|AccountKey|SharedAccessKey|SharedAccessSignature)=[^\s&;"']{8,}/gi, (_, k) => `${k}=${HIDDEN}`],
-      // A named secret: "access_token": "…", api-key=…, client_secret: …, password = …, x-ms-…-token: …
-      [/\b((?:access|refresh|id|auth|session)[_-]?token|api[_-]?key|client[_-]?secret|password|passwd|pwd|x-ms-[\w-]*token|authorization|cookie)("?\s*[:=]\s*"?)(?!\[hidden\]|bearer\b|basic\b)[^\s"',;}]{6,}/gi, (_, k, sep) => `${k}${sep}${HIDDEN}`]
-    ];
-  }
-});
-
 // src/store/state.ts
-import { closeSync as closeSync2, existsSync as existsSync5, mkdirSync as mkdirSync2, openSync as openSync2, readdirSync as readdirSync3, readFileSync as readFileSync4, rmSync, writeSync } from "node:fs";
+import { closeSync as closeSync2, existsSync as existsSync5, mkdirSync as mkdirSync2, openSync as openSync2, readdirSync as readdirSync3, readFileSync as readFileSync5, rmSync, writeSync } from "node:fs";
 import { homedir as homedir3, hostname as hostname3, uptime } from "node:os";
 import { createHash } from "node:crypto";
 import { basename as basename2, dirname as dirname3, isAbsolute as isAbsolute2, join as join5, relative, resolve as resolve3 } from "node:path";
@@ -21327,7 +21526,7 @@ async function withTickLock(fn, bootMs = Date.now() - uptime() * 1e3) {
   const lock = join5(LOCAL_DIR, "tick.lock");
   const token = `${process.pid} ${Date.now()} ${Math.random()}`;
   if (!tryLock(lock, token)) {
-    const [pid, at3] = readFileSync4(lock, "utf8").split(" ").map(Number);
+    const [pid, at3] = readFileSync5(lock, "utf8").split(" ").map(Number);
     if (aliveAs(pid, /node|delegate/i) && at3 > bootMs && Date.now() - at3 < 60 * 6e4) return "locked";
     rmSync(lock, { force: true });
     if (!tryLock(lock, token)) return "locked";
@@ -21335,7 +21534,7 @@ async function withTickLock(fn, bootMs = Date.now() - uptime() * 1e3) {
   try {
     return await fn();
   } finally {
-    if (existsSync5(lock) && readFileSync4(lock, "utf8") === token) rmSync(lock, { force: true });
+    if (existsSync5(lock) && readFileSync5(lock, "utf8") === token) rmSync(lock, { force: true });
   }
 }
 function tryLock(path, token) {
@@ -21778,7 +21977,7 @@ var init_state = __esm({
         const since = new Date(Date.now() - days2 * 864e5).toISOString().slice(0, 10);
         const dir = this.p("state", "log");
         if (!existsSync5(dir)) return [];
-        return readdirSync3(dir).filter((f) => f.endsWith(".jsonl") && f.slice(0, 10) >= since).flatMap((f) => readFileSync4(join5(dir, f), "utf8").split("\n").filter(Boolean).map((l) => {
+        return readdirSync3(dir).filter((f) => f.endsWith(".jsonl") && f.slice(0, 10) >= since).flatMap((f) => readFileSync5(join5(dir, f), "utf8").split("\n").filter(Boolean).map((l) => {
           try {
             return JSON.parse(l);
           } catch {
@@ -21792,7 +21991,7 @@ var init_state = __esm({
         return existsSync5(dir) ? readdirSync3(dir).filter((f) => /^\d{4}-\d{2}-\d{2}-.+\.jsonl$/.test(f)).map((f) => ({ day: f.slice(0, 10), machine: f.slice(11, -6), file: join5(dir, f) })) : [];
       }
       logOf(file2) {
-        return readFileSync4(file2, "utf8").split("\n").filter(Boolean).flatMap((l) => {
+        return readFileSync5(file2, "utf8").split("\n").filter(Boolean).flatMap((l) => {
           try {
             return [JSON.parse(l)];
           } catch {
@@ -21819,7 +22018,7 @@ var init_state = __esm({
       }
       lessons() {
         const dir = this.p("feedback");
-        return (existsSync5(dir) ? readdirSync3(dir).filter((f) => f.endsWith(".jsonl")) : []).flatMap((f) => readFileSync4(join5(dir, f), "utf8").split("\n").filter(Boolean).flatMap((l) => {
+        return (existsSync5(dir) ? readdirSync3(dir).filter((f) => f.endsWith(".jsonl")) : []).flatMap((f) => readFileSync5(join5(dir, f), "utf8").split("\n").filter(Boolean).flatMap((l) => {
           try {
             return [JSON.parse(l)];
           } catch {
@@ -21850,7 +22049,7 @@ var init_state = __esm({
 });
 
 // src/runner/repos.ts
-import { existsSync as existsSync6, readdirSync as readdirSync4, readFileSync as readFileSync5, statSync as statSync2 } from "node:fs";
+import { existsSync as existsSync6, readdirSync as readdirSync4, readFileSync as readFileSync6, statSync as statSync2 } from "node:fs";
 import { homedir as homedir4 } from "node:os";
 import { isAbsolute as isAbsolute3, join as join6, resolve as resolve4 } from "node:path";
 function remoteOf(s2) {
@@ -21872,14 +22071,14 @@ function gitInfo(dir) {
   const dot = join6(dir, ".git");
   let gitDir;
   try {
-    gitDir = statSync2(dot).isDirectory() ? dot : resolve4(dir, /^gitdir:\s*(.+)$/m.exec(readFileSync5(dot, "utf8"))?.[1]?.trim() ?? "");
+    gitDir = statSync2(dot).isDirectory() ? dot : resolve4(dir, /^gitdir:\s*(.+)$/m.exec(readFileSync6(dot, "utf8"))?.[1]?.trim() ?? "");
   } catch {
     return void 0;
   }
-  const common = existsSync6(join6(gitDir, "commondir")) ? resolve4(gitDir, readFileSync5(join6(gitDir, "commondir"), "utf8").trim()) : gitDir;
+  const common = existsSync6(join6(gitDir, "commondir")) ? resolve4(gitDir, readFileSync6(join6(gitDir, "commondir"), "utf8").trim()) : gitDir;
   const read3 = (p) => {
     try {
-      return readFileSync5(p, "utf8");
+      return readFileSync6(p, "utf8");
     } catch {
       return "";
     }
@@ -21964,26 +22163,26 @@ var init_util2 = __esm({
       }
       util2.assertNever = assertNever2;
       util2.arrayToEnum = (items2) => {
-        const obj2 = {};
+        const obj3 = {};
         for (const item of items2) {
-          obj2[item] = item;
+          obj3[item] = item;
         }
-        return obj2;
+        return obj3;
       };
-      util2.getValidEnumValues = (obj2) => {
-        const validKeys = util2.objectKeys(obj2).filter((k) => typeof obj2[obj2[k]] !== "number");
+      util2.getValidEnumValues = (obj3) => {
+        const validKeys = util2.objectKeys(obj3).filter((k) => typeof obj3[obj3[k]] !== "number");
         const filtered = {};
         for (const k of validKeys) {
-          filtered[k] = obj2[k];
+          filtered[k] = obj3[k];
         }
         return util2.objectValues(filtered);
       };
-      util2.objectValues = (obj2) => {
-        return util2.objectKeys(obj2).map(function(e) {
-          return obj2[e];
+      util2.objectValues = (obj3) => {
+        return util2.objectKeys(obj3).map(function(e) {
+          return obj3[e];
         });
       };
-      util2.objectKeys = typeof Object.keys === "function" ? (obj2) => Object.keys(obj2) : (object3) => {
+      util2.objectKeys = typeof Object.keys === "function" ? (obj3) => Object.keys(obj3) : (object3) => {
         const keys = [];
         for (const key in object3) {
           if (Object.prototype.hasOwnProperty.call(object3, key)) {
@@ -31199,12 +31398,12 @@ var require_codegen = __commonJS({
       }
       // `for-in` statement.
       // With option `ownProperties` replaced with a `for-of` loop for object keys
-      forIn(nameOrPrefix, obj2, forBody, varKind = this.opts.es5 ? scope_1.varKinds.var : scope_1.varKinds.const) {
+      forIn(nameOrPrefix, obj3, forBody, varKind = this.opts.es5 ? scope_1.varKinds.var : scope_1.varKinds.const) {
         if (this.opts.ownProperties) {
-          return this.forOf(nameOrPrefix, (0, code_1._)`Object.keys(${obj2})`, forBody);
+          return this.forOf(nameOrPrefix, (0, code_1._)`Object.keys(${obj3})`, forBody);
         }
         const name = this._scope.toName(nameOrPrefix);
-        return this._for(new ForIter("in", varKind, name, obj2), () => forBody(name));
+        return this._for(new ForIter("in", varKind, name, obj3), () => forBody(name));
       }
       // end `for` loop
       endFor() {
@@ -33024,11 +33223,11 @@ var require_validate = __commonJS({
         if (!this.allErrors)
           this.gen.if(cond);
       }
-      setParams(obj2, assign) {
+      setParams(obj3, assign) {
         if (assign)
-          Object.assign(this.params, obj2);
+          Object.assign(this.params, obj3);
         else
-          this.params = obj2;
+          this.params = obj3;
       }
       block$data(valid, codeBlock, $dataValid = codegen_1.nil) {
         this.gen.block(() => {
@@ -37806,15 +38005,15 @@ function applyElicitationDefaults(schema, data) {
   if (!schema || data === null || typeof data !== "object")
     return;
   if (schema.type === "object" && schema.properties && typeof schema.properties === "object") {
-    const obj2 = data;
+    const obj3 = data;
     const props = schema.properties;
     for (const key of Object.keys(props)) {
       const propSchema = props[key];
-      if (obj2[key] === void 0 && Object.prototype.hasOwnProperty.call(propSchema, "default")) {
-        obj2[key] = propSchema.default;
+      if (obj3[key] === void 0 && Object.prototype.hasOwnProperty.call(propSchema, "default")) {
+        obj3[key] = propSchema.default;
       }
-      if (obj2[key] !== void 0) {
-        applyElicitationDefaults(propSchema, obj2[key]);
+      if (obj3[key] !== void 0) {
+        applyElicitationDefaults(propSchema, obj3[key]);
       }
     }
   }
@@ -39871,7 +40070,7 @@ var init_validate = __esm({
 });
 
 // src/core/intents.ts
-import { existsSync as existsSync7, readFileSync as readFileSync6 } from "node:fs";
+import { existsSync as existsSync7, readFileSync as readFileSync7 } from "node:fs";
 import { join as join8 } from "node:path";
 function intents(root) {
   const all = new Map(read(join8(SKILL_DIR, "intents.json")).map((i) => [i.id, i]));
@@ -39880,7 +40079,7 @@ function intents(root) {
 }
 function intentPlaybook(root, def) {
   if (!def?.playbook) return "";
-  for (const p of [join8(root, "playbooks", def.playbook), join8(SKILL_DIR, "workflows", def.playbook)]) if (existsSync7(p)) return readFileSync6(p, "utf8");
+  for (const p of [join8(root, "playbooks", def.playbook), join8(SKILL_DIR, "workflows", def.playbook)]) if (existsSync7(p)) return readFileSync7(p, "utf8");
   return "";
 }
 var read;
@@ -39888,7 +40087,7 @@ var init_intents = __esm({
   "src/core/intents.ts"() {
     "use strict";
     init_paths();
-    read = (p) => existsSync7(p) ? JSON.parse(readFileSync6(p, "utf8").replace(/^\uFEFF/, "")) : [];
+    read = (p) => existsSync7(p) ? JSON.parse(readFileSync7(p, "utf8").replace(/^\uFEFF/, "")) : [];
   }
 });
 
@@ -39966,7 +40165,7 @@ var init_gate = __esm({
 });
 
 // src/worker/prompt.ts
-import { existsSync as existsSync8, readFileSync as readFileSync7 } from "node:fs";
+import { existsSync as existsSync8, readFileSync as readFileSync8 } from "node:fs";
 import { join as join10, resolve as resolve5 } from "node:path";
 function buildPrompt(wf, thread, cfg, root, owners = [], others = [], corrected = [], ctx = {}) {
   const contract = playbook(root, wf.kind);
@@ -40098,7 +40297,7 @@ function orientation(code, id, status3, draft, effects) {
 }
 function playbook(root, kind) {
   const own3 = join10(root, "playbooks", `${kind}.md`);
-  return readFileSync7(existsSync8(own3) ? own3 : join10(SKILL_DIR, "workflows", `${kind}.md`), "utf8");
+  return readFileSync8(existsSync8(own3) ? own3 : join10(SKILL_DIR, "workflows", `${kind}.md`), "utf8");
 }
 function allowed(cfg, none) {
   const e = cfg.agent.effectTools ?? [], d = cfg.deploy?.allowed ?? [];
@@ -40142,7 +40341,7 @@ var init_levels = __esm({
 });
 
 // src/runner/habits.ts
-import { existsSync as existsSync9, readFileSync as readFileSync8, writeFileSync as writeFileSync3 } from "node:fs";
+import { existsSync as existsSync9, readFileSync as readFileSync9, writeFileSync as writeFileSync3 } from "node:fs";
 import { join as join11 } from "node:path";
 function outcome(store2, wf, how, o = {}) {
   const edited = how === "sent" && !!o.draft && !!o.sent && norm(o.draft) !== norm(o.sent);
@@ -40224,10 +40423,10 @@ ${h.evidence.links.map((l) => `- ${l}`).join("\n")}` : ""}`;
 }
 function setRules(store2, rules) {
   const file2 = join11(store2.root, "rules.compiled.json");
-  const cur = existsSync9(file2) ? JSON.parse(readFileSync8(file2, "utf8")) : { schema: 1 };
+  const cur = existsSync9(file2) ? JSON.parse(readFileSync9(file2, "utf8")) : { schema: 1 };
   writeFileSync3(file2, JSON.stringify({ ...cur, rules }, null, "	") + "\n");
   const md3 = join11(store2.root, "rules.md");
-  const text2 = existsSync9(md3) ? readFileSync8(md3, "utf8") : "";
+  const text2 = existsSync9(md3) ? readFileSync9(md3, "utf8") : "";
   const own3 = text2.replace(new RegExp(`\\n*${BEGIN}[\\s\\S]*?${END}\\n*`), "\n").trimEnd();
   const learned = rules.filter((r) => r.learned).map((r) => `- ${r.text.replace(/^Learned: /, "")} (learned ${r.learned.at.slice(0, 10)} from ${r.learned.evidence})`);
   writeFileSync3(md3, `${own3}${learned.length ? `
@@ -40254,12 +40453,12 @@ var init_habits = __esm({
 });
 
 // src/runner/sharing.ts
-import { existsSync as existsSync10, mkdirSync as mkdirSync3, readFileSync as readFileSync9, rmSync as rmSync2, writeFileSync as writeFileSync4 } from "node:fs";
+import { existsSync as existsSync10, mkdirSync as mkdirSync3, readFileSync as readFileSync10, rmSync as rmSync2, writeFileSync as writeFileSync4 } from "node:fs";
 import { dirname as dirname4, join as join12 } from "node:path";
 function recordRead(root, runId, links, query, tool = "teams", n = links.length) {
   if (!runId) return;
   const f = provenanceFile(root, runId);
-  const had = existsSync10(f) ? normal(JSON.parse(readFileSync9(f, "utf8"))) : { chats: [], searches: [] };
+  const had = existsSync10(f) ? normal(JSON.parse(readFileSync10(f, "utf8"))) : { chats: [], searches: [] };
   const chats = links.map((l) => parseMessageLink(l)?.chatId).filter((c) => !!c);
   assertTestSafe(f);
   mkdirSync3(dirname4(f), { recursive: true });
@@ -40269,7 +40468,7 @@ function takeRead(root, runId) {
   const f = provenanceFile(root, runId);
   if (!existsSync10(f)) return { chats: [], searches: [] };
   try {
-    return normal(JSON.parse(readFileSync9(f, "utf8")));
+    return normal(JSON.parse(readFileSync10(f, "utf8")));
   } finally {
     rmSync2(f, { force: true });
   }
@@ -40308,7 +40507,7 @@ async function sharingHold(store2, src, wf, chats) {
     if (!here3 || !there) return `Uses something from ${name}, and I could not check who is in each chat`;
     const out = here3.filter((id) => !there.includes(id));
     if (out.length) {
-      const names = out.map((id) => nameOf(store2, wf.chat.id, id)).filter(Boolean);
+      const names = out.map((id) => nameOf2(store2, wf.chat.id, id)).filter(Boolean);
       return `Uses something from ${name}, and ${names.length === out.length && names.length <= 3 ? `${names.join(" and ")} ${names.length === 1 ? "is" : "are"} not in it` : "not everyone here is in that chat"}`;
     }
   }
@@ -40333,7 +40532,7 @@ function setChatLevel(store2, chat, level, said2) {
   store2.saveConfig({ ...cfg, chatLevels: { ...levels, [id]: { level, name, at: (/* @__PURE__ */ new Date()).toISOString() } } });
   return `${name} is ${LEVEL_SAYS[level]}. Say "${name} is normal again" to undo.`;
 }
-var provenanceFile, normal, UNTRACKED, nameOf, fromOffChat;
+var provenanceFile, normal, UNTRACKED, nameOf2, fromOffChat;
 var init_sharing = __esm({
   "src/runner/sharing.ts"() {
     "use strict";
@@ -40343,7 +40542,7 @@ var init_sharing = __esm({
     provenanceFile = (root, runId) => join12(root, "state", "provenance", `${runId}.json`);
     normal = (v) => Array.isArray(v) ? { chats: v, searches: [] } : v;
     UNTRACKED = /^teams-(List|Get|Search)/i;
-    nameOf = (store2, chat, id) => store2.members()[chat]?.names?.[id]?.split(/\s+/)[0];
+    nameOf2 = (store2, chat, id) => store2.members()[chat]?.names?.[id]?.split(/\s+/)[0];
     fromOffChat = (cfg, src) => !src.some((s2) => s2.link.startsWith("delegate:remember")) && src.some((s2) => offRecord(cfg, parseMessageLink(s2.link)?.chatId));
   }
 });
@@ -40441,7 +40640,7 @@ function parseLine(line2, card2) {
     tags.unshift(t2[1]);
     rest = rest.slice(0, t2.index);
   }
-  const idm = rest.match(ID);
+  const idm = rest.match(ID2);
   if (idm) rest = rest.slice(0, idm.index);
   return { id: idm?.[1] ?? "", type: m[1], text: rest.trim(), tags, src, review, ...card2, audience };
 }
@@ -40489,7 +40688,7 @@ function slug(s2) {
   if (!base) return `topic-${hashOf(s2).slice(0, 6)}`;
   return base.length > 48 ? `${base.slice(0, 41)}-${hashOf(base).slice(0, 6)}` : base;
 }
-var TYPES, CARDS, CARD_OF, TTL_DAYS, expired, hashOf, LINE, DATE, GROUP, TAG, ID, clean, day;
+var TYPES, CARDS, CARD_OF, TTL_DAYS, expired, hashOf, LINE, DATE, GROUP, TAG, ID2, clean, day;
 var init_format2 = __esm({
   "src/knowledge/format.ts"() {
     "use strict";
@@ -40506,19 +40705,19 @@ var init_format2 = __esm({
     DATE = /^\d{4}-\d{2}-\d{2}$/;
     GROUP = /\s*\((src|review|audience):\s*([^()]*)\)\s*$/;
     TAG = /\s#([\p{L}\p{N}_-]+)\s*$/u;
-    ID = /\s\^([a-z0-9]{2,12})\s*$/i;
+    ID2 = /\s\^([a-z0-9]{2,12})\s*$/i;
     clean = (s2) => s2.replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim();
     day = (s2) => DATE.test(s2?.trim() ?? "") ? s2.trim() : "";
   }
 });
 
 // src/mesh/inbox.mjs
-import { closeSync as closeSync3, existsSync as existsSync11, mkdirSync as mkdirSync4, openSync as openSync3, readdirSync as readdirSync5, readFileSync as readFileSync10, renameSync as renameSync2, rmSync as rmSync3, statSync as statSync4, writeFileSync as writeFileSync5, writeSync as writeSync2 } from "node:fs";
+import { closeSync as closeSync3, existsSync as existsSync11, mkdirSync as mkdirSync4, openSync as openSync3, readdirSync as readdirSync5, readFileSync as readFileSync11, renameSync as renameSync2, rmSync as rmSync3, statSync as statSync4, writeFileSync as writeFileSync5, writeSync as writeSync2 } from "node:fs";
 import { randomBytes as randomBytes2 } from "node:crypto";
 import { dirname as dirname5, join as join13 } from "node:path";
 function readJson2(p) {
   try {
-    return JSON.parse(readFileSync10(p, "utf8").replace(/^\uFEFF/, ""));
+    return JSON.parse(readFileSync11(p, "utf8").replace(/^\uFEFF/, ""));
   } catch {
     return void 0;
   }
@@ -40597,12 +40796,12 @@ var init_inbox = __esm({
 
 // src/mesh/route.ts
 import { createHash as createHash3 } from "node:crypto";
-import { copyFileSync, existsSync as existsSync12, mkdirSync as mkdirSync5, readFileSync as readFileSync11, rmSync as rmSync4, writeFileSync as writeFileSync6 } from "node:fs";
+import { copyFileSync, existsSync as existsSync12, mkdirSync as mkdirSync5, readFileSync as readFileSync12, rmSync as rmSync4, writeFileSync as writeFileSync6 } from "node:fs";
 import { join as join14 } from "node:path";
 function readSettings(copilotHome, forWriting = false) {
   const f = join14(copilotHome, "settings.json");
   if (!existsSync12(f)) return {};
-  const text2 = readFileSync11(f, "utf8").replace(/^\uFEFF/, "");
+  const text2 = readFileSync12(f, "utf8").replace(/^\uFEFF/, "");
   if (forWriting && /^\s*\/\//m.test(text2)) return void 0;
   try {
     return JSON.parse(text2.replace(/^\s*\/\/.*$/gm, ""));
@@ -40613,7 +40812,7 @@ function readSettings(copilotHome, forWriting = false) {
 function installExtension(copilotHome, from = MESH_DIR, local2 = LOCAL_DIR) {
   const dir = extensionDir(copilotHome);
   if (existsSync12(dir) && !ours2(dir)) return `Left ${dir} alone: it is not ${NAME}'s.`;
-  const before = ours2(dir) ? JSON.parse(readFileSync11(join14(dir, MARK2), "utf8")) : void 0;
+  const before = ours2(dir) ? JSON.parse(readFileSync12(join14(dir, MARK2), "utf8")) : void 0;
   assertTestSafe(dir);
   mkdirSync5(dir, { recursive: true });
   for (const f of FILES) copyFileSync(join14(from, f), join14(dir, f));
@@ -40633,7 +40832,7 @@ function installExtension(copilotHome, from = MESH_DIR, local2 = LOCAL_DIR) {
 function uninstallExtension(copilotHome) {
   const dir = extensionDir(copilotHome);
   if (!ours2(dir)) return void 0;
-  const mark2 = JSON.parse(readFileSync11(join14(dir, MARK2), "utf8"));
+  const mark2 = JSON.parse(readFileSync12(join14(dir, MARK2), "utf8"));
   assertTestSafe(dir);
   rmSync4(dir, { recursive: true, force: true });
   const s2 = mark2.setFlag ? readSettings(copilotHome, true) : void 0;
@@ -40710,7 +40909,7 @@ var init_route = __esm({
     EXTENSION = "delegate-inbox";
     FILES = ["extension.mjs", "inbox.mjs"];
     MARK2 = "delegate.json";
-    hash2 = (f) => createHash3("sha256").update(readFileSync11(f, "utf8").replace(/\r\n/g, "\n")).digest("hex");
+    hash2 = (f) => createHash3("sha256").update(readFileSync12(f, "utf8").replace(/\r\n/g, "\n")).digest("hex");
     extensionDir = (copilotHome) => join14(copilotHome, "extensions", EXTENSION);
     ours2 = (dir) => existsSync12(join14(dir, MARK2));
     extensionsOn = (copilotHome) => {
@@ -40726,13 +40925,13 @@ var init_route = __esm({
 });
 
 // src/runner/own.ts
-import { cpSync, existsSync as existsSync13, lstatSync, mkdirSync as mkdirSync6, readFileSync as readFileSync12, renameSync as renameSync3, statSync as statSync5, writeFileSync as writeFileSync7 } from "node:fs";
+import { cpSync, existsSync as existsSync13, lstatSync, mkdirSync as mkdirSync6, readFileSync as readFileSync13, renameSync as renameSync3, statSync as statSync5, writeFileSync as writeFileSync7 } from "node:fs";
 import { homedir as homedir6 } from "node:os";
 import { dirname as dirname6, join as join15 } from "node:path";
 import { randomUUID } from "node:crypto";
 function sessionCwd(id) {
   const f = join15(sessions(), id, "workspace.yaml");
-  return existsSync13(f) ? readFileSync12(f, "utf8").match(/^cwd:\s*(.+)$/m)?.[1].trim() : void 0;
+  return existsSync13(f) ? readFileSync13(f, "utf8").match(/^cwd:\s*(.+)$/m)?.[1].trim() : void 0;
 }
 function forkSession(id) {
   if (!sessionExists(id)) return void 0;
@@ -40740,7 +40939,7 @@ function forkSession(id) {
   assertTestSafe(sessions());
   cpSync(join15(sessions(), id), join15(sessions(), copy), { recursive: true, filter: (s2) => !s2.endsWith(".lock") && !lstatSync(s2).isSymbolicLink() });
   const f = join15(sessions(), copy, "workspace.yaml");
-  if (existsSync13(f)) writeFileSync7(f, readFileSync12(f, "utf8").replace(/^id:.*$/m, `id: ${copy}`).replace(/^mc_[a-z_]+:.*\n/gm, ""));
+  if (existsSync13(f)) writeFileSync7(f, readFileSync13(f, "utf8").replace(/^id:.*$/m, `id: ${copy}`).replace(/^mc_[a-z_]+:.*\n/gm, ""));
   return copy;
 }
 function put(p, data) {
@@ -40751,7 +40950,7 @@ function put(p, data) {
   renameSync3(tmp, p);
 }
 function move(from, to, events) {
-  if (existsSync13(join15(from, "workspace.yaml"))) put(join15(to, "workspace.yaml"), readFileSync12(join15(from, "workspace.yaml")));
+  if (existsSync13(join15(from, "workspace.yaml"))) put(join15(to, "workspace.yaml"), readFileSync13(join15(from, "workspace.yaml")));
   put(join15(to, "events.jsonl"), events);
 }
 function diverged(store2, id, dir, events) {
@@ -40829,7 +41028,7 @@ var init_own = __esm({
     };
     plain2 = (s2) => !s2.endsWith(".lock") && !lstatSync(s2).isSymbolicLink();
     isPrefix = (a, b) => a.length <= b.length && b.subarray(0, a.length).equals(a);
-    read2 = (p) => existsSync13(p) && plain2(p) ? readFileSync12(p) : void 0;
+    read2 = (p) => existsSync13(p) && plain2(p) ? readFileSync13(p) : void 0;
   }
 });
 
@@ -41204,7 +41403,7 @@ function slim(raw) {
       case "sent":
         if (code && /^(owner$|rule:)/.test(str2(e.approvedBy) ?? "")) {
           const d = drafted(e);
-          out.push({ at: at3, event: "sent", code, ...d === void 0 ? {} : { asDrafted: d }, ...e.holding === true ? { holding: true } : {}, ...num(e.changesOff) ? { changesOff: num(e.changesOff) } : {}, ...str2(e.msgId) ? { msgId: str2(e.msgId) } : {}, ...opt("askAt") });
+          out.push({ at: at3, event: "sent", code, ...d === void 0 ? {} : { asDrafted: d }, ...e.holding === true ? { holding: true } : {}, ...num2(e.changesOff) ? { changesOff: num2(e.changesOff) } : {}, ...str2(e.msgId) ? { msgId: str2(e.msgId) } : {}, ...opt("askAt") });
         }
         break;
       case "state": {
@@ -41215,7 +41414,7 @@ function slim(raw) {
       }
       // Changes applied before item codes and counts were logged cannot be tied to an item, so they are left out.
       case "job-executed":
-        if (Array.isArray(e.items)) out.push({ at: at3, event: "applied", items: e.items.filter((c) => typeof c === "string"), kept: num(e.kept), removed: num(e.removed), left: num(e.left) });
+        if (Array.isArray(e.items)) out.push({ at: at3, event: "applied", items: e.items.filter((c) => typeof c === "string"), kept: num2(e.kept), removed: num2(e.removed), left: num2(e.left) });
         break;
       // A correction names the send it is about: undo by its message, a mark or a posted correction by sentId (from 10-21).
       case "marked":
@@ -41286,7 +41485,7 @@ function inputs(evs, items2, inSpan, notAsks) {
     ...teams.filter((e) => e.askAt && e.replyAt).map((e) => ({ code: e.code, min: (Date.parse(e.replyAt) - Date.parse(e.askAt)) / 6e4 }))
   ].filter((w) => w.min >= 0).sort((a, b) => a.min - b.min);
   const mins = waits.map((w) => Math.round(w.min));
-  const wait2 = { n: waits.length, codes: waits.map((w) => w.code), ...mins.length ? { median: median(mins), min: mins[0], max: mins.at(-1) } : {} };
+  const wait2 = { n: waits.length, codes: waits.map((w) => w.code), ...mins.length ? { median: median2(mins), min: mins[0], max: mins.at(-1) } : {} };
   return { replies: { ...replies, ...pct(replies.n, replies.of) }, missed: { ...missed, ...pct(missed.n, missed.of) }, wait: wait2 };
 }
 function numbers(raw, items2, now, tz, key = "this") {
@@ -41368,7 +41567,7 @@ function weekLine(n) {
   if (!n.handled.n && !r.of && !m.n) return void 0;
   return `This week: ${n.handled.n} handled for you \xB7 ${r.n} of ${r.of} replies as drafted \xB7 ${m.n} missed.`;
 }
-var WINDOWS, DAY2, SMALL, str2, num, addDays, weekday, weekOf, isFriday, legacyClose, CORRECTS, pct, uniq, push, median, MONTHS, DAYS2, md, dmd, LABEL, ratio, short, dur, BLOCKS, WHEN;
+var WINDOWS, DAY2, SMALL, str2, num2, addDays, weekday, weekOf, isFriday, legacyClose, CORRECTS, pct, uniq, push, median2, MONTHS, DAYS2, md, dmd, LABEL, ratio, short, dur, BLOCKS, WHEN;
 var init_numbers = __esm({
   "src/core/numbers.ts"() {
     "use strict";
@@ -41378,7 +41577,7 @@ var init_numbers = __esm({
     DAY2 = 864e5;
     SMALL = 10;
     str2 = (v) => typeof v === "string" && v ? v : void 0;
-    num = (v) => typeof v === "number" ? v : void 0;
+    num2 = (v) => typeof v === "number" ? v : void 0;
     addDays = (day3, n) => new Date(Date.parse(`${day3}T00:00:00Z`) + n * DAY2).toISOString().slice(0, 10);
     weekday = (day3) => (/* @__PURE__ */ new Date(`${day3}T00:00:00Z`)).getUTCDay();
     weekOf = (day3) => addDays(day3, -((weekday(day3) + 6) % 7));
@@ -41392,7 +41591,7 @@ var init_numbers = __esm({
       if (l) l.push(v);
       else m.set(k, [v]);
     };
-    median = (xs) => xs.length % 2 ? xs[(xs.length - 1) / 2] : Math.round((xs[xs.length / 2 - 1] + xs[xs.length / 2]) / 2);
+    median2 = (xs) => xs.length % 2 ? xs[(xs.length - 1) / 2] : Math.round((xs[xs.length / 2 - 1] + xs[xs.length / 2]) / 2);
     MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     DAYS2 = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
     md = (day3) => `${MONTHS[Number(day3.slice(5, 7)) - 1]} ${Number(day3.slice(8))}`;
@@ -41950,7 +42149,7 @@ var init_discover = __esm({
 });
 
 // src/knowledge/index.ts
-import { existsSync as existsSync14, readdirSync as readdirSync6, readFileSync as readFileSync13 } from "node:fs";
+import { existsSync as existsSync14, readdirSync as readdirSync6, readFileSync as readFileSync14 } from "node:fs";
 import { join as join16 } from "node:path";
 function newId2(text2) {
   for (; ; ) {
@@ -41981,7 +42180,7 @@ var init_knowledge = __esm({
       cards() {
         const dir = join16(this.root, "topics");
         if (!existsSync14(dir)) return [];
-        return readdirSync6(dir, { withFileTypes: true }).filter((d) => d.isDirectory()).flatMap((d) => CARDS.map((c) => join16(dir, d.name, `${c}.md`)).filter(existsSync14).map((p) => parseCard(p, readFileSync13(p, "utf8"))));
+        return readdirSync6(dir, { withFileTypes: true }).filter((d) => d.isDirectory()).flatMap((d) => CARDS.map((c) => join16(dir, d.name, `${c}.md`)).filter(existsSync14).map((p) => parseCard(p, readFileSync14(p, "utf8"))));
       }
       search(q2, f = {}) {
         const want = words2(q2);
@@ -42028,7 +42227,7 @@ var init_knowledge = __esm({
       }
       cardHash(topic, card2) {
         const p = this.path(topic, card2);
-        return existsSync14(p) ? hashOf(readFileSync13(p, "utf8")) : "";
+        return existsSync14(p) ? hashOf(readFileSync14(p, "utf8")) : "";
       }
       // Writes only if every card is still the version the proposal was made against (R-BOOT-06, exact-revision ok).
       apply(p) {
@@ -42038,7 +42237,7 @@ var init_knowledge = __esm({
         const texts = /* @__PURE__ */ new Map();
         for (const card2 of touched) {
           const path = this.path(p.topic, card2);
-          let text2 = existsSync14(path) ? readFileSync13(path, "utf8") : newCard(p.topic, p.title, card2, "team");
+          let text2 = existsSync14(path) ? readFileSync14(path, "utf8") : newCard(p.topic, p.title, card2, "team");
           const before = parseCard(path, text2).entries;
           for (const [i, o] of p.ops.entries()) {
             if (o.card !== card2) continue;
@@ -42573,6 +42772,7 @@ function statusText(store2, now = /* @__PURE__ */ new Date()) {
   return [
     `${NAME} is ${state} \xB7 auto-send ${c.autoSend ? "on" : "off"} \xB7 runner: ${cfg.runner ?? store2.machine}${status() ? ", in the background" : ", only when asked"}`,
     `Last check: ${lastTick ? `${age(lastTick, now)} ago` : "not today"} \xB7 Today: ${n("sent")} sent (${n("sent", (e) => String(e.approvedBy ?? "").startsWith("rule:"))} by your rules), ${n("worker")} drafted, ${store2.runsToday()} of ${cfg.dailyRuns ?? 200} AI runs (resets at local midnight)`,
+    modelsLine(today),
     ...suggestions(store2)
   ].join("\n");
 }
@@ -42596,6 +42796,7 @@ var init_status = __esm({
     init_render();
     init_scheduler();
     init_brand();
+    init_runinfo();
   }
 });
 
@@ -44014,10 +44215,10 @@ async function dispatch(store2, src, cfg, run2 = runAgent) {
         startFailed(store2, wf, e);
         return;
       }
-      const ran = store2.workflow(wf.id);
-      if (ran?.startFails) {
-        ran.startFails = void 0;
-        store2.save(ran, false);
+      const ran2 = store2.workflow(wf.id);
+      if (ran2?.startFails) {
+        ran2.startFails = void 0;
+        store2.save(ran2, false);
       }
       done++;
     }));
@@ -44067,7 +44268,7 @@ async function judgeReply(store2, cfg, a, run2 = runAgent, now = /* @__PURE__ */
   const later = /^later\s+(\S+)/i.exec(said2), at3 = later ? new Date(later[1]) : void 0;
   const change = /^done\b/i.test(said2) ? { state: "ended", next: void 0, why: `${first2} said it is done` } : at3 && !isNaN(at3.getTime()) && at3 > now && at3.getTime() - now.getTime() < 7 * 864e5 ? { next: at3.toISOString(), why: `${first2} said ${at3.toLocaleString(void 0, { weekday: "short", hour: "numeric", minute: "2-digit" })}; the next reminder moved` } : /^keep\b/i.test(said2) ? { why: `${first2} replied; reminders continue` } : { state: "paused", next: void 0, why: `${first2} replied` };
   store2.saveAutomation({ ...fresh, ...change, heard: void 0, updatedAt: now.toISOString() });
-  store2.log({ event: "automation-judged", code: a.code, said: said2.slice(0, 80), ms: res.ms });
+  store2.log({ event: "automation-judged", code: a.code, said: said2.slice(0, 80), ms: res.ms, runId, ...ran("reminder", res.used) });
 }
 function workerMcp(store2, targetId, runId, interactive = false) {
   const cwd = join19(LOCAL_DIR, "sessions");
@@ -44115,7 +44316,7 @@ async function runOne(store2, src, cfg, wf, run2) {
   const raw = store2.peekReport(wf.id, runId) ? void 0 : reportFromText(res.summary, wf.id, intents(store2.root).map((i) => i.id));
   const salvaged = raw && scrubDeep(raw);
   const report2 = store2.peekReport(wf.id, runId) ?? salvaged;
-  store2.log({ event: "worker", ...salvaged ? { salvaged: true } : {}, workflowId: wf.id, code: wf.code, runId, exitCode: res.exitCode, ms: res.ms, intent: report2?.intent, summary: report2?.summary, sources: report2?.reply?.sources, commitment: report2?.reply?.commitment, error: res.error });
+  store2.log({ event: "worker", ...salvaged ? { salvaged: true } : {}, workflowId: wf.id, code: wf.code, runId, exitCode: res.exitCode, ms: res.ms, intent: report2?.intent, summary: report2?.summary, sources: report2?.reply?.sources, commitment: report2?.reply?.commitment, error: res.error, ...ran("draft", res.used) });
   const fresh = store2.workflow(wf.id) ?? wf;
   const into = report2?.same ? others.find((o) => o.code === report2.same.toUpperCase()) : void 0;
   if (into && joinInto(store2, fresh, store2.workflow(into.id) ?? into)) {
@@ -44192,7 +44393,7 @@ async function runAsk(store2, src, cfg, wf, run2) {
   if (note) Object.assign(note, report2?.answer ? { a: report2.answer, sources: report2.reply ? checked(store2, cfg, report2).reply.sources : void 0 } : { a: `I could not answer that${res.error ? ` (${res.error.slice(0, 80)})` : ""}. Ask again, or open ${fresh.code} on your computer.` });
   store2.save(fresh);
   store2.archiveReport(wf.id, runId);
-  store2.log({ event: "ask", workflowId: wf.id, code: wf.code, runId, ms: res.ms });
+  store2.log({ event: "ask", workflowId: wf.id, code: wf.code, runId, ms: res.ms, ...ran("ask", res.used) });
   if (note && fresh.answerSurface === "self") await say(store2, src, plain(`${MARK} ${fresh.code} \xB7 ${note.q}
 ${note.a}`).slice(0, 1800));
 }
@@ -44313,6 +44514,7 @@ var init_dispatch = __esm({
     init_effects();
     init_validate();
     init_mcp_client();
+    init_runinfo();
     AUTH = /bad credentials|not logged in|please run \/login|authenticat|unauthori[sz]ed|sign[ -]?in/i;
     UNSAFE = /is never a read tool|never runs in your clone with a shell/;
     readDirs = (store2, cfg) => [.../* @__PURE__ */ new Set([...(cfg.knowledge ?? []).map((f) => here2(store2.root, f)), cfg.cards?.root ?? join19(store2.root, "knowledge"), ...cfg.cards?.team ? [cfg.cards.team] : []])].filter((d) => existsSync18(d));
@@ -44352,7 +44554,7 @@ var init_ledger = __esm({
 // src/runner/jobs.ts
 import { uptime as uptime3 } from "node:os";
 import { randomUUID as randomUUID8 } from "node:crypto";
-import { existsSync as existsSync19, readFileSync as readFileSync14 } from "node:fs";
+import { existsSync as existsSync19, readFileSync as readFileSync15 } from "node:fs";
 import { isAbsolute as isAbsolute5, join as join20 } from "node:path";
 function canonicalKey2(key) {
   const k = key.trim().toLowerCase().replace(/\s+/g, "");
@@ -44498,9 +44700,10 @@ async function checkJobs(store2, src, cfg, procs) {
       continue;
     }
     if (rebooted && !r && run2.purpose === "work") {
+      const used = readUse(store2, job);
       Object.assign(job, { state: "queued", run: void 0 });
       store2.saveJob(job);
-      store2.log({ event: "job-resumed-after-restart", job: job.id, key: job.key });
+      store2.log({ event: "job-resumed-after-restart", job: job.id, key: job.key, ...used });
       continue;
     }
     if (run2.purpose === "execute" && !r && live2 && !parentsOf(store2, job).some((p) => stillApproved(p, job))) {
@@ -44519,19 +44722,38 @@ async function checkJobs(store2, src, cfg, procs) {
       backupSession(store2, job.session.id);
       if (run2.machine === store2.machine) scrubLog(store2, run2.id);
     }
-    if (r) {
-      if (run2.purpose === "execute") await finishExecute(store2, src, cfg, job);
-      else finishWork(store2, job, r, run2.asks);
-      store2.archiveReport(job.id, run2.id);
-      n++;
-    } else if (over && run2.purpose === "work" && !run2.wrapUp) {
-      Object.assign(job, { state: "queued", wrapUp: true, run: void 0 });
-      store2.saveJob(job);
-      store2.log({ event: "job-wrap-up", job: job.id, key: job.key });
-    } else if (over) fail(store2, job, `Stopped after ${run2.wrapUp ? minutes + WRAP_UP_MINUTES : minutes} minutes, its time budget`);
-    else if (!live2) failOrRetry(store2, job, "It stopped without a result");
+    ended.set(job.id, readUse(store2, job));
+    try {
+      if (r) {
+        if (run2.purpose === "execute") await finishExecute(store2, src, cfg, job);
+        else finishWork(store2, job, r, run2.asks);
+        store2.archiveReport(job.id, run2.id);
+        n++;
+      } else if (over && run2.purpose === "work" && !run2.wrapUp) {
+        Object.assign(job, { state: "queued", wrapUp: true, run: void 0 });
+        store2.saveJob(job);
+        store2.log({ event: "job-wrap-up", job: job.id, key: job.key, ...usedBy(job) });
+      } else if (over) fail(store2, job, `Stopped after ${run2.wrapUp ? minutes + WRAP_UP_MINUTES : minutes} minutes, its time budget`);
+      else if (!live2) failOrRetry(store2, job, "It stopped without a result");
+    } finally {
+      const left = usedBy(job);
+      if (Object.keys(left).length) store2.log({ event: "job-run", job: job.id, key: job.key, ...left });
+    }
   }
   return n;
+}
+function readUse(store2, job) {
+  const run2 = job.run, f = run2 && !run2.relay && run2.machine === store2.machine ? join20(LOCAL_DIR, "sessions", `${run2.id}.log`) : void 0;
+  if (!run2 || !f || !existsSync19(f)) return {};
+  let text2;
+  try {
+    text2 = readFileSync15(f, "utf8");
+  } catch {
+    return {};
+  }
+  const started2 = Date.parse(run2.startedAt), { use, lastAt } = readRun(text2, started2, process.env, sessionLog(job.session.agent, job.session.id), Date.now());
+  const out = ran(run2.purpose === "execute" ? "change" : job.intent === "pr_review" || canonicalKey2(job.key).startsWith("pr:") ? "review" : "job", use);
+  return Object.keys(out).length ? { ...out, runId: run2.id, ...lastAt !== void 0 && lastAt >= started2 ? { ms: lastAt - started2 } : {} } : {};
 }
 function finishWork(store2, job, r, asksAtStart) {
   if (isBootstrap(job) || job.key.startsWith("learn:")) return finishBootstrap(store2, job, r);
@@ -44566,7 +44788,7 @@ function finishWork(store2, job, r, asksAtStart) {
   }
   Object.assign(job, { result: { summary: r.summary, reply: r.reply ? { ...r.reply } : void 0, effects }, state: again ? "queued" : "done", purpose: "work", run: void 0 });
   store2.saveJob(job);
-  if (!again) store2.log({ event: "job-done", job: job.id, key: job.key, summary: r.summary, effects: effects.length });
+  if (!again) store2.log({ event: "job-done", job: job.id, key: job.key, summary: r.summary, effects: effects.length, ...usedBy(job) });
 }
 async function finishExecute(store2, src, cfg, job) {
   const effects = foldChanges(store2, job);
@@ -44576,7 +44798,7 @@ async function finishExecute(store2, src, cfg, job) {
   const again = job.asks.length > (job.run?.asks ?? job.asks.length);
   const before = { ...job, result: { ...job.result, effects: job.result?.effects ?? [] } };
   const parents = parentsOf(store2, job);
-  store2.log({ event: "job-executed", job: job.id, items: parents.map((w) => w.code), kept: effects.filter((e) => !e.off).length, removed: effects.filter((e) => e.off).length, done: effects.length - left.length, left: left.length });
+  store2.log({ event: "job-executed", job: job.id, items: parents.map((w) => w.code), kept: effects.filter((e) => !e.off).length, removed: effects.filter((e) => e.off).length, done: effects.length - left.length, left: left.length, ...usedBy(job) });
   for (const wf of parents) {
     const ok = stillApproved(wf, before);
     wf.effects = ok ? effects : wf.effects && carryMarks(wf.effects, effects);
@@ -44729,17 +44951,17 @@ function stopRun(store2, procs, job, why) {
     store2.setHealth(`job:${job.id}`, `Could not stop the changes for ${job.key} (process ${job.run.pid}): ${why}. Stop it by hand.`);
     return;
   }
-  const again = !!job.run && job.asks.length > job.run.asks;
+  const again = !!job.run && job.asks.length > job.run.asks, used = readUse(store2, job);
   Object.assign(job, { result: { ...job.result, effects: foldChanges(store2, job) }, state: again ? "queued" : "done", purpose: "work", run: void 0 });
   adoptList(store2, job);
   store2.saveJob(job);
-  store2.log({ event: "job-execute-stopped", job: job.id, why });
+  store2.log({ event: "job-execute-stopped", job: job.id, why, ...used });
 }
 function finishCheck(store2, job, r, asksAtStart) {
   if (r.goalMet === false && !r.done) {
     Object.assign(job, { state: "done", run: void 0, nextAt: new Date(Date.now() + job.every * 6e4).toISOString() });
     store2.saveJob(job);
-    store2.log({ event: "track-check-short", job: job.id, why: r.blocker?.why });
+    store2.log({ event: "track-check-short", job: job.id, why: r.blocker?.why, ...usedBy(job) });
     return;
   }
   const key = hashOf(r.summary.trim().toLowerCase());
@@ -44763,7 +44985,7 @@ function finishCheck(store2, job, r, asksAtStart) {
   const again = !r.done && job.asks.length > asksAtStart;
   Object.assign(job, { result: { summary: r.summary, effects: [], at: now }, last: key, state: again ? "queued" : "done", run: void 0, nextAt: r.done ? void 0 : new Date(Date.now() + job.every * 6e4).toISOString(), every: r.done ? void 0 : job.every });
   store2.saveJob(job);
-  store2.log({ event: "track-check", job: job.id, changed, done: !!r.done, summary: r.summary });
+  store2.log({ event: "track-check", job: job.id, changed, done: !!r.done, summary: r.summary, ...usedBy(job) });
 }
 function finishBootstrap(store2, job, r) {
   const learn = job.key.startsWith("learn:");
@@ -44771,7 +44993,7 @@ function finishBootstrap(store2, job, r) {
   if (r.checkpoint) store2.saveSource(job.key, r.checkpoint);
   Object.assign(job, { result: { summary: r.summary, effects: [] }, state: "done", run: void 0 });
   store2.saveJob(job);
-  store2.log({ event: "bootstrap-done", job: job.id, key: job.key, claims: r.claims?.length ?? 0, proposals: made.map((p) => p.code) });
+  store2.log({ event: "bootstrap-done", job: job.id, key: job.key, claims: r.claims?.length ?? 0, proposals: made.map((p) => p.code), ...usedBy(job) });
 }
 function relayJob(store2, job) {
   const to = job.relay;
@@ -44817,7 +45039,7 @@ function queueRetry(store2, job, retry2, fresh) {
   }
   Object.assign(job, { state: "queued", purpose: "work", retry: retry2, nextAt: retry2.at, run: void 0, error: void 0, ...fresh ? { session: { ...job.session, id: randomUUID8() } } : {} });
   store2.saveJob(job);
-  store2.log({ event: "retry-planned", job: job.id, key: job.key, n: retry2.n, kind: retry2.last.kind, why: retry2.last.why, at: retry2.at, fresh });
+  store2.log({ event: "retry-planned", job: job.id, key: job.key, n: retry2.n, kind: retry2.last.kind, why: retry2.last.why, at: retry2.at, fresh, ...usedBy(job) });
 }
 function shortOfGoal(store2, job, r) {
   const p = planRetry(job.retry, r.blocker);
@@ -44832,7 +45054,7 @@ function shortOfGoal(store2, job, r) {
   }
   Object.assign(job, { result: { summary: r.summary, reply: draft, effects: [] }, state: "done", purpose: "work", run: void 0, retry: void 0, nextAt: void 0 });
   store2.saveJob(job);
-  store2.log({ event: "retry-stopped", job: job.id, key: job.key, why: p.stop });
+  store2.log({ event: "retry-stopped", job: job.id, key: job.key, why: p.stop, ...usedBy(job) });
 }
 function fail(store2, job, why) {
   for (const wf of parentsOf(store2, job)) {
@@ -44841,18 +45063,18 @@ function fail(store2, job, why) {
   }
   Object.assign(job, { state: "failed", error: why, run: void 0, purpose: "work", retry: void 0, nextAt: void 0 });
   store2.saveJob(job);
-  store2.log({ event: "job-failed", job: job.id, key: job.key, error: why });
+  store2.log({ event: "job-failed", job: job.id, key: job.key, error: why, ...usedBy(job) });
 }
 function scrubLog(store2, runId) {
   const f = join20(LOCAL_DIR, "sessions", `${runId}.log`);
   if (!existsSync19(f)) return;
-  const text2 = readFileSync14(f, "utf8"), clean3 = scrub(text2);
+  const text2 = readFileSync15(f, "utf8"), clean3 = scrub(text2);
   if (clean3 !== text2) writeText(f, clean3, store2.machine);
 }
 function parentsOf(store2, job) {
   return job.parents.map((id) => store2.workflow(id)).filter((w) => !!w && w.state !== "done" && (w.job === job.id || w.work?.watch === job.id));
 }
-var realProcs, NEVER_RELAY, keyOf, effectsKey, stillApproved, executing, WRAP_UP_MINUTES, WRAP_UP, switchOf, hhmm3, changeText, TRACKER_SESSION_LIMIT;
+var realProcs, NEVER_RELAY, keyOf, effectsKey, stillApproved, executing, WRAP_UP_MINUTES, WRAP_UP, ended, usedBy, switchOf, hhmm3, changeText, TRACKER_SESSION_LIMIT;
 var init_jobs = __esm({
   "src/runner/jobs.ts"() {
     "use strict";
@@ -44869,6 +45091,7 @@ var init_jobs = __esm({
     init_secrets();
     init_fs();
     init_ids();
+    init_runinfo();
     init_agent();
     init_process();
     init_window();
@@ -44900,6 +45123,12 @@ var init_jobs = __esm({
     executing = (job) => job.purpose === "execute" && (job.state === "queued" || job.state === "running");
     WRAP_UP_MINUTES = 3;
     WRAP_UP = (id) => `Your time for this job is up. Stop looking further. Call submit_report now with workflowId "${id}": what you found, with sources, and a question for the owner if they must decide something. If the goal is not met yet, set goalMet to false and blocker with kind "budget", what is left, and what you tried, so the next run continues; any reply is then only a holding reply.`;
+    ended = /* @__PURE__ */ new Map();
+    usedBy = (job) => {
+      const u = ended.get(job.id) ?? {};
+      ended.delete(job.id);
+      return u;
+    };
     switchOf = (c) => {
       const one = `${c.tool}:${String(c.args.action ?? "")}`;
       return changeName(one) !== one ? changeName(one) : changeName(c.tool);
@@ -45543,7 +45772,7 @@ init_fs();
 init_state();
 import { spawnSync as spawnSync4 } from "node:child_process";
 import { randomUUID as randomUUID9 } from "node:crypto";
-import { existsSync as existsSync27, mkdirSync as mkdirSync10, readdirSync as readdirSync8, statSync as statSync9, writeFileSync as writeFileSync13 } from "node:fs";
+import { existsSync as existsSync27, mkdirSync as mkdirSync10, readdirSync as readdirSync8, statSync as statSync10, writeFileSync as writeFileSync13 } from "node:fs";
 import { homedir as homedir8, hostname as hostname4 } from "node:os";
 import { join as join29 } from "node:path";
 
@@ -45556,7 +45785,7 @@ init_habits();
 
 // src/adapters/demo.ts
 init_fs();
-import { existsSync as existsSync20, readFileSync as readFileSync15 } from "node:fs";
+import { existsSync as existsSync20, readFileSync as readFileSync16 } from "node:fs";
 import { join as join21 } from "node:path";
 var DemoSource = class {
   selfChatId = "self";
@@ -45565,7 +45794,7 @@ var DemoSource = class {
     this.file = join21(root, "demo", "chats.json");
   }
   all() {
-    return existsSync20(this.file) ? JSON.parse(readFileSync15(this.file, "utf8")) : {};
+    return existsSync20(this.file) ? JSON.parse(readFileSync16(this.file, "utf8")) : {};
   }
   save(c) {
     writeJson(this.file, c, "demo");
@@ -46110,7 +46339,7 @@ init_fs();
 init_paths();
 init_state();
 import { execFileSync as execFileSync2 } from "node:child_process";
-import { existsSync as existsSync21, mkdirSync as mkdirSync9, readFileSync as readFileSync16, writeFileSync as writeFileSync10 } from "node:fs";
+import { existsSync as existsSync21, mkdirSync as mkdirSync9, readFileSync as readFileSync17, writeFileSync as writeFileSync10 } from "node:fs";
 import { join as join22 } from "node:path";
 var UPDATE_EVERY_MIN = 1440;
 function channelOf(setting, origin) {
@@ -46224,7 +46453,7 @@ function versionInfo(setting, root = ROOT, local2 = LOCAL_DIR, everyMin = UPDATE
 }
 function readMark(f) {
   try {
-    return JSON.parse(readFileSync16(f, "utf8"));
+    return JSON.parse(readFileSync17(f, "utf8"));
   } catch {
     return {};
   }
@@ -46247,7 +46476,7 @@ init_state();
 
 // src/store/retention.ts
 init_state();
-import { existsSync as existsSync22, readdirSync as readdirSync7, readFileSync as readFileSync17, rmSync as rmSync6, statSync as statSync6, writeFileSync as writeFileSync11 } from "node:fs";
+import { existsSync as existsSync22, readdirSync as readdirSync7, readFileSync as readFileSync18, rmSync as rmSync6, statSync as statSync6, writeFileSync as writeFileSync11 } from "node:fs";
 import { join as join23 } from "node:path";
 var CONTENT = ["text", "summary", "lastAsk", "sent", "answer", "ask", "draft", "note"];
 function sweep2(store2, days2 = 30, now = Date.now()) {
@@ -46295,7 +46524,7 @@ function sweep2(store2, days2 = 30, now = Date.now()) {
   const fbDir = join23(store2.root, "feedback");
   if (existsSync22(fbDir)) for (const f of readdirSync7(fbDir).filter((f2) => f2.endsWith(".jsonl"))) {
     const p = join23(fbDir, f);
-    const lines = readFileSync17(p, "utf8").split("\n").filter(Boolean).map((l) => {
+    const lines = readFileSync18(p, "utf8").split("\n").filter(Boolean).map((l) => {
       try {
         const e = JSON.parse(l);
         if (String(e.at) < cutoff && e.detail) for (const k of [...CONTENT, "fyi"]) delete e.detail[k];
@@ -46309,7 +46538,7 @@ function sweep2(store2, days2 = 30, now = Date.now()) {
   const logDir = join23(store2.root, "state", "log");
   if (existsSync22(logDir)) for (const f of readdirSync7(logDir).filter((f2) => f2.endsWith(".jsonl") && f2.slice(0, 10) < cutoff.slice(0, 10))) {
     const p = join23(logDir, f);
-    const lines = readFileSync17(p, "utf8").split("\n").filter(Boolean).map((l) => {
+    const lines = readFileSync18(p, "utf8").split("\n").filter(Boolean).map((l) => {
       try {
         const e = JSON.parse(l);
         for (const k of CONTENT) delete e[k];
@@ -47234,8 +47463,8 @@ var McpServer = class {
           title: tool.title,
           description: tool.description,
           inputSchema: (() => {
-            const obj2 = normalizeObjectSchema(tool.inputSchema);
-            return obj2 ? toJsonSchemaCompat(obj2, {
+            const obj3 = normalizeObjectSchema(tool.inputSchema);
+            return obj3 ? toJsonSchemaCompat(obj3, {
               strictUnions: true,
               pipeStrategy: "input"
             }) : EMPTY_OBJECT_JSON_SCHEMA;
@@ -47245,9 +47474,9 @@ var McpServer = class {
           _meta: tool._meta
         };
         if (tool.outputSchema) {
-          const obj2 = normalizeObjectSchema(tool.outputSchema);
-          if (obj2) {
-            toolDefinition.outputSchema = toJsonSchemaCompat(obj2, {
+          const obj3 = normalizeObjectSchema(tool.outputSchema);
+          if (obj3) {
+            toolDefinition.outputSchema = toJsonSchemaCompat(obj3, {
               strictUnions: true,
               pipeStrategy: "output"
             });
@@ -47900,20 +48129,20 @@ var EMPTY_OBJECT_JSON_SCHEMA = {
 function isZodTypeLike(value) {
   return value !== null && typeof value === "object" && "parse" in value && typeof value.parse === "function" && "safeParse" in value && typeof value.safeParse === "function";
 }
-function isZodSchemaInstance(obj2) {
-  return "_def" in obj2 || "_zod" in obj2 || isZodTypeLike(obj2);
+function isZodSchemaInstance(obj3) {
+  return "_def" in obj3 || "_zod" in obj3 || isZodTypeLike(obj3);
 }
-function isZodRawShapeCompat(obj2) {
-  if (typeof obj2 !== "object" || obj2 === null) {
+function isZodRawShapeCompat(obj3) {
+  if (typeof obj3 !== "object" || obj3 === null) {
     return false;
   }
-  if (isZodSchemaInstance(obj2)) {
+  if (isZodSchemaInstance(obj3)) {
     return false;
   }
-  if (Object.keys(obj2).length === 0) {
+  if (Object.keys(obj3).length === 0) {
     return true;
   }
-  return Object.values(obj2).some(isZodTypeLike);
+  return Object.values(obj3).some(isZodTypeLike);
 }
 function getZodSchemaObject(schema) {
   if (!schema) {
@@ -48057,11 +48286,12 @@ init_deploy();
 init_repos();
 init_state();
 init_brand();
-import { existsSync as existsSync23, readFileSync as readFileSync18, writeFileSync as writeFileSync12 } from "node:fs";
+import { existsSync as existsSync23, readFileSync as readFileSync19, statSync as statSync8, writeFileSync as writeFileSync12 } from "node:fs";
 import { join as join24 } from "node:path";
+init_runinfo();
 var set2 = (patch) => ({ ok: true, save: (cfg) => ({ ...cfg, ...patch }) });
 var list = (raw) => raw.split(/[,\n]/).map((s2) => s2.trim()).filter(Boolean);
-var num2 = (raw, min, max, key) => {
+var num3 = (raw, min, max, key) => {
   const n = Number(raw);
   return Number.isInteger(n) && n >= min && n <= max ? set2({ [key]: n }) : { ok: false, why: `Give a whole number from ${min} to ${max}.` };
 };
@@ -48079,7 +48309,7 @@ var SETTINGS = [
     help: `A few lines ${NAME} reads before every draft: what you do and how you write.`,
     kind: "text",
     section: "you",
-    read: (_c, s2) => existsSync23(join24(s2.root, "profile.md")) ? readFileSync18(join24(s2.root, "profile.md"), "utf8") : "",
+    read: (_c, s2) => existsSync23(join24(s2.root, "profile.md")) ? readFileSync19(join24(s2.root, "profile.md"), "utf8") : "",
     parse: (raw) => raw.trim().length < 20 ? { ok: false, why: "Write at least a sentence about yourself." } : { ok: true, save: (cfg, s2) => {
       writeFileSync12(join24(s2.root, "profile.md"), raw.trim() + "\n");
       return cfg;
@@ -48151,7 +48381,7 @@ var SETTINGS = [
     kind: "number",
     section: "timing",
     read: (c) => String(c.quietHours ?? 48),
-    parse: (raw) => num2(raw, 1, 336, "quietHours")
+    parse: (raw) => num3(raw, 1, 336, "quietHours")
   },
   {
     key: "dailyRuns",
@@ -48160,7 +48390,7 @@ var SETTINGS = [
     kind: "number",
     section: "system",
     read: (c) => String(c.dailyRuns ?? 200),
-    parse: (raw) => num2(raw, 1, 2e3, "dailyRuns")
+    parse: (raw) => num3(raw, 1, 2e3, "dailyRuns")
   },
   {
     key: "autoUpdate",
@@ -48285,7 +48515,7 @@ var SETTINGS = [
     section: "system",
     advanced: true,
     read: (c) => String(c.maxParallel ?? 3),
-    parse: (raw) => num2(raw, 1, 6, "maxParallel")
+    parse: (raw) => num3(raw, 1, 6, "maxParallel")
   },
   {
     key: "retentionDays",
@@ -48295,7 +48525,7 @@ var SETTINGS = [
     section: "system",
     advanced: true,
     read: (c) => String(c.retentionDays ?? 30),
-    parse: (raw) => num2(raw, 7, 365, "retentionDays")
+    parse: (raw) => num3(raw, 7, 365, "retentionDays")
   },
   {
     key: "followUpHours",
@@ -48304,7 +48534,7 @@ var SETTINGS = [
     kind: "number",
     section: "timing",
     read: (c) => String(c.followUpHours ?? 24),
-    parse: (raw) => num2(raw, 1, 168, "followUpHours")
+    parse: (raw) => num3(raw, 1, 168, "followUpHours")
   },
   {
     key: "model",
@@ -48360,7 +48590,7 @@ function whoOf(r) {
 function aboutView(store2) {
   const habits = store2.habits(), held = store2.heldRules(), cfg = store2.config();
   return {
-    profile: existsSync23(join24(store2.root, "profile.md")) ? readFileSync18(join24(store2.root, "profile.md"), "utf8").trim() : "",
+    profile: existsSync23(join24(store2.root, "profile.md")) ? readFileSync19(join24(store2.root, "profile.md"), "utf8").trim() : "",
     rules: store2.rules().map((r) => ({ text: r.text.replace(/^Learned: /, ""), who: whoOf(r), ...r.learned ? { learned: `Learned ${r.learned.at.slice(0, 10)} from ${r.learned.evidence}` } : {}, held: !!held[r.id], ...r.learned ? { code: habits.find((h) => h.key === r.learned.key)?.code } : {} })),
     suggestions: habits.filter((h) => h.state === "suggested").map((h) => ({ code: h.code, text: h.text, does: h.does, evidence: `${h.evidence.count} unedited replies on ${h.evidence.days} days, out of ${h.evidence.total}` })),
     chats: Object.values(cfg.chatLevels ?? {}).map((c) => ({ name: c.name, says: LEVEL_SAYS[c.level] }))
@@ -48389,6 +48619,7 @@ function settingsView(store2) {
   return {
     rows: specsOf(cfg).map((s2) => ({ key: s2.key, label: words3(s2.label), help: words3(typeof s2.help === "function" ? s2.help(cfg) : s2.help), kind: s2.kind, section: s2.section, value: s2.read(cfg, store2), options: s2.options, ...s2.advanced ? { advanced: true } : {} })),
     about: aboutView(store2),
+    models: modelsView(store2),
     fixed: [
       { label: "Tools drafts may read", value: cfg.agent.tools.filter((t2) => !["view", "glob", "grep"].includes(t2)).join(", ") || "none", how: `Say "set up ${CMD}" and change the tools step.` },
       // Changes allowed in setup that Settings never offers as a switch, such as a whole tool: shown, changed only in setup.
@@ -48396,6 +48627,25 @@ function settingsView(store2) {
       { label: "Reads your chats from", value: cfg.runner ?? "the machine where setup last finished", how: `On another machine, say "move ${NAME} here".` }
     ]
   };
+}
+var runCache = /* @__PURE__ */ new Map();
+function modelsView(store2, now = Date.now()) {
+  const since = now - 7 * 864e5, day3 = new Date(since - 864e5).toISOString().slice(0, 10);
+  const files2 = store2.logFiles().filter((f) => f.day >= day3).map((f) => f.file);
+  for (const f of runCache.keys()) if (!files2.includes(f)) runCache.delete(f);
+  const events = files2.flatMap((file2) => {
+    try {
+      const st = statSync8(file2), stamp2 = `${st.size}:${st.mtimeMs}`, hit = runCache.get(file2);
+      if (hit?.stamp === stamp2) return hit.runs;
+      const runs = store2.logOf(file2).filter((e) => runsOf([e]).length);
+      runCache.set(file2, { stamp: stamp2, runs });
+      return runs;
+    } catch {
+      return [];
+    }
+  }).filter((e) => Date.parse(String(e.at)) >= since);
+  const lines = runLines(events), model = store2.config().agent.model, name = model && nameFor(events, model);
+  return { set: model ? `Set to: ${model}${name && name !== model ? ` (${name})` : ""}` : "Uses the AI CLI's default", lines: lines.length ? lines : ["Models that ran: not recorded yet."] };
 }
 async function saveSetting(store2, key, raw, deps = {}) {
   const spec = specsOf(store2.config()).find((s2) => s2.key === key);
@@ -48524,11 +48774,11 @@ init_probe();
 
 // src/web/shell.ts
 init_paths();
-import { existsSync as existsSync25, readFileSync as readFileSync19 } from "node:fs";
+import { existsSync as existsSync25, readFileSync as readFileSync20 } from "node:fs";
 import { join as join26 } from "node:path";
 
 // src/web/page-bundle.ts
-import { existsSync as existsSync24, statSync as statSync8 } from "node:fs";
+import { existsSync as existsSync24, statSync as statSync9 } from "node:fs";
 import { createRequire } from "node:module";
 import { join as join25, relative as relative3 } from "node:path";
 var PAGE = {
@@ -48551,7 +48801,7 @@ function checkInputs(meta3) {
 var last2 = { root: "", inputs: [], key: "", text: "" };
 var keyOf2 = (root, inputs2) => inputs2.map((f) => {
   const p = join25(root, f);
-  return `${f}:${existsSync24(p) ? statSync8(p).mtimeMs : "gone"}`;
+  return `${f}:${existsSync24(p) ? statSync9(p).mtimeMs : "gone"}`;
 }).join("|");
 function bundlePage(root) {
   if (last2.root === root && last2.inputs.length && keyOf2(root, last2.inputs) === last2.key) return last2.text;
@@ -48591,7 +48841,7 @@ var THEME_FIRST = `<script>try{var t=localStorage.getItem('delegate-theme');if(t
 var warned = false;
 var pageBuild = { bundle: bundlePage };
 function pageScript(bundle2 = pageBuild.bundle, root = ROOT, webDir = WEB_DIR) {
-  if (!existsSync25(join26(webDir, "app.ts"))) return readFileSync19(join26(webDir, "app.js"), "utf8");
+  if (!existsSync25(join26(webDir, "app.ts"))) return readFileSync20(join26(webDir, "app.js"), "utf8");
   try {
     return bundle2(root);
   } catch (e) {
@@ -48600,11 +48850,11 @@ function pageScript(bundle2 = pageBuild.bundle, root = ROOT, webDir = WEB_DIR) {
       warned = true;
       console.error(`The page could not be built from source, so it uses dist/web/app.js: ${String(e?.message ?? e).split("\n")[0]}`);
     }
-    return readFileSync19(join26(root, "dist", "web", "app.js"), "utf8");
+    return readFileSync20(join26(root, "dist", "web", "app.js"), "utf8");
   }
 }
 function renderApp(view2, mode, bundle2 = "") {
-  const css = readFileSync19(join26(WEB_DIR, "app.css"), "utf8"), app = pageScript();
+  const css = readFileSync20(join26(WEB_DIR, "app.css"), "utf8"), app = pageScript();
   const boot = `window.DELEGATE=${safe({ mode, view: view2, name: NAME, cmd: CMD })};`;
   const scripts = mode === "panel" ? `<script type="module">${bundle2}
 ${boot}
@@ -48691,7 +48941,7 @@ function G(B, Q, F, V2, q2) {
 init_window();
 init_verbs();
 init_intake2();
-import { existsSync as existsSync26, readFileSync as readFileSync20 } from "node:fs";
+import { existsSync as existsSync26, readFileSync as readFileSync21 } from "node:fs";
 import { createRequire as createRequire2 } from "node:module";
 init_scheduler();
 init_state();
@@ -49124,7 +49374,7 @@ function appBundle() {
   if (bundle) return bundle;
   const shipped = join27(dirname8(CLI), "ext-apps.js");
   const file2 = CLI.endsWith(".mjs") && existsSync26(shipped) ? shipped : createRequire2(import.meta.url).resolve("@modelcontextprotocol/ext-apps/app-with-deps");
-  const src = readFileSync20(file2, "utf8");
+  const src = readFileSync21(file2, "utf8");
   const m = src.match(/export\s*\{([^}]*)\};?\s*$/);
   if (!m) throw new Error("Unexpected MCP Apps bundle format");
   const names = m[1].split(",").map((p) => p.trim().split(/\s+as\s+/)).map(([local2, name]) => `${JSON.stringify(name ?? local2)}:${local2}`);
@@ -49678,7 +49928,7 @@ Fix the first one you use (for most people: run it once and type /login), then r
         return `${cfg.knowledge.length} knowledge folder(s), kept`;
       }
       const folders = k.folders ?? [];
-      const missing = folders.filter((f) => !existsSync27(here2(store2.root, f)) || !statSync9(here2(store2.root, f)).isDirectory());
+      const missing = folders.filter((f) => !existsSync27(here2(store2.root, f)) || !statSync10(here2(store2.root, f)).isDirectory());
       if (missing.length) throw new Error(`Not a folder: ${missing.join(", ")}`);
       cfg.knowledge = folders.map((f) => portable(store2.root, here2(store2.root, f)));
       store2.saveConfig(cfg);
@@ -49794,7 +50044,7 @@ init_fs();
 init_scheduler();
 import { execFileSync as execFileSync4, spawn as spawn6, spawnSync as spawnSync5 } from "node:child_process";
 import { createHash as createHash4 } from "node:crypto";
-import { cpSync as cpSync2, existsSync as existsSync28, lstatSync as lstatSync2, mkdirSync as mkdirSync11, readFileSync as readFileSync21, readlinkSync, rmSync as rmSync7, symlinkSync, writeFileSync as writeFileSync14 } from "node:fs";
+import { cpSync as cpSync2, existsSync as existsSync28, lstatSync as lstatSync2, mkdirSync as mkdirSync11, readFileSync as readFileSync22, readlinkSync, rmSync as rmSync7, symlinkSync, writeFileSync as writeFileSync14 } from "node:fs";
 import { homedir as homedir9 } from "node:os";
 import { basename as basename3, join as join30 } from "node:path";
 init_brand();
@@ -49854,7 +50104,7 @@ function launcherPath() {
 function launcher2() {
   const p = launcherPath();
   if (!p) return void 0;
-  if (existsSync28(p) && !readFileSync21(p, "utf8").includes(MARKER)) return `Left ${p} alone: it is not ${NAME}'s.`;
+  if (existsSync28(p) && !readFileSync22(p, "utf8").includes(MARKER)) return `Left ${p} alone: it is not ${NAME}'s.`;
   const body = process.platform === "win32" ? `@rem ${MARKER}\r
 @"${process.execPath}" "${CLI}" %*\r
 ` : `#!/bin/sh
@@ -49872,7 +50122,7 @@ var isLink = (p) => {
     return false;
   }
 };
-var ours3 = (p) => isLink(p) ? readlinkSync(p) === SKILL_DIR : existsSync28(join30(p, "workflows", "reply.md")) && /^name: delegate$/m.test(readFileSync21(join30(p, "SKILL.md"), "utf8"));
+var ours3 = (p) => isLink(p) ? readlinkSync(p) === SKILL_DIR : existsSync28(join30(p, "workflows", "reply.md")) && /^name: delegate$/m.test(readFileSync22(join30(p, "SKILL.md"), "utf8"));
 var dirname9 = (p) => join30(p, "..");
 function runnerSilent(o) {
   if (!o.installed || !o.lease || o.lease.machine !== o.machine || o.runner && o.runner !== o.machine) return 0;
@@ -49993,7 +50243,7 @@ function uninstall2(purge) {
   if (ext) out.push(ext);
   if (has("claude")) spawnSync5("claude", ["mcp", "remove", "--scope", "user", "delegate"], { stdio: "ignore" });
   const lp = launcherPath();
-  if (lp && existsSync28(lp) && readFileSync21(lp, "utf8").includes(MARKER)) {
+  if (lp && existsSync28(lp) && readFileSync22(lp, "utf8").includes(MARKER)) {
     if (process.platform === "win32") {
       const d = deleteAfterExit(lp);
       spawn6(d.command, d.options).unref();
@@ -50027,7 +50277,7 @@ function uninstall2(purge) {
   out.push(root ? `Your data is still in ${root}. Delete that folder yourself if you want it gone.` : "Done.");
   return out;
 }
-var fileHash = (f) => createHash4("sha256").update(readFileSync21(f, "utf8").replace(/\r\n/g, "\n")).digest("hex");
+var fileHash = (f) => createHash4("sha256").update(readFileSync22(f, "utf8").replace(/\r\n/g, "\n")).digest("hex");
 var pluginListed = (out = spawnSync5("copilot", ["plugin", "list"], { encoding: "utf8", windowsHide: true }).stdout ?? "") => /^\s*\W?\s*delegate(@\S+)?\s+\(v/m.test(out);
 var version2 = () => VERSION;
 

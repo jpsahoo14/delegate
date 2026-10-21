@@ -36,6 +36,7 @@ import { intents } from '../core/intents.ts'
 import { unsafeRead } from '../core/effects.ts'
 import { shellInClone, shellTool } from './validate.ts'
 import { toolServers } from '../adapters/mcp-client.ts'
+import { ran } from '../core/runinfo.ts'
 
 export type RunWorker = (cfg: Config['agent'], input: RunInput & { workflowId: string; runId: string }) => Promise<RunResult>
 
@@ -117,7 +118,7 @@ export async function judgeReply(store: Store, cfg: Config, a: Automation, run: 
 		: /^keep\b/i.test(said) ? { why: `${first} replied; reminders continue` }
 		: { state: 'paused', next: undefined, why: `${first} replied` }
 	store.saveAutomation({ ...fresh, ...change, heard: undefined, updatedAt: now.toISOString() })
-	store.log({ event: 'automation-judged', code: a.code, said: said.slice(0, 80), ms: res.ms })
+	store.log({ event: 'automation-judged', code: a.code, said: said.slice(0, 80), ms: res.ms, runId, ...ran('reminder', res.used) })
 }
 
 // The folders a worker may open: the knowledge folders and card roots only, never the rest of the storage folder,
@@ -182,7 +183,7 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 	const raw = store.peekReport(wf.id, runId) ? undefined : reportFromText(res.summary, wf.id, intents(store.root).map(i => i.id))
 	const salvaged = raw && scrubDeep(raw)
 	const report = store.peekReport(wf.id, runId) ?? salvaged
-	store.log({ event: 'worker', ...(salvaged ? { salvaged: true } : {}), workflowId: wf.id, code: wf.code, runId, exitCode: res.exitCode, ms: res.ms, intent: report?.intent, summary: report?.summary, sources: report?.reply?.sources, commitment: report?.reply?.commitment, error: res.error })
+	store.log({ event: 'worker', ...(salvaged ? { salvaged: true } : {}), workflowId: wf.id, code: wf.code, runId, exitCode: res.exitCode, ms: res.ms, intent: report?.intent, summary: report?.summary, sources: report?.reply?.sources, commitment: report?.reply?.commitment, error: res.error, ...ran('draft', res.used) })
 	const fresh = store.workflow(wf.id) ?? wf
 	const into = report?.same ? others.find(o => o.code === report.same!.toUpperCase()) : undefined
 	if (into && joinInto(store, fresh, store.workflow(into.id) ?? into)) { store.archiveReport(wf.id, runId); return }
@@ -255,7 +256,7 @@ async function runAsk(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 	if (note) Object.assign(note, report?.answer ? { a: report.answer, sources: report.reply ? checked(store, cfg, report).reply!.sources : undefined } : { a: `I could not answer that${res.error ? ` (${res.error.slice(0, 80)})` : ''}. Ask again, or open ${fresh.code} on your computer.` })
 	store.save(fresh)
 	store.archiveReport(wf.id, runId)
-	store.log({ event: 'ask', workflowId: wf.id, code: wf.code, runId, ms: res.ms })
+	store.log({ event: 'ask', workflowId: wf.id, code: wf.code, runId, ms: res.ms, ...ran('ask', res.used) })
 	if (note && fresh.answerSurface === 'self') await say(store, src, plain(`${MARK} ${fresh.code} · ${note.q}\n${note.a}`).slice(0, 1800))
 }
 

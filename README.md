@@ -147,6 +147,8 @@ A clone follows tagged releases. It looks once a day (Settings › Look for upda
 
 Open Settings on Home. It shows **What Delegate knows about you** (your profile, your standing instructions, said or learned, its suggestions, and the chats you marked private or off the record) and the few settings there are: your nicknames, notes folders, the daily summary time, the signature, whether to sign replies you approve, whether to notice your habits, whether to approve learned facts first, the daily AI-run limit, updates, the repos you work in, and where Delegate may deploy. Each is saved to `config.json` in your data folder and used by every machine.
 
+Under Updates and system, **AI models** says which model is set (or that your AI CLI picks), and which models ran in the last 7 days for drafts, reviews, asks, and the other runs, with the typical time of a run split into the model, tools, and start-up. `status` names the models that ran today. Only model names and numbers are kept, never what was asked or answered.
+
 ## Several machines
 
 Install on each machine and pick the same data folder. One machine reads your chats; another stands by and takes over after 30 quiet minutes. `continue A7` opens an item's AI session on the machine you are at.

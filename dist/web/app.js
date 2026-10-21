@@ -2046,6 +2046,7 @@
     if (c && !c.querySelector(".dot")) c.insertAdjacentHTML("beforeend", '<span class="dot" title="Not saved yet"></span>');
   };
   var detailsPanel = () => html`<h2 class="section-h">Details</h2><ul class="rows setrows"><li class="setrow"><b>Runner</b><span class="m">${esc(V.details.runner)}</span>${env.snap ? "" : html`<div class="markacts">${checkNow()}</div>`}</li><li class="setrow"><b>Today's log, newest first</b><pre class="dbg">${esc(V.details.log.join("\n") || "Nothing yet.")}</pre></li></ul>`;
+  var modelsBlock = (m) => m ? html`<h3 class="section-h">AI models</h3><ul class="rows setrows"><li class="setrow" data-code="models"><b>${esc(m.set)}</b>${m.lines.map((l) => html`<span>${esc(l)}</span>`)}<span class="m">From the last 7 days, on every machine. To choose a model, open More, then AI model.</span></li></ul>` : "";
   function input(r) {
     const id = `set-${r.key}`, v = S.set[r.key] ?? r.value;
     if (r.kind === "text") return html`<textarea id="${esc(id)}" class="edit" data-set="${esc(r.key)}" rows="4">${esc(v)}</textarea>`;
@@ -2077,7 +2078,7 @@
       you: html`<ul class="rows setrows">${rows2("you")}</ul>${changes}`,
       replies: html`<p class="m" style="margin:-4px 0 10px">Replies go out by themselves only for your <a href="#settings/learned">standing instructions</a>. These limits apply to every one.</p><ul class="rows setrows">${rows2("replies")}</ul>`,
       timing: html`<ul class="rows setrows">${rows2("timing")}</ul>`,
-      system: html`<ul class="rows setrows">${rows2("system")}</ul><details class="adv" data-adv${S.advOpen ? raw(" open") : ""}><summary class="section-h">More</summary><ul class="rows setrows">${rows2("system", true)}</ul>${V.details ? detailsPanel() : ""}<h3 class="section-h">Changed by setup</h3><ul class="rows setrows">${fixed}</ul></details>`
+      system: html`<ul class="rows setrows">${rows2("system")}</ul>${modelsBlock(st.models)}<details class="adv" data-adv${S.advOpen ? raw(" open") : ""}><summary class="section-h">More</summary><ul class="rows setrows">${rows2("system", true)}</ul>${V.details ? detailsPanel() : ""}<h3 class="section-h">Changed by setup</h3><ul class="rows setrows">${fixed}</ul></details>`
     };
     const intro = { learned: `Ask your AI chat "what do you know about me?" for the same list. To change a rule you wrote, say "change my rules" there.` };
     const sub = S.route.split("/")[1], here = st.rows.find((r) => r.key === sub)?.section ?? sub;

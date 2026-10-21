@@ -16,7 +16,8 @@ import { writeText } from '../store/fs.ts'
 import { isAbsolute, join } from 'node:path'
 import type { Call, Config, Effect, Job, Report, Retry, Workflow } from '../core/types.ts'
 import { ulid } from '../core/ids.ts'
-import { startAgent, type RunInput } from '../adapters/agent.ts'
+import { ran, readRun } from '../core/runinfo.ts'
+import { sessionLog, startAgent, type RunInput } from '../adapters/agent.ts'
 import type { Source } from '../adapters/source.ts'
 import { alive, aliveAs, killTree } from '../os/process.ts'
 import { openWindow } from '../os/window.ts'
@@ -200,9 +201,10 @@ export async function checkJobs(store: Store, src: Source, cfg: Config, procs: P
 			continue
 		}
 		if (rebooted && !r && run.purpose === 'work') {
+			const used = readUse(store, job)
 			Object.assign(job, { state: 'queued', run: undefined })
 			store.saveJob(job)
-			store.log({ event: 'job-resumed-after-restart', job: job.id, key: job.key })
+			store.log({ event: 'job-resumed-after-restart', job: job.id, key: job.key, ...used })
 			continue
 		}
 		// A change run nobody still approves (a new ask, the owner's own reply, skip) stops before it does more (review 01-04 P1-6).
@@ -214,20 +216,43 @@ export async function checkJobs(store: Store, src: Source, cfg: Config, procs: P
 			store.setHealth(`job:${job.id}`)
 		}
 		if (!live) { backupSession(store, job.session.id); if (run.machine === store.machine) scrubLog(store, run.id) }
-		if (r) {
-			if (run.purpose === 'execute') await finishExecute(store, src, cfg, job)
-			else finishWork(store, job, r, run.asks)
-			store.archiveReport(job.id, run.id)
-			n++
-		} else if (over && run.purpose === 'work' && !run.wrapUp) {
-			// Out of time with nothing reported: one short turn in the same session keeps what it found (live R01 and R18 runs lost 10 minutes of work).
-			Object.assign(job, { state: 'queued', wrapUp: true, run: undefined })
-			store.saveJob(job)
-			store.log({ event: 'job-wrap-up', job: job.id, key: job.key })
-		} else if (over) fail(store, job, `Stopped after ${run.wrapUp ? minutes + WRAP_UP_MINUTES : minutes} minutes, its time budget`)
-		else if (!live) failOrRetry(store, job, 'It stopped without a result')
+		// The run has ended: what it used goes on the event that ends it.
+		ended.set(job.id, readUse(store, job))
+		try {
+			if (r) {
+				if (run.purpose === 'execute') await finishExecute(store, src, cfg, job)
+				else finishWork(store, job, r, run.asks)
+				store.archiveReport(job.id, run.id)
+				n++
+			} else if (over && run.purpose === 'work' && !run.wrapUp) {
+				// Out of time with nothing reported: one short turn in the same session keeps what it found (live R01 and R18 runs lost 10 minutes of work).
+				Object.assign(job, { state: 'queued', wrapUp: true, run: undefined })
+				store.saveJob(job)
+				store.log({ event: 'job-wrap-up', job: job.id, key: job.key, ...usedBy(job) })
+			} else if (over) fail(store, job, `Stopped after ${run.wrapUp ? minutes + WRAP_UP_MINUTES : minutes} minutes, its time budget`)
+			else if (!live) failOrRetry(store, job, 'It stopped without a result')
+		} finally {
+			// An end that logs nothing of its own (asks came in during the run, so it runs again) still records what the run used.
+			const left = usedBy(job)
+			if (Object.keys(left).length) store.log({ event: 'job-run', job: job.id, key: job.key, ...left })
+		}
 	}
 	return n
+}
+
+// What each run that ended here used, read once from its log, for the event that ends it (R-SET-14).
+const ended = new Map<string, Record<string, unknown>>()
+const usedBy = (job: Job) => { const u = ended.get(job.id) ?? {}; ended.delete(job.id); return u }
+// Another machine's run, or a relay, has no log here.
+function readUse(store: Store, job: Job): Record<string, unknown> {
+	const run = job.run, f = run && !run.relay && run.machine === store.machine ? join(LOCAL_DIR, 'sessions', `${run.id}.log`) : undefined
+	if (!run || !f || !existsSync(f)) return {}
+	let text: string
+	try { text = readFileSync(f, 'utf8') } catch { return {} }
+	const started = Date.parse(run.startedAt), { use, lastAt } = readRun(text, started, process.env, sessionLog(job.session.agent, job.session.id), Date.now())
+	// A review is what the Done tab counts as one: a PR review job (view.ts).
+	const out = ran(run.purpose === 'execute' ? 'change' : job.intent === 'pr_review' || canonicalKey(job.key).startsWith('pr:') ? 'review' : 'job', use)
+	return Object.keys(out).length ? { ...out, runId: run.id, ...(lastAt !== undefined && lastAt >= started ? { ms: lastAt - started } : {}) } : {}
 }
 
 export function finishWork(store: Store, job: Job, r: Report, asksAtStart: number) {
@@ -272,7 +297,7 @@ export function finishWork(store: Store, job: Job, r: Report, asksAtStart: numbe
 	// Asks that arrived during the run get one more run in the same session.
 	Object.assign(job, { result: { summary: r.summary, reply: r.reply ? { ...r.reply } : undefined, effects }, state: again ? 'queued' : 'done', purpose: 'work', run: undefined })
 	store.saveJob(job)
-	if (!again) store.log({ event: 'job-done', job: job.id, key: job.key, summary: r.summary, effects: effects.length })
+	if (!again) store.log({ event: 'job-done', job: job.id, key: job.key, summary: r.summary, effects: effects.length, ...usedBy(job) })
 }
 
 // The approved changes ran. The reply goes out only to items whose ok still matches what they approved.
@@ -290,7 +315,7 @@ async function finishExecute(store: Store, src: Source, cfg: Config, job: Job) {
 	const parents = parentsOf(store, job)
 	// Kept and removed say whether the changes went as proposed (removed: left out by the owner, or dropped as no longer needed).
 	// Logged before the replies go out, so the changes come first in the log, as they did in the chat (R-NEX-11).
-	store.log({ event: 'job-executed', job: job.id, items: parents.map(w => w.code), kept: effects.filter(e => !e.off).length, removed: effects.filter(e => e.off).length, done: effects.length - left.length, left: left.length })
+	store.log({ event: 'job-executed', job: job.id, items: parents.map(w => w.code), kept: effects.filter(e => !e.off).length, removed: effects.filter(e => e.off).length, done: effects.length - left.length, left: left.length, ...usedBy(job) })
 	for (const wf of parents) {
 		const ok = stillApproved(wf, before)
 		// An item whose list was not the one made keeps its own, with what was made marked (review 10-21c P1-1).
@@ -460,11 +485,11 @@ function stopRun(store: Store, procs: Procs, job: Job, why: string) {
 		return
 	}
 	// Asks that arrived during the stopped run get a work run in the same session.
-	const again = !!job.run && job.asks.length > job.run.asks
+	const again = !!job.run && job.asks.length > job.run.asks, used = readUse(store, job)
 	Object.assign(job, { result: { ...job.result!, effects: foldChanges(store, job) }, state: again ? 'queued' : 'done', purpose: 'work', run: undefined })
 	adoptList(store, job)
 	store.saveJob(job)
-	store.log({ event: 'job-execute-stopped', job: job.id, why })
+	store.log({ event: 'job-execute-stopped', job: job.id, why, ...used })
 }
 
 // A tracker check: quiet when the result repeats, one update when it changes, done when its condition holds (R-TRK-02).
@@ -473,7 +498,7 @@ function finishCheck(store: Store, job: Job, r: Report, asksAtStart: number) {
 	if (r.goalMet === false && !r.done) {
 		Object.assign(job, { state: 'done', run: undefined, nextAt: new Date(Date.now() + job.every! * 60_000).toISOString() })
 		store.saveJob(job)
-		store.log({ event: 'track-check-short', job: job.id, why: r.blocker?.why })
+		store.log({ event: 'track-check-short', job: job.id, why: r.blocker?.why, ...usedBy(job) })
 		return
 	}
 	const key = hashOf(r.summary.trim().toLowerCase())
@@ -488,7 +513,7 @@ function finishCheck(store: Store, job: Job, r: Report, asksAtStart: number) {
 	const again = !r.done && job.asks.length > asksAtStart
 	Object.assign(job, { result: { summary: r.summary, effects: [], at: now }, last: key, state: again ? 'queued' : 'done', run: undefined, nextAt: r.done ? undefined : new Date(Date.now() + job.every! * 60_000).toISOString(), every: r.done ? undefined : job.every })
 	store.saveJob(job)
-	store.log({ event: 'track-check', job: job.id, changed, done: !!r.done, summary: r.summary })
+	store.log({ event: 'track-check', job: job.id, changed, done: !!r.done, summary: r.summary, ...usedBy(job) })
 }
 
 // A bootstrap source turns its claims into K proposals and remembers where it stopped (R-BOOT-05, R-BOOT-10).
@@ -498,7 +523,7 @@ function finishBootstrap(store: Store, job: Job, r: Report) {
 	if (r.checkpoint) store.saveSource(job.key, r.checkpoint)
 	Object.assign(job, { result: { summary: r.summary, effects: [] }, state: 'done', run: undefined })
 	store.saveJob(job)
-	store.log({ event: 'bootstrap-done', job: job.id, key: job.key, claims: r.claims?.length ?? 0, proposals: made.map(p => p.code) })
+	store.log({ event: 'bootstrap-done', job: job.id, key: job.key, claims: r.claims?.length ?? 0, proposals: made.map(p => p.code), ...usedBy(job) })
 }
 
 // The ask goes to the owner's open session as a message; the session does the work with its own history and approvals.
@@ -552,7 +577,7 @@ function queueRetry(store: Store, job: Job, retry: Retry, fresh: boolean) {
 	for (const wf of parentsOf(store, job)) { Object.assign(wf, { state: 'waiting_on_task', status: retryStatus(retry, hhmm), waitingSince: wf.waitingSince ?? new Date().toISOString() }); store.save(wf) }
 	Object.assign(job, { state: 'queued', purpose: 'work', retry, nextAt: retry.at, run: undefined, error: undefined, ...(fresh ? { session: { ...job.session, id: randomUUID() } } : {}) })
 	store.saveJob(job)
-	store.log({ event: 'retry-planned', job: job.id, key: job.key, n: retry.n, kind: retry.last.kind, why: retry.last.why, at: retry.at, fresh })
+	store.log({ event: 'retry-planned', job: job.id, key: job.key, n: retry.n, kind: retry.last.kind, why: retry.last.why, at: retry.at, fresh, ...usedBy(job) })
 }
 
 function shortOfGoal(store: Store, job: Job, r: Report) {
@@ -571,7 +596,7 @@ function shortOfGoal(store: Store, job: Job, r: Report) {
 	}
 	Object.assign(job, { result: { summary: r.summary, reply: draft, effects: [] }, state: 'done', purpose: 'work', run: undefined, retry: undefined, nextAt: undefined })
 	store.saveJob(job)
-	store.log({ event: 'retry-stopped', job: job.id, key: job.key, why: p.stop })
+	store.log({ event: 'retry-stopped', job: job.id, key: job.key, why: p.stop, ...usedBy(job) })
 }
 
 function fail(store: Store, job: Job, why: string) {
@@ -581,7 +606,7 @@ function fail(store: Store, job: Job, why: string) {
 	}
 	Object.assign(job, { state: 'failed', error: why, run: undefined, purpose: 'work', retry: undefined, nextAt: undefined })
 	store.saveJob(job)
-	store.log({ event: 'job-failed', job: job.id, key: job.key, error: why })
+	store.log({ event: 'job-failed', job: job.id, key: job.key, error: why, ...usedBy(job) })
 }
 
 // A run's log holds the AI CLI's raw output; once the run is over, any secret in it is hidden (review 10-21 P2-6).

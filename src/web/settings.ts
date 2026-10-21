@@ -7,13 +7,14 @@ import { toolServers } from '../adapters/mcp-client.ts'
 import { NEVER_RING, parseTargets, targetsText } from '../core/deploy.ts'
 import type { BuildProbe } from '../runner/probe.ts'
 import { remoteOf } from '../runner/repos.ts'
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Config, DeployTarget, Rule } from '../core/types.ts'
 import type { Store } from '../store/state.ts'
 import { here } from '../store/state.ts'
 import { CMD, NAME } from '../brand.ts'
 import { UPDATE_EVERY_MIN } from '../os/autoupdate.ts'
+import { nameFor, runLines, runsOf } from '../core/runinfo.ts'
 
 // The settings the page can change, in one table: how each is shown, read, checked, and saved (B13).
 // Each saves to the shared config (or profile.md) in the storage folder, so every machine and the next cycle use it.
@@ -179,13 +180,14 @@ export function aboutText(store: Store): string {
 	].join('\n')
 }
 
-export function settingsView(store: Store): { rows: SettingRow[]; fixed: ReadOnlyRow[]; about: AboutView } {
+export function settingsView(store: Store): { rows: SettingRow[]; fixed: ReadOnlyRow[]; about: AboutView; models: ModelsView } {
 	const cfg = store.config()
 	// The new experience names its places differently: Waiting, and the foot of Now (PM review of N1a, 7).
 	const words = (t: string) => store.ui().ui === 'new' ? t.replace('Waiting on others', 'Waiting').replace('Check for updates on Home', 'Check for updates at the foot of Now') : t
 	return {
 		rows: specsOf(cfg).map(s => ({ key: s.key, label: words(s.label), help: words(typeof s.help === 'function' ? s.help(cfg) : s.help), kind: s.kind, section: s.section, value: s.read(cfg, store), options: s.options, ...(s.advanced ? { advanced: true as const } : {}) })),
 		about: aboutView(store),
+		models: modelsView(store),
 		fixed: [
 			{ label: 'Tools drafts may read', value: cfg.agent.tools.filter(t => !['view', 'glob', 'grep'].includes(t)).join(', ') || 'none', how: `Say "set up ${CMD}" and change the tools step.` },
 			// Changes allowed in setup that Settings never offers as a switch, such as a whole tool: shown, changed only in setup.
@@ -193,6 +195,28 @@ export function settingsView(store: Store): { rows: SettingRow[]; fixed: ReadOnl
 			{ label: 'Reads your chats from', value: cfg.runner ?? 'the machine where setup last finished', how: `On another machine, say "move ${NAME} here".` },
 		],
 	}
+}
+
+// AI models (R-SET-14, design-spec/runinfo.md): what is set, and what ran in the last 7 days, per kind of run.
+export type ModelsView = { set: string; lines: string[] }
+// The page polls often: each log file's runs are read again only when the file changes.
+const runCache = new Map<string, { stamp: string; runs: Record<string, unknown>[] }>()
+export function modelsView(store: Store, now = Date.now()): ModelsView {
+	// A file is named by its machine's UTC day: one day more is read, and each line's own time decides.
+	const since = now - 7 * 86_400_000, day = new Date(since - 86_400_000).toISOString().slice(0, 10)
+	const files = store.logFiles().filter(f => f.day >= day).map(f => f.file)
+	for (const f of runCache.keys()) if (!files.includes(f)) runCache.delete(f)
+	const events = files.flatMap(file => {
+		try {
+			const st = statSync(file), stamp = `${st.size}:${st.mtimeMs}`, hit = runCache.get(file)
+			if (hit?.stamp === stamp) return hit.runs
+			const runs = store.logOf(file).filter(e => runsOf([e]).length)
+			runCache.set(file, { stamp, runs })
+			return runs
+		} catch { return [] }
+	}).filter(e => Date.parse(String(e.at)) >= since)
+	const lines = runLines(events), model = store.config().agent.model, name = model && nameFor(events, model)
+	return { set: model ? `Set to: ${model}${name && name !== model ? ` (${name})` : ''}` : 'Uses the AI CLI\'s default', lines: lines.length ? lines : ['Models that ran: not recorded yet.'] }
 }
 
 export async function saveSetting(store: Store, key: string, raw: string, deps: SaveDeps = {}): Promise<{ ok: boolean; text: string }> {

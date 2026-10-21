@@ -15,6 +15,9 @@ export const markUnsaved = (sec: string | undefined) => { const c = sec && docum
 // Show details: what the runner is doing, and today's log, for when something looks wrong.
 const detailsPanel = (): H => html`<h2 class="section-h">Details</h2><ul class="rows setrows"><li class="setrow"><b>Runner</b><span class="m">${esc(V.details!.runner)}</span>${env.snap ? '' : html`<div class="markacts">${checkNow()}</div>`}</li><li class="setrow"><b>Today's log, newest first</b><pre class="dbg">${esc(V.details!.log.join('\n') || 'Nothing yet.')}</pre></li></ul>`
 
+// AI models (R-SET-14): what is set, and what ran in the last 7 days per kind of run, with where its time went. Read-only.
+const modelsBlock = (m?: Settings['models']): H => (m ? html`<h3 class="section-h">AI models</h3><ul class="rows setrows"><li class="setrow" data-code="models"><b>${esc(m.set)}</b>${m.lines.map(l => html`<span>${esc(l)}</span>`)}<span class="m">From the last 7 days, on every machine. To choose a model, open More, then AI model.</span></li></ul>` : '')
+
 function input(r: Row): H {
 	const id = `set-${r.key}`, v = S.set[r.key] ?? r.value
 	if (r.kind === 'text') return html`<textarea id="${esc(id)}" class="edit" data-set="${esc(r.key)}" rows="4">${esc(v)}</textarea>`
@@ -50,7 +53,7 @@ export function settingsView(): H {
 		you: html`<ul class="rows setrows">${rows('you')}</ul>${changes}`,
 		replies: html`<p class="m" style="margin:-4px 0 10px">Replies go out by themselves only for your <a href="#settings/learned">standing instructions</a>. These limits apply to every one.</p><ul class="rows setrows">${rows('replies')}</ul>`,
 		timing: html`<ul class="rows setrows">${rows('timing')}</ul>`,
-		system: html`<ul class="rows setrows">${rows('system')}</ul><details class="adv" data-adv${S.advOpen ? raw(' open') : ''}><summary class="section-h">More</summary><ul class="rows setrows">${rows('system', true)}</ul>${V.details ? detailsPanel() : ''}<h3 class="section-h">Changed by setup</h3><ul class="rows setrows">${fixed}</ul></details>`,
+		system: html`<ul class="rows setrows">${rows('system')}</ul>${modelsBlock(st.models)}<details class="adv" data-adv${S.advOpen ? raw(' open') : ''}><summary class="section-h">More</summary><ul class="rows setrows">${rows('system', true)}</ul>${V.details ? detailsPanel() : ''}<h3 class="section-h">Changed by setup</h3><ul class="rows setrows">${fixed}</ul></details>`,
 	}
 	const intro: Record<string, string> = { learned: `Ask your AI chat "what do you know about me?" for the same list. To change a rule you wrote, say "change my rules" there.` }
 	const sub = S.route.split('/')[1], here = st.rows.find(r => r.key === sub)?.section ?? sub
