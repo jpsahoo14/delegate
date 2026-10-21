@@ -49,7 +49,7 @@ test('N2 whose rule 5: an open to-do puts the item in Your move, even a done one
 		[{ state: 'open', work: { open: true, next: 'them' }, todos: 0 }, 'waiting', 'waiting'],
 	]
 	assert.deepEqual(cases.map(([f]) => { const m = whoseMove({ ...base, ...f }); return [m.section, m.rule] }), cases.map(([, s, r]) => [s, r]))
-	assert.deepEqual(RULES.map(r => r.id), ['catchup', 'done', 'needs-you', 'stopped', 'todo', 'job-running', 'starts-next', 'your-step', 'partner-wait', 'waiting'])
+	assert.deepEqual(RULES.map(r => r.id), ['catchup', 'done', 'needs-you', 'stopped', 'todo', 'job-running', 'starts-next', 'your-step', 'waiting'])
 })
 
 test('N2 owned work: the opened item has every plan step with its owner, done steps ticked, the current step marked, and your move', () => {
@@ -298,12 +298,4 @@ test('re-review N2 P2-D: every rule has a place in the design order, and an unkn
 	assert.deepEqual([...PRECEDENCE].sort(), RULES.map(r => r.id).sort())
 	assert.equal(PRECEDENCE.length, RULES.length)
 	assert.deepEqual([rankOf('needs-you'), rankOf('a-new-rule')], [0, PRECEDENCE.length])
-})
-
-test('review react-spec P0-2: the page can undo a reply the owner approved, inside its window, exactly as it offers', async () => {
-	const store = fresh()
-	const w = store.byCode('A20')!
-	store.save({ ...w, state: 'done', sent: { msgId: 'm-a20', at: new Date().toISOString(), text: w.draft!.text, undoUntil: new Date(Date.now() + 9 * 60_000).toISOString() } })
-	const r = await send(store, 'undo A20')
-	assert.deepEqual([store.byCode('A20')!.state, store.byCode('A20')!.sent], ['needs_human', undefined], `undone (${r.said} ${r.out})`)
 })

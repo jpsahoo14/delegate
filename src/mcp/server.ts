@@ -29,7 +29,7 @@ import { registerAppResource, registerAppTool, RESOURCE_MIME_TYPE } from '@model
 import { existsSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { openUrl } from '../os/window.ts'
-import { parseVerbs } from '../core/verbs.ts'
+import { parseVerbs, type Parsed } from '../core/verbs.ts'
 import type { Store } from '../store/state.ts'
 import { isControl, latestPreview, MISSED } from '../runner/intake.ts'
 import { STEPS, save as setupSave, status as setupStatus } from './setup.ts'
@@ -314,16 +314,23 @@ export function actResult(store: Store, command: string, shownAt?: string, from:
 	// A watch only adds a new item and job, so it starts at once, like "missed" (design-spec/done-v2.md).
 	if (parsed?.[0]?.verb === 'watch') { const r = watchCommand(store, parsed[0]); return { text: r.text, accepted: r.accepted, ids: [] } }
 	if (!parsed) return { text: 'I did not understand. Use a verb and a code, for example "ok A7" or "A7: Oct 24 works".', accepted: false, ids: [] }
+	return enqueueParsed(store, parsed, shownAt, from)
+}
+
+// Typed page intents enter after chat parsing so user text remains one field.
+export function enqueueParsed(store: Store, parsed: Parsed[], shownAt?: string, from: 'chat' | 'page' = 'page', answerId?: string, page?: import('../core/types.ts').PageApproval): { text: string; accepted: boolean; ids: string[] } {
+	if (answerId && parsed.length !== 1) throw new Error('A page submission must target exactly one action.')
+	const write = (answer: Parameters<Store['writeAnswer']>[0]) => store.writeAnswer({ ...answer, ...(page ? { page, ...(page.todoIds ? { todos: page.todoIds } : {}) } : {}) }, answerId)
 	let shown = 0
 	const out: string[] = []
 	const ids: string[] = []
 	for (const p of parsed) {
-		if (isControl(p.verb) && !p.code) { ids.push(store.writeAnswer({ code: '', verb: p.verb, surface: 'chat' }).id); out.push(`${p.verb}: applying now.`); continue }
+		if (isControl(p.verb) && !p.code) { ids.push(write({ code: '', verb: p.verb, surface: 'chat' }).id); out.push(`${p.verb}: applying now.`); continue }
 		const code = p.code ?? latestPreview(store, 'chat')
 		const wt = code?.startsWith('W') ? store.waiting().find(w => w.code === code) : undefined
 		if (wt) {
 			if (p.verb !== 'ok' && p.verb !== 'skip') { out.push(`${wt.code} takes ok (draft a follow-up) or skip.`); continue }
-			ids.push(store.writeAnswer({ code: wt.code, verb: p.verb, surface: 'chat', seenAt: shownAt }).id)
+			ids.push(write({ code: wt.code, verb: p.verb, surface: 'chat', seenAt: shownAt }).id)
 			out.push(p.verb === 'ok' ? `${wt.code} will get a follow-up draft to ${wt.to.join(', ')}. You'll see it before it is sent.` : `${wt.code} will be dropped.`)
 			continue
 		}
@@ -331,14 +338,14 @@ export function actResult(store: Store, command: string, shownAt?: string, from:
 		if (hb) {
 			if (p.verb === 'more') { out.push(answerHabit(store, hb, 'more')); shown++; continue }
 			if (!['ok', 'skip', 'never'].includes(p.verb)) { out.push(`${hb.code} takes ok (turn it on), skip (not now), never, or more.`); continue }
-			ids.push(store.writeAnswer({ code: hb.code, verb: p.verb, surface: 'chat' }).id)
+			ids.push(write({ code: hb.code, verb: p.verb, surface: 'chat' }).id)
 			out.push(`${hb.code} ${{ ok: 'will turn on', skip: 'will wait 14 days', never: 'will not come back' }[p.verb as 'ok']}.`)
 			continue
 		}
 		const auto = code?.startsWith('R') ? store.automation(code) : undefined
 		if (auto) {
 			if (p.verb === 'more') { out.push(describe(auto)); shown++; continue }
-			ids.push(store.writeAnswer({ code: auto.code, verb: p.verb, text: p.text, surface: 'chat', seenAt: shownAt }).id)
+			ids.push(write({ code: auto.code, verb: p.verb, text: p.text, surface: 'chat', seenAt: shownAt }).id)
 			out.push(`${auto.code} ${{ ok: 'will start', edit: `will say: "${p.text}"`, pause: 'will pause', resume: 'will resume', skip: 'will end; nothing more is sent' }[p.verb as 'ok'] ?? 'takes ok, edit, pause, resume, or skip'}.`)
 			continue
 		}
@@ -347,7 +354,7 @@ export function actResult(store: Store, command: string, shownAt?: string, from:
 			if (p.verb === 'more') { out.push(renderProposal(kp)); shown++; continue }
 			// Refused before promising anything (persona test P1).
 			if (p.verb === 'edit' && kp.ops.length > 1) { out.push(`${kp.code} has ${kp.ops.length} facts, so it can't be edited as one. Say "ok ${kp.code}" to save them as shown or "skip ${kp.code}" to drop them. Then say "remember <topic>: <the right fact>" to add what is correct.`); continue }
-			ids.push(store.writeAnswer({ code: kp.code, verb: p.verb, text: p.text, nums: p.nums, except: p.except, surface: 'chat', seenAt: shownAt ?? new Date().toISOString() }).id)
+			ids.push(write({ code: kp.code, verb: p.verb, text: p.text, nums: p.nums, except: p.except, surface: 'chat', seenAt: shownAt ?? new Date().toISOString() }).id)
 			out.push(`${kp.code} (${kp.title}) ${{ ok: `will save: ${kp.status}`, edit: `will save your text: "${p.text}"`, skip: 'will be dropped; nothing is saved', undo: 'will be taken back' }[p.verb as 'ok'] ?? 'is not a knowledge verb'}.`)
 			continue
 		}
@@ -360,12 +367,11 @@ export function actResult(store: Store, command: string, shownAt?: string, from:
 		const marks = p.verb === 'close' && openTodos(wf).length > 0
 		// A rev older than every open to-do came from a button that drew none (a Close on another row): all open, as before.
 		const drawn = marks ? openTodos(wf).filter(t => from !== 'page' || !shownAt || t.at <= shownAt) : [], seen = drawn.length ? drawn : openTodos(wf)
-		if (marks) { ids.push(store.writeAnswer({ code: wf.code, verb: p.verb, text: p.text, surface: 'chat', seenAt: shownAt ?? store.seenRev(wf.code), todos: seen.map(t => t.id) }).id); out.push(`${wf.code} will mark ${seen.length === 1 ? 'its to-do' : `its ${seen.length} to-dos`} done. Nothing is sent.`); continue }
+		if (marks) { ids.push(write({ code: wf.code, verb: p.verb, text: p.text, surface: 'chat', seenAt: shownAt ?? store.seenRev(wf.code), todos: seen.map(t => t.id) }).id); out.push(`${wf.code} will mark ${seen.length === 1 ? 'its to-do' : `its ${seen.length} to-dos`} done. Nothing is sent.`); continue }
 		if (wf.state === 'done' && !reopenable(wf, p.verb) && !(p.verb === 'mine' && wf.fyi) && !['undo', 'ask', 'wrong', 'incomplete', 'unneeded'].includes(p.verb) && !(p.verb === 'send' && wf.sent)) { out.push(`${wf.code} is already done: ${wf.status}`); shown++; continue }
 		if (p.verb === 'mine' && (wf.state !== 'done' || !wf.fyi)) { out.push(`${wf.code} is not in Catch up, so nothing changed.`); shown++; continue }
-		// Every sent reply can be undone inside its window, as the page offers; the runner says when it has closed (owner 10-21; review react-spec P0-2).
-		if (p.verb === 'undo' && !wf.sent) { out.push(`${wf.code}: has not been sent, so there is nothing to undo.`); shown++; continue }
-		ids.push(store.writeAnswer({ code: wf.code, verb: p.verb, text: p.text, nums: p.nums, except: p.except, again: p.again, surface: 'chat', seenAt: shownAt ?? store.seenRev(wf.code) }).id)
+		if (p.verb === 'undo' && (!wf.sent?.undoUntil || Date.parse(wf.sent.undoUntil) <= Date.now())) { out.push(`${wf.code}: the undo window has closed. The reply stays in the chat.`); continue }
+		ids.push(write({ code: wf.code, verb: p.verb, text: p.text, nums: p.nums, except: p.except, again: p.again, surface: 'chat', seenAt: shownAt ?? store.seenRev(wf.code) }).id)
 		const ask = wf.lastAsk ? ` (${wf.asker?.name}: "${wf.lastAsk.slice(0, 80)}")` : ''
 		const left = pendingEffects(wf.effects)
 		const changes = left.length ? `will ${effectLine(left)}, then ` : 'will '

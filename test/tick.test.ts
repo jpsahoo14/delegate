@@ -459,9 +459,9 @@ test('Catch up: an FYI worth knowing is listed with its line, noise and room gue
 	script = (_: string, id: string): Report => ({ workflowId: id, intent: 'none', state: 'done', summary: 'thanks' })
 	src.post(g, 'Kim', 'thanks Robin!'); await go()
 	assert.equal(store.workflows().at(-1)!.fyi, undefined, 'noise is not listed')
-	script = (_: string, id: string): Report => ({ workflowId: id, intent: 'none', state: 'done', summary: 'Lunch chatter is not relevant news' })
+	script = fyi('Lunch plan for Friday')
 	src.post(g, 'Kim', 'hey everyone, lunch on Friday?'); await go()
-	assert.deepEqual([store.workflows().at(-1)!.startedBy, store.workflows().at(-1)!.fyi], ['room', undefined], 'the judgment excludes noise, not every group message')
+	assert.deepEqual([store.workflows().at(-1)!.startedBy, store.workflows().at(-1)!.fyi], ['room', undefined], 'a guess about a message to the whole group is never listed')
 	const { view } = await import('../src/web/view.ts')
 	const since = new Date(Date.now() - 3_600_000).toISOString()
 	const v = view(store, since)
@@ -566,16 +566,13 @@ test('R-ING-07 chats that only have history are not answered, and an idle tick r
 	assert.deepEqual(src.reads.filter(r => r === old), [])
 })
 
-test('R-ING-08 discovered group chats judge unaddressed messages behind direct asks', async () => {
+test('R-ING-08 discovered group chats only count messages that mention the owner', async () => {
 	const g = '19:team@thread.v2'
 	src.listed.add(g)
-	script = (_: string, workflowId: string) => ({ workflowId, intent: 'none', state: 'done', summary: 'Lunch chatter' })
 	src.post(g, 'kim', 'lunch at 1?'); await go()
-	assert.deepEqual([store.workflows().length, store.workflows()[0].state, store.workflows()[0].startedBy], [1, 'done', 'room'])
-	script = draft('The banner fix is in.')
+	assert.equal(store.workflows().length, 0)
 	src.post(g, 'kim', 'Robin, is the banner fix in?'); await go()
 	assert.equal(store.workflows().length, 1)
-	assert.equal(store.workflows()[0].startedBy, undefined)
 })
 
 test('dogfood: in a group chat, the reply to the owner\'s answer is for the owner even without the name; a nickname counts too', async () => {
@@ -588,13 +585,13 @@ test('dogfood: in a group chat, the reply to the owner\'s answer is for the owne
 	const wf = store.workflows().find(w => w.asker?.id === 'Noah')!
 	assert.equal(wf.lastAsk, 'is this the right area path? Product\Web\Files\Notes?')
 	src.post(g, 'Lea', 'tested with Ines, unable to repro'); await go()
-	assert.equal(store.workflows().find(w => w.asker?.id === 'Lea')?.startedBy, 'room', 'not an owner-turn reply; judged as group context')
+	assert.equal(store.workflows().filter(w => w.asker?.id === 'Lea').length, 0, 'someone the owner did not answer')
 	src.post(g, 'me', 'Ok.'); await go()
 	src.post(g, 'Kim', 'lunch at 1?'); await go()
 	src.post(g, 'Lea', 'will connect with the person who raised it'); await go()
-	assert.equal(store.workflows().filter(w => w.asker?.id === 'Lea').length, 2, 'unowned group messages are separate judgments, not replacements for unanswered asks')
+	assert.equal(store.workflows().filter(w => w.asker?.id === 'Lea').length, 0, 'once someone else joined in, the owner\'s turn is over')
 	src.post(g, 'Ravi', 'AI JP'); await go()
-	assert.equal(store.workflows().find(w => w.asker?.id === 'Ravi')?.startedBy, 'room', 'no alias set: judgment, not a direct mention')
+	assert.equal(store.workflows().filter(w => w.asker?.id === 'Ravi').length, 0, 'no alias set')
 	store.saveConfig({ ...store.config(), aliases: ['JP'] })
 	src.post(g, 'Ravi', 'AI JP, can you look?'); await go()
 	assert.equal(store.workflows().filter(w => w.asker?.id === 'Ravi').length, 1)
@@ -609,8 +606,7 @@ test('dogfood 10-20: a request to the whole group ("hi guys, I have a PR") gets 
 	src.post(g, 'John', 'Great work on the launch, everyone!'); await go()
 	src.post(g, 'John', 'all good on your side?'); await go()
 	src.post(g, 'John', 'is the team offsite still on?'); await go()
-	assert.ok(store.workflows().every(w => w.state === 'done' && w.startedBy === 'room'), 'unaddressed messages are judged, not silently missed')
-	seen.length = 0
+	assert.equal(store.workflows().length, 0, 'not to the room, or not a request')
 	src.post(g, 'John', 'hey everyone, do we know the SKU IDs?'); await go()
 	const a = store.workflows().at(-1)!
 	assert.deepEqual([a.startedBy, a.state, a.intent], ['room', 'done', 'none'])
@@ -2708,11 +2704,9 @@ test('B22 how the owner changed an earlier draft reaches the next draft\'s promp
 test('B21 a message the owner says was missed becomes an item, and why it was missed is logged', async () => {
 	const g = '19:team@thread.v2'
 	src.listed.add(g)
-	src.post(g, 'me', 'old history'); await go()
-	const id = src.post(g, 'Kim', 'the ring 1 rollout looks stuck')
-	store.saveCursors({ ...store.cursors(), [g]: id })
-	await go()
-	assert.equal(store.workflows().length, 0, 'simulate an older message outside the new-message read')
+	src.post(g, 'Kim', 'hi'); await go()
+	const id = src.post(g, 'Kim', 'the ring 1 rollout looks stuck'); await go()
+	assert.equal(store.workflows().length, 0, 'not for the owner by the rules')
 	const link = `https://teams.microsoft.com/l/message/${encodeURIComponent(g)}/${id}?context=%7B%7D`
 	script = draft('Ring 1 starts Thursday.')
 	src.post('self', 'me', `missed ${link}: Kim always means me`); await go()
@@ -2770,8 +2764,7 @@ test('B19 a reply that promises actions brings them for ok: the change is made f
 	const watch = store.byCode(code)!, job = store.job(watch.job!)!
 	assert.deepEqual([watch.kind, job.every, Math.round((Date.parse(job.endsAt!) - Date.now()) / 86_400_000)], ['tracker', 120, 7])
 	assert.match(src.chats.self.map(m => m.body).join('\n'), new RegExp(`Watching incident 2100 every 2 h as ${code}[^\n]*Still yours to do: Ping the partner PM on Teams`))
-	src.post('self', 'me', `every ${code}: 4h`)
-	src.post('self', 'me', `extend ${code}`); await go()
+	src.post('self', 'me', `every ${code}: 4h, extend ${code}`); await go()
 	assert.deepEqual([store.job(watch.job!)!.every, Math.round((Date.parse(store.job(watch.job!)!.endsAt!) - Date.now()) / 86_400_000)], [240, 14])
 	const { dueTrackers } = await import('../src/runner/track.ts')
 	const j = store.job(watch.job!)!; Object.assign(j, { state: 'done', nextAt: new Date(0).toISOString(), endsAt: new Date(Date.now() - 1000).toISOString() }); store.saveJob(j)
@@ -2938,7 +2931,7 @@ test('dogfood 10-20: an item about a PR leaves Needs you when the PR is complete
 	pr = { status: 'completed', votes: [] }
 	store.saveProbeMark({}); await t()
 	const b2 = store.byCode('A2')!
-	assert.deepEqual([b2.state, b2.work?.steps.at(-1)?.what], ['needs_human', 'PR 1738040 was completed'], 'broader work redrafts with the news instead of dropping its remaining ask')
+	assert.deepEqual([b2.state, b2.work?.steps.at(-1)?.what], ['open', 'PR 1738040 was completed'], 'open work stays open, with the news as a step')
 	pr = { status: 'active', votes: [{ name: 'Robin Park', vote: -5 }] }
 	src.post(CHAT, 'me', `[as Pete] can you re-review? ${link.replace('4200004', '1738041')}`); await t()
 	store.saveProbeMark({}); await t()
@@ -2996,8 +2989,8 @@ test('review 10-20: a PR already closed when the ask came in keeps the item; an 
 	assert.deepEqual([store.byCode('A2')!.status, store.byCode('A2')!.closedBy], ['Nothing needed: PR 1739002 was completed', 'nothing'], 'completed after Sam asked, while Delegate was not looking')
 	assert.equal(store.byCode('A1')!.state, 'needs_human', 'still closed at the next look is still not news')
 	const { probePRs } = await import('../src/runner/probe.ts')
-	pr = { status: 'active', votes: [{ name: 'Robin Park', vote: 0 }] }
 	src.post(CHAT, 'me', `[as Pia] please approve ${link.replace('4200005', '1739003')}`); await t()
+	pr = { status: 'active', votes: [{ name: 'Robin Park', vote: 0 }] }
 	store.saveProbeMark({}); await t()
 	pr = { status: 'active', votes: [{ name: 'Robin Park', vote: 10 }] }
 	store.writeAnswer({ code: 'A3', verb: 'ok', surface: 'panel' })
@@ -3017,7 +3010,7 @@ test('review 10-20: a PR already closed when the ask came in keeps the item; an 
 test('S14 deploy, test, report: work you take on in a group thread follows you into a 1:1, waits on a build, and closes everywhere', async () => {
 	const g = '19:events@thread.v2', dm = '19:me_div@unq.gbl.spaces', pete = '19:me_pete@unq.gbl.spaces'
 	src.listed.add(g); src.listed.add(dm); src.listed.add(pete)
-	src.post(g, 'me', 'old history'); await go()
+	src.post(g, 'Rita', 'hello all'); await go()
 	let builds = new Map<number, { status: string; result?: string }>(), down = false
 	const probe = { builds: async (_: string, ids: number[]) => { if (down) throw new Error('ADO 503'); return new Map(ids.filter(i => builds.has(i)).map(i => [i, builds.get(i)!])) } }
 	const tickP = async () => { store.saveProbeMark({}); await tick(store, { source: src, run, procs, force: true, history: noList, probe }) }
@@ -3079,7 +3072,7 @@ test('S14 deploy, test, report: work you take on in a group thread follows you i
 	assert.equal(a3.partOf, store.byCode('A1')!.id, 'a message naming the PR joins without the AI deciding')
 
 	const g2 = '19:release@thread.v2'
-	src.listed.add(g2); src.post(g2, 'me', 'old history'); await go()
+	src.listed.add(g2); src.post(g2, 'Sam', 'hello'); await go()
 	src.post(g2, 'Sam', '@Robin is PR 1234567 on staging2?'); await go()
 	src.post(g2, 'Tom', '@Robin also, does PR 1234567 fix the checkout bug?'); await go()
 	assert.deepEqual(store.workflows().filter(w => w.chat.id === g2).map(w => w.partOf === store.byCode('A1')!.id), [true], 'a second person naming the PR in the same chat joins the same part')
@@ -3732,7 +3725,7 @@ test('Q2 a reply in a channel thread the owner started becomes an item; without 
 	await go()
 	const wf = store.workflows().find(w => w.chat.id === mine)!
 	assert.deepEqual([wf.asker?.name, wf.state, wf.decision?.reason], ['ravi', 'needs_human', 'Channel replies always wait for you'])
-	assert.equal(store.workflows().find(w => w.chat.id === other)?.startedBy, 'room', 'not addressed to the owner: group judgment decides, never another thread\'s item')
+	assert.ok(!store.workflows().some(w => w.chat.id === other), 'not addressed to the owner')
 	assert.equal(src.chats[mine].length, 1, 'nothing posted in the channel')
 })
 

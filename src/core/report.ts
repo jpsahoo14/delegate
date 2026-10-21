@@ -51,7 +51,6 @@ export const ReportSchema = {
 	work: z.object({
 		goal: z.string().optional().describe('First report only: what the asker expects, one line'),
 		doneWhen: z.string().optional().describe('First report only: what closes this work, one line'),
-		changedAsk: z.string().optional().describe('Only when the asker explicitly changes the goal: the ID of that new owned message marked >>. Never change the goal just to describe a plan step.'),
 		step: z.string().optional().describe('One line: what this run found or did'),
 		next: z.object({ who: z.enum(['you', 'them', 'me']), what: z.string() }).optional().describe('The next step now. you = the owner, them = someone else, me = you (a watch, a draft)'),
 		waitingOn: z.object({ who: z.string(), where: z.string().optional() }).optional().describe('Whom the work waits on now, and where (an incident, a PR)'),

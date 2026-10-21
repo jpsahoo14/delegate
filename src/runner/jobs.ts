@@ -1,5 +1,5 @@
 import { planRetry, retryStatus } from './retry.ts'
-import { active, afterSend, canCloseApproval, homeOf, mergeWork, step, watchNews } from './work.ts'
+import { homeOf, step, watchNews } from './work.ts'
 import { confidence } from '../core/policy.ts'
 import { uptime } from 'node:os'
 import { allows, changeName, changeSays, isVote, unsafeRead, pendingEffects, refusal, refusedAsk, reviewAgain, carryMarks, shown, vet, voteValue } from '../core/effects.ts'
@@ -26,7 +26,7 @@ import { buildJobPrompt } from '../worker/prompt.ts'
 import { checked, WORKER_SERVER, WORKER_TOOLS, workerMcp, readDirs } from './dispatch.ts'
 import { isBootstrap, YOURS, type BootSource } from './bootstrap.ts'
 import { knowledgeOf, propose } from './proposals.ts'
-import { closeFamily, send } from './apply.ts'
+import { send } from './apply.ts'
 import { reopenPromise, rest } from './promise.ts'
 import { forkSession, ownerFor, sessionBytes, backupSession, restoreSession } from './own.ts'
 import { dueTrackers } from './track.ts'
@@ -295,14 +295,6 @@ export function finishWork(store: Store, job: Job, r: Report, asksAtStart: numbe
 		if (v.todos.length) Object.assign(wf, { todos: [...new Set([...(wf.todos ?? []), ...v.todos])], question: wf.question ?? (wf.draft ? refusedAsk(wf.code, v.todos.length) : undefined) })
 		// A job's finding is a step on the work its item belongs to, the home or a part's home (review part 2 #5).
 		const home = homeOf(store, wf)
-		mergeWork(home, r.work)
-		if (nothing) wf.completionSeen = `job:${job.id}:${hashOf(r.summary)}`
-		if (nothing && home === wf && (r.work?.closed || canCloseApproval(store, home))) {
-			closeFamily(store, realProcs, home, r.work?.closed ?? r.summary)
-			wf.closedBy = 'job'
-		} else if (nothing && home !== wf) {
-			Object.assign(wf, { state: 'done', closedBy: 'job' })
-		}
 		if (home.work && step(home, `${home === wf ? '' : `${wf.code}: `}Found: ${r.summary}`, { ref: `job:${job.id}:${hashOf(r.summary)}` }) && home !== wf) store.save(home)
 		store.save(wf)
 	}
@@ -310,34 +302,6 @@ export function finishWork(store: Store, job: Job, r: Report, asksAtStart: numbe
 	Object.assign(job, { result: { summary: r.summary, reply: r.reply ? { ...r.reply } : undefined, effects }, state: again ? 'queued' : 'done', purpose: 'work', run: undefined })
 	store.saveJob(job)
 	if (!again) store.log({ event: 'job-done', job: job.id, key: job.key, summary: r.summary, effects: effects.length, ...usedBy(job) })
-}
-
-// Repair receipts written before completion closed approval work. No new work or external writes.
-export function settleCompleted(store: Store, procs: Procs = realProcs) {
-	for (const wf of store.workflows().filter(w => w.state === 'open' || w.state === 'done')) {
-		if (wf.work?.closed) {
-			if (wf.state !== 'done') { closeFamily(store, procs, wf, wf.work.closed.why); store.save(wf) }
-			continue
-		}
-		if (!active(wf) || wf.pending.length || wf.follow) continue
-		const job = wf.job ? store.job(wf.job) : undefined
-		if (!canCloseApproval(store, wf)) {
-			const effects = (wf.effects ?? []).filter(e => !e.off)
-			const receipt = wf.sent && effects.length && effects.every(e => e.done) ? `sent:${wf.sent.msgId}` : !wf.draft && !wf.question && job?.state === 'done' && job.result && !job.result.reply && !job.result.effects.length ? `job:${job.id}:${hashOf(job.result.summary)}` : undefined
-			if (wf.state === 'open' && receipt && wf.completionSeen !== receipt && step(wf, 'Completed step recorded; checking what remains of the original ask', { ref: `completion:${receipt}` })) {
-				wf.completionSeen = receipt
-				Object.assign(wf, { state: 'running', status: 'Checking remaining work after a completed step' })
-				store.save(wf)
-			}
-			continue
-		}
-		if (wf.sent) afterSend(wf, wf.sent.text ?? '', wf.sent.msgId, wf, canCloseApproval(store, wf))
-		else if (!wf.draft && !wf.question && job?.state === 'done' && job.result && !job.result.reply && !job.result.effects.length) closeFamily(store, procs, wf, job.result.summary)
-		if (!wf.work?.closed) continue
-		closeFamily(store, procs, wf, wf.work.closed.why)
-		store.save(wf)
-		store.log({ event: 'work-completed', code: wf.code, reason: 'persisted completion receipt' })
-	}
 }
 
 // The approved changes ran. The reply goes out only to items whose ok still matches what they approved.

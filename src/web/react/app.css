@@ -1,0 +1,73 @@
+@import "tailwindcss";
+
+:root {
+	color-scheme: light;
+	--bg: #f6f6f8;
+	--surface: #ffffff;
+	--surface-2: #f2f2f5;
+	--border: #e4e4ea;
+	--border-strong: #cfcfd8;
+	--text: #18181b;
+	--text-2: #52525b;
+	--text-3: #6b6b75;
+	--accent: #5b5fc7;
+	--accent-soft: #eef0ff;
+	--on-accent: #ffffff;
+	--danger: #c42b3c;
+	--focus: #5b5fc7;
+}
+
+:root[data-theme="dark"] {
+	color-scheme: dark;
+	--bg: #0e0e11;
+	--surface: #17171b;
+	--surface-2: #1e1e23;
+	--border: #2a2a31;
+	--border-strong: #3a3a44;
+	--text: #ededf0;
+	--text-2: #b3b3bd;
+	--text-3: #8b8b96;
+	--accent: #8f94ff;
+	--accent-soft: #23244a;
+	--on-accent: #0b0b1a;
+	--danger: #ff7a87;
+	--focus: #a5a9ff;
+}
+
+@theme inline {
+	--color-background: var(--surface);
+	--color-foreground: var(--text);
+	--color-primary: var(--accent);
+	--color-primary-foreground: var(--on-accent);
+	--color-secondary: var(--surface-2);
+	--color-secondary-foreground: var(--text);
+	--color-accent: var(--accent-soft);
+	--color-accent-foreground: var(--text);
+	--color-destructive: var(--danger);
+	--color-ring: var(--focus);
+	--color-input: var(--border-strong);
+	--color-border: var(--border);
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 "Segoe UI", -apple-system, sans-serif; }
+button, select { font: inherit; cursor: pointer; }
+button:disabled, select:disabled { cursor: wait; }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+.skip-link { position: absolute; top: -100px; left: 16px; padding: 12px; background: var(--surface); z-index: 2; }
+.skip-link:focus { top: 12px; }
+.preview-header { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 16px 24px; background: var(--surface); border-bottom: 1px solid var(--border); }
+.brand { font-size: 19px; font-weight: 650; color: var(--text); text-decoration: none; }
+.preview-label { color: var(--text-3); }
+.version-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-left: auto; }
+select { border: 1px solid var(--border-strong); border-radius: 8px; background: var(--surface); color: var(--text); padding: 8px; }
+main { max-width: 1000px; margin: 0 auto; padding: 36px 24px; }
+.error { color: var(--danger); }
+@media (max-width: 560px) {
+	.preview-header { padding: 14px; }
+	.version-controls { width: 100%; margin: 0; gap: 8px; }
+	main { padding: 20px 14px; }
+}
+@media (prefers-reduced-motion: reduce) {
+	*, *::before, *::after { transition-duration: 0s !important; animation-duration: 0s !important; }
+}

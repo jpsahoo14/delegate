@@ -4,6 +4,7 @@ import { hashUi, pickUi, type Ui } from '../model/ui.ts'
 import { S, V, cardOf, env } from '../state/store.ts'
 import { render } from '../view/render.ts'
 import { say } from './ui.ts'
+import type { UiChoice } from '../model/types.ts'
 
 const KEY = 'delegate-ui'
 // The AI-chat panel may not allow storage: every use is optional.
@@ -12,7 +13,7 @@ export function cached(): { ui: Ui; at?: string } | undefined {
 }
 const cache = (ui: Ui) => { try { localStorage.setItem(KEY, JSON.stringify({ ui, at: new Date().toISOString() })) } catch { /* no storage here */ } }
 // Saved on the server first; only a saved choice is cached here, so this browser never disagrees with the machine (review P2-4).
-const save = async (ui: Ui): Promise<boolean> => { const r = await env.io?.ui?.({ ui }).catch(() => undefined); if (r?.ok) cache(ui); return !!r?.ok }
+const save = async (ui: UiChoice['ui']): Promise<boolean> => { const r = await env.io?.ui?.({ ui }).catch(() => undefined); if (r?.ok && ui !== 'react') cache(ui); return !!r?.ok }
 
 // At start: the experience to draw. A #ui= address is saved like a flip and leaves the address, so a reload keeps it; it is
 // drawn only once the server saved it, and offline the page stays as it was and says so (review round 2, P2-1).
@@ -39,12 +40,12 @@ export function unsent(): boolean {
 }
 
 // Flip: ask first when a field holds unsent text, save, then reload. Done and Settings reload on the same tab; the rest opens the start.
-export async function switchUi(to: Ui) {
+export async function switchUi(to: UiChoice['ui']) {
 	if (env.panel) return
-	if (unsent() && !window.confirm('Discard your edit?')) return
-	if (!await save(to)) { say('Could not switch: offline'); return }
+	if (unsent() && !window.confirm('Discard your edit?')) { render(); return }
+	if (!await save(to)) { say('Could not switch: offline'); render(); return }
 	const base = S.route.split('/')[0]
-	history.replaceState(null, '', location.pathname + location.search + (base === 'done' || base === 'settings' ? location.hash : ''))
+	history.replaceState(null, '', location.pathname + location.search + (base === 'done' || base === 'settings' || base === 'numbers' ? location.hash : ''))
 	location.reload()
 }
 

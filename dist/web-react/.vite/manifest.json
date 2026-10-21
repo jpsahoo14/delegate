@@ -1,0 +1,26 @@
+{
+  "App.tsx": {
+    "file": "assets/App-BMb87HLU.js",
+    "name": "App",
+    "src": "App.tsx",
+    "isDynamicEntry": true,
+    "imports": [
+      "index.html"
+    ],
+    "css": [
+      "assets/App-Cf3CUAAO.css"
+    ]
+  },
+  "index.html": {
+    "file": "assets/index-Dp2PzdT5.js",
+    "name": "index",
+    "src": "index.html",
+    "isEntry": true,
+    "dynamicImports": [
+      "App.tsx"
+    ],
+    "css": [
+      "assets/index-DE2Wv3B-.css"
+    ]
+  }
+}

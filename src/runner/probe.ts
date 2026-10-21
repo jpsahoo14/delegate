@@ -6,9 +6,7 @@ import { effectLine } from '../core/render.ts'
 import type { Store } from '../store/state.ts'
 import { clientFor, toolServers } from '../adapters/mcp-client.ts'
 import { NAME } from '../brand.ts'
-import { active, approvalAsk, canCloseApproval, homeOf, linksIn, newTurn, statusOf, step, wake } from './work.ts'
-import { closeFamily } from './apply.ts'
-import { realProcs } from './jobs.ts'
+import { active, homeOf, statusOf, step, wake } from './work.ts'
 
 // Checklist steps that wait on a build are checked by the runner, not the AI (R-WRK-13).
 // branch, version, repo: where the build is from, for a deploy's build check (review 10-21 P1-3).
@@ -107,23 +105,17 @@ export async function probeBuilds(store: Store, probe: BuildProbe | undefined, n
 const PR_LINK = /https?:\/\/(?:[\w-]+\.visualstudio\.com|dev\.azure\.com\/[\w-]+)\/([^/\s]+)\/_git\/([^/\s?#]+)\/pullrequest\/(\d+)/i
 // remote: the repo by its remote, from the PR's own link, never the AI's key (owned work).
 export type PrRef = { project: string; repo: string; id: number; remote?: string }
-// The ask's own PR wins over an old job. A pronoun follow-up can use the asker's earlier link, never another sender's PR.
+// The PR the item is about: its job's PR, else the first one the ask names. A link to any other PR in the thread is not it (dry run 10-20: A37).
 export function prTarget(store: Store, w: Workflow): number | undefined {
 	const job = w.job ? store.job(w.job) : undefined
-	const inText = (text = '') => linksIn(text).filter(l => l.startsWith('pr:')).map(l => l.slice(3))
-	const linked = [...new Set((w.work?.links ?? []).filter(l => /^pr:/i.test(l)).map(l => l.split(/[:/]/).at(-1)))]
-	const thread = store.thread(w.id), ask = inText(w.lastAsk), owned = new Set(thread.filter(m => !m.byOwner && w.msgIds.includes(m.id)).flatMap(m => inText(m.text)))
-	const prior = inText(thread.filter(m => !m.byOwner && m.from.id === w.asker?.id && inText(m.text).length).at(-1)?.text)
-	const effects = [...new Set((w.effects ?? []).filter(e => !e.off && isVote(e.call)).map(e => prIdOf(e.call)).filter((id): id is number => id !== undefined))]
-	if (ask.length > 1 || owned.size > 1 || !ask.length && !owned.size && prior.length > 1) return undefined
-	return Number(ask[0] ?? [...owned][0] ?? /^pr:.*?(\d+)$/.exec(job?.key ?? '')?.[1] ?? (linked.length === 1 ? linked[0] : undefined) ?? prior[0] ?? (effects.length === 1 ? effects[0] : 0)) || undefined
+	return Number(/^pr:.*?(\d+)$/.exec(job?.key ?? '')?.[1] ?? /(?:pull ?request|\bPR)\s*#?\s*(\d{4,})|pullrequest\/(\d+)/i.exec(w.lastAsk ?? '')?.slice(1).find(Boolean) ?? 0) || undefined
 }
 
 export function prOf(store: Store, w: Workflow): PrRef | undefined {
 	const job = w.job ? store.job(w.job) : undefined
 	const target = prTarget(store, w)
 	if (!target) return undefined
-	const texts = [w.lastAsk, job?.goal, ...(job?.asks ?? []), ...(w.work?.links ?? []), ...store.thread(w.id).map(m => m.text)]
+	const texts = [w.lastAsk, job?.goal, ...(job?.asks ?? []), ...(w.work?.links ?? []), ...store.thread(w.id).slice(-12).map(m => m.text)]
 	for (const t of texts) for (const m of (t ?? '').matchAll(new RegExp(PR_LINK.source, 'gi'))) if (Number(m[3]) === target) return { project: decodeURIComponent(m[1]), repo: decodeURIComponent(m[2]), id: target, remote: remoteOf(m[0]) }
 	return undefined
 }
@@ -131,10 +123,10 @@ export function prOf(store: Store, w: Workflow): PrRef | undefined {
 const VOTE: Record<string, (id: number) => string> = { '10': id => `approved PR ${id}`, '5': id => `approved PR ${id} with suggestions`, '-5': id => `voted "Waiting for author" on PR ${id}`, '-10': id => `rejected PR ${id}` }
 // Items waiting on the owner about a pull request are checked against Azure DevOps every 10 minutes, or at once on Check now:
 // a PR completed or abandoned, or the owner's own vote there, takes the item out of Needs you (dogfood 10-20: A12).
-export async function probePRs(store: Store, cfg: Config, probe: BuildProbe | undefined, now = Date.now(), force = false, subjects?: Workflow[]): Promise<number> {
+export async function probePRs(store: Store, cfg: Config, probe: BuildProbe | undefined, now = Date.now(), force = false): Promise<number> {
 	if (!probe?.pr) return 0
 	const mark = store.probeMark()
-	const items = (subjects ?? store.workflows()).filter(w => w.kind !== 'tracker' && (w.state === 'needs_human' || !!subjects && approvalAsk(w.lastAsk ?? ''))).map(w => ({ w, ref: prRefOf(store, w) })).filter((x): x is { w: Workflow; ref: PrRef } => !!x.ref)
+	const items = store.workflows().filter(w => w.state === 'needs_human' && w.kind !== 'tracker').map(w => ({ w, ref: prRefOf(store, w) })).filter((x): x is { w: Workflow; ref: PrRef } => !!x.ref)
 	// A PR change not yet described is read at once, so the owner sees what it means before the ok.
 	if (!force && mark.prAt && now - Date.parse(mark.prAt) < EVERY_MS && !items.some(x => prChanges(x.w).some(e => !e.pr))) return 0
 	if (!items.length) return 0
@@ -152,40 +144,32 @@ export async function probePRs(store: Store, cfg: Config, probe: BuildProbe | un
 	const queued = new Set(store.answers().map(a => a.answer.code))
 	let n = 0
 	for (const { w: was, ref } of items) {
-		const w = subjects ? was : store.workflow(was.id)
-		if (!w || !subjects && (w.state !== 'needs_human' || queued.has(w.code))) continue
+		const w = store.workflow(was.id)
+		if (!w || w.state !== 'needs_human' || queued.has(w.code)) continue
 		const st = states.get(`${ref.project}/${ref.repo}/${ref.id}`)
 		// A reply without a status or reviewers says nothing; it never moves an item or its baseline.
-		if (!st || !/^(active|completed|abandoned)$/i.test(st.status) || !st.votes.length && !/completed|abandoned/i.test(st.status)) continue
+		if (!st || /^unknown$/i.test(st.status) || !st.votes.length && !/completed|abandoned/i.test(st.status)) continue
 		describe(store, w, st)
 		// The owner is the one reviewer with their name; two with the same name prove nothing.
-		const named = me ? st.votes.filter(v => v.name.trim().toLowerCase() === me) : []
+		const named = st.votes.filter(v => v.name.trim().toLowerCase() === me)
 		const mine = named.length === 1 ? named[0].vote : undefined
-		w.prRead = JSON.stringify([ref.id, st.status, st.head, mine])
-		const changed = mine !== undefined && w.prVote !== undefined && mine !== w.prVote && mine !== 0
+		const first = w.prVote === undefined, changed = mine !== undefined && !first && mine !== w.prVote && mine !== 0
 		// Already approved when the ask came in counts only when the ask was for approval (A12: "approve kardo"); a re-review ask keeps waiting.
-		const receipt = (w.effects ?? []).find(e => e.done && isVote(e.call) && prIdOf(e.call) === ref.id)
-		const madeHere = !!receipt && sameVote(mine ?? 0, voteValue(receipt.call))
-		const approvedNow = mine !== undefined && mine >= 5 && !madeHere && (changed || approvalAsk(w.lastAsk ?? ''))
+		const approvedNow = mine !== undefined && mine >= 5 && (changed || first && /approv|sign ?off|\blgtm\b/i.test(w.lastAsk ?? ''))
 		// Closed before the ask came in is context, not news ("it merged yesterday and broke the build"): only a close after it counts.
 		const asked = Date.parse(store.thread(w.id).filter(m => !m.byOwner).at(-1)?.at ?? w.createdAt)
 		const closedNow = /completed|abandoned/i.test(st.status) && (st.closedAt ? Date.parse(st.closedAt) > asked : w.prStatus !== undefined && !/completed|abandoned/i.test(w.prStatus))
-		const stale = !!w.draft && !!w.prDraft && w.prDraft !== w.prRead
-		const reason = receipt && !w.sent || w.draft && w.prDraft === w.prRead ? undefined : stale ? `PR ${ref.id} changed since this draft`
-			: closedNow ? `PR ${ref.id} was ${/completed/i.test(st.status) ? 'completed' : 'abandoned'}`
+		const reason = closedNow ? `PR ${ref.id} was ${/completed/i.test(st.status) ? 'completed' : 'abandoned'}`
 			: approvedNow || changed ? `You ${(VOTE[String(mine)] ?? (id => `voted on PR ${id}`))(ref.id)} in Azure DevOps` : undefined
 		if (mine !== undefined && mine !== w.prVote) w.prVote = mine
 		w.prStatus = st.status
 		if (!reason) { store.save(w, false); continue }
 		const home = homeOf(store, w)
-		newTurn(w, !!w.sent)
 		if (active(home)) {
 			step(home, reason, { ref: `pr:${ref.id}:${st.status}:${mine}`, news: true })
-			if (home === w && canCloseApproval(store, home) && (approvedNow || closedNow)) closeFamily(store, realProcs, home, reason)
-			else Object.assign(w, { state: 'running', status: `PR checked: ${reason}; checking the remaining ask`, pending: w.pending.length ? w.pending : w.msgIds.slice(-1) })
+			Object.assign(w, { state: 'open', status: statusOf(home), pending: [] })
 			if (home !== w) store.save(home)
-		} else if (stale || /\b(?:and|then|also|after|before|plus)\b|[;&]/i.test(w.lastAsk ?? '')) Object.assign(w, { state: 'running', status: `PR checked: ${reason}; checking the remaining ask`, pending: w.pending.length ? w.pending : w.msgIds.slice(-1) })
-		else Object.assign(w, { state: 'done', status: `Nothing needed: ${reason}`, pending: [], closedBy: 'nothing' })
+		} else Object.assign(w, { state: 'done', status: `Nothing needed: ${reason}`, pending: [], closedBy: 'nothing' })
 		store.log({ event: 'pr-moved', code: w.code, pr: ref.id, reason })
 		store.save(w)
 		n++
@@ -198,9 +182,7 @@ export async function probePRs(store: Store, cfg: Config, probe: BuildProbe | un
 // Only a vote needs the PR as it is now; a comment means the same on any iteration.
 const prChanges = (w: Workflow) => pendingEffects(w.effects).filter(e => isVote(e.call) && prIdOf(e.call) !== undefined)
 export function prRefOf(store: Store, w: Workflow): PrRef | undefined {
-	const target = prTarget(store, w)
-	if (!target) return undefined
-	const c = prChanges(w).find(e => prIdOf(e.call) === target)?.call
+	const c = prChanges(w)[0]?.call
 	return prOf(store, w) ?? (c ? { project: String(c.args.project ?? ''), repo: String(c.args.repositoryId ?? ''), id: prIdOf(c)! } : undefined)
 }
 
@@ -229,8 +211,8 @@ export const voteDropped = (status = '') => /^PR \d+ is \w+, so no vote is neede
 export async function recheckPr(store: Store, w: Workflow, probe?: BuildProbe): Promise<string | undefined> {
 	const left = prChanges(w)
 	if (!left.length) return undefined
-	const ref = prRefOf(store, w), code = w.code, id = prIdOf(left[0].call)!
-	if (!ref || ref.id !== id || id !== prTarget(store, w)) return `Not done ${code}: PR ${id} is not this item's PR. Nothing was changed.`
+	const ref = prRefOf(store, w)!, code = w.code, id = ref.id
+	if (id !== prTarget(store, w)) return `Not done ${code}: PR ${id} is not this item's PR. Nothing was changed.`
 	if (!probe?.pr) return `Not done ${code}: PR ${id} must be checked first, and no Azure DevOps server is set up. Nothing was changed.`
 	let st: PrState
 	try { st = await probe.pr(ref.project, ref.repo, id) } catch (e) { return `Not done ${code}: could not read PR ${id} first (${String(e).slice(0, 120)}). Nothing was changed. Say "ok ${code}" to try again.` }

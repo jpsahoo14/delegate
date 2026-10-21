@@ -1,7 +1,7 @@
 // Which experience draws the page (R-NEX-01). Pure: the address, the server's file for this machine, and this browser's cache.
 import type { UiChoice, View } from './types.ts'
 
-export type Ui = UiChoice['ui']
+export type Ui = Exclude<UiChoice['ui'], 'react'>
 // #ui=new or #ui=classic in a link sets it, for beta invites.
 export const hashUi = (hash: string): Ui | undefined => (/(?:^#|[&/])ui=(new|classic)\b/.exec(hash)?.[1] as Ui | undefined)
 // The address wins; then the newer of the server's file and this browser's cache (a panel may be drawn from an older view);
@@ -12,7 +12,8 @@ export function pickUi(v: Pick<View, 'ui'> | undefined, hash: string, cached?: {
 	if (h) return h
 	const s = v?.ui
 	if (s && cached && (cached.at ?? '') > (s.at ?? '')) return cached.ui
-	return s?.ui ?? cached?.ui ?? 'classic'
+	const choice = s?.ui ?? cached?.ui ?? 'classic'
+	return choice === 'react' ? 'new' : choice
 }
 // The classic addresses, opened in the new experience (design-spec/new-experience.md §2). Done and Settings stay; the rest is Now.
 export function newRoute(h: string): string {

@@ -16,7 +16,7 @@ export type Facts = {
 	// Whether the runner will run anything next cycle. paused means a machine is reading and nothing is sent: when none
 	// reads, the runner is off, whatever the pause (web/next.ts snapshot).
 	runner: 'ok' | 'off' | 'paused' | 'stopped' | 'capped'
-	work?: { open: boolean; next?: 'you' | 'them' | 'me'; waiting?: boolean }
+	work?: { open: boolean; next?: 'you' | 'them' | 'me' }
 	// Open to-dos a sent reply left the owner, kept across turns (R-NEX-07).
 	todos?: number
 	fyiUnread: boolean
@@ -48,7 +48,6 @@ export const RULES: Rule[] = [
 	{ id: 'job-running', section: 'working', when: running },
 	{ id: 'starts-next', section: 'working', when: startsNext },
 	{ id: 'your-step', section: 'move', when: f => !!f.work?.open && f.work.next === 'you' },
-	{ id: 'partner-wait', section: 'waiting', when: f => !!f.work?.open && !!f.work.waiting },
 	{ id: 'waiting', section: 'waiting', when: () => true },
 ]
 
@@ -61,6 +60,6 @@ export function whoseMove(f: Facts): { section: Section; rule: string } {
 export const URGENCY: Section[] = ['move', 'working', 'waiting', 'catchup', 'done']
 // Within one section, the design's rule order (§3: 2, 2a, 4, 5, 6) picks the subject: a part's draft waiting for ok is not hidden
 // behind its home's to-do (review N2 P1-1). RULES differs only because rule 4 must first know that nothing runs.
-export const PRECEDENCE = ['needs-you', 'stopped', 'your-step', 'todo', 'job-running', 'starts-next', 'partner-wait', 'waiting', 'catchup', 'done']
+export const PRECEDENCE = ['needs-you', 'stopped', 'your-step', 'todo', 'job-running', 'starts-next', 'waiting', 'catchup', 'done']
 // A rule missing from PRECEDENCE ranks last, so it never wins a tie by accident (re-review N2 P2-D).
 export const rankOf = (id: string) => { const i = PRECEDENCE.indexOf(id); return i < 0 ? PRECEDENCE.length : i }

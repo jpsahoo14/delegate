@@ -59,11 +59,10 @@ test('N0 whose move: each rule places its case, first match wins, and needs_huma
 		[{ state: 'open', work: { open: true, next: 'you' } }, 'move', 'your-step'],
 		[{ state: 'open', work: { open: false, next: 'you' } }, 'waiting', 'waiting'],
 		[{ state: 'open', work: { open: true, next: 'me' } }, 'waiting', 'waiting'],
-		[{ state: 'open', work: { open: true, waiting: true } }, 'waiting', 'partner-wait'],
 		[{ state: 'waiting_on_sender' }, 'waiting', 'waiting'],
 	]
 	assert.deepEqual(cases.map(([f]) => { const m = whoseMove({ ...base, ...f }); return [m.section, m.rule] }), cases.map(([, s, r]) => [s, r]))
-	assert.deepEqual(RULES.map(r => r.id), ['catchup', 'done', 'needs-you', 'stopped', 'todo', 'job-running', 'starts-next', 'your-step', 'partner-wait', 'waiting'])
+	assert.deepEqual(RULES.map(r => r.id), ['catchup', 'done', 'needs-you', 'stopped', 'todo', 'job-running', 'starts-next', 'your-step', 'waiting'])
 })
 
 test('N0 live cases: a stale "you" plan step, a Delegate step nothing runs, and "them" in the AI words, never a glued name', () => {
@@ -229,3 +228,4 @@ test('bug 10-20 catch-up: a read FYI saved again later stays read, in both exper
 	assert.equal(row(place(snapshot(store)), 'A41').section, 'done')
 	assert.equal(view(store, ago(60)).catchUp.count, 0)
 })
+

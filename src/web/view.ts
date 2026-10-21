@@ -166,8 +166,7 @@ function nextSteps(w: Workflow): Pick<ItemCard, 'replyOnly' | 'reviewAgain'> {
 	}
 }
 
-function card(store: Store, w: Workflow): ItemCard {
-	const k = knowledgeOf(store, store.config())
+export function card(store: Store, w: Workflow, k = knowledgeOf(store, store.config())): ItemCard {
 	const job = w.job ? store.job(w.job) : undefined
 	return {
 		code: w.code, type: cardType(w), rev: w.revAt ?? w.updatedAt, who: who(w.asker?.name), at: w.createdAt,
@@ -285,8 +284,8 @@ export function view(store: Store, since: string | undefined, now = new Date()):
 	const done = doneRows(store, from < week ? from : week).map(r => ({ ...r, fresh: r.at > from }))
 	const autos = store.automations().filter(a => a.state !== 'ended').map(a => ({ code: a.code, sentence: describe(a).replace(/^R\d+ · /, ''), to: a.to.name, text: a.text, when: when(a.schedule), state: a.state, why: a.why, next: a.next, count: a.count, rev: a.updatedAt }))
 	const watching = g.watching.map(w => ({ code: w.code, what: (w.lastAsk ?? '').replace(/^Watch /, '').replace(` until ${DEFAULT_UNTIL}`, ''), last: w.status, changedAt: w.changedAt, update: !!w.changedAt && w.changedAt > from && (!w.ackAt || w.changedAt > w.ackAt), rev: w.revAt ?? w.updatedAt , every: (w.job ? store.job(w.job) : undefined)?.every, endsAt: (w.job ? store.job(w.job) : undefined)?.endsAt, by: w.watchBy, nextAt: (w.job ? store.job(w.job) : undefined)?.nextAt, from: w.watchFrom === 'catchup' ? wfs.find(x => x.watchedAs === w.code)?.code : undefined }))
-	const progress = wfs.filter(w => w.state === 'open' && homeOf(store, w).work).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map(w => {
-		const k = homeOf(store, w).work!, job = k.watch ? store.job(k.watch) : undefined, last = k.steps.at(-1)
+	const progress = wfs.filter(w => w.state === 'open' && w.work).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map(w => {
+		const k = w.work!, job = k.watch ? store.job(k.watch) : undefined, last = k.steps.at(-1)
 		return { code: w.code, who: who(w.asker?.name), chat: w.chat.name, goal: k.goal, status: w.status, last: last && { at: last.at, what: last.what }, next: nextOf(k), checkAt: k.checkAt, every: job?.every, endsAt: job?.every ? job.endsAt : undefined, rev: w.updatedAt }
 	})
 	const running = [...g.running.map(w => ({ code: w.code, what: w.status, who: w.asker?.name, since: w.waitingSince ?? w.updatedAt })), ...bootLines(store).map(b => ({ code: '', what: b.what, since: b.since, ...(b.total ? { progress: (b.done ?? 0) / b.total } : {}) }))]

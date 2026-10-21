@@ -1,4 +1,4 @@
-import { active, addPart, homeNamed, homeOf, inWork, linksIn, named, newTurn, ownerStep, statusOf, step } from './work.ts'
+import { active, addPart, homeNamed, homeOf, inWork, named, newTurn, ownerStep, statusOf, step } from './work.ts'
 import { reopenPromise } from './promise.ts'
 import { watchCommand } from './track.ts'
 import { askAtOf } from '../core/numbers.ts'
@@ -79,7 +79,7 @@ const COMMIT = /\b(I(?:'|’)ll|I will|I(?:'|’)d be|I would be|I can take|I(?:
 // backlog: the first-setup read of the week before (first-sweep.md). Its turns are its own and never saved, no message becomes two items,
 // it joins only items it made, quiet is measured at each message's time, nothing is a room guess, and every item it makes waits for the owner.
 export async function intake(store: Store, src: Source, cfg: Config, cursors: Record<string, string>, chats: WatchedChat[] = cfg.watch, o: { backlog?: { turns: Record<string, Turn> } } = {}): Promise<number> {
-	let asks = 0, candidates = 0
+	let asks = 0, candidates = 0, rooms = 0
 	const backlog = !!o.backlog
 	const sent = store.sentIds(), turns = o.backlog?.turns ?? store.turns()
 	const claimed = backlog ? new Set(store.workflows().flatMap(w => w.msgIds)) : undefined
@@ -89,7 +89,7 @@ export async function intake(store: Store, src: Source, cfg: Config, cursors: Re
 		if (truncated && !backlog) store.log({ event: 'gap', chat: chat.id, oldestRead: msgs[0]?.id, cursor: cursors[chat.id] })
 		if (!backlog) store.setHealth(`gap:${chat.id}`, truncated ? `${chat.name} had more new messages than I can read at once. I read the newest ones; older ones were skipped.` : undefined)
 		for (const raw of msgs) {
-			if (claimed?.has(raw.id)) { store.log({ event: 'intake-skip', chat: chat.id, msgId: raw.id, reason: 'already claimed' }); continue }
+			if (claimed?.has(raw.id)) continue
 			claimed?.add(raw.id)
 			const now = backlog ? Date.parse(raw.at) : Date.now()
 			let c = classify(raw, { ownerId: cfg.owner.id, ownerName: cfg.owner.name, aliases: cfg.aliases, test: !!chat.test, group: !!chat.group, sentIds: sent })
@@ -102,10 +102,10 @@ export async function intake(store: Store, src: Source, cfg: Config, cursors: Re
 					turns[chat.id] = nextTurn(t, { owner: false, from: c.from, at: raw.at })
 				}
 			}
-			if (c.kind === 'skip') { store.log({ event: 'intake-skip', chat: chat.id, msgId: raw.id, reason: c.why }); continue }
+			if (c.kind === 'skip') continue
 			const open = store.openInChat(chat.id)
 			if (c.kind === 'owner') {
-				if (store.wasSentRecently(c.text)) { store.log({ event: 'intake-skip', chat: chat.id, msgId: raw.id, reason: 'recently sent by us' }); continue }
+				if (store.wasSentRecently(c.text)) continue
 				store.saveActivity({ ownerLastAt: raw.at })
 				const to = askedOf(raw, cfg.owner.name)
 				// In a chat with open work the ask is also a step on that work, so the W entry belongs to it and the work's row
@@ -148,23 +148,20 @@ export async function intake(store: Store, src: Source, cfg: Config, cursors: Re
 					Object.assign(cand, { startedBy: 'owner', state: 'running', lastAsk: c.text, lastMsgId: raw.id, pending: [raw.id], msgIds: [raw.id], status: 'Checking whether you took something on' })
 					store.save(cand)
 					candidates++
-				} else store.log({ event: 'intake-skip', chat: chat.id, msgId: raw.id, reason: !home && COMMIT.test(c.text) && candidates >= 2 ? 'owner candidate limit' : 'owner context; no new ask' })
+				}
 				continue
 			}
 			// Anyone the owner asked who now writes in that chat has answered.
 			const sender = c.from
-			const groupJudgment = c.kind === 'context' && !backlog
-			if (groupJudgment) c = { ...c, kind: 'ask' }
 			const ws = store.waiting(), hit = ws.filter(w => w.state === 'waiting' && w.chat.id === chat.id && answers(w, sender.name) && raw.at > w.at)
 			if (hit.length) store.saveWaiting(ws.map(w => (hit.includes(w) ? { ...w, state: 'answered', doneAt: raw.at } : w)))
 			hearReply(store, chat, c.from.name, c.text, raw.at)
 			// An open reply item that went quiet does not absorb a new conversation; it stays for the owner, and a new item starts (review 085 P1-1).
 			const hours = cfg.quietHours ?? 48
 			const live = open.filter(w => (w.job || inWork(store, w) || !quietFor(store, w, hours, now)) && (!backlog || w.before))
-			if (groupJudgment) for (const o of open) appendThread(store, o, toMsg(raw, c.from, c.text, false))
-			let wf = groupJudgment ? undefined : route(live, c.kind === 'ask' || c.kind === 'context' ? c.from.id : '', c.kind === 'ask' && !backlog ? recentItem(store, chat.id, c.from.id, hours, now) : undefined, c.text)
+			let wf = route(live, c.kind === 'ask' || c.kind === 'context' ? c.from.id : '', c.kind === 'ask' && !backlog ? recentItem(store, chat.id, c.from.id, hours, now) : undefined, c.text)
 			// An ask that names a link of work from another chat goes to that work's part here, or starts one.
-			const named = c.kind === 'ask' && !groupJudgment && !(wf && inWork(store, wf)) ? homeNamed(store.workflows(), c.text) : undefined
+			const named = c.kind === 'ask' && !(wf && inWork(store, wf)) ? homeNamed(store.workflows(), c.text) : undefined
 			const elsewhere = named && named.chat.id !== chat.id ? named : undefined
 			if (elsewhere) wf = live.find(o => o.partOf === elsewhere.id)
 			// "Fixed, please recheck" reopens the same item, which keeps its code (scenario 04 step 5, tester P2-14).
@@ -174,9 +171,10 @@ export async function intake(store: Store, src: Source, cfg: Config, cursors: Re
 			if (wf?.state === 'done' && wf.work?.closed) { wf.work.closed = undefined; step(wf, `Reopened by ${c.from.name}`) }
 			if (wf?.state === 'open' && c.kind === 'ask') newTurn(wf)
 			// A request to the whole group ("hi guys, I have a PR") may be the owner's: one short run decides, using what the owner owns.
-			const room = groupJudgment && !wf
-			if (c.kind === 'context') { for (const o of open) appendThread(store, o, toMsg(raw, c.from, c.text, false)); store.log({ event: 'intake-skip', chat: chat.id, msgId: raw.id, reason: 'backlog group context' }); continue }
-			if (wf?.lastMsgId && BigInt(raw.id) <= BigInt(wf.lastMsgId)) { store.log({ event: 'intake-skip', chat: chat.id, msgId: raw.id, reason: 'already read by item' }); continue }
+			const room = c.kind === 'context' && !wf && !backlog && rooms < 2 && toRoom(c.text)
+			if (room && c.kind === 'context') { c = { kind: 'ask', from: c.from, text: c.text }; rooms++ }
+			if (c.kind === 'context') { for (const o of open) appendThread(store, o, toMsg(raw, c.from, c.text, false)); continue }
+			if (wf?.lastMsgId && BigInt(raw.id) <= BigInt(wf.lastMsgId)) continue
 			// The reply already went and its promised change waits, or its check failed: the new ask is a new turn (Slice 3).
 			if (wf && c.kind === 'ask') reopenPromise(store, wf)
 			wf ??= await create(store, src, cfg, chat, c.kind === 'ask' ? earlierOf(store, chat.id, c.from.id) : undefined)
@@ -192,14 +190,11 @@ export async function intake(store: Store, src: Source, cfg: Config, cursors: Re
 			// The hold stays once set; only a draft that answers nothing but old messages waits its turn.
 			if (backlog) Object.assign(wf, { before: true, paced: true })
 			else wf.paced = undefined
-			// Unaddressed group messages get judgment too, behind live asks and within the daily run cap.
-			if (room) wf.paced = true
 			// Only the message that was a guess stays a guess: a direct ask that joins the item is for the owner (review 10-20).
 			if (room) Object.assign(wf, { startedBy: 'room', status: 'Checking whether this is for you' })
-			else if (!groupJudgment && wf.startedBy === 'room') wf.startedBy = undefined
+			else if (wf.startedBy === 'room') wf.startedBy = undefined
 			if (truncated && !backlog) wf.status = 'Older messages skipped'
 			store.save(wf)
-			store.log({ event: 'intake-routed', chat: chat.id, msgId: raw.id, code: wf.code, reason: room ? 'group judgment' : 'owned ask' })
 			asks++
 		}
 	}
@@ -218,12 +213,8 @@ function answeredBy(store: Store, msgId: string): string[] {
 // Among one sender's open items: the work the message names, else the most recently changed (R-WRK-09, review P0.3).
 function route(open: Workflow[], senderId: string, recent?: Workflow, text = ''): Workflow | undefined {
 	// A part the owner started in a 1:1 has no asker yet: the other person's reply is its.
-	const compatible = (w: Workflow) => {
-		const asks = linksIn(text).filter(l => l.startsWith('pr:')), own = [...linksIn(w.lastAsk ?? ''), ...(w.work?.links ?? [])].filter(l => l.startsWith('pr:'))
-		return !asks.length || !own.length || asks.some(a => own.some(o => a.split(/[:/]/).at(-1) === o.split(/[:/]/).at(-1)))
-	}
-	const theirs = open.filter(w => (w.asker?.id === senderId || (!w.asker && !!w.partOf && !w.chat.group && !!senderId)) && compatible(w))
-	return named(theirs, text) ?? theirs.sort((a, b) => a.updatedAt.localeCompare(b.updatedAt)).at(-1) ?? (recent && compatible(recent) ? recent : undefined)
+	const theirs = open.filter(w => w.asker?.id === senderId || (!w.asker && !!w.partOf && !w.chat.group && !!senderId))
+	return named(theirs, text) ?? theirs.sort((a, b) => a.updatedAt.localeCompare(b.updatedAt)).at(-1) ?? recent
 }
 
 // A follow-up continues the sender's closed item while the talk is fresh: a job item for 7 days (its PR is the key, R-WF-11),
