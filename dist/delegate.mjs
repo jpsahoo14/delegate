@@ -20805,7 +20805,7 @@ var init_effects = __esm({
     init_brand();
     init_deploy();
     pendingEffects = (es = []) => es.filter((e) => !e.done && !e.off);
-    sameChange = (a, b) => JSON.stringify([a.system, a.action, a.target, a.call ?? a.payload ?? null, a.head ?? null]) === JSON.stringify([b.system, b.action, b.target, b.call ?? b.payload ?? null, b.head ?? null]);
+    sameChange = (a, b) => JSON.stringify([a.system, a.action, a.target, a.call ?? a.payload ?? null]) === JSON.stringify([b.system, b.action, b.target, b.call ?? b.payload ?? null]) && (!isVote(a.call) || (a.head ?? null) === (b.head ?? null));
     carryMarks = (list2, from = []) => list2.map((e) => {
       if (e.done) return e;
       const m = from.find((x) => (x.done || x.maybe) && sameChange(x, e));
@@ -21299,6 +21299,7 @@ var init_secrets = __esm({
 // src/store/state.ts
 import { closeSync as closeSync2, existsSync as existsSync5, mkdirSync as mkdirSync2, openSync as openSync2, readdirSync as readdirSync3, readFileSync as readFileSync4, rmSync, writeSync } from "node:fs";
 import { homedir as homedir3, hostname as hostname3, uptime } from "node:os";
+import { createHash } from "node:crypto";
 import { basename as basename2, dirname as dirname3, isAbsolute as isAbsolute2, join as join5, relative, resolve as resolve3 } from "node:path";
 function loadLocal() {
   const p = join5(LOCAL_DIR, "local.json");
@@ -21720,6 +21721,12 @@ var init_state = __esm({
       // What make_change did in one change run, one record per change by its index (next action).
       changes(jobId, runId) {
         return readJson(this.p("state", "changes", `${jobId}-${runId}.json`), {});
+      }
+      callRec(call) {
+        return readJson(this.p("state", "calls", `${createHash("sha256").update(call).digest("hex")}.json`), void 0);
+      }
+      saveCallRec(r) {
+        this.w(this.p("state", "calls", `${createHash("sha256").update(r.call).digest("hex")}.json`), r);
       }
       saveChange(jobId, runId, index, c) {
         this.w(this.p("state", "changes", `${jobId}-${runId}.json`), { ...this.changes(jobId, runId), [index]: c });
@@ -40394,7 +40401,7 @@ var init_format = __esm({
 });
 
 // src/knowledge/format.ts
-import { createHash } from "node:crypto";
+import { createHash as createHash2 } from "node:crypto";
 function reviewDate(e) {
   if (e.review) return e.review;
   const days2 = TTL_DAYS[e.type];
@@ -40483,7 +40490,7 @@ var init_format2 = __esm({
       const r = reviewDate(e);
       return !!r && r < now.toISOString().slice(0, 10);
     };
-    hashOf = (text2) => createHash("sha1").update(text2).digest("hex").slice(0, 12);
+    hashOf = (text2) => createHash2("sha1").update(text2).digest("hex").slice(0, 12);
     LINE = /^- \[(\w+)\]\s+(.*)$/;
     DATE = /^\d{4}-\d{2}-\d{2}$/;
     GROUP = /\s*\((src|review|audience):\s*([^()]*)\)\s*$/;
@@ -40578,7 +40585,7 @@ var init_inbox = __esm({
 });
 
 // src/mesh/route.ts
-import { createHash as createHash2 } from "node:crypto";
+import { createHash as createHash3 } from "node:crypto";
 import { copyFileSync, existsSync as existsSync12, mkdirSync as mkdirSync5, readFileSync as readFileSync11, rmSync as rmSync4, writeFileSync as writeFileSync6 } from "node:fs";
 import { join as join14 } from "node:path";
 function readSettings(copilotHome, forWriting = false) {
@@ -40692,7 +40699,7 @@ var init_route = __esm({
     EXTENSION = "delegate-inbox";
     FILES = ["extension.mjs", "inbox.mjs"];
     MARK2 = "delegate.json";
-    hash2 = (f) => createHash2("sha256").update(readFileSync11(f, "utf8").replace(/\r\n/g, "\n")).digest("hex");
+    hash2 = (f) => createHash3("sha256").update(readFileSync11(f, "utf8").replace(/\r\n/g, "\n")).digest("hex");
     extensionDir = (copilotHome) => join14(copilotHome, "extensions", EXTENSION);
     ours2 = (dir) => existsSync12(join14(dir, MARK2));
     extensionsOn = (copilotHome) => {
@@ -44295,6 +44302,25 @@ var init_dispatch = __esm({
   }
 });
 
+// src/runner/ledger.ts
+function madeBefore(store2, e) {
+  const r = e.call ? store2.callRec(callKey(e.call)) : void 0;
+  return r?.state === "done" && (!isVote(e.call) || (r.head ?? null) === (e.head ?? null)) ? r : void 0;
+}
+function clearCalling(store2, e) {
+  const r = e.call ? store2.callRec(callKey(e.call)) : void 0;
+  if (r?.state === "calling") store2.saveCallRec({ ...r, state: "failed", error: "The owner checked and said to make it again", at: (/* @__PURE__ */ new Date()).toISOString() });
+}
+var sorted, callKey;
+var init_ledger = __esm({
+  "src/runner/ledger.ts"() {
+    "use strict";
+    init_effects();
+    sorted = (v) => Array.isArray(v) ? v.map(sorted) : v && typeof v === "object" ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, sorted(v[k])])) : v;
+    callKey = (c) => JSON.stringify([c.tool, sorted(c.args)]);
+  }
+});
+
 // src/runner/jobs.ts
 import { uptime as uptime3 } from "node:os";
 import { randomUUID as randomUUID8 } from "node:crypto";
@@ -44592,7 +44618,7 @@ function adoptList(store2, job) {
       store2.save(p);
     }
   }
-  if (keyOf(list2) !== keyOf(job.result?.effects) || pendingEffects(list2).length !== pendingEffects(job.result?.effects).length) job.result = { ...job.result, effects: list2 };
+  if (JSON.stringify(list2) !== JSON.stringify(job.result?.effects)) job.result = { ...job.result, effects: list2 };
 }
 function changesJob(store2, cfg, wf, effects) {
   const now = (/* @__PURE__ */ new Date()).toISOString();
@@ -44617,6 +44643,7 @@ function approveEffects(store2, cfg, wf, again = false) {
   if (!cfg.agent.effectTools?.length && !left.every((e) => isDeploy(e.call) && cfg.deploy?.allowed.length)) return `${wf.code} has ${left.length} change(s) to make, but no write tools are set. Add them in setup (the "tools" step, as effectTools), or skip ${wf.code}.`;
   if (store2.control().paused) return `Paused, so ${wf.code}'s changes were not made. Say "resume", then ok again.`;
   if (maybe) {
+    for (const e of left.filter((x) => x.maybe)) clearCalling(store2, e);
     const clear = (es = []) => es.map((e) => ({ ...e, maybe: void 0 }));
     wf.effects = clear(wf.effects);
     job.result = { ...job.result, effects: clear(job.result?.effects) };
@@ -44824,6 +44851,7 @@ var init_jobs = __esm({
     init_format2();
     init_route();
     init_inbox();
+    init_ledger();
     realProcs = {
       start: (cfg, i) => startAgent(cfg, i, join20(LOCAL_DIR, "sessions", `${i.runId}.log`)),
       alive: (pid) => aliveAs(pid),
@@ -48347,6 +48375,7 @@ init_effects();
 init_jobs();
 init_probe();
 init_deploy();
+init_ledger();
 async function makeChange(store2, jobId, runId, index, call, probe) {
   const job = store2.job(jobId), e = job?.result?.effects[index];
   if (!job || !e) return { error: `There is no change ${index}.` };
@@ -48368,20 +48397,31 @@ async function makeChange(store2, jobId, runId, index, call, probe) {
     store2.saveChange(jobId, runId, index, { call: key, state: "failed", error: unusable, at: at3() });
     return { error: unusable };
   }
+  const made = madeBefore(store2, e);
+  if (made) {
+    store2.saveChange(jobId, runId, index, { call: JSON.stringify(e.call), state: "done", ref: made.ref, at: made.at });
+    return { ref: made.ref };
+  }
+  const open2 = store2.callRec(callKey(e.call));
+  if (open2?.state === "calling" && !isVote(e.call)) return { error: `Change ${index} may have been made already: an earlier call has no answer. The owner must check, then say to make it again.` };
   const moved = isVote(e.call) ? await voteMoved(store2, owner, e, probe) : isDeploy(e.call) ? await deployMoved(store2, owner, e, probe).then((error62) => error62 ? { error: error62, stale: void 0 } : void 0) : void 0;
   if (moved) {
     store2.saveChange(jobId, runId, index, { call: key, state: "failed", error: moved.error, at: at3(), ...moved.stale ? { stale: true } : {} });
     return { error: moved.error };
   }
+  const ledger = (r) => store2.saveCallRec({ call: callKey(e.call), head: e.head, at: at3(), ...r });
   store2.saveChange(jobId, runId, index, { call: key, state: "calling", at: at3() });
+  ledger({ state: "calling" });
   try {
     const r = await call(to[0], to[1], e.call.args);
     const ref = String(r?.id ?? "done");
     store2.saveChange(jobId, runId, index, { call: key, state: "done", ref, at: at3() });
+    ledger({ state: "done", ref });
     return { ref };
   } catch (err) {
     const error62 = String(err).slice(0, 300);
     store2.saveChange(jobId, runId, index, { call: key, state: "failed", error: error62, at: at3() });
+    ledger({ state: "failed", error: error62 });
     return { error: error62 };
   }
 }
@@ -49684,7 +49724,7 @@ init_state();
 init_fs();
 init_scheduler();
 import { execFileSync as execFileSync4, spawn as spawn6, spawnSync as spawnSync5 } from "node:child_process";
-import { createHash as createHash3 } from "node:crypto";
+import { createHash as createHash4 } from "node:crypto";
 import { cpSync as cpSync2, existsSync as existsSync28, lstatSync as lstatSync2, mkdirSync as mkdirSync11, readFileSync as readFileSync21, readlinkSync, rmSync as rmSync7, symlinkSync, writeFileSync as writeFileSync14 } from "node:fs";
 import { homedir as homedir9 } from "node:os";
 import { basename as basename3, join as join30 } from "node:path";
@@ -49918,7 +49958,7 @@ function uninstall2(purge) {
   out.push(root ? `Your data is still in ${root}. Delete that folder yourself if you want it gone.` : "Done.");
   return out;
 }
-var fileHash = (f) => createHash3("sha256").update(readFileSync21(f, "utf8").replace(/\r\n/g, "\n")).digest("hex");
+var fileHash = (f) => createHash4("sha256").update(readFileSync21(f, "utf8").replace(/\r\n/g, "\n")).digest("hex");
 var pluginListed = (out = spawnSync5("copilot", ["plugin", "list"], { encoding: "utf8", windowsHide: true }).stdout ?? "") => /^\s*\W?\s*delegate(@\S+)?\s+\(v/m.test(out);
 var version2 = () => VERSION;
 

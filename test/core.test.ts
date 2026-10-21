@@ -185,5 +185,6 @@ test('review 10-21c P2-2: a change counts as made only when it is the same call,
 		sameChange(vote('Approved'), vote('ApprovedWithSuggestions')),
 		sameChange({ system: 'ado', action: 'comment', target: 'PR 1', summary: 's', payload: { a: 1 } }, { system: 'ado', action: 'comment', target: 'PR 1', summary: 's2', payload: { a: 1 } }),
 		sameChange({ ...vote('Approved'), head: 'h1' }, { ...vote('Approved'), head: 'h2' }),
-	], [true, false, false, true, false], 'a vote at a new head is a new vote (review 10-21d P2-2)')
+		sameChange({ ...note('Null check'), head: 'h1' }, { ...note('Null check'), head: 'h2' }),
+	], [true, false, false, true, false, true], 'a vote at a new head is a new vote (10-21d P2-2); a comment is the same comment at any head (10-21e P1-3)')
 })

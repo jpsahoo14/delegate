@@ -109,6 +109,8 @@ export type PrFacts = { title: string; author: string; required: string[]; autoC
 // What make_change did for one change in one change run: "calling" before the call, the result after.
 // stale: a vote refused because its PR changed since the review, so the owner reviews again.
 export type Change = { call: string; state: 'calling' | 'done' | 'failed'; ref?: string; error?: string; at: string; stale?: true }
+// One record per distinct call ever made, written only by make_change: what was made, whatever any list says (eng-change-lists.md slice 1).
+export type CallRec = { call: string; state: 'calling' | 'done' | 'failed'; head?: string; ref?: string; error?: string; at: string }
 
 // A long job runs in its own session, keyed by the entity it is about (R-LNG-01/02, R-WF-11). Never shown as an item.
 export type Job = {

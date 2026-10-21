@@ -1,7 +1,8 @@
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, writeSync } from 'node:fs'
 import { homedir, hostname, uptime } from 'node:os'
+import { createHash } from 'node:crypto'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
-import type { Answer, Automation, Change, Config, Job, Local, Msg, Owner, Proposal, Report, Rule, Workflow } from '../core/types.ts'
+import type { Answer, Automation, CallRec, Change, Config, Job, Local, Msg, Owner, Proposal, Report, Rule, Workflow } from '../core/types.ts'
 import { itemCode, ulid } from '../core/ids.ts'
 import type { Waiting } from '../core/waiting.ts'
 import type { Turn } from '../core/intake.ts'
@@ -285,6 +286,8 @@ export class Store {
 
 	// What make_change did in one change run, one record per change by its index (next action).
 	changes(jobId: string, runId: string): Record<string, Change> { return readJson(this.p('state', 'changes', `${jobId}-${runId}.json`), {}) }
+	callRec(call: string): CallRec | undefined { return readJson(this.p('state', 'calls', `${createHash('sha256').update(call).digest('hex')}.json`), undefined) }
+	saveCallRec(r: CallRec) { this.w(this.p('state', 'calls', `${createHash('sha256').update(r.call).digest('hex')}.json`), r) }
 	saveChange(jobId: string, runId: string, index: number, c: Change) { this.w(this.p('state', 'changes', `${jobId}-${runId}.json`), { ...this.changes(jobId, runId), [index]: c }) }
 	// A report is scrubbed of secrets where it lands, so no token reaches chat, knowledge, or a card (owned work).
 	writeReport(r: Report, runId: string) { this.w(this.p('state', 'reports', `${r.workflowId}-${runId}.json`), scrubDeep(r)) }

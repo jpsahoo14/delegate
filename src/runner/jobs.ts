@@ -32,6 +32,7 @@ import { close } from './intake.ts'
 import { hashOf } from '../knowledge/format.ts'
 import { findSession, sendToSession } from '../mesh/route.ts'
 import { addr, MAX_TEXT, readReceipt, settle, TTL_MS } from '../mesh/inbox.mjs'
+import { clearCalling } from './ledger.ts'
 
 export type Procs = {
 	start: (cfg: Config['agent'], i: RunInput & { workflowId: string; runId: string }) => { pid: number }
@@ -365,7 +366,7 @@ function adoptList(store: Store, job: Job) {
 	if (!parents.length || !parents.every(p => effectsKey(p) === effectsKey(parents[0]))) return
 	const list = carryMarks(parents[0].effects!.map(e => ({ ...e })), job.result?.effects)
 	for (const p of parents) { const mine = carryMarks(p.effects!, list); if (keyOf(mine) !== effectsKey(p)) { p.effects = mine; store.save(p) } }
-	if (keyOf(list) !== keyOf(job.result?.effects) || pendingEffects(list).length !== pendingEffects(job.result?.effects).length) job.result = { ...job.result!, effects: list }
+	if (JSON.stringify(list) !== JSON.stringify(job.result?.effects)) job.result = { ...job.result!, effects: list }
 }
 
 // A picked option that makes changes, on an item with no job: a job that only carries them, so ok runs the same executor (design-spec S5).
@@ -394,6 +395,7 @@ export function approveEffects(store: Store, cfg: Config, wf: Workflow, again = 
 	if (store.control().paused) return `Paused, so ${wf.code}'s changes were not made. Say "resume", then ok again.`
 	// "again" counts only once the change run is queued; a refused ok leaves it unsaid (review 10-21b P2-5).
 	if (maybe) {
+		for (const e of left.filter(x => x.maybe)) clearCalling(store, e)
 		const clear = (es: Effect[] = []) => es.map(e => ({ ...e, maybe: undefined }))
 		wf.effects = clear(wf.effects)
 		job.result = { ...job.result!, effects: clear(job.result?.effects) }

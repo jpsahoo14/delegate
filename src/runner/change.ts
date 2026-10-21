@@ -1,11 +1,13 @@
 import { cliServers, clientFor, toolServers } from '../adapters/mcp-client.ts'
 import { NAME } from '../brand.ts'
 import { isVote, pendingEffects, prIdOf, refusal } from '../core/effects.ts'
-import type { Config, Effect, Workflow } from '../core/types.ts'
+import type { CallRec, Config, Effect, Workflow } from '../core/types.ts'
 import type { Store } from '../store/state.ts'
 import { parentsOf, stillApproved } from './jobs.ts'
 import { deployMoved, prMoved, prOf, prTarget, type BuildProbe } from './probe.ts'
 import { isDeploy } from '../core/deploy.ts'
+import { callKey, madeBefore } from './ledger.ts'
+export { madeBefore }
 
 // Calls one tool on one of the owner's tool servers.
 export type Caller = (server: string, tool: string, args: Record<string, unknown>) => Promise<unknown>
@@ -36,18 +38,24 @@ export async function makeChange(store: Store, jobId: string, runId: string, ind
 	const unusable = !to ? `No tool server is set up for ${e.call!.tool}${cli.error ? `: ${cli.path} could not be read (${cli.error})` : ''}.`
 		: !spec?.command ? `The ${to[0]} tool server is remote (${spec?.type ?? 'http'}); ${NAME} cannot call it yet.` : undefined
 	if (unusable) { store.saveChange(jobId, runId, index, { call: key, state: 'failed', error: unusable, at: at() }); return { error: unusable } }
+	// The ledger: a call made in any run is never made again, whatever the lists say (review 10-21e P1).
+	const made = madeBefore(store, e)
+	if (made) { store.saveChange(jobId, runId, index, { call: JSON.stringify(e.call), state: 'done', ref: made.ref, at: made.at }); return { ref: made.ref } }
+	const open = store.callRec(callKey(e.call!))
+	if (open?.state === 'calling' && !isVote(e.call)) return { error: `Change ${index} may have been made already: an earlier call has no answer. The owner must check, then say to make it again.` }
 	// A deploy reads its ring and PR again right before the call, as a vote reads its PR (owned work).
 	const moved = isVote(e.call) ? await voteMoved(store, owner, e, probe) : isDeploy(e.call) ? await deployMoved(store, owner, e, probe).then(error => (error ? { error, stale: undefined } : undefined)) : undefined
 	if (moved) { store.saveChange(jobId, runId, index, { call: key, state: 'failed', error: moved.error, at: at(), ...(moved.stale ? { stale: true as const } : {}) }); return { error: moved.error } }
-	store.saveChange(jobId, runId, index, { call: key, state: 'calling', at: at() })
+	const ledger = (r: Omit<CallRec, 'call' | 'head' | 'at'>) => store.saveCallRec({ call: callKey(e.call!), head: e.head, at: at(), ...r })
+	store.saveChange(jobId, runId, index, { call: key, state: 'calling', at: at() }); ledger({ state: 'calling' })
 	try {
 		const r = await call(to![0], to![1], e.call!.args) as { id?: unknown } | undefined
 		const ref = String(r?.id ?? 'done')
-		store.saveChange(jobId, runId, index, { call: key, state: 'done', ref, at: at() })
+		store.saveChange(jobId, runId, index, { call: key, state: 'done', ref, at: at() }); ledger({ state: 'done', ref })
 		return { ref }
 	} catch (err) {
 		const error = String(err).slice(0, 300)
-		store.saveChange(jobId, runId, index, { call: key, state: 'failed', error, at: at() })
+		store.saveChange(jobId, runId, index, { call: key, state: 'failed', error, at: at() }); ledger({ state: 'failed', error })
 		return { error }
 	}
 }

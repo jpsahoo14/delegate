@@ -3059,7 +3059,7 @@ test('S14 deploy, test, report: work you take on in a group thread follows you i
 	const g2 = '19:release@thread.v2'
 	src.listed.add(g2); src.post(g2, 'Sam', 'hello'); await go()
 	src.post(g2, 'Sam', '@Robin is PR 1234567 on staging2?'); await go()
-	src.post(g2, 'Tom', '@Robin also, does PR 1234567 fix CreateEvent?'); await go()
+	src.post(g2, 'Tom', '@Robin also, does PR 1234567 fix the checkout bug?'); await go()
 	assert.deepEqual(store.workflows().filter(w => w.chat.id === g2).map(w => w.partOf === store.byCode('A1')!.id), [true], 'a second person naming the PR in the same chat joins the same part')
 	const gina = '19:me_gina@unq.gbl.spaces'
 	src.listed.add(gina); src.post(gina, 'Gina', 'hi'); await go()
@@ -4172,6 +4172,41 @@ test('review 10-21d P2-3: "except" leaves out the change the owner named, even w
 	assert.deepEqual(store.job(job)!.result!.effects!.filter(e => e.off).map(e => e.summary), ['Ask for a test'], 'change 1 is left out, not the vote')
 })
 
+test('review 10-21e P1: a change already made is never made again, whatever the lists say; a vote at a new head is a new vote (the call ledger)', async () => {
+	voteSetup(['ado-comment', 'ado-repo_pull_request_write:vote']); calls.length = 0
+	script = promise([NOTE, voteEffect()], 'Left a comment and approved.')
+	src.post(CHAT, 'me', `[as Kim] Can you approve? ${PR_URL}`); await goPr(); await goPr()
+	jf.job = () => undefined
+	await see('A1'); src.post('self', 'me', 'ok A1'); await goPr(); src.post('self', 'me', 'ok A1'); await goPr()
+	const { makeChange, madeBefore } = await import('../src/runner/change.ts')
+	let job = store.job(store.byCode('A1')!.job!)!
+	await makeChange(store, job.id, job.run!.id, 0, ado, prProbe)
+	jf.dead.add(job.run!.pid); await goPr()
+	const forget = <T extends { effects?: Eff[] }>(x: T) => ({ ...x, effects: x.effects?.map(e => ({ ...e, done: undefined, maybe: undefined, error: undefined })) })
+	job = store.job(job.id)!
+	store.saveJob({ ...job, state: 'done', purpose: 'work', result: forget(job.result!) }); store.save({ ...forget(store.byCode('A1')!), state: 'needs_human', approved: undefined, question: undefined, status: 'Ready' })
+	await see('A1'); src.post('self', 'me', 'ok A1'); await goPr(); src.post('self', 'me', 'ok A1'); await goPr()
+	await makeChanges([0, 1]); await goPr()
+	assert.deepEqual(calls.map(c => c.args.content ?? c.args.vote), ['Null check', 'Approved'], 'the comment the run that died had made is not posted again')
+	assert.ok(madeBefore(store, voteEffect()), 'the vote at the reviewed head is made')
+	assert.equal(madeBefore(store, voteEffect({ head: 'beef' })), undefined, 'a vote at a new head is not')
+	assert.equal(madeBefore(store, { ...NOTE, call: { tool: 'ado-comment', args: { pullRequestId: 4200001, content: 'Another' } } }), undefined, 'nor another comment')
+})
+
+test('review 10-21e P1-1: a call an earlier run started with no answer is not repeated until the owner says again', async () => {
+	voteSetup(['ado-comment', 'ado-repo_pull_request_write:vote']); calls.length = 0
+	script = promise([NOTE], 'Left a comment.')
+	src.post(CHAT, 'me', `[as Kim] Can you look? ${PR_URL}`); await goPr(); await goPr()
+	jf.job = () => undefined
+	const { callKey, clearCalling } = await import('../src/runner/ledger.ts')
+	store.saveCallRec({ call: callKey(NOTE.call), state: 'calling', at: new Date().toISOString() })
+	await see('A1'); src.post('self', 'me', 'ok A1'); await goPr()
+	const [r] = await makeChanges([0]); await goPr()
+	assert.deepEqual([calls.length, /may have been made/.test(r.error ?? '')], [0, true], 'not posted: it may already be there')
+	clearCalling(store, NOTE)
+	assert.equal(store.callRec(callKey(NOTE.call))!.state, 'failed', 'again clears it')
+})
+
 test("next action: a vote names only the item's PR", async () => {
 	voteSetup()
 	const reviewers = voteEffect({ summary: 'Add Kim as a reviewer', call: { tool: 'ado-repo_pull_request_write', args: { action: 'update_reviewers', pullRequestId: 4200001, reviewerIds: ['kim'], reviewerAction: 'add' } } })
@@ -4297,7 +4332,7 @@ test('next action: the executor cannot run an unapproved call', async () => {
 	assert.deepEqual(await makeChange(store, job().id, run.id, 0, ado, prProbe), { ref: 'vote-1' }, 'again: the recorded result, no second call')
 	assert.equal(calls.length, 1)
 	const down = async () => { throw new Error('ADO 503') }
-	assert.deepEqual([(await makeChange(store, job().id, 'r1', 0, down, prProbe)).error, (await makeChange(store, job().id, 'r1', 0, ado, prProbe)).error], ['Error: ADO 503', 'Error: ADO 503'], 'a failure in this run is its answer; the next ok tries again')
+	assert.deepEqual([await makeChange(store, job().id, 'r1', 0, down, prProbe), await makeChange(store, job().id, 'r1', 0, ado, prProbe)], [{ ref: 'vote-1' }, { ref: 'vote-1' }], 'a later run never casts a vote already cast: the ledger answers (review 10-21e P1)')
 	assert.equal(calls.length, 1)
 	const j = job()
 	store.saveJob({ ...j, result: { ...j.result!, effects: j.result!.effects.map((e, i) => i === 0 ? { ...e, call: { ...e.call!, args: { ...e.call!.args, vote: 'Rejected' } } } : e) } })
