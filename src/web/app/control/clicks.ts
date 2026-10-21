@@ -39,6 +39,7 @@ export function onClick(e: MouseEvent) {
 		case 'wby': S.watchForm!.by = v; render(); break
 		case 'watchgo': A.startRowWatch(v); break
 		case 'seenall': A.seenAll(); break
+		case 'findmissed': A.findMissed(); break
 		case 'copydebug': navigator.clipboard?.writeText(c.debug!.join('\n')).then(() => say('Details copied.'), () => say('Could not copy. Select the lines and copy them.')); break
 		case 'teams': u.menu = false; window.open(c.teams, '_blank', 'noopener'); render(); break
 		// Teams cannot pre-fill a group chat's compose box from a link, so the reply goes to the clipboard and the chat opens.

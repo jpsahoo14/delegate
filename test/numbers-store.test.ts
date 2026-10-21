@@ -175,7 +175,7 @@ test('R-NEX-11 the page asks for the numbers on their own: /numbers by window, w
 		assert.equal((await (await fetch(n)).json()).window.key, 'this', 'this week by default')
 		assert.equal((await fetch(`${n}&window=year`)).status, 400)
 		assert.equal((await fetch(n.replace(/t=\w+/, 't=wrong'))).status, 403)
-	} finally { server.close() }
+	} finally { (server.closeAllConnections?.(), server.close()) }
 })
 
 test('R-NEX-11 delegate numbers prints the tab as text, and refuses an unknown window', () => {
@@ -215,7 +215,7 @@ test('R-NEX-11 every number brings its rows: /numbers and the panel\'s numbers_v
 		assert.deepEqual(Object.keys(v.rows).sort(), codes.filter(c => !c.startsWith('missed:')).sort(), 'only the rows its lists open')
 		assert.deepEqual(Object.values(v.rows as Record<string, Record<string, unknown>>).filter(r => 'text' in r || 'why' in r || 'notes' in r), [], 'no sent text, why, or notes: the list never expands')
 		assert.ok(v.rows[v.handled.reply[0]].said, 'what was said still reads on the row')
-	} finally { server.close() }
+	} finally { (server.closeAllConnections?.(), server.close()) }
 	// The chat panel reaches the same numbers through its own tool.
 	const { build } = await import('../src/mcp/server.ts')
 	const { Client } = await import('@modelcontextprotocol/sdk/client/index.js')

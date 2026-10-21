@@ -356,7 +356,7 @@ test('N1a data: classic never builds the new rows; the new page gets them when i
 		await fetch(`${base}/ui?t=${t}`, { method: 'POST', body: JSON.stringify({ noted: true }) })
 		assert.deepEqual([store.ui().ui, store.ui().noted], ['new', true], 'closing the note keeps the choice')
 		assert.equal(store.answers().length, 0, 'the switch sends no command')
-	} finally { server.close() }
+	} finally { (server.closeAllConnections?.(), server.close()) }
 })
 
 test('N1a page model: the address wins, then the newer of the server file and the cache; classic links open in Now', () => {

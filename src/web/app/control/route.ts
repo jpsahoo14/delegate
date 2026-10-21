@@ -18,6 +18,8 @@ export function route() {
 	if (!S.route.startsWith('done')) S.seenFor = null
 	// The Numbers tab asks for its numbers when it opens; opening one of its lists is not opening it again (R-NEX-11).
 	if (S.route.split('/')[0] === 'numbers' && was !== 'numbers') void loadNumbers()
+	// Coming back to Now is a new look too: New and Back to you are what changed since the last one (N1b).
+	if (!S.route.startsWith('now')) S.nowLook = null
 	if (h === 'automations/new') S.sheet = 'pick'
 	// Entering the queue puts focus on a card, so its keys work at once.
 	if (S.route === 'focus') { const code = h.split('/')[1] || S.cur || openCards()[0]?.code; if (code && cardOf(code)) return A.go(code) }

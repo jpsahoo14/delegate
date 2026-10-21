@@ -17,6 +17,14 @@ export function listen() {
 	document.addEventListener('submit', onSubmit)
 	document.addEventListener('keydown', onKey)
 	document.addEventListener('focusout', () => setTimeout(() => { if (S.deferred && !typing()) render() }, 0))
+	// A dead key or an IME composes in the field; nothing redraws until it ends, then Find shows what was typed (review P1-4).
+	document.addEventListener('compositionstart', () => { S.composing = true }, true)
+	document.addEventListener('compositionend', e => {
+		S.composing = false
+		const t = e.target as HTMLInputElement
+		if (t.id === 'find') A.setFind(t.value)
+		else if (S.deferred && !typing()) render()
+	}, true)
 	document.addEventListener('pointerdown', e => { if ((e.target as HTMLElement).closest?.('button,[data-act]')) S.pressing = Date.now() }, true)
 	// A release outside the window never arrives, so a hold counts for 3 s at most.
 	const released = () => { S.pressing = 0; setTimeout(() => { if (S.deferred && !typing()) render() }, 0) }

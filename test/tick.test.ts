@@ -139,6 +139,20 @@ test('R-WF-01 a follow-up joins the open item and counts as new', async () => {
 	assert.equal(wfs.length, 1); assert.equal(wfs[0].newCount, 1); assert.equal(wfs[0].lastAsk, 'Also, which ring?')
 })
 
+test('N1b every cycle stamps where an item stands and when it really changed; a quiet cycle changes neither', async () => {
+	src.post(CHAT, 'me', '[as Kim] Is the plan final?'); await go()
+	const a = store.byCode('A1')!
+	assert.deepEqual([a.place?.section, a.place?.rule], ['move', 'needs-you'])
+	assert.equal(a.changedAt, a.createdAt, 'a new item is new from when it was made')
+	await go()
+	const b = store.byCode('A1')!
+	assert.deepEqual([b.place, b.changedAt, b.updatedAt], [a.place, a.changedAt, a.updatedAt], 'nothing happened: nothing moved')
+	script = draft('Yes, it is final.')
+	src.post(CHAT, 'me', '[as Kim] Also, is the date fixed?'); await go()
+	const c = store.byCode('A1')!
+	assert.ok(c.changedAt! > a.changedAt!, 'a new turn and a new draft are a change')
+})
+
 test('R-HIL-15 R-HIL-13 R-POL-10 answer gives a preview, ok sends it once, and the send is not a new ask', async () => {
 	src.post(CHAT, 'me', '[as Ravi] Status?'); await go()
 	src.post('self', 'me', 'remember to buy milk')
@@ -3619,6 +3633,28 @@ test('bug 10-21 W entry: an ask about something else in a chat with open work st
 	ownerAsks('<at id="0">Dev</at> Does incident 4512345 block your change?')
 	await go()
 	assert.deepEqual(store.waiting().map(w => [w.to[0], w.item ?? '']), [['Kim', ''], ['Kim', 'A10'], ['Lin', 'A9'], ['Sam', 'A9'], ['Dev', '']])
+})
+
+// Code review round 4, P2-2: in a small chat with more than one open topic, the asker alone links nothing: "Kim, lunch?" in Kim's
+// chat, where Kim's work and Kim's other question are open, stays its own row. A reply quote or the work's link still links it,
+// and with one open topic the asker still does (the first bug 10-21 W entry test).
+test('bug 10-21 W entry: with more than one open topic in the chat, an ask to the asker alone is its own row; a reply or a link still joins', async () => {
+	const { item } = await import('./fixture.ts')
+	const now = new Date().toISOString(), chat = { id: CHAT, name: 'Kim Lane', test: false, group: false }
+	item(store, 'A9', 'Kim Lane', 'Kim Lane', { state: 'open', status: 'In progress', chat, msgIds: ['m-a9'], work: { goal: 'The Q3 deck for Acme', doneWhen: 'Kim has the deck', steps: [{ at: now, what: 'Replied: on it.' }], links: ['pr:2204'] } } as never)
+	item(store, 'A10', 'Kim Lane', 'Kim Lane', { state: 'needs_human', chat, msgIds: ['m-a10'], lastAsk: 'Are you at the offsite on Friday?' } as never)
+	ownerAsks('<at id="0">Kim</at> Lunch today?')
+	ownerAsks('<blockquote itemtype="http://schema.skype.com/Reply" itemid="m-a9"><strong>Kim Lane</strong><p>Deck?</p></blockquote><at id="0">Kim</at> Can you send the numbers for it?')
+	ownerAsks('<at id="0">Kim</at> Did PR 2204 go in?')
+	await go()
+	const ws = store.waiting()
+	assert.deepEqual(ws.map(w => /Lunch|numbers|PR 2204/.exec(w.text)?.[0]), ['Lunch', 'numbers', 'PR 2204'])
+	assert.deepEqual(ws.map(w => w.item ?? ''), ['', 'A9', 'A9'], 'lunch is its own row; the reply and the link join the work')
+	// Two works match, one waiting on Kim and one she asked for: it could be either, so it stays its own row.
+	item(store, 'A8', 'Dev Moss', 'Kim Lane', { createdAt: new Date(Date.now() - 7_200_000).toISOString(), state: 'open', status: 'In progress', chat, msgIds: ['m-a8'], work: { goal: 'Kim signs off the launch', doneWhen: 'signed off', waitingOn: { who: 'Kim Lane', since: now }, steps: [{ at: now, what: 'Replied: on it.' }], links: [] } } as never)
+	ownerAsks('<at id="0">Kim</at> Any news?')
+	await go()
+	assert.equal(store.waiting().at(-1)!.item, undefined)
 })
 
 test('Q4 R16 the owner\'s @mention ask with no answer for a day shows under Waiting on others; follow up drafts a nudge for ok; an answer clears it', async () => {

@@ -28,7 +28,7 @@ test('R-HIL-09 the page carries the view as escaped data, under a strict CSP, an
 		assert.match(html, /"draft":\{"text":"Left \\u003c1> comment\."/, 'the draft travels as data, and "<" cannot close the script')
 		assert.match(html, /<body><div id="app" data-mode="page"><\/div><script>/, 'no server-drawn cards: the client draws them')
 		assert.match(html, /window\.DELEGATE_IO=\{/)
-	} finally { server.close() }
+	} finally { (server.closeAllConnections?.(), server.close()) }
 })
 
 test('R-HIL-09 the page server needs its token, and an action carries the owner\'s words with the revision the card showed', async () => {
@@ -46,7 +46,7 @@ test('R-HIL-09 the page server needs its token, and an action carries the owner\
 		assert.deepEqual([a.code, a.verb, a.seenAt, r.ids], ['A1', 'ok', seenAt, [a.id]])
 		const o = await (await fetch(url.replace('/?', `/result?ids=${a.id}&code=A1&`))).json()
 		assert.deepEqual([o.applied, o.card.code, 'html' in o], [false, 'A1', false])
-	} finally { server.close() }
+	} finally { (server.closeAllConnections?.(), server.close()) }
 })
 
 test('R-HIL-09 the synced snapshot is read-only, carries the view for the words to type, and is rewritten only on change', () => {
@@ -211,7 +211,7 @@ test('Done v2 seen: a filter is seen up to the data the page showed, never later
 		assert.equal(store.seen().catchup, shown, 'an older page does not bring rows back')
 		await post({ filters: ['replies'], at: '2999-01-01T00:00:00.000Z' })
 		assert.ok(Date.parse(store.seen().replies) <= Date.now(), 'a clock ahead cannot hide rows still to come')
-	} finally { server.close() }
+	} finally { (server.closeAllConnections?.(), server.close()) }
 })
 
 test('Bet 1 reading state: ok within 20 minutes of the last good read, late within an hour, off after, never before the first', async () => {
@@ -224,4 +224,19 @@ test('Bet 1 reading state: ok within 20 minutes of the last good read, late with
 	assert.equal(readingOf(store, t).at, '2026-10-20T08:59:00.000Z', 'the last good read, not the lease')
 	store.saveChats({ ...store.chats(), goodAt: new Date(t - 2 * 60_000).toISOString() })
 	assert.equal(readingOf(store, t).state, 'ok', 'chats are read while an older gap is still being searched')
+})
+
+test('test teardown: a connection still open never keeps the test server, and so the test file, alive', async () => {
+	const { connect } = await import('node:net')
+	const store = setup()
+	const { url, server } = await serveInbox(() => store)
+	const sock = connect(Number(new URL(url).port), '127.0.0.1')
+	await new Promise(r => sock.once('connect', r))
+	// A request that never finishes, as a held page refresh does.
+	sock.write('GET /data HTTP/1.1\r\nHost: x\r\n')
+	await new Promise(r => setTimeout(r, 50))
+	const closed = new Promise<boolean>(r => server.close(() => r(true)))
+	server.closeAllConnections?.()
+	assert.equal(await Promise.race([closed, new Promise<boolean>(r => setTimeout(() => r(false), 2000))]), true, 'closed at once')
+	sock.destroy()
 })

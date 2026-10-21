@@ -56,7 +56,7 @@ async function open(ui: 'classic' | 'new', hash = '', o: { viewport?: { width: n
 	await page.clock.setFixedTime(NOW)
 	await page.goto(url + hash)
 	await page.waitForSelector('#main :first-child')
-	return { store, url, page, errors, asked, polls, close: async () => { await ctx.close(); server.close(); assert.deepEqual(errors, []) } }
+	return { store, url, page, errors, asked, polls, close: async () => { await ctx.close(); (server.closeAllConnections?.(), server.close()); assert.deepEqual(errors, []) } }
 }
 const until = async (f: () => boolean, ms = 6000) => { for (let t = 0; t < ms && !f(); t += 50) await new Promise(r => setTimeout(r, 50)); assert.ok(f()) }
 const codesShown = (p: Page) => p.$$eval('#main ul.rows > li[data-code]', (ls: HTMLElement[]) => ls.map(l => l.dataset.code))
@@ -199,7 +199,7 @@ test('numbers tab: the narrow layout stacks the cards, keeps all 8 bars, and the
 		assert.ok(Math.max(...bars) <= 400, 'no bar off the screen')
 		assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= 400), true, 'nothing scrolls sideways')
 		assert.deepEqual(errors, [])
-	} finally { await ctx.close(); server.close() }
+	} finally { await ctx.close(); (server.closeAllConnections?.(), server.close()) }
 })
 
 // The chat panel asks through its own tool, numbers_view, with a stub MCP Apps host, the same as next-browser's panel test.

@@ -14,6 +14,9 @@ export function onKey(e: KeyboardEvent) {
 		// The key list closes itself; Escape there must not also leave the item.
 		if (current().keys.isOpen()) return
 		if (S.sheet) { S.sheet = null; render(); return }
+		// Escape in Find with words in it clears them first; the next Escape leaves it.
+		const a = document.activeElement as HTMLInputElement | null
+		if (a?.id === 'find' && a.value) { e.preventDefault(); A.setFind(''); return }
 		// Leaving a field returns to its card, so the card keys keep working.
 		if (inField) { const active = document.activeElement as HTMLElement, card = active.closest<HTMLElement>('article.card'); active.blur(); card?.focus({ preventScroll: true }); return }
 		if (S.route === 'focus') location.hash = '#home'
@@ -21,6 +24,8 @@ export function onKey(e: KeyboardEvent) {
 	}
 	if (inField || e.metaKey || e.ctrlKey || e.altKey || current().keys.isOpen()) return
 	if (e.key === '?') { current().keys.open(); return }
+	// "/" goes to Find, where the page has it (Now on the new page).
+	if (e.key === '/' && document.getElementById('find')) { e.preventDefault(); focusOn('find'); return }
 	if (e.key === 'g') { gAt = Date.now(); return }
 	if (e.key === 'h' && Date.now() - gAt < 800) { location.hash = '#home'; return }
 	if (e.key === 'u') { const r = V.done.find(x => x.undoUntil && Date.parse(x.undoUntil) > Date.now()); if (r) { location.hash = '#done/replies'; A.act(`row:${r.code}`, r.code, `undo ${r.code}`, 'row') } return }

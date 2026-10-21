@@ -1,3 +1,4 @@
+import type { Section } from './whose.ts'
 export type Id = string
 export type Code = string
 // open: the reply is out and the work it started goes on; nothing needs the owner now (dev-spec/work.md).
@@ -191,7 +192,13 @@ export type Workflow = {
 	effects?: Effect[]
 	waitingSince?: string
 	openOn?: string
+	// When something the owner has not seen happened: a new turn, a new draft by Delegate, a news step, or a move to another
+	// section, stamped by the runner (runner/place.ts). On a watch, only a new check result sets it (runner/jobs.ts finishCheck).
+	// Never updatedAt, which a build check touches every 10 minutes (N1b).
 	changedAt?: string
+	// Where the new page places the item and since when, stamped by the runner when whoseMove's result changes (N1b).
+	// sig: what it last saw (the last ask, Delegate's draft, the news steps), so only a real change moves changedAt.
+	place?: { section: Section; rule: string; since: string; sig?: string }
 	// The owner saw the latest tracker update.
 	ackAt?: string
 	learnAfter?: { draft: string; sent: string }

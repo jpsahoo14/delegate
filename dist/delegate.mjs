@@ -1543,18 +1543,18 @@ var init_parse = __esm({
       return result.issues.length === 0;
     };
     _encode = (_Err) => {
-      const parse3 = _parse(_Err);
+      const parse4 = _parse(_Err);
       const fn = (schema, value, _ctx, _params) => {
         const ctx = _ctx ? { ..._ctx, direction: "backward" } : { direction: "backward" };
-        return parse3(schema, value, ctx, finalizeParams(fn, _params));
+        return parse4(schema, value, ctx, finalizeParams(fn, _params));
       };
       return fn;
     };
     encode = /* @__PURE__ */ _encode($ZodRealError);
     _decode = (_Err) => {
-      const parse3 = _parse(_Err);
+      const parse4 = _parse(_Err);
       const fn = (schema, value, _ctx, _params) => {
-        return parse3(schema, value, _ctx, finalizeParams(fn, _params));
+        return parse4(schema, value, _ctx, finalizeParams(fn, _params));
       };
       return fn;
     };
@@ -21609,8 +21609,9 @@ var init_state = __esm({
         return out;
       }
       // A mark only moves forward, so a late or repeated post never brings back rows already seen.
-      saveSeen(keys, at3 = (/* @__PURE__ */ new Date()).toISOString()) {
-        const f = this.p("state", "seen", `${this.machine}.json`), was = readJson(f, {});
+      // keep: which marks this machine's file keeps (per-item marks go 7 days after the item is done; N1b).
+      saveSeen(keys, at3 = (/* @__PURE__ */ new Date()).toISOString(), keep = () => true) {
+        const f = this.p("state", "seen", `${this.machine}.json`), was = Object.fromEntries(Object.entries(readJson(f, {})).filter(([k]) => keep(k)));
         this.w(f, { ...was, ...Object.fromEntries(keys.map((k) => [k, was[k] && was[k] > at3 ? was[k] : at3])) });
       }
       // The "New experience" switch, one file per machine and never in seen/, whose marks merge across machines (R-NEX-01).
@@ -34139,7 +34140,7 @@ var require_fast_uri = __commonJS({
         normalizeString(uri, options);
       } else if (typeof uri === "object") {
         uri = /** @type {T} */
-        parse3(serialize(uri, options), options);
+        parse4(serialize(uri, options), options);
       }
       return uri;
     }
@@ -34179,8 +34180,8 @@ var require_fast_uri = __commonJS({
     function resolveComponent(base, relative4, options, skipNormalization) {
       const target2 = {};
       if (!skipNormalization) {
-        base = parse3(serialize(base, options), options);
-        relative4 = parse3(serialize(relative4, options), options);
+        base = parse4(serialize(base, options), options);
+        relative4 = parse4(serialize(relative4, options), options);
       }
       options = options || {};
       if (!options.tolerant && relative4.scheme) {
@@ -34479,7 +34480,7 @@ var require_fast_uri = __commonJS({
       }
       return { parsed, malformedAuthorityOrPort, malformedPercentEncoding, malformedSchemeSpecific, malformedHost, malformedScheme };
     }
-    function parse3(uri, opts) {
+    function parse4(uri, opts) {
       return parseWithStatus(uri, opts).parsed;
     }
     function normalizeString(uri, opts) {
@@ -34516,7 +34517,7 @@ var require_fast_uri = __commonJS({
       resolveComponent,
       equal,
       serialize,
-      parse: parse3
+      parse: parse4
     };
     module.exports = fastUri;
     module.exports.default = fastUri;
@@ -38692,7 +38693,7 @@ var require_parse = __commonJS({
       }
       return parsed;
     }
-    function parse3(command, args2, options) {
+    function parse4(command, args2, options) {
       if (args2 && !Array.isArray(args2)) {
         options = args2;
         args2 = null;
@@ -38711,7 +38712,7 @@ var require_parse = __commonJS({
       };
       return options.shell ? parsed : parseNonShell(parsed);
     }
-    module.exports = parse3;
+    module.exports = parse4;
   }
 });
 
@@ -38770,16 +38771,16 @@ var require_cross_spawn = __commonJS({
   "node_modules/cross-spawn/index.js"(exports, module) {
     "use strict";
     var cp = __require("child_process");
-    var parse3 = require_parse();
+    var parse4 = require_parse();
     var enoent = require_enoent();
     function spawn8(command, args2, options) {
-      const parsed = parse3(command, args2, options);
+      const parsed = parse4(command, args2, options);
       const spawned = cp.spawn(parsed.command, parsed.args, parsed.options);
       enoent.hookChildProcess(spawned, parsed);
       return spawned;
     }
     function spawnSync7(command, args2, options) {
-      const parsed = parse3(command, args2, options);
+      const parsed = parse4(command, args2, options);
       const result = cp.spawnSync(parsed.command, parsed.args, parsed.options);
       result.error = result.error || enoent.verifyENOENTSync(result.status, parsed);
       return result;
@@ -38787,7 +38788,7 @@ var require_cross_spawn = __commonJS({
     module.exports = spawn8;
     module.exports.spawn = spawn8;
     module.exports.sync = spawnSync7;
-    module.exports._parse = parse3;
+    module.exports._parse = parse4;
     module.exports._enoent = enoent;
   }
 });
@@ -41694,7 +41695,7 @@ function knowledge(p) {
 function itemRow(store2, w) {
   const name = w.asker?.name ?? "Someone", where = w.chat.group ? ` in ${w.chat.name}` : "", first2 = name.split(/[\s,(]+/)[0];
   const made = (w.effects ?? []).filter((e) => e.done);
-  const base = { code: w.code, who: who(name), teams: teamsOf(w), ask: w.redacted ? void 0 : askLine(w.lastAsk) || void 0 };
+  const base = { code: w.code, who: who(name), teams: teamsOf(w), ask: w.redacted ? void 0 : askLine(w.lastAsk) || void 0, ...w.msgIds.length ? { msgs: msgKeys(w) } : {} };
   if (w.sent) return { ...base, kind: made.length && w.intent === "pr_review" ? "review" : "reply", sentence: made.length && w.intent === "pr_review" ? `Reviewed for ${name} and replied${where}` : `Replied to ${name}${where}`, by: w.sent.byRule ? `by rule ${w.sent.byRule}` : "by you", at: w.sent.at, text: w.redacted ? void 0 : w.sent.text ?? w.draft?.text, said: w.redacted ? void 0 : short2(w.sent.text ?? w.draft?.text), own: !w.sent.byRule, notes: w.notes ?? [], why: { reason: w.decision?.reason, confidence: w.decision?.confidence, sources: (w.draft?.sources ?? []).map((s2) => source(s2.ref, s2.tier, s2.stale, s2.label)), gaps: w.gaps ?? [] }, rule: w.sent.byRule, undoUntil: w.sent.byRule ? w.sent.undoUntil : void 0, work: workLine(homeOf(store2, w)) };
   if (w.fyi) return { ...base, kind: "catchup", sentence: w.fyi.line, gist: w.fyi.gist ?? base.ask, watch: w.fyi.watch, watchedAs: w.watchedAs, by: `${first2}${w.chat.group ? ` \xB7 ${w.chat.name}` : ""}`, at: w.fyi.at ?? w.updatedAt, high: w.fyi.weight === "high" };
   if (closedHow(w) === "replied") {
@@ -41807,7 +41808,7 @@ function view(store2, since, now = /* @__PURE__ */ new Date()) {
     people: [...people].map(([name, p]) => ({ name, ...p })).sort((a, b) => a.name.localeCompare(b.name))
   };
 }
-var HUES, catchUpOf, SKIP, nextOf, TASK, PR, INVITE, COMMENT, SEEN_KEYS, askLine, short2, teamsOf, closedHow;
+var HUES, catchUpOf, SKIP, nextOf, TASK, PR, INVITE, COMMENT, SEEN_KEYS, askLine, short2, teamsOf, closedHow, msgKeys;
 var init_view = __esm({
   "src/web/view.ts"() {
     "use strict";
@@ -41832,6 +41833,10 @@ var init_view = __esm({
     short2 = (t2 = "") => t2.replace(/\s+/g, " ").trim().slice(0, 200);
     teamsOf = (w, msgId = w.lastMsgId) => w.chat.id && msgId && !w.chat.test ? isThread(w.chat.id) ? threadLink(w.chat.id, msgId) : `https://teams.microsoft.com/l/message/${encodeURIComponent(w.chat.id)}/${msgId}` : void 0;
     closedHow = (w) => w.closedBy ?? (/^You replied yourself/.test(w.status) ? "replied" : /^Skipped by you/.test(w.status) ? "skipped" : void 0);
+    msgKeys = (w) => {
+      const c = isThread(w.chat.id) ? parseThread(w.chat.id).channelId : w.chat.id;
+      return w.msgIds.map((m) => `${c}|${m}`);
+    };
   }
 });
 
@@ -42883,10 +42888,14 @@ function workOfAsk(store2, open2, raw, text2, to) {
     if (replied) return replied.code;
   }
   const asked = { to };
-  const theirs = homes.filter((h) => [h.work.waitingOn?.who, h.asker?.name].some((n) => !!n && answers(asked, n)));
+  const waited = homes.filter((h) => !!h.work.waitingOn?.who && answers(asked, h.work.waitingOn.who));
+  const theirs = homes.filter((h) => waited.includes(h) || !!h.asker?.name && answers(asked, h.asker.name));
   const named2 = homeNamed(homes, text2);
   const hit = [.../* @__PURE__ */ new Set([...theirs, ...named2 ? [named2] : []])];
-  return hit.length === 1 ? hit[0].code : void 0;
+  if (hit.length !== 1) return void 0;
+  const chat = open2[0].chat.id;
+  const topics = new Set(open2.map((o) => homeOf(store2, o).id)).size + store2.waiting().filter((w) => w.state === "waiting" && w.chat.id === chat && !w.item).length;
+  return topics > 1 && hit[0] !== named2 && !waited.includes(hit[0]) ? void 0 : hit[0].code;
 }
 function ownerAnswered(text2, wf, openInChat) {
   if (!wf.chat.group || openInChat <= 1) return true;
@@ -44971,6 +44980,7 @@ var init_work = __esm({
 var numbers_exports = {};
 __export(numbers_exports, {
   counted: () => counted,
+  handledThisWeek: () => handledThisWeek,
   numbersOf: () => numbersOf,
   saveWeeks: () => saveWeeks
 });
@@ -44979,9 +44989,9 @@ function fromLog(store2, machine2, week) {
   const files2 = store2.logFiles().filter((f) => f.machine === machine2 && f.day >= week && f.day <= addDays(week, 6));
   return slim(files2.flatMap((f) => store2.logOf(f.file)));
 }
-function counted(store2) {
-  const saved = new Map(store2.numberWeeks().map((w) => [`${w.machine}|${w.week}`, w.file]));
-  const pairs = /* @__PURE__ */ new Set([...saved.keys(), ...store2.logFiles().map((f) => `${f.machine}|${weekOf(f.day)}`)]);
+function counted(store2, from = "") {
+  const saved = new Map(store2.numberWeeks().filter((w) => w.week >= from).map((w) => [`${w.machine}|${w.week}`, w.file]));
+  const pairs = /* @__PURE__ */ new Set([...saved.keys(), ...store2.logFiles().filter((f) => weekOf(f.day) >= from).map((f) => `${f.machine}|${weekOf(f.day)}`)]);
   return [...pairs].flatMap((k) => {
     const file2 = saved.get(k), w = file2 ? readJson(file2, void 0) : void 0;
     return w?.schema === SCHEMA ? w.events : fromLog(store2, ...split(k));
@@ -45010,14 +45020,38 @@ function saveWeeks(store2, now = /* @__PURE__ */ new Date()) {
 function numbersOf(store2, key = "this", now = /* @__PURE__ */ new Date()) {
   return numbers(counted(store2), store2.workflows(), now, store2.config()?.tz, key);
 }
-var SCHEMA, split;
+function handledThisWeek(store2, items2, now = /* @__PURE__ */ new Date()) {
+  const tz = store2.config()?.tz, today = dayIn(now, tz), from = addDays(weekOf(today), -7);
+  const key = [
+    today,
+    items2.length,
+    items2.reduce((n2, w) => n2 + w.msgIds.length, 0),
+    ...store2.numberWeeks().filter((w) => w.week >= from).map((w) => w.file),
+    ...store2.logFiles().filter((f) => weekOf(f.day) >= from).map((f) => {
+      try {
+        const st = statSync7(f.file);
+        return `${f.file}:${st.size}:${st.mtimeMs}`;
+      } catch {
+        return f.file;
+      }
+    })
+  ].join("|");
+  const had = handledCache.get(store2.root);
+  if (had?.key === key) return had.n;
+  const n = numbers(counted(store2, from), items2, now, tz, "this").handled.n;
+  handledCache.set(store2.root, { key, n });
+  return n;
+}
+var SCHEMA, split, handledCache;
 var init_numbers2 = __esm({
   "src/store/numbers.ts"() {
     "use strict";
     init_fs();
     init_numbers();
+    init_schedule();
     SCHEMA = 2;
     split = (k) => [k.slice(0, k.lastIndexOf("|")), k.slice(k.lastIndexOf("|") + 1)];
+    handledCache = /* @__PURE__ */ new Map();
   }
 });
 
@@ -45263,7 +45297,7 @@ function itemRow2(s2, p, w) {
     return { ...base, kind: "working", headline: run2 ? clip2(j2.goal, 120) : `Drafting a reply to ${name}`, ...run2 ? { facts: { ...facts, verb: "started", at: j2.run?.startedAt ?? w.waitingSince ?? p.at } } : {}, next: { owner: { kind: "delegate" }, what: "back to you when done" } };
   }
   if (j2?.every || w.kind === "tracker") {
-    const changed = !!w.changedAt && (!w.ackAt || w.changedAt > w.ackAt);
+    const changed = w.kind === "tracker" && !!w.changedAt && (!w.ackAt || w.changedAt > w.ackAt);
     const last3 = j2?.result?.summary ? { label: "Last check", text: clip2(j2.result.summary, 160), ...j2.result.at ? { at: j2.result.at } : {} } : { label: "Last check", text: "not checked yet" };
     return { ...base, who: void 0, kind: "watch", chips: chipsOf(w, j2, changed), headline: clip2(watchLine(w.lastAsk ?? w.work?.goal), 120), facts: { at: w.changedAt ?? p.at, notes: [last3], ...j2?.endsAt ? { until: j2.endsAt } : {} }, next: { owner: { kind: "delegate" }, what: j2?.every ? `checks ${every(j2.every)}` : "checks soon" }, ...changed ? { primary: { label: "Got it", command: `ok ${c}` } } : {}, more: [...j2?.endsAt ? [{ label: "Extend 7 days", command: `extend ${c}` }] : [], { label: "Stop", command: `skip ${c}` }] };
   }
@@ -45285,12 +45319,22 @@ function reminderRow(p, a) {
   const next2 = a.state === "paused" ? p.next : { owner: { kind: "delegate" }, what: a.next ? `reminds ${first(a.to.name)} {at}` : `reminds ${first(a.to.name)}`, ...a.next ? { at: a.next } : {} };
   return { kind: "reminder", headline: clip2(`Reminding ${first(a.to.name)}: "${a.text}"`, 160), who: who(a.to.name), facts, chips: [], next: next2, primary: a.state === "paused" ? { label: "Resume", command: `resume ${a.code}` } : { label: "Pause", command: `pause ${a.code}` }, more: [{ label: "Stop reminding", command: `skip ${a.code}` }] };
 }
+function freshOf(p, w, items2) {
+  if (!w) return {};
+  const changed = p.subjects.map((c) => items2.get(c)).filter((x) => x && x.kind !== "tracker").map((x) => x.changedAt).filter((x) => !!x).sort().at(-1);
+  const back = p.section === "move" && w.place?.section === "move" && w.place.since > w.createdAt ? w.place.since : void 0;
+  const msgs = p.subjects.flatMap((c) => {
+    const x = items2.get(c);
+    return x ? msgKeys(x) : [];
+  });
+  return { fresh: { born: w.createdAt, ...changed ? { changed } : {}, ...back ? { back } : {} }, ...msgs.length ? { msgs } : {} };
+}
 function rowsOf(s2, placed) {
   const items2 = new Map(s2.workflows.map((w) => [w.code, w])), waits = new Map(s2.waiting.map((w) => [w.code, w])), autos = new Map(s2.automations.map((a) => [a.code, a]));
   return placed.filter((p) => p.section !== "done").map((p) => {
     const w = items2.get(p.act), wt = waits.get(p.act), a = autos.get(p.act);
     const body = w ? itemRow2(s2, p, w) : wt ? waitRow(wt) : reminderRow(p, a);
-    return { code: p.code, act: p.act, section: p.section, rule: p.rule, ...body };
+    return { code: p.code, act: p.act, section: p.section, rule: p.rule, ...body, ...freshOf(p, w, items2) };
   });
 }
 function nextView(store2, now = Date.now()) {
@@ -45305,7 +45349,7 @@ function nextView(store2, now = Date.now()) {
   const cu = of("catchup").sort((a, b) => high(a) - high(b) || b.facts.at.localeCompare(a.facts.at));
   const reading = readingOf(store2, now);
   const off = s2.runner === "ok" ? void 0 : s2.runner === "paused" ? { text: "Paused: drafts go on, nothing is sent" } : s2.runner === "off" ? { text: `${NAME} is off`, ...reading.at ? { since: reading.at } : {} } : { text: s2.runner === "capped" ? "Daily limit reached; it runs again tomorrow" : `${NAME} is ${s2.runner}` };
-  return { move: move2, working, waiting, catchup: { count: cu.length, worth: cu.filter((r) => high(r) === 0).length, rows: cu.slice(0, 3) }, minute: { facts: store2.proposals().filter((p) => p.state === "needs_human").length, suggestions: store2.habits().filter((h) => h.state === "suggested").length }, ...off ? { off } : {}, ...store2.control().paused || store2.config().paused ? { paused: true } : {} };
+  return { move: move2, working, waiting, catchup: { count: cu.length, worth: cu.filter((r) => high(r) === 0).length, rows: cu.slice(0, 3) }, minute: { facts: store2.proposals().filter((p) => p.state === "needs_human").length, suggestions: store2.habits().filter((h) => h.state === "suggested").length }, ...off ? { off } : {}, ...store2.control().paused || store2.config().paused ? { paused: true } : {}, handled: handledThisWeek(store2, s2.workflows, new Date(now)) };
 }
 var isMe, runnerWhy, titleOf, ownerText, NAMES, COMMANDS, INLINE_MAX, first, firsts, clip2, teamsLink2, triesOf, every, whyOf, mustSee, SHORT, said, commentsOrChanges, pickPrompt, watchLine;
 var init_next = __esm({
@@ -45319,6 +45363,7 @@ var init_next = __esm({
     init_retry();
     init_view();
     init_brand();
+    init_numbers2();
     isMe = (s2, who2) => !!who2 && s2.me.includes(who2.toLowerCase());
     runnerWhy = { off: `${NAME} is not reading now`, paused: `${NAME} is paused`, stopped: `${NAME} is stopped`, capped: "daily limit reached; tomorrow" };
     titleOf = (sub) => sub.kind === "waiting" ? sub.w.text : sub.kind === "reminder" ? `Remind ${sub.a.to.name}: ${sub.a.text}` : sub.wf.work && !sub.wf.work.closed ? sub.wf.work.goal : sub.wf.fyi?.line ?? sub.wf.lastAsk ?? sub.wf.status;
@@ -46245,6 +46290,48 @@ async function daily(store2, src, cfg, now = /* @__PURE__ */ new Date()) {
 init_automations();
 init_jobs();
 init_continue();
+
+// src/runner/place.ts
+init_whose();
+init_format2();
+init_next();
+var parse3 = (sig) => {
+  if (!sig) return void 0;
+  const [turn = "", draft = "", news = ""] = sig.split("|");
+  return { turn, draft, news };
+};
+function sigOf(wf, was) {
+  const d = wf.draft?.text && !wf.draft.byOwner ? hashOf(wf.draft.text) : was?.draft ?? "";
+  const news = (wf.work?.steps ?? []).filter((s2) => s2.news).map((s2) => s2.at).sort().at(-1) ?? "";
+  return { turn: wf.lastMsgId ?? "", draft: d, news };
+}
+var OPEN = /* @__PURE__ */ new Set(["move", "working", "waiting"]);
+function stampPlaces(store2, now = Date.now()) {
+  const s2 = snapshot(store2, now), at3 = new Date(now).toISOString();
+  const first2 = store2.probeMark().placedAt;
+  let n = 0;
+  for (const wf of s2.workflows.filter((w) => w.code)) {
+    if (wf.state === "done" && (!wf.place || !OPEN.has(wf.place.section))) continue;
+    const { section, rule } = whoseMove(factsOf2(s2, { kind: "item", wf }));
+    const was = wf.place, prev = parse3(was?.sig), sig = sigOf(wf, prev), key = `${sig.turn}|${sig.draft}|${sig.news}`;
+    if (was?.section === section && was.rule === rule && was.sig === key) continue;
+    let changedAt = wf.changedAt;
+    if (!was) {
+      if (first2 && wf.kind !== "tracker") changedAt = wf.createdAt > first2 ? wf.createdAt : at3;
+    } else if (wf.kind !== "tracker") {
+      const real = sig.turn !== prev?.turn || sig.draft !== (prev?.draft ?? "") || sig.news > (prev?.news ?? "");
+      const moved = was.section !== section && section === "move";
+      if (real || moved) changedAt = at3;
+    }
+    const since = !was ? wf.createdAt : was.section === section ? was.since : at3;
+    const cur = store2.workflow(wf.id);
+    if (!cur) continue;
+    store2.save({ ...cur, place: { section, rule, since, sig: key }, ...changedAt ? { changedAt } : {} }, false);
+    n++;
+  }
+  if (!first2) store2.saveProbeMark({ ...store2.probeMark(), placedAt: at3 });
+  return n;
+}
 
 // src/web/server.ts
 init_format2();
@@ -48925,6 +49012,19 @@ function withUi(s2, v, wantNext) {
   const ui = s2.ui();
   return { ...v, ui, ...wantNext ?? ui.ui === "new" ? { next: nextView(s2) } : {} };
 }
+function saveSeenFrom(s2, body) {
+  const { filters, at: at3 } = body ?? {};
+  const now = Date.now(), week = new Date(now - 7 * 864e5).toISOString();
+  const live2 = /* @__PURE__ */ new Set([
+    ...s2.workflows().filter((w) => w.code && (w.state !== "done" || w.updatedAt > week)).map((w) => w.code),
+    ...s2.waiting().filter((w) => w.state === "waiting" || w.at > week).map((w) => w.code),
+    ...s2.automations().filter((a) => a.state !== "ended" || a.updatedAt > week).map((a) => a.code)
+  ]);
+  const item = (f) => /^item:[A-Za-z]+\d+$/.test(f) && live2.has(f.slice(5).toUpperCase());
+  const ok = Array.isArray(filters) ? [...new Set(filters.filter((f) => typeof f === "string" && (SEEN_KEYS.includes(f) || item(f))).map((f) => f.startsWith("item:") ? `item:${f.slice(5).toUpperCase()}` : f))] : [];
+  const iso = new Date(now).toISOString(), t2 = typeof at3 === "string" && !Number.isNaN(Date.parse(at3)) ? new Date(at3).toISOString() : iso;
+  s2.saveSeen(ok, t2 < iso ? t2 : iso, (k) => !k.startsWith("item:") || live2.has(k.slice(5)));
+}
 function saveUiFrom(s2, body) {
   const b = body ?? {};
   if (b.ui !== "new" && b.ui !== "classic" && b.noted !== true) return { ok: false };
@@ -48968,14 +49068,11 @@ function serveInbox(get, port = 0, token = randomBytes3(16).toString("hex"), pro
       let body = "";
       req.on("data", (c) => {
         body += c;
-        if (body.length > 2e3) req.destroy();
+        if (body.length > 2e4) req.destroy();
       });
       req.on("end", () => {
         try {
-          const { filters, at: at3 } = JSON.parse(body);
-          const ok = Array.isArray(filters) ? filters.filter((f) => typeof f === "string" && SEEN_KEYS.includes(f)) : [];
-          const now = (/* @__PURE__ */ new Date()).toISOString(), t2 = typeof at3 === "string" && !Number.isNaN(Date.parse(at3)) ? new Date(at3).toISOString() : now;
-          get().saveSeen(ok, t2 < now ? t2 : now);
+          saveSeenFrom(get(), JSON.parse(body));
           res.writeHead(200, { "content-type": "application/json" }).end('{"ok":true}');
         } catch {
           res.writeHead(400).end('{"ok":false}');
@@ -49261,6 +49358,11 @@ async function tick(store2, deps = {}) {
     store2.log({ event: "tick", ...r });
     return r;
   } finally {
+    try {
+      stampPlaces(store2);
+    } catch (e) {
+      store2.log({ event: "place-failed", error: String(e).slice(0, 300) });
+    }
     const now = /* @__PURE__ */ new Date(), awakeMs = mono() - p0, c = store2.chats();
     const slept = now.getTime() - t0 - awakeMs > 10 * 6e4 && !c.notice ? offNotice(new Date(t0 + awakeMs).toISOString(), now, store2.machine, cfg.tz) : void 0;
     store2.saveChats({ ...c, endAt: now.toISOString(), ...slept ? { notice: slept } : {} });

@@ -140,7 +140,7 @@ async function draw(theme: string, seed: (s: any) => any, states: typeof STATES,
 		for (const [name, hash, steps] of states) await shoot(name, url + hash, steps)
 		// The read-only snapshot draws every card at once, with the words to type instead of buttons.
 		if (snapshot) { writeSnapshot(store); await shoot('snapshot', pathToFileURL(join(store.root, 'inbox.html')).href) }
-	} finally { await ctx.close(); server.close() }
+	} finally { await ctx.close(); (server.closeAllConnections?.(), server.close()) }
 	assert.deepEqual(errors, [])
 	assert.deepEqual(diffs, [], `the page draws differently:\n${diffs.join('\n')}`)
 }
@@ -160,6 +160,26 @@ const NEXT: typeof STATES = [
 	['next-knowledge', '#knowledge'],
 	['next-keys', '#now', p => p.keyboard.press('?')],
 ]
+// N1b: Find by a person, a pasted link that is not an item yet; and New, Back to you, and the Since line with handled.
+const NEXT_N1B: typeof STATES = [
+	['next-now-find', '#now', p => p.fill('#find', 'kim')],
+	['next-now-find-number', '#now', p => p.fill('#find', '2204')],
+	['next-now-find-link', '#now', p => p.fill('#find', 'https://teams.microsoft.com/l/message/19%3Akimchat%40thread.v2/1700000000123')],
+	['next-now-find-none', '#now', p => p.fill('#find', 'zebra')],
+]
+const NEXT_FRESH: typeof STATES = [['next-now-fresh', '#now']]
+// The owner last looked an hour ago; since then A20 changed, A23 came back to the owner, and two rule sends count as handled.
+// deno-lint-ignore no-explicit-any
+function seedFresh(s: any) {
+	const ago = (min: number) => new Date(NOW - min * 60_000).toISOString()
+	mkdirSync(join(s.root, 'state', 'viewed'), { recursive: true })
+	writeFileSync(join(s.root, 'state', 'viewed', 'mac.json'), JSON.stringify({ at: ago(60) }))
+	s.save({ ...s.byCode('A20'), changedAt: ago(5) }, false)
+	s.save({ ...s.byCode('A23'), changedAt: ago(3), place: { section: 'move', rule: 'your-step', since: ago(3) } }, false)
+	for (const c of ['A10', 'A11']) s.log({ event: 'sent', code: c, approvedBy: 'rule:R1', v: 2, unchanged: true, edited: false, text: 'Done.' })
+	s.log({ event: 'tick' })
+	return s
+}
 const NEXT_EMPTY: typeof STATES = [['next-quiet', '#now']]
 const NEXT_MOVING: typeof STATES = [['next-nothing-for-you', '#now']]
 const NEXT_PAUSED: typeof STATES = [['next-paused', '#now']]
@@ -194,5 +214,9 @@ for (const theme of ['light', 'dark']) {
 		await draw(theme, s => s, NEXT_EMPTY, false, s => seedQuiet(s))
 		await draw(theme, s => s, NEXT_MOVING, false, s => seedQuiet(s, true))
 		await draw(theme, s => pauseNext(s), NEXT_PAUSED, false, s => seedNext(s))
+	})
+	test(`golden: the new experience's Find, New, Back to you, and Since line (${theme})`, { skip }, async () => {
+		await draw(theme, s => seedNext(s, 'new', false), NEXT_N1B, false)
+		await draw(theme, s => seedFresh(seedNext(s, 'new', false)), NEXT_FRESH, false)
 	})
 }

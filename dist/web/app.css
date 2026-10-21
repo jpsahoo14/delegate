@@ -617,7 +617,7 @@ label.chk{display:flex;gap:8px;align-items:flex-start;font-size:13px;color:var(-
 #app[data-ui=next] .nquiet .ok{display:inline-grid;place-items:center;width:44px;height:44px;border-radius:50%;background:var(--success-soft);color:var(--success)}
 #app[data-ui=next] .nquiet h2{margin:12px 0 4px;font-size:20px}
 #app[data-ui=next] .nquiet p{margin:0;color:var(--text-2)}
-#app[data-ui=next] .nnote{display:flex;gap:12px;align-items:center;padding:10px 14px;margin:4px 0 8px;border-radius:var(--r-md);background:var(--accent-soft);color:var(--accent-text)}
+#app[data-ui=next] .nnote{display:flex;gap:12px;align-items:center;padding:6px 8px 6px 14px;margin:0 0 8px;font-size:13.5px;border-radius:var(--r-md);background:var(--accent-soft);color:var(--accent-text)}
 #app[data-ui=next] .nnote p{margin:0;flex:1}
 #app[data-ui=next] .themeitem{gap:8px;align-items:center;padding:8px 10px;border:0;border-radius:8px;background:none;color:var(--text-2);font:500 14px var(--font);cursor:pointer}
 @container app (max-width:860px){
@@ -630,8 +630,8 @@ label.chk{display:flex;gap:8px;align-items:flex-start;font-size:13px;color:var(-
 #app[data-ui=next] .nsum a{color:var(--text);text-decoration:none;font-weight:500;border-bottom:1px dotted var(--border-strong)}
 #app[data-ui=next] .nsum a:hover{color:var(--accent-text)}
 #app[data-ui=next] .nsum .sep,#app[data-ui=next] .nfl .sep{color:var(--text-3);white-space:pre}
-#app[data-ui=next] .nundo{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 14px;margin:0 0 10px;border-radius:var(--r-md);background:var(--success-soft);color:var(--text)}
-#app[data-ui=next] .nundo p{margin:0;flex:1;min-width:200px}
+#app[data-ui=next] .nundo{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:6px 8px 6px 14px;margin:0 0 8px;font-size:13.5px;border-radius:var(--r-md);background:var(--success-soft);color:var(--text)}
+#app[data-ui=next] .nundo p{margin:0;flex:1;min-width:0}
 #app[data-ui=next] .nquo{color:var(--text-2)}
 #app[data-ui=next] .nl2{font-weight:600;color:var(--text-2)}
 #app[data-ui=next] .nwarn{display:flex;gap:6px;align-items:center;margin-top:4px;font-size:12.5px;color:var(--warn)}
@@ -659,6 +659,13 @@ label.chk{display:flex;gap:8px;align-items:flex-start;font-size:13px;color:var(-
   #app[data-ui=next] .ncard{padding:0 8px 12px}
   #app[data-ui=next] .pill .pt{display:inline}
   #app[data-ui=next] .nnote .wide{display:none}
+  /* 400 px: Your move starts on the first screen (PM verification of N1a): the strip, the note, and a banner take one line each. */
+  #app[data-ui=next] .nundo .nquo,#app[data-ui=next] .nundo .nsaid{display:none}
+  #app[data-ui=next] .nundo,#app[data-ui=next] .nnote{flex-wrap:nowrap}
+  #app[data-ui=next] .health{padding:8px 10px;gap:8px;margin:0 0 8px;font-size:13.5px}
+  #app[data-ui=next] .health p{flex:1 1 0}
+  #app[data-ui=next] .health p span:not(.hm){display:none}
+  #app[data-ui=next] .nk{display:none}
   #app[data-ui=next] .nnote .narrow{display:inline}
   #app[data-ui=next] .row.cu .rowacts{width:100%;padding-left:44px;opacity:1}
   #app[data-ui=next] .row.cu .rt{flex:1 1 calc(100% - 90px)}
@@ -742,3 +749,17 @@ a.num-bin:hover .num-bw{color:var(--accent-text)}
   .num-days i{background:CanvasText}
   .num-days i.off{background:Canvas;outline-color:CanvasText}
 }
+/* N1b: Find, its results, and New and Back to you. */
+#app[data-ui=next] .nfind{display:flex;gap:8px;align-items:center;background:var(--surface);border:1px solid var(--border-strong);border-radius:10px;padding:1px 8px 1px 12px;margin:0 0 8px}
+#app[data-ui=next] .nfind:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 20%,transparent)}
+#app[data-ui=next] .nfind input{flex:1;border:0;background:none;padding:6px 0;min-width:0;font:inherit;color:var(--text)}
+#app[data-ui=next] .nfind input:focus{outline:none}
+#app[data-ui=next] .nfind:focus-within .nk{display:none}
+#app[data-ui=next] .nfres{margin:0 0 10px;font-size:13.5px;color:var(--text-2)}
+#app[data-ui=next] .nfl-make{display:flex;gap:12px;align-items:center;flex-wrap:wrap;padding:10px 14px;margin:0 0 10px;border-radius:var(--r-md);background:var(--accent-soft);color:var(--text)}
+#app[data-ui=next] .nfl-make p{margin:0;flex:1;min-width:200px}
+#app[data-ui=next] .nfound .section-h{margin-top:18px}
+#app[data-ui=next] .nsince{display:contents}
+#app[data-ui=next] .nsince .nsl{color:var(--text-2);margin-right:4px}
+#app[data-ui=next] .tag.fresh-new::before,#app[data-ui=next] .tag.fresh-back::before{content:"";display:inline-block;width:6px;height:6px;border-radius:50%;background:currentColor;margin-right:5px;vertical-align:1px}
+

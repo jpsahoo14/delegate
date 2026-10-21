@@ -329,7 +329,8 @@ function appendThread(store: Store, wf: Workflow, m: Msg) {
 // In a 1:1 chat any owner message answers. In a group it answers the only open item, or the one whose asker it names (review P1-9).
 // The open work an owner's @-ask in this chat belongs to, if any (bug 10-21; code review round 3, P2-2). A reply to one of a
 // work's messages belongs to it; otherwise the ask must go to someone the work waits on or its asker, or name the work's link,
-// and exactly one work may match. An ask about anything else stays its own W entry, with its own follow-up.
+// and exactly one work may match; its asker alone is enough only when the chat has one open topic. An ask about anything else
+// stays its own W entry, with its own follow-up.
 export function workOfAsk(store: Store, open: Workflow[], raw: RawMsg, text: string, to: string[]): string | undefined {
 	const homes = [...new Map(open.filter(o => inWork(store, o)).map(o => { const h = homeOf(store, o); return [h.id, h] as const })).values()]
 	if (!homes.length) return undefined
@@ -339,10 +340,17 @@ export function workOfAsk(store: Store, open: Workflow[], raw: RawMsg, text: str
 		if (replied) return replied.code
 	}
 	const asked = { to } as Waiting
-	const theirs = homes.filter(h => [h.work!.waitingOn?.who, h.asker?.name].some(n => !!n && answers(asked, n)))
+	const waited = homes.filter(h => !!h.work!.waitingOn?.who && answers(asked, h.work!.waitingOn.who))
+	const theirs = homes.filter(h => waited.includes(h) || (!!h.asker?.name && answers(asked, h.asker.name)))
 	const named = homeNamed(homes, text)
 	const hit = [...new Set([...theirs, ...(named ? [named] : [])])]
-	return hit.length === 1 ? hit[0].code : undefined
+	if (hit.length !== 1) return undefined
+	// The asker alone is a weak sign (code review round 4, P2-2): "Kim, lunch?" in Kim's chat is not about Kim's work. With more
+	// than one open topic in the chat (its open items, by home, and the owner's asks still waiting there), it takes the
+	// work's link or someone the work waits on.
+	const chat = open[0].chat.id
+	const topics = new Set(open.map(o => homeOf(store, o).id)).size + store.waiting().filter(w => w.state === 'waiting' && w.chat.id === chat && !w.item).length
+	return topics > 1 && hit[0] !== named && !waited.includes(hit[0]) ? undefined : hit[0].code
 }
 
 export function ownerAnswered(text: string, wf: Workflow, openInChat: number): boolean {

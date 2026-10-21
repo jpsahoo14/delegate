@@ -50,7 +50,7 @@ async function open(hash = '', seed: (s: S) => S = s => seedNext(s), o: { viewpo
 	await o.before?.(page)
 	await page.goto(url + hash)
 	await page.waitForSelector('#main :first-child')
-	return { store, url, page, ctx, errors, posted, uis, close: async () => { clearInterval(runner); await ctx.close(); server.close(); assert.deepEqual(errors, []) } }
+	return { store, url, page, ctx, errors, posted, uis, close: async () => { clearInterval(runner); await ctx.close(); (server.closeAllConnections?.(), server.close()); assert.deepEqual(errors, []) } }
 }
 const until = async (f: () => boolean, ms = 6000) => { for (let t = 0; t < ms && !f(); t += 50) await new Promise(r => setTimeout(r, 50)); assert.ok(f()) }
 const exp = (p: Page) => p.evaluate(() => document.getElementById('app')!.dataset.ui ?? 'classic')
@@ -195,8 +195,9 @@ test('next Now: the summary line, every row kind on its fixture, attributed word
 	const t = await open('#now')
 	try {
 		const flat = async (sel: string) => (await t.page.locator(sel).innerText()).replace(/\s+/g, ' ').trim()
-		assert.equal(await flat('#nsum'), 'Delegate is working on 3 · Waiting 8, 2 changed · Catch up 4, 1 worth a look')
-		assert.deepEqual(await t.page.locator('#nsum a').evaluateAll((l: Element[]) => l.map(a => a.getAttribute('href'))), ['#now/working', '#now/waiting', '#now/catchup'], 'each part opens its section')
+		// N1b: the Since line leads the same one line (test/next-n1b-browser.test.ts).
+		assert.match(await flat('#nsum'), /^Since (yesterday )?\d{1,2}:\d{2} [AP]M: replied to 3 \(1 by rule\) · 4 FYIs · Delegate is working on 3 · Waiting 8, 2 changed · Catch up 4, 1 worth a look$/)
+		assert.deepEqual(await t.page.locator('#nsum a').evaluateAll((l: Element[]) => l.map(a => a.getAttribute('href'))), ['#done/replies', '#done/catchup', '#now/working', '#now/waiting', '#now/catchup'], 'each part opens its Done filter or its section')
 		assert.deepEqual(await Promise.all(['move', 'working', 'waiting', 'catchup'].map(id => flat(`#now-${id} .nsh h2`))), ['YOUR MOVE · 13', 'DELEGATE IS WORKING · 3', 'WAITING · 8', 'CATCH UP · 4 UNREAD'])
 		assert.deepEqual((await t.page.locator('#tabs a').allInnerTexts()).map((x: string) => x.replace(/\s+/g, ' ')), ['Now 13', 'Done 5', 'Numbers', 'Settings'])
 		assert.match(await flat('#status'), /^Checked \d/)
@@ -245,7 +246,9 @@ test('next Now: Undo for a rule send, the quiet footer, and Settings in its own 
 		assert.match((await t.page.locator('.nundo').innerText()).replace(/\s+/g, ' '), /^Sent for you to Meera \(rule r1\): "The release notes are in the Release 26\.10 wiki page, section 3\." Undo \d:\d\d$/)
 		await t.page.click('.nundo [data-act=undo]')
 		await until(() => t.posted.includes('undo A9'))
-		assert.equal(await t.page.locator('#missin').getAttribute('placeholder'), 'Missed a message? Paste its link')
+		// N1b: Find takes a pasted link and offers to make it an item, so the footer has no second box for it.
+		assert.equal(await t.page.locator('#missin').count(), 0)
+		assert.match(await t.page.locator('#find').getAttribute('placeholder'), /paste a Teams link/)
 		assert.match((await t.page.locator('.nfoot').innerText()).replace(/\s+/g, ' '), /\+ Remind someone · Channels you named \(1\) · Version .* · Check for updates · Report a problem/)
 		// A redraw in the same task as the click, before its toggle event, keeps the list open (CI macOS 10-21).
 		await t.page.evaluate(() => { document.querySelector<HTMLElement>('.nchan summary')!.click(); window.dispatchEvent(new HashChangeEvent('hashchange')) })

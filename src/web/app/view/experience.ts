@@ -5,16 +5,18 @@
 // - #app gets the experience's chrome; #main is the drawn area; data-mode on #app is the shell's.
 // - Actions are buttons or links with data-act (and data-v); rows and cards carry data-code; list actions carry data-key.
 // - Fields carry data-input (card), data-set (settings), data-f (reminder), data-ws (sheet watch), data-wf (row watch),
-//   data-opt / data-cmt / data-fact (picks), data-every (watch timing); forms carry data-form (ask, mark, report, missed).
+//   data-opt / data-cmt / data-fact (picks), data-every (watch timing); forms carry data-form (ask, mark, report, missed, find).
 // - Ids app.ts focuses: card-<code>, pri-<code>, ed-<code>, askin-<code>, mk-<code>, oth-<code>, wt-<code>, o-<code>-<n>,
-//   cm-<code>-<n>, set-<key>, setsec-<section>, ws-text, repin, missin, and sections #running and #automations.
+//   cm-<code>-<n>, set-<key>, setsec-<section>, ws-text, repin, missin, find ("/" focuses it where it is), and sections
+//   #running and #automations.
 // - Numbers (R-NEX-11): the window field carries data-numwin; a "How is this counted?" <details> carries data-how; #num-list
 //   heads a list a number opened.
 //
 // What an experience must not do: change page state while drawing. It reads V and S and reports what it drew (the markup
 // above), nothing more. Before every draw, state/actions.ts viewing() settles what the page shows, so every experience gets it:
 // - S.cur, the card the Needs you queue is on; the keys (j/k, l, a, e, 1-9, Ctrl/⌘+Enter), Next, and Previous act on it;
-// - on a Done filter, S.seenOpen (what was new when it was opened, to keep marked) and the seen mark a moment later.
+// - on a Done filter, S.seenOpen (what was new when it was opened, to keep marked) and the seen mark a moment later;
+// - on Now, S.nowLook (each row's mark when this look first showed it) and the rows' item marks a moment later (N1b).
 // Opening forms is state too (S.sheet, S.form, S.wform, S.watchForm): the controls and actions set them, the view only reads.
 // (The shared redraw step in view/render.ts keeps S.deferred and S.pressing; that is not the experience's.)
 import type { AutoForm } from '../model/types.ts'

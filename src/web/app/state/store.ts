@@ -19,6 +19,11 @@ export type PageState = {
 	sheet: null | 'pick' | 'form' | 'watch'; form: AutoForm | null; wform?: SheetWatch; formBusy: boolean; formErr: string; newAuto: string | null
 	// Done: the seen marks as they were when this filter was opened, the filter they are for, and the Catch up row being watched.
 	seenOpen?: Record<string, string>; seenFor?: string | null; watchOpen?: string | null; watchForm?: RowWatch | null
+	// Now: each row's seen mark as it was when this look at Now first showed it, so New and Back to you stay for the look
+	// though the row is marked seen a moment later (N1b). Cleared when the owner leaves Now. And Find's words.
+	nowLook?: Record<string, string> | null; find?: string
+	// A composition (a dead key or an IME) is in progress in a field: a redraw would cancel it (review P1-4).
+	composing?: boolean
 	// Settings edits not saved yet, and whether More is open.
 	set: Record<string, string>; advOpen?: boolean
 	// Now's footer: whether the list of channels the owner named is open.

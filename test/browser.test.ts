@@ -47,7 +47,7 @@ async function open(hash = '', prep?: (s: InstanceType<typeof Store>) => void) {
 	const errors: string[] = []
 	page.on('pageerror', (e: Error) => errors.push(e.message))
 	await page.goto(url + hash)
-	return { store, page, errors, close: async () => { clearInterval(runner); await ctx.close(); server.close(); assert.deepEqual(errors, []) } }
+	return { store, page, errors, close: async () => { clearInterval(runner); await ctx.close(); (server.closeAllConnections?.(), server.close()); assert.deepEqual(errors, []) } }
 }
 const text = (p: Page, sel: string) => p.locator(sel).first().innerText()
 const answered = (store: InstanceType<typeof Store>) => { const d = join(store.root, 'state', 'done', 'answers'); return existsSync(d) ? readdirSync(d).length : 0 }
@@ -355,7 +355,8 @@ test('final P1-2 a refused approval keeps the card, refreshed, and says why', { 
 		// The page must still be behind the newer draft when Send is clicked: hold its data refresh while the draft changes (CI 10-21).
 		// Held, not aborted: an aborted refresh reads as offline and disables Send.
 		const held: Route[] = []
-		await t.page.route('**/data?**', (r: Route) => { held.push(r) })
+		let releasing = false
+		await t.page.route('**/data?**', (r: Route) => { held.push(r); if (releasing) void r.continue().catch(() => undefined) })
 		// A refresh already on its way finishes first, on the older data.
 		await new Promise(r => setTimeout(r, 300))
 		// As on a slow runner, a refresh starts inside the window; it is held until after the click.
@@ -365,8 +366,11 @@ test('final P1-2 a refused approval keeps the card, refreshed, and says why', { 
 		t.store.save({ ...wf, draft: { ...wf.draft!, text: newer }, revAt: new Date(Date.now() + 5000).toISOString() })
 		await t.page.click('#pri-A1')
 		assert.ok(held.length >= 1, 'a refresh was held across the click')
-		for (const r of held) await r.continue().catch(() => undefined)
+		// Stop holding, then release every held refresh, including one that arrived meanwhile: a pending request hangs the page's close.
+		releasing = true
 		await t.page.unroute('**/data?**')
+		for (const r of held) await r.continue().catch(() => undefined)
+		releasing = false
 		await t.page.waitForSelector('.state.refused')
 		assert.match(await text(t.page, '.state.refused'), /A1 changed after you looked\. Nothing was sent or changed\./)
 		assert.equal(await text(t.page, '#card-A1 .draft'), newer)

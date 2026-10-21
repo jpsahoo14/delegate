@@ -11,5 +11,5 @@ export function banners(): H {
 	if (!h) return off
 	const more = V.health.length > 1 ? html` <span>And ${esc(plural(V.health.length - 1, 'more problem'))}.</span>` : ''
 	const fix = h.fix ? B(h.fix.label, 'healthfix', { busy: st.status === 'pending', busyLabel: 'Checking…', verb: h.fix.command }) : ''
-	return html`${off}<section class="health" aria-label="Problem with ${esc(env.name)}"><span class="hi">${I('warn', 'lg')}</span><p><b>${esc(h.text)}</b>${h.since ? html` <span>Since ${esc(when(h.since))}.</span>` : ''}${more}${st.msg ? html` <span>${esc(st.msg)}</span>` : ''}</p>${fix}</section>`
+	return html`${off}<section class="health" aria-label="Problem with ${esc(env.name)}"><span class="hi">${I('warn', 'lg')}</span><p><b>${esc(h.text)}</b>${h.since ? html` <span>Since ${esc(when(h.since))}.</span>` : ''}${more}${st.msg ? html` <span class="hm">${esc(st.msg)}</span>` : ''}</p>${fix}</section>`
 }

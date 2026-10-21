@@ -70,8 +70,18 @@
   var CHIP_LABEL = { catchup: "Catch up" };
   var KIND_KEY = { reply: "replies", review: "replies", change: "changes", reminder: "reminders", learned: "learned", catchup: "catchup" };
   var seenIn = (v) => (k) => v.seen?.[k] ?? v.since ?? "";
-  var isNew = (r, seen) => !r.own && !!KIND_KEY[r.kind] && r.at > seen(KIND_KEY[r.kind]);
-  var newCount = (v) => v.done.filter((r) => isNew(r, seenIn(v))).length;
+  var itemSeen = (v) => (code) => v.seen?.[`item:${code}`];
+  var isNew = (r, seen, item = () => void 0) => !r.own && !!KIND_KEY[r.kind] && r.at > seen(KIND_KEY[r.kind]) && !((item(r.code) ?? "") >= r.at);
+  var newCount = (v) => v.done.filter((r) => isNew(r, seenIn(v), itemSeen(v))).length;
+  var latest = (...xs) => xs.filter((x) => !!x).sort().at(-1) ?? "";
+  var rowMark = (v, r) => latest(v.seen?.[`item:${r.code}`], v.seen?.[`item:${r.act}`], r.section === "catchup" ? v.seen?.catchup : void 0, v.since);
+  function freshOf(r, mark) {
+    const f = r.fresh;
+    if (!f) return void 0;
+    if (f.back && f.back > mark && f.born <= mark) return "back";
+    return f.changed && f.changed > mark && !r.chips?.some((c) => c.kind === "changed") ? "new" : void 0;
+  }
+  var FRESH_TEXT = { new: "New", back: "Back to you" };
   function orderOf(order, needs, handled, later) {
     const live = new Set(needs.map((c) => c.code));
     const next2 = order.filter((c) => live.has(c) || handled(c));
@@ -120,6 +130,64 @@
     const on = factsOn(k, u);
     return on.size === k.facts.length ? `ok ${k.code}` : `ok ${k.code} ${[...on].sort((a, b) => a - b).map((x) => `#${x}`).join(" ")}`;
   };
+  function sinceOf(v) {
+    const at = v.since ?? new Date(Date.parse(v.now) - 864e5).toISOString();
+    const fresh = (v.done ?? []).filter((r) => r.at > at);
+    const replies = fresh.filter((r) => r.kind === "reply" && !r.inTeams), people = new Set(replies.map((r) => r.who.name)).size;
+    const byRule = new Set(replies.filter((r) => r.by.startsWith("by rule")).map((r) => r.who.name)).size;
+    const reviews = fresh.filter((r) => r.kind === "review").length, fyis = fresh.filter((r) => r.kind === "catchup").length, handled = v.next?.handled ?? 0;
+    const parts = [
+      people ? { text: `replied to ${people}${byRule ? ` (${byRule} by rule)` : ""}`, href: "#done/replies" } : void 0,
+      reviews ? { text: plural(reviews, "review"), href: "#done/reviews" } : void 0,
+      fyis ? { text: fyis === 1 ? "1 FYI" : `${fyis} FYIs`, href: "#done/catchup" } : void 0,
+      handled ? { text: `${handled} handled`, href: "#numbers" } : void 0
+    ].filter((p) => !!p);
+    return { at, parts };
+  }
+
+  // src/web/app/model/find.ts
+  function teamsMessage(q) {
+    const m = /^https:\/\/teams\.microsoft\.com\/l\/message\/([^/?#]+)\/(\d+)/i.exec(q.trim());
+    if (!m) return void 0;
+    try {
+      return { chat: decodeURIComponent(m[1]), msg: m[2] };
+    } catch {
+      return void 0;
+    }
+  }
+  function termsOf(q) {
+    const t = q.trim().toLowerCase();
+    if (/^https?:\/\//.test(t)) {
+      const n = t.match(/\d{3,}/g)?.at(-1);
+      return n ? [n] : [];
+    }
+    return t.split(/\s+/).map((w) => w.replace(/^[#"'(]+|[?"'),.:;!]+$/g, "")).filter(Boolean);
+  }
+  var escRe = (s2) => s2.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  var matcher = (t) => /^\d+$|^[a-z]\d+$/.test(t) ? new RegExp(`(^|[^\\p{L}\\p{N}])${escRe(t)}($|[^\\p{L}\\p{N}])`, "u") : new RegExp(`(^|[^\\p{L}\\p{N}])${escRe(t)}`, "u");
+  var hay = (parts) => parts.filter(Boolean).join(" \n ").toLowerCase();
+  var nowText = (r) => hay([r.act, r.code, r.who?.name, r.facts.who, r.facts.where, r.headline, r.facts.quote?.by, r.facts.quote?.text, ...(r.facts.notes ?? []).map((n) => n.text), r.gist, r.draft]);
+  var doneText = (r) => hay([r.code, r.who.name, r.sentence, r.ask, r.said, r.gist, r.by, r.text]);
+  var sameMsg = (r, m) => {
+    if (r.msgs?.includes(`${m.chat}|${m.msg}`)) return true;
+    const x = r.teams ? teamsMessage(r.teams) : void 0;
+    return !!x && x.msg === m.msg && x.chat === m.chat;
+  };
+  function find(v, q) {
+    const n = v.next, rows2 = n ? [...n.move, ...n.working, ...n.waiting, ...n.catchup.rows] : [];
+    const msg = teamsMessage(q);
+    if (msg) {
+      const now2 = rows2.filter((r) => sameMsg(r, msg)), done2 = (v.done ?? []).filter((r) => sameMsg(r, msg) && !now2.some((x) => x.act === r.code || x.code === r.code));
+      const item = now2[0]?.act ?? done2[0]?.code;
+      return { now: now2, done: done2, link: { href: q.trim(), ...item ? { item } : {} } };
+    }
+    const ms = termsOf(q).map(matcher);
+    if (!ms.length) return { now: [], done: [] };
+    const hit = (text2) => ms.every((m) => m.test(text2));
+    const now = rows2.filter((r) => hit(nowText(r)));
+    const done = (v.done ?? []).filter((r) => hit(doneText(r)) && !now.some((x) => x.act === r.code || x.code === r.code));
+    return { now, done };
+  }
 
   // src/web/app/model/forms.ts
   var MARKS = [["wrong", "Wrong", "What should it have said?", "Draft a correction"], ["incomplete", "Incomplete", "What was missing?", "Draft what was missing"], ["unneeded", "Should not have replied", "Anything else? (optional)", "Note it"]];
@@ -340,6 +408,47 @@
         markSeen(f, keys);
       }
     }
+    if (base === "now" && V.next && !S.find?.trim()) viewingNow(sub);
+  }
+  function viewingNow(sub) {
+    const n = V.next, look = S.nowLook ??= {};
+    const narrow = (document.getElementById("app")?.clientWidth ?? 1e3) <= 600;
+    const shown = [...n.move, ...!narrow || sub === "working" ? n.working : [], ...!narrow || sub === "waiting" ? n.waiting : [], ...!narrow || sub === "catchup" ? n.catchup.rows : []];
+    const later = [], now = [];
+    for (const r of shown) {
+      const opened = !!sub && (r.act === sub || r.code === sub), first2 = !(r.act in look);
+      if (first2) look[r.act] = rowMark(V, r);
+      const again = opened && latest(r.fresh?.changed, r.fresh?.back) > (V.seen?.[`item:${r.act}`] ?? "");
+      if (!freshOf(r, look[r.act]) || !(first2 || again)) continue;
+      (again ? now : later).push(.../* @__PURE__ */ new Set([`item:${r.act}`, `item:${r.code}`]));
+    }
+    if (now.length) markItems(now, 0);
+    if (later.length) markItems(later, 1500);
+  }
+  var itemT;
+  var itemKeys = /* @__PURE__ */ new Set();
+  var sending = /* @__PURE__ */ new Set();
+  function markItems(keys, wait) {
+    if (!wait) return sendItems(keys.filter((k) => !sending.has(k)));
+    for (const k of keys) itemKeys.add(k);
+    clearTimeout(itemT);
+    itemT = setTimeout(() => {
+      const ks = [...itemKeys];
+      itemKeys.clear();
+      sendItems(ks);
+    }, wait);
+  }
+  function sendItems(ks) {
+    const io = env.io;
+    if (!S.route.startsWith("now") || S.find?.trim() || document.hidden || !io?.seen || !ks.length) return;
+    const at = V.now;
+    for (const k of ks) sending.add(k);
+    io.seen(ks, at).then(() => {
+      for (const k of ks) if ((V.seen?.[k] ?? "") < at) V.seen = { ...V.seen, [k]: at };
+      render();
+    }, () => void 0).finally(() => {
+      for (const k of ks) sending.delete(k);
+    });
   }
   function openRowWatch(code) {
     const r = V.done.find((x) => x.code === code) ?? V.catchUp?.top.find((x) => x.code === code);
@@ -501,7 +610,10 @@
     render();
     io.call(`missed ${link}`).then((r) => {
       S.missing = false;
-      if (r.ok) S.missedLink = "";
+      if (r.ok) {
+        S.missedLink = "";
+        if (S.find?.trim() === link) S.find = "";
+      }
       say(r.text, r.ok);
       render();
       setTimeout(refresh, 5e3);
@@ -510,6 +622,14 @@
       say("Could not reach the page server.", false);
       render();
     });
+  }
+  function setFind(q) {
+    S.find = q;
+    render();
+  }
+  function findMissed() {
+    const f = find(V, S.find ?? "");
+    if (f.link && !f.link.item && !S.missing) missed(f.link.href);
   }
 
   // src/web/app/view/render.ts
@@ -521,6 +641,10 @@
   };
   var typing = () => field() && !!document.activeElement.value;
   function render2(enter = false) {
+    if (S.composing && field()) {
+      S.deferred = true;
+      return;
+    }
     if (S.pressing && Date.now() - S.pressing < 3e3) {
       S.flushT ??= setTimeout(() => {
         S.flushT = null;
@@ -532,6 +656,7 @@
     const a = document.activeElement, id = a && a.id, caret = a && typeof a.selectionStart === "number" ? a.selectionStart : null;
     S.deferred = false;
     viewing();
+    S.composing = false;
     exp.draw(enter);
     if (id) {
       const el = document.getElementById(id);
@@ -545,7 +670,7 @@
     }
   }
   var renderSoon2 = () => {
-    if (typing()) S.deferred = true;
+    if (typing() && document.activeElement?.id !== "find") S.deferred = true;
     else render2();
   };
   function start(e) {
@@ -851,6 +976,7 @@
     S.route = h.startsWith("focus") ? "focus" : { running: "ongoing/running", watching: "ongoing", automations: "ongoing/automations", "automations/new": "ongoing" }[h] || h;
     if (!S.route.startsWith("done")) S.seenFor = null;
     if (S.route.split("/")[0] === "numbers" && was !== "numbers") void loadNumbers();
+    if (!S.route.startsWith("now")) S.nowLook = null;
     if (h === "automations/new") S.sheet = "pick";
     if (S.route === "focus") {
       const code = h.split("/")[1] || S.cur || openCards()[0]?.code;
@@ -947,6 +1073,9 @@
         break;
       case "seenall":
         seenAll();
+        break;
+      case "findmissed":
+        findMissed();
         break;
       case "copydebug":
         navigator.clipboard?.writeText(c.debug.join("\n")).then(() => say2("Details copied."), () => say2("Could not copy. Select the lines and copy them."));
@@ -1195,6 +1324,11 @@
   }
   function onInput(e) {
     const t = e.target;
+    if (t.id === "find") {
+      if (e.isComposing) S.find = t.value;
+      else setFind(t.value);
+      return;
+    }
     const enable = (act2, on) => {
       const b = document.querySelector(`[data-act=${act2}]`);
       if (b) b.disabled = !on;
@@ -1247,6 +1381,11 @@
       missed(value("missin"));
       return;
     }
+    if (form === "find") {
+      e.preventDefault();
+      findMissed();
+      return;
+    }
     if (form === "tell") {
       e.preventDefault();
       const code = f.dataset.code, u = U(`tell:${code}`), text2 = u.answer.trim();
@@ -1281,6 +1420,12 @@
         render2();
         return;
       }
+      const a = document.activeElement;
+      if (a?.id === "find" && a.value) {
+        e.preventDefault();
+        setFind("");
+        return;
+      }
       if (inField) {
         const active = document.activeElement, card3 = active.closest("article.card");
         active.blur();
@@ -1293,6 +1438,11 @@
     if (inField || e.metaKey || e.ctrlKey || e.altKey || current().keys.isOpen()) return;
     if (e.key === "?") {
       current().keys.open();
+      return;
+    }
+    if (e.key === "/" && document.getElementById("find")) {
+      e.preventDefault();
+      focusOn("find");
       return;
     }
     if (e.key === "g") {
@@ -1343,6 +1493,15 @@
     document.addEventListener("focusout", () => setTimeout(() => {
       if (S.deferred && !typing()) render2();
     }, 0));
+    document.addEventListener("compositionstart", () => {
+      S.composing = true;
+    }, true);
+    document.addEventListener("compositionend", (e) => {
+      S.composing = false;
+      const t = e.target;
+      if (t.id === "find") setFind(t.value);
+      else if (S.deferred && !typing()) render2();
+    }, true);
     document.addEventListener("pointerdown", (e) => {
       if (e.target.closest?.("button,[data-act]")) S.pressing = Date.now();
     }, true);
@@ -1693,7 +1852,7 @@
     if (!h) return off;
     const more = V.health.length > 1 ? html` <span>And ${esc(plural(V.health.length - 1, "more problem"))}.</span>` : "";
     const fix = h.fix ? B(h.fix.label, "healthfix", { busy: st.status === "pending", busyLabel: "Checking…", verb: h.fix.command }) : "";
-    return html`${off}<section class="health" aria-label="Problem with ${esc(env.name)}"><span class="hi">${I("warn", "lg")}</span><p><b>${esc(h.text)}</b>${h.since ? html` <span>Since ${esc(when(h.since))}.</span>` : ""}${more}${st.msg ? html` <span>${esc(st.msg)}</span>` : ""}</p>${fix}</section>`;
+    return html`${off}<section class="health" aria-label="Problem with ${esc(env.name)}"><span class="hi">${I("warn", "lg")}</span><p><b>${esc(h.text)}</b>${h.since ? html` <span>Since ${esc(when(h.since))}.</span>` : ""}${more}${st.msg ? html` <span class="hm">${esc(st.msg)}</span>` : ""}</p>${fix}</section>`;
   }
 
   // src/web/app/view/classic/tabs/done.ts
@@ -1732,8 +1891,8 @@
     if (f === "closed") f = "catchup";
     const shown = (r) => r.kind !== "closed";
     const rows2 = V.done.filter((r) => shown(r) && (f === "all" || DONE_KINDS[f]?.includes(r.kind)));
-    const chips = [["all", "All", V.done.filter(shown).length, newCount(V)], ...Object.entries(DONE_KINDS).map(([k, ks]) => [k, CHIP_LABEL[k] ?? k[0].toUpperCase() + k.slice(1), V.done.filter((r) => ks.includes(r.kind)).length, V.done.filter((r) => ks.includes(r.kind) && isNew(r, seenIn(V))).length])].filter((x) => x[2]);
-    const fresh = rows2.filter((r) => isNew(r, seenOf)), earlier = rows2.filter((r) => !isNew(r, seenOf));
+    const chips = [["all", "All", V.done.filter(shown).length, newCount(V)], ...Object.entries(DONE_KINDS).map(([k, ks]) => [k, CHIP_LABEL[k] ?? k[0].toUpperCase() + k.slice(1), V.done.filter((r) => ks.includes(r.kind)).length, V.done.filter((r) => ks.includes(r.kind) && isNew(r, seenIn(V), itemSeen(V))).length])].filter((x) => x[2]);
+    const fresh = rows2.filter((r) => isNew(r, seenOf, itemSeen(V))), earlier = rows2.filter((r) => !isNew(r, seenOf, itemSeen(V)));
     const list2 = (h, rs) => rs.length ? html`${h ? html`<h2 class="section-h">${esc(h)}</h2>` : ""}<ul class="rows">${rs.map(row)}</ul>` : "";
     const quiet = f === "catchup" ? V.done.filter((r) => r.kind === "closed") : [];
     const foot = quiet.length ? html`<details class="quiet"><summary class="m">Also closed ${quiet.length} with nothing to know · Show</summary><ul class="rows">${quiet.map((r) => html`<li class="row"><span class="ri">${I("check")}</span><div class="rt"><b>${esc(r.sentence)}</b><span class="m">${esc(when(r.at))}${r.teams && !env.snap ? html` · <a class="ext-in" href="${esc(r.teams)}" target="_blank" rel="noopener">Open in Teams↗</a>` : ""}</span></div></li>`)}</ul></details>` : "";
@@ -2066,7 +2225,7 @@
 
   // src/web/app/view/next/row.ts
   var ICON = { working: "bolt", scheduled: "clock", watch: "eye", "waiting-delegate": "clock", reminder: "clock", "reminder-new": "clock", catchup: "eye", stopped: "warn" };
-  var TONE = { changed: "accent", retrying: "warn", held: "warn", worth: "accent" };
+  var TONE = { changed: "accent", retrying: "warn", held: "warn", worth: "accent", new: "accent", back: "accent" };
   function nextLine(r) {
     const n = r.next;
     if (!n) return "";
@@ -2120,7 +2279,8 @@
   function row3(r, open) {
     const c = open ? cardOf(r.act) : void 0, icon = ICON[r.kind];
     const lead = r.who && !icon ? av(r.who) : html`<span class="ri">${I(icon ?? "clock")}</span>`;
-    const chips = r.chips.map((ch) => html`<span class="tag ${raw(TONE[ch.kind] ?? "")}">${esc(ch.text)}</span>`);
+    const fresh = env.snap ? void 0 : freshOf(r, S.nowLook?.[r.act] ?? rowMark(V, r));
+    const chips = [...fresh ? [{ kind: fresh, text: FRESH_TEXT[fresh] }] : [], ...r.chips].map((ch) => html`<span class="tag ${raw(TONE[ch.kind] ?? "")}${ch.kind === "new" || ch.kind === "back" ? raw(` fresh-${ch.kind}`) : ""}">${esc(ch.text)}</span>`);
     const nx = nextLine(r);
     const acts = U(`row:${r.act}`).msg ? "" : html`${r.primary ? action(r, r.primary, true, open) : ""}${(r.more ?? []).map((m) => action(r, m, false, false))}`;
     return html`<li class="nrow k-${raw(r.kind)}${open ? raw(" open") : ""}" id="now-${esc(r.act)}" data-code="${esc(r.act)}"${r.rev ? html` data-rev="${esc(r.rev)}"` : ""}>
@@ -2147,28 +2307,30 @@
   }
   function summary() {
     const n = V.next, changed = n.waiting.filter((r) => r.chips.some((c) => c.kind === "changed")).length;
+    const sep = raw('<span class="sep" aria-hidden="true"> · </span>');
     const part2 = (id, text2) => html`<a href="#now/${raw(id)}">${esc(text2)}</a>`;
-    return html`<p class="nsum" id="nsum">${n.off && !n.paused ? html`<span class="tag warn">${esc(n.off.since ? `${n.off.text} since ${when(n.off.since)}` : n.off.text)}</span>` : ""}${join([
+    const since = sinceOf(V);
+    const lead = since.parts.length ? html`<span class="nsince"><span class="nsl">${esc(`Since ${when(since.at)}:`)}</span> ${join(since.parts.map((p) => html`<a href="${esc(p.href)}">${esc(p.text)}${p.href === "#numbers" ? raw('<span aria-hidden="true"> ›</span>') : ""}</a>`), sep)}</span>${sep}` : "";
+    return html`<p class="nsum" id="nsum">${n.off && !n.paused ? html`<span class="tag warn">${esc(n.off.since ? `${n.off.text} since ${when(n.off.since)}` : n.off.text)}</span>` : ""}${lead}${join([
       part2("working", `${env.name} is working on ${n.working.length}`),
       part2("waiting", `Waiting ${n.waiting.length}${changed ? `, ${changed} changed` : ""}`),
       part2("catchup", `Catch up ${n.catchup.count}${n.catchup.worth ? `, ${n.catchup.worth} worth a look` : ""}`)
-    ], raw('<span class="sep" aria-hidden="true"> · </span>'))}</p>`;
+    ], sep)}</p>`;
   }
   function undoStrip() {
     const open = (V.done ?? []).filter((r) => r.undoUntil && Date.parse(r.undoUntil) > Date.now());
     return html`${open.map((r) => {
       const rule = /by rule (\S+)/.exec(r.by)?.[1], left = Math.max(0, Math.round((Date.parse(r.undoUntil) - Date.now()) / 1e3));
-      return html`<div class="nundo" data-code="${esc(r.code)}" role="status"><p>${esc(`Sent for you to ${first(r.who.name)}${rule ? ` (rule ${rule})` : ""}`)}${r.said ? html`: <span class="nquo">"${esc(r.said)}"</span>` : ""}</p>${env.snap ? "" : html`<button class="btn sm" data-act="undo" data-v="${esc(r.code)}"${U(`row:${r.code}`).status === "pending" ? raw(" disabled") : ""}>${I("undo", "sm")}<span class="bl">Undo <span data-until="${esc(r.undoUntil)}">${esc(mmss(left))}</span></span></button>`}${rowState(`row:${r.code}`)}</div>`;
+      return html`<div class="nundo" data-code="${esc(r.code)}" role="status"><p>${esc(`Sent for you to ${first(r.who.name)}${rule ? ` (rule ${rule})` : ""}`)}${r.said ? html`<span class="nsaid">: <span class="nquo">"${esc(r.said)}"</span></span>` : ""}</p>${env.snap ? "" : html`<button class="btn sm" data-act="undo" data-v="${esc(r.code)}"${U(`row:${r.code}`).status === "pending" ? raw(" disabled") : ""}>${I("undo", "sm")}<span class="bl">Undo <span data-until="${esc(r.undoUntil)}">${esc(mmss(left))}</span></span></button>`}${rowState(`row:${r.code}`)}</div>`;
     })}`;
   }
   function footer() {
     if (env.snap) return "";
     const v = V.version, chans = V.channels ?? [];
-    const miss = html`<form class="askf nmiss" data-form="missed" aria-label="Missed a message"><label class="sr" for="missin">Paste the Teams link of a message ${esc(env.name)} missed</label><input id="missin" placeholder="Missed a message? Paste its link" autocomplete="off" value="${esc(S.missedLink || "")}"${S.offline ? raw(" disabled") : ""}><button class="btn sm ghost" type="submit"${S.offline || S.missing ? raw(" disabled") : ""}>Make an item</button></form>`;
     const channels = chans.length ? html`<details class="nchan" data-chan${S.chanOpen ? raw(" open") : ""}><summary>${esc(`Channels you named (${chans.length})`)}</summary><ul>${chans.map((c, i) => html`<li>${esc(c.name)} ${U(`row:ch${i}`).msg ? "" : B("Stop", "rowact", { sm: true, ghost: true, v: `unwatch ${c.link}`, verb: `unwatch ${c.link}`, aria: html`data-key="row:ch${i}"` })}${rowState(`row:ch${i}`)}</li>`)}</ul></details>` : "";
     const ver = v?.code ? esc(`Version ${v.tag ? `${v.tag} (${v.code})` : v.code}`) : "";
     const report2 = S.reporting ? html`<form class="markf missf" data-form="report" aria-label="Report a problem"><label class="sr" for="repin">What went wrong</label><textarea id="repin" class="edit" rows="3" placeholder="What went wrong, and what should it have done?"></textarea><div class="markacts"><button class="btn sm primary" type="submit"${S.offline ? raw(" disabled") : ""}>Send to the feedback log</button>${B("Cancel", "reportcancel", { sm: true, ghost: true })}</div></form>` : "";
-    return html`<footer class="nfoot" aria-label="More">${miss}<div class="nfl">${join([
+    return html`<footer class="nfoot" aria-label="More"><div class="nfl">${join([
       B("+ Remind someone", "tpl", { sm: true, ghost: true, v: "remind" }),
       channels,
       ver,
@@ -2176,16 +2338,30 @@
       B("Report a problem", "reportopen", { sm: true, ghost: true })
     ].filter((x) => !!x), raw('<span class="sep" aria-hidden="true"> · </span>'))}</div>${report2}</footer>${S.sheet ? sheet() : ""}`;
   }
+  function findBox() {
+    if (env.snap) return "";
+    return html`<form class="nfind" data-form="find" role="search" aria-label="Find"><label class="sr" for="find">Find a person, chat, PR or number, or paste a Teams link</label><input id="find" type="search" placeholder="Find a person, a number, or paste a Teams link" autocomplete="off" spellcheck="false" value="${esc(S.find ?? "")}"><kbd class="nk" aria-hidden="true">/</kbd></form>`;
+  }
+  function found() {
+    const q = (S.find ?? "").trim(), f = find(V, q);
+    const make = f.link && !f.link.item ? html`<div class="nfl-make" role="group" aria-label="Not an item yet"><p>${esc(`This message is not an item yet. ${env.name} reads it and drafts what it needs, as for any ask.`)}</p><button class="btn sm primary" type="button" data-act="findmissed"${S.offline || S.missing ? raw(" disabled") : ""}><span class="bl">${esc(S.missing ? "Making it an item…" : "Make it an item")}</span></button></div>` : "";
+    const n = f.now.length + f.done.length;
+    const head2 = n ? join([f.now.length ? `${f.now.length} on Now` : "", f.done.length ? `${f.done.length} in Done` : ""].filter(Boolean).map((x) => esc(x)), raw(" · ")) : f.link ? "" : esc(`Nothing on Now or in Done matches "${q}".`);
+    return html`<div class="nfound" id="nfound">${head2 ? html`<p class="nfres" role="status">${head2}</p>` : ""}${make}
+		${f.now.length ? html`<ul class="nrows">${f.now.map((r) => row3(r, false))}</ul>` : ""}
+		${f.done.length ? html`<h2 class="section-h">In Done</h2><ul class="rows">${f.done.map(row)}</ul>` : ""}</div>`;
+  }
   function nowView() {
     const n = V.next;
     if (!n) return html`${banners()}<p class="empty" role="status">Loading…</p>`;
     const waiting = n.waiting.length;
-    const note = env.snap || env.ui !== "new" || V.ui?.noted ? "" : html`<div class="nnote" role="note"><p>Same items, sorted by whose move it is: yours, someone else's, or ${esc(env.name)}'s. Switch back any time, <span class="wide">top right</span><span class="narrow">in the ⋯ menu</span>.</p>${B("Got it", "uinote", { sm: true, ghost: true })}</div>`;
-    if (!n.move.length && !waiting && !n.working.length && !n.catchup.count && !n.minute.facts && !n.minute.suggestions) return html`${banners()}${undoStrip()}${note}<div class="nquiet"><span class="ok">${I("check", "lg")}</span><h2>Quiet.</h2><p>Nothing needs you, and nothing is waiting.</p></div>${footer()}`;
+    const note = env.snap || env.ui !== "new" || V.ui?.noted ? "" : html`<div class="nnote" role="note"><p>Same items, sorted by whose move it is<span class="wide">: yours, someone else's, or ${esc(env.name)}'s</span>. Switch back any time, <span class="wide">top right</span><span class="narrow">in ⋯</span>.</p>${B("Got it", "uinote", { sm: true, ghost: true })}</div>`;
+    if (S.find?.trim()) return html`${banners()}${findBox()}${undoStrip()}${found()}${footer()}`;
+    if (!n.move.length && !waiting && !n.working.length && !n.catchup.count && !n.minute.facts && !n.minute.suggestions) return html`${banners()}${findBox()}${undoStrip()}${note}<div class="nquiet"><span class="ok">${I("check", "lg")}</span><h2>Quiet.</h2><p>Nothing needs you, and nothing is waiting.</p></div>${footer()}`;
     const minute = n.minute.facts || n.minute.suggestions ? html`<p class="nmin">When you have a minute: ${n.minute.suggestions ? html`<a href="#settings/learned">${esc(plural(n.minute.suggestions, "suggestion"))}</a>` : ""}${n.minute.facts && n.minute.suggestions ? raw(" · ") : ""}${n.minute.facts ? html`<a href="#knowledge">${esc(`${plural(n.minute.facts, "fact")} to check`)}</a>` : ""}</p>` : "";
     const offHead = n.off ? html`<span class="tag warn">${esc(n.off.since ? `${n.off.text} since ${when(n.off.since)}` : n.off.text)}</span>` : "";
     const more = n.catchup.count - n.catchup.rows.length, others = waiting + n.working.length;
-    return html`${banners()}${summary()}${undoStrip()}${note}
+    return html`${banners()}${findBox()}${summary()}${undoStrip()}${note}
 		${section("move", "Your move", String(n.move.length), n.move, "", html`<p class="nempty">Nothing needs you. ${esc(others ? `${plural(others, "thing")} ${others === 1 ? "is" : "are"} waiting on someone else.` : "Nothing is waiting either.")}</p>`, minute)}
 		${section("working", `${env.name} is working`, String(n.working.length), n.working, offHead)}
 		${section("waiting", "Waiting", String(waiting), n.waiting)}

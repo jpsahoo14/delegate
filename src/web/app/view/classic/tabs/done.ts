@@ -1,5 +1,5 @@
 // Done: the last 7 days by filter, new first, each reply readable as the exchange, with Undo while it can, and Catch up.
-import { CHIP_LABEL, DONE_KINDS, isNew, newCount, seenIn } from '../../../model/derive.ts'
+import { CHIP_LABEL, DONE_KINDS, isNew, itemSeen, newCount, seenIn } from '../../../model/derive.ts'
 import { first, mmss, when } from '../../../model/format.ts'
 import { BY, rowWatchOf } from '../../../model/forms.ts'
 import type { DoneRow } from '../../../model/types.ts'
@@ -31,7 +31,7 @@ function watchForm(r: DoneRow): H {
 		<div class="seg" role="group" aria-label="Done by">${BY.map(([k, l]) => html`<button type="button" data-act="wby" data-v="${esc(k)}" aria-pressed="${f.by === k}">${esc(l)}</button>`)}</div>
 		<div class="acts">${B('Start watching', 'watchgo', { primary: true, sm: true, v: r.code, disabled: !f.target.trim() })}${B('Cancel', 'watchcancel', { sm: true, ghost: true })}</div></div>`
 }
-// One Done row; the Numbers tab draws the rows a number counted with it too (R-NEX-11).
+// One Done row; the Numbers tab draws the rows a number counted with it too (R-NEX-11), and Find on the new page's Now (N1b).
 export function row(r: DoneRow): H {
 	if (r.kind === 'catchup') return cuRow(r)
 	const key = `row:${r.code}`, left = r.undoUntil ? Math.round((Date.parse(r.undoUntil) - Date.now()) / 1000) : 0, u = peek(key), ru = peek(r.code)
@@ -55,8 +55,8 @@ export function doneList(f: string): H {
 	// What was new when this filter was opened stays marked for the visit (S.seenOpen, settled by state/actions.ts viewing()).
 	const shown = (r: DoneRow) => r.kind !== 'closed'
 	const rows = V.done.filter(r => shown(r) && (f === 'all' || DONE_KINDS[f]?.includes(r.kind)))
-	const chips = ([['all', 'All', V.done.filter(shown).length, newCount(V)], ...Object.entries(DONE_KINDS).map(([k, ks]) => [k, CHIP_LABEL[k] ?? k[0].toUpperCase() + k.slice(1), V.done.filter(r => ks.includes(r.kind)).length, V.done.filter(r => ks.includes(r.kind) && isNew(r, seenIn(V))).length])] as [string, string, number, number][]).filter(x => x[2])
-	const fresh = rows.filter(r => isNew(r, seenOf)), earlier = rows.filter(r => !isNew(r, seenOf))
+	const chips = ([['all', 'All', V.done.filter(shown).length, newCount(V)], ...Object.entries(DONE_KINDS).map(([k, ks]) => [k, CHIP_LABEL[k] ?? k[0].toUpperCase() + k.slice(1), V.done.filter(r => ks.includes(r.kind)).length, V.done.filter(r => ks.includes(r.kind) && isNew(r, seenIn(V), itemSeen(V))).length])] as [string, string, number, number][]).filter(x => x[2])
+	const fresh = rows.filter(r => isNew(r, seenOf, itemSeen(V))), earlier = rows.filter(r => !isNew(r, seenOf, itemSeen(V)))
 	const list = (h: string, rs: DoneRow[]): H => rs.length ? html`${h ? html`<h2 class="section-h">${esc(h)}</h2>` : ''}<ul class="rows">${rs.map(row)}</ul>` : ''
 	const quiet = f === 'catchup' ? V.done.filter(r => r.kind === 'closed') : []
 	const foot = quiet.length ? html`<details class="quiet"><summary class="m">Also closed ${quiet.length} with nothing to know · Show</summary><ul class="rows">${quiet.map(r => html`<li class="row"><span class="ri">${I('check')}</span><div class="rt"><b>${esc(r.sentence)}</b><span class="m">${esc(when(r.at))}${r.teams && !env.snap ? html` · <a class="ext-in" href="${esc(r.teams)}" target="_blank" rel="noopener">Open in Teams↗</a>` : ''}</span></div></li>`)}</ul></details>` : ''

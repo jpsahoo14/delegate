@@ -7,8 +7,9 @@ import { pendingEffects } from '../core/effects.ts'
 import { isThread, threadLink } from '../adapters/channels.ts'
 import { when } from '../runner/automations.ts'
 import { DELAYS, MAX_TRIES } from '../runner/retry.ts'
-import { cardType, readingOf, who as whoOf, type Who } from './view.ts'
+import { cardType, msgKeys, readingOf, who as whoOf, type Who } from './view.ts'
 import { NAME } from '../brand.ts'
+import { handledThisWeek } from '../store/numbers.ts'
 
 // The new experience's placement (dev-spec/new-experience.md §0, phase N0): one thread per home code, in one section, with its Next owner.
 export type Owner = { kind: 'you' } | { kind: 'delegate' } | { kind: 'others'; text: string } | { kind: 'nobody' }
@@ -176,7 +177,7 @@ export const COMMANDS: Record<RowKind, string> = {
 	catchup: 'mine <code>',
 }
 // Holding reply is not a chip: the headline says it (PM review, cut list).
-export type Chip = { kind: 'before' | 'retrying' | 'guests' | 'changed' | 'room' | 'pointed' | 'held' | 'worth'; text: string }
+export type Chip = { kind: 'before' | 'retrying' | 'guests' | 'changed' | 'room' | 'pointed' | 'held' | 'worth' | 'new' | 'back'; text: string }
 // An action is an existing command. "{text}" in it is filled from a field on the row; no command opens the item's card.
 export type RowAction = { label: string; command?: string }
 // Words someone wrote, and who: "Ravi asked: …", "You said: …". Shown in quotation marks.
@@ -200,6 +201,12 @@ export type NextRow = {
 	// The whole draft, only when it fits on the row (design principle 4); rev is what the owner saw, for ok.
 	draft?: string; rev?: string
 	teams?: string; gist?: string
+	// New and Back to you (N1b), as timestamps the page compares with the owner's seen marks: changed, the latest real change
+	// of any item in the thread (runner/place.ts); back, when the row entered Your move (wf.place.since); born, when the item
+	// that places it was made, so an item the owner never saw is New, not Back.
+	fresh?: { changed?: string; back?: string; born: string }
+	// Every message the thread's items hold, as "chat|msg", so Find knows a pasted link to any of them (review P2-6).
+	msgs?: string[]
 }
 export type NextView = {
 	move: NextRow[]; working: NextRow[]; waiting: NextRow[]
@@ -210,6 +217,8 @@ export type NextView = {
 	// Delegate runs nothing next cycle, or (paused) drafts but sends nothing: why, and since when.
 	off?: { text: string; since?: string }
 	paused?: boolean
+	// What Delegate handled this week, as the Numbers tab counts it, for the Since line (N1b).
+	handled: number
 }
 
 // A draft longer than this does not fit on a row, so the row opens the card instead of sending from the list.
@@ -327,7 +336,8 @@ function itemRow(s: Snap, p: Placed, w: Workflow): Body {
 	}
 	// Waiting: on a person, a team or a condition in the AI's words, a watch, Delegate (with what it does next), or nobody.
 	if (j?.every || w.kind === 'tracker') {
-		const changed = !!w.changedAt && (!w.ackAt || w.changedAt > w.ackAt)
+		// Only a watch's new check result is "Changed"; on other items changedAt is any real change, which New says (N1b).
+		const changed = w.kind === 'tracker' && !!w.changedAt && (!w.ackAt || w.changedAt > w.ackAt)
 		// The watch's own last result, from its job, never the item's status line.
 		const last: Note = j?.result?.summary ? { label: 'Last check', text: clip(j.result.summary, 160), ...(j.result.at ? { at: j.result.at } : {}) } : { label: 'Last check', text: 'not checked yet' }
 		return { ...base, who: undefined, kind: 'watch', chips: chipsOf(w, j, changed), headline: clip(watchLine(w.lastAsk ?? w.work?.goal), 120), facts: { at: w.changedAt ?? p.at, notes: [last], ...(j?.endsAt ? { until: j.endsAt } : {}) }, next: { owner: { kind: 'delegate' }, what: j?.every ? `checks ${every(j.every)}` : 'checks soon' }, ...(changed ? { primary: { label: 'Got it', command: `ok ${c}` } } : {}), more: [...(j?.endsAt ? [{ label: 'Extend 7 days', command: `extend ${c}` }] : []), { label: 'Stop', command: `skip ${c}` }] }
@@ -355,13 +365,23 @@ function reminderRow(p: Placed, a: Automation): Body {
 	return { kind: 'reminder', headline: clip(`Reminding ${first(a.to.name)}: "${a.text}"`, 160), who: whoOf(a.to.name), facts, chips: [], next, primary: a.state === 'paused' ? { label: 'Resume', command: `resume ${a.code}` } : { label: 'Pause', command: `pause ${a.code}` }, more: [{ label: 'Stop reminding', command: `skip ${a.code}` }] }
 }
 
+// What New and Back to you compare (N1b). Only items change: a W entry is the owner's own ask, and a reminder is the owner's.
+// A watch's news is "Changed", which Got it settles, so it never counts as New (review P1-2).
+function freshOf(p: Placed, w: Workflow | undefined, items: Map<string, Workflow>): Pick<NextRow, 'fresh' | 'msgs'> {
+	if (!w) return {}
+	const changed = p.subjects.map(c => items.get(c)).filter(x => x && x.kind !== 'tracker').map(x => x!.changedAt).filter((x): x is string => !!x).sort().at(-1)
+	const back = p.section === 'move' && w.place?.section === 'move' && w.place.since > w.createdAt ? w.place.since : undefined
+	const msgs = p.subjects.flatMap(c => { const x = items.get(c); return x ? msgKeys(x) : [] })
+	return { fresh: { born: w.createdAt, ...(changed ? { changed } : {}), ...(back ? { back } : {}) }, ...(msgs.length ? { msgs } : {}) }
+}
+
 // Placed threads into rows. The row's button acts on the subject that placed it (a part's own code), never a guessed one.
 export function rowsOf(s: Snap, placed: Placed[]): NextRow[] {
 	const items = new Map(s.workflows.map(w => [w.code, w])), waits = new Map(s.waiting.map(w => [w.code, w])), autos = new Map(s.automations.map(a => [a.code, a]))
 	return placed.filter(p => p.section !== 'done').map(p => {
 		const w = items.get(p.act), wt = waits.get(p.act), a = autos.get(p.act)
 		const body = w ? itemRow(s, p, w) : wt ? waitRow(wt) : reminderRow(p, a!)
-		return { code: p.code, act: p.act, section: p.section, rule: p.rule, ...body }
+		return { code: p.code, act: p.act, section: p.section, rule: p.rule, ...body, ...freshOf(p, w, items) }
 	})
 }
 
@@ -380,5 +400,5 @@ export function nextView(store: Store, now = Date.now()): NextView {
 	const reading = readingOf(store, now)
 	// Paused drafts go on and sends wait (tick.ts drafts every cycle; gate.ts refuses every send).
 	const off = s.runner === 'ok' ? undefined : s.runner === 'paused' ? { text: 'Paused: drafts go on, nothing is sent' } : s.runner === 'off' ? { text: `${NAME} is off`, ...(reading.at ? { since: reading.at } : {}) } : { text: s.runner === 'capped' ? 'Daily limit reached; it runs again tomorrow' : `${NAME} is ${s.runner}` }
-	return { move, working, waiting, catchup: { count: cu.length, worth: cu.filter(r => high(r) === 0).length, rows: cu.slice(0, 3) }, minute: { facts: store.proposals().filter(p => p.state === 'needs_human').length, suggestions: store.habits().filter(h => h.state === 'suggested').length }, ...(off ? { off } : {}), ...(store.control().paused || store.config().paused ? { paused: true } : {}) }
+	return { move, working, waiting, catchup: { count: cu.length, worth: cu.filter(r => high(r) === 0).length, rows: cu.slice(0, 3) }, minute: { facts: store.proposals().filter(p => p.state === 'needs_human').length, suggestions: store.habits().filter(h => h.state === 'suggested').length }, ...(off ? { off } : {}), ...(store.control().paused || store.config().paused ? { paused: true } : {}), handled: handledThisWeek(store, s.workflows, new Date(now)) }
 }

@@ -1,6 +1,6 @@
 // What the page works out from the data: what is new, the queue's order, the tabs, and each card's one primary action. Pure.
 import { plural } from './format.ts'
-import type { CardUi, DoneRow, ItemCard, KnowledgeCard, Primary, View } from './types.ts'
+import type { CardUi, DoneRow, ItemCard, KnowledgeCard, NextRow, Primary, View } from './types.ts'
 
 /* ------------------------------ what is new ------------------------------ */
 // Each Done filter and the row kinds in it. Closed-with-nothing-to-know rows are only a footer under Catch up; skipped ones are never shown.
@@ -10,8 +10,26 @@ export const KIND_KEY: Partial<Record<DoneRow['kind'], string>> = { reply: 'repl
 // When the owner last looked at a filter; before any look, since the visit started.
 export const seenIn = (v: View) => (k: string) => v.seen?.[k] ?? v.since ?? ''
 // New: something Delegate did or read that the owner has not seen since they last looked at its filter. Their own sends never count.
-export const isNew = (r: DoneRow, seen: (k: string) => string) => !r.own && !!KIND_KEY[r.kind] && r.at > seen(KIND_KEY[r.kind]!)
-export const newCount = (v: View) => v.done.filter(r => isNew(r, seenIn(v))).length
+// A row the owner already looked at on Now (its item mark, N1b) is not new either, in either experience.
+export const itemSeen = (v: View) => (code: string): string | undefined => v.seen?.[`item:${code}`]
+export const isNew = (r: DoneRow, seen: (k: string) => string, item: (code: string) => string | undefined = () => undefined) => !r.own && !!KIND_KEY[r.kind] && r.at > seen(KIND_KEY[r.kind]!) && !((item(r.code) ?? '') >= r.at)
+export const newCount = (v: View) => v.done.filter(r => isNew(r, seenIn(v), itemSeen(v))).length
+
+/* ------------------------------ New and Back to you on Now (N1b) ------------------------------ */
+export const latest = (...xs: (string | undefined)[]) => xs.filter((x): x is string => !!x).sort().at(-1) ?? ''
+// When the owner last saw a row on Now: the marks of its items (the home and the code that placed it), or its filter's: Catch up's
+// mark for a Catch up row, and the start of this visit for every row. Seen marks merge across machines, so any machine counts.
+export const rowMark = (v: View, r: Pick<NextRow, 'code' | 'act' | 'section'>) => latest(v.seen?.[`item:${r.code}`], v.seen?.[`item:${r.act}`], r.section === 'catchup' ? v.seen?.catchup : undefined, v.since)
+// Back to you: it entered Your move after the owner last looked, and the owner had seen it before (it is older than the look).
+// New: it changed after the owner last looked. Back says more, so it wins.
+// A watch's "Changed" already says New, with its Got it.
+export function freshOf(r: Pick<NextRow, 'fresh'> & { chips?: NextRow['chips'] }, mark: string): 'new' | 'back' | undefined {
+	const f = r.fresh
+	if (!f) return undefined
+	if (f.back && f.back > mark && f.born <= mark) return 'back'
+	return f.changed && f.changed > mark && !r.chips?.some(c => c.kind === 'changed') ? 'new' : undefined
+}
+export const FRESH_TEXT = { new: 'New', back: 'Back to you' } as const
 
 /* ------------------------------ the queue ------------------------------ */
 // Cards keep the order they arrived in, handled ones stay in place for the visit, and Later ones go to the end.
@@ -71,3 +89,23 @@ export const primaryOf = (c: ItemCard, u: CardUi, name: string) => (PRIMARY[c.ty
 // To learn: every fact by default; a subset names the ones to keep.
 export const factsOn = (k: KnowledgeCard, u: CardUi) => u.facts ?? new Set(k.facts.map((_, i) => i + 1))
 export const kCmd = (k: KnowledgeCard, u: CardUi) => { const on = factsOn(k, u); return on.size === k.facts.length ? `ok ${k.code}` : `ok ${k.code} ${[...on].sort((a, b) => a - b).map(x => `#${x}`).join(' ')}` }
+
+/* ------------------------------ the Since line (N1b) ------------------------------ */
+// "Since 6:10 PM: replied to 5 (2 by rule) · 1 review · 4 FYIs · 11 handled": what Delegate did since the owner last looked, from
+// Done's rows on the page, each part opening its Done filter; "handled" is this week's, from the Numbers count, and opens Numbers.
+// Replies are to people, by Delegate on the owner's word or a rule; the owner's own replies in Teams are not.
+export function sinceOf(v: Pick<View, 'now' | 'since' | 'done' | 'next'>): { at: string; parts: { text: string; href: string }[] } {
+	const at = v.since ?? new Date(Date.parse(v.now) - 86_400_000).toISOString()
+	const fresh = (v.done ?? []).filter(r => r.at > at)
+	const replies = fresh.filter(r => r.kind === 'reply' && !r.inTeams), people = new Set(replies.map(r => r.who.name)).size
+	// Both numbers count people (review P2-5): three rule replies to Kim are "replied to 1 (1 by rule)".
+	const byRule = new Set(replies.filter(r => r.by.startsWith('by rule')).map(r => r.who.name)).size
+	const reviews = fresh.filter(r => r.kind === 'review').length, fyis = fresh.filter(r => r.kind === 'catchup').length, handled = v.next?.handled ?? 0
+	const parts = [
+		people ? { text: `replied to ${people}${byRule ? ` (${byRule} by rule)` : ''}`, href: '#done/replies' } : undefined,
+		reviews ? { text: plural(reviews, 'review'), href: '#done/reviews' } : undefined,
+		fyis ? { text: fyis === 1 ? '1 FYI' : `${fyis} FYIs`, href: '#done/catchup' } : undefined,
+		handled ? { text: `${handled} handled`, href: '#numbers' } : undefined,
+	].filter((p): p is { text: string; href: string } => !!p)
+	return { at, parts }
+}

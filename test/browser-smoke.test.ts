@@ -47,7 +47,7 @@ async function open(hash = '', prep?: (s: InstanceType<typeof Store>) => void, v
 	page.on('request', (r: Req) => { if (/\/act\?/.test(r.url())) posted.push(JSON.parse(r.postData() ?? '{}').command) })
 	await page.goto(url + hash)
 	await page.waitForSelector('#main :first-child')
-	return { store, page, errors, posted, close: async () => { clearInterval(runner); await ctx.close(); server.close(); assert.deepEqual(errors, []) } }
+	return { store, page, errors, posted, close: async () => { clearInterval(runner); await ctx.close(); (server.closeAllConnections?.(), server.close()); assert.deepEqual(errors, []) } }
 }
 const until = async (f: () => boolean, ms = 5000) => { for (let t = 0; t < ms && !f(); t += 50) await new Promise(r => setTimeout(r, 50)); assert.ok(f()) }
 const focused = (p: Page) => p.evaluate(() => document.activeElement?.id || document.activeElement?.tagName)

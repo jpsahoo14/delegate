@@ -1,5 +1,6 @@
 // One row on Now (design-spec/new-experience.md §5): the headline, the facts, "Next:", its markers, and its one action.
 // The server built every word (src/web/next.ts); this draws it and says times in the owner's time.
+import { FRESH_TEXT, freshOf, rowMark } from '../../model/derive.ts'
 import { plural, when } from '../../model/format.ts'
 import type { NextRow, Owner } from '../../model/types.ts'
 import { S, U, V, cardOf, env } from '../../state/store.ts'
@@ -9,7 +10,7 @@ import { esc, html, join, raw, type H } from '../html.ts'
 import { I } from '../icons.ts'
 
 const ICON: Partial<Record<NextRow['kind'], string>> = { working: 'bolt', scheduled: 'clock', watch: 'eye', 'waiting-delegate': 'clock', reminder: 'clock', 'reminder-new': 'clock', catchup: 'eye', stopped: 'warn' }
-const TONE: Partial<Record<string, string>> = { changed: 'accent', retrying: 'warn', held: 'warn', worth: 'accent' }
+const TONE: Partial<Record<string, string>> = { changed: 'accent', retrying: 'warn', held: 'warn', worth: 'accent', new: 'accent', back: 'accent' }
 
 // "Next:" says who, in fixed words: the owner, Delegate (what it will do), a person or condition in the AI's words, or nobody.
 // A time in it comes as a timestamp and is said here in the owner's time.
@@ -71,7 +72,9 @@ function tell(r: NextRow): H {
 export function row(r: NextRow, open: boolean): H {
 	const c = open ? cardOf(r.act) : undefined, icon = ICON[r.kind]
 	const lead = r.who && !icon ? av(r.who) : html`<span class="ri">${I(icon ?? 'clock')}</span>`
-	const chips = r.chips.map(ch => html`<span class="tag ${raw(TONE[ch.kind] ?? '')}">${esc(ch.text)}</span>`)
+	// New or Back to you, against the mark this look at Now started with (state/actions.ts viewing).
+	const fresh = env.snap ? undefined : freshOf(r, S.nowLook?.[r.act] ?? rowMark(V, r))
+	const chips = [...(fresh ? [{ kind: fresh, text: FRESH_TEXT[fresh] }] : []), ...r.chips].map(ch => html`<span class="tag ${raw(TONE[ch.kind] ?? '')}${ch.kind === 'new' || ch.kind === 'back' ? raw(` fresh-${ch.kind}`) : ''}">${esc(ch.text)}</span>`)
 	const nx = nextLine(r)
 	const acts = U(`row:${r.act}`).msg ? '' : html`${r.primary ? action(r, r.primary, true, open) : ''}${(r.more ?? []).map(m => action(r, m, false, false))}`
 	return html`<li class="nrow k-${raw(r.kind)}${open ? raw(' open') : ''}" id="now-${esc(r.act)}" data-code="${esc(r.act)}"${r.rev ? html` data-rev="${esc(r.rev)}"` : ''}>

@@ -46,6 +46,23 @@ export function withUi<V extends object>(s: Store, v: V, wantNext?: boolean): V 
 	const ui = s.ui()
 	return { ...v, ui, ...((wantNext ?? ui.ui === 'new') ? { next: nextView(s) } : {}) }
 }
+// POST /seen: the Done filters, and from N1b a mark per item ("item:A13") for codes that exist, so New and Back to you clear
+// once the owner looked. Seen up to the data the page showed, never later than now, never backwards. A per-item mark goes 7 days
+// after its item is done (or once its code is gone).
+export function saveSeenFrom(s: Store, body: unknown) {
+	const { filters, at } = (body ?? {}) as { filters?: unknown; at?: unknown }
+	const now = Date.now(), week = new Date(now - 7 * 86_400_000).toISOString()
+	const live = new Set<string>([
+		...s.workflows().filter(w => w.code && (w.state !== 'done' || w.updatedAt > week)).map(w => w.code),
+		...s.waiting().filter(w => w.state === 'waiting' || w.at > week).map(w => w.code),
+		...s.automations().filter(a => a.state !== 'ended' || a.updatedAt > week).map(a => a.code),
+	])
+	// The prefix is lower case only; the code may be either (review P2-7).
+	const item = (f: string) => /^item:[A-Za-z]+\d+$/.test(f) && live.has(f.slice(5).toUpperCase())
+	const ok = Array.isArray(filters) ? [...new Set(filters.filter((f): f is string => typeof f === 'string' && (SEEN_KEYS.includes(f) || item(f))).map(f => (f.startsWith('item:') ? `item:${f.slice(5).toUpperCase()}` : f)))] : []
+	const iso = new Date(now).toISOString(), t = typeof at === 'string' && !Number.isNaN(Date.parse(at)) ? new Date(at).toISOString() : iso
+	s.saveSeen(ok, t < iso ? t : iso, k => !k.startsWith('item:') || live.has(k.slice(5)))
+}
 // POST /ui and the panel's ui_save: the choice, or that the first-time note was closed.
 export function saveUiFrom(s: Store, body: unknown): { ok: boolean; ui?: ReturnType<Store['ui']> } {
 	const b = (body ?? {}) as { ui?: unknown; noted?: unknown }
@@ -82,9 +99,9 @@ export function serveInbox(get: () => Store, port = 0, token = randomBytes(16).t
 		}
 		if (req.method === 'POST' && u.pathname === '/seen') {
 			let body = ''
-			req.on('data', c => { body += c; if (body.length > 2_000) req.destroy() })
+			req.on('data', c => { body += c; if (body.length > 20_000) req.destroy() })
 			req.on('end', () => {
-				try { const { filters, at } = JSON.parse(body) as { filters: unknown; at?: unknown }; const ok = Array.isArray(filters) ? filters.filter((f): f is string => typeof f === 'string' && SEEN_KEYS.includes(f)) : []; const now = new Date().toISOString(), t = typeof at === 'string' && !Number.isNaN(Date.parse(at)) ? new Date(at).toISOString() : now; get().saveSeen(ok, t < now ? t : now); res.writeHead(200, { 'content-type': 'application/json' }).end('{"ok":true}') } catch { res.writeHead(400).end('{"ok":false}') }
+				try { saveSeenFrom(get(), JSON.parse(body)); res.writeHead(200, { 'content-type': 'application/json' }).end('{"ok":true}') } catch { res.writeHead(400).end('{"ok":false}') }
 			})
 			return
 		}

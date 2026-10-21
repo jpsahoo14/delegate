@@ -7,7 +7,7 @@ import { bootLines, knowledgeOf } from '../runner/proposals.ts'
 import type { Knowledge } from '../knowledge/index.ts'
 import { describe, when } from '../runner/automations.ts'
 import { DEFAULT_UNTIL } from '../runner/track.ts'
-import { isThread, threadLink } from '../adapters/channels.ts'
+import { isThread, parseThread, threadLink } from '../adapters/channels.ts'
 import { NAME } from '../brand.ts'
 import type { versionInfo } from '../os/autoupdate.ts'
 import type { settingsView } from './settings.ts'
@@ -41,7 +41,7 @@ export type ItemCard = {
 export type WorkView = { goal: string; next?: string; waiting?: string; due: boolean; steps: { at: string; what: string; news: boolean }[]; plan: { what: string; who: string; done: boolean; where?: string; build?: string }[]; home?: string; proposed: boolean }
 export type KnowledgeCard = { code: string; rev: string; topic: string; home: 'team' | 'personal'; facts: { type: string; text: string; who?: string; date: string; href?: string; private: boolean }[] }
 export type AutomationRow = { code: string; sentence: string; to: string; text: string; when: string; state: Automation['state']; why?: string; next?: string; count: number; rev: string }
-export type DoneRow = { work?: string; code: string; kind: 'reply' | 'review' | 'change' | 'closed' | 'catchup' | 'reminder' | 'learned'; who: Who; sentence: string; high?: boolean; teams?: string; ask?: string; said?: string; inTeams?: boolean; gist?: string; watch?: { target: string; until: string }; watchedAs?: string; own?: boolean; href?: string; by: string; at: string; text?: string; undoUntil?: string; notes?: Note[]; why?: ItemCard['why']; rule?: string; fresh?: boolean }
+export type DoneRow = { work?: string; code: string; kind: 'reply' | 'review' | 'change' | 'closed' | 'catchup' | 'reminder' | 'learned'; who: Who; sentence: string; high?: boolean; teams?: string; ask?: string; said?: string; inTeams?: boolean; gist?: string; watch?: { target: string; until: string }; watchedAs?: string; own?: boolean; href?: string; by: string; at: string; text?: string; undoUntil?: string; notes?: Note[]; why?: ItemCard['why']; rule?: string; fresh?: boolean ; msgs?: string[] }
 export type Tile = { key: string; count: number; label: string; sub?: string }
 
 export type View = {
@@ -178,11 +178,15 @@ const teamsOf = (w: Workflow, msgId = w.lastMsgId) => (w.chat.id && msgId && !w.
 // Why an item closed with no reply from Delegate. Items from before closedBy was kept are read from their status.
 const closedHow = (w: Workflow) => w.closedBy ?? (/^You replied yourself/.test(w.status) ? 'replied' : /^Skipped by you/.test(w.status) ? 'skipped' : undefined)
 
+// An item's messages as "chat|msg", for Find on the new page (N1b review P2-6). A channel thread's item lives under
+// "ch|<team>|<channel>|<root>", but a pasted link names the channel, so its messages are keyed by the channel (round 2, P2-B).
+export const msgKeys = (w: Pick<Workflow, 'chat' | 'msgIds'>) => { const c = isThread(w.chat.id) ? parseThread(w.chat.id).channelId : w.chat.id; return w.msgIds.map(m => `${c}|${m}`) }
+
 // An item's own Done row: its reply, its Catch up line, the owner's reply in Teams, or how it closed. Skipped items have none.
 function itemRow(store: Store, w: Workflow): DoneRow | undefined {
 	const name = w.asker?.name ?? 'Someone', where = w.chat.group ? ` in ${w.chat.name}` : '', first = name.split(/[\s,(]+/)[0]
 	const made = (w.effects ?? []).filter(e => e.done)
-	const base = { code: w.code, who: who(name), teams: teamsOf(w), ask: w.redacted ? undefined : askLine(w.lastAsk) || undefined }
+	const base = { code: w.code, who: who(name), teams: teamsOf(w), ask: w.redacted ? undefined : askLine(w.lastAsk) || undefined, ...(w.msgIds.length ? { msgs: msgKeys(w) } : {}) }
 	if (w.sent) return { ...base, kind: made.length && w.intent === 'pr_review' ? 'review' : 'reply', sentence: made.length && w.intent === 'pr_review' ? `Reviewed for ${name} and replied${where}` : `Replied to ${name}${where}`, by: w.sent.byRule ? `by rule ${w.sent.byRule}` : 'by you', at: w.sent.at, text: w.redacted ? undefined : w.sent.text ?? w.draft?.text, said: w.redacted ? undefined : short(w.sent.text ?? w.draft?.text), own: !w.sent.byRule, notes: w.notes ?? [], why: { reason: w.decision?.reason, confidence: w.decision?.confidence, sources: (w.draft?.sources ?? []).map(s => source(s.ref, s.tier, s.stale, s.label)), gaps: w.gaps ?? [] }, rule: w.sent.byRule, undoUntil: w.sent.byRule ? w.sent.undoUntil : undefined, work: workLine(homeOf(store, w)) }
 	if (w.fyi) return { ...base, kind: 'catchup', sentence: w.fyi.line, gist: w.fyi.gist ?? base.ask, watch: w.fyi.watch, watchedAs: w.watchedAs, by: `${first}${w.chat.group ? ` · ${w.chat.name}` : ''}`, at: w.fyi.at ?? w.updatedAt, high: w.fyi.weight === 'high' }
 	if (closedHow(w) === 'replied') {

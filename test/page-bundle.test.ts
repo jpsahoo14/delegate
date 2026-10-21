@@ -68,7 +68,7 @@ test('shell: a page that cannot be built is not hidden behind an old one; the pa
 		assert.match(await r.text(), /^The page could not be drawn: The page bundle may only use .* it imports src\/store\/state\.ts\.$/)
 		pageBuild.bundle = real
 		assert.equal((await fetch(url)).status, 200, 'the server kept running')
-	} finally { pageBuild.bundle = real; server.close() }
+	} finally { pageBuild.bundle = real; (server.closeAllConnections?.(), server.close()) }
 })
 
 test('panel and page: the inlined page script parses where each surface runs it', () => {

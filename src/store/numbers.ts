@@ -1,7 +1,8 @@
 import { statSync } from 'node:fs'
 import type { Store } from './state.ts'
 import { readJson } from './fs.ts'
-import { addDays, numbers, slim, weekOf, type Ev, type Numbers, type WindowKey } from '../core/numbers.ts'
+import { addDays, numbers, slim, weekOf, type Ev, type Item, type Numbers, type WindowKey } from '../core/numbers.ts'
+import { dayIn } from '../core/schedule.ts'
 
 // Where the Numbers tab's lines come from (R-NEX-11). A finished week is read from its file, one per machine and week,
 // so the 8-week view never rescans every log; the week still going, and a week with no file yet, are read from the log.
@@ -18,9 +19,10 @@ function fromLog(store: Store, machine: string, week: string): Ev[] {
 
 const split = (k: string) => [k.slice(0, k.lastIndexOf('|')), k.slice(k.lastIndexOf('|') + 1)]
 
-export function counted(store: Store): Ev[] {
-	const saved = new Map(store.numberWeeks().map(w => [`${w.machine}|${w.week}`, w.file]))
-	const pairs = new Set([...saved.keys(), ...store.logFiles().map(f => `${f.machine}|${weekOf(f.day)}`)])
+// from: the first week to read (a Monday), for a count that needs only recent weeks (the Since line, review P2-4).
+export function counted(store: Store, from = ''): Ev[] {
+	const saved = new Map(store.numberWeeks().filter(w => w.week >= from).map(w => [`${w.machine}|${w.week}`, w.file]))
+	const pairs = new Set([...saved.keys(), ...store.logFiles().filter(f => weekOf(f.day) >= from).map(f => `${f.machine}|${weekOf(f.day)}`)])
 	return [...pairs].flatMap(k => {
 		const file = saved.get(k), w = file ? readJson<WeekFile | undefined>(file, undefined) : undefined
 		return w?.schema === SCHEMA ? w.events : fromLog(store, ...split(k) as [string, string])
@@ -52,4 +54,20 @@ export function saveWeeks(store: Store, now = new Date()): number {
 
 export function numbersOf(store: Store, key: WindowKey = 'this', now = new Date()): Numbers {
 	return numbers(counted(store), store.workflows(), now, store.config()?.tz, key)
+}
+
+// The Since line's "handled" on the new page (N1b): this week's count, as the Numbers tab makes it, from this week and last
+// only (last week covers the time zone's edge), so its cost does not grow with the history (review P2-4). /data is asked every
+// 20 seconds, so the count is made again only when one of those weeks' log or week files changes, the items change, or the
+// day turns. Per store, so tests and machines never share it.
+const handledCache = new Map<string, { key: string; n: number }>()
+export function handledThisWeek(store: Store, items: Item[], now = new Date()): number {
+	const tz = store.config()?.tz, today = dayIn(now, tz), from = addDays(weekOf(today), -7)
+	const key = [today, items.length, items.reduce((n, w) => n + w.msgIds.length, 0), ...store.numberWeeks().filter(w => w.week >= from).map(w => w.file),
+		...store.logFiles().filter(f => weekOf(f.day) >= from).map(f => { try { const st = statSync(f.file); return `${f.file}:${st.size}:${st.mtimeMs}` } catch { return f.file } })].join('|')
+	const had = handledCache.get(store.root)
+	if (had?.key === key) return had.n
+	const n = numbers(counted(store, from), items, now, tz, 'this').handled.n
+	handledCache.set(store.root, { key, n })
+	return n
 }

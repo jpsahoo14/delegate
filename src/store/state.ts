@@ -216,8 +216,8 @@ export class Store {
 	saveHabits(h: Habit[]) { this.w(this.p('state', 'habits.json'), h) }
 	habit(code: string): Habit | undefined { return this.habits().find(h => h.code === code.toUpperCase()) }
 	// When build steps were last checked; only the runner writes it (R-WRK-13).
-	probeMark(): { checkedAt?: string; habitsAt?: string; prAt?: string } { return readJson(this.p('state', 'probe.json'), {}) }
-	saveProbeMark(m: { checkedAt?: string; habitsAt?: string; prAt?: string }) { this.w(this.p('state', 'probe.json'), m) }
+	probeMark(): { checkedAt?: string; habitsAt?: string; prAt?: string; placedAt?: string } { return readJson(this.p('state', 'probe.json'), {}) }
+	saveProbeMark(m: { checkedAt?: string; habitsAt?: string; prAt?: string; placedAt?: string }) { this.w(this.p('state', 'probe.json'), m) }
 	missed(): (Missed & { file: string })[] {
 		const old = this.p('state', 'missed.json')
 		if (existsSync(old)) { for (const m of readJson<Missed[]>(old, [])) this.addMissed(m); rmSync(old, { force: true }) }
@@ -226,7 +226,8 @@ export class Store {
 	// When the owner last looked at each Done filter, kept per machine and merged, so the page never writes a file the runner writes (design-spec/done-v2.md).
 	seen(): Record<string, string> { const dir = this.p('state', 'seen'), out: Record<string, string> = {}; if (existsSync(dir)) for (const f of readdirSync(dir).filter(f => f.endsWith('.json'))) for (const [k, v] of Object.entries(readJson<Record<string, string>>(join(dir, f), {}))) if (!out[k] || v > out[k]) out[k] = v; return out }
 	// A mark only moves forward, so a late or repeated post never brings back rows already seen.
-	saveSeen(keys: string[], at = new Date().toISOString()) { const f = this.p('state', 'seen', `${this.machine}.json`), was = readJson<Record<string, string>>(f, {}); this.w(f, { ...was, ...Object.fromEntries(keys.map(k => [k, was[k] && was[k] > at ? was[k] : at])) }) }
+	// keep: which marks this machine's file keeps (per-item marks go 7 days after the item is done; N1b).
+	saveSeen(keys: string[], at = new Date().toISOString(), keep: (k: string) => boolean = () => true) { const f = this.p('state', 'seen', `${this.machine}.json`), was = Object.fromEntries(Object.entries(readJson<Record<string, string>>(f, {})).filter(([k]) => keep(k))); this.w(f, { ...was, ...Object.fromEntries(keys.map(k => [k, was[k] && was[k] > at ? was[k] : at])) }) }
 	// The "New experience" switch, one file per machine and never in seen/, whose marks merge across machines (R-NEX-01).
 	// A missing or bad file is classic. at: when it was last set; tried: when it was first turned on; noted: the first-time note was closed.
 	ui(): UiChoice {

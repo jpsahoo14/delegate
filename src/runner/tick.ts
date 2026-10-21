@@ -23,6 +23,7 @@ import { daily } from './daily.ts'
 import { dueAutomations } from './automations.ts'
 import { checkJobs, legacyEffects, realProcs, startJobs, type Procs } from './jobs.ts'
 import { checkOpen } from './continue.ts'
+import { stampPlaces } from './place.ts'
 import { writeSnapshot } from '../web/server.ts'
 import { notify } from '../os/notify.ts'
 import { clock, DEFAULT_POLL, isDue, offNotice, plan, validTz } from '../core/schedule.ts'
@@ -168,6 +169,8 @@ export async function tick(store: Store, deps: { source?: Source; run?: RunWorke
 		store.log({ event: 'tick', ...r })
 		return r
 	} finally {
+		// Every cycle that ran, even stopped or with Teams down, stamps where each item now stands for the new page (N1b).
+		try { stampPlaces(store) } catch (e) { store.log({ event: 'place-failed', error: String(e).slice(0, 300) }) }
 		// Any cycle that ran, even stopped or with Teams down, shows this machine was awake, unless it slept during the cycle.
 		const now = new Date(), awakeMs = mono() - p0, c = store.chats()
 		const slept = now.getTime() - t0 - awakeMs > 10 * 60_000 && !c.notice ? offNotice(new Date(t0 + awakeMs).toISOString(), now, store.machine, cfg.tz) : undefined

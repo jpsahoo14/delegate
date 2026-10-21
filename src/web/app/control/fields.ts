@@ -33,6 +33,9 @@ export function onChange(e: Event) {
 }
 export function onInput(e: Event) {
 	const t = e.target as HTMLInputElement
+	// Find filters as the owner types; the redraw puts the caret back where it was (view/render.ts).
+	// During a composition only the words are kept; compositionend draws the result (control/index.ts).
+	if (t.id === 'find') { if ((e as InputEvent).isComposing) S.find = t.value; else A.setFind(t.value); return }
 	const enable = (act: string, on: boolean) => { const b = document.querySelector<HTMLButtonElement>(`[data-act=${act}]`); if (b) b.disabled = !on }
 	if (t.dataset.ws) { (S.wform as Record<string, unknown>)[t.dataset.ws] = t.type === 'checkbox' ? t.checked : t.value; enable('wscreate', !!S.wform!.text.trim()); return }
 	if (t.dataset.wf) { (S.watchForm as Record<string, unknown>)[t.dataset.wf] = t.value; enable('watchgo', !!S.watchForm!.target.trim()); return }
@@ -51,6 +54,8 @@ export function onSubmit(e: SubmitEvent) {
 	const value = (id: string) => ((document.getElementById(id) as HTMLInputElement | null)?.value || '').trim()
 	if (form === 'report') { e.preventDefault(); A.report(value('repin')); return }
 	if (form === 'missed') { e.preventDefault(); A.missed(value('missin')); return }
+	// Enter in Find: a pasted link that is not an item yet becomes one; otherwise the rows are already there.
+	if (form === 'find') { e.preventDefault(); A.findMissed(); return }
 	// Your step on work: what the owner did or found goes back through the answer path ("A30: …").
 	if (form === 'tell') { e.preventDefault(); const code = f.dataset.code!, u = U(`tell:${code}`), text = u.answer.trim(); if (!text) return; u.answer = ''; A.act(`row:${code}`, code, f.dataset.cmd!.replace('{text}', text), 'row'); return }
 	if (form === 'mark') { e.preventDefault(); A.markCard(f.closest<HTMLElement>('[data-code]')!.dataset.code!); return }
