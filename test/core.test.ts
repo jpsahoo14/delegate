@@ -33,6 +33,7 @@ test('review react-spec P0-1: once a command takes text, every comma after it is
 		{ code: 'A2', verb: 'skip', text: undefined },
 		{ code: 'A3', verb: 'answer', text: 'hi, ok A4' },
 	], 'commands before the first text still batch')
+	assert.deepEqual(parseVerbs('every A5: 4h, extend A5'), [{ code: 'A5', verb: 'every', text: '4h' }, { code: 'A5', verb: 'extend', text: undefined }], 'a short value is not the owner\'s words: the next command still batches (CI 10-22, B19)')
 })
 
 test('R-HIL-15 verbs: personal notes are not commands', () => {

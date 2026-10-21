@@ -41123,7 +41123,7 @@ function parseVerbs(input2) {
   if (auto) return [{ verb: auto[1].toLowerCase() === "on" ? "auto-on" : "auto-off" }];
   const segs = input2.trim().split(",");
   const parts2 = [];
-  const takesText = (p) => !!parsePart(p.trim())?.some((x) => x.text !== void 0);
+  const takesText = (p) => !!parsePart(p.trim())?.some((x) => x.text !== void 0 && WORDS.has(x.verb));
   for (const seg of segs) {
     const t2 = seg.trim();
     if (parts2.length && (takesText(parts2[parts2.length - 1]) || !parsePart(t2))) parts2[parts2.length - 1] += `,${seg}`;
@@ -41168,12 +41168,13 @@ function expand2(codes) {
   if (b - a >= 20) return null;
   return Array.from({ length: b - a + 1 }, (_, i) => `${p}${a + i}`);
 }
-var CONTROL, WATCH, PART;
+var CONTROL, WORDS, WATCH, PART;
 var init_verbs = __esm({
   "src/core/verbs.ts"() {
     "use strict";
     init_types3();
     CONTROL = new Set(CONTROL_VERBS);
+    WORDS = /* @__PURE__ */ new Set(["send", "edit", "answer", "ask", "wrong", "incomplete"]);
     WATCH = /^watch(?:\s+([A-Z]\d+))?(?:\s*:\s*([\s\S]*)|((?:\s+(?:by\s+\d{4}-\d{2}-\d{2}|push))*))$/i;
     PART = /^(?:(mine|ok|edit|send|later|dismiss|answer|skip|more|undo|continue|pick|ask|wrong|incomplete|unneeded|every|extend|close|wait|never|nudge|pause|resume|stop)\b\s*)?([A-Z]\d+(?:-[A-Z]?\d+)?)?((?:\s+#?\d+\s*,?)*)\s*(?::\s*([\s\S]*))?$/i;
   }

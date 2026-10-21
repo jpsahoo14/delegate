@@ -269,6 +269,7 @@
   var renderSoon = () => hooks.renderSoon();
   var say = (t, toast) => hooks.say(t, toast);
   var cards = (v, key) => v[key];
+  var lastDrawn = Date.now();
   function merge(nv) {
     for (const key of ["needs", "knowledge"]) nv[key] = cards(nv, key).map((c) => {
       const old = cards(V, key).find((x) => x.code === c.code), u = S.ui[c.code];
@@ -281,9 +282,13 @@
     });
     for (const key of ["needs", "knowledge"]) for (const c of cards(V, key)) if (S.ui[c.code]?.status === "pending" && !cards(nv, key).some((x) => x.code === c.code)) cards(nv, key).push(c);
     nv.since = V.since;
+    const same = !!V && JSON.stringify({ ...nv, now: "" }) === JSON.stringify({ ...V, now: "" }) && Date.now() - lastDrawn < 6e4;
     setView(nv);
     syncOrder();
-    renderSoon();
+    if (!same) {
+      lastDrawn = Date.now();
+      renderSoon();
+    }
     if (env.start && nv.version?.code && nv.version.code !== env.start && !hooks.typing()) {
       say(`Updated to ${nv.version.code}. Reloading.`);
       setTimeout(() => location.reload(), 1200);

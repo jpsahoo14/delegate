@@ -14,6 +14,7 @@ const cards = (v: View, key: 'needs' | 'knowledge') => v[key] as Card[]
 
 /* ------------------------------ data ------------------------------ */
 // Fresh data from the server. A card the owner has started on keeps what they did and says a newer version is there.
+let lastDrawn = Date.now()
 export function merge(nv: View) {
 	for (const key of ['needs', 'knowledge'] as const) (nv[key] as Card[]) = cards(nv, key).map(c => {
 		const old = cards(V, key).find(x => x.code === c.code), u = S.ui[c.code]
@@ -23,7 +24,11 @@ export function merge(nv: View) {
 	// A card whose action is still on its way stays until its result arrives, even while the item is being redrafted.
 	for (const key of ['needs', 'knowledge'] as const) for (const c of cards(V, key)) if (S.ui[c.code]?.status === 'pending' && !cards(nv, key).some(x => x.code === c.code)) cards(nv, key).push(c)
 	nv.since = V.since
-	setView(nv); syncOrder(); renderSoon()
+	// Nothing new: no redraw, so nothing under the owner's pointer is replaced mid-click (CI 10-22). Once a minute it still
+	// redraws, so times like "5 min ago" stay right.
+	const same = !!V && JSON.stringify({ ...nv, now: '' }) === JSON.stringify({ ...V, now: '' }) && Date.now() - lastDrawn < 60_000
+	setView(nv); syncOrder()
+	if (!same) { lastDrawn = Date.now(); renderSoon() }
 	// A new version was installed: reload into it, unless the owner is typing.
 	if (env.start && nv.version?.code && nv.version.code !== env.start && !hooks.typing()) { say(`Updated to ${nv.version.code}. Reloading.`); setTimeout(() => location.reload(), 1200) }
 }

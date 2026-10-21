@@ -1,6 +1,8 @@
 import { CONTROL_VERBS, type Verb } from './types.ts'
 
 const CONTROL = new Set<string>(CONTROL_VERBS)
+// Verbs whose text is the owner's own words, kept whole with every comma (review react-spec P0-1).
+const WORDS = new Set<string>(['send', 'edit', 'answer', 'ask', 'wrong', 'incomplete'])
 
 export type Parsed = { code?: string; verb: Verb; text?: string; nums?: number[]; except?: number[]; again?: true }
 
@@ -47,7 +49,8 @@ export function parseVerbs(input: string): Parsed[] | null {
 	const parts: string[] = []
 	// Once a command takes the owner's words, every comma after it is part of them: "send A7: Yes, ok" sends "Yes, ok",
 	// and never a second command (review react-spec P0-1).
-	const takesText = (p: string) => !!parsePart(p.trim())?.some(x => x.text !== undefined)
+	// Only verbs that carry the owner's own words; "every A5: 4h" or "wait A2: 3d" carry a short value, and commands after them still batch.
+	const takesText = (p: string) => !!parsePart(p.trim())?.some(x => x.text !== undefined && WORDS.has(x.verb))
 	for (const seg of segs) {
 		const t = seg.trim()
 		if (parts.length && (takesText(parts[parts.length - 1]) || !parsePart(t))) parts[parts.length - 1] += `,${seg}`

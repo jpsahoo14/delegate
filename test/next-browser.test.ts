@@ -455,3 +455,17 @@ test('owner 10-21 A33: after you tell Delegate something, the row\'s result clea
 		assert.equal(await t.page.locator('#now-A23 [role=status]').count(), 0, 'the old result is gone')
 	} finally { await t.close() }
 })
+
+test('CI 10-22 flakes: a poll with nothing new does not redraw, so a row under the pointer is never replaced mid-click', { skip }, async () => {
+	const t = await open('#now')
+	try {
+		// After the one-time seen marks of this look have drawn (1.5 s), nothing else should.
+		await t.page.waitForTimeout(2000)
+		await t.page.evaluate(() => { (document.querySelector('#now-A20') as HTMLElement & { mark?: number }).mark = 1 })
+		await t.page.waitForTimeout(1300)
+		assert.equal(await t.page.evaluate(() => (document.querySelector('#now-A20') as HTMLElement & { mark?: number }).mark), 1, 'the same row element after ten polls with nothing new')
+		const w = t.store.byCode('A20')!
+		t.store.save({ ...w, lastAsk: 'A changed question?', revAt: new Date().toISOString() })
+		await t.page.waitForFunction(() => /A changed question/.test(document.querySelector('#now-A20')?.textContent ?? ''))
+	} finally { await t.close() }
+})
