@@ -7,7 +7,7 @@
 		"dist/ext-apps.js": "fb56376b7583ecafb4820bdebc150abee18feb6258ff84b83c2c944ebd9c3602",
 		"dist/mesh/extension.mjs": "72606e840b669f3316fa663ff0eedaddc44fb5be5fe5d51aa6d3e787f0565407",
 		"dist/mesh/inbox.mjs": "a0fe7454b2269fed108cbdff9fe5d77c88ce36b6f0c49d1b52dccd754424a432",
-		"dist/web/app.css": "5b09bdc1beb81f5b2c7d0e73148726b2350ce6ce7e99779138da49feaa29a52a",
+		"dist/web/app.css": "50c1af48531a863116a0511a7be6af3cadce504b86fadb0a8e911bbaf5229a15",
 		"dist/web/app.js": "96f206d66374a1502c4b71dea61db772d867dc8460251d3005880fb519eb1537",
 		"skills/delegate/SKILL.md": "5c20f6989a77d27853bd1295fbfff1d8e14e13b2339c2a8b33bb372dafa9b21a",
 		"skills/delegate/intents.json": "fb876508d5d911e70af8834248c18152bc08d9420b685e866f29ab86209a30eb",
