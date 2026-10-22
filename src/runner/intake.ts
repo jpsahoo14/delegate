@@ -76,21 +76,27 @@ export async function say(store: Store, src: Source, text: string) {
 // The owner taking something on: "I'll", "I will", "I'd be the POC", "let me check", "I can take".
 const COMMIT = /\b(I(?:'|’)ll|I will|I(?:'|’)d be|I would be|I can take|I(?:'|’)m on it|let me (?:check|take|look|handle|test|try|do))\b/i
 
-// backlog: the first-setup read of the week before (first-sweep.md). Its turns are its own and never saved, no message becomes two items,
-// it joins only items it made, quiet is measured at each message's time, nothing is a room guess, and every item it makes waits for the owner.
+export const SKIP_REASONS = ['prefilter', 'context-absorbed', 'dedupe', 'ai-noise', 'ai-fyi', 'budget-deferred'] as const
+export function auditSkip(store: Store, chat: string, msgId: string, reason: typeof SKIP_REASONS[number], workflowId?: string) {
+	const outcome = { prefilter: 'ignored', 'context-absorbed': 'context', dedupe: 'duplicate', 'ai-noise': 'noise', 'ai-fyi': 'fyi', 'budget-deferred': 'deferred' }[reason]
+	store.log({ event: 'intake-skip', reason, chat, msgId, outcome, ...(workflowId ? { workflowId } : {}) })
+}
+
+// Backlog uses its own turns and message-time quiet checks. Its candidates persist behind direct asks, and every reply waits for the owner.
 export async function intake(store: Store, src: Source, cfg: Config, cursors: Record<string, string>, chats: WatchedChat[] = cfg.watch, o: { backlog?: { turns: Record<string, Turn> } } = {}): Promise<number> {
-	let asks = 0, candidates = 0
+	let asks = 0
 	const backlog = !!o.backlog
 	const sent = store.sentIds(), turns = o.backlog?.turns ?? store.turns()
-	const claimed = backlog ? new Set(store.workflows().flatMap(w => w.msgIds)) : undefined
+	const claimed = new Set(store.workflows().flatMap(w => w.msgIds.map(id => `${w.chat.id}/${id}`)))
 	for (const chat of chats) {
 		const { msgs, newest, truncated } = await src.newMessages(chat.id, cursors[chat.id], chat.since)
 		if (newest) cursors[chat.id] = newest
 		if (truncated && !backlog) store.log({ event: 'gap', chat: chat.id, oldestRead: msgs[0]?.id, cursor: cursors[chat.id] })
 		if (!backlog) store.setHealth(`gap:${chat.id}`, truncated ? `${chat.name} had more new messages than I can read at once. I read the newest ones; older ones were skipped.` : undefined)
 		for (const raw of msgs) {
-			if (claimed?.has(raw.id)) { store.log({ event: 'intake-skip', chat: chat.id, msgId: raw.id, reason: 'already claimed' }); continue }
-			claimed?.add(raw.id)
+			const key = `${chat.id}/${raw.id}`
+			if (claimed.has(key)) { auditSkip(store, chat.id, raw.id, 'dedupe'); continue }
+			claimed.add(key)
 			const now = backlog ? Date.parse(raw.at) : Date.now()
 			let c = classify(raw, { ownerId: cfg.owner.id, ownerName: cfg.owner.name, aliases: cfg.aliases, test: !!chat.test, group: !!chat.group, sentIds: sent })
 			if (chat.group) {
@@ -102,10 +108,10 @@ export async function intake(store: Store, src: Source, cfg: Config, cursors: Re
 					turns[chat.id] = nextTurn(t, { owner: false, from: c.from, at: raw.at })
 				}
 			}
-			if (c.kind === 'skip') { store.log({ event: 'intake-skip', chat: chat.id, msgId: raw.id, reason: c.why }); continue }
+			if (c.kind === 'skip') { auditSkip(store, chat.id, raw.id, 'prefilter'); continue }
 			const open = store.openInChat(chat.id)
 			if (c.kind === 'owner') {
-				if (store.wasSentRecently(c.text)) { store.log({ event: 'intake-skip', chat: chat.id, msgId: raw.id, reason: 'recently sent by us' }); continue }
+				if (store.wasSentRecently(c.text)) { auditSkip(store, chat.id, raw.id, 'dedupe'); continue }
 				store.saveActivity({ ownerLastAt: raw.at })
 				const to = askedOf(raw, cfg.owner.name)
 				// In a chat with open work the ask is also a step on that work, so the W entry belongs to it and the work's row
@@ -142,18 +148,17 @@ export async function intake(store: Store, src: Source, cfg: Config, cursors: Re
 					continue
 				}
 				// The owner taking something on may start work; one short run decides, and the owner confirms (R-WRK-11).
-				if (!home && candidates < 2 && COMMIT.test(c.text) && !open.some(o => inWork(store, o))) {
+				if (!home && COMMIT.test(c.text) && !open.some(o => inWork(store, o))) {
 					const cand = await create(store, src, cfg, chat)
 					if (!store.thread(cand.id).some(m => m.id === raw.id)) appendThread(store, cand, toMsg(raw, cfg.owner, c.text, true))
-					Object.assign(cand, { startedBy: 'owner', state: 'running', lastAsk: c.text, lastMsgId: raw.id, pending: [raw.id], msgIds: [raw.id], status: 'Checking whether you took something on' })
+					Object.assign(cand, { startedBy: 'owner', state: 'running', paced: true, ...(backlog ? { before: true } : {}), lastAsk: c.text, lastMsgId: raw.id, pending: [raw.id], msgIds: [raw.id], status: 'Checking whether you took something on' })
 					store.save(cand)
-					candidates++
-				} else store.log({ event: 'intake-skip', chat: chat.id, msgId: raw.id, reason: !home && COMMIT.test(c.text) && candidates >= 2 ? 'owner candidate limit' : 'owner context; no new ask' })
+				} else auditSkip(store, chat.id, raw.id, 'context-absorbed')
 				continue
 			}
 			// Anyone the owner asked who now writes in that chat has answered.
 			const sender = c.from
-			const groupJudgment = c.kind === 'context' && !backlog
+			const groupJudgment = c.kind === 'context'
 			if (groupJudgment) c = { ...c, kind: 'ask' }
 			const ws = store.waiting(), hit = ws.filter(w => w.state === 'waiting' && w.chat.id === chat.id && answers(w, sender.name) && raw.at > w.at)
 			if (hit.length) store.saveWaiting(ws.map(w => (hit.includes(w) ? { ...w, state: 'answered', doneAt: raw.at } : w)))
@@ -175,8 +180,7 @@ export async function intake(store: Store, src: Source, cfg: Config, cursors: Re
 			if (wf?.state === 'open' && c.kind === 'ask') newTurn(wf)
 			// A request to the whole group ("hi guys, I have a PR") may be the owner's: one short run decides, using what the owner owns.
 			const room = groupJudgment && !wf
-			if (c.kind === 'context') { for (const o of open) appendThread(store, o, toMsg(raw, c.from, c.text, false)); store.log({ event: 'intake-skip', chat: chat.id, msgId: raw.id, reason: 'backlog group context' }); continue }
-			if (wf?.lastMsgId && BigInt(raw.id) <= BigInt(wf.lastMsgId)) { store.log({ event: 'intake-skip', chat: chat.id, msgId: raw.id, reason: 'already read by item' }); continue }
+			if (wf?.lastMsgId && BigInt(raw.id) <= BigInt(wf.lastMsgId)) { auditSkip(store, chat.id, raw.id, 'dedupe', wf.id); continue }
 			// The reply already went and its promised change waits, or its check failed: the new ask is a new turn (Slice 3).
 			if (wf && c.kind === 'ask') reopenPromise(store, wf)
 			wf ??= await create(store, src, cfg, chat, c.kind === 'ask' ? earlierOf(store, chat.id, c.from.id) : undefined)
@@ -188,7 +192,7 @@ export async function intake(store: Store, src: Source, cfg: Config, cursors: Re
 			wf.pending.push(raw.id)
 			wf.msgIds.push(raw.id)
 			// A new ask withdraws any ok given before it (tester P0).
-			Object.assign(wf, { asker: c.from, lastAsk: c.text, state: 'running', lastMsgId: raw.id, approved: undefined, needsMe: undefined })
+			Object.assign(wf, { asker: c.from, lastAsk: c.text, state: 'running', lastMsgId: raw.id, approved: undefined, needsMe: undefined, intakeDeferred: undefined })
 			// The hold stays once set; only a draft that answers nothing but old messages waits its turn.
 			if (backlog) Object.assign(wf, { before: true, paced: true })
 			else wf.paced = undefined

@@ -2,7 +2,7 @@ import { site } from '../core/site.ts'
 import type { PlanStep, Report, Step, Workflow, WorkReport } from '../core/types.ts'
 import type { Store } from '../store/state.ts'
 import { canonicalKey } from './jobs.ts'
-import { isVote, prIdOf, voteValue } from '../core/effects.ts'
+import { isVote, pendingEffects, prIdOf, VOTES, voteValue } from '../core/effects.ts'
 
 // Open work: an item that keeps one code until its work is closed. Every state change for work items is here (dev-spec/work.md).
 
@@ -83,6 +83,12 @@ export function mergeWork(wf: Workflow, w: WorkReport | undefined, now = new Dat
 	if (w.closed) k.closed = { at, why: w.closed }
 }
 
+export function mergeReportWork(wf: Workflow, r: Report, home = wf, changedAsk?: string, allowClose = true) {
+	const deferred = !!(r.reply || r.question || r.effects?.length || r.job)
+	wf.closeWorkAfterSend = deferred ? r.work?.closed : undefined
+	mergeWork(home, r.work && (deferred || !allowClose) ? { ...r.work, closed: undefined } : r.work, undefined, label(wf, home), changedAsk)
+}
+
 // The worker sends the full list; a step keeps its id, done mark, and probe state across reports.
 export function mergePlan(old: PlanStep[], next: NonNullable<WorkReport['plan']>, at: string, keep = false): PlanStep[] {
 	let n = old.reduce((m, p) => Math.max(m, Number(p.id.replace(/\D/g, '')) || 0), 0)
@@ -101,7 +107,7 @@ export function mergePlan(old: PlanStep[], next: NonNullable<WorkReport['plan']>
 // Ending a turn without new input (wait, skip, close, the owner's own message) keeps the last send for Done and "Not right?".
 // The turn's own to-dos go with it; the ones a sent reply promised (kept) stay until the owner marks them done (R-NEX-07).
 export function newTurn(wf: Workflow, keepSent = false) {
-	Object.assign(wf, { draft: undefined, prDraft: undefined, choices: undefined, question: undefined, effects: undefined, promised: undefined, decision: undefined, approved: undefined, picked: undefined, sendAt: undefined, correction: undefined, todos: undefined, newCount: 0, ...(keepSent ? {} : { sent: undefined }) })
+	Object.assign(wf, { draft: undefined, prDraft: undefined, closeWorkAfterSend: undefined, choices: undefined, question: undefined, effects: undefined, promised: undefined, decision: undefined, approved: undefined, picked: undefined, sendAt: undefined, correction: undefined, todos: undefined, newCount: 0, ...(keepSent ? {} : { sent: undefined }) })
 }
 
 // When a reply goes out, what it promised the owner would do becomes theirs to keep, once per open text (R-NEX-07).
@@ -130,13 +136,15 @@ export function settle(wf: Workflow, r: Report, home = wf): boolean {
 }
 
 // After a reply is sent. Returns true when the item stays open.
-export function afterSend(wf: Workflow, text: string, msgId: string, home = wf, closeApproval = true): boolean {
+export function afterSend(wf: Workflow, text: string, msgId: string, home = wf, closeApproval = true, closeReport = true): boolean {
 	if (!home.work) return false
 	wf.completionSeen = `sent:${msgId}`
 	step(home, `${label(wf, home)}Replied: ${text}`, { ref: `sent:${msgId}` })
 	const effects = (wf.effects ?? []).filter(e => !e.off)
-	if (closeApproval && wf === home && approvalOnly(home) && !wf.follow && effects.length && effects.every(e => e.done) && effects.some(e => isVote(e.call) && (voteValue(e.call) ?? 0) >= 5 && linksIn(wf.lastAsk ?? '').includes(`pr:${prIdOf(e.call)}`))) {
-		home.work.closed = { at: new Date().toISOString(), why: 'Approval recorded and reply sent' }
+	const reported = closeReport && !wf.pending.length && !wf.question && effects.every(e => e.done) && !wf.effects?.some(e => e.off) && wf.closeWorkAfterSend
+	wf.closeWorkAfterSend = undefined
+	if (reported || closeApproval && wf === home && approvalOnly(home) && !wf.follow && effects.length && effects.every(e => e.done) && effects.some(e => isVote(e.call) && (voteValue(e.call) ?? 0) >= 5 && linksIn(wf.lastAsk ?? '').includes(`pr:${prIdOf(e.call)}`))) {
+		home.work.closed = { at: new Date().toISOString(), why: reported || 'Approval recorded and reply sent' }
 		home.work.next = undefined
 		home.work.waitingOn = undefined
 	}
@@ -145,7 +153,24 @@ export function afterSend(wf: Workflow, text: string, msgId: string, home = wf, 
 	return true
 }
 
-export const approvalAsk = (text: string) => /approv|sign[ -]?off|\blgtm\b/i.test(text) && !/re[ -]?review|review again|recheck/i.test(text)
+export const approvalMention = (text: string) => /approv|sign[ -]?off|\blgtm\b/i.test(text)
+export function approvalReplyMatches(text: string, vote: number | undefined, pr: number): boolean {
+	if (!approvalMention(text)) return true
+	const line = text.trim().replace(/\u2019/g, "'").replace(/[.!]$/, '')
+	// Only complete, bounded statements pass. Unrecognized approval wording waits for a redraft.
+	const target = '(?:\\s+(?:(?:the\\s+)?(?:PR|pull request)(?:\\s*#?\\s*\\d+)?|it|\\d+))?'
+	const condition = '(?:\\s+(?:after|once|when|until)\\s+(?:(?:the\\s+)?(?:build|tests?|checks?|requested changes|null check|comments?)(?:\\s+(?:is|are)\\s+(?:green|fixed|addressed|resolved|complete|done))?|checking the comments))?'
+	const future = new RegExp(`^(?:(?:(?:Rechecked,?\\s+)?looks good(?: to me)?[.!;]|Yes,)\\s+)?(?:I|we)(?:'ll| will(?: not)?| won't)\\s+(?:approve|sign[ -]?off)${target}(?:\\s+too)?${condition}(?:, and add [a-z][a-z -]{0,60} as a reviewer)?$`, 'i')
+	if (future.test(line)) return true
+	if ((line.match(/\d+/g) ?? []).some(id => Number(id) !== pr)) return false
+	if (vote === undefined || !Object.values(VOTES).includes(vote)) return false
+	const negative = new RegExp(`^(?:(?:I|we)\\s+(?:have not|haven't|did not|didn't|have never|never)\\s+(?:approved|signed[ -]?off)${target}(?:\\s+yet)?|(?:Not yet,\\s*)?(?:my|our)\\s+approval\\s+(?:has not been|hasn't been|is not|isn't)\\s+(?:recorded|given))$`, 'i')
+	if (negative.test(line)) return vote !== undefined && vote < 5
+	const positive = new RegExp(`^(?:(?:I|we)\\s+(?:have\\s+)?)?(?:approved|signed[ -]?off)${target}(?:,\\s*(?:thanks|with suggestions))?$|^LGTM$`, 'i')
+	return vote !== undefined && vote >= 5 && positive.test(line)
+}
+export const reReviewAsk = (text: string) => /re[ -]?review|review again|recheck/i.test(text)
+export const approvalAsk = (text: string) => approvalMention(text) && !reReviewAsk(text)
 export const approvalOnly = (wf: Workflow) => {
 	const k = wf.work
 	if (!k || !/^(?:please\s+)?(?:review\s+(?:and|&)\s+)?(?:approve|sign[ -]?off)\s+(?:PR|pull request)\s*#?\s*\d{4,}[.!]?$/i.test(k.goal)) return false
@@ -154,11 +179,19 @@ export const approvalOnly = (wf: Workflow) => {
 	return new Set([...k.links.filter(l => /^pr:/i.test(l)), ...goal, ...ask].map(l => l.split(/[:/]/).at(-1))).size <= 1
 }
 
-export function canCloseApproval(store: Store, home: Workflow): boolean {
-	return approvalOnly(home) && !/\b(?:then|also|after|before|plus)\b|[;&]|\band\b(?!\s+approve)/i.test(home.lastAsk ?? '') && !(home.work?.parts ?? []).some(id => {
+export function pendingParts(store: Store, home: Workflow, except?: string): boolean {
+	return (home.work?.parts ?? []).filter(id => id !== except).some(id => {
 		const part = store.workflow(id)
-		return part && part.state !== 'done' && (part.pending.length || part.question || part.draft || part.state === 'running' || part.state === 'waiting_on_task' || active(part))
+		return part && (pendingEffects(part.effects).length > 0 || part.state !== 'done' && (part.pending.length || part.question || part.draft || part.state === 'running' || part.state === 'waiting_on_task' || active(part)))
 	})
+}
+
+export function canCloseReport(store: Store, home: Workflow, reporter: Workflow): boolean {
+	return !pendingParts(store, home, reporter.id) && (home === reporter || !home.pending.length && !pendingEffects(home.effects).length)
+}
+
+export function canCloseApproval(store: Store, home: Workflow): boolean {
+	return approvalOnly(home) && approvalAsk(home.lastAsk ?? '') && !/\b(?:then|also|after|before|plus)\b|[;&]|\band\b(?!\s+approve)/i.test(home.lastAsk ?? '') && !pendingParts(store, home)
 }
 
 export function statusOf(wf: Workflow): string {

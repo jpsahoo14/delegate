@@ -97,12 +97,13 @@ export class ReplaySource implements Source {
 	async close() {}
 }
 
-export type Outcome = 'reply' | 'ask' | 'job' | 'track' | 'waiting' | 'ignore' | 'not-addressed' | 'error'
+export type Outcome = 'reply' | 'ask' | 'job' | 'track' | 'waiting' | 'fyi' | 'ignore' | 'not-addressed' | 'error'
 export function outcomeOf(wf: Workflow | undefined, err?: string): Outcome {
 	if (err) return 'error'
 	if (!wf) return 'not-addressed'
 	if (wf.kind === 'tracker') return 'track'
 	if (wf.job || wf.state === 'waiting_on_task') return 'job'
+	if (wf.fyi && wf.state === 'done' && !wf.sent) return 'fyi'
 	if (wf.state === 'done' && !wf.sent) return 'ignore'
 	if (wf.question || wf.choices || /_{3,}/.test(wf.draft?.text ?? '')) return 'ask'
 	if (wf.draft?.text) return 'reply'

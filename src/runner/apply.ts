@@ -1,7 +1,7 @@
 import { answerHabit, outcome } from './habits.ts'
 import { membersOf } from './sharing.ts'
-import { active, afterSend, approvalAsk, canCloseApproval, closeWork, doneTodos, homeOf, inWork, keepTodos, linksIn, newTurn, openTodos, statusOf, step, wait } from './work.ts'
-import { asksReviewAgain, doLine, isVote, pendingEffects, prIdOf, refusal, saidLine, sameChange, vet } from '../core/effects.ts'
+import { active, afterSend, approvalAsk, approvalMention, approvalReplyMatches, canCloseApproval, closeWork, doneTodos, homeOf, inWork, keepTodos, linksIn, newTurn, openTodos, pendingParts, statusOf, step, wait } from './work.ts'
+import { asksReviewAgain, doLine, isVote, pendingEffects, prIdOf, refusal, saidLine, sameChange, sameHead, vet, voteValue } from '../core/effects.ts'
 import type { Answer, Config, Effect, Person, Workflow } from '../core/types.ts'
 import { sendGate } from '../core/gate.ts'
 import { classify, htmlToText } from '../core/intake.ts'
@@ -419,10 +419,9 @@ async function threadSince(store: Store, src: Source, cfg: Config, wf: Workflow,
 }
 
 export async function send(store: Store, src: Source, cfg: Config, wf: Workflow, text: string | undefined, by: SendBy, probe?: BuildProbe): Promise<boolean> {
-	const target = prTarget(store, wf)
 	const ref = prRefOf(store, wf)
-	const aboutPR = !!ref || wf.intent === 'pr_review' || linksIn([wf.lastAsk ?? '', ...store.thread(wf.id).filter(m => m.from.id === wf.asker?.id).map(m => m.text)].join('\n')).some(l => l.startsWith('pr:'))
-	if (approvalAsk(wf.lastAsk ?? '') && !voteDropped(wf.status) && aboutPR && !wf.effects?.some(e => e.done && isVote(e.call) && target !== undefined && target === prIdOf(e.call))) {
+	const aboutPR = !!ref || wf.intent === 'pr_review' || linksIn([text ?? '', wf.lastAsk ?? '', ...store.thread(wf.id).filter(m => m.from.id === wf.asker?.id).map(m => m.text)].join('\n')).some(l => l.startsWith('pr:'))
+	if ((approvalAsk(wf.lastAsk ?? '') && !voteDropped(wf.status) || approvalMention(text ?? '')) && aboutPR) {
 		const live = probe ?? adoProbe(cfg)
 		try {
 			if (!live?.pr) throw new Error('no live PR check is configured')
@@ -431,8 +430,27 @@ export async function send(store: Store, src: Source, cfg: Config, wf: Workflow,
 			if (!/^(active|completed|abandoned)$/i.test(st.status) || !st.votes.length && !/completed|abandoned/i.test(st.status)) throw new Error('the live PR response has no status or reviewers')
 			const mine = cfg.owner.name.trim().toLowerCase()
 			if (!/completed|abandoned/i.test(st.status) && (!mine || st.votes.filter(v => v.name.trim().toLowerCase() === mine).length !== 1)) throw new Error('the owner reviewer vote is missing or ambiguous')
+			const votes = mine ? st.votes.filter(v => v.name.trim().toLowerCase() === mine) : []
+			let vote = votes.length === 1 ? votes[0].vote : undefined
+			// Only an owed execution reply on a completed PR can use its fully scoped receipt.
+			if (mine && !wf.sent && wf.draft && /^completed$/i.test(st.status) && !st.votes.length) {
+				const askedAt = Date.parse(store.thread(wf.id).filter(m => !m.byOwner).at(-1)?.at ?? wf.createdAt)
+				const receipts = (wf.effects ?? []).filter(e => e.done && isVote(e.call) && prIdOf(e.call) === ref.id)
+				const e = receipts.length === 1 ? receipts[0] : undefined
+				if (e?.done && !e.off && !e.maybe && !e.error && Date.parse(e.done.at) >= askedAt &&
+					String(e.call?.args.project ?? '').toLowerCase() === ref.project.toLowerCase() &&
+					[ref.repo, st.repo, st.repoId].some(repo => repo && repo.toLowerCase() === String(e.call?.args.repositoryId ?? '').toLowerCase()) &&
+					(!e.head || !st.head || sameHead(e.head, st.head))) vote = voteValue(e.call)
+			}
+			if (!approvalReplyMatches(text ?? '', vote, ref.id)) {
+				Object.assign(wf, { state: 'running', draft: undefined, prDraft: undefined, sendAt: undefined, approved: undefined, status: 'The PR evidence does not support this approval reply. Redrafting.', pending: wf.pending.length ? wf.pending : wf.msgIds.slice(-1) })
+				store.log({ event: 'pr-reply-redraft', workflowId: wf.id })
+				store.save(wf)
+				return false
+			}
+			const before = wf.state
 			await probePRs(store, cfg, { ...live, pr: async () => st }, Date.now(), true, [wf])
-			if (wf.state !== 'needs_human' || !wf.draft) { store.save(wf); return false }
+			if (wf.state !== before || !wf.draft) { store.save(wf); return false }
 		} catch (e) {
 			Object.assign(wf, { state: 'needs_human', sendAt: undefined, status: `Not sent: the PR approval could not be verified (${String(e).slice(0, 160)})` })
 			store.log({ event: 'pr-send-held', code: wf.code, reason: String(e).slice(0, 160) }); store.save(wf)
@@ -484,9 +502,10 @@ export async function send(store: Store, src: Source, cfg: Config, wf: Workflow,
 	const changesOff = (wf.effects ?? []).filter(e => e.off).length
 	wf.needsMe = undefined
 	wf.sent = { msgId, at: new Date().toISOString(), text, byRule: by.ruleId, undoUntil: new Date(Date.now() + p.undoMin * 60_000).toISOString() }
+	store.save(wf, false)
 	keepTodos(wf, wf.sent.at)
 	const home = homeOf(store, wf)
-	if (home.work) { afterSend(wf, out!, msgId, home, canCloseApproval(store, home)); if (!active(home)) { stopWatch(store, home); closeFamily(store, realProcs, home, home.work.closed?.why ?? 'closed') } if (home !== wf) store.save(home) }
+	if (home.work) { afterSend(wf, out!, msgId, home, canCloseApproval(store, home), !home.pending.length && !pendingEffects(home.effects).length && !pendingParts(store, home, wf.id)); if (!active(home)) { stopWatch(store, home); closeFamily(store, realProcs, home, home.work.closed?.why ?? 'closed') } if (home !== wf) store.save(home) }
 	else close(wf, by.ruleId ? `Sent by rule ${by.ruleId}: "${text!.slice(0, 70)}"` : `Sent: "${text!.slice(0, 80)}"`)
 	// The owner's own words may promise what the draft did not: a short run checks, after the reply is out (Slice 3).
 	if (promiseDue(store, wf, by)) notePromise(store, wf, text!)

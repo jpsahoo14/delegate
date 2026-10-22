@@ -1,6 +1,6 @@
 import { CMD } from '../brand.ts'
 import { blockerOf } from './retry.ts'
-import { active, addPart, homeOf, label, mergeWork, settle, step } from './work.ts'
+import { active, addPart, canCloseReport, homeOf, mergeReportWork, settle, step } from './work.ts'
 import { assertTestSafe } from '../store/fs.ts'
 import { closeFamily } from './apply.ts'
 import { realProcs } from './jobs.ts'
@@ -22,10 +22,10 @@ import { buildAskPrompt, buildPrompt } from '../worker/prompt.ts'
 import { corrections } from '../store/feedback.ts'
 import { levelOf } from '../core/levels.ts'
 import { CLI } from '../paths.ts'
-import { joinInto, say, splitOff } from './intake.ts'
+import { auditSkip, joinInto, say, splitOff } from './intake.ts'
 import { ackJob, afterDraft, ownerActive } from './autosend.ts'
 import { attachJob, carry } from './jobs.ts'
-import { isVote, refusedAsk, sameChange, vet } from '../core/effects.ts'
+import { isVote, pendingEffects, refusedAsk, sameChange, vet } from '../core/effects.ts'
 import { probePRs, prTarget, voteNow, type BuildProbe } from './probe.ts'
 import { checkPromise, failPromise, promisesDue } from './promise.ts'
 import { heldBy } from './owner.ts'
@@ -50,9 +50,13 @@ export async function dispatch(store: Store, src: Source, cfg: Config, run: RunW
 	const room = cap - store.runsToday()
 	const running = store.workflows().filter(w => w.state === 'running' && heldBy(store, w) !== 'window').sort((a, b) => a.updatedAt.localeCompare(b.updatedAt))
 	// The week before setup is drafted behind live asks, a few per check, within half of the day's runs (first-sweep.md).
-	const paced = running.filter(w => w.paced).slice(0, store.runsToday() < cap / 2 ? cfg.maxParallel : 0)
+	const paced = running.filter(w => w.paced).sort((a, b) => Number(!!a.startedBy) - Number(!!b.startedBy)).slice(0, store.runsToday() < cap / 2 ? cfg.maxParallel : 0)
 	const queue = [...running.filter(w => !w.paced), ...paced].slice(0, Math.max(0, room))
-	for (const w of queue) if (w.paced) { w.paced = undefined; store.save(w, false) }
+	for (const w of running.filter(w => !queue.includes(w) && !w.intakeDeferred)) {
+		for (const msgId of w.pending) auditSkip(store, w.chat.id, msgId, 'budget-deferred', w.id)
+		w.intakeDeferred = true; store.save(w, false)
+	}
+	for (const w of queue) if (w.paced || w.intakeDeferred) { w.paced = undefined; w.intakeDeferred = undefined; store.save(w, false) }
 	let done = 0
 	// The owner's questions about an item run after drafting, in the item's session, and never change it (design-spec S12).
 	const asks = store.workflows().filter(w => w.notes?.some(n => n.a === undefined) && w.state !== 'running' && heldBy(store, w) !== 'window' && !(w.job && store.job(w.job)?.state === 'running'))
@@ -194,16 +198,24 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 	const report = store.peekReport(wf.id, runId) ?? salvaged
 	store.log({ event: 'worker', ...(salvaged ? { salvaged: true } : {}), workflowId: wf.id, code: wf.code, runId, exitCode: res.exitCode, ms: res.ms, intent: report?.intent, summary: report?.summary, sources: report?.reply?.sources, commitment: report?.reply?.commitment, error: res.error, ...ran('draft', res.used) })
 	const fresh = store.workflow(wf.id) ?? wf
+	if (report && (fresh.pending.some(id => !wf.pending.includes(id)) || report.work?.closed && pendingEffects(fresh.effects).length)) {
+		const newer = fresh.pending.some(id => !wf.pending.includes(id))
+		Object.assign(fresh, { state: newer ? 'running' : 'needs_human', approved: undefined, status: newer ? 'New asks arrived during this run. Checking them next.' : 'Earlier changes are still unverified. Review them before closing this work.' })
+		store.log({ event: 'report-held', workflowId: fresh.id, reason: newer ? 'newer-ask' : 'unverified-effects' })
+		store.save(fresh)
+		store.archiveReport(wf.id, runId)
+		return
+	}
 	const into = report?.same ? others.find(o => o.code === report.same!.toUpperCase()) : undefined
 	if (into && joinInto(store, fresh, store.workflow(into.id) ?? into)) { store.archiveReport(wf.id, runId); return }
 	const auth = !report && AUTH.test(res.error ?? '')
 	store.setHealth('agent-auth', auth ? `The AI CLI is not signed in on ${store.machine}. Run "${cfg.agent.command.join(' ')}" once and sign in.` : undefined)
 	if (!report) Object.assign(fresh, { state: 'needs_human', status: auth ? 'Waiting for the AI CLI sign-in' : 'The worker did not finish', question: auth ? 'Sign in, then answer or skip this item' : 'Check this item, then answer or skip it' })
-	else if (report.job) { fresh.intent = report.intent; const h = family(store, fresh, report); mergeWork(h, report.work); if (h !== fresh) store.save(h); attachJob(store, cfg, fresh, report.job) }
+	else if (report.job) { fresh.intent = report.intent; const h = family(store, fresh, report); mergeReportWork(fresh, report, h, undefined, false); if (h !== fresh) store.save(h); attachJob(store, cfg, fresh, report.job) }
 	else {
 		// The home is read and written in one synchronous step, so a part's run and the home's run never overwrite each other (review part 2 #4).
 		const h = family(store, fresh, report)
-		applyReport(fresh, checked(store, cfg, report), h)
+		applyReport(fresh, checked(store, cfg, report), h, canCloseReport(store, h, fresh))
 		if (fresh.draft) fresh.prDraft = wf.prRead
 		if (report.goalMet === false) store.log({ event: 'short-of-goal', workflowId: fresh.id, code: fresh.code, kind: blockerOf(report.blocker).kind, why: blockerOf(report.blocker).why, tried: blockerOf(report.blocker).tried })
 		// Closed with a last reply: the family closes when that reply is sent; without one, now.
@@ -239,7 +251,7 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 	fresh.drewOn = drewOn.length ? drewOn : undefined
 	fresh.shareHold = drewOn.length ? await sharingHold(store, src, fresh, drewOn) : undefined
 	if (report && !report.job) await afterDraft(store, src, cfg, fresh)
-	if (report && !report.job && fresh.state === 'done' && fresh.closedBy === 'nothing') for (const msgId of wf.pending) store.log({ event: 'intake-skip', chat: wf.chat.id, msgId, code: wf.code, reason: fresh.fyi ? 'judged FYI; no reply' : 'judged no owner action or relevant news' })
+	if (report && !report.job && fresh.state === 'done' && fresh.closedBy === 'nothing') for (const msgId of wf.pending) auditSkip(store, wf.chat.id, msgId, fresh.fyi ? 'ai-fyi' : 'ai-noise', wf.id)
 	if (report?.job) await ackJob(store, src, cfg, fresh)
 	store.save(fresh)
 	store.archiveReport(wf.id, runId)
@@ -278,12 +290,12 @@ export function checked(store: Store, cfg: Config, r: Report): Report {
 	return r.reply ? { ...r, reply: { ...r.reply, sources: resolveEvidence(knowledgeOf(store, cfg), cfg, r.reply.sources, store.root) } } : r
 }
 
-export function applyReport(wf: Workflow, r: Report, home = wf) {
-	const changedAsk = r.work?.changedAsk && wf.pending.includes(r.work.changedAsk) && wf.msgIds.includes(r.work.changedAsk) ? r.work.changedAsk : undefined
+export function applyReport(wf: Workflow, r: Report, home = wf, allowClose = true) {
+	const changedAsk = home === wf && r.work?.changedAsk && wf.pending.includes(r.work.changedAsk) && wf.msgIds.includes(r.work.changedAsk) ? r.work.changedAsk : undefined
 	wf.intent = r.intent
 	wf.pending = []
 	const fresh = !home.work
-	mergeWork(home, r.work, undefined, home === wf ? '' : label(wf, home), changedAsk)
+	mergeReportWork(wf, r, home, changedAsk, allowClose)
 	// A candidate from the owner's own message is shown for ok before it is tracked (R-WRK-11).
 	if (wf.startedBy === 'owner' && fresh && home.work && home === wf) {
 		home.work.proposed = true

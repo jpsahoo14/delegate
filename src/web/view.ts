@@ -1,4 +1,4 @@
-import { homeOf } from '../runner/work.ts'
+import { homeOf, openTodos } from '../runner/work.ts'
 import type { Automation, Choices, Fact, Meeting, Note, Proposal, Workflow } from '../core/types.ts'
 import { asksReviewAgain, isVote, meaningParts, pendingEffects, reviewAgainCmd, shown, type Meaning } from '../core/effects.ts'
 import { voteDropped } from '../runner/probe.ts'
@@ -13,7 +13,7 @@ import { NAME } from '../brand.ts'
 import type { versionInfo } from '../os/autoupdate.ts'
 import type { settingsView } from './settings.ts'
 import type { UiChoice } from '../store/state.ts'
-import type { NextView } from './next.ts'
+import { place, snapshot, type NextView } from './next.ts'
 
 // The one shape every surface renders: the browser page, the chat panel, and the synced snapshot (design-spec/data.md).
 // Only what the owner should see: no ids, paths, or raw citations.
@@ -276,19 +276,22 @@ export function view(store: Store, since: string | undefined, now = new Date()):
 	const from = since ?? new Date(now.getTime() - 86_400_000).toISOString()
 	const wfs = store.workflows()
 	const g = groups(wfs, from)
+	const placements = place(snapshot(store))
+	const represented = new Set(placements.map(r => r.act))
+	const todos = new Set(placements.filter(r => r.rule === 'todo').map(r => r.act))
 	// A tracker needs the owner only when it proposes changes or asks something; otherwise it lives under Ongoing.
-	const needs = g.needs.filter(w => w.kind !== 'tracker' || pendingEffects(w.effects).length || w.question).map(w => card(store, w))
+	const needs = g.needs.filter(w => represented.has(w.code) && !todos.has(w.code) && (w.kind !== 'tracker' || pendingEffects(w.effects).length || w.question)).map(w => card(store, w))
 	const kp = store.proposals().filter(p => p.state === 'needs_human').sort((a, b) => a.createdAt.localeCompare(b.createdAt)).map(knowledge)
 	// Done keeps a week of history; only what is new since the owner last looked counts on Home (dogfood: replies vanished after a restart).
 	const week = new Date(now.getTime() - 7 * 86_400_000).toISOString()
 	const done = doneRows(store, from < week ? from : week).map(r => ({ ...r, fresh: r.at > from }))
 	const autos = store.automations().filter(a => a.state !== 'ended').map(a => ({ code: a.code, sentence: describe(a).replace(/^R\d+ · /, ''), to: a.to.name, text: a.text, when: when(a.schedule), state: a.state, why: a.why, next: a.next, count: a.count, rev: a.updatedAt }))
-	const watching = g.watching.map(w => ({ code: w.code, what: (w.lastAsk ?? '').replace(/^Watch /, '').replace(` until ${DEFAULT_UNTIL}`, ''), last: w.status, changedAt: w.changedAt, update: !!w.changedAt && w.changedAt > from && (!w.ackAt || w.changedAt > w.ackAt), rev: w.revAt ?? w.updatedAt , every: (w.job ? store.job(w.job) : undefined)?.every, endsAt: (w.job ? store.job(w.job) : undefined)?.endsAt, by: w.watchBy, nextAt: (w.job ? store.job(w.job) : undefined)?.nextAt, from: w.watchFrom === 'catchup' ? wfs.find(x => x.watchedAs === w.code)?.code : undefined }))
-	const progress = wfs.filter(w => w.state === 'open' && homeOf(store, w).work).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map(w => {
-		const k = homeOf(store, w).work!, job = k.watch ? store.job(k.watch) : undefined, last = k.steps.at(-1)
-		return { code: w.code, who: who(w.asker?.name), chat: w.chat.name, goal: k.goal, status: w.status, last: last && { at: last.at, what: last.what }, next: nextOf(k), checkAt: k.checkAt, every: job?.every, endsAt: job?.every ? job.endsAt : undefined, rev: w.updatedAt }
+	const watching = g.watching.filter(w => represented.has(w.code) && !todos.has(w.code)).map(w => ({ code: w.code, what: (w.lastAsk ?? '').replace(/^Watch /, '').replace(` until ${DEFAULT_UNTIL}`, ''), last: w.status, changedAt: w.changedAt, update: !!w.changedAt && w.changedAt > from && (!w.ackAt || w.changedAt > w.ackAt), rev: w.revAt ?? w.updatedAt , every: (w.job ? store.job(w.job) : undefined)?.every, endsAt: (w.job ? store.job(w.job) : undefined)?.endsAt, by: w.watchBy, nextAt: (w.job ? store.job(w.job) : undefined)?.nextAt, from: w.watchFrom === 'catchup' ? wfs.find(x => x.watchedAs === w.code)?.code : undefined }))
+	const progress = wfs.filter(w => represented.has(w.code) && (todos.has(w.code) || w.state === 'open' || w.state === 'waiting_on_sender')).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map(w => {
+		const k = homeOf(store, w).work, job = k?.watch ? store.job(k.watch) : undefined, last = k?.steps.at(-1)
+		return { code: w.code, who: who(w.asker?.name), chat: w.chat.name, goal: k?.goal ?? w.lastAsk ?? w.status, status: w.status, last: last && { at: last.at, what: last.what }, next: todos.has(w.code) ? `You: ${openTodos(w).map(t => t.text).join('; ')}` : k ? nextOf(k) : undefined, checkAt: k?.checkAt, every: job?.every, endsAt: job?.every ? job.endsAt : undefined, rev: w.updatedAt }
 	})
-	const running = [...g.running.map(w => ({ code: w.code, what: w.status, who: w.asker?.name, since: w.waitingSince ?? w.updatedAt })), ...bootLines(store).map(b => ({ code: '', what: b.what, since: b.since, ...(b.total ? { progress: (b.done ?? 0) / b.total } : {}) }))]
+	const running = [...g.running.filter(w => represented.has(w.code) && !todos.has(w.code)).map(w => ({ code: w.code, what: w.status, who: w.asker?.name, since: w.waitingSince ?? w.updatedAt })), ...bootLines(store).map(b => ({ code: '', what: b.what, since: b.since, ...(b.total ? { progress: (b.done ?? 0) / b.total } : {}) }))]
 	const state = c.stopped ? 'stopped' : c.paused || cfg.paused ? 'paused' : 'on'
 	const health = Object.entries(store.health()).map(([key, h]) => ({ key, text: h.text, since: h.since, fix: key === 'source' ? { label: 'Try again', command: 'retry' } : undefined }))
 	if (state !== 'on') health.unshift({ key: 'paused', text: state === 'stopped' ? `${NAME} is stopped. It is not reading your chats.` : `${NAME} is paused. It keeps drafting, and sends nothing.`, since: '', fix: { label: 'Resume', command: 'resume' } })

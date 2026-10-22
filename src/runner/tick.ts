@@ -83,7 +83,7 @@ export async function tick(store: Store, deps: { source?: Source; run?: RunWorke
 			// Without chats, pause and stop from the AI chat still apply, and runs are still supervised (review 01-04 P1-7).
 			if (answers) await applyAnswers(store, src, cfg, procs, true)
 			checkOpen(store, procs, procs.bootMs?.())
-			await checkJobs(store, src, cfg, procs)
+			await checkJobs(store, src, cfg, procs, deps.probe)
 			return { skipped: 'source unavailable', ...empty, ms: Date.now() - t0 }
 		}
 		let commands: number
@@ -91,7 +91,7 @@ export async function tick(store: Store, deps: { source?: Source; run?: RunWorke
 		// Saved at once: answers are queued, so a later failure must not re-read the same commands.
 		store.saveCursors(cursors)
 		// Finished reports land before the owner's answers, so an ok never acts on a turn that news already replaced (review P0.4).
-		const jobsEarly = await checkJobs(store, src, cfg, procs)
+		const jobsEarly = await checkJobs(store, src, cfg, procs, deps.probe)
 		legacyEffects(store)
 		settleCompleted(store, procs)
 		// The owner's ok re-reads a pull request before voting on it, through the same read the PR checks use.
@@ -103,7 +103,7 @@ export async function tick(store: Store, deps: { source?: Source; run?: RunWorke
 		const answers = await applyAnswers(store, src, cfg, procs, false, probe)
 		const closeProbe = () => { if (!deps.probe) void probe?.close?.().catch(() => undefined) }
 		// Stopped means no reading or drafting, but runs already started are still watched and their budgets enforced (tester P1-10).
-		if (store.control().stopped) { closeProbe(); store.setHealth('source'); checkOpen(store, procs, procs.bootMs?.()); await checkJobs(store, src, cfg, procs); reschedule(store, cfg, false, t0); return { skipped: 'stopped', commands, answers, asks: 0, runs: 0, nudged: false, ms: Date.now() - t0 } }
+		if (store.control().stopped) { closeProbe(); store.setHealth('source'); checkOpen(store, procs, procs.bootMs?.()); await checkJobs(store, src, cfg, procs, deps.probe); reschedule(store, cfg, false, t0); return { skipped: 'stopped', commands, answers, asks: 0, runs: 0, nudged: false, ms: Date.now() - t0 } }
 		planSweep(store)
 		let found: Awaited<ReturnType<typeof discover>>, asks: number
 		const before = store.chats()
@@ -132,7 +132,7 @@ export async function tick(store: Store, deps: { source?: Source; run?: RunWorke
 		const runs = await dispatch(store, src, cfg, deps.run, probe).finally(closeProbe)
 		// Jobs run detached: the tick starts and checks them, and never waits (R-LNG-02).
 		const handedBack = checkOpen(store, procs, procs.bootMs?.())
-		const jobsDone = await checkJobs(store, src, cfg, procs)
+		const jobsDone = await checkJobs(store, src, cfg, procs, deps.probe)
 		saveLearned(store)
 		try { closeDead(store.root, store.machine) } catch (e) { store.log({ event: 'sessions-sweep-failed', error: String(e).slice(0, 200) }) }
 		const h = deps.history ?? historyFor(cfg)
@@ -146,7 +146,7 @@ export async function tick(store: Store, deps: { source?: Source; run?: RunWorke
 			try { await readOwnerCommands(store, src, cursors); store.saveCursors(cursors) } catch (e) { store.log({ event: 'controls-reread-failed', error: String(e).slice(0, 200) }) }
 		}
 		await applyAnswers(store, src, cfg, procs, true)
-		const autoSent = await dueSends(store, src, cfg) + await dueAutomations(store, src, cfg)
+		const autoSent = await dueSends(store, src, cfg, deps.probe) + await dueAutomations(store, src, cfg)
 		const nudged = await nudge(store, src, cfg)
 		// Habit suggestions wait until nothing needs a reply, and are told once (R-HAB-01, review: not a second inbox).
 		try {

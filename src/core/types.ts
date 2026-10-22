@@ -178,6 +178,7 @@ export type Workflow = {
 	intent?: Intent
 	// PR identity, status, head and owner vote read before drafting; the reply keeps that basis until the next turn.
 	prRead?: string
+	prUnknown?: true
 	prDraft?: string
 	completionSeen?: string
 	draft?: Draft
@@ -221,6 +222,7 @@ export type Workflow = {
 	kept?: Todo[]
 	follow?: Follow
 	work?: Work
+	closeWorkAfterSend?: string
 	// A part: this chat's item for work whose record lives on another item (dev-spec/work.md part 2).
 	partOf?: Id
 	// Why this draft may not go by itself: it drew on a conversation not everyone in this chat is in (R-SHR-01).
@@ -246,6 +248,7 @@ export type Workflow = {
 	before?: true
 	// Its first draft waits behind live asks, a few per check.
 	paced?: true
+	intakeDeferred?: true
 	// AI runs that could not start in a row; at 3 it waits for the owner (review 10-20 R3).
 	startFails?: number
 	// Why an item closed with no reply sent by Delegate: the owner replied in Teams, skipped it, there was nothing to answer,
