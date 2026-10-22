@@ -21623,9 +21623,12 @@ var init_state = __esm({
         this.w(this.p("state", "runs.json"), { day: localDay(), n: this.runsToday() + 1 });
       }
       // What applying each queued action said, by answer id, so the page or panel that acted shows the real result.
-      addOutcome(id, text3) {
+      addOutcome(id, text3, refused = false) {
         const all = readJson(this.p("state", "outcomes.json"), []);
-        this.w(this.p("state", "outcomes.json"), [...all, { id, text: text3, at: (/* @__PURE__ */ new Date()).toISOString() }].slice(-100));
+        this.w(this.p("state", "outcomes.json"), [...all, { id, text: text3, at: (/* @__PURE__ */ new Date()).toISOString(), ...refused ? { refused: true } : {} }].slice(-100));
+      }
+      outcomeRefused(id) {
+        return readJson(this.p("state", "outcomes.json"), []).some((result) => result.id === id && result.refused);
       }
       pruneOutcomes(before) {
         this.w(this.p("state", "outcomes.json"), readJson(this.p("state", "outcomes.json"), []).filter((o) => (o.at ?? "") >= before));
@@ -21926,6 +21929,16 @@ var init_state = __esm({
       savePageSubmission(submission) {
         if (!/^[a-f0-9-]{36}$/i.test(submission.id)) throw new Error("Invalid page submission identity.");
         this.w(this.p("state", "page-submissions", `${submission.id}.json`), submission);
+      }
+      completePageSubmission(answer, text3, refused = false) {
+        if (!answer.pageSubmissionId) return;
+        const record2 = this.pageSubmission(answer.pageSubmissionId);
+        if (!record2) {
+          this.log({ event: "page-receipt-missing", id: answer.id, code: answer.code });
+          return;
+        }
+        const detail = text3 ? record2.processed ? `${record2.text} ${text3}` : text3 : record2.processed ? record2.text : "No result detail was recorded. Open the item to verify what happened.";
+        this.savePageSubmission({ ...record2, phase: "queued", accepted: true, ids: [answer.id], processed: true, text: detail, refused: !!record2.refused || refused });
       }
       answers() {
         return listJson(this.p("state", "answers")).map((file2) => ({ file: file2, answer: readJson(file2, null) }));
@@ -40774,13 +40787,16 @@ function started(store2, t2) {
   return { text: `Watching ${t2.target} as ${code}${t2.by ? `, by ${t2.by}` : ""}. I'll tell you when it is done or needs you.`, accepted: true, code };
 }
 function watchItem(store2, wf, body) {
+  const input2 = parseWatch(body);
+  return watchItemTarget(store2, wf, { target: input2.target, until: input2.until, by: input2.by, shepherd: input2.push });
+}
+function watchItemTarget(store2, wf, input2) {
   if (wf.state !== "done" || !wf.fyi) return { text: `${wf.code} is not in Catch up, so there is nothing to watch from it. To watch something else, say "watch: <what should get done>".`, accepted: false };
   const live2 = wf.watchedAs ? store2.byCode(wf.watchedAs) : void 0;
   if (live2 && live2.state !== "done") return { text: `${wf.code} is already watched as ${live2.code}.`, accepted: true, code: live2.code };
-  const w = parseWatch(body);
   const link2 = teamsLink(wf);
-  const target2 = w.target ?? wf.fyi.watch?.target ?? wf.fyi.line;
-  const r = started(store2, { target: target2, until: w.until ?? wf.fyi.watch?.until, by: w.by, endsAt: w.by ? void 0 : weekOut(), shepherd: w.push || void 0, from: "catchup", link: link2 });
+  const target2 = input2.target ?? wf.fyi.watch?.target ?? wf.fyi.line;
+  const r = started(store2, { target: target2, until: input2.until ?? wf.fyi.watch?.until, by: input2.by, endsAt: input2.by ? void 0 : weekOut(), shepherd: input2.shepherd || void 0, from: "catchup", link: link2 });
   if (r.code) {
     const src = store2.byCode(wf.code);
     src.watchedAs = r.code;
@@ -40791,10 +40807,13 @@ function watchItem(store2, wf, body) {
 function watchSomething(store2, body) {
   const w = parseWatch(body);
   if (!w.target) return { text: 'Say what to watch, for example "watch: PR 1601234 merged by 2026-10-23".', accepted: false };
-  const until = w.until ?? DEFAULT_UNTIL;
-  const live2 = store2.workflows().find((x) => x.kind === "tracker" && x.state !== "done" && x.watchFrom === "owner" && x.lastAsk === `Watch ${w.target} until ${until}`);
-  if (live2) return { text: `Already watching ${w.target} as ${live2.code}.`, accepted: true, code: live2.code };
-  return started(store2, { target: w.target, until, by: w.by, endsAt: w.by ? void 0 : weekOut(), shepherd: w.push || void 0, from: "owner" });
+  return watchTarget(store2, { target: w.target, until: w.until, by: w.by, shepherd: w.push || void 0 });
+}
+function watchTarget(store2, input2) {
+  const until = input2.until ?? DEFAULT_UNTIL;
+  const live2 = store2.workflows().find((x) => x.kind === "tracker" && x.state !== "done" && x.watchFrom === "owner" && x.lastAsk === `Watch ${input2.target} until ${until}`);
+  if (live2) return { text: `Already watching ${input2.target} as ${live2.code}.`, accepted: true, code: live2.code };
+  return started(store2, { ...input2, until, endsAt: input2.by ? void 0 : weekOut(), from: "owner" });
 }
 function startFollow(store2, f, now = Date.now()) {
   let code = "";
@@ -42132,9 +42151,9 @@ function itemRows(store2, codes, wfs = store2.workflows()) {
   for (const w of wfs) if (w.code && want.has(w.code)) out[w.code] = itemRow2(store2, w) ?? { code: w.code, kind: "closed", who: who(w.asker?.name), sentence: `${w.asker?.name ?? "Someone"}: ${w.status.replace(/: ".*$/s, "")}`, by: "", at: w.updatedAt, teams: teamsOf(w) };
   return out;
 }
-function doneRows(store2, since) {
+function doneRows(store2, since, workflows = store2.workflows()) {
   const rows = [];
-  for (const w of store2.workflows().filter((w2) => (w2.state === "done" || w2.state === "open" && w2.sent) && w2.code && (w2.intent !== "none" || w2.fyi) && w2.updatedAt > since && w2.kind !== "tracker")) {
+  for (const w of workflows.filter((w2) => (w2.state === "done" || w2.state === "open" && w2.sent) && w2.code && (w2.intent !== "none" || w2.fyi) && w2.updatedAt > since && w2.kind !== "tracker")) {
     const r = itemRow2(store2, w), name = w.asker?.name ?? "Someone";
     if (r) rows.push(r);
     for (const e of (w.effects ?? []).filter((e2) => e2.done)) if (!(w.intent === "pr_review" && COMMENT.test(e.action))) rows.push({ code: w.code, kind: "change", who: who(name), sentence: shown(e).line, by: shown(e).system, at: e.done.at, own: true, href: /^https:\/\//.test(e.done?.ref ?? "") ? e.done.ref : void 0 });
@@ -42172,10 +42191,10 @@ function tiles(store2, since, needs, done2) {
   ];
   return t2.filter((x) => x.key === "needs" || x.count > 0);
 }
-function view(store2, since, now = /* @__PURE__ */ new Date()) {
+function view(store2, since, now = /* @__PURE__ */ new Date(), workflows = store2.workflows()) {
   const cfg = store2.config(), c = store2.control();
   const from = since ?? new Date(now.getTime() - 864e5).toISOString();
-  const wfs = store2.workflows();
+  const wfs = workflows;
   const g = groups(wfs, from);
   const placements = place(snapshot(store2));
   const represented = new Set(placements.map((r) => r.act));
@@ -42183,7 +42202,7 @@ function view(store2, since, now = /* @__PURE__ */ new Date()) {
   const needs = g.needs.filter((w) => represented.has(w.code) && !todos.has(w.code) && (w.kind !== "tracker" || pendingEffects(w.effects).length || w.question)).map((w) => card(store2, w));
   const kp = store2.proposals().filter((p) => p.state === "needs_human").sort((a, b) => a.createdAt.localeCompare(b.createdAt)).map(knowledge);
   const week = new Date(now.getTime() - 7 * 864e5).toISOString();
-  const done2 = doneRows(store2, from < week ? from : week).map((r) => ({ ...r, fresh: r.at > from }));
+  const done2 = doneRows(store2, from < week ? from : week, wfs).map((r) => ({ ...r, fresh: r.at > from }));
   const autos = store2.automations().filter((a) => a.state !== "ended").map((a) => ({ code: a.code, sentence: describe3(a).replace(/^R\d+ · /, ""), to: a.to.name, text: a.text, when: when(a.schedule), state: a.state, why: a.why, next: a.next, count: a.count, rev: a.updatedAt }));
   const watching = g.watching.filter((w) => represented.has(w.code) && !todos.has(w.code)).map((w) => ({ code: w.code, what: (w.lastAsk ?? "").replace(/^Watch /, "").replace(` until ${DEFAULT_UNTIL}`, ""), last: w.status, changedAt: w.changedAt, update: !!w.changedAt && w.changedAt > from && (!w.ackAt || w.changedAt > w.ackAt), rev: w.revAt ?? w.updatedAt, every: (w.job ? store2.job(w.job) : void 0)?.every, endsAt: (w.job ? store2.job(w.job) : void 0)?.endsAt, by: w.watchBy, nextAt: (w.job ? store2.job(w.job) : void 0)?.nextAt, from: w.watchFrom === "catchup" ? wfs.find((x) => x.watchedAs === w.code)?.code : void 0 }));
   const progress2 = wfs.filter((w) => represented.has(w.code) && (todos.has(w.code) || w.state === "open" || w.state === "waiting_on_sender")).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map((w) => {
@@ -44297,6 +44316,7 @@ function pageAnswerRefusal(answer, workflow, automation2, proposal) {
     return void 0;
   }
   if (guard.kind === "undo-send" && (!workflow?.sent || workflow.sent.msgId !== guard.sentMessageId)) return "That reply is no longer the current sent reply. Nothing was deleted.";
+  if (guard.kind === "feedback-send" && (!workflow?.sent || workflow.sent.msgId !== guard.sentMessageId)) return "That reply changed. Nothing was sent, deleted or redrafted. Open its current activity first.";
   const current = workflow ? workflowApprovalRev(workflow) : automation2 ? automationApprovalRev(automation2) : proposal ? proposalApprovalRev(proposal) : void 0;
   return current !== guard.expect ? "Changed since you looked. Nothing was sent or changed. Open the new version first." : void 0;
 }
@@ -44318,6 +44338,8 @@ var init_page_approval = __esm({
       question: workflow.question,
       meeting: workflow.meeting,
       sent: workflow.sent?.msgId,
+      fyi: workflow.fyi,
+      watchedAs: workflow.watchedAs,
       todos: workflow.kept?.filter((todo) => !todo.done).map((todo) => [todo.id, todo.text, todo.at]),
       work: workflow.work && { goal: workflow.work.goal, next: workflow.work.next, proposed: workflow.work.proposed }
     });
@@ -44352,7 +44374,7 @@ async function applyAnswers(store2, src, cfg, procs = realProcs, controlsOnly = 
         }
         const refusal2 = pageAnswerRefusal(answer, wf, answer.code.startsWith("R") ? store2.automation(answer.code) : void 0, kp);
         if (refusal2) {
-          await reply(store2, src, answer, `${MARK} ${refusal2}`);
+          await reply(store2, src, answer, `${MARK} ${refusal2}`, true);
           store2.doneAnswer(file2);
           store2.log({ event: "page-answer-refused", code: answer.code, verb: answer.verb, reason: refusal2 });
           n++;
@@ -44385,10 +44407,11 @@ ${nextProposal(store2, kp.code, answer.surface === "self" ? 6 : Infinity)}`}`).s
         Object.assign(wf, { state: "needs_human", status: `Could not send: ${why2}. Reply "ok ${wf.code}" to retry` });
         store2.save(wf);
       }
-      await reply(store2, src, answer, `${MARK} ${answer.verb} ${answer.code} failed: ${why2}`);
+      await reply(store2, src, answer, `${MARK} ${answer.verb} ${answer.code} failed: ${why2}`, true);
     }
     store2.doneAnswer(file2);
     store2.addOutcome(answer.id, "");
+    store2.completePageSubmission(answer);
     store2.log({ event: "answer", workflowId: wf?.id, code: answer.code, verb: answer.verb, surface: answer.surface, text: answer.text });
     n++;
   }
@@ -44870,8 +44893,12 @@ function replyContext(wf, text3 = "", all = {}, ownerId = "") {
     mentions: people.filter((p) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(p.id)).map((p) => ({ id: p.id, name: p.name }))
   };
 }
-async function reply(store2, src, a, text3) {
-  if (a.id) store2.addOutcome(a.id, text3.replace(new RegExp(`^${MARK}\\s*`), ""));
+async function reply(store2, src, a, text3, refused = false) {
+  if (a.id) {
+    const detail = text3.replace(new RegExp(`^${MARK}\\s*`), "");
+    store2.addOutcome(a.id, detail, refused);
+    store2.completePageSubmission(a, detail, refused);
+  }
   if (a.surface === "chat" || a.surface === "panel") return store2.addReceipt(text3.replace(new RegExp(`^${MARK}\\s*`), ""));
   if (a.surface !== "self") return;
   try {
@@ -50051,9 +50078,9 @@ function actResult(store2, command, shownAt, from = "chat") {
   if (!parsed) return { text: 'I did not understand. Use a verb and a code, for example "ok A7" or "A7: Oct 24 works".', accepted: false, ids: [] };
   return enqueueParsed(store2, parsed, shownAt, from);
 }
-function enqueueParsed(store2, parsed, shownAt, from = "page", answerId, page2) {
+function enqueueParsed(store2, parsed, shownAt, from = "page", answerId, page2, pageSubmissionId) {
   if (answerId && parsed.length !== 1) throw new Error("A page submission must target exactly one action.");
-  const write = (answer) => store2.writeAnswer({ ...answer, ...page2 ? { page: page2, ...page2.todoIds ? { todos: page2.todoIds } : {} } : {} }, answerId);
+  const write = (answer) => store2.writeAnswer({ ...answer, ...page2 ? { page: page2, ...page2.todoIds ? { todos: page2.todoIds } : {} } : {}, ...pageSubmissionId ? { pageSubmissionId } : {} }, answerId);
   let shown2 = 0;
   const out = [];
   const ids = [];
@@ -50207,24 +50234,24 @@ init_next();
 init_paths();
 import { readFileSync as readFileSync22 } from "node:fs";
 import { join as join28, basename as basename3 } from "node:path";
-var directory = () => join28(ROOT, "dist", "web-react");
-function reactAssets() {
-  const manifest = JSON.parse(readFileSync22(join28(directory(), ".vite", "manifest.json"), "utf8"));
+var directory = (root) => join28(root, "dist", "web-react");
+function reactAssets(root = ROOT) {
+  const manifest = JSON.parse(readFileSync22(join28(directory(root), ".vite", "manifest.json"), "utf8"));
   return new Set(Object.values(manifest).flatMap((e) => [e.file, ...e.css ?? [], ...e.assets ?? []]));
 }
-function reactPage(token) {
-  reactAssets();
-  return readFileSync22(join28(directory(), "index.html"), "utf8").replaceAll("__PAGE_TOKEN__", encodeURIComponent(token)).replace(
+function reactPage(token, root = ROOT) {
+  reactAssets(root);
+  return readFileSync22(join28(directory(root), "index.html"), "utf8").replaceAll("__PAGE_TOKEN__", encodeURIComponent(token)).replace(
     /(src|href)="\.\/([^"]+)"/g,
     (_, attribute, file2) => `${attribute}="/web-react/${file2}?t=${encodeURIComponent(token)}"`
   );
 }
-function reactAsset(path, token) {
-  const assets = reactAssets();
+function reactAsset(path, token, root = ROOT) {
+  const assets = reactAssets(root);
   if (!assets.has(path)) return void 0;
   const js = path.endsWith(".js"), css = path.endsWith(".css");
   if (!js && !css) return void 0;
-  let content = readFileSync22(join28(directory(), path), "utf8");
+  let content = readFileSync22(join28(directory(root), path), "utf8");
   if (js) for (const file2 of assets) for (const value of [file2, `./${basename3(file2)}`, `../${file2}`]) {
     for (const quote of ['"', "'", "`"]) content = content.replaceAll(`${quote}${value}${quote}`, `${quote}${value}?t=${encodeURIComponent(token)}${quote}`);
   }
@@ -50263,6 +50290,7 @@ var change = external_exports.object({
   action: text2,
   detail: optional2,
   meaning: external_exports.array(external_exports.object({ text: text2, warn: external_exports.boolean().optional() })).optional(),
+  error: optional2,
   state: external_exports.enum(["proposed", "approved", "made", "uncertain", "left-out"])
 });
 var draft = external_exports.object({ id: text2, itemId: text2, rev: text2, text: text2, commitment: external_exports.boolean(), preview: external_exports.boolean(), holding: external_exports.boolean().optional() });
@@ -50278,6 +50306,7 @@ var item = external_exports.object({
   personId: text2,
   chatId: text2,
   at: text2,
+  askAt: optional2,
   ask: optional2,
   thread: external_exports.array(thread),
   newCount: external_exports.number(),
@@ -50290,14 +50319,17 @@ var item = external_exports.object({
   context: external_exports.array(context).optional(),
   meeting: external_exports.object({ subject: text2, start: text2, minutes: external_exports.number(), attendees: strings }).optional(),
   changeIds: strings,
+  effectIds: strings.optional(),
   sourceIds: strings,
   noteIds: strings,
   todoIds: strings,
   actionIds: strings,
+  primaryActionId: optional2,
   workId: optional2,
   job: optional2,
   why,
   status: text2,
+  attention: optional2,
   openOn: optional2,
   teams: optional2,
   debug: strings.optional(),
@@ -50315,7 +50347,9 @@ var action = external_exports.object({
   expect: optional2,
   input: optional2,
   needsConfirm: external_exports.boolean().optional(),
-  meaning: optional2
+  meaning: optional2,
+  expiresAt: optional2,
+  selection: external_exports.object({ total: external_exports.number().int().nonnegative(), verb: text2, singular: text2, plural: text2, suffix: text2, empty: text2, allowEmpty: external_exports.boolean(), exactSingle: optional2 }).optional()
 });
 var work = external_exports.object({
   id: text2,
@@ -50407,7 +50441,7 @@ var entitiesSchema = external_exports.object({
   drafts: table(draft),
   changes: table(change),
   sources: table(source2),
-  notes: table(external_exports.object({ id: text2, itemId: text2, at: text2, question: text2, answer: optional2, sourceIds: strings })),
+  notes: table(external_exports.object({ id: text2, itemId: text2, at: text2, question: text2, answer: optional2, sourceIds: strings, useActionId: optional2 })),
   work: table(work),
   planSteps: table(external_exports.object({ id: text2, workId: text2, position: external_exports.number(), what: text2, owner, done: external_exports.boolean(), now: external_exports.boolean(), where: optional2, build: external_exports.union([text2, external_exports.number()]).optional() })),
   workSteps: table(external_exports.object({ id: text2, workId: text2, at: text2, what: text2, news: external_exports.boolean() })),
@@ -50417,7 +50451,7 @@ var entitiesSchema = external_exports.object({
   doneEntries: table(done),
   watches: table(watch),
   automations: table(automation),
-  knowledgeProposals: table(external_exports.object({ id: text2, code: text2, rev: text2, topic: text2, home: text2, factIds: strings, actionIds: strings })),
+  knowledgeProposals: table(external_exports.object({ id: text2, code: text2, rev: text2, topic: text2, home: text2, state: optional2, factIds: strings, actionIds: strings })),
   facts: table(external_exports.object({ id: text2, proposalId: text2, type: text2, text: text2, who: optional2, date: text2, href: optional2, private: external_exports.boolean() })),
   health: table(external_exports.object({ id: text2, text: text2, since: text2, actionIds: strings })),
   channels: table(external_exports.object({ id: text2, name: text2, link: text2, actionIds: strings })),
@@ -50446,6 +50480,37 @@ var snapshotSchema = external_exports.object({
     minute: external_exports.object({ facts: external_exports.number(), suggestions: external_exports.number() }),
     catchup: external_exports.object({ count: external_exports.number(), worth: external_exports.number() })
   }),
+  pageActionIds: strings.optional(),
+  recipients: external_exports.array(external_exports.object({ id: text2, name: text2, group: external_exports.boolean() })).optional(),
+  reminderDefaults: external_exports.object({ text: text2, every: external_exports.enum(["day", "weekday", "week"]), at: text2 }).optional(),
+  doneNew: external_exports.number().optional(),
+  version: external_exports.object({ code: optional2, tag: optional2, auto: external_exports.boolean(), channel: text2, everyMin: external_exports.number(), checkedAt: optional2, failed: optional2 }).optional(),
+  sinceLine: external_exports.object({ at: text2, parts: external_exports.array(external_exports.object({ text: text2, href: text2 })) }).optional(),
+  settingsActions: external_exports.record(text2, strings).optional(),
+  classic: external_exports.object({
+    needsIds: strings,
+    tiles: external_exports.array(external_exports.object({ key: text2, count: external_exports.number(), label: text2, sub: optional2 })),
+    also: external_exports.array(external_exports.object({ key: text2, count: external_exports.number(), label: text2, sub: optional2 })),
+    catchupIds: strings,
+    running: external_exports.array(external_exports.object({ code: text2, what: text2, who: optional2, since: text2, progress: external_exports.number().optional(), actionIds: strings })),
+    progress: external_exports.array(external_exports.object({
+      code: text2,
+      who: text2,
+      chat: text2,
+      goal: text2,
+      status: text2,
+      last: external_exports.object({ at: text2, what: text2 }).optional(),
+      next: optional2,
+      checkAt: optional2,
+      every: external_exports.number().optional(),
+      endsAt: optional2,
+      rev: text2,
+      actionIds: strings
+    })),
+    watchActionIds: external_exports.record(text2, strings),
+    automationActionIds: external_exports.record(text2, strings),
+    details: external_exports.object({ runner: text2, log: strings }).optional()
+  }).optional(),
   search: external_exports.object({ query: text2, nowIds: strings, doneIds: strings, link: external_exports.object({ href: text2, item: optional2 }).optional() }).optional()
 });
 var intentSchema = external_exports.object({
@@ -50458,7 +50523,16 @@ var intentSchema = external_exports.object({
     text: text2.max(15e3).optional(),
     picks: external_exports.array(external_exports.number().int().positive()).max(100).optional(),
     excluded: external_exports.array(external_exports.number().int().positive()).max(100).optional(),
-    result: external_exports.enum(["Both work", "Issues found", "Blocked"]).optional()
+    result: external_exports.enum(["Both work", "Issues found", "Blocked"]).optional(),
+    to: text2.max(300).optional(),
+    recipientId: text2.max(200).optional(),
+    every: external_exports.enum(["day", "weekday", "week"]).optional(),
+    at: text2.max(5).optional(),
+    day: external_exports.number().int().min(0).max(6).optional(),
+    until: text2.max(2e3).optional(),
+    by: text2.max(10).optional(),
+    push: external_exports.boolean().optional(),
+    seenAt: text2.max(40).optional()
   }).strict().optional()
 }).strict();
 var receiptSchema = external_exports.object({
@@ -50468,7 +50542,10 @@ var receiptSchema = external_exports.object({
   ids: strings,
   accepted: external_exports.boolean(),
   applied: external_exports.boolean(),
-  text: text2
+  text: text2,
+  refused: external_exports.boolean().optional(),
+  uncertain: external_exports.boolean().optional(),
+  at: optional2
 });
 var emptyEntities = () => ({
   items: {},
@@ -50542,10 +50619,31 @@ function find(v, q2) {
 }
 
 // src/web/app/model/format.ts
+var plural3 = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
+function sourceChip(s3) {
+  if (s3.label) return s3.label;
+  if (s3.ref.startsWith("card:")) return s3.ref.slice(5).split(/[/#]/)[0].replace(/-/g, " ");
+  if (!/^https?:\/\//.test(s3.ref)) return s3.ref.slice(0, 60);
+  let u;
+  try {
+    u = new URL(s3.ref);
+  } catch {
+    return s3.ref.slice(0, 60);
+  }
+  const pr = u.pathname.match(/\/pullrequest\/(\d+)/);
+  if (pr) return `PR ${pr[1]}`;
+  if (u.hostname === "teams.microsoft.com") return "Teams message";
+  return u.hostname.replace(/^www\./, "");
+}
 var typed = /"[^"]*\b[A-Z]\d{1,3}\b[^"]*"/;
 var forPage = (text3 = "") => text3.replace(/^Before you ok [A-Z]\d{1,3}:/, "Before it goes ahead:").split(/(?<=[.?!])\s+(?=[A-Z])/).filter((s3) => !typed.test(s3)).join(" ").trim();
 
 // src/web/app/model/derive.ts
+var KIND_KEY = { reply: "replies", review: "replies", change: "changes", reminder: "reminders", learned: "learned", catchup: "catchup" };
+var seenIn = (v) => (k) => v.seen?.[k] ?? v.since ?? "";
+var itemSeen = (v) => (code) => v.seen?.[`item:${code}`];
+var isNew = (r, seen, item2 = () => void 0) => !r.own && !!KIND_KEY[r.kind] && r.at > seen(KIND_KEY[r.kind]) && !((item2(r.code) ?? "") >= r.at);
+var newCount = (v) => v.done.filter((r) => isNew(r, seenIn(v), itemSeen(v))).length;
 var latest = (...xs) => xs.filter((x) => !!x).sort().at(-1) ?? "";
 var rowMark = (v, r) => latest(v.seen?.[`item:${r.code}`], v.seen?.[`item:${r.act}`], r.section === "catchup" ? v.seen?.catchup : void 0, v.since);
 function freshOf2(r, mark2) {
@@ -50554,11 +50652,49 @@ function freshOf2(r, mark2) {
   if (f.back && f.back > mark2 && f.born <= mark2) return "back";
   return f.changed && f.changed > mark2 && !r.chips?.some((c) => c.kind === "changed") ? "new" : void 0;
 }
+function sinceOf(v) {
+  const at3 = v.since ?? new Date(Date.parse(v.now) - 864e5).toISOString();
+  const fresh = (v.done ?? []).filter((r) => r.at > at3);
+  const replies = fresh.filter((r) => r.kind === "reply" && !r.inTeams), people = new Set(replies.map((r) => r.who.name)).size;
+  const byRule = new Set(replies.filter((r) => r.by.startsWith("by rule")).map((r) => r.who.name)).size;
+  const reviews = fresh.filter((r) => r.kind === "review").length, fyis = fresh.filter((r) => r.kind === "catchup").length, handled = v.next?.handled ?? 0;
+  const parts2 = [
+    people ? { text: `replied to ${people}${byRule ? ` (${byRule} by rule)` : ""}`, href: "#done/replies" } : void 0,
+    reviews ? { text: plural3(reviews, "review"), href: "#done/reviews" } : void 0,
+    fyis ? { text: fyis === 1 ? "1 FYI" : `${fyis} FYIs`, href: "#done/catchup" } : void 0,
+    handled ? { text: `${handled} handled`, href: "#numbers" } : void 0
+  ].filter((p) => !!p);
+  return { at: at3, parts: parts2 };
+}
 
 // src/web/react-projection.ts
 init_brand();
 init_page_approval();
 init_effects();
+init_track();
+init_automations();
+init_feedback();
+init_channels();
+
+// src/web/app/model/forms.ts
+var peopleOf = (v) => {
+  const asked = v.needs.map((c) => c.who.name);
+  return v.people.slice().sort((a, b) => (asked.includes(a.name) ? 0 : 1) - (asked.includes(b.name) ? 0 : 1));
+};
+var newReminder = (to) => ({ to, text: "Reminder: please send me an update.", every: "weekday", at: "16:00", someone: false });
+
+// src/web/react-projection.ts
+init_policy();
+init_ledger();
+init_jobs();
+
+// src/web/page-text.ts
+var hasCommandHint = (text3) => /\b(?:ok|edit|send|skip|answer|pick|undo|more|close|wait)\s+[A-Z]\d+\b/i.test(text3);
+function pageText(text3 = "") {
+  return forPage(text3).split(/(?<=[.!?])\s+/).filter((sentence) => !hasCommandHint(sentence)).join(" ").trim();
+}
+
+// src/web/react-projection.ts
 var IntentError = class extends Error {
   status;
   constructor(status3, message) {
@@ -50574,10 +50710,15 @@ var requiredText = (input2) => {
 var ownerOf = (who2) => who2 === "you" ? { kind: "you" } : who2 === "me" ? { kind: "delegate" } : { kind: "others", text: who2 === "them" ? "Others" : who2 };
 function reactProjection(store2, query = "") {
   const facts = snapshot(store2), placed = place(facts), placementOf = new Map(placed.map((placement2) => [placement2.code, placement2]));
-  const base = view(store2, store2.lastViewed()), next2 = nextView(store2, facts.now, { snapshot: facts, allCatchup: true }), entities = emptyEntities();
+  const base = view(store2, store2.lastViewed(), new Date(facts.now), facts.workflows), next2 = nextView(store2, facts.now, { snapshot: facts, allCatchup: true }), entities = emptyEntities();
   const bindings = /* @__PURE__ */ new Map(), workflows = facts.workflows, byCode = new Map(workflows.map((w) => [w.code, w]));
   const expectations = /* @__PURE__ */ new Map();
   const readyCards = new Map(base.needs.map((item2) => [item2.code, item2])), knowledge2 = knowledgeOf(store2, store2.config());
+  const asksAt = /* @__PURE__ */ new Map();
+  for (const workflow of workflows) {
+    const message = store2.thread(workflow.id).find((message2) => message2.id === workflow.lastMsgId && !message2.byOwner);
+    if (message) asksAt.set(workflow.code, message.at);
+  }
   function person2(code, who2) {
     const id = `person:${hashOf(byCode.get(code)?.asker?.id ?? code)}`;
     entities.people[id] = { id, ...who2 };
@@ -50595,12 +50736,12 @@ function reactProjection(store2, query = "") {
       const id = `${prefix}/note/${n}`;
       const sourceIds = sources(itemId, id, (row.sources ?? []).map((source3) => ({
         kind: source3.tier === "private" ? "Private" : source3.tier === "card" ? "Knowledge" : "In the chat",
-        label: source3.label ?? "Source",
+        label: source3.label ?? (/^https:/.test(source3.ref) ? sourceChip(source3) : source3.tier === "card" ? "Knowledge source" : "Private source"),
         href: safeLink(source3.ref),
         stale: source3.stale,
         locked: source3.tier === "private"
       })));
-      entities.notes[id] = { id, itemId, question: row.q, answer: row.a === void 0 ? void 0 : forPage(row.a), at: row.at, sourceIds };
+      entities.notes[id] = { id, itemId, question: row.q, answer: row.a === void 0 ? void 0 : pageText(row.a), at: row.at, sourceIds };
       return id;
     });
   }
@@ -50609,6 +50750,13 @@ function reactProjection(store2, query = "") {
     const action2 = { id, item: item2, rev, kind, label: label2, effect: "local", staleness: "none", ...options };
     entities.actions[id] = action2;
     bindings.set(id, { action: action2, resolve: resolve8 });
+    return id;
+  }
+  function tool(item2, kind, label2, execute, input2, prefix = "page") {
+    const id = offer(item2, "", kind, label2, () => {
+      throw new IntentError(422, "This is not a queued item command.");
+    }, { input: input2 }, prefix);
+    bindings.get(id).execute = execute;
     return id;
   }
   const editable = new Set(base.needs.map((c) => c.code));
@@ -50620,11 +50768,32 @@ function reactProjection(store2, query = "") {
     const draftId = draft2 ? `${id}/draft` : void 0;
     if (draft2 && draftId) entities.drafts[draftId] = { ...draft2, id: draftId, itemId: id, rev };
     const pending = (wf.effects ?? []).filter((effect) => !effect.done && !effect.off);
+    const approved = stillApproved(wf, wf.job ? facts.jobs.get(wf.job) : void 0);
     const changeIds = changes.map((change2, n) => {
       const key = `${id}/change/${pageChangeId(pending[n])}`;
-      entities.changes[key] = { ...change2, id: key, itemId: id, rev, state: pending[n]?.maybe ? "uncertain" : "proposed" };
+      entities.changes[key] = { ...change2, id: key, itemId: id, rev, state: maybeOf(store2, pending[n]) ? "uncertain" : approved ? "approved" : "proposed", error: pending[n].error ? pageText(pending[n].error) || "The change could not be confirmed. Check the target before retrying." : void 0 };
       return key;
     });
+    const effectIds = [...new Set((wf.effects ?? []).map((effect, index) => {
+      const key = `${id}/change/${pageChangeId(effect)}`;
+      if (!entities.changes[key]) {
+        const display = shown(effect);
+        entities.changes[key] = {
+          id: key,
+          itemId: id,
+          rev,
+          n: index + 1,
+          summary: display.text,
+          target: display.loc || display.system,
+          system: display.system,
+          action: display.line,
+          detail: display.detail || void 0,
+          meaning: meaningParts(effect),
+          state: effect.done || madeBefore(store2, effect) ? "made" : effect.off ? "left-out" : maybeOf(store2, effect) ? "uncertain" : approved ? "approved" : "proposed"
+        };
+      }
+      return key;
+    }))];
     const todoIds = (wf.kept ?? []).filter((todo) => !todo.done).map((todo) => {
       const key = `${id}/todo/${todo.id}`;
       entities.todos[key] = { ...todo, id: key, itemId: id, code: id, done: false };
@@ -50647,21 +50816,42 @@ function reactProjection(store2, query = "") {
     const actionIds = [];
     const expect = rev;
     expectations.set(id, expect);
+    const approval = (input2) => {
+      const excluded = [...new Set(input2?.excluded ?? [])];
+      if (excluded.some((n) => !changes.some((change2) => change2.n === n))) throw new IntentError(422, "That change is not offered.");
+      if (input2?.text !== void 0) throw new IntentError(422, "Use Send your version to send an edit.");
+      return { code: id, verb: "ok", ...excluded.length ? { except: excluded } : {} };
+    };
+    const comments = changes.length > 0 && changes.every((change2) => /comment|review/i.test(change2.action));
+    const selection = changes.length ? {
+      total: changes.length,
+      verb: comments ? "Post" : "Make",
+      singular: comments ? "comment" : "change",
+      plural: comments ? "comments" : "changes",
+      suffix: draft2 ? " and reply" : "",
+      empty: draft2 ? "Send reply only" : "Nothing selected",
+      allowEmpty: !!draft2,
+      exactSingle: !draft2 && changes.length === 1 ? changes[0].action : void 0
+    } : void 0;
     if (editable.has(id)) {
       if (reviewAgain2) actionIds.push(offer(id, rev, "review-again", "Review again", () => ({ code: id, verb: "answer", text: "review again" })));
       else if (draft2 && (!c.choices || draft2.preview) || changes.length && !c.question || c.promise?.failed) {
         const label2 = c.promise?.failed && !draft2 ? "Check again" : changes.length ? `Approve selected changes${draft2 ? " and reply" : ""}` : draft2?.holding ? "Send holding reply" : "Send";
-        actionIds.push(offer(id, rev, "approve", label2, (input2) => {
-          const excluded = [...new Set(input2?.excluded ?? [])];
-          if (excluded.some((n) => !changes.some((change2) => change2.n === n))) throw new IntentError(422, "That change is not offered.");
-          if (input2?.text !== void 0) throw new IntentError(422, "Use Send your version to send an edit.");
-          return { code: id, verb: "ok", ...excluded.length ? { except: excluded } : {} };
-        }, { effect: draft2 && !changes.length ? "sends" : "changes-system", staleness: "exact", expect, input: changes.length ? "approval" : void 0 }));
+        actionIds.push(offer(id, rev, "approve", label2, approval, { effect: draft2 && !changes.length ? "sends" : "changes-system", staleness: "exact", expect, input: changes.length ? "approval" : void 0, selection }));
+        if (pending.some((effect) => maybeOf(store2, effect))) actionIds.push(offer(id, rev, "approve-again", "I checked: make the changes once", (input2) => ({ ...approval(input2), again: true }), {
+          effect: "changes-system",
+          staleness: "exact",
+          expect,
+          input: "approval",
+          needsConfirm: true,
+          meaning: "Choose this only after checking the target system and confirming these changes were not made. This permits one new attempt.",
+          selection: selection && { ...selection, verb: "I checked: make", suffix: ` once${draft2 ? " and reply" : ""}`, exactSingle: void 0 }
+        }));
       }
-      if (draft2) actionIds.push(offer(id, rev, "send-edit", "Send your version", (input2) => {
+      if (draft2) actionIds.push(offer(id, rev, "send-edit", changes.length ? "Preview your version with changes" : "Send your version", (input2) => {
         if (input2?.excluded?.length) throw new IntentError(422, "Change the reply and leave out changes one at a time.");
         return { code: id, verb: "send", text: requiredText(input2) };
-      }, { effect: changes.length ? "changes-system" : "sends", staleness: "exact", expect, input: "text" }));
+      }, { effect: changes.length ? "local" : "sends", staleness: "exact", expect, input: "text" }));
       actionIds.push(offer(id, rev, "answer", "Draft reply", (input2) => ({ code: id, verb: "answer", text: requiredText(input2) }), { input: "text" }));
       if (c.choices) actionIds.push(offer(id, rev, "pick", "Preview reply", (input2) => {
         const picks = [...new Set(input2?.picks ?? [])];
@@ -50672,11 +50862,19 @@ function reactProjection(store2, query = "") {
       if (replyOnly) actionIds.push(offer(id, rev, "reply-only", "Send reply only", () => ({ code: id, verb: "ok", except: changes.map((change2) => change2.n) }), { staleness: "exact", expect, effect: "sends" }));
     }
     actionIds.push(offer(id, rev, "ask", `Ask ${NAME}`, (input2) => ({ code: id, verb: "ask", text: requiredText(input2) }), { input: "text" }));
+    if (reopenable(wf, "answer")) actionIds.push(offer(id, rev, "reopen", "Reopen and draft reply", (input2) => ({ code: id, verb: "answer", text: requiredText(input2) }), { input: "text", staleness: "exact", expect }));
+    const noteIds = notes(id, id, cardNotes);
+    for (const noteId of noteIds) {
+      const note = entities.notes[noteId];
+      if (note.answer?.trim()) note.useActionId = offer(id, rev, "use-note", "Use this in the reply", () => ({ code: id, verb: "answer", text: `Use this: ${note.answer}` }), { staleness: "exact", expect: pageDigest(note.answer) }, noteId);
+    }
     if (c.openOn || wf.job) actionIds.push(offer(id, rev, "continue", "Open on your computer", () => ({ code: id, verb: "continue" })));
     if (todoIds.length) {
       const drawnAt = todoIds.map((key) => entities.todos[key].at).sort().at(-1);
       actionIds.push(offer(id, drawnAt, "todo-done", "Mark done", () => ({ code: id, verb: "close" }), { staleness: "exact" }));
     }
+    const job = wf.job ? facts.jobs.get(wf.job) : void 0;
+    const stopped = wf.state === "waiting_on_task" && (!job || job.state === "failed" || job.state === "done");
     entities.items[id] = {
       ...rest2,
       rev,
@@ -50685,13 +50883,18 @@ function reactProjection(store2, query = "") {
       chatId,
       draftId,
       changeIds,
+      effectIds,
       todoIds,
       workId,
       actionIds,
-      question: c.question === void 0 ? void 0 : forPage(c.question),
+      askAt: asksAt.get(id),
+      status: pageText(c.status),
+      attention: stopped || c.draft?.holding ? pageText(job?.error ?? wf.status) || "The previous run could not finish. Use the available action, ask a question or review the visible holding reply." : void 0,
+      question: c.question === void 0 ? void 0 : pageText(c.question) || void 0,
       choices: c.choices && { ...c.choices, prompt: forPage(c.choices.prompt), options: c.choices.options.map((option) => ({ ...option, id: pageOptionId(option) })) },
       sourceIds: sources(id, id, why2.sources),
-      noteIds: notes(id, id, cardNotes),
+      noteIds,
+      primaryActionId: ["review-again", "approve-again", ...c.choices && !draft2?.preview ? ["pick"] : [], "approve", "answer", "reopen"].map((kind) => `${id}/${kind}`).find((key) => actionIds.includes(key)),
       why: { reason: why2.reason, confidence: why2.confidence, gaps: why2.gaps, searched: why2.searched },
       teams: safeLink(c.teams)
     };
@@ -50766,11 +50969,17 @@ function reactProjection(store2, query = "") {
       const fresh = freshOf2(row, rowMark(base, row));
       const authoritative = placementOf.get(row.code);
       if (!authoritative) throw new Error(`The row ${row.code} has no authoritative server placement.`);
+      const workflow = byCode.get(row.act), askedAt = asksAt.get(row.act);
+      const headline = hasCommandHint(row.headline) ? workflow?.lastAsk ? `Review ${workflow.asker?.name ?? "the request"}: "${workflow.lastAsk.slice(0, 160)}"` : "Review this request" : pageText(row.headline);
       entities.placements[row.code] = {
         ...rest2,
-        headline: forPage(row.headline),
-        facts: { ...row.facts, notes: row.facts.notes?.map((note) => ({ ...note, text: forPage(note.text) })) },
-        chips: [...row.chips, ...fresh ? [{ kind: fresh, text: fresh === "back" ? "Back to you" : "New" }] : []],
+        headline,
+        facts: {
+          ...row.facts,
+          ...row.facts.verb === "asked" && workflow ? { at: askedAt ?? workflow.createdAt, verb: askedAt ? "asked" : "item created" } : {},
+          notes: row.facts.notes?.map((note) => ({ ...note, text: pageText(note.text) }))
+        },
+        chips: [...row.chips, ...byCode.get(row.act)?.draft?.holding ? [{ kind: "holding", text: "Holding reply" }] : [], ...fresh ? [{ kind: fresh, text: fresh === "back" ? "Back to you" : "New" }] : []],
         id: row.code,
         subjects: authoritative.subjects,
         position,
@@ -50810,12 +51019,26 @@ function reactProjection(store2, query = "") {
     const id = wf?.sent?.at === row.at && (row.kind === "reply" || row.kind === "review") ? `sent:${hashOf(`${wf.chat.id}|${wf.sent.msgId}`)}` : `${activity}/${n}`;
     const rev = wf ? workflowApprovalRev(wf) : row.at;
     const actionIds = [];
-    if (row.undoUntil && Date.parse(row.undoUntil) > Date.now()) actionIds.push(offer(row.code, rev, "undo", "Undo", () => ({ code: row.code, verb: "undo" }), { staleness: "exact", expect: rev, effect: "changes-system", meaning: "Removes this reply from the chat. Changes already made are not reversed." }));
+    if (row.undoUntil && Date.parse(row.undoUntil) > Date.now()) actionIds.push(offer(row.code, rev, "undo", "Undo", () => ({ code: row.code, verb: "undo" }), { staleness: "exact", expect: rev, effect: "changes-system", expiresAt: row.undoUntil, meaning: "Removes this reply from the chat. Changes already made are not reversed." }));
     if (row.kind === "catchup") actionIds.push(offer(row.code, rev, "needs-me", "Needs me", () => ({ code: row.code, verb: "mine" })));
+    if (row.kind === "catchup" && wf && (!wf.watchedAs || !byCode.get(wf.watchedAs) || byCode.get(wf.watchedAs)?.state === "done")) actionIds.push(tool(wf.code, "watch-fyi", "Start watching", (input2) => {
+      const target2 = input2?.text?.trim() || row.watch?.target || row.sentence;
+      if (input2?.by && !byEnd(input2.by)) throw new IntentError(422, "Choose a valid date.");
+      const result = watchItemTarget(store2, wf, { target: target2, until: input2?.until?.trim() || row.watch?.until, by: input2?.by || void 0, shepherd: input2?.push });
+      return { accepted: result.accepted, text: pageText(result.text) };
+    }, "watch", id));
+    if (row.kind === "learned" && store2.proposal(row.code)?.state === "applied") actionIds.push(`${row.code}/undo-facts`);
     for (const [kind, label2] of [["wrong", "Wrong"], ["incomplete", "Incomplete"], ["unneeded", "Not needed"]]) {
-      if (row.kind === "reply" || row.kind === "review") actionIds.push(offer(row.code, rev, kind, label2, (input2) => ({ code: row.code, verb: kind, text: input2?.text }), { input: "feedback" }));
+      if (row.kind === "reply" || row.kind === "review") actionIds.push(offer(row.code, rev, kind, label2, (input2) => ({ code: row.code, verb: kind, text: input2?.text }), {
+        input: "feedback",
+        staleness: "exact",
+        expect: rev,
+        effect: kind === "unneeded" ? "changes-system" : "local",
+        needsConfirm: kind === "unneeded",
+        meaning: kind === "unneeded" ? "Marks this reply as unnecessary and removes it if its Undo window is still open. Changes already made are not reversed." : "Drafts a follow-up for your approval. Nothing is sent yet."
+      }));
     }
-    entities.doneEntries[id] = { ...rest2, id, personId: person2(row.code, who2), actionIds, sourceIds: sources(row.code, id, why2?.sources ?? []), noteIds: notes(row.code, id, historyNotes ?? []), why: why2 && { reason: why2.reason, confidence: why2.confidence, gaps: why2.gaps, searched: why2.searched }, teams: safeLink(row.teams), href: safeLink(row.href) };
+    entities.doneEntries[id] = { ...rest2, fresh: isNew(row, seenIn(base), itemSeen(base)), id, personId: person2(row.code, who2), actionIds, sourceIds: sources(row.code, id, why2?.sources ?? []), noteIds: notes(row.code, id, historyNotes ?? []), why: why2 && { reason: why2.reason, confidence: why2.confidence, gaps: why2.gaps, searched: why2.searched }, teams: safeLink(row.teams), href: safeLink(row.href) };
   }
   for (const w of base.watching) entities.watches[w.code] = {
     ...w,
@@ -50834,28 +51057,28 @@ function reactProjection(store2, query = "") {
       offer(a.code, a.rev, "end", "End", () => ({ code: a.code, verb: "skip" }))
     ]
   };
-  for (const k of base.knowledge) {
+  const readyProposals = new Map(base.knowledge.map((proposal) => [proposal.code, proposal]));
+  for (const proposal of store2.proposals()) {
+    const k = readyProposals.get(proposal.code) ?? knowledge(proposal);
     const factIds = k.facts.map((fact, n) => {
       const id = `${k.code}/fact/${n}`;
       entities.facts[id] = { ...fact, id, proposalId: k.code, href: safeLink(fact.href) };
       return id;
     });
-    const proposal = store2.proposal(k.code), revision = proposalApprovalRev(proposal);
-    entities.knowledgeProposals[k.code] = { id: k.code, code: k.code, rev: revision, topic: k.topic, home: k.home, factIds, actionIds: [
+    const revision = proposalApprovalRev(proposal);
+    const actionIds = proposal.state === "needs_human" ? [
       offer(k.code, revision, "save-facts", "Save selected facts", (input2) => {
         const excluded = input2?.excluded ?? [];
         if (excluded.some((n) => n > k.facts.length)) throw new IntentError(422, "That fact is not offered.");
         return { code: k.code, verb: "ok", ...excluded.length ? { except: excluded } : {} };
-      }, { staleness: "exact", input: "approval", expect: revision }),
+      }, { staleness: "exact", input: "approval", expect: revision, selection: { total: k.facts.length, verb: "Save", singular: "fact", plural: "facts", suffix: "", empty: "Nothing selected", allowEmpty: false } }),
+      ...k.facts.length === 1 ? [offer(k.code, revision, "edit-fact", "Save your version", (input2) => ({ code: k.code, verb: "edit", text: requiredText(input2) }), { input: "text", staleness: "exact", expect: revision })] : [],
       offer(k.code, revision, "skip-facts", "Skip", () => ({ code: k.code, verb: "skip" }))
-    ] };
+    ] : proposal.state === "applied" ? [offer(k.code, revision, "undo-facts", "Undo learned facts", () => ({ code: k.code, verb: "undo" }), { staleness: "exact", expect: revision })] : [];
+    entities.knowledgeProposals[k.code] = { id: k.code, code: k.code, rev: revision, topic: k.topic, home: k.home, state: proposal.state, factIds, actionIds };
   }
   for (const h of base.health) {
-    const actionIds = h.fix ? [offer("", "", `health:${h.key}`, h.fix.label, () => {
-      const parsed = parseVerbs(h.fix.command);
-      if (parsed?.length !== 1) throw new IntentError(422, "This health check needs the existing page.");
-      return parsed[0];
-    })] : [];
+    const actionIds = h.fix ? [tool("", `health:${h.key}`, h.fix.label, () => actResult(store2, h.fix.command, void 0, "page"))] : [];
     entities.health[h.key] = { id: h.key, text: h.text, since: h.since, actionIds };
   }
   for (const w of base.waiting) entities.waiting[w.code] = { ...w, id: w.code, link: safeLink(w.link), actionIds: [
@@ -50864,9 +51087,112 @@ function reactProjection(store2, query = "") {
   ] };
   for (const ch of base.channels) {
     const id = `channel:${hashOf(ch.link)}`;
-    entities.channels[id] = { ...ch, id, actionIds: [] };
+    entities.channels[id] = { ...ch, id, actionIds: [tool("", "stop-channel", "Stop watching", () => {
+      if (!parseChannelLink(ch.link)) throw new IntentError(422, "This channel link cannot be read.");
+      return { accepted: true, text: watchChannel(store2, ch.link, true) };
+    }, void 0, id)] };
+  }
+  const pageActionIds = [
+    offer("", "", "pause-resume", base.status.state === "on" ? "Pause" : "Resume", () => ({ verb: base.status.state === "on" ? "pause" : "resume" }), {}, "page"),
+    tool("", "retry-source", "Check now", () => actResult(store2, "retry", void 0, "page")),
+    tool("", "check-update", "Check for updates", () => actResult(store2, "check update", void 0, "page")),
+    tool("", "mark-all-read", "Mark all read", (input2) => {
+      if (!input2?.seenAt || !Number.isFinite(Date.parse(input2.seenAt)) || Date.parse(input2.seenAt) > Date.now()) throw new IntentError(422, "The displayed time is not valid. Refresh before marking read.");
+      store2.saveSeen(["catchup"], new Date(input2.seenAt).toISOString());
+      return { accepted: true, text: "Marked the displayed Catch up items read." };
+    }),
+    tool("", "report-problem", "Report a problem", (input2) => ({ accepted: true, text: report(store2, requiredText(input2)) }), "text"),
+    tool("", "paste-missed", "Make it an item", (input2) => {
+      const link2 = requiredText(input2).trim();
+      if (!/^https:\/\/teams\.microsoft\.com\/l\/message\/[^/?#]+\/[^/?#]+/i.test(link2)) throw new IntentError(422, "Paste a Teams message link.");
+      store2.addMissed({ link: link2, at: (/* @__PURE__ */ new Date()).toISOString() });
+      store2.saveKick();
+      return { accepted: true, text: "Saved. It becomes an item on the next read. Nothing is sent." };
+    }, "text"),
+    tool("", "watch-something", "Start watching", (input2) => {
+      const target2 = requiredText(input2).trim();
+      if (input2?.by && !byEnd(input2.by)) throw new IntentError(422, "Choose a valid date.");
+      const result = watchTarget(store2, { target: target2, until: input2?.until?.trim() || void 0, by: input2?.by || void 0, shepherd: input2?.push });
+      return { accepted: result.accepted, text: pageText(result.text) };
+    }, "watch"),
+    tool("", "remind-someone", "Create reminder", (input2) => {
+      if (!input2?.to || !input2.every || !input2.at) throw new IntentError(422, "Choose a person and schedule.");
+      const selected = input2.recipientId ? base.people.find((person3) => hashOf(person3.chat) === input2.recipientId && person3.name === input2.to) : void 0;
+      if (input2.recipientId && !selected) throw new IntentError(409, "That recipient changed. Select the person again.");
+      const before = new Set(store2.automations().map((auto2) => auto2.code));
+      const text3 = propose(store2, { to: input2.to, chatId: selected?.chat, text: requiredText(input2), every: input2.every, at: input2.at, day: input2.day, until: input2.by });
+      const auto = store2.automations().find((auto2) => !before.has(auto2.code) && auto2.state === "proposed");
+      if (!auto) return { accepted: false, text: forPage(text3) };
+      return { accepted: true, text: forPage(answerAutomation(store2, auto, { id: "", code: auto.code, verb: "ok", surface: "chat", at: "" })) };
+    }, "reminder")
+  ];
+  const reminderRevision = pageDigest(base.people);
+  Object.assign(entities.actions["page/remind-someone"], {
+    effect: "sends",
+    staleness: "exact",
+    rev: reminderRevision,
+    expect: reminderRevision,
+    meaning: "Creates the displayed reminder schedule for the selected recipient. The exact text above is what will be sent."
+  });
+  const settingsActions = {};
+  for (const habit of store2.habits()) {
+    if (habit.state === "suggested") settingsActions[habit.code] = [
+      offer(habit.code, "", "accept-habit", "Turn on", () => ({ code: habit.code, verb: "ok" })),
+      offer(habit.code, "", "defer-habit", "Not now", () => ({ code: habit.code, verb: "skip" })),
+      offer(habit.code, "", "never-habit", "Never", () => ({ code: habit.code, verb: "never" }))
+    ];
+    else settingsActions[habit.code] = [offer(habit.code, "", "remove-rule", "Remove", () => ({ code: habit.code, verb: "never" }))];
+  }
+  for (const [chatId, level] of Object.entries(store2.config().chatLevels ?? {})) {
+    const key = `chat:${hashOf(chatId)}`;
+    const actionId = tool(key, "chat-normal", "Mark normal again", () => {
+      const config2 = store2.config(), levels = { ...config2.chatLevels };
+      delete levels[chatId];
+      store2.saveConfig({ ...config2, chatLevels: levels });
+      return { accepted: true, text: "This chat is normal again. Existing drafts and source checks are unchanged." };
+    }, void 0, key);
+    Object.assign(entities.actions[actionId], {
+      effect: "changes-system",
+      rev: pageDigest([chatId, level]),
+      expect: pageDigest([chatId, level]),
+      staleness: "exact",
+      needsConfirm: true,
+      meaning: `Stop treating ${level.name} as ${level.level === "off" ? "off the record" : "private"}? Future learning and replies use the normal privacy checks. Existing stored facts are not changed.`
+    });
+    settingsActions[key] = [actionId];
   }
   const found = query.trim() ? find({ ...base, next: next2 }, query) : void 0;
+  const classic = {
+    needsIds: base.needs.map((item2) => item2.code),
+    tiles: base.tiles,
+    also: base.also,
+    catchupIds: base.catchUp.top.map((row) => Object.values(entities.doneEntries).find((entry) => entry.code === row.code && entry.kind === row.kind && entry.at === row.at)?.id).filter((id) => !!id),
+    running: base.running.map((row) => ({
+      ...row,
+      what: pageText(row.what),
+      actionIds: row.code ? [offer(row.code, entities.items[row.code]?.rev ?? "", "classic-continue", "Open on your computer", () => ({ code: row.code, verb: "continue" }))] : []
+    })),
+    progress: base.progress.map((row) => ({
+      ...row,
+      who: row.who.name,
+      status: pageText(row.status),
+      next: row.next && pageText(row.next),
+      actionIds: [
+        offer(row.code, row.rev, "classic-close", "Close", () => ({ code: row.code, verb: "close" })),
+        ...row.every ? [offer(row.code, row.rev, "classic-interval", "Save interval", (input2) => ({ code: row.code, verb: "every", text: requiredText(input2) }), { input: "interval" })] : [],
+        ...row.endsAt ? [offer(row.code, row.rev, "classic-extend", "Extend 7 days", () => ({ code: row.code, verb: "extend" }))] : []
+      ]
+    })),
+    watchActionIds: Object.fromEntries(base.watching.map((row) => [row.code, [
+      offer(row.code, row.rev, "classic-ack-watch", "Got it", () => ({ code: row.code, verb: "ok" })),
+      ...entities.watches[row.code].actionIds
+    ]])),
+    automationActionIds: Object.fromEntries(base.automations.map((row) => [row.code, [
+      ...row.state === "proposed" ? [offer(row.code, row.rev, "classic-start", "Start", () => ({ code: row.code, verb: "ok" }))] : [],
+      ...entities.automations[row.code].actionIds
+    ]])),
+    details: base.details
+  };
   const snapshot2 = snapshotSchema.parse({
     schemaVersion: 1,
     fetchedAt: (/* @__PURE__ */ new Date()).toISOString(),
@@ -50877,6 +51203,13 @@ function reactProjection(store2, query = "") {
     sections,
     seen: base.seen,
     status: base.status,
+    classic,
+    pageActionIds,
+    reminderDefaults: newReminder(""),
+    recipients: peopleOf(base).map((person3) => ({ id: hashOf(person3.chat), name: person3.name, group: person3.group })),
+    settingsActions,
+    doneNew: newCount(base),
+    sinceLine: sinceOf({ ...base, next: next2 }),
     summary: { minute: next2.minute, handled: next2.handled, catchup: { count: next2.catchup.count, worth: next2.catchup.worth }, off: next2.off, paused: next2.paused },
     search: found ? {
       query,
@@ -50893,6 +51226,7 @@ function resolvePageIntent(store2, intent) {
   if (binding.action.staleness === "exact" && (binding.action.rev !== intent.rev || binding.action.expect !== intent.expect)) {
     throw new IntentError(409, "Changed since you looked. Open the new version first.");
   }
+  if (binding.execute) return { execute: () => binding.execute(intent.input) };
   const parsed = binding.resolve(intent.input);
   const workflow = store2.byCode(intent.item), automation2 = store2.automation(intent.item), proposal = store2.proposal(intent.item);
   let page2;
@@ -50900,8 +51234,8 @@ function resolvePageIntent(store2, intent) {
     const expect = workflow ? workflowApprovalRev(workflow) : automation2 ? automationApprovalRev(automation2) : proposal ? proposalApprovalRev(proposal) : void 0;
     if (expect) {
       const todoIds = parsed.verb === "close" ? workflow?.kept?.filter((todo) => !todo.done).map((todo) => todo.id) : void 0;
-      const kind = todoIds?.length ? "mark-todos" : parsed.verb === "undo" ? "undo-send" : parsed.verb === "pick" ? "pick" : workflow && pendingEffects(workflow.effects).length > 0 ? "make-changes" : workflow?.draft && (parsed.verb === "ok" || parsed.verb === "send") ? "send-reply" : "approve";
-      page2 = { kind, expect, ...kind === "undo-send" ? { sentMessageId: workflow?.sent?.msgId } : {}, ...todoIds ? { todoIds } : {} };
+      const kind = todoIds?.length ? "mark-todos" : parsed.verb === "undo" && workflow ? "undo-send" : workflow?.sent && ["wrong", "incomplete", "unneeded"].includes(parsed.verb) ? "feedback-send" : parsed.verb === "pick" ? "pick" : workflow && ["ok", "send", "edit"].includes(parsed.verb) && pendingEffects(workflow.effects).length > 0 ? "make-changes" : workflow?.draft && (parsed.verb === "ok" || parsed.verb === "send") ? "send-reply" : "approve";
+      page2 = { kind, expect, ...kind === "undo-send" || kind === "feedback-send" ? { sentMessageId: workflow?.sent?.msgId } : {}, ...todoIds ? { todoIds } : {} };
     }
   }
   return { parsed, page: page2, shownAt: binding.action.kind === "todo-done" ? binding.action.rev : workflow?.revAt ?? workflow?.updatedAt ?? automation2?.updatedAt ?? proposal?.revAt };
@@ -50914,14 +51248,15 @@ init_page_approval();
 function recover(store2, record2) {
   if (record2.phase !== "prepared") return record2;
   const existing = store2.answerById(record2.answerId), outcome2 = store2.outcome(record2.answerId);
-  const result = existing || outcome2 !== void 0 ? { accepted: true, ids: [record2.answerId], text: `Queued. Waiting for ${NAME}.` } : { accepted: false, ids: [], text: "This submission was interrupted before it was queued. Nothing was sent. Open the item again." };
+  const result = existing || outcome2 !== void 0 ? { accepted: true, ids: [record2.answerId], text: `Queued. Waiting for ${NAME}.` } : { accepted: false, ids: [], text: record2.immediate ? "This action was interrupted. Its result cannot be confirmed. Check the existing item, watch or reminder before doing anything else. It will not be retried." : "This submission was interrupted before it was queued. Nothing was sent. Open the item again." };
   const saved = {
     ...record2,
     phase: result.accepted ? "queued" : "refused",
     accepted: result.accepted,
     ids: result.ids,
     text: forPage(result.text),
-    status: result.accepted ? result.ids.length ? 202 : 200 : 422
+    status: result.accepted ? result.ids.length ? 202 : 200 : 422,
+    uncertain: !!record2.immediate && !result.accepted
   };
   store2.savePageSubmission(saved);
   return saved;
@@ -50930,10 +51265,15 @@ function submissionReceipt(store2, id) {
   const record2 = store2.pageSubmission(id);
   if (!record2) return void 0;
   const saved = recover(store2, record2), outcomes = saved.ids.map((answerId) => store2.outcome(answerId));
-  const applied = saved.processed || !saved.ids.length || outcomes.every((outcome2) => outcome2 !== void 0);
-  const text3 = outcomes.length && outcomes.every((outcome2) => outcome2 !== void 0) ? forPage(outcomes.join(" ")) : applied ? saved.text : `Queued. Waiting for ${NAME}.`;
-  if (applied && !saved.processed) store2.savePageSubmission({ ...saved, processed: true, text: text3 });
-  return { submissionId: saved.id, item: saved.item, rev: saved.rev, ids: saved.ids, accepted: saved.accepted, applied: !!applied, text: text3 };
+  const applied = saved.processed || !saved.ids.length || outcomes.every((outcome2) => outcome2 !== void 0) || saved.ids.every((id2) => store2.answered(id2));
+  const lostDetails = applied && saved.ids.length > 0 && !saved.processed && outcomes.some((outcome2) => outcome2 === void 0);
+  const recorded = pageText(outcomes.join(" "));
+  const current = store2.byCode(saved.item);
+  const text3 = lostDetails ? "The saved action was processed, but its detailed result is no longer available. Check the current item before acting; it will not be resent." : outcomes.length && outcomes.every((outcome2) => outcome2 !== void 0) ? recorded || (current && pageText(current.status) ? `Current item: ${pageText(current.status)}` : "No result detail was recorded. Open the item to verify what happened.") : applied ? pageText(saved.text) : `Queued. Waiting for ${NAME}.`;
+  const refused = saved.refused ?? (!saved.accepted || saved.ids.some((id2) => store2.outcomeRefused(id2)));
+  const uncertain = !!saved.uncertain || !!lostDetails;
+  if (applied && !saved.processed) store2.savePageSubmission({ ...saved, processed: true, text: text3, refused, uncertain });
+  return { submissionId: saved.id, item: saved.item, rev: saved.rev, ids: saved.ids, accepted: saved.accepted, applied: !!applied, text: text3, refused, uncertain, at: saved.at };
 }
 function submitIntent(store2, intent) {
   const fingerprint = pageDigest(intent), previous = store2.pageSubmission(intent.submissionId);
@@ -50975,16 +51315,40 @@ function submitIntent(store2, intent) {
     accepted: false,
     ids: [],
     text: "Preparing your action.",
-    status: 202
+    status: 202,
+    immediate: !!resolved.execute
   };
   store2.savePageSubmission(record2);
-  const result = enqueueParsed(store2, [resolved.parsed], resolved.shownAt, "page", record2.answerId, resolved.page);
-  const queued = { ...record2, phase: result.accepted ? "queued" : "refused", accepted: result.accepted, ids: result.ids, text: forPage(result.text), status: result.accepted ? result.ids.length ? 202 : 200 : 422 };
+  if (resolved.execute) {
+    try {
+      const immediate = resolved.execute();
+      const saved = { ...record2, phase: immediate.accepted ? "queued" : "refused", accepted: immediate.accepted, text: immediate.text, processed: true, status: immediate.accepted ? 200 : 422 };
+      store2.savePageSubmission(saved);
+      return { status: saved.status, receipt: submissionReceipt(store2, saved.id) };
+    } catch (error62) {
+      if (!(error62 instanceof IntentError)) throw error62;
+      store2.savePageSubmission({ ...record2, phase: "refused", text: error62.message, processed: true, status: error62.status });
+      return { status: error62.status, receipt: submissionReceipt(store2, record2.id) };
+    }
+  }
+  if (!resolved.parsed) throw new Error("The item action has no structured answer.");
+  const result = enqueueParsed(store2, [resolved.parsed], resolved.shownAt, "page", record2.answerId, resolved.page, record2.id);
+  const completed = store2.pageSubmission(record2.id);
+  const queued = {
+    ...record2,
+    phase: result.accepted ? "queued" : "refused",
+    accepted: result.accepted,
+    ids: result.ids,
+    text: forPage(result.text),
+    status: result.accepted ? result.ids.length ? 202 : 200 : 422,
+    ...completed?.processed ? { processed: true, text: completed.text, refused: completed.refused, uncertain: completed.uncertain } : {}
+  };
   store2.savePageSubmission(queued);
   return { status: queued.status, receipt: submissionReceipt(store2, queued.id) };
 }
 
 // src/web/server.ts
+init_paths();
 function actOutcome(store2, ids, code) {
   const said2 = ids.map((id) => store2.outcome(id));
   const v = view(store2, store2.lastViewed());
@@ -51000,8 +51364,11 @@ function automateFromPage(store2, i) {
 }
 var ver;
 var withVersion = (s3, v) => {
+  return { ...v, version: versionFor(s3), settings: settingsView(s3) };
+};
+var versionFor = (s3) => {
   if (!ver || Date.now() - ver.at > 3e4) ver = { at: Date.now(), v: versionInfo(s3.config()?.autoUpdate, void 0, void 0, s3.config()?.updateEveryMin) };
-  return { ...v, version: ver.v, settings: settingsView(s3) };
+  return ver.v;
 };
 function withUi(s3, v, wantNext) {
   const ui = s3.ui();
@@ -51025,7 +51392,7 @@ function saveUiFrom(s3, body) {
   if (b.ui !== "new" && b.ui !== "classic" && b.ui !== "react" && b.noted !== true) return { ok: false };
   return { ok: true, ui: s3.saveUi(b.ui === "new" || b.ui === "classic" || b.ui === "react" ? b.ui : s3.ui().ui, b.noted === true) };
 }
-function serveInbox(get, port = 0, token = randomBytes3(16).toString("hex"), probeFor = adoProbe) {
+function serveInbox(get, port = 0, token = randomBytes3(16).toString("hex"), probeFor = adoProbe, previewRoot = ROOT) {
   const server = createServer((req, res) => {
     const u = new URL(req.url ?? "/", "http://127.0.0.1");
     const host = req.headers.host ?? "";
@@ -51035,7 +51402,7 @@ function serveInbox(get, port = 0, token = randomBytes3(16).toString("hex"), pro
     }
     const headers = { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'" };
     if (u.pathname.startsWith("/api/v1/")) {
-      const json2 = (status3, body) => res.writeHead(status3, { "content-type": "application/json", "cache-control": "no-store" }).end(JSON.stringify(body));
+      const json2 = (status3, body, extra = {}) => res.writeHead(status3, { "content-type": "application/json", "cache-control": "no-store", ...extra }).end(JSON.stringify(body));
       const failure2 = (error62) => {
         if (error62 instanceof IntentError) json2(error62.status, { text: error62.message });
         else {
@@ -51050,7 +51417,8 @@ function serveInbox(get, port = 0, token = randomBytes3(16).toString("hex"), pro
           return;
         }
         try {
-          json2(200, reactProjection(get(), query).snapshot);
+          const store2 = get(), start = performance.now(), snapshot2 = reactProjection(store2, query).snapshot;
+          json2(200, { ...snapshot2, version: versionFor(store2) }, { "server-timing": `projection;dur=${(performance.now() - start).toFixed(2)}` });
         } catch (error62) {
           failure2(error62);
         }
@@ -51058,7 +51426,18 @@ function serveInbox(get, port = 0, token = randomBytes3(16).toString("hex"), pro
       }
       if (req.method === "GET" && u.pathname === "/api/v1/settings") {
         try {
-          json2(200, settingsView(get()));
+          const store2 = get(), settings = settingsView(store2);
+          const actions = reactProjection(store2).snapshot.settingsActions;
+          const marked = Object.entries(store2.config().chatLevels ?? {}).map(([id, level]) => ({ name: level.name, actionIds: actions?.[`chat:${hashOf(id)}`] }));
+          json2(200, {
+            ...settings,
+            rows: settings.rows.map((row) => ({
+              ...row,
+              help: row.help.replace(/\bTo learn\b/g, "Facts to check").replace(/\bOngoing\b/g, "Waiting on Now").replace(/\bWatching\b/g, "Watch details at the foot of Now"),
+              options: row.options?.map((option) => ({ ...option, label: row.key === "autoUpdate" && option.value === "off" ? "Off: check for updates manually" : option.label }))
+            })),
+            about: { ...settings.about, chats: settings.about.chats.map((chat2, index) => ({ ...chat2, actionIds: marked[index]?.actionIds })) }
+          });
         } catch (error62) {
           failure2(error62);
         }
@@ -51132,7 +51511,7 @@ function serveInbox(get, port = 0, token = randomBytes3(16).toString("hex"), pro
     }
     if (req.method === "GET" && u.pathname.startsWith("/web-react/")) {
       try {
-        const asset = reactAsset(u.pathname.slice("/web-react/".length), token);
+        const asset = reactAsset(u.pathname.slice("/web-react/".length), token, previewRoot);
         if (!asset) {
           res.writeHead(404).end();
           return;
@@ -51156,7 +51535,7 @@ function serveInbox(get, port = 0, token = randomBytes3(16).toString("hex"), pro
         react = s3.ui().ui === "react";
         if (react) {
           try {
-            page2 = reactPage(token);
+            page2 = reactPage(token, previewRoot);
           } catch (error62) {
             console.error("React preview unavailable; showing New instead:", error62);
             react = false;

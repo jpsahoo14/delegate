@@ -186,7 +186,7 @@ export function card(store: Store, w: Workflow, k = knowledgeOf(store, store.con
 	}
 }
 
-function knowledge(p: Proposal): KnowledgeCard {
+export function knowledge(p: Proposal): KnowledgeCard {
 	return { code: p.code, rev: p.revAt, topic: p.title, home: p.home ?? 'personal', facts: p.ops.map(o => ({ type: o.entry.type, text: o.entry.text, who: o.entry.src[0]?.who, date: o.entry.src[0]?.date ?? '', href: /^https:\/\//.test(o.entry.src[0]?.link ?? '') ? o.entry.src[0].link : undefined, private: o.entry.audience === 'private' })) }
 }
 
@@ -228,9 +228,9 @@ export function itemRows(store: Store, codes: Iterable<string>, wfs: Workflow[] 
 	return out
 }
 
-function doneRows(store: Store, since: string): DoneRow[] {
+function doneRows(store: Store, since: string, workflows = store.workflows()): DoneRow[] {
 	const rows: DoneRow[] = []
-	for (const w of store.workflows().filter(w => (w.state === 'done' || w.state === 'open' && w.sent) && w.code && (w.intent !== 'none' || w.fyi) && w.updatedAt > since && w.kind !== 'tracker')) {
+	for (const w of workflows.filter(w => (w.state === 'done' || w.state === 'open' && w.sent) && w.code && (w.intent !== 'none' || w.fyi) && w.updatedAt > since && w.kind !== 'tracker')) {
 		const r = itemRow(store, w), name = w.asker?.name ?? 'Someone'
 		if (r) rows.push(r)
 		for (const e of (w.effects ?? []).filter(e => e.done)) if (!(w.intent === 'pr_review' && COMMENT.test(e.action))) rows.push({ code: w.code, kind: 'change', who: who(name), sentence: shown(e).line, by: shown(e).system, at: e.done!.at, own: true, href: /^https:\/\//.test(e.done?.ref ?? '') ? e.done!.ref : undefined })
@@ -271,10 +271,10 @@ function tiles(store: Store, since: string, needs: number, done: DoneRow[]): Til
 	return t.filter(x => x.key === 'needs' || x.count > 0)
 }
 
-export function view(store: Store, since: string | undefined, now = new Date()): View {
+export function view(store: Store, since: string | undefined, now = new Date(), workflows = store.workflows()): View {
 	const cfg = store.config(), c = store.control()
 	const from = since ?? new Date(now.getTime() - 86_400_000).toISOString()
-	const wfs = store.workflows()
+	const wfs = workflows
 	const g = groups(wfs, from)
 	const placements = place(snapshot(store))
 	const represented = new Set(placements.map(r => r.act))
@@ -284,7 +284,7 @@ export function view(store: Store, since: string | undefined, now = new Date()):
 	const kp = store.proposals().filter(p => p.state === 'needs_human').sort((a, b) => a.createdAt.localeCompare(b.createdAt)).map(knowledge)
 	// Done keeps a week of history; only what is new since the owner last looked counts on Home (dogfood: replies vanished after a restart).
 	const week = new Date(now.getTime() - 7 * 86_400_000).toISOString()
-	const done = doneRows(store, from < week ? from : week).map(r => ({ ...r, fresh: r.at > from }))
+	const done = doneRows(store, from < week ? from : week, wfs).map(r => ({ ...r, fresh: r.at > from }))
 	const autos = store.automations().filter(a => a.state !== 'ended').map(a => ({ code: a.code, sentence: describe(a).replace(/^R\d+ · /, ''), to: a.to.name, text: a.text, when: when(a.schedule), state: a.state, why: a.why, next: a.next, count: a.count, rev: a.updatedAt }))
 	const watching = g.watching.filter(w => represented.has(w.code) && !todos.has(w.code)).map(w => ({ code: w.code, what: (w.lastAsk ?? '').replace(/^Watch /, '').replace(` until ${DEFAULT_UNTIL}`, ''), last: w.status, changedAt: w.changedAt, update: !!w.changedAt && w.changedAt > from && (!w.ackAt || w.changedAt > w.ackAt), rev: w.revAt ?? w.updatedAt , every: (w.job ? store.job(w.job) : undefined)?.every, endsAt: (w.job ? store.job(w.job) : undefined)?.endsAt, by: w.watchBy, nextAt: (w.job ? store.job(w.job) : undefined)?.nextAt, from: w.watchFrom === 'catchup' ? wfs.find(x => x.watchedAs === w.code)?.code : undefined }))
 	const progress = wfs.filter(w => represented.has(w.code) && (todos.has(w.code) || w.state === 'open' || w.state === 'waiting_on_sender')).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map(w => {

@@ -47,6 +47,9 @@ export type UiChoice = { ui: 'new' | 'classic' | 'react'; at?: string; tried?: s
 export type PageSubmission = {
 	id: string; answerId: string; fingerprint: string; item: string; rev: string; at: string
 	phase: 'prepared' | 'queued' | 'refused'; accepted: boolean; ids: string[]; text: string; processed?: boolean; status: number
+	immediate?: boolean
+	refused?: boolean
+	uncertain?: boolean
 }
 export type Control = { paused: boolean; stopped: boolean; autoSend?: boolean; at?: string }
 type Notify = { lastNudgeAt?: string; previews?: Record<string, Preview | Preview[]>; snapshot?: string; summaryDay?: string; sweepDay?: string }
@@ -96,9 +99,12 @@ export class Store {
 	addRun() { this.w(this.p('state', 'runs.json'), { day: localDay(), n: this.runsToday() + 1 }) }
 
 	// What applying each queued action said, by answer id, so the page or panel that acted shows the real result.
-	addOutcome(id: string, text: string) {
-		const all = readJson<{ id: string; text: string; at?: string }[]>(this.p('state', 'outcomes.json'), [])
-		this.w(this.p('state', 'outcomes.json'), [...all, { id, text, at: new Date().toISOString() }].slice(-100))
+	addOutcome(id: string, text: string, refused = false) {
+		const all = readJson<{ id: string; text: string; at?: string; refused?: true }[]>(this.p('state', 'outcomes.json'), [])
+		this.w(this.p('state', 'outcomes.json'), [...all, { id, text, at: new Date().toISOString(), ...(refused ? { refused: true as const } : {}) }].slice(-100))
+	}
+	outcomeRefused(id: string): boolean {
+		return readJson<{ id: string; refused?: true }[]>(this.p('state', 'outcomes.json'), []).some(result => result.id === id && result.refused)
 	}
 	pruneOutcomes(before: string) {
 		this.w(this.p('state', 'outcomes.json'), readJson<{ id: string; text: string; at?: string }[]>(this.p('state', 'outcomes.json'), []).filter(o => (o.at ?? '') >= before))
@@ -295,6 +301,13 @@ export class Store {
 	savePageSubmission(submission: PageSubmission): void {
 		if (!/^[a-f0-9-]{36}$/i.test(submission.id)) throw new Error('Invalid page submission identity.')
 		this.w(this.p('state', 'page-submissions', `${submission.id}.json`), submission)
+	}
+	completePageSubmission(answer: Answer, text?: string, refused = false): void {
+		if (!answer.pageSubmissionId) return
+		const record = this.pageSubmission(answer.pageSubmissionId)
+		if (!record) { this.log({ event: 'page-receipt-missing', id: answer.id, code: answer.code }); return }
+		const detail = text ? record.processed ? `${record.text} ${text}` : text : record.processed ? record.text : 'No result detail was recorded. Open the item to verify what happened.'
+		this.savePageSubmission({ ...record, phase: 'queued', accepted: true, ids: [answer.id], processed: true, text: detail, refused: !!record.refused || refused })
 	}
 	answers(): { file: string; answer: Answer }[] {
 		return listJson(this.p('state', 'answers')).map(file => ({ file, answer: readJson<Answer>(file, null as never) }))

@@ -14,6 +14,7 @@ export const workflowApprovalRev = (workflow: Workflow): string => pageDigest({
 	changes: pendingEffects(workflow.effects).map(effect => ({ id: pageChangeId(effect), meaning: [effect.pr, effect.ring, effect.build, effect.deploy], summary: effect.summary, maybe: effect.maybe })),
 	choices: workflow.choices && { ...workflow.choices, options: workflow.choices.options.map(pageOptionId) },
 	question: workflow.question, meeting: workflow.meeting, sent: workflow.sent?.msgId,
+	fyi: workflow.fyi, watchedAs: workflow.watchedAs,
 	todos: workflow.kept?.filter(todo => !todo.done).map(todo => [todo.id, todo.text, todo.at]),
 	work: workflow.work && { goal: workflow.work.goal, next: workflow.work.next, proposed: workflow.work.proposed },
 })
@@ -32,6 +33,7 @@ export function pageAnswerRefusal(answer: Answer, workflow?: Workflow, automatio
 		return undefined
 	}
 	if (guard.kind === 'undo-send' && (!workflow?.sent || workflow.sent.msgId !== guard.sentMessageId)) return 'That reply is no longer the current sent reply. Nothing was deleted.'
+	if (guard.kind === 'feedback-send' && (!workflow?.sent || workflow.sent.msgId !== guard.sentMessageId)) return 'That reply changed. Nothing was sent, deleted or redrafted. Open its current activity first.'
 	const current = workflow ? workflowApprovalRev(workflow) : automation ? automationApprovalRev(automation) : proposal ? proposalApprovalRev(proposal) : undefined
 	return current !== guard.expect ? 'Changed since you looked. Nothing was sent or changed. Open the new version first.' : undefined
 }

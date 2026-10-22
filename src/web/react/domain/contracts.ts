@@ -14,6 +14,7 @@ const why = z.object({ reason: optional, confidence: optional, gaps: strings, se
 const change = z.object({
 	id: text, itemId: text, rev: text, n: z.number(), summary: text, target: text, system: text, action: text, detail: optional,
 	meaning: z.array(z.object({ text, warn: z.boolean().optional() })).optional(),
+	error: optional,
 	state: z.enum(['proposed', 'approved', 'made', 'uncertain', 'left-out']),
 })
 const draft = z.object({ id: text, itemId: text, rev: text, text, commitment: z.boolean(), preview: z.boolean(), holding: z.boolean().optional() })
@@ -23,11 +24,11 @@ const context = z.object({ label: text, text, tone: z.enum(['info', 'warn']).opt
 const thread = z.object({ who: text, text, at: text, owner: z.boolean() })
 const item = z.object({
 	id: text, code: text, rev: text, type: text,
-	personId: text, chatId: text, at: text, ask: optional, thread: z.array(thread), newCount: z.number(), earlier: optional, before: optional,
+	personId: text, chatId: text, at: text, askAt: optional, ask: optional, thread: z.array(thread), newCount: z.number(), earlier: optional, before: optional,
 	question: optional, draftId: optional, choices: choices.optional(), picked: z.array(z.number()).optional(), context: z.array(context).optional(),
 	meeting: z.object({ subject: text, start: text, minutes: z.number(), attendees: strings }).optional(),
-	changeIds: strings, sourceIds: strings, noteIds: strings, todoIds: strings, actionIds: strings, workId: optional,
-	job: optional, why, status: text, openOn: optional, teams: optional, debug: strings.optional(),
+	changeIds: strings, effectIds: strings.optional(), sourceIds: strings, noteIds: strings, todoIds: strings, actionIds: strings, primaryActionId: optional, workId: optional,
+	job: optional, why, status: text, attention: optional, openOn: optional, teams: optional, debug: strings.optional(),
 	promise: z.object({ said: text, failed: optional }).optional(),
 	follow: z.object({ target: text, until: text, everyHours: z.number() }).optional(),
 })
@@ -37,6 +38,8 @@ const action = z.object({
 	staleness: z.enum(['exact', 'none']), expect: optional,
 	input: optional,
 	needsConfirm: z.boolean().optional(), meaning: optional,
+	expiresAt: optional,
+	selection: z.object({ total: z.number().int().nonnegative(), verb: text, singular: text, plural: text, suffix: text, empty: text, allowEmpty: z.boolean(), exactSingle: optional }).optional(),
 })
 const work = z.object({
 	id: text, itemId: text, goal: text, next: optional, waiting: optional, due: z.boolean(), proposed: z.boolean(), home: optional,
@@ -69,13 +72,13 @@ const automation = z.object({ id: text, code: text, sentence: text, to: text, te
 const table = <T extends z.ZodType>(schema: T) => z.record(text, schema)
 export const entitiesSchema = z.object({
 	items: table(item), people: table(person), chats: table(chat), drafts: table(draft), changes: table(change), sources: table(source),
-	notes: table(z.object({ id: text, itemId: text, at: text, question: text, answer: optional, sourceIds: strings })),
+	notes: table(z.object({ id: text, itemId: text, at: text, question: text, answer: optional, sourceIds: strings, useActionId: optional })),
 	work: table(work),
 	planSteps: table(z.object({ id: text, workId: text, position: z.number(), what: text, owner, done: z.boolean(), now: z.boolean(), where: optional, build: z.union([text, z.number()]).optional() })),
 	workSteps: table(z.object({ id: text, workId: text, at: text, what: text, news: z.boolean() })),
 	todos: table(z.object({ id: text, itemId: text, code: text, text, at: text, done: z.boolean() })),
 	placements: table(placement), actions: table(action), doneEntries: table(done), watches: table(watch), automations: table(automation),
-	knowledgeProposals: table(z.object({ id: text, code: text, rev: text, topic: text, home: text, factIds: strings, actionIds: strings })),
+	knowledgeProposals: table(z.object({ id: text, code: text, rev: text, topic: text, home: text, state: optional, factIds: strings, actionIds: strings })),
 	facts: table(z.object({ id: text, proposalId: text, type: text, text, who: optional, date: text, href: optional, private: z.boolean() })),
 	health: table(z.object({ id: text, text, since: text, actionIds: strings })),
 	channels: table(z.object({ id: text, name: text, link: text, actionIds: strings })),
@@ -92,6 +95,28 @@ export const snapshotSchema = z.object({
 		off: z.object({ text, since: optional }).optional(), paused: z.boolean().optional(), handled: z.number(),
 		minute: z.object({ facts: z.number(), suggestions: z.number() }), catchup: z.object({ count: z.number(), worth: z.number() }),
 	}),
+	pageActionIds: strings.optional(),
+	recipients: z.array(z.object({ id: text, name: text, group: z.boolean() })).optional(),
+	reminderDefaults: z.object({ text, every: z.enum(['day', 'weekday', 'week']), at: text }).optional(),
+	doneNew: z.number().optional(),
+	version: z.object({ code: optional, tag: optional, auto: z.boolean(), channel: text, everyMin: z.number(), checkedAt: optional, failed: optional }).optional(),
+	sinceLine: z.object({ at: text, parts: z.array(z.object({ text, href: text })) }).optional(),
+	settingsActions: z.record(text, strings).optional(),
+	classic: z.object({
+		needsIds: strings,
+		tiles: z.array(z.object({ key: text, count: z.number(), label: text, sub: optional })),
+		also: z.array(z.object({ key: text, count: z.number(), label: text, sub: optional })),
+		catchupIds: strings,
+		running: z.array(z.object({ code: text, what: text, who: optional, since: text, progress: z.number().optional(), actionIds: strings })),
+		progress: z.array(z.object({
+			code: text, who: text, chat: text, goal: text, status: text,
+			last: z.object({ at: text, what: text }).optional(), next: optional, checkAt: optional,
+			every: z.number().optional(), endsAt: optional, rev: text, actionIds: strings,
+		})),
+		watchActionIds: z.record(text, strings),
+		automationActionIds: z.record(text, strings),
+		details: z.object({ runner: text, log: strings }).optional(),
+	}).optional(),
 	search: z.object({ query: text, nowIds: strings, doneIds: strings, link: z.object({ href: text, item: optional }).optional() }).optional(),
 })
 export const intentSchema = z.object({
@@ -100,10 +125,17 @@ export const intentSchema = z.object({
 		text: text.max(15_000).optional(), picks: z.array(z.number().int().positive()).max(100).optional(),
 		excluded: z.array(z.number().int().positive()).max(100).optional(),
 		result: z.enum(['Both work', 'Issues found', 'Blocked']).optional(),
+		to: text.max(300).optional(), recipientId: text.max(200).optional(),
+		every: z.enum(['day', 'weekday', 'week']).optional(), at: text.max(5).optional(), day: z.number().int().min(0).max(6).optional(),
+		until: text.max(2000).optional(), by: text.max(10).optional(), push: z.boolean().optional(),
+		seenAt: text.max(40).optional(),
 	}).strict().optional(),
 }).strict()
 export const receiptSchema = z.object({
 	submissionId: text, item: text, rev: text, ids: strings, accepted: z.boolean(), applied: z.boolean(), text,
+	refused: z.boolean().optional(),
+	uncertain: z.boolean().optional(),
+	at: optional,
 })
 export type Snapshot = z.infer<typeof snapshotSchema>
 export type Entities = z.infer<typeof entitiesSchema>

@@ -116,3 +116,38 @@ test('React actions API: manual Undo crosses the real HTTP gate and is applied b
 		await new Promise<void>(resolve => server.close(() => resolve()))
 	}
 })
+
+test('React actions API: a refused result stays refused after the outcome log rotates', async () => {
+	const root = mkdtempSync(join(tmpdir(), 'delegate-react-durable-refusal-'))
+	const store = seedNext(new Store({ root, machine: 'test' }))
+	const action = reactProjection(store).snapshot.entities.actions['A1/send-edit']
+	const intent: Intent = { submissionId: randomUUID(), action: action.id, item: action.item, rev: action.rev, expect: action.expect, input: { text: 'My exact unsent words' } }
+	submitIntent(store, intent)
+	const workflow = store.byCode('A1')!
+	workflow.draft!.text = 'A changed draft before application'
+	store.save(workflow, false)
+	await applyAnswers(store, stub, store.config(), { start: () => ({ pid: 1 }), alive: () => false, kill: () => true, openWindow: () => {} } as never)
+	for (let index = 0; index < 200; index++) store.addOutcome(`other-action-${index}`, 'Other activity')
+	const result = submissionReceipt(new Store({ root, machine: 'another-machine' }), intent.submissionId)!
+	assert.equal(result.applied, true)
+	assert.equal(result.refused, true)
+	assert.equal(result.uncertain, false)
+	assert.match(result.text, /changed|Changed/)
+	assert.equal(store.byCode('A1')!.sent, undefined)
+	assert.deepEqual(store.answers(), [])
+})
+
+test('React actions API: legacy processed answers with missing detail terminate as uncertainty, never queue or claim success', async () => {
+	const store = seedNext(new Store({ root: mkdtempSync(join(tmpdir(), 'delegate-react-legacy-receipt-')), machine: 'test' }))
+	const answerId = store.writeAnswer({ code: 'A1', verb: 'skip', surface: 'panel' }).id
+	const id = randomUUID()
+	store.savePageSubmission({ id, answerId, ids: [answerId], item: 'A1', rev: '', fingerprint: 'legacy', at: new Date().toISOString(), phase: 'queued', accepted: true, status: 202, text: 'Queued' })
+	await applyAnswers(store, stub, store.config(), { start: () => ({ pid: 1 }), alive: () => false, kill: () => true, openWindow: () => {} } as never)
+	for (let index = 0; index < 200; index++) store.addOutcome(`other-action-${index}`, 'Other activity')
+	const result = submissionReceipt(store, id)!
+	assert.equal(result.applied, true)
+	assert.equal(result.uncertain, true)
+	assert.match(result.text, /detailed result is no longer available/)
+	assert.deepEqual(submissionReceipt(store, id), result)
+	assert.deepEqual(store.answers(), [])
+})

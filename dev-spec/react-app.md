@@ -1,8 +1,34 @@
 # React preview
 
-Status: reviewed architecture; M1 foundation implemented; M2 typed API and
-unactivated item components in progress. Schema version: 1.
-Reviews: [spec](../reviews/react-spec.md), [action safety](../reviews/react-actions.md).
+M4b secondary-screen follow-up: Numbers retains supplied gist/work in its counted
+lists. Done partitions pin-aware entries using the accumulating visit-stable New
+id set, with keyed sibling entries so grouping never reparents an editor.
+Grouped entry headings are h3 below h2 group labels; ungrouped/closed entries
+remain h2. Find is the sole missed-message entry point. See
+[the handoff](../reviews/react-parity-m4.md) for browser proofs and remaining
+New-side ownership. The owner has reassigned this builder to React Classic.
+
+## React Classic
+
+Classic is a separate presentation under `src/web/react/classic/`. The React
+entry defaults to New; `#classic/...` selects the in-app Classic shell without
+changing the machine's `ui: react` choice or reloading the page. Returning to New
+uses `#now`. Both experiences share the normalized store, revision pins, receipt
+recovery and typed action gates.
+
+The optional v1 `classic` page metadata projects the existing Classic view:
+ordered Needs-you ids, Home tiles and Also-for-you tiles, Catch-up activity ids,
+running work with bootstrap progress, ongoing work with check dates, and debug
+runner details. Counts and membership stay on the server. Classic-only offered
+action ids reuse existing continue/close/every/extend/ok verbs; the browser never
+formats commands. Shared Done, Numbers, Settings and Knowledge retain one
+implementation and adapt their navigation to the selected experience.
+
+Status: M1, M2 and M3 complete. All four screens and supporting sheets are
+implemented and browser-proven. The final M4 scenario inventory follows.
+Schema version: 1.
+Reviews: [spec](../reviews/react-spec.md), [action safety](../reviews/react-actions.md),
+[UI and narrow safety follow-ups](../reviews/react-ui.md).
 
 ## Goal and boundaries
 
@@ -199,6 +225,13 @@ not just a threshold assertion. No real-owner data is needed or accessed.
 | Test runners | node:test only; requested component stack | Keep Vitest/Testing Library as explicitly selected by owner, alongside fixture-backed node:test browser tests |
 | Schema drift | Manually remember fields; coverage assertion | Projection tests must account for every existing view/card/row field, mapped or explicitly dropped |
 | Classic extras | Add tabs; place in existing surfaces | Watches/reminders and channel management in Now Waiting footer/sheet; the approved Since line replaces Home tiles; missed-message paste in Find; knowledge queue linked from Now minute line; update/report/version in footer |
+| Activity edits | Component-local fields; normalized revision fields | Feedback and watch forms use the same pinned revision mechanism as drafts. Retain the old activity when a replacement send changes its row id; block editing another version of that item until explicit discard |
+| Receipt retention | Bounded outcome log; durable completion | Carry an optional submission identity on queued answers and persist runner text/refusal at completion. Preserve completion across the enqueue/save race. Older archived answers with missing detail terminate as explicit uncertainty, never a replay or fabricated success |
+| Edit consumption | Any changed revision after an ack; confirmed carried words | Consume an edited reply only if its submitted words exist in the new draft or sent activity. Uncertainty, refusal, newer text, focus, composition and changed selections keep the pin |
+| Redraw budget | Recompare all entities; respect Query identity | Reuse identical Query-owned references before deep comparison. All 500 headlines must change in the benchmark; unchanged polling is not proof of a redraw |
+| Milestone integration | Dead imports until each milestone; integrated lazy screens | Wire all lazy screens with the shell in M2, then finish their explicit M3 acceptance separately. Do not expose placeholder screens or claim the inventory complete prematurely |
+| Settings provenance | Drop metadata; retain evidence | Show learned-rule evidence alongside its scope and Remove control. Setup-only values remain readable, labelled as managed during setup rather than exposing chat commands as the page's controls |
+| Screen refresh | Poll all queries; query per screen | Numbers fetches on open/window/remount, not page polling, focus or reconnect. Settings retains mounted drafts on failed refresh and advanced deep links open the containing More fold |
 
 ## Review disposition
 
@@ -222,10 +255,62 @@ dist, not one HTML file.
   Earlier metadata returned inconsistent older versions; official public release
   tags confirm React v19.3.1, Tailwind v4.3.3 and Zustand v5.0.15. The inference
   that these versions were private or nonexistent was incorrect.
-- M2 in progress: typed layers and structured action safety verified; Now and
-  open card components are not yet activated.
-- M3 pending: Done, Numbers and Settings.
+- M2 complete: typed layers, Now, every current row/card kind, server-owned
+  actions, private Ask, holding replies, work, changes, Undo and refresh safety.
+- M3 complete: Done, Numbers and Settings, including filters, exact feedback,
+  learned provenance, habits, privacy controls and retained screen edits.
 - M4 pending: Classic extras, scenario matrix and measured parity.
+
+## M2 verification checkpoint
+
+- Real Chrome against fictional temporary stores and the real local server:
+  every row kind, exact edited sends, preview-before-send choices, selected
+  changes, private sources/Ask, separate PR approvals, holding/retrying/stopped
+  work, reports, to-dos, Find, knowledge, sheets and all four screens.
+- Stale submission and apply-time races, double click, dropped POST response,
+  reload while receipt checking remains blocked, rotated outcome logs and
+  exact-target Undo are covered. Activity forms retain focus/selection/IME and
+  typed watch text when records change.
+- Full gate: 896 Node cases; 894 passed initially. The two failures were the
+  16.2 ms worst redraw and a reopen assertion observing the queued message.
+  Identical-entity reuse removed redundant serialization; the reopen test now
+  awaits the matching applied receipt. Both failed cases passed their focused
+  rerun. All 13 component/resolver cases passed.
+- Changed-row production benchmark after the optimization: 7.30 ms median,
+  14.30 ms maximum/p95, 15 updates with all 500 headlines changed. Includes
+  normalized index reconciliation and React commit; excludes network, query
+  parsing/cache work, layout and paint. Projection: 170.51 ms; JSON 1,576,730
+  bytes uncompressed. These are local measurements, not a cross-platform claim.
+- Twenty screenshots inspected: Now/card/Done/Numbers/Settings, each at
+  1280x800 and 400x860, light and dark. No horizontal overflow; navigation
+  clears the sticky header; codes do not wrap and chart baselines align.
+- 63 cumulative genuine mutation kills, including selected primary counts,
+  pinned activity retention, discard protection and durable completion.
+  An initially invalid mutation baseline was not counted: the lost-response
+  test now holds receipt blocking through reload rather than racing unroute.
+- Heavier screens are lazy. Current build sizes are recorded in the milestone
+  summary. All tests write under temporary roots; no owner data, AI, push or
+  publication was used.
+
+## M3 verification checkpoint
+
+- Browser-proven Done feedback/watch retention and exact-send targets; Numbers
+  counted lists and anonymous copy; all Settings fields and model details.
+- Additional real-browser checks cover Numbers fetch cadence through six real
+  page polls, focus and reconnect, advanced Settings links opening More,
+  retained focus/text after a failed refresh, all three habit choices, learned
+  evidence/Remove and cancelled/confirmed chat privacy changes.
+- Full Node suite: 899 cases, 898 passed initially. A non-reply completion
+  assertion timed out; its diagnostic also waited on the already-removed row.
+  It now awaits the exact applied receipt and asserts that receipt's text is
+  rendered. The focused seven-action case passed. No production cause was
+  established for the old timing-only assertion. All 13 React cases pass.
+- Full-run changed-row measurement: median 8.00 ms, maximum/p95 13.40 ms;
+  projection 93.61 ms and 1,576,730-byte JSON. Same measurement scope as M2.
+- Four additional learned-rule screenshots inspected at both required sizes
+  and themes. Evidence, scope and controls are readable without overflow.
+- Three new genuine mutation kills for provenance, command-free setup labels
+  and Numbers reconnect policy: 66 cumulative. Baseline passed first.
 
 ## M1 verification checkpoint
 

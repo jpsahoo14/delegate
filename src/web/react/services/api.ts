@@ -26,3 +26,4 @@ export const receipt = (submissionId: string) => request(`/api/v1/result?submiss
 export const fetchSettings = (signal?: AbortSignal) => request('/api/v1/settings', settingsSchema, { signal })
 export const fetchNumbers = (window: string, signal?: AbortSignal) => request(`/api/v1/numbers?window=${encodeURIComponent(window)}`, numbersSchema, { signal })
 export const saveSetting = (key: string, value: string) => request('/settings', saveResultSchema, { method: 'POST', body: JSON.stringify({ key, value }) })
+export const saveSeen = (filters: string[], at: string) => request('/seen', z.object({ ok: z.literal(true) }), { method: 'POST', body: JSON.stringify({ filters, at }) })

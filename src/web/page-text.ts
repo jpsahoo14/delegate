@@ -1,0 +1,6 @@
+import { forPage } from './app/model/format.ts'
+
+export const hasCommandHint = (text: string) => /\b(?:ok|edit|send|skip|answer|pick|undo|more|close|wait)\s+[A-Z]\d+\b/i.test(text)
+export function pageText(text = ''): string {
+	return forPage(text).split(/(?<=[.!?])\s+/).filter(sentence => !hasCommandHint(sentence)).join(' ').trim()
+}

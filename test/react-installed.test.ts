@@ -50,7 +50,7 @@ test('React preview distribution: the installed bundle serves without node_modul
 		assert.ok(ready, `Installed server did not become ready: ${log}`)
 		const page = await browser.newPage()
 		await page.goto(url)
-		await page.getByRole('heading', { name: 'A new front end. The same Delegate.' }).waitFor()
+		await page.getByRole('heading', { name: 'Now', exact: true }).waitFor()
 		renameSync(join(root, 'dist/web-react'), join(root, 'dist/web-react-unavailable'))
 		const response = await page.goto(url)
 		assert.equal(response!.status(), 200)

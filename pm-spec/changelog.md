@@ -18,3 +18,17 @@ Existing Classic and New remain available. See R-REACT-01, 02 and 09.
 2026-10-22: Rebased the React foundation onto the reconciled engine, replaced
 the class utility package with an owned helper, and reserved the version menu's
 layout allocation so native option/font metrics cannot resize the header.
+
+2026-10-22: Activated the React workspace and current card. Rows only open;
+typed server-offered buttons handle replies, choices, selected changes, private
+Ask, work reports, holding replies and Undo. Pending identities and durable
+receipts prevent replay after a lost response. Pinned revisions retain newer
+typing and activity-form edits. The integrated supporting screens are available;
+their formal M3 acceptance and complete M4 inventory follow. SC-406 through
+SC-419 record the fixture-browser and shared-engine regression coverage.
+
+2026-10-22: Completed M3 screen acceptance. Numbers fetches only when opened
+or its window changes, including after focus/reconnect events. Advanced Settings
+links open More and failed refresh preserves the same focused edit. Learned
+rules retain their provenance; all habit and privacy controls refresh through
+the real server. Setup-only values no longer prescribe chat commands.

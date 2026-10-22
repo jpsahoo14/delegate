@@ -318,9 +318,9 @@ export function actResult(store: Store, command: string, shownAt?: string, from:
 }
 
 // Typed page intents enter after chat parsing so user text remains one field.
-export function enqueueParsed(store: Store, parsed: Parsed[], shownAt?: string, from: 'chat' | 'page' = 'page', answerId?: string, page?: import('../core/types.ts').PageApproval): { text: string; accepted: boolean; ids: string[] } {
+export function enqueueParsed(store: Store, parsed: Parsed[], shownAt?: string, from: 'chat' | 'page' = 'page', answerId?: string, page?: import('../core/types.ts').PageApproval, pageSubmissionId?: string): { text: string; accepted: boolean; ids: string[] } {
 	if (answerId && parsed.length !== 1) throw new Error('A page submission must target exactly one action.')
-	const write = (answer: Parameters<Store['writeAnswer']>[0]) => store.writeAnswer({ ...answer, ...(page ? { page, ...(page.todoIds ? { todos: page.todoIds } : {}) } : {}) }, answerId)
+	const write = (answer: Parameters<Store['writeAnswer']>[0]) => store.writeAnswer({ ...answer, ...(page ? { page, ...(page.todoIds ? { todos: page.todoIds } : {}) } : {}), ...(pageSubmissionId ? { pageSubmissionId } : {}) }, answerId)
 	let shown = 0
 	const out: string[] = []
 	const ids: string[] = []

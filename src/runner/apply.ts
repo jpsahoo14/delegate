@@ -42,7 +42,7 @@ export async function applyAnswers(store: Store, src: Source, cfg: Config, procs
 				if (store.answered(answer.id)) { store.doneAnswer(file); continue }
 				const refusal = pageAnswerRefusal(answer, wf, answer.code.startsWith('R') ? store.automation(answer.code) : undefined, kp)
 				if (refusal) {
-					await reply(store, src, answer, `${MARK} ${refusal}`)
+					await reply(store, src, answer, `${MARK} ${refusal}`, true)
 					store.doneAnswer(file)
 					store.log({ event: 'page-answer-refused', code: answer.code, verb: answer.verb, reason: refusal })
 					n++
@@ -77,10 +77,11 @@ export async function applyAnswers(store: Store, src: Source, cfg: Config, procs
 				Object.assign(wf, { state: 'needs_human', status: `Could not send: ${why}. Reply "ok ${wf.code}" to retry` })
 				store.save(wf)
 			}
-			await reply(store, src, answer, `${MARK} ${answer.verb} ${answer.code} failed: ${why}`)
+			await reply(store, src, answer, `${MARK} ${answer.verb} ${answer.code} failed: ${why}`, true)
 		}
 		store.doneAnswer(file)
 		store.addOutcome(answer.id, '')
+		store.completePageSubmission(answer)
 		store.log({ event: 'answer', workflowId: wf?.id, code: answer.code, verb: answer.verb, surface: answer.surface, text: answer.text })
 		n++
 	}
@@ -543,9 +544,13 @@ export function replyContext(wf: Workflow, text = '', all: Record<string, string
 	}
 }
 
-async function reply(store: Store, src: Source, a: Answer, text: string) {
+async function reply(store: Store, src: Source, a: Answer, text: string, refused = false) {
 	// The surface that acted reads its own result, so a refusal is never shown as success (final review P1-2).
-	if (a.id) store.addOutcome(a.id, text.replace(new RegExp(`^${MARK}\\s*`), ''))
+	if (a.id) {
+		const detail = text.replace(new RegExp(`^${MARK}\\s*`), '')
+		store.addOutcome(a.id, detail, refused)
+		store.completePageSubmission(a, detail, refused)
+	}
 	if (a.surface === 'chat' || a.surface === 'panel') return store.addReceipt(text.replace(new RegExp(`^${MARK}\\s*`), ''))
 	if (a.surface !== 'self') return
 	try { await say(store, src, text) } catch (e) { store.log({ event: 'ack-failed', code: a.code, error: String(e) }) }

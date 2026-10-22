@@ -21,6 +21,7 @@ import { reactProjection, IntentError } from './react-projection.ts'
 import { submissionReceipt, submitIntent } from './react-submissions.ts'
 import { intentSchema } from './react/domain/contracts.ts'
 import { listsOf, numbersModel, RULES as NUMBER_RULES } from './app/model/numbers.ts'
+import { ROOT } from '../paths.ts'
 
 // What a page or panel action really did once applied, and the item's fresh card if it still needs the owner.
 export function actOutcome(store: Store, ids: string[], code: string) {
@@ -42,8 +43,11 @@ export function automateFromPage(store: Store, i: AutomateInput): { ok: boolean;
 // The running version, read at most every 30 s: the page polls often, and each read asks git.
 let ver: { at: number; v: ReturnType<typeof versionInfo> } | undefined
 const withVersion = (s: Store, v: ReturnType<typeof view>) => {
+	return { ...v, version: versionFor(s), settings: settingsView(s) }
+}
+const versionFor = (s: Store) => {
 	if (!ver || Date.now() - ver.at > 30_000) ver = { at: Date.now(), v: versionInfo(s.config()?.autoUpdate, undefined, undefined, s.config()?.updateEveryMin) }
-	return { ...v, version: ver.v, settings: settingsView(s) }
+	return ver.v
 }
 
 // The switch on this machine, and the new page's rows only when that page asks: classic never builds them (R-NEX-01).
@@ -77,14 +81,14 @@ export function saveUiFrom(s: Store, body: unknown): { ok: boolean; ui?: ReturnT
 
 // A local page with working buttons. Only this machine can reach it, and only with the token in its link (R-HIL-09).
 // probeFor: the owner's Azure DevOps read, for a setting checked there before it is saved.
-export function serveInbox(get: () => Store, port = 0, token = randomBytes(16).toString('hex'), probeFor: (cfg: Config) => BuildProbe | undefined = adoProbe): Promise<{ url: string; server: Server }> {
+export function serveInbox(get: () => Store, port = 0, token = randomBytes(16).toString('hex'), probeFor: (cfg: Config) => BuildProbe | undefined = adoProbe, previewRoot = ROOT): Promise<{ url: string; server: Server }> {
 	const server = createServer((req, res) => {
 		const u = new URL(req.url ?? '/', 'http://127.0.0.1')
 		const host = req.headers.host ?? ''
 		if (u.searchParams.get('t') !== token || !/^(127\.0\.0\.1|localhost):\d+$/.test(host)) { res.writeHead(403).end(`Open the link ${NAME} gave you.`); return }
 		const headers = { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'" }
 		if (u.pathname.startsWith('/api/v1/')) {
-			const json = (status: number, body: unknown) => res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' }).end(JSON.stringify(body))
+			const json = (status: number, body: unknown, extra: Record<string, string> = {}) => res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store', ...extra }).end(JSON.stringify(body))
 			const failure = (error: unknown) => {
 				if (error instanceof IntentError) json(error.status, { text: error.message })
 				else { console.error('React API request failed:', error); json(500, { text: `${NAME} could not complete this request. Nothing will be retried automatically.` }) }
@@ -92,11 +96,27 @@ export function serveInbox(get: () => Store, port = 0, token = randomBytes(16).t
 			if (req.method === 'GET' && u.pathname === '/api/v1/page') {
 				const query = u.searchParams.get('find') ?? ''
 				if (query.length > 2000) { json(422, { text: 'Find text is too long.' }); return }
-				try { json(200, reactProjection(get(), query).snapshot) } catch (error) { failure(error) }
+				try {
+					const store = get(), start = performance.now(), snapshot = reactProjection(store, query).snapshot
+					json(200, { ...snapshot, version: versionFor(store) }, { 'server-timing': `projection;dur=${(performance.now() - start).toFixed(2)}` })
+				} catch (error) { failure(error) }
 				return
 			}
 			if (req.method === 'GET' && u.pathname === '/api/v1/settings') {
-				try { json(200, settingsView(get())) } catch (error) { failure(error) }
+				try {
+					const store = get(), settings = settingsView(store)
+					const actions = reactProjection(store).snapshot.settingsActions
+					const marked = Object.entries(store.config().chatLevels ?? {}).map(([id, level]) => ({ name: level.name, actionIds: actions?.[`chat:${hashOf(id)}`] }))
+					json(200, {
+						...settings,
+						rows: settings.rows.map(row => ({
+							...row,
+							help: row.help.replace(/\bTo learn\b/g, 'Facts to check').replace(/\bOngoing\b/g, 'Waiting on Now').replace(/\bWatching\b/g, 'Watch details at the foot of Now'),
+							options: row.options?.map(option => ({ ...option, label: row.key === 'autoUpdate' && option.value === 'off' ? 'Off: check for updates manually' : option.label })),
+						})),
+						about: { ...settings.about, chats: settings.about.chats.map((chat, index) => ({ ...chat, actionIds: marked[index]?.actionIds })) },
+					})
+				} catch (error) { failure(error) }
 				return
 			}
 			if (req.method === 'GET' && u.pathname === '/api/v1/numbers') {
@@ -143,7 +163,7 @@ export function serveInbox(get: () => Store, port = 0, token = randomBytes(16).t
 		}
 		if (req.method === 'GET' && u.pathname.startsWith('/web-react/')) {
 			try {
-				const asset = reactAsset(u.pathname.slice('/web-react/'.length), token)
+				const asset = reactAsset(u.pathname.slice('/web-react/'.length), token, previewRoot)
 				if (!asset) { res.writeHead(404).end(); return }
 				res.writeHead(200, { 'content-type': asset.type, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' }).end(asset.content)
 			} catch (error) {
@@ -165,7 +185,7 @@ export function serveInbox(get: () => Store, port = 0, token = randomBytes(16).t
 				}
 				react = s.ui().ui === 'react'
 				if (react) {
-					try { page = reactPage(token) } catch (error) {
+					try { page = reactPage(token, previewRoot) } catch (error) {
 						console.error('React preview unavailable; showing New instead:', error)
 						react = false
 						page = renderApp({ ...withUi(s, withVersion(s, view(s, s.visitSince())), true), ui: { ...s.ui(), ui: 'new' } }, 'page')
