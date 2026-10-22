@@ -1,0 +1,9 @@
+.foundation { padding: 28px; background: var(--surface); border: 1px solid var(--border); border-radius: 14px; }
+.foundation p { max-width: 64ch; color: var(--text-2); margin-bottom: 18px; }
+.foundation h1 { font-size: 28px; line-height: 1.2; font-weight: 650; margin: 0 0 20px; }
+.foundation .eyebrow { font-size: 12px; font-weight: 650; text-transform: uppercase; letter-spacing: .06em; }
+@media (max-width: 560px) {
+	.foundation { padding: 20px; }
+	.foundation h1 { font-size: 22px; }
+	.foundation p { font-size: 15px; }
+}

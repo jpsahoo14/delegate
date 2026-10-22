@@ -6,10 +6,17 @@ import { S, U, cardOf, env } from '../state/store.ts'
 import { current, render } from '../view/render.ts'
 import { focusOn } from './ui.ts'
 import { loadNumbers } from '../state/numbers.ts'
+import { switchUi } from './switch.ts'
 import type { WindowKey } from '../model/types.ts'
 
 export function onChange(e: Event) {
 	const t = e.target as HTMLInputElement
+	if (t.hasAttribute('data-ui-choice')) {
+		const choice = t.value
+		t.value = env.ui
+		if (choice === 'new' || choice === 'classic' || choice === 'react') void switchUi(choice)
+		return
+	}
 	if (t.dataset.ws === 'push') { S.wform!.push = t.checked; return }
 	// No re-render: leaving a field fires change on the way to its Save button, and a redraw would drop that click.
 	if (t.dataset.set) { S.set[t.dataset.set] = t.value; current().patch.unsaved(t); return }
@@ -75,4 +82,3 @@ export function onSubmit(e: SubmitEvent) {
 	e.preventDefault()
 	A.ask(f.closest<HTMLElement>('[data-code]')!.dataset.code!)
 }
-

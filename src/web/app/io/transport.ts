@@ -12,7 +12,7 @@ export type IO = {
 	settings?(key: string, value: string): Promise<{ ok: boolean; text: string }>
 	seen?(filters: string[], at: string): Promise<void>
 	// The New experience switch on this machine (R-NEX-01), or that its first-time note was closed. The snapshot has none.
-	ui?(b: { ui?: 'new' | 'classic'; noted?: boolean }): Promise<{ ok: boolean; ui?: UiChoice }>
+	ui?(b: { ui?: UiChoice['ui']; noted?: boolean }): Promise<{ ok: boolean; ui?: UiChoice }>
 	// The Numbers tab, asked for only when it opens and when its window changes (R-NEX-11). The snapshot has none.
 	numbers?(window: WindowKey): Promise<NumbersPage>
 }

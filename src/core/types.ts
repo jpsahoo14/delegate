@@ -317,7 +317,8 @@ export const CONTROL_VERBS = ['pause', 'resume', 'stop', 'auto-on', 'auto-off'] 
 // nums: 1-based option numbers for pick, or the only changes an ok approves.
 // again: "ok A1 again", the owner checked that a change which may have been made was not, so it is made once more.
 // todos: on a close from the page, the open to-dos the owner saw, so Mark done marks only those (review N2 P2-1).
-export type Answer = { id: Id; code: Code; verb: Verb; text?: string; nums?: number[]; except?: number[]; again?: true; surface: 'chat' | 'self' | 'panel'; at: string; seenAt?: string; todos?: string[] }
+export type PageApproval = { kind: 'send-reply' | 'make-changes' | 'pick' | 'undo-send' | 'mark-todos' | 'approve'; expect: string; sentMessageId?: string; todoIds?: string[] }
+export type Answer = { id: Id; code: Code; verb: Verb; text?: string; nums?: number[]; except?: number[]; again?: true; surface: 'chat' | 'self' | 'panel'; at: string; seenAt?: string; todos?: string[]; page?: PageApproval }
 
 export type WatchedChat = { id: string; name: string; test?: boolean; group?: boolean; since?: string }
 

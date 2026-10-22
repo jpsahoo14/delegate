@@ -43,7 +43,11 @@ export type ChatsState = { startedAt: string; seen: Record<string, string>; read
 type Lease = { machine: string; at: string }
 export type OpenWindow = { machine: string; pid: number; runId: string; since: string; closed?: boolean }
 export type Health = Record<string, { text: string; since: string; machine: string }>
-export type UiChoice = { ui: 'new' | 'classic'; at?: string; tried?: string; noted?: true }
+export type UiChoice = { ui: 'new' | 'classic' | 'react'; at?: string; tried?: string; noted?: true }
+export type PageSubmission = {
+	id: string; answerId: string; fingerprint: string; item: string; rev: string; at: string
+	phase: 'prepared' | 'queued' | 'refused'; accepted: boolean; ids: string[]; text: string; processed?: boolean; status: number
+}
 export type Control = { paused: boolean; stopped: boolean; autoSend?: boolean; at?: string }
 type Notify = { lastNudgeAt?: string; previews?: Record<string, Preview | Preview[]>; snapshot?: string; summaryDay?: string; sweepDay?: string }
 
@@ -235,9 +239,9 @@ export class Store {
 	// The "New experience" switch, one file per machine and never in seen/, whose marks merge across machines (R-NEX-01).
 	// A missing or bad file is classic. at: when it was last set; tried: when it was first turned on; noted: the first-time note was closed.
 	ui(): UiChoice {
-		try { const u = readJson<Partial<UiChoice>>(this.p('state', 'ui', `${this.machine}.json`), {}); return u && (u.ui === 'new' || u.ui === 'classic') ? { ui: u.ui, ...(typeof u.at === 'string' ? { at: u.at } : {}), ...(typeof u.tried === 'string' ? { tried: u.tried } : {}), ...(u.noted ? { noted: true } : {}) } : { ui: 'classic' } } catch { return { ui: 'classic' } }
+		try { const u = readJson<Partial<UiChoice>>(this.p('state', 'ui', `${this.machine}.json`), {}); return u && (u.ui === 'new' || u.ui === 'classic' || u.ui === 'react') ? { ui: u.ui, ...(typeof u.at === 'string' ? { at: u.at } : {}), ...(typeof u.tried === 'string' ? { tried: u.tried } : {}), ...(u.noted ? { noted: true } : {}) } : { ui: 'classic' } } catch { return { ui: 'classic' } }
 	}
-	saveUi(ui: 'new' | 'classic', noted = false): UiChoice {
+	saveUi(ui: UiChoice['ui'], noted = false): UiChoice {
 		const was = this.ui(), at = new Date().toISOString()
 		const next: UiChoice = { ui, at, ...(was.tried || ui === 'new' ? { tried: was.tried ?? at } : {}), ...(was.noted || noted ? { noted: true } : {}) }
 		this.w(this.p('state', 'ui', `${this.machine}.json`), next)
@@ -260,10 +264,37 @@ export class Store {
 	notify(): Notify { return readJson(this.p('state', 'notify.json'), {}) }
 	saveNotify(n: Notify) { this.w(this.p('state', 'notify.json'), n) }
 
-	writeAnswer(a: Omit<Answer, 'id' | 'at'>): Answer {
-		const full: Answer = { ...a, id: ulid(), at: new Date().toISOString() }
+	writeAnswer(a: Omit<Answer, 'id' | 'at'>, submissionId?: string): Answer {
+		const id = submissionId ?? ulid()
+		if (!/^[0-9A-HJKMNP-TV-Z]{26}$/.test(id)) throw new Error('An answer identity must preserve time order.')
+		const existing = submissionId ? this.answerById(id) : undefined
+		if (existing) {
+			const { id: _id, at: _at, ...previous } = existing
+			if (JSON.stringify(previous) !== JSON.stringify(a)) throw new Error('That submission already has a different answer.')
+			return existing
+		}
+		const full: Answer = { ...a, id, at: new Date().toISOString() }
 		this.w(this.p('state', 'answers', `${full.id}-${this.machine}.json`), full)
 		return full
+	}
+	answerById(id: string): Answer | undefined {
+		if (!/^[a-zA-Z0-9-]+$/.test(id)) throw new Error('Invalid answer identity.')
+		for (const directory of [this.p('state', 'answers'), this.p('state', 'done', 'answers')]) {
+			for (const file of listJson(directory)) if (basename(file).startsWith(`${id}-`)) return readJson<Answer | undefined>(file, undefined)
+		}
+		return undefined
+	}
+	answered(id: string): boolean {
+		if (!/^[0-9A-HJKMNP-TV-Z]{26}$/.test(id)) throw new Error('Invalid answer identity.')
+		return listJson(this.p('state', 'done', 'answers')).some(file => basename(file).startsWith(`${id}-`) && readJson<Answer | undefined>(file, undefined)?.id === id)
+	}
+	pageSubmission(id: string): PageSubmission | undefined {
+		if (!/^[a-f0-9-]{36}$/i.test(id)) throw new Error('Invalid page submission identity.')
+		return readJson<PageSubmission | undefined>(this.p('state', 'page-submissions', `${id}.json`), undefined)
+	}
+	savePageSubmission(submission: PageSubmission): void {
+		if (!/^[a-f0-9-]{36}$/i.test(submission.id)) throw new Error('Invalid page submission identity.')
+		this.w(this.p('state', 'page-submissions', `${submission.id}.json`), submission)
 	}
 	answers(): { file: string; answer: Answer }[] {
 		return listJson(this.p('state', 'answers')).map(file => ({ file, answer: readJson<Answer>(file, null as never) }))

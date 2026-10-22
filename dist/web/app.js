@@ -754,7 +754,8 @@
     if (h) return h;
     const s2 = v?.ui;
     if (s2 && cached2 && (cached2.at ?? "") > (s2.at ?? "")) return cached2.ui;
-    return s2?.ui ?? cached2?.ui ?? "classic";
+    const choice = s2?.ui ?? cached2?.ui ?? "classic";
+    return choice === "react" ? "new" : choice;
   }
   function newRoute(h) {
     const [base, sub] = h.split("/");
@@ -793,7 +794,7 @@
   };
   var save = async (ui) => {
     const r = await env.io?.ui?.({ ui }).catch(() => void 0);
-    if (r?.ok) cache(ui);
+    if (r?.ok && ui !== "react") cache(ui);
     return !!r?.ok;
   };
   async function chooseUi() {
@@ -816,13 +817,17 @@
   }
   async function switchUi(to) {
     if (env.panel) return;
-    if (unsent() && !window.confirm("Discard your edit?")) return;
+    if (unsent() && !window.confirm("Discard your edit?")) {
+      render2();
+      return;
+    }
     if (!await save(to)) {
       say2("Could not switch: offline");
+      render2();
       return;
     }
     const base = S.route.split("/")[0];
-    history.replaceState(null, "", location.pathname + location.search + (base === "done" || base === "settings" ? location.hash : ""));
+    history.replaceState(null, "", location.pathname + location.search + (base === "done" || base === "settings" || base === "numbers" ? location.hash : ""));
     location.reload();
   }
   function closeNote() {
@@ -1310,6 +1315,12 @@
   // src/web/app/control/fields.ts
   function onChange(e) {
     const t = e.target;
+    if (t.hasAttribute("data-ui-choice")) {
+      const choice = t.value;
+      t.value = env.ui;
+      if (choice === "new" || choice === "classic" || choice === "react") void switchUi(choice);
+      return;
+    }
     if (t.dataset.ws === "push") {
       S.wform.push = t.checked;
       return;
@@ -2201,8 +2212,7 @@
   // src/web/app/view/next/switch.ts
   function uiSwitch(where) {
     if (env.snap || env.panel) return "";
-    const on = env.ui === "new", fresh = !V.ui?.tried;
-    return html`<button class="uisw uisw-${raw(where)}" type="button" role="switch" aria-checked="${raw(String(on))}" data-act="ui"><span class="uisw-l">New experience</span>${fresh ? raw('<span class="newdot" title="New"><span class="sr"> (new)</span></span>') : ""}<span class="uisw-t" aria-hidden="true"><i></i></span></button>`;
+    return html`<label class="uisw uisw-${raw(where)}"><span class="sr">App version</span><select aria-label="App version" data-ui-choice><option value="classic"${env.ui === "classic" ? raw(" selected") : ""}>Classic</option><option value="new"${env.ui === "new" ? raw(" selected") : ""}>New</option><option value="react">React (preview)</option></select></label>`;
   }
 
   // src/web/app/view/classic/index.ts

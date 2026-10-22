@@ -59,13 +59,12 @@ test('next switch: flips this machine only, survives a reload, sends no command,
 	const t = await open('#home', s => seedNext(s, 'classic'))
 	try {
 		assert.equal(await exp(t.page), 'classic')
-		assert.equal(await t.page.getAttribute('.uisw-top', 'aria-checked'), 'false')
-		assert.equal(await t.page.locator('.uisw-top .newdot').count(), 1, 'a New dot until first tried')
-		await Promise.all([t.page.waitForEvent('load'), t.page.click('.uisw-top')])
+		assert.equal(await t.page.inputValue('.uisw-top select'), 'classic')
+		assert.deepEqual(await t.page.locator('.uisw-top option').allTextContents(), ['Classic', 'New', 'React (preview)'])
+		await Promise.all([t.page.waitForEvent('load'), t.page.selectOption('.uisw-top select', 'new')])
 		await t.page.waitForSelector('#app[data-ui=next] #now-move')
 		assert.deepEqual([t.store.ui().ui, typeof t.store.ui().tried], ['new', 'string'])
-		assert.equal(await t.page.getAttribute('.uisw-top', 'aria-checked'), 'true')
-		assert.equal(await t.page.locator('.uisw-top .newdot').count(), 0, 'no dot once tried')
+		assert.equal(await t.page.inputValue('.uisw-top select'), 'new')
 		const other = new Store({ root: t.store.root, machine: 'pc' })
 		assert.equal(other.ui().ui, 'classic', 'the other machine keeps its own')
 		await t.page.reload()
@@ -73,7 +72,7 @@ test('next switch: flips this machine only, survives a reload, sends no command,
 		// Done reloads on the same tab, in the other experience.
 		await t.page.goto(t.url + '#done/replies')
 		await t.page.waitForSelector('#app[data-ui=next] .lh')
-		await Promise.all([t.page.waitForEvent('load'), t.page.click('.uisw-top')])
+		await Promise.all([t.page.waitForEvent('load'), t.page.selectOption('.uisw-top select', 'classic')])
 		await t.page.waitForSelector('#app:not([data-ui=next]) #tabs a')
 		assert.equal(await t.page.evaluate(() => location.hash), '#done/replies')
 		assert.equal(t.store.ui().ui, 'classic')
@@ -106,15 +105,15 @@ test('next switch: a save that fails switches nothing, says "Could not switch: o
 	try {
 		await t.page.evaluate(() => { (window as unknown as { stay: number }).stay = 1 })
 		await t.page.route(/\/ui\?/, (r: { abort(): Promise<void> }) => r.abort())
-		await t.page.click('.uisw-top')
+		await t.page.selectOption('.uisw-top select', 'new')
 		await t.page.waitForFunction(() => /Could not switch: offline/.test(document.getElementById('toast')?.textContent ?? ''))
 		assert.equal(await t.page.evaluate(() => (window as unknown as { stay?: number }).stay), 1, 'no reload')
 		assert.equal(await exp(t.page), 'classic')
 		assert.equal(await t.page.evaluate(() => localStorage.getItem('delegate-ui')), null, 'the cache is unchanged')
 		assert.equal(t.store.ui().ui, 'classic')
-		assert.equal(await t.page.getAttribute('.uisw-top', 'aria-checked'), 'false')
+		assert.equal(await t.page.inputValue('.uisw-top select'), 'classic')
 		await t.page.unroute(/\/ui\?/)
-		await Promise.all([t.page.waitForEvent('load'), t.page.click('.uisw-top')])
+		await Promise.all([t.page.waitForEvent('load'), t.page.selectOption('.uisw-top select', 'new')])
 		await t.page.waitForSelector('#app[data-ui=next] #now-move')
 		assert.equal(JSON.parse(await t.page.evaluate(() => localStorage.getItem('delegate-ui')) ?? '{}').ui, 'new', 'cached once saved')
 	} finally { await t.close() }
@@ -123,8 +122,9 @@ test('next switch: a save that fails switches nothing, says "Could not switch: o
 // Review P2-3: the AI-chat panel is not verified in a real host yet, so it offers no switch and never writes the setting;
 // it follows this machine's setting as it is. Drawn here with a stub MCP Apps host.
 test('next panel: no switch; it follows the machine setting read-only and ignores #ui=', { skip }, async () => {
-	for (const ui of ['new', 'classic'] as const) {
-		const store = seedNext(new Store({ root: mkdtempSync(join(tmpdir(), 'delegate-nbpanel-')), machine: 'mac' }), ui)
+	for (const ui of ['new', 'classic', 'react'] as const) {
+		const store = seedNext(new Store({ root: mkdtempSync(join(tmpdir(), 'delegate-nbpanel-')), machine: 'mac' }), ui === 'react' ? 'new' : ui)
+		if (ui === 'react') store.saveUi(ui)
 		const ctx = await browser.newContext({ viewport: { width: 420, height: 800 }, reducedMotion: 'reduce', locale: 'en-US' })
 		const page: Page = await ctx.newPage(), errors: string[] = [], calls: string[] = []
 		page.on('pageerror', (e: Error) => errors.push(e.message))
@@ -138,7 +138,7 @@ test('next panel: no switch; it follows the machine setting read-only and ignore
 		const host = 'window.DELEGATE_POLL_MS = 60; globalThis.McpExtApps = { App: class { async connect() {} async callServerTool(r) { return window.__tool(r.name, r.arguments) } } };'
 		await page.setContent(renderApp(withUi(store, view(store, store.visitSince())), 'panel', host))
 		await page.waitForSelector('#main :first-child')
-		assert.equal(await exp(page), ui === 'new' ? 'next' : 'classic', `the panel follows the machine (${ui})`)
+		assert.equal(await exp(page), ui !== 'classic' ? 'next' : 'classic', `the panel follows the machine (${ui})`)
 		assert.equal(await page.locator('.uisw').count(), 0, 'no switch in the panel')
 		if (ui === 'new') await page.waitForSelector('#now-move .nrow')
 		await page.waitForTimeout(300)
@@ -168,7 +168,7 @@ test('next switch: unsent text asks "Discard your edit?" first; Cancel keeps it;
 		await t.page.fill('#tell-A23', 'Tried the form once')
 		const asked: string[] = []
 		t.page.once('dialog', async (d: { message(): string; dismiss(): Promise<void> }) => { asked.push(d.message()); await d.dismiss() })
-		await t.page.click('.uisw-top')
+		await t.page.selectOption('.uisw-top select', 'classic')
 		await until(() => asked.length === 1)
 		assert.deepEqual(asked, ['Discard your edit?'])
 		await t.page.waitForTimeout(300)
@@ -176,7 +176,7 @@ test('next switch: unsent text asks "Discard your edit?" first; Cancel keeps it;
 		assert.equal(await t.page.inputValue('#tell-A23'), 'Tried the form once', 'Cancel keeps the text')
 		assert.equal(t.store.ui().ui, 'new')
 		t.page.once('dialog', (d: { accept(): Promise<void> }) => d.accept())
-		await Promise.all([t.page.waitForEvent('load'), t.page.click('.uisw-top')])
+		await Promise.all([t.page.waitForEvent('load'), t.page.selectOption('.uisw-top select', 'classic')])
 		await t.page.waitForSelector('#app:not([data-ui=next]) #tabs a')
 		assert.equal(t.store.ui().ui, 'classic', 'saved on the server with no storage in the page')
 		assert.deepEqual(t.posted, [], 'the text was never sent')
@@ -185,7 +185,7 @@ test('next switch: unsent text asks "Discard your edit?" first; Cancel keeps it;
 		await t.page.fill('#card-A2 textarea, #card-A2 input[data-input=answer]', 'Oct 24')
 		const again: string[] = []
 		t.page.once('dialog', async (d: { message(): string; dismiss(): Promise<void> }) => { again.push(d.message()); await d.dismiss() })
-		await t.page.click('.uisw-top')
+		await t.page.selectOption('.uisw-top select', 'new')
 		await until(() => again.length === 1)
 		assert.equal(await exp(t.page), 'classic')
 	} finally { await t.close() }
@@ -347,7 +347,7 @@ test('next narrow panel: Your move leads, the summary line opens the other secti
 		await t.page.waitForSelector('#tabs.open .uisw-menu', { state: 'visible' })
 		assert.deepEqual((await t.page.locator('#tabs a').allInnerTexts()).map((x: string) => x.replace(/\s+/g, ' ')), ['Now 13', 'Done 5', 'Numbers', 'Settings'])
 		assert.equal(await visible('#tabs .themeitem'), true)
-		await Promise.all([t.page.waitForEvent('load'), t.page.click('#tabs .uisw-menu')])
+		await Promise.all([t.page.waitForEvent('load'), t.page.selectOption('#tabs .uisw-menu select', 'classic')])
 		await t.page.waitForSelector('#app:not([data-ui=next]) #main :first-child')
 		assert.equal(t.store.ui().ui, 'classic')
 	} finally { await t.close() }
@@ -369,6 +369,42 @@ test('next first screen: at 1280×800 and 400×860 the summary line and the firs
 			if (width === 1280) assert.equal(await inside('#now-A6 .nn'), true, "Vikram's Next line is on the first screen")
 		} finally { await t.close() }
 	}
+})
+
+test('next version menu: native control metrics cannot resize or overflow the header across refreshes', { skip }, async () => {
+	const t = await open('#now')
+	try {
+		const initial = await t.page.locator('.uisw-top').boundingBox()
+		const measure = () => t.page.evaluate(() => {
+			const header = document.querySelector('.top-in')!.getBoundingClientRect()
+			const control = document.querySelector('.uisw-top')!.getBoundingClientRect()
+			const row = document.querySelector('#now-A1 .nmain')!.getBoundingClientRect()
+			return { header: { width: header.width, height: header.height }, control: { width: control.width, height: control.height, right: control.right }, row: { x: row.x, y: row.y }, scroll: { x: scrollX, y: scrollY }, width: innerWidth, documentWidth: document.documentElement.scrollWidth }
+		})
+		const before = await measure()
+		// Native selects size to the longest option, including an unselected one.
+		// Delayed platform/font metrics must not change the header's allocation.
+		await t.page.evaluate(() => {
+			const control = document.querySelector<HTMLSelectElement>('.uisw-top select')!
+			control.style.fontSize = '28px'
+			control.options[2].textContent = 'React (preview) '.repeat(20)
+			control.getBoundingClientRect()
+		})
+		const changed = await measure()
+		assert.equal(changed.control.width, initial!.width, JSON.stringify({ before, changed }))
+		assert.equal(changed.control.height, initial!.height)
+		assert.equal(changed.documentWidth, changed.width)
+		assert.deepEqual(changed.row, before.row)
+		// A real poll redraws the main content and narrow menu, but keeps the
+		// top control mounted; geometry and the owner's scroll stay put.
+		await t.page.evaluate(() => { (window as Window & { __previousRow?: Element | null }).__previousRow = document.querySelector('#now-A1') })
+		t.store.save({ ...t.store.byCode('A1')!, revAt: new Date().toISOString() })
+		await t.page.waitForFunction(() => (window as Window & { __previousRow?: Element }).__previousRow?.isConnected === false)
+		const after = await measure()
+		assert.deepEqual(after.row, before.row)
+		assert.deepEqual(after.scroll, before.scroll)
+		assert.deepEqual(after.header, before.header)
+	} finally { await t.close() }
 })
 
 test('bug 10-21: in the new experience an Ask Delegate answer uses the card width, and its source chip names the PR', { skip }, async () => {
