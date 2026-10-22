@@ -17,6 +17,10 @@ const page = await build({ ...PAGE, outfile: 'dist/web/app.js', write: false })
 checkInputs(page.metafile!)
 writeFileSync('dist/web/app.js', page.outputFiles![0].text)
 
+// The preview is built at release time; the installed runtime never imports Vite.
+const { build: buildReact } = await import('vite')
+await buildReact({ configFile: join(import.meta.dirname, '..', 'vite.config.ts'), root: join(process.cwd(), 'src/web/react'), build: { outDir: join(process.cwd(), 'dist/web-react') } })
+
 // The session extension runs inside the Copilot CLI, which loads it from its own folder (research/cross-session-opus.md).
 mkdirSync('dist/mesh', { recursive: true })
 for (const f of ['extension.mjs', 'inbox.mjs']) copyFileSync(join('src/mesh', f), join('dist/mesh', f))

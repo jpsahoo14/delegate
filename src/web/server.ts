@@ -16,6 +16,11 @@ import type { Config } from '../core/types.ts'
 import { numbersPage } from './numbers.ts'
 import { WINDOWS, type WindowKey } from '../core/numbers.ts'
 import { nextView } from './next.ts'
+import { reactAsset, reactPage } from './react-build.ts'
+import { reactProjection, IntentError } from './react-projection.ts'
+import { submissionReceipt, submitIntent } from './react-submissions.ts'
+import { intentSchema } from './react/domain/contracts.ts'
+import { listsOf, numbersModel, RULES as NUMBER_RULES } from './app/model/numbers.ts'
 
 // What a page or panel action really did once applied, and the item's fresh card if it still needs the owner.
 export function actOutcome(store: Store, ids: string[], code: string) {
@@ -44,7 +49,7 @@ const withVersion = (s: Store, v: ReturnType<typeof view>) => {
 // The switch on this machine, and the new page's rows only when that page asks: classic never builds them (R-NEX-01).
 export function withUi<V extends object>(s: Store, v: V, wantNext?: boolean): V & { ui: ReturnType<Store['ui']>; next?: ReturnType<typeof nextView> } {
 	const ui = s.ui()
-	return { ...v, ui, ...((wantNext ?? ui.ui === 'new') ? { next: nextView(s) } : {}) }
+	return { ...v, ui, ...((wantNext ?? ui.ui !== 'classic') ? { next: nextView(s) } : {}) }
 }
 // POST /seen: the Done filters, and from N1b a mark per item ("item:A13") for codes that exist, so New and Back to you clear
 // once the owner looked. Seen up to the data the page showed, never later than now, never backwards. A per-item mark goes 7 days
@@ -66,8 +71,8 @@ export function saveSeenFrom(s: Store, body: unknown) {
 // POST /ui and the panel's ui_save: the choice, or that the first-time note was closed.
 export function saveUiFrom(s: Store, body: unknown): { ok: boolean; ui?: ReturnType<Store['ui']> } {
 	const b = (body ?? {}) as { ui?: unknown; noted?: unknown }
-	if (b.ui !== 'new' && b.ui !== 'classic' && b.noted !== true) return { ok: false }
-	return { ok: true, ui: s.saveUi(b.ui === 'new' || b.ui === 'classic' ? b.ui : s.ui().ui, b.noted === true) }
+	if (b.ui !== 'new' && b.ui !== 'classic' && b.ui !== 'react' && b.noted !== true) return { ok: false }
+	return { ok: true, ui: s.saveUi(b.ui === 'new' || b.ui === 'classic' || b.ui === 'react' ? b.ui : s.ui().ui, b.noted === true) }
 }
 
 // A local page with working buttons. Only this machine can reach it, and only with the token in its link (R-HIL-09).
@@ -78,12 +83,102 @@ export function serveInbox(get: () => Store, port = 0, token = randomBytes(16).t
 		const host = req.headers.host ?? ''
 		if (u.searchParams.get('t') !== token || !/^(127\.0\.0\.1|localhost):\d+$/.test(host)) { res.writeHead(403).end(`Open the link ${NAME} gave you.`); return }
 		const headers = { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'" }
+		if (u.pathname.startsWith('/api/v1/')) {
+			const json = (status: number, body: unknown) => res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' }).end(JSON.stringify(body))
+			const failure = (error: unknown) => {
+				if (error instanceof IntentError) json(error.status, { text: error.message })
+				else { console.error('React API request failed:', error); json(500, { text: `${NAME} could not complete this request. Nothing will be retried automatically.` }) }
+			}
+			if (req.method === 'GET' && u.pathname === '/api/v1/page') {
+				const query = u.searchParams.get('find') ?? ''
+				if (query.length > 2000) { json(422, { text: 'Find text is too long.' }); return }
+				try { json(200, reactProjection(get(), query).snapshot) } catch (error) { failure(error) }
+				return
+			}
+			if (req.method === 'GET' && u.pathname === '/api/v1/settings') {
+				try { json(200, settingsView(get())) } catch (error) { failure(error) }
+				return
+			}
+			if (req.method === 'GET' && u.pathname === '/api/v1/numbers') {
+				const key = u.searchParams.get('window') ?? 'this'
+				if (!(WINDOWS as string[]).includes(key)) { json(422, { text: 'Choose a supported Numbers window.' }); return }
+				try {
+					const page = numbersPage(get(), key as WindowKey)
+					json(200, { model: numbersModel(page, NAME), lists: listsOf(page), rows: page.rows, missed: page.missed, rules: NUMBER_RULES(NAME) })
+				} catch (error) { failure(error) }
+				return
+			}
+			if (req.method === 'GET' && u.pathname === '/api/v1/result') {
+				const id = u.searchParams.get('submission') ?? ''
+				if (!/^[a-f0-9-]{36}$/i.test(id)) { json(422, { text: 'A valid submission identity is required.' }); return }
+				try {
+					const receipt = submissionReceipt(get(), id)
+					json(receipt ? 200 : 404, receipt ?? { text: 'This submission has not been confirmed. Keep checking; do not send it again.' })
+				} catch (error) { failure(error) }
+				return
+			}
+			if (req.method === 'POST' && u.pathname === '/api/v1/actions') {
+				let body = '', tooLarge = false
+				req.setEncoding('utf8')
+				req.on('data', chunk => {
+					if (tooLarge) return
+					body += chunk
+					if (Buffer.byteLength(body) > 20_000) { tooLarge = true; body = ''; json(413, { text: 'That action is too large.' }) }
+				})
+				req.on('end', () => {
+					if (tooLarge) return
+					let raw: unknown
+					try { raw = JSON.parse(body) } catch { json(422, { text: 'Could not read that action.' }); return }
+					const parsed = intentSchema.safeParse(raw)
+					if (!parsed.success) { json(422, { text: 'That action has invalid fields.' }); return }
+					try {
+						const result = submitIntent(get(), parsed.data)
+						json(result.status, result.receipt)
+					} catch (error) { failure(error) }
+				})
+				return
+			}
+			json(404, { text: 'That preview endpoint does not exist.' })
+			return
+		}
+		if (req.method === 'GET' && u.pathname.startsWith('/web-react/')) {
+			try {
+				const asset = reactAsset(u.pathname.slice('/web-react/'.length), token)
+				if (!asset) { res.writeHead(404).end(); return }
+				res.writeHead(200, { 'content-type': asset.type, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' }).end(asset.content)
+			} catch (error) {
+				res.writeHead(500, { 'content-type': 'text/plain' }).end(`Preview asset unavailable: ${String(error)}`)
+			}
+			return
+		}
 		// Home counts what happened since the owner last looked; opening the page is looking.
 		if (req.method === 'GET' && u.pathname === '/') {
 			// A page that cannot be drawn says why, instead of stopping the server.
-			let page
-			try { const s = get(); page = renderApp(withUi(s, withVersion(s, view(s, s.visitSince()))), 'page') } catch (e) { res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' }).end(`The page could not be drawn: ${(e as Error)?.message ?? e}`); return }
-			res.writeHead(200, headers).end(page); return
+			let page, react = false
+			try {
+				const s = get(), recover = u.searchParams.get('ui')
+				if (recover === 'new' || recover === 'classic') {
+					s.saveUi(recover)
+					u.searchParams.delete('ui')
+					res.writeHead(303, { location: u.pathname + u.search, 'cache-control': 'no-store' }).end()
+					return
+				}
+				react = s.ui().ui === 'react'
+				if (react) {
+					try { page = reactPage(token) } catch (error) {
+						console.error('React preview unavailable; showing New instead:', error)
+						react = false
+						page = renderApp({ ...withUi(s, withVersion(s, view(s, s.visitSince())), true), ui: { ...s.ui(), ui: 'new' } }, 'page')
+							.replace('<body>', '<body><p role="alert">React preview unavailable. Showing New instead. Choose a version from App version to save it.</p>')
+					}
+				} else page = renderApp(withUi(s, withVersion(s, view(s, s.visitSince()))), 'page')
+			} catch (e) { res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' }).end(`The page could not be drawn: ${(e as Error)?.message ?? e}`); return }
+			const pageHeaders = react ? {
+				...headers,
+				'content-security-policy': "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+				'referrer-policy': 'no-referrer',
+			} : headers
+			res.writeHead(200, pageHeaders).end(page); return
 		}
 		if (req.method === 'GET' && u.pathname === '/data') {
 			res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' }).end(JSON.stringify(withUi(get(), withVersion(get(), view(get(), u.searchParams.get('since') || undefined)), u.searchParams.get('ui') === 'new')))
