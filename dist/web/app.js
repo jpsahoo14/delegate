@@ -270,7 +270,7 @@
   var say = (t, toast) => hooks.say(t, toast);
   var cards = (v, key) => v[key];
   var lastDrawn = Date.now();
-  function merge(nv) {
+  function merge(nv, force = false) {
     for (const key of ["needs", "knowledge"]) nv[key] = cards(nv, key).map((c) => {
       const old = cards(V, key).find((x) => x.code === c.code), u = S.ui[c.code];
       if (old && old.rev !== c.rev && u && u.status !== "pending" && dirty(u)) {
@@ -282,7 +282,7 @@
     });
     for (const key of ["needs", "knowledge"]) for (const c of cards(V, key)) if (S.ui[c.code]?.status === "pending" && !cards(nv, key).some((x) => x.code === c.code)) cards(nv, key).push(c);
     nv.since = V.since;
-    const same = !!V && JSON.stringify({ ...nv, now: "" }) === JSON.stringify({ ...V, now: "" }) && Date.now() - lastDrawn < 6e4;
+    const same = !force && !!V && JSON.stringify({ ...nv, now: "" }) === JSON.stringify({ ...V, now: "" }) && Date.now() - lastDrawn < 6e4;
     setView(nv);
     syncOrder();
     if (!same) {
@@ -294,12 +294,12 @@
       setTimeout(() => location.reload(), 1200);
     }
   }
-  var connected = (nv) => {
+  var connected = (nv, force = false) => {
     if (S.offline) {
       S.offline = false;
       say("Connected again.", false);
     }
-    merge(nv);
+    merge(nv, force);
   };
   var lost = () => {
     if (!S.offline) {
@@ -311,7 +311,7 @@
     if (!env.io) return;
     try {
       const nv = await env.io.data(V.since, env.ui);
-      connected(nv);
+      connected(nv, true);
     } catch {
       lost();
     }

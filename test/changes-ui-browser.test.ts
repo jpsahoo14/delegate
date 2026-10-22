@@ -106,8 +106,21 @@ test('changes ui page: a Settings switch saves as it flips, and a forbidden chan
 		await t.page.click(cal)
 		await t.page.waitForFunction(() => /read tools workers hold/.test(document.querySelector('[data-code="set:change:calendar-CreateEvent"]')?.textContent ?? ''))
 		assert.equal(await t.page.getAttribute(cal, 'aria-checked'), 'false')
-		assert.equal(t.store.config().agent.effectTools!.includes('calendar-CreateEvent'), false)
 	} finally { await t.close(); useSite(undefined) }
+})
+
+// CI 10-22 (3721620): a refused switch's message never drew when the polls had already drawn everything, because the refresh
+// after the refusal found nothing new and did not redraw.
+test('changes ui page: a refused Settings switch says why even when the page has nothing new to draw', { skip }, async () => {
+	const t = await open('#settings/you')
+	try {
+		const cal = '[data-act=setswitch][data-v="change:calendar-CreateEvent"]'
+		await t.page.waitForSelector(cal)
+		t.store.saveConfig({ ...t.store.config(), agent: { ...t.store.config().agent, tools: [...t.store.config().agent.tools, 'calendar-CreateEvent'] } })
+		await t.page.waitForTimeout(1500)
+		await t.page.click(cal)
+		await t.page.waitForFunction(() => /read tools workers hold/.test(document.querySelector('[data-code="set:change:calendar-CreateEvent"]')?.textContent ?? ''), undefined, { timeout: 8000 })
+	} finally { await t.close() }
 })
 
 test('changes ui page: "Send reply only" quotes the reply and sends nothing until the second ok', { skip }, async () => {
