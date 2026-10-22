@@ -254,11 +254,17 @@ test('re-review N2 P2-C: Mark done from the page leaves a to-do kept after the p
 		const home = t.store.byCode('A41')!, at = new Date(Date.now() - 60_000).toISOString()
 		t.store.save({ ...home, kept: [{ id: 't1', text: 'Book the test account', at }], work: { ...home.work!, parts: ['w-A43'] } }, false)
 		item(t.store, 'A43', 'Dev Moss', 'Dev Moss', { createdAt: at, partOf: 'w-A41', lastAsk: 'Deploying now, ok?', draft: { text: 'Sounds good.', commitment: false, sources: [] } })
+		// A stale but connected page: every refresh gets the old view, not an offline error that disables Mark done.
+		// Install before navigation so no live refresh can already be in flight in the document under test.
+		const data = await t.page.evaluate(() => window.DELEGATE_IO!.data(undefined, 'new'))
+		await t.page.route(/\/data\?/, (r: { fulfill(o: { json: unknown }): Promise<void> }) => r.fulfill({ json: data }))
 		await t.page.goto(t.url + '#now/A43')
 		await t.page.waitForSelector('#now-A43.open .iown [data-v="close A41"]')
-		// The page draws no more: a send in Teams keeps a new to-do the page never shows.
-		await t.page.route(/\/data\?/, (r: { abort(): Promise<void> }) => r.abort())
+		const refreshed = t.page.waitForResponse(/\/data\?/)
 		t.store.save({ ...t.store.byCode('A41')!, kept: [{ id: 't1', text: 'Book the test account', at }, { id: 't2', text: 'Send Kim the refund numbers', at: new Date().toISOString() }] }, false)
+		await refreshed
+		assert.equal(await t.page.locator('#now-A43 .iown [data-v="close A41"]').isDisabled(), false, 'a stale page is still connected')
+		assert.equal(await t.page.getAttribute('#now-A43 .iown [data-v="close A41"]', 'data-seen'), at, 'the refresh still shows only the old to-do')
 		await t.page.click('#now-A43 .iown [data-v="close A41"]')
 		await until(() => !!t.store.byCode('A41')!.kept![0].done)
 		assert.deepEqual(t.store.byCode('A41')!.kept!.map(x => [x.id, !!x.done]), [['t1', true], ['t2', false]])

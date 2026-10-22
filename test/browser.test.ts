@@ -478,13 +478,21 @@ test('page: keyboard only. Entering the queue focuses a card; ? and Escape keep 
 
 test('page: Dismiss says it is dismissing; the send button never shows "Sending…" for it', { skip }, async () => {
 	const t = await open('#focus/A2')
+	let release!: () => void
+	const send = new Promise<void>(resolve => { release = resolve })
 	try {
-		await t.page.click('#focus-card [data-act=more], .card [data-act=more]').catch(() => {})
-		await t.page.evaluate(() => (document.querySelector('[data-act=dismiss]') as HTMLElement | null)?.click())
+		// Keep the command in flight until its pending UI has been checked, even if the runner is fast.
+		await t.page.route('**/act?**', async (r: Route) => { await send; await r.continue() })
+		await t.page.click('#card-A2 [data-act=menu]')
+		await t.page.click('#card-A2 [data-act=dismiss]')
 		await t.page.waitForSelector('.state.pending:has-text("Dismissing.")')
 		assert.equal(await t.page.locator('#pri-A2 .spin').count(), 0, 'the main button is not busy')
 		assert.equal(await t.page.locator('text=Sending…').count(), 0)
-	} finally { await t.close() }
+		assert.equal(t.store.byCode('A2')!.state, 'needs_human', 'the command is still in flight')
+		release()
+		await t.page.waitForSelector('#card-A2 .applied')
+		assert.equal(t.store.byCode('A2')!.state, 'done')
+	} finally { release(); await t.close() }
 })
 
 test('page: Edit in Teams copies the reply and opens the chat, sending nothing', { skip }, async () => {
