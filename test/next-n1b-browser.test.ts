@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { createRequire } from 'node:module'
+import { freezeClock } from './browser-clock.ts'
 
 process.env.DELEGATE_LOCAL = mkdtempSync(join(tmpdir(), 'delegate-n1bblocal-'))
 process.env.DELEGATE_NO_KICK = '1'
@@ -43,7 +44,7 @@ export function seedFresh(s: S): S {
 	return s
 }
 
-async function open(hash = '#now', seed: (s: S) => S = seedFresh, o: { viewport?: { width: number; height: number }; init?: string } = {}) {
+async function open(hash = '#now', seed: (s: S) => S = seedFresh, o: { viewport?: { width: number; height: number }; init?: string; clock?: boolean } = {}) {
 	const store = seed(new Store({ root: mkdtempSync(join(tmpdir(), 'delegate-n1bbroot-')), machine: 'mac' }))
 	const { url, server } = await serveInbox(() => store)
 	let busy = false
@@ -51,6 +52,7 @@ async function open(hash = '#now', seed: (s: S) => S = seedFresh, o: { viewport?
 	const ctx = await browser.newContext({ viewport: o.viewport ?? { width: 1280, height: 900 }, reducedMotion: 'reduce', locale: 'en-US' })
 	await ctx.addInitScript(`window.DELEGATE_POLL_MS = 60;${o.init ?? ''}`)
 	const page: Page = await ctx.newPage()
+	if (o.clock) await freezeClock(page)
 	const errors: string[] = [], posted: string[] = [], seen: string[][] = []
 	page.on('pageerror', (e: Error) => errors.push(e.message))
 	page.on('request', (r: Req) => {
@@ -59,10 +61,17 @@ async function open(hash = '#now', seed: (s: S) => S = seedFresh, o: { viewport?
 	})
 	await page.goto(url + hash)
 	await page.waitForSelector('#app[data-ui=next] #main :first-child')
+	if (o.clock) await page.evaluate(() => {
+		const io = window.DELEGATE_IO!, seen = io.seen!, calls: string[] = []
+		document.documentElement.dataset.itemSeenCalls = '[]'
+		// Record synchronously: an absent network request cannot be proved by checking the server before it arrives.
+		io.seen = (keys, at) => { calls.push(...keys.filter(k => k.startsWith('item:'))); document.documentElement.dataset.itemSeenCalls = JSON.stringify(calls); return seen(keys, at) }
+	})
 	return { store, url, page, posted, seen, close: async () => { clearInterval(runner); await ctx.close(); (server.closeAllConnections?.(), server.close()); assert.deepEqual(errors, []) } }
 }
 const until = async (f: () => boolean, ms = 6000) => { for (let t = 0; t < ms && !f(); t += 50) await new Promise(r => setTimeout(r, 50)); assert.ok(f()) }
 const chips = (p: Page, code: string) => p.$$eval(`#now-${code} .nh .tag`, (els: Element[]) => els.map(e => e.textContent))
+const itemAttempts = (p: Page): Promise<string[]> => p.evaluate(() => JSON.parse(document.documentElement.dataset.itemSeenCalls!))
 
 test('N1b New and Back to you: they show on what changed since the owner looked, are seen a moment later, and are gone on the next look', { skip }, async () => {
 	const t = await open('#now')
@@ -91,24 +100,34 @@ test('N1b New and Back to you: they show on what changed since the owner looked,
 })
 
 test('N1b New: opening a row marks it seen at once; a look that ends at once marks nothing', { skip }, async () => {
-	// The moment is long here, so a slow machine still leaves before it passes (CI 10-21: macOS took over 1.5 s to get here).
-	const t = await open('#now/A20', seedFresh, { init: 'window.DELEGATE_LOOK_MS = 4000;' })
+	const t = await open('#now/A20', seedFresh, { clock: true })
 	try {
-		await until(() => !!t.store.seen()['item:A20'], 1200)
+		await until(() => !!t.store.seen()['item:A20'])
 		assert.equal(t.store.seen()['item:A23'], undefined, 'the rest wait their moment')
-		// Away before the moment passes: A23 was never really looked at.
 		await t.page.click('#tabs a[href="#done"]')
-		// Nothing to wait for: the check is that nothing is sent once the moment has passed.
-		await new Promise(r => setTimeout(r, 4300))
+		await t.page.waitForFunction(() => location.hash === '#done')
+		await t.page.clock.runFor(1501)
+		assert.deepEqual(await itemAttempts(t.page), [])
 		assert.equal(t.store.seen()['item:A23'], undefined)
 	} finally { await t.close() }
-	// Nor does a look that turns into a Find at once: the rows were never really looked at.
-	const f = await open('#now')
+	const f = await open('#now', seedFresh, { clock: true })
 	try {
 		await f.page.fill('#find', 'kim')
-		await new Promise(r => setTimeout(r, 1800))
+		await f.page.waitForSelector('#nfound')
+		await f.page.clock.runFor(1501)
+		assert.deepEqual(await itemAttempts(f.page), [])
 		assert.deepEqual(f.seen, [])
 	} finally { await f.close() }
+	// The same timer really does mark rows when the owner stays: cancellation is not a disabled timer.
+	const stay = await open('#now', seedFresh, { clock: true })
+	try {
+		await stay.page.clock.runFor(1499)
+		assert.deepEqual(await itemAttempts(stay.page), [], 'not before the look interval')
+		assert.deepEqual(stay.seen, [], 'not before the look interval')
+		await stay.page.clock.runFor(2)
+		await until(() => !!stay.store.seen()['item:A20'] && !!stay.store.seen()['item:A23'])
+		assert.deepEqual((await itemAttempts(stay.page)).sort(), ['item:A20', 'item:A23'])
+	} finally { await stay.close() }
 })
 
 const results = (p: Page) => p.$$eval('#nfound .nrow, #nfound li[data-code], #nfound li.row', (els: Element[]) => [...new Set(els.map(e => (e as HTMLElement).dataset.code ?? e.closest('[data-code]')?.getAttribute('data-code') ?? ''))].filter(Boolean))
