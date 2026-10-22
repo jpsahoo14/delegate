@@ -456,6 +456,18 @@ test('owner 10-21 A33: after you tell Delegate something, the row\'s result clea
 	} finally { await t.close() }
 })
 
+// CI 10-22 (b551b26, M1): a row's result never showed when a poll had already drawn the runner's change before /result
+// answered, because the result's own refresh then found nothing new and did not redraw.
+test('CI 10-22: a row result shows even when the page already has the change it made', { skip }, async () => {
+	const t = await open('#now')
+	try {
+		await t.page.route(/\/result\?/, async (r: { continue(): Promise<void> }) => { await new Promise(res => setTimeout(res, 1500)); await r.continue() })
+		await t.page.fill('#tell-A23', 'Deleted the message; please send that I approved the PR.')
+		await t.page.press('#tell-A23', 'Enter')
+		await t.page.waitForFunction(() => !!document.querySelector('#now-A23 [role=status]')?.textContent, undefined, { timeout: 8000 })
+	} finally { await t.close() }
+})
+
 test('CI 10-22 flakes: a poll with nothing new does not redraw, so a row under the pointer is never replaced mid-click', { skip }, async () => {
 	const t = await open('#now')
 	try {

@@ -377,12 +377,14 @@
     if (kind === "row") {
       Object.assign(u, { status: "ready", msg: o.text || "Done." });
       say(o.text);
+      render();
       refresh();
       return;
     }
     if ((kind === "ask" || kind === "mark") && !o.card) {
       Object.assign(u, { status: "ready", msg: "" }, kind === "mark" ? { marking: false, marknote: "" } : {});
       say(o.text);
+      render();
       refresh();
       return;
     }

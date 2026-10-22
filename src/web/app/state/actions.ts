@@ -76,8 +76,8 @@ export async function act(key: string, code: string, cmd: string, kind: Kind, se
 function finish(key: string, code: string, o: Result, kind: Kind) {
 	const u = U(key)
 	u.lost = false
-	if (kind === 'row') { Object.assign(u, { status: 'ready', msg: o.text || 'Done.' }); say(o.text); refresh(); return }
-	if ((kind === 'ask' || kind === 'mark') && !o.card) { Object.assign(u, { status: 'ready', msg: '' }, kind === 'mark' ? { marking: false, marknote: '' } : {}); say(o.text); refresh(); return }
+	if (kind === 'row') { Object.assign(u, { status: 'ready', msg: o.text || 'Done.' }); say(o.text); render(); refresh(); return }
+	if ((kind === 'ask' || kind === 'mark') && !o.card) { Object.assign(u, { status: 'ready', msg: '' }, kind === 'mark' ? { marking: false, marknote: '' } : {}); say(o.text); render(); refresh(); return }
 	if (o.card) {
 		replaceCard(o.card); u.stale = false; delete S.fresh[code]
 		if (kind === 'finish') { Object.assign(u, { status: 'refused', msg: o.text || 'Nothing was changed.' }); say(u.msg, false); render(); return }
