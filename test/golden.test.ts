@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createRequire } from 'node:module'
+import { freezeClock } from './browser-clock.ts'
 
 // One clock and one time zone for the store, the server, and the browser, so relative times draw the same on every run.
 process.env.TZ = 'UTC'
@@ -113,9 +114,24 @@ function check(name: string, html: string, diffs: string[]) {
 	if (UPDATE || !existsSync(file)) { mkdirSync(DIR, { recursive: true }); writeFileSync(file, html); return }
 	const want = readFileSync(file, 'utf8')
 	if (want === html) return
-	const a = want.split('\n'), b = html.split('\n'), i = a.findIndex((l, n) => l !== b[n])
-	diffs.push(`${name}: line ${i + 1}\n  golden: ${a[i]?.slice(0, 400)}\n  now:    ${b[i]?.slice(0, 400)}`)
+	const a = want.split('\n'), b = html.split('\n')
+	let i = 0, col = 0
+	while (i < Math.max(a.length, b.length) && a[i] === b[i]) i++
+	const old = a[i] ?? '', now = b[i] ?? ''
+	while (col < Math.min(old.length, now.length) && old[col] === now[col]) col++
+	const from = Math.max(0, col - 80)
+	diffs.push(`${name}: line ${i + 1}, column ${col + 1}\n  golden: ${JSON.stringify(old.slice(from, col + 160))}\n  now:    ${JSON.stringify(now.slice(from, col + 160))}`)
 }
+
+test('golden diagnostics: show the differing character even beyond a long shared prefix', { skip: UPDATE }, () => {
+	const want = readFileSync(join(DIR, 'home.light.html'), 'utf8')
+	const changed = want.replace('href="#settings"', 'href="#ci-difference"')
+	const diffs: string[] = []
+	check('home.light', changed, diffs)
+	assert.equal(diffs.length, 1)
+	assert.match(diffs[0], /ci-difference/)
+	assert.match(diffs[0], /column \d+/)
+})
 
 // One store, its page server, and a context in the theme; each state on a fresh page with the clock held still.
 // deno-lint-ignore no-explicit-any
@@ -128,7 +144,7 @@ async function draw(theme: string, seed: (s: any) => any, states: typeof STATES,
 	const diffs: string[] = [], errors: string[] = []
 	const shoot = async (name: string, at: string, steps?: (p: Page) => Promise<void>) => {
 		const page = await ctx.newPage()
-		await page.clock.setFixedTime(NOW)
+		await freezeClock(page, NOW)
 		page.on('pageerror', (e: Error) => errors.push(`${name}: ${e.message}`))
 		await page.goto(at)
 		await page.waitForFunction(() => !!document.getElementById('main')?.innerHTML)
