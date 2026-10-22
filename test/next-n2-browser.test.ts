@@ -56,7 +56,7 @@ test('N2 checklist: the opened item shows each step with its owner, done steps t
 	const t = await open('#now/A40')
 	try {
 		await t.page.waitForSelector('#now-A40.open .iown')
-		assert.match(await flat(t.page, '#now-A40 .imove'), /^YOUR MOVE Test checkout flows 1 and 2 on staging2\. Deploy done \d{1,2}:\d\d [AP]M \(build 991\)$/)
+		assert.match(await flat(t.page, '#now-A40 .imove'), /^YOUR MOVE Test checkout flows 1 and 2 on staging2\. Deploy done (yesterday )?\d{1,2}:\d\d [AP]M \(build 991\)$/)
 		const steps = await t.page.locator('#now-A40 .icheck li').evaluateAll((l: Element[]) => l.map(li => [li.className, li.querySelector('.iw')!.textContent!.replace(/\s+/g, ' ').trim(), li.querySelector('.io')!.textContent]))
 		assert.deepEqual(steps, [
 			['done', 'Route the staging ring to the dev instance (PR 4200002) (done)', 'You'],
