@@ -68,7 +68,7 @@ test('N2 checklist: the opened item shows each step with its owner, done steps t
 		assert.equal(await t.page.locator('#now-A40 .icheck li[aria-current=step]').count(), 1)
 		assert.match(await flat(t.page, '#now-A40 .ireport'), /Both work Issues found Blocked .*Draft my report Nothing is sent\. You see the draft first\./)
 		assert.equal(await t.page.locator('#now-A40 form[data-form=tell]').count(), 0, 'one way to report in the opened item')
-		assert.match(await flat(t.page, '#now-A40 .iown'), /WHAT HAPPENED, NEWEST FIRST \d{1,2}:\d\d [AP]M Build 991 succeeded/)
+		assert.match(await flat(t.page, '#now-A40 .iown'), /WHAT HAPPENED, NEWEST FIRST (yesterday )?\d{1,2}:\d\d [AP]M Build 991 succeeded/)
 		// Someone else's step: who it waits on, then yours. No Report.
 		await t.page.evaluate(() => { location.hash = '#now/A41' })
 		await t.page.waitForSelector('#now-A41.open .iown')
