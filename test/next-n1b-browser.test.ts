@@ -7,6 +7,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { createRequire } from 'node:module'
+import { freezeClock } from './browser-clock.ts'
+import { readLayout } from './browser-layout.ts'
 
 process.env.DELEGATE_LOCAL = mkdtempSync(join(tmpdir(), 'delegate-n1bblocal-'))
 process.env.DELEGATE_NO_KICK = '1'
@@ -43,7 +45,7 @@ export function seedFresh(s: S): S {
 	return s
 }
 
-async function open(hash = '#now', seed: (s: S) => S = seedFresh, o: { viewport?: { width: number; height: number }; init?: string } = {}) {
+async function open(hash = '#now', seed: (s: S) => S = seedFresh, o: { viewport?: { width: number; height: number }; init?: string; clock?: boolean } = {}) {
 	const store = seed(new Store({ root: mkdtempSync(join(tmpdir(), 'delegate-n1bbroot-')), machine: 'mac' }))
 	const { url, server } = await serveInbox(() => store)
 	let busy = false
@@ -51,6 +53,7 @@ async function open(hash = '#now', seed: (s: S) => S = seedFresh, o: { viewport?
 	const ctx = await browser.newContext({ viewport: o.viewport ?? { width: 1280, height: 900 }, reducedMotion: 'reduce', locale: 'en-US' })
 	await ctx.addInitScript(`window.DELEGATE_POLL_MS = 60;${o.init ?? ''}`)
 	const page: Page = await ctx.newPage()
+	if (o.clock) await freezeClock(page)
 	const errors: string[] = [], posted: string[] = [], seen: string[][] = []
 	page.on('pageerror', (e: Error) => errors.push(e.message))
 	page.on('request', (r: Req) => {
@@ -59,10 +62,17 @@ async function open(hash = '#now', seed: (s: S) => S = seedFresh, o: { viewport?
 	})
 	await page.goto(url + hash)
 	await page.waitForSelector('#app[data-ui=next] #main :first-child')
+	if (o.clock) await page.evaluate(() => {
+		const io = window.DELEGATE_IO!, seen = io.seen!, calls: string[] = []
+		document.documentElement.dataset.itemSeenCalls = '[]'
+		// Record synchronously: an absent network request cannot be proved by checking the server before it arrives.
+		io.seen = (keys, at) => { calls.push(...keys.filter(k => k.startsWith('item:'))); document.documentElement.dataset.itemSeenCalls = JSON.stringify(calls); return seen(keys, at) }
+	})
 	return { store, url, page, posted, seen, close: async () => { clearInterval(runner); await ctx.close(); (server.closeAllConnections?.(), server.close()); assert.deepEqual(errors, []) } }
 }
 const until = async (f: () => boolean, ms = 6000) => { for (let t = 0; t < ms && !f(); t += 50) await new Promise(r => setTimeout(r, 50)); assert.ok(f()) }
 const chips = (p: Page, code: string) => p.$$eval(`#now-${code} .nh .tag`, (els: Element[]) => els.map(e => e.textContent))
+const itemAttempts = (p: Page): Promise<string[]> => p.evaluate(() => JSON.parse(document.documentElement.dataset.itemSeenCalls!))
 
 test('N1b New and Back to you: they show on what changed since the owner looked, are seen a moment later, and are gone on the next look', { skip }, async () => {
 	const t = await open('#now')
@@ -91,24 +101,34 @@ test('N1b New and Back to you: they show on what changed since the owner looked,
 })
 
 test('N1b New: opening a row marks it seen at once; a look that ends at once marks nothing', { skip }, async () => {
-	// The moment is long here, so a slow machine still leaves before it passes (CI 10-21: macOS took over 1.5 s to get here).
-	const t = await open('#now/A20', seedFresh, { init: 'window.DELEGATE_LOOK_MS = 4000;' })
+	const t = await open('#now/A20', seedFresh, { clock: true })
 	try {
-		await until(() => !!t.store.seen()['item:A20'], 1200)
+		await until(() => !!t.store.seen()['item:A20'])
 		assert.equal(t.store.seen()['item:A23'], undefined, 'the rest wait their moment')
-		// Away before the moment passes: A23 was never really looked at.
 		await t.page.click('#tabs a[href="#done"]')
-		// Nothing to wait for: the check is that nothing is sent once the moment has passed.
-		await new Promise(r => setTimeout(r, 4300))
+		await t.page.waitForFunction(() => location.hash === '#done')
+		await t.page.clock.runFor(1501)
+		assert.deepEqual(await itemAttempts(t.page), [])
 		assert.equal(t.store.seen()['item:A23'], undefined)
 	} finally { await t.close() }
-	// Nor does a look that turns into a Find at once: the rows were never really looked at.
-	const f = await open('#now')
+	const f = await open('#now', seedFresh, { clock: true })
 	try {
 		await f.page.fill('#find', 'kim')
-		await new Promise(r => setTimeout(r, 1800))
+		await f.page.waitForSelector('#nfound')
+		await f.page.clock.runFor(1501)
+		assert.deepEqual(await itemAttempts(f.page), [])
 		assert.deepEqual(f.seen, [])
 	} finally { await f.close() }
+	// The same timer really does mark rows when the owner stays: cancellation is not a disabled timer.
+	const stay = await open('#now', seedFresh, { clock: true })
+	try {
+		await stay.page.clock.runFor(1499)
+		assert.deepEqual(await itemAttempts(stay.page), [], 'not before the look interval')
+		assert.deepEqual(stay.seen, [], 'not before the look interval')
+		await stay.page.clock.runFor(2)
+		await until(() => !!stay.store.seen()['item:A20'] && !!stay.store.seen()['item:A23'])
+		assert.deepEqual((await itemAttempts(stay.page)).sort(), ['item:A20', 'item:A23'])
+	} finally { await stay.close() }
 })
 
 const results = (p: Page) => p.$$eval('#nfound .nrow, #nfound li[data-code], #nfound li.row', (els: Element[]) => [...new Set(els.map(e => (e as HTMLElement).dataset.code ?? e.closest('[data-code]')?.getAttribute('data-code') ?? ''))].filter(Boolean))
@@ -231,17 +251,40 @@ test('N1b Since line: it leads the one summary line, and each part opens its Don
 	} finally { await t.close() }
 })
 
+test('browser layout: a redraw between selector resolution and measurement cannot detach the measured row', { skip }, async () => {
+	const t = await open('#now', seedFresh, { viewport: { width: 400, height: 860 } })
+	try {
+		await t.page.waitForSelector('#now-move .nrow .nmain')
+		const duringRedraw: Page = {
+			evaluate: t.page.evaluate.bind(t.page),
+			locator: (selector: string) => ({
+				first: () => ({
+					boundingBox: async () => {
+						const handle = await t.page.locator(selector).first().elementHandle()
+						await t.page.evaluate(() => { const main = document.getElementById('main')!; main.innerHTML = main.innerHTML })
+						return handle.boundingBox()
+					},
+				}),
+			}),
+		}
+		const boxes = await readLayout(duringRedraw, ['#now-move', '#now-move .nrow .nmain'])
+		assert.ok(boxes['#now-move .nrow .nmain']?.height > 0, 'a visible row has a box even when a redraw would detach a handle')
+		await assert.rejects(readLayout(t.page, ['#layout-missing']), /Missing layout element/)
+		await t.page.evaluate(() => { const hidden = document.createElement('div'); hidden.id = 'layout-hidden'; hidden.hidden = true; document.body.append(hidden) })
+		await assert.rejects(readLayout(t.page, ['#layout-hidden']), /Invisible layout element/)
+	} finally { await t.close() }
+})
+
 // PM verification of N1a (P2): at 400 px the banner, the Undo strip, and the first-time note pushed Your move halfway down.
 test('N1b 400 px: paused, with the banner, Find, the Since line, the Undo strip, and the note, Your move starts on the first screen', { skip }, async () => {
 	const { pauseNext } = await import('./fixture.ts')
 	const t = await open('#now', s => { seedFresh(s); pauseNext(s); for (const c of ['A10', 'A11']) s.log({ event: 'sent', code: c, approvedBy: 'rule:R1', v: 2, unchanged: true, edited: false, text: 'Done.' }); return s }, { viewport: { width: 400, height: 860 } })
 	try {
-		await t.page.waitForSelector('.health')
-		const box = async (sel: string) => (await t.page.locator(sel).first().boundingBox())!
-		for (const sel of ['.health', '#find', '#nsum', '.nundo', '.nnote']) assert.ok(await t.page.locator(sel).count(), `${sel} is there`)
+		await t.page.waitForSelector('#now-move .nrow .nmain')
+		const boxes = await readLayout(t.page, ['.health', '#find', '#nsum', '.nundo', '.nnote', '#now-move', '#now-move .nrow .nmain'])
 		// Each strip takes one line.
-		for (const sel of ['.nundo', '.nnote']) assert.ok((await box(sel)).height <= 60, `${sel} is one line`)
-		const move = await box('#now-move'), first = await box('#now-move .nrow .nmain')
+		for (const sel of ['.nundo', '.nnote']) assert.ok(boxes[sel].height <= 60, `${sel} is one line`)
+		const move = boxes['#now-move'], first = boxes['#now-move .nrow .nmain']
 		assert.ok(move.y < 860 / 2, `Your move starts in the top half (at ${Math.round(move.y)} px)`)
 		assert.ok(first.y + first.height <= 860, 'and its first row is whole on the first screen')
 		// No part of the one summary line breaks across two lines.
