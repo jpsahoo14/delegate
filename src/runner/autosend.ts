@@ -5,6 +5,7 @@ import type { Source } from '../adapters/source.ts'
 import type { Store } from '../store/state.ts'
 import { send } from './apply.ts'
 import { close } from './intake.ts'
+import type { BuildProbe } from './probe.ts'
 
 const policy = (cfg: Config) => ({ ...DEFAULT_POLICY, ...cfg.policy })
 
@@ -71,7 +72,7 @@ export async function ownerActive(store: Store, src: Source): Promise<boolean> {
 }
 
 // Send every scheduled reply whose delay has passed, through the same pre-send checks as an owner send (R-POL-03).
-export async function dueSends(store: Store, src: Source, cfg: Config): Promise<number> {
+export async function dueSends(store: Store, src: Source, cfg: Config, probe?: BuildProbe): Promise<number> {
 	const due = store.workflows().filter(w => w.state === 'scheduled' && w.sendAt && Date.parse(w.sendAt) <= Date.now())
 	for (const w of due.filter(w => w.draft?.preview)) { Object.assign(w, { state: 'needs_human', sendAt: undefined, status: 'Edited by you; waits for your ok' }); store.save(w) }
 	if (!due.length) return 0
@@ -86,7 +87,7 @@ export async function dueSends(store: Store, src: Source, cfg: Config): Promise<
 		const d = decide(wf, store.rules(), { autoSend: !!store.control().autoSend, autoSendsThisHour: autoCount(store, wf), maxPerHour: policy(cfg).maxAutoPerChatHour, never: policy(cfg).never, held: Object.keys(store.heldRules()) })
 		if (d.action !== 'send') { Object.assign(wf, { state: 'needs_human', sendAt: undefined, decision: d, status: `Not sent: ${d.reason}` }); store.save(wf); continue }
 		try {
-			if (await send(store, src, cfg, wf, wf.draft?.text, { ruleId: d.ruleId })) { n++; store.addAuto(wf.chat.id, 'send') }
+			if (await send(store, src, cfg, wf, wf.draft?.text, { ruleId: d.ruleId }, probe)) { n++; store.addAuto(wf.chat.id, 'send') }
 		} catch (e) {
 			// One failed send never blocks the others; the owner sees why in the inbox.
 			Object.assign(wf, { state: 'needs_human', sendAt: undefined, status: `Not sent: ${String(e).slice(0, 120)}` })

@@ -12,11 +12,11 @@ const { Store } = await import('../src/store/state.ts')
 const { item } = await import('./fixture.ts')
 const { probePRs, prTarget } = await import('../src/runner/probe.ts')
 const { applyReport, dispatch } = await import('../src/runner/dispatch.ts')
-const { finishWork } = await import('../src/runner/jobs.ts')
+const { checkJobs, finishWork } = await import('../src/runner/jobs.ts')
 const { afterSend, mergeWork } = await import('../src/runner/work.ts')
 const { send } = await import('../src/runner/apply.ts')
 const { intake } = await import('../src/runner/intake.ts')
-const { ReplaySource } = await import('../scripts/eval.ts')
+const { ReplaySource, outcomeOf } = await import('../scripts/eval.ts')
 const { snapshot, place, rowsOf } = await import('../src/web/next.ts')
 const { view } = await import('../src/web/view.ts')
 const { buildPrompt } = await import('../src/worker/prompt.ts')
@@ -52,6 +52,202 @@ const approved: BuildProbe = {
 	async builds() { return new Map() },
 	async pr() { return { status: 'active', head: 'abc', votes: [{ name: 'Robin Park', vote: 10 }] } },
 }
+
+test('engine safety F1: completed approval claims require live approval, while negatives and future promises remain valid', async () => {
+	for (const vote of [0, -5]) for (const byOwner of [false, true]) for (const stamp of [undefined, 0, 10]) {
+		for (const [text, allowed] of [['I have approved PR 4300101.', false], ['I have not approved PR 4300101 yet.', true], ["I'll approve PR 4300101 after the requested changes.", true], ["I'll approve it later, but I have already approved PR 4300101.", false]] as const) {
+			const store = setup(), w = approval(store, { work: undefined, prVote: stamp, prDraft: stamp === undefined ? undefined : JSON.stringify([4300101, 'active', 'abc', stamp]), lastAsk: `Please review PR 4300101 ${link(4300101)}`, draft: { text, commitment: false, sources: [], byOwner: byOwner ? true : undefined } })
+			const src = new ReplaySource(w.chat.id, [], { id: '101', at, from: w.asker!, html: false, body: w.lastAsk! })
+			let posts = 0
+			src.send = async () => { posts++; return { msgId: '102' } }
+			const result = await send(store, src, store.config(), w, text, {}, { ...approved, async pr() { return { status: 'active', head: 'abc', votes: [{ name: 'Robin Park', vote }] } } })
+			if (!allowed) assert.equal(result, false, `${text}; vote=${vote}, byOwner=${byOwner}, stamp=${stamp}`)
+			else if (stamp === undefined || stamp === vote || byOwner) assert.equal(result, true, `valid negative/future reply: ${text}; vote=${vote}, byOwner=${byOwner}, stamp=${stamp}`)
+			assert.equal(posts, Number(result))
+		}
+	}
+})
+
+test('engine safety V1: status claims use their own PR evidence, while other-PR future promises remain valid', async () => {
+	for (const receipt of [false, true]) for (const [text, vote, allowed] of [
+		['I have approved PR 4300999.', 10, false],
+		['I have not approved PR 4300999 yet.', 0, false],
+		['I have approved 4300999.', 10, false],
+		['I have approved pull request #4300999.', 10, false],
+		['Left a comment. I have approved PR 4300101.', 10, false],
+		['I have approved PR 4300101.', 10, true],
+		['I have approved it.', 10, true],
+		['I have not approved PR 4300101 yet.', 0, true],
+		['I have not approved it yet.', 0, true],
+		['I will approve PR 4300999 after the requested changes.', 0, true],
+	] as const) {
+		const store = setup(), w = approval(store, { work: undefined, prVote: vote, prDraft: JSON.stringify([4300101, 'active', 'abc', vote]), draft: { text, commitment: false, sources: [], byOwner: true } })
+		if (receipt) w.effects = [{ system: 'ado', action: 'vote', target: 'PR 4300101', summary: 'Vote recorded', call: { tool: 'ado-repo_pull_request_write', args: { action: 'vote', pullRequestId: 4300101, vote } }, done: { at } }]
+		const src = new ReplaySource(w.chat.id, [], { id: '101', at, from: w.asker!, html: false, body: w.lastAsk! })
+		let posts = 0
+		src.send = async () => { posts++; return { msgId: '102' } }
+		assert.equal(await send(store, src, store.config(), w, text, {}, { ...approved, async pr() { return { status: 'active', head: 'abc', votes: [{ name: 'Robin Park', vote }] } } }), allowed, `${text}; receipt=${receipt}`)
+		assert.equal(posts, Number(allowed))
+	}
+})
+
+test('engine safety V2: vote receipts never bypass subject and meaning validation or fresher owner evidence', async () => {
+	for (const receiptVote of [-10, -5, 0, 5, 10]) for (const current of [undefined, 0, 10]) for (const positive of [false, true]) {
+		const text = positive ? 'I have approved PR 4300101.' : 'I have not approved PR 4300101 yet.'
+		const vote = current ?? receiptVote
+		const store = setup(), w = approval(store, { work: undefined, prVote: current, prDraft: JSON.stringify([4300101, current === undefined ? 'completed' : 'active', 'abc', current ?? null]), draft: { text, commitment: false, sources: [], byOwner: true } })
+		w.effects = [{ system: 'ado', action: 'vote', target: 'PR 4300101', summary: 'Vote recorded', call: { tool: 'ado-repo_pull_request_write', args: { action: 'vote', project: 'Canvas', repositoryId: 'widget', pullRequestId: 4300101, vote: receiptVote } }, done: { at } }]
+		const src = new ReplaySource(w.chat.id, [], { id: '101', at, from: w.asker!, html: false, body: w.lastAsk! })
+		let posts = 0, reads = 0
+		src.send = async () => { posts++; return { msgId: '102' } }
+		const allowed = positive ? vote >= 5 : vote < 5
+		assert.equal(await send(store, src, store.config(), w, text, {}, { ...approved, async pr() { reads++; return { status: current === undefined ? 'completed' : 'active', head: 'abc', votes: current === undefined ? [] : [{ name: 'Robin Park', vote: current }] } } }), allowed, `receipt=${receiptVote}, current=${current}, positive=${positive}`)
+		assert.equal(reads, 1, 'a historical receipt does not skip the current read')
+		assert.equal(posts, Number(allowed))
+	}
+})
+
+test('engine safety V1: an outgoing PR status cannot supply its own missing source identity', async () => {
+	const text = 'I have approved PR 4300999.'
+	const store = setup(), w = approval(store, { work: undefined, intent: 'status_next_step', lastAsk: 'How are things?', draft: { text, commitment: false, sources: [], byOwner: true } })
+	const src = new ReplaySource(w.chat.id, [], { id: '101', at, from: w.asker!, html: false, body: w.lastAsk! })
+	let posts = 0
+	src.send = async () => { posts++; return { msgId: '102' } }
+	assert.equal(await send(store, src, store.config(), w, text, {}, approved), false)
+	assert.equal(posts, 0)
+})
+
+test('engine safety V2: receipt fallback requires a completed PR and one current successful scoped execution', async () => {
+	for (const kind of ['valid', 'scope-less', 'project', 'repo', 'pr', 'stale', 'failed', 'unknown', 'off', 'duplicate', 'head', 'invalid-vote', 'invalid-live', 'abandoned', 'active', 'missing-owner', 'ambiguous-owner', 'unavailable', 'malformed', 'blank-owner'] as const) {
+		const text = 'I have approved PR 4300101.'
+		const store = setup(), w = approval(store, { work: undefined, draft: { text, commitment: false, sources: [], byOwner: true } })
+		const e = { system: 'ado', action: 'vote', target: 'PR 4300101', summary: 'Vote recorded', head: 'abcdef123', call: { tool: 'ado-repo_pull_request_write', args: { action: 'vote', project: 'Canvas', repositoryId: 'widget', pullRequestId: 4300101, vote: 10 } }, done: { at } }
+		w.effects = [e]
+		if (kind === 'scope-less') e.call.args.project = ''
+		if (kind === 'project') e.call.args.project = 'Other'
+		if (kind === 'repo') e.call.args.repositoryId = 'other'
+		if (kind === 'pr') e.call.args.pullRequestId = 4300999
+		if (kind === 'stale') e.done.at = '2000-01-01T00:00:00.000Z'
+		if (kind === 'failed') w.effects[0].error = 'Not made'
+		if (kind === 'unknown') w.effects[0].maybe = true
+		if (kind === 'off') w.effects[0].off = true
+		if (kind === 'duplicate') w.effects.push({ ...e })
+		if (kind === 'head') e.head = 'different'
+		if (kind === 'invalid-vote') e.call.args.vote = 6
+		if (kind === 'blank-owner') store.saveConfig({ ...store.config(), owner: { id: 'me', name: '' } })
+		const src = new ReplaySource(w.chat.id, [], { id: '101', at, from: w.asker!, html: false, body: w.lastAsk! })
+		let posts = 0
+		src.send = async () => { posts++; return { msgId: '102' } }
+		const allowed = kind === 'valid'
+		assert.equal(await send(store, src, store.config(), w, text, {}, { ...approved, async pr() {
+			if (kind === 'unavailable') throw new Error('Fictional read failure')
+			return { status: kind === 'active' ? 'active' : kind === 'abandoned' ? 'abandoned' : kind === 'malformed' ? 'unknown' : 'completed', head: 'abcdef123', votes: kind === 'invalid-live' ? [{ name: 'Robin Park', vote: 6 }] : kind === 'missing-owner' ? [{ name: 'Kim', vote: 10 }] : kind === 'ambiguous-owner' ? [{ name: 'Robin Park', vote: 10 }, { name: 'Robin Park', vote: 0 }] : [] }
+		} }), allowed, kind)
+		assert.equal(posts, Number(allowed), kind)
+	}
+})
+
+test('engine safety V2: unsupported live votes cannot satisfy approval before drafting', async () => {
+	for (const vote of [6, 99, Number.NaN]) {
+		const store = setup(), w = approval(store)
+		await probePRs(store, store.config(), { ...approved, async pr() { return { status: 'active', votes: [{ name: 'Robin Park', vote }] } } }, Date.now(), true)
+		const got = store.workflow(w.id)!
+		assert.equal(got.prUnknown, true)
+		assert.ok(!got.work!.closed)
+		assert.notEqual(got.state, 'done')
+	}
+})
+
+test('engine safety F2: terminal part reports cannot close pending home asks or unresolved home changes', async () => {
+	for (const viaJob of [false, true]) for (const obligation of ['ask', 'effect']) {
+		const store = setup(), home = approval(store, { state: obligation === 'ask' ? 'running' : 'needs_human', pending: obligation === 'ask' ? ['202'] : [], work: work('Ship the widget release'), updatedAt: '2026-01-02T00:00:00.000Z' })
+		home.work!.watch = 'watch1'
+		if (obligation === 'effect') home.effects = [{ system: 'ado', action: 'approve', target: 'PR 4300101', summary: 'Approve', call: { tool: 'ado-repo_pull_request_write', args: { action: 'vote', pullRequestId: 4300101, vote: 10 } }, error: 'Vote failed' }]
+		const part = item(store, 'A2', 'Dev', 'Partner', { state: 'running', partOf: home.id, pending: viaJob ? [] : ['201'], msgIds: ['201'], lastAsk: 'Finish the partner check', updatedAt: '2026-01-01T00:00:00.000Z', job: viaJob ? 'job1' : undefined })
+		home.work!.parts = [part.id]; store.save(home, false)
+		const job: Job = { schema: 1, id: 'job1', key: 'partner:widget', goal: part.lastAsk!, state: 'running', purpose: 'work', session: part.session, parents: [part.id], asks: [], createdAt: at, updatedAt: at }
+		store.saveJob({ ...job, id: 'watch1', every: 60, state: 'done' })
+		const report: Report = { workflowId: viaJob ? job.id : part.id, intent: 'status_next_step', state: 'done', summary: 'Partner check finished', work: { closed: 'Release complete' } }
+		if (viaJob) { store.saveJob(job); finishWork(store, job, report, 0) }
+		else {
+			store.saveConfig({ ...store.config(), dailyRuns: 1 })
+			await dispatch(store, new ReplaySource(part.chat.id, [], { id: '201', at, from: part.asker!, html: false, body: part.lastAsk! }), store.config(), async (_, input) => { store.writeReport(report, input.runId); return { exitCode: 0, ms: 1 } })
+		}
+		const got = store.workflow(home.id)!
+		assert.ok(!got.work!.closed, `${viaJob ? 'job' : 'reply'} must retain home ${obligation}`)
+		assert.notEqual(got.state, 'done')
+		assert.equal(store.job('watch1')!.every, 60)
+		assert.deepEqual(got.pending, obligation === 'ask' ? ['202'] : [])
+		if (obligation === 'effect') assert.equal(got.effects![0].error, 'Vote failed')
+	}
+})
+
+test('engine safety F1: approval-sensitive templates have no unchecked remainder or inferred positive meaning', async () => {
+	for (const [text, vote, allowed] of [
+		['I will approve PR 4300101; actually, I already have.', 0, false],
+		['I have never given approval for PR 4300101.', 10, false],
+		['I will approve PR 4300101 after the requested changes, actually I already have.', 0, false],
+		['I have approved PR 4300101.', 10, true],
+		['Approved, thanks.', 10, true],
+		['I have not approved PR 4300101 yet.', 10, false],
+		['I have not approved PR 4300101 yet.', 0, true],
+		['Not yet, my approval has not been recorded.', 0, true],
+		['I will approve PR 4300101 after the requested changes.', 0, true],
+	] as const) {
+		const store = setup(), w = approval(store, { work: undefined, prVote: vote, prDraft: JSON.stringify([4300101, 'active', 'abc', vote]), lastAsk: `Please review PR 4300101 ${link(4300101)}`, draft: { text, commitment: false, sources: [], byOwner: true } })
+		const src = new ReplaySource(w.chat.id, [], { id: '101', at, from: w.asker!, html: false, body: w.lastAsk! })
+		let posts = 0
+		src.send = async () => { posts++; return { msgId: '102' } }
+		assert.equal(await send(store, src, store.config(), w, text, {}, { ...approved, async pr() { return { status: 'active', head: 'abc', votes: [{ name: 'Robin Park', vote }] } } }), allowed, text)
+		assert.equal(posts, Number(allowed))
+	}
+})
+
+test('engine safety F3: a done part with retained to-dos keeps one actionable Classic and New family row', () => {
+	for (const state of ['open', 'running', 'needs_human', 'waiting_on_task', 'done'] as const) {
+		const store = setup(), home = approval(store, { state, draft: undefined, pending: [], work: work('Ship the widget release') })
+		const part = item(store, 'A2', 'Dev', 'Partner', { state: 'done', partOf: home.id, kept: [{ id: 't1', text: 'Verify partner results', at }] })
+		home.work!.parts = [part.id]; store.save(home)
+		const classic = view(store, undefined), placed = place(snapshot(store))
+		const rows = [...classic.needs, ...classic.running, ...classic.progress, ...classic.watching]
+		assert.equal(rows.filter(r => [home.code, part.code].includes(r.code)).length, 1, state)
+		assert.equal(rowsOf(snapshot(store), placed).filter(r => r.code === home.code).length, 1)
+		if (placed.some(r => r.rule === 'todo')) assert.ok(JSON.stringify(classic.progress).includes('Verify partner results'))
+	}
+})
+
+test('engine safety F2: a terminal report cannot consume newer own asks or erase unverified own effects', async () => {
+	for (const obligation of ['ask', 'effect']) {
+		const store = setup(), w = approval(store, { state: 'running', pending: ['101'], draft: undefined, work: work('Ship the widget release') })
+		if (obligation === 'effect') {
+			w.effects = [{ system: 'ado', action: 'approve', target: 'PR 4300101', summary: 'Approve', call: { tool: 'ado-repo_pull_request_write', args: { action: 'vote', pullRequestId: 4300101, vote: 10 } }, maybe: true }]
+			store.save(w)
+		}
+		await dispatch(store, new ReplaySource(w.chat.id, [], { id: '101', at, from: w.asker!, html: false, body: w.lastAsk! }), store.config(), async (_, input) => {
+			if (obligation === 'ask') {
+				const fresh = store.workflow(w.id)!
+				fresh.pending.push('202'); fresh.msgIds.push('202'); store.save(fresh)
+			}
+			store.writeReport({ workflowId: w.id, intent: 'status_next_step', state: 'done', summary: 'Finished', work: { closed: 'Released' } }, input.runId)
+			return { exitCode: 0, ms: 1 }
+		})
+		const got = store.workflow(w.id)!
+		assert.ok(!got.work!.closed, obligation)
+		if (obligation === 'ask') assert.ok(got.pending.includes('202'))
+		else assert.equal(got.effects![0].maybe, true)
+	}
+})
+
+test('engine safety F4: failed unavailable and malformed live reads never present stale approval as fresh runner facts', async () => {
+	for (const probe of [undefined, { ...approved, async pr() { throw new Error('Offline') } }, { ...approved, async pr() { return { status: '', votes: [] } } }, { ...approved, async pr() { return { status: 'active', votes: [] } } }]) {
+		const store = setup(), w = approval(store, { state: 'running', draft: undefined, pending: ['101'], lastAsk: `Please re-review PR 4300101 ${link(4300101)}`, prRead: JSON.stringify([4300101, 'active', 'old-head', 10]) })
+		let prompt = ''
+		await dispatch(store, new ReplaySource(w.chat.id, [], { id: '101', at, from: w.asker!, html: false, body: w.lastAsk! }), store.config(), async (_, input) => { prompt = input.prompt; store.writeReport({ workflowId: w.id, intent: 'status_next_step', state: 'needs_human', summary: 'Check unavailable', question: 'Check the PR again?' }, input.runId); return { exitCode: 0, ms: 1 } }, probe)
+		assert.ok(!prompt.includes('old-head'))
+		assert.match(prompt, /PR.*could not be verified/)
+		assert.equal(store.workflow(w.id)!.prRead, undefined)
+	}
+})
 
 test('engine crosscheck F1: an already-seen approval withdraws the contradicting draft and closes approval work', async () => {
 	const store = setup(), w = approval(store)
@@ -156,6 +352,14 @@ test('engine crosscheck safety: an approved PR redrafts broader asks instead of 
 	assert.ok(reply.prDraft)
 	let posted = 0
 	src.send = async () => { posted++; return { msgId: '102' } }
+	assert.equal(await send(store, src, store.config(), reply, reply.draft!.text, {}, approved), false, 'unbounded approval wording is conservatively redrafted, not interpreted as proof')
+	assert.equal(reply.draft, undefined)
+	await dispatch(store, src, store.config(), async (_, input) => {
+		store.writeReport({ workflowId: input.workflowId, intent: 'status_next_step', state: 'needs_human', summary: 'Approval verified; rollout answer', reply: { text: 'The rollout is staged.', commitment: false, sources: [] } }, input.runId)
+		return { exitCode: 0, ms: 1 }
+	}, approved)
+	const explained = store.workflow(w.id)!
+	Object.assign(reply, explained)
 	assert.equal(await send(store, src, store.config(), reply, reply.draft!.text, {}, approved), true)
 	assert.equal(posted, 1, 'fresh drafts based on unchanged live truth can be sent')
 	reply.state = 'needs_human'; reply.sent = undefined; store.save(reply)
@@ -300,7 +504,8 @@ test('engine crosscheck F1: unavailable live reads hold sends, while a re-review
 	}
 	const store = setup(), w = approval(store, { lastAsk: `Please re-review PR 4300101 after the fix ${link(4300101)}` })
 	await probePRs(store, store.config(), approved, Date.now(), true)
-	assert.equal(store.workflow(w.id)!.state, 'needs_human')
+	assert.equal(store.workflow(w.id)!.state, 'running')
+	assert.equal(store.workflow(w.id)!.draft, undefined)
 })
 
 test('engine crosscheck F2: a persisted sent approval repairs stale open work and closes the family on the next tick', async () => {
@@ -366,17 +571,27 @@ test('engine crosscheck F3/A14: every fixture state appears exactly once, includ
 	assert.equal(rows.find(r => r.code === 'A6')?.section, 'waiting')
 	assert.deepEqual(rows.find(r => r.code === 'A6')?.next?.owner, { kind: 'others', text: 'Partner team' })
 	const classic = view(store, undefined)
-	assert.ok(classic.progress.some(r => r.code === 'A8'), 'a part with no work record is still in progress')
+	assert.equal(classic.progress.filter(r => ['A6', 'A8'].includes(r.code)).length, 1, 'one ongoing row represents the home and its part')
+	const codes = [...classic.needs, ...classic.running, ...classic.progress, ...classic.watching].map(r => r.code)
+	for (const w of store.workflows().filter(w => w.state !== 'done' && !w.partOf)) {
+		const family = [w.code, ...store.workflows().filter(p => p.partOf === w.id).map(p => p.code)]
+		assert.equal(codes.filter(c => family.includes(c)).length, 1, `Classic assembled ${w.code}`)
+	}
 })
 
 test('engine crosscheck F3: the shared inbox fixtures all have exactly one placement', async () => {
 	const store = setup(), { seedInbox } = await import('./fixture.ts')
 	seedInbox(store)
 	const s = snapshot(store), placed = place(s), rows = rowsOf(s, placed)
+	const classic = view(store, undefined)
+	const classicRows = [...classic.needs, ...classic.running, ...classic.progress, ...classic.watching, ...classic.waiting, ...classic.automations]
 	for (const w of store.workflows()) {
 		const hits = placed.filter(r => r.subjects.includes(w.code))
 		assert.equal(hits.length, 1, w.code)
-		if (w.state !== 'done') assert.equal(rows.filter(r => r.code === hits[0].code).length, 1, `visible ${w.code}`)
+		if (w.state !== 'done') {
+			assert.equal(rows.filter(r => r.code === hits[0].code).length, 1, `visible ${w.code}`)
+			assert.equal(classicRows.filter(r => placed.find(p => p.subjects.includes(r.code))?.code === hits[0].code).length, 1, `Classic visible ${w.code}`)
+		}
 	}
 })
 
@@ -416,7 +631,7 @@ test('engine crosscheck F5/F8: group asks and FYIs reach judgment without a gree
 	const skipped = store.logs(1).find(l => l.event === 'intake-skip' && l.msgId === '999')
 	assert.ok(skipped)
 	assert.equal(skipped.chat, chat.id)
-	assert.equal(skipped.reason, 'system message')
+	assert.equal(skipped.reason, 'prefilter')
 	assert.ok(!JSON.stringify(skipped).includes('private text'))
 })
 
@@ -432,9 +647,340 @@ test('engine crosscheck F5/F8: daily limits defer group judgment without droppin
 	})
 	assert.equal(store.workflows().filter(w => w.state === 'running' && w.paced).length, 1, 'the unjudged message remains queued')
 	assert.equal(store.workflows().filter(w => w.state === 'done').length, 1)
-	const judged = store.logs(1).filter(l => l.event === 'intake-skip' && String(l.reason).startsWith('judged'))
+	const judged = store.logs(1).filter(l => l.event === 'intake-skip' && l.reason === 'ai-noise')
 	assert.equal(judged.length, 1)
 	assert.equal(judged[0].chat, chat.id)
 	assert.ok(['301', '302'].includes(String(judged[0].msgId)))
 	assert.ok(!JSON.stringify(judged).includes('private message'))
+})
+
+test('engine review F1: a scheduled reply with unchanged verified PR evidence can send', async () => {
+	const store = setup(), w = approval(store, { state: 'scheduled', prVote: 0, prDraft: JSON.stringify([4300101, 'active', 'abc', 0]) })
+	w.draft!.text = 'I have not approved it yet.'
+	store.save(w)
+	const src = new ReplaySource(w.chat.id, [], { id: '101', at, from: w.asker!, html: false, body: w.lastAsk! })
+	let sends = 0
+	src.send = async () => { sends++; return { msgId: '102' } }
+	const zero: BuildProbe = { ...approved, async pr() { return { status: 'active', head: 'abc', votes: [{ name: 'Robin Park', vote: 0 }] } } }
+	assert.equal(await send(store, src, store.config(), w, w.draft!.text, {}, zero), true)
+	assert.equal(sends, 1)
+})
+
+test('engine review F1: re-review workers read live approval before drafting without treating it as completion', async () => {
+	for (const prVote of [0, 10]) for (const hasWork of [true, false]) for (const status of ['active', 'completed']) {
+		const store = setup(), w = approval(store, { state: 'running', draft: undefined, pending: ['101'], prVote, prStatus: 'active', lastAsk: `Please re-review PR 4300101 ${link(4300101)}` })
+		if (!hasWork) { delete w.work; store.save(w) }
+		const evidence = JSON.stringify([4300101, status, 'abc', 10])
+		const src = new ReplaySource(w.chat.id, [], { id: '101', at, from: w.asker!, html: false, body: w.lastAsk! })
+		await dispatch(store, src, store.config(), async (_, input) => {
+			assert.ok(input.prompt.includes(evidence), 'the re-review worker receives the current approval evidence')
+			store.writeReport({ workflowId: w.id, intent: 'status_next_step', state: 'needs_human', summary: 'Re-review still needed', question: 'Which new changes should I review?' }, input.runId)
+			return { exitCode: 0, ms: 1 }
+		}, { ...approved, async pr() { return { status, head: 'abc', votes: [{ name: 'Robin Park', vote: 10 }] } } })
+		assert.equal(store.workflow(w.id)!.prRead, evidence)
+		assert.equal(store.workflow(w.id)!.state, 'needs_human')
+	}
+})
+
+test('engine review F1: a legacy re-review draft contradicting an already-seen approval is withdrawn', async () => {
+	const store = setup(), w = approval(store, { lastAsk: `Please re-review PR 4300101 ${link(4300101)}` })
+	await probePRs(store, store.config(), approved, Date.now(), true)
+	assert.equal(store.workflow(w.id)!.state, 'running')
+	assert.equal(store.workflow(w.id)!.draft, undefined)
+	assert.ok(!store.workflow(w.id)!.work!.closed)
+})
+
+test('engine review F1: the common boundary checks approval claims even when the original ask was only review', async () => {
+	const store = setup(), w = approval(store, { state: 'scheduled', lastAsk: `Please review PR 4300101 ${link(4300101)}` })
+	const src = new ReplaySource(w.chat.id, [], { id: '101', at, from: w.asker!, html: false, body: w.lastAsk! })
+	let sent = 0
+	src.send = async () => { sent++; return { msgId: '102' } }
+	assert.equal(await send(store, src, store.config(), w, w.draft!.text, {}, approved), false)
+	assert.equal(sent, 0)
+	assert.equal(store.workflow(w.id)!.draft, undefined)
+	assert.equal(store.workflow(w.id)!.state, 'running')
+})
+
+test('engine review F1: finished jobs use live evidence for reply-only approval claims', async () => {
+	for (const mine of [0, 10]) {
+		const store = setup(), w = approval(store, { state: 'waiting_on_task', job: 'job1', pending: [], prVote: 0, prDraft: JSON.stringify([4300101, 'active', 'abc', 0]), lastAsk: `Please re-review PR 4300101 ${link(4300101)}`, work: work('Re-review PR 4300101') })
+		w.approved = { text: w.draft!.text, effects: '[]', at }
+		store.save(w)
+		const job: Job = { schema: 1, id: 'job1', key: 'pr:acme/widget/4300101', goal: w.lastAsk!, state: 'running', purpose: 'execute', session: w.session, parents: [w.id], asks: [], createdAt: at, updatedAt: at, run: { id: 'run1', pid: 123, startedAt: at, machine: 'test', purpose: 'execute', asks: 0 }, result: { summary: 'Finished', effects: [] } }
+		store.saveJob(job)
+		store.writeReport({ workflowId: job.id, intent: 'pr_review', state: 'done', summary: 'Finished' }, 'run1')
+		const src = new ReplaySource(w.chat.id, [], { id: '101', at, from: w.asker!, html: false, body: w.lastAsk! })
+		let reads = 0, posts = 0
+		src.send = async () => { posts++; return { msgId: '102' } }
+		await checkJobs(store, src, store.config(), { start() { throw new Error('Unexpected start') }, alive: () => false, kill: () => true, openWindow() { throw new Error('Unexpected window') }, bootMs: () => 0 }, { ...approved, async pr() { reads++; return { status: 'active', head: 'abc', votes: [{ name: 'Robin Park', vote: mine }] } } })
+		assert.equal(reads, 1)
+		assert.equal(posts, mine === 0 ? 1 : 0)
+		assert.equal(store.workflow(w.id)!.state, mine === 0 ? 'open' : 'running')
+	}
+})
+
+test('engine review A19: part asks and stale job reports cannot replace the home outcome', () => {
+	const store = setup(), home = approval(store, { state: 'open', pending: [] })
+	home.work!.plan = [{ id: 'p1', what: 'Keep the original approval obligation', who: 'me' }]
+	const part = item(store, 'A2', 'Dev', 'Partner', { partOf: home.id, pending: ['201'], msgIds: ['201'] })
+	home.work!.parts = [part.id]; store.save(home)
+	applyReport(part, { workflowId: part.id, intent: 'status_next_step', state: 'needs_human', summary: 'Partner plan', question: 'Which ring?', work: { changedAsk: '201', goal: 'Validate the patch', doneWhen: 'Tests pass', step: 'Partner asked about testing', plan: [{ what: 'Run partner tests', who: 'them' }] } }, home)
+	assert.equal(home.work!.goal, 'Approve PR 4300101')
+	assert.equal(home.work!.doneWhen, 'The vote is recorded and the reply is sent')
+	assert.ok(home.work!.steps.some(s => s.what.includes('Partner asked about testing')))
+	store.save(home); store.save(part)
+	const job: Job = { schema: 1, id: 'job1', key: 'pr:acme/widget/4300101', goal: 'Old request', state: 'running', purpose: 'work', session: home.session, parents: [part.id], asks: [], createdAt: at, updatedAt: at }
+	part.job = job.id; store.save(part); store.saveJob(job)
+	finishWork(store, job, { workflowId: job.id, intent: 'pr_review', state: 'needs_human', summary: 'Stale plan', question: 'Which ring?', work: { changedAsk: '201', goal: 'Only test now', doneWhen: 'Tests pass', step: 'Job read the partner plan', plan: [{ what: 'Read partner results', who: 'me' }] } }, 0)
+	assert.equal(store.workflow(home.id)!.work!.goal, 'Approve PR 4300101')
+	assert.ok(store.workflow(home.id)!.work!.steps.some(s => s.what.includes('Job read the partner plan')))
+	assert.deepEqual(store.workflow(home.id)!.work!.plan!.map(p => p.what), ['Keep the original approval obligation', 'Run partner tests', 'Read partner results'])
+})
+
+test('engine review F2: terminal reports retain newer asks and failed or unknown changes', () => {
+	for (const reportClosed of [false, true]) for (const kind of ['new-ask', 'failed', 'unknown', 'part-ask', 'part-unknown']) {
+		const store = setup(), w = approval(store, { state: 'waiting_on_task', job: 'job1', pending: [] })
+		if (kind === 'new-ask') w.pending = ['202']
+		if (kind === 'failed' || kind === 'unknown') w.effects = [{ system: 'ado', action: 'approve', target: 'PR 4300101', summary: 'Approve', call: { tool: 'ado-repo_pull_request_write', args: { action: 'vote', pullRequestId: 4300101, vote: 10 } }, ...(kind === 'failed' ? { error: 'Not made' } : { maybe: true }) }]
+		if (kind === 'part-ask') {
+			const p = item(store, 'A2', 'Dev', 'Partner', { partOf: w.id, pending: ['203'], question: 'Do we need a rollback?' })
+			w.work!.parts = [p.id]
+		}
+		if (kind === 'part-unknown') {
+			const p = item(store, 'A2', 'Dev', 'Partner', { state: 'open', partOf: w.id, pending: [], draft: undefined, question: undefined, effects: [{ system: 'ado', action: 'comment', target: 'PR 4300101', summary: 'Comment', maybe: true }] })
+			w.work!.parts = [p.id]
+		}
+		store.save(w)
+		const job: Job = { schema: 1, id: 'job1', key: 'pr:acme/widget/4300101', goal: w.lastAsk!, state: 'running', purpose: 'work', session: w.session, parents: [w.id], asks: [], createdAt: at, updatedAt: at }
+		store.saveJob(job)
+		finishWork(store, job, { workflowId: job.id, intent: 'pr_review', state: 'done', summary: 'Nothing needed', work: reportClosed ? { closed: 'Approval task finished' } : undefined }, 0)
+		const got = store.workflow(w.id)!
+		assert.ok(!got.work!.closed, kind)
+		assert.notEqual(got.state, 'done', kind)
+		if (kind === 'new-ask') {
+			assert.deepEqual(got.pending, ['202'])
+			assert.equal(got.state, 'running')
+		}
+		if (kind === 'failed' || kind === 'unknown') {
+			assert.equal(got.effects?.length, 1, kind)
+			assert.equal(got.state, 'needs_human', kind)
+		}
+	}
+})
+
+test('engine review F5/F8: backlog candidates persist past the cursor and direct asks run first', async () => {
+	const store = setup(), chat = { id: 'review-room', name: 'Review room', group: true, test: false }
+	store.saveConfig({ ...store.config(), dailyRuns: 1 })
+	const cursors: Record<string, string> = {}
+	for (const id of ['401', '402', '403']) {
+		await intake(store, new ReplaySource(chat.id, [], { id, at, from: { id: 'kim', name: 'Kim' }, html: false, body: `Widget deployment update ${id}` }), store.config(), cursors, [chat], { backlog: { turns: {} } })
+	}
+	assert.equal(cursors[chat.id], '403')
+	assert.equal(store.workflows().length, 3)
+	assert.ok(store.workflows().every(w => w.before && w.paced && w.startedBy === 'room'))
+	await intake(store, new ReplaySource(chat.id, [], { id: '404', at, from: { id: 'dev', name: 'Dev' }, html: false, body: 'Robin, which ring should I use?' }), store.config(), cursors, [chat])
+	const ran: string[] = [], src = new ReplaySource(chat.id, [], { id: '405', at, from: null, html: false, body: '' })
+	const run: Parameters<typeof dispatch>[3] = async (_, input) => {
+		const w = store.workflow(input.workflowId)!
+		ran.push(w.lastMsgId)
+		store.writeReport({ workflowId: w.id, intent: 'none', state: 'done', summary: 'No action' }, input.runId)
+		return { exitCode: 0, ms: 1 }
+	}
+	await dispatch(store, src, store.config(), run)
+	assert.deepEqual(ran, ['404'])
+	assert.equal(store.workflows().filter(w => w.paced && w.state === 'running').length, 3)
+	const deferred = store.logs(1).filter(l => l.event === 'intake-skip' && l.reason === 'budget-deferred')
+	assert.equal(deferred.length, 3)
+	await dispatch(store, src, store.config(), run)
+	assert.equal(store.logs(1).filter(l => l.event === 'intake-skip' && l.reason === 'budget-deferred').length, 3, 'one audit per deferral, not every tick')
+	store.saveConfig({ ...store.config(), dailyRuns: 20 })
+	await dispatch(store, src, store.config(), run)
+	await dispatch(store, src, store.config(), run)
+	assert.deepEqual(new Set(ran), new Set(['401', '402', '403', '404']), 'judgment does not need the old messages to be fetched again')
+	assert.ok(store.workflows().every(w => !w.paced && !w.intakeDeferred), 'a completed judgment clears its pacing and deferral marks')
+})
+
+test('engine review skip audit: each skip has a fixed private reason and identifiers only', async () => {
+	const store = setup(), chat = { id: 'review-room', name: 'Private room name', group: true, test: false }
+	const cfg = store.config(), cursors = {}
+	const receive = (id: string, from: { id: string; name: string } | null, body: string) => intake(store, new ReplaySource(chat.id, [], { id, at, from, html: false, body }), cfg, cursors, [chat])
+	await receive('501', null, 'sensitive system payload')
+	await receive('502', cfg.owner, 'private owner context')
+	await receive('503', { id: 'kim', name: 'Private person' }, 'Robin, private question')
+	await receive('503', { id: 'kim', name: 'Private person' }, 'Robin, private question')
+	const audits = store.logs(1).filter(l => l.event === 'intake-skip')
+	assert.deepEqual(new Set(audits.map(l => l.reason)), new Set(['prefilter', 'context-absorbed', 'dedupe']))
+	for (const entry of audits) {
+		assert.ok(Object.keys(entry).every(k => ['at', 'event', 'reason', 'chat', 'msgId', 'workflowId', 'outcome'].includes(k)))
+		assert.ok(!/private|sensitive|payload/i.test(JSON.stringify(entry)))
+		assert.ok(entry.msgId && entry.chat && entry.outcome)
+	}
+})
+
+test('engine review evals: relevant FYIs are distinct from noise in measured outcomes', () => {
+	const store = setup(), w = approval(store, { work: undefined })
+	applyReport(w, { workflowId: w.id, intent: 'none', state: 'done', summary: 'Deployment news', fyi: { line: 'Kim shared widget deployment progress.', weight: 'normal' } })
+	assert.equal(outcomeOf(w), 'fyi')
+	applyReport(w, { workflowId: w.id, intent: 'none', state: 'done', summary: 'Thanks only' })
+	assert.equal(outcomeOf(w), 'ignore')
+})
+
+test('engine review F5: owner commitment candidates beyond two also persist for paced judgment', async () => {
+	const store = setup(), chats = ['room-a', 'room-b', 'room-c'].map(id => ({ id, name: 'Widget room', group: true, test: false }))
+	const src = new ReplaySource('none', [], { id: '601', at, from: store.config().owner, html: false, body: '' })
+	src.newMessages = async chatId => ({ msgs: [{ id: '601', at, from: store.config().owner, html: false, body: `I will investigate the widget rollout in ${chatId}` }], newest: '601', truncated: false })
+	await intake(store, src, store.config(), {}, chats)
+	assert.equal(store.workflows().length, 3)
+	assert.ok(store.workflows().every(w => w.startedBy === 'owner' && w.paced))
+})
+
+test('engine review skip audit: direct asks held by the daily cap record their budget deferral too', async () => {
+	const store = setup(), w = approval(store, { state: 'running', work: undefined, pending: ['101'], lastAsk: 'Which ring?', draft: undefined })
+	store.saveConfig({ ...store.config(), dailyRuns: 1 }); store.addRun()
+	await dispatch(store, new ReplaySource(w.chat.id, [], { id: '102', at, from: null, html: false, body: '' }), store.config(), async () => { throw new Error('Budget must prevent this run') })
+	assert.equal(store.workflow(w.id)!.state, 'running')
+	const entry = store.logs(1).find(l => l.event === 'intake-skip' && l.reason === 'budget-deferred')
+	assert.equal(entry?.workflowId, w.id)
+	assert.equal(entry?.msgId, '101')
+})
+
+test('engine review F5: a replayed unaddressed group candidate is deduplicated before independent routing', async () => {
+	const store = setup(), chat = { id: 'widget-room', name: 'Widget room', group: true, test: false }
+	const replay = () => new ReplaySource(chat.id, [], { id: '701', at, from: { id: 'kim', name: 'Kim' }, html: false, body: 'Widget deployment is ready.' })
+	await intake(store, replay(), store.config(), {}, [chat])
+	await intake(store, replay(), store.config(), {}, [chat])
+	assert.equal(store.workflows().length, 1)
+	assert.ok(store.logs(1).some(e => e.event === 'intake-skip' && e.reason === 'dedupe' && e.msgId === '701'))
+})
+
+test('engine review F5: paced direct backlog asks precede older room candidates', async () => {
+	const store = setup(), chat = { id: 'widget-room', name: 'Widget room', group: true, test: false }
+	store.saveConfig({ ...store.config(), maxParallel: 1 })
+	for (const [id, body] of [['801', 'Widget news'], ['802', 'Robin, please review the widget plan']]) {
+		await intake(store, new ReplaySource(chat.id, [], { id, at, from: { id, name: id === '801' ? 'Kim' : 'Dev' }, html: false, body }), store.config(), {}, [chat], { backlog: { turns: {} } })
+	}
+	const ran: string[] = []
+	await dispatch(store, new ReplaySource(chat.id, [], { id: '803', at, from: null, html: false, body: '' }), store.config(), async (_, input) => {
+		ran.push(store.workflow(input.workflowId)!.lastMsgId)
+		store.writeReport({ workflowId: input.workflowId, intent: 'none', state: 'done', summary: 'No action' }, input.runId)
+		return { exitCode: 0, ms: 1 }
+	})
+	assert.deepEqual(ran, ['802'])
+})
+
+test('engine review F3: assembled Classic and New rows share one home across every home and part state', () => {
+	const states: State[] = ['running', 'needs_human', 'waiting_on_task', 'waiting_on_sender', 'scheduled', 'open', 'done']
+	for (const state of states) for (const partState of states) {
+		if (state === 'done' && partState === 'done') continue
+		const store = setup(), home = approval(store, { state, status: 'Nothing needed', pending: [], work: work('Get a partner fix') })
+		const part = item(store, 'A2', 'Dev', 'Partner', { state: partState, partOf: home.id })
+		home.work!.parts = [part.id]; store.save(home)
+		const classic = view(store, undefined), snap = snapshot(store), placed = place(snap), rows = rowsOf(snap, placed)
+		const classicRows = [...classic.needs, ...classic.progress, ...classic.running, ...classic.watching]
+		assert.equal(classicRows.filter(r => [home.code, part.code].includes(r.code)).length, 1, `Classic ${state}/${partState}`)
+		assert.equal(rows.filter(r => r.code === home.code).length, 1, `New ${state}/${partState}`)
+		assert.ok(!store.workflow(home.id)!.work!.closed, 'status words are not closure evidence')
+	}
+})
+
+test('engine review F2: a closing report retains work and its watch until the reply is persisted', async () => {
+	for (const pendingPart of [false, true]) {
+		const store = setup(), w = approval(store, { state: 'waiting_on_task', job: 'job1', pending: [], lastAsk: 'Finish the widget release.', work: work('Ship the widget release') })
+		const job: Job = { schema: 1, id: 'job1', key: 'release:widget', goal: w.lastAsk!, state: 'running', purpose: 'work', session: w.session, parents: [w.id], asks: [], createdAt: at, updatedAt: at }
+		w.work!.watch = 'watch1'
+		if (pendingPart) {
+			const part = item(store, 'A2', 'Dev', 'Partner', { partOf: w.id, pending: ['201'], question: 'What about rollback?' })
+			w.work!.parts = [part.id]
+		}
+		store.save(w); store.saveJob(job); store.saveJob({ ...job, id: 'watch1', every: 60, state: 'done' })
+		finishWork(store, job, { workflowId: job.id, intent: 'status_next_step', state: 'needs_human', summary: 'Release finished', work: { closed: 'Released and reported' }, reply: { text: 'Released.', commitment: false, sources: [] } }, 0)
+		let got = store.workflow(w.id)!
+		assert.ok(!got.work!.closed, 'a reply still owed is not a completed family')
+		assert.equal(store.job('watch1')!.every, 60)
+		const src = new ReplaySource(w.chat.id, [], { id: '101', at, from: w.asker!, html: false, body: w.lastAsk! })
+		src.send = async () => { throw new Error('Send failed') }
+		await assert.rejects(send(store, src, store.config(), got, got.draft!.text, {}), /Send failed/)
+		assert.ok(!store.workflow(w.id)!.work!.closed)
+		assert.equal(store.job('watch1')!.every, 60)
+		got = store.workflow(w.id)!
+		src.send = async () => ({ msgId: '102' })
+		await send(store, src, store.config(), got, got.draft!.text, {})
+		assert.equal(store.workflow(w.id)!.sent?.msgId, '102')
+		assert.equal(!!store.workflow(w.id)!.work!.closed, !pendingPart)
+		assert.equal(store.job('watch1')!.every, pendingPart ? 60 : undefined)
+	}
+})
+
+test('engine review F2: a crash during family closure cannot lose the persisted send receipt', async () => {
+	const store = setup(), w = approval(store, { pending: [] })
+	w.effects = [{ system: 'ado', action: 'approve', target: 'PR 4300101', summary: 'Approve', call: { tool: 'ado-repo_pull_request_write', args: { action: 'vote', pullRequestId: 4300101, vote: 10 } }, done: { at } }]
+	const part = item(store, 'A2', 'Dev', 'Partner', { state: 'open', partOf: w.id, pending: [], draft: undefined, question: undefined })
+	w.work!.parts = [part.id]; store.save(w)
+	const save = store.save.bind(store)
+	store.save = (wf, ...args) => { if (wf.id === part.id) throw new Error('Closure interrupted'); return save(wf, ...args) }
+	const src = new ReplaySource(w.chat.id, [], { id: '101', at, from: w.asker!, html: false, body: w.lastAsk! })
+	src.send = async () => ({ msgId: '102' })
+	await assert.rejects(send(store, src, store.config(), w, 'Approved.', {}, approved), /Closure interrupted/)
+	assert.equal(store.workflow(w.id)!.sent?.msgId, '102')
+	store.save = save
+	const { settleCompleted } = await import('../src/runner/jobs.ts')
+	settleCompleted(store)
+	assert.equal(store.workflow(w.id)!.state, 'done')
+	assert.equal(store.workflow(part.id)!.state, 'done')
+	for (const mark of [{ maybe: true as const }, { error: 'Unverified' }]) {
+		const other = setup(), held = approval(other, { state: 'needs_human', pending: [], sent: { msgId: '102', text: 'Approved.', at } })
+		held.effects = [{ ...w.effects![0], done: undefined, ...mark }]
+		other.save(held)
+		settleCompleted(other)
+		assert.equal(other.workflow(held.id)!.state, 'needs_human')
+		assert.ok(!other.workflow(held.id)!.work!.closed)
+	}
+})
+
+test('engine review F2: a persisted broader completion reply can finish recovery without reopening its watch', async () => {
+	const store = setup(), w = approval(store, { state: 'scheduled', pending: [], work: work('Ship the widget release'), closeWorkAfterSend: 'Released and reported', sent: { msgId: '102', text: 'Released.', at }, effects: [] })
+	const { settleCompleted } = await import('../src/runner/jobs.ts')
+	settleCompleted(store)
+	assert.equal(store.workflow(w.id)!.state, 'done')
+	assert.equal(store.workflow(w.id)!.work!.closed?.why, 'Released and reported')
+})
+
+test('engine review F2: deferred report closure requires verified changes and never carries into a new turn', async () => {
+	for (const mark of [{ maybe: true as const }, { error: 'Unverified' }, { off: true }]) {
+		const store = setup(), w = approval(store, { pending: [], lastAsk: 'Finish the widget release.', work: work('Ship the widget release') })
+		applyReport(w, { workflowId: w.id, intent: 'status_next_step', state: 'needs_human', summary: 'Finished', work: { closed: 'Released and reported' }, reply: { text: 'Released.', commitment: false, sources: [] } })
+		assert.ok(!w.work!.closed)
+		w.effects = [{ system: 'ado', action: 'comment', target: 'Release', summary: 'Post release result', ...mark }]
+		w.sent = { msgId: '102', text: 'Released.', at }
+		afterSend(w, 'Released.', '102')
+		assert.ok(!w.work!.closed)
+		w.closeWorkAfterSend = 'Old outcome'
+		const { newTurn } = await import('../src/runner/work.ts')
+		newTurn(w)
+		assert.equal(w.closeWorkAfterSend, undefined)
+	}
+})
+
+test('engine review evals: blind inputs hide expectations and scoring checks both classification and facts', async () => {
+	const { prepareFictional, scoreFictional } = await import('../scripts/eval-fictional.ts')
+	const { writeJson } = await import('../src/store/fs.ts')
+	const cases = [
+		{ id: 'positive', text: 'The widget is in BLUE.', expect: { accept: ['fyi' as const], facts: ['unseen-expectation-marker'] } },
+		{ id: 'negative', text: 'Thanks!', expect: { accept: ['ignore' as const] } },
+	]
+	const root = await prepareFictional(cases)
+	assert.ok(!readFileSync(join(root, 'inputs.json'), 'utf8').includes('unseen-expectation-marker'))
+	const reports = cases.map(c => {
+		const store = new Store({ root: join(root, c.id), machine: 'eval' })
+		return { id: c.id, report: { workflowId: store.workflows()[0].id, intent: 'none', state: 'done', summary: 'News', fyi: { line: 'Widget update', weight: 'normal' } } }
+	})
+	writeJson(join(root, 'reports.json'), reports, 'eval')
+	const scored = await scoreFictional(cases, root)
+	assert.ok(scored.every(r => !r.pass), 'a correct category without its facts, and a false-positive FYI, both fail')
+	assert.ok(new Store({ root: join(root, 'positive'), machine: 'eval' }).logs(1).some(e => e.event === 'intake-skip' && e.reason === 'ai-fyi'))
+	writeJson(join(root, 'reports.json'), [reports[0], reports[0]], 'eval')
+	await assert.rejects(scoreFictional(cases, root), /each case exactly once/)
+	writeJson(join(root, 'reports.json'), [{ ...reports[0], report: { ...reports[0].report, workflowId: 'wrong-item' } }, reports[1]], 'eval')
+	await assert.rejects(scoreFictional(cases, root), /Wrong workflow/)
+	await assert.rejects(prepareFictional([{ ...cases[0], id: '../escape' }]), /Invalid fictional case id/)
 })

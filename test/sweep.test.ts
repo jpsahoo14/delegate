@@ -87,7 +87,7 @@ beforeEach(() => {
 	script = (_, workflowId) => ({ workflowId, intent: 'status_next_step', state: 'needs_human', reply: { text: 'Sorry for the late reply: Friday.', commitment: false, sources: [] }, summary: 'Answer' } as unknown as Report)
 })
 
-test('first setup reads the week before: people still waiting on you become items marked From before setup; what you answered, chatter, system messages, and older than 7 days do not', async () => {
+test('first setup reads the week before: owned asks become items and group chatter stays queued for judgment; answered, system, and older messages do not', async () => {
 	src.post(DM('ana'), 'Ana', 'hi', 6 * D); src.post(DM('ana'), 'Ana', 'can you review my PR?', 5 * D); src.post(DM('ana'), 'Ana', 'ping?', 4 * D)
 	src.post('19:date@thread.v2', 'Yan', 'we need a date for the review', 3 * D); src.post('19:date@thread.v2', 'me', 'which day works for you?', 3 * D - H); src.post('19:date@thread.v2', 'Yan', 'Friday', 2 * D)
 	const live = { 'other-chat': { owner: { at: new Date().toISOString(), to: ['x'], text: 'live' } } }
@@ -99,7 +99,8 @@ test('first setup reads the week before: people still waiting on you become item
 	src.post(DM('gus'), 'Gus', 'old question?', 9 * D)
 	src.post(DM('bot'), null, 'Build 123 failed', D)
 	await go()
-	assert.deepEqual(items().map(w => w.asker?.name).sort(), ['Ana', 'Bob', 'Dan', 'Yan'], 'only people still waiting on you; Yan answered the question you asked after him')
+	assert.deepEqual(items().filter(w => w.startedBy !== 'room').map(w => w.asker?.name).sort(), ['Ana', 'Bob', 'Dan', 'Yan'], 'direct asks and answers reach judgment before group candidates')
+	assert.ok(of('Cat')[0]?.paced && of('Cat')[0].before, 'unaddressed chatter remains a persisted backlog candidate until AI judges it')
 	const [ana] = of('Ana')
 	assert.equal(ana.msgIds.length, 3, 'three messages over three quiet days from one person are one item')
 	assert.ok(items().every(w => w.before), 'each is marked From before setup')

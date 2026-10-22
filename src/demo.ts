@@ -76,7 +76,7 @@ export async function seed(): Promise<void> {
 	writeFileSync(join(ROOT, 'knowledge', 'topics', 'meeting-options', 'architecture.md'), '---\ntitle: Meeting options · architecture\ntype: card\ntopic: meeting-options\ncard: architecture\naudience: team\naliases: []\n---\n## Observations\n- [fact] Admin policy and sensitivity labels lock some meeting options; organizers cannot change those. ^demo (src: https://teams.microsoft.com/l/message/demo/1, 2026-10-01, Priya)\n')
 	const src = new DemoSource(ROOT)
 	src.post('self', { id: 'owner', name: 'You' }, 'notes to self')
-	src.post(CHAT, { id: 'sam', name: 'Sam' }, 'Morning all!')
+	src.post(CHAT, { id: 'owner', name: 'You' }, 'Morning all!')
 	await tick(store, { force: true })
 	src.post(CHAT, { id: 'vikram', name: 'Vikram' }, 'Can you review PR 1234 when you get a chance?')
 	src.post(CHAT, { id: 'priya', name: 'Priya' }, 'Why do some meeting options show as locked for organizers?')

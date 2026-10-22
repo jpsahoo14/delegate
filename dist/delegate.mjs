@@ -40025,6 +40025,7 @@ function buildPrompt(wf, thread2, cfg, root, owners = [], others = [], corrected
     ...lines
   ];
   if (wf.prRead) parts2.push("", `Runner PR evidence [PR id, status, head, owner vote]: ${wf.prRead}. The reply must agree with these facts; a vote of 10 or 5 is approval. Answer any remaining owned questions too.`);
+  if (wf.prUnknown) parts2.push("", "The current PR owner approval could not be verified. Older votes and earlier conversation are historical context, not proof of current approval. Do not claim approval or non-approval; report the verification gap or read a fresh source.");
   if (others.length) parts2.push("", "Other open items in this chat. If the new message asks for the same thing as one of them, even from someone else, set `same` to its code and leave out reply:", ...others.map((o) => `- ${o.code} \xB7 ${o.asker?.name ?? "someone"}: "${(o.lastAsk ?? "").slice(0, 200)}"`));
   if (wf.kind === "reply") parts2.push("", ...allowed(cfg, "every action the reply promises goes in `todos`"));
   if (corrected.length) parts2.push("", "How the owner corrected your recent drafts. Learn the pattern (tone, length, what they leave out or add). Never copy facts from these into this reply:", ...corrected.map((c) => `- ${c}`));
@@ -41129,7 +41130,7 @@ async function ownerActive(store2, src) {
   if (!last3 || Date.now() - Date.parse(last3) > 10 * 6e4) return false;
   return (await src.presence()).availability === "Available";
 }
-async function dueSends(store2, src, cfg) {
+async function dueSends(store2, src, cfg, probe) {
   const due2 = store2.workflows().filter((w) => w.state === "scheduled" && w.sendAt && Date.parse(w.sendAt) <= Date.now());
   for (const w of due2.filter((w2) => w2.draft?.preview)) {
     Object.assign(w, { state: "needs_human", sendAt: void 0, status: "Edited by you; waits for your ok" });
@@ -41153,7 +41154,7 @@ async function dueSends(store2, src, cfg) {
       continue;
     }
     try {
-      if (await send(store2, src, cfg, wf, wf.draft?.text, { ruleId: d.ruleId })) {
+      if (await send(store2, src, cfg, wf, wf.draft?.text, { ruleId: d.ruleId }, probe)) {
         n++;
         store2.addAuto(wf.chat.id, "send");
       }
@@ -41187,6 +41188,814 @@ function heldBy(store2, wf) {
 var init_owner = __esm({
   "src/runner/owner.ts"() {
     "use strict";
+  }
+});
+
+// src/core/whose.ts
+function whoseMove(f) {
+  const r = RULES2.find((r2) => r2.when(f));
+  return { section: r.section, rule: r.id };
+}
+var running, startsNext, RULES2, URGENCY, PRECEDENCE, rankOf;
+var init_whose = __esm({
+  "src/core/whose.ts"() {
+    "use strict";
+    running = (f) => f.job?.state === "running" && !f.job.watch;
+    startsNext = (f) => {
+      const draft2 = f.state === "running" && f.queue === "next", run2 = f.job?.state === "queued" && !f.job.watch && !f.job.retryLater && !!f.job.slot;
+      return f.runner === "ok" ? draft2 || f.state === "scheduled" || run2 : f.runner === "paused" && (draft2 || run2 && !f.job.retry);
+    };
+    RULES2 = [
+      // An item with an open to-do is not done for the owner, whatever its state (rule 5).
+      { id: "catchup", section: "catchup", when: (f) => f.state === "done" && f.fyiUnread && !f.todos },
+      { id: "done", section: "done", when: (f) => f.state === "done" && !f.todos },
+      { id: "needs-you", section: "move", when: (f) => f.state === "needs_human" },
+      // A watch between checks is waiting_on_task with its job done: that is waiting, not stopped.
+      { id: "stopped", section: "move", when: (f) => f.state === "waiting_on_task" && (!f.job || f.job.state === "failed" || f.job.state === "done" && !f.job.watch) },
+      // Rule 5 (design §3), before Working as its number says. Only where rule 4 places the item (the owner's step, nothing running)
+      // does it say that step instead; while Delegate runs, the to-do keeps the item in Your move (review N2 P2-3).
+      // A rule send that is due places the item until it goes, with its time; then the to-do is back (re-review N2 P2-B).
+      { id: "todo", section: "move", when: (f) => !!f.todos && f.state !== "scheduled" && !(f.work?.open && f.work.next === "you" && !running(f) && !startsNext(f)) },
+      { id: "job-running", section: "working", when: running },
+      { id: "starts-next", section: "working", when: startsNext },
+      { id: "your-step", section: "move", when: (f) => !!f.work?.open && f.work.next === "you" },
+      { id: "partner-wait", section: "waiting", when: (f) => !!f.work?.open && !!f.work.waiting },
+      { id: "waiting", section: "waiting", when: () => true }
+    ];
+    URGENCY = ["move", "working", "waiting", "catchup", "done"];
+    PRECEDENCE = ["needs-you", "stopped", "your-step", "todo", "job-running", "starts-next", "partner-wait", "waiting", "catchup", "done"];
+    rankOf = (id) => {
+      const i = PRECEDENCE.indexOf(id);
+      return i < 0 ? PRECEDENCE.length : i;
+    };
+  }
+});
+
+// src/core/schedule.ts
+function local(d, tz) {
+  const key = validTz(tz) ? tz : "";
+  if (!fmt.has(key)) fmt.set(key, new Intl.DateTimeFormat("en-US", { timeZone: key || void 0, weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }));
+  const p = Object.fromEntries(fmt.get(key).formatToParts(d).map((x) => [x.type, x.value]));
+  return { day: DAYS2.indexOf(p.weekday), hour: Number(p.hour), label: `${p.weekday} ${p.hour}:${p.minute}`, date: `${p.day} ${p.month}` };
+}
+function offNotice(since, now, machine2, tz) {
+  if (!since) return void 0;
+  const from = Date.parse(since);
+  let work2 = 0;
+  for (let t2 = from; t2 < now.getTime() && work2 < 30; t2 += 5 * 6e4) if (isWorkHours(new Date(t2), tz)) work2 += 5;
+  if (work2 < 30) return void 0;
+  const a = local(new Date(from), tz), b = local(now, tz);
+  const long = now.getTime() - from > 864e5;
+  const at3 = (l) => long ? `${l.label.slice(0, 3)} ${l.date} ${l.label.slice(4)}` : l.label;
+  return `I was not reading your chats from ${at3(a)} to ${at3(b)} (${machine2} was asleep or off). I have caught up; anything new from that time is in your list.`;
+}
+function dayIn(at3, tz) {
+  const key = validTz(tz) ? tz : "";
+  if (!days.has(key)) days.set(key, new Intl.DateTimeFormat("sv-SE", { timeZone: key || void 0, year: "numeric", month: "2-digit", day: "2-digit" }));
+  return days.get(key).format(typeof at3 === "string" ? new Date(at3) : at3);
+}
+function isDue(s3, now) {
+  return !s3.nextAt || Date.parse(s3.nextAt) <= now.getTime();
+}
+function plan(s3, now, poll, activity, tz) {
+  const t2 = now.getTime();
+  const fastUntil = activity ? new Date(t2 + poll.fastForMin * 6e4).toISOString() : s3.fastUntil;
+  const fast = !!fastUntil && Date.parse(fastUntil) > t2;
+  const work2 = poll.idleMin <= DEFAULT_POLL.idleMin && isWorkHours(now, tz);
+  const gapMs = (fast ? poll.fastMin : work2 ? Math.min(poll.idleMin, WORK_IDLE_MIN) : poll.idleMin) * 6e4 - 1e4;
+  return { fastUntil, nextAt: new Date(t2 + gapMs).toISOString() };
+}
+var DEFAULT_POLL, WORK_IDLE_MIN, fmt, DAYS2, validTz, isWorkHours, clock2, days;
+var init_schedule = __esm({
+  "src/core/schedule.ts"() {
+    "use strict";
+    DEFAULT_POLL = { idleMin: 15, fastMin: 1, fastForMin: 5 };
+    WORK_IDLE_MIN = 5;
+    fmt = /* @__PURE__ */ new Map();
+    DAYS2 = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    validTz = (tz) => {
+      try {
+        return !!tz && !!new Intl.DateTimeFormat("en-US", { timeZone: tz });
+      } catch {
+        return false;
+      }
+    };
+    isWorkHours = (d, tz) => {
+      const l = local(d, tz);
+      return l.day >= 1 && l.day <= 5 && l.hour >= 9 && l.hour < 18;
+    };
+    clock2 = (d, tz) => local(d, tz).label;
+    days = /* @__PURE__ */ new Map();
+  }
+});
+
+// src/core/numbers.ts
+function drafted(e) {
+  if (str2(e.approvedBy)?.startsWith("rule:")) return true;
+  if (e.v === 2) return e.unchanged === true && e.edited === false;
+  if (e.unchanged !== true) return false;
+  if (typeof e.draft === "string") return e.draft === e.text;
+  return typeof e.text === "string" ? true : void 0;
+}
+function slim(raw) {
+  const moved = new Set(raw.filter((e) => e.event === "pr-moved").map((e) => str2(e.code)));
+  const hours = /* @__PURE__ */ new Map(), out = [];
+  for (const e of raw) {
+    const at3 = str2(e.at), code = str2(e.code);
+    if (!at3 || Number.isNaN(Date.parse(at3))) continue;
+    const opt = (k) => str2(e[k]) ? { [k]: str2(e[k]) } : {};
+    switch (e.event) {
+      case "tick": {
+        const h = hours.get(at3.slice(0, 13));
+        if (!h) hours.set(at3.slice(0, 13), [at3, at3]);
+        else if (at3 < h[0]) h[0] = at3;
+        else if (at3 > h[1]) h[1] = at3;
+        break;
+      }
+      // Replies to asks only: a reminder an automation sent is not a reply.
+      case "sent":
+        if (code && /^(owner$|rule:)/.test(str2(e.approvedBy) ?? "")) {
+          const d = drafted(e);
+          out.push({ at: at3, event: "sent", code, ...d === void 0 ? {} : { asDrafted: d }, ...e.holding === true ? { holding: true } : {}, ...num2(e.changesOff) ? { changesOff: num2(e.changesOff) } : {}, ...str2(e.msgId) ? { msgId: str2(e.msgId) } : {}, ...opt("askAt") });
+        }
+        break;
+      case "state": {
+        if (code && e.from === "new") out.push({ at: at3, event: "made", code });
+        const by = str2(e.closedBy) ?? legacyClose(str2(e.status) ?? "", moved.has(code));
+        if (code && e.to === "done") out.push({ at: at3, event: "closed", code, ...by ? { closedBy: by } : {}, ...opt("askAt"), ...opt("replyAt") });
+        break;
+      }
+      // Changes applied before item codes and counts were logged cannot be tied to an item, so they are left out.
+      case "job-executed":
+        if (Array.isArray(e.items)) out.push({ at: at3, event: "applied", items: e.items.filter((c) => typeof c === "string"), kept: num2(e.kept), removed: num2(e.removed), left: num2(e.left) });
+        break;
+      // A correction names the send it is about: undo by its message, a mark or a posted correction by sentId (from 10-21).
+      case "marked":
+      case "undo":
+      case "correction": {
+        const target2 = str2(e.event === "undo" ? e.msgId : e.sentId);
+        if (code) out.push({ at: at3, event: e.event, code, ...e.event === "marked" ? { kind: str2(e.kind) } : {}, ...target2 ? { target: target2 } : {} });
+        break;
+      }
+      case "notfyi":
+        if (code) out.push({ at: at3, event: "notfyi", code });
+        break;
+      case "missed":
+        if (str2(e.chat)) out.push({ at: at3, event: "missed", chat: str2(e.chat), msgId: str2(e.msgId) });
+        break;
+    }
+  }
+  return [...out, ...[...hours.values()].flatMap(([a, b]) => (a === b ? [a] : [a, b]).map((at3) => ({ at: at3, event: "tick" })))];
+}
+function askAtOf(thread2, ids) {
+  const last3 = thread2.findLastIndex((m) => m.byOwner);
+  return thread2.slice(last3 + 1).find((m) => !m.byOwner && ids.includes(m.id))?.at;
+}
+function handledAll(evs, items2) {
+  const sends = /* @__PURE__ */ new Map(), fixes = /* @__PURE__ */ new Map(), spoiled = /* @__PURE__ */ new Set();
+  for (const e of evs) {
+    if (e.event === "sent") push(sends, e.code, e);
+    if (CORRECTS.has(e.event)) push(fixes, e.code, e);
+    if (e.event === "applied" && (e.removed ?? 0) > 0) for (const c of e.items ?? []) spoiled.add(c);
+  }
+  for (const l of sends.values()) l.sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+  const byMsg = /* @__PURE__ */ new Map(), missedOf = /* @__PURE__ */ new Map();
+  for (const w of items2) for (const m of w.msgIds) push(byMsg, `${w.chat.id}|${m}`, w.code);
+  for (const e of evs) if (e.event === "missed") for (const c of byMsg.get(`${e.chat}|${e.msgId}`) ?? []) push(missedOf, c, e.at);
+  const first3 = /* @__PURE__ */ new Map();
+  const put2 = (code, at3, how, msgId) => {
+    const c = first3.get(code);
+    if (!spoiled.has(code) && (!c || Date.parse(at3) < Date.parse(c.at))) first3.set(code, { code, at: at3, how, ...msgId ? { msgId } : {} });
+  };
+  for (const e of evs) {
+    if (e.event === "sent" && e.asDrafted === true && !e.holding && !e.changesOff) put2(e.code, e.at, "reply", e.msgId);
+    if (e.event === "applied" && e.left === 0 && e.removed === 0) for (const c of e.items ?? []) put2(c, e.at, "changes", sends.get(c)?.find((x) => Date.parse(x.at) >= Date.parse(e.at))?.msgId);
+    if (e.event === "closed" && e.closedBy === "job") put2(e.code, e.at, "nothing");
+  }
+  const about = (k) => k.target ?? sends.get(k.code)?.filter((x) => Date.parse(x.at) <= Date.parse(k.at)).at(-1)?.msgId;
+  const corrected = (c) => {
+    const from = Date.parse(c.at), within = (at3) => {
+      const t2 = Date.parse(at3);
+      return t2 >= from && t2 <= from + 7 * DAY2;
+    };
+    return (fixes.get(c.code) ?? []).some((k) => within(k.at) && (k.event === "notfyi" || c.msgId !== void 0 && about(k) === c.msgId)) || (missedOf.get(c.code) ?? []).some(within);
+  };
+  return [...first3.values()].filter((c) => !corrected(c)).sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+}
+function inputs(evs, items2, inSpan, notAsks) {
+  const here3 = evs.filter(inSpan);
+  const answered = here3.filter((e) => e.event === "sent"), sends = answered.filter((e) => !e.holding);
+  const teams = here3.filter((e) => e.event === "closed" && e.closedBy === "replied").filter((e, i, all) => all.findIndex((x) => x.code === e.code) === i);
+  const drafted2 = sends.filter((e) => e.asDrafted === true).map((e) => e.code), edited = sends.filter((e) => e.asDrafted === false).map((e) => e.code);
+  const replies = { drafted: drafted2, edited, teams: teams.map((e) => e.code), unknown: sends.filter((e) => e.asDrafted === void 0).map((e) => e.code), n: drafted2.length, of: drafted2.length + edited.length + teams.length };
+  const itemOf = (e) => items2.find((w) => w.chat.id === e.chat && !!e.msgId && w.msgIds.includes(e.msgId))?.code ?? `missed:${e.msgId ?? e.at}`;
+  const pointed = uniq(here3.filter((e) => e.event === "missed").map(itemOf)), mine = uniq(here3.filter((e) => e.event === "notfyi").map((e) => e.code));
+  const watch2 = new Set(items2.filter((w) => w.kind === "tracker").map((w) => w.code));
+  const asks = /* @__PURE__ */ new Set([...here3.filter((e) => e.event === "made" && !watch2.has(e.code) && !notAsks.has(e.code)).map((e) => e.code), ...pointed, ...mine]);
+  const missed = { pointed, mine, asks: [...asks], n: pointed.length + mine.length, of: asks.size };
+  const waits = [
+    ...answered.filter((e) => e.askAt).map((e) => ({ code: e.code, min: (Date.parse(e.at) - Date.parse(e.askAt)) / 6e4 })),
+    ...teams.filter((e) => e.askAt && e.replyAt).map((e) => ({ code: e.code, min: (Date.parse(e.replyAt) - Date.parse(e.askAt)) / 6e4 }))
+  ].filter((w) => w.min >= 0).sort((a, b) => a.min - b.min);
+  const mins = waits.map((w) => Math.round(w.min));
+  const wait2 = { n: waits.length, codes: waits.map((w) => w.code), ...mins.length ? { median: median2(mins), min: mins[0], max: mins.at(-1) } : {} };
+  return { replies: { ...replies, ...pct(replies.n, replies.of) }, missed: { ...missed, ...pct(missed.n, missed.of) }, wait: wait2 };
+}
+function numbers(raw, items2, now, tz, key = "this") {
+  const seen = /* @__PURE__ */ new Set(), key_ = (e) => `${e.event}|${e.at}|${e.code ?? ""}|${e.msgId ?? ""}|${e.chat ?? ""}|${e.items?.join(",") ?? ""}`;
+  const evs = raw.filter((e) => {
+    const k = key_(e);
+    return Date.parse(e.at) <= now.getTime() && !seen.has(k) && !!seen.add(k);
+  });
+  const days2 = /* @__PURE__ */ new Map(), dayOf = (at3) => {
+    const q2 = `${at3.slice(0, 14)}${Math.floor(Number(at3.slice(14, 16)) / 15)}`;
+    return days2.get(q2) ?? days2.set(q2, dayIn(at3, tz)).get(q2);
+  };
+  const today = dayIn(now, tz), week = weekOf(today);
+  const reads = new Set(evs.filter((e) => e.event === "tick").map((e) => dayOf(e.at)));
+  const first3 = [...reads].sort()[0] ?? evs.map((e) => dayOf(e.at)).sort()[0] ?? today;
+  const spans = { this: { from: week, to: today }, last: { from: addDays(week, -7), to: addDays(week, -1) }, "4w": { from: addDays(week, -21), to: today }, all: { from: weekOf(first3), to: today } };
+  const span = spans[key];
+  const within = (s3) => (e) => {
+    const d = dayOf(e.at);
+    return d >= s3.from && d <= s3.to;
+  };
+  const all = handledAll(evs, items2);
+  const asked = new Set(evs.filter((e) => e.event === "sent" || e.event === "closed" && e.closedBy !== "nothing").map((e) => e.code));
+  const notAsks = new Set(evs.filter((e) => e.event === "closed" && e.closedBy === "nothing" && !asked.has(e.code)).map((e) => e.code));
+  const counted2 = all.filter(within(span));
+  const of = (how) => counted2.filter((c) => c.how === how).map((c) => c.code);
+  const prior = key === "this" ? spans.last : key === "last" ? { from: addDays(week, -14), to: addDays(week, -8) } : key === "4w" ? { from: addDays(week, -49), to: addDays(week, -22) } : void 0;
+  const before = prior ? all.filter(within(prior)).length : void 0;
+  const arrow = before !== void 0 && before >= SMALL && counted2.length >= SMALL ? counted2.length > before ? "up" : counted2.length < before ? "down" : "same" : void 0;
+  const bars = Array.from({ length: 8 }, (_, i) => addDays(week, (i - 7) * 7)).map((w) => {
+    const ws = { from: w, to: addDays(w, 6) }, codes = all.filter(within(ws)).map((c) => c.code);
+    const gaps = Array.from({ length: 7 }, (_, d) => addDays(w, d)).filter((d) => d >= first3 && d < today && !reads.has(d));
+    return { week: w, n: codes.length, codes, gaps, before: ws.to < first3 };
+  });
+  const four = within(spans["4w"]);
+  const sent = evs.filter((e) => e.event === "sent" && !e.holding && four(e)).map((e) => e.code), sends = sent.length;
+  const fixes = uniq(evs.filter((e) => (e.event === "marked" || e.event === "undo") && four(e)).map((e) => e.code));
+  return {
+    window: { key, ...span, label: `${LABEL[key]} (${dmd(span.from)} to ${span.to === today ? "today" : dmd(span.to)})` },
+    firstWeek: weekOf(first3) === week,
+    handled: { n: counted2.length, codes: counted2.map((c) => c.code), reply: of("reply"), changes: of("changes"), nothing: of("nothing"), provisional: counted2.filter((c) => now.getTime() - Date.parse(c.at) < 7 * DAY2).map((c) => c.code), ...before !== void 0 ? { before } : {}, ...arrow ? { arrow } : {} },
+    bars,
+    now: inputs(evs, items2, within(span), notAsks),
+    four: inputs(evs, items2, four, notAsks),
+    corrections: { n: fixes.length, sends, codes: fixes, sent, ...sends >= SMALL ? { per100: Math.round(fixes.length / sends * 1e3) / 10 } : {} }
+  };
+}
+function numbersText(n) {
+  const h = n.handled, when2 = WHEN[n.window.key], top = Math.max(1, ...n.bars.map((b) => b.n));
+  const trend = n.firstWeek ? "Your first week. Trends start next week." : h.arrow === "up" ? `\u25B2 ${h.n - h.before} more than ${n.window.key === "this" ? "last week" : "before"} (${h.before})` : h.arrow === "down" ? `\u25BC ${h.before - h.n} fewer than ${n.window.key === "this" ? "last week" : "before"} (${h.before})` : h.before !== void 0 ? `${n.window.key === "this" ? "last week" : "before"}: ${h.before}` : "";
+  const gaps = n.bars.flatMap((b) => b.gaps);
+  const bars = n.bars.map((b) => b.before ? "\xB7" : b.gaps.length ? "\u2592" : BLOCKS[Math.round(b.n / top * (BLOCKS.length - 1))]).join(" ");
+  const r = n.now.replies, m = n.now.missed, w = n.now.wait, c = n.corrections;
+  return [
+    `Numbers \xB7 ${n.window.label}`,
+    `Counted from ${NAME}'s own log on all your machines. Nothing is estimated.`,
+    "",
+    "HANDLED FOR YOU",
+    `${h.n} ask${h.n === 1 ? "" : "s"} ${when2}${trend ? ` \xB7 ${trend}` : ""}`,
+    `${bars}  the last 8 weeks (${n.bars.map((b) => b.n).join(", ")})${gaps.length ? `  \u2592 = no machine was reading: ${gaps.map(md).join(", ")}` : ""}`,
+    `${h.reply.length} repl${h.reply.length === 1 ? "y" : "ies"} as drafted \xB7 ${h.changes.length} applied as proposed \xB7 ${h.nothing.length} "nothing needed"`,
+    ...h.provisional.length ? [`${h.provisional.length} of the ${h.n} ${h.provisional.length === 1 ? "is" : "are"} still in ${h.provisional.length === 1 ? "its" : "their"} 7-day check.`] : [],
+    ...h.n ? [`See all ${h.n}: ${h.codes.join(", ")}`] : [],
+    "",
+    "REPLIES AS DRAFTED",
+    `${ratio(r, when2)} \xB7 ${r.drafted.length} as drafted \xB7 ${r.edited.length} edited \xB7 ${r.teams.length} you typed in Teams \xB7 4 weeks: ${short(n.four.replies)}`,
+    ...r.unknown.length ? [`${r.unknown.length} sent before 10-21 can no longer be checked, so ${r.unknown.length === 1 ? "it is" : "they are"} left out.`] : [],
+    "MISSED",
+    `${m.n} of ${m.of} asks${m.pct !== void 0 ? ` (${m.pct}%)` : ""} \xB7 you pointed at ${m.pointed.length} \xB7 moved ${m.mine.length} to Needs me \xB7 4 weeks: ${short(n.four.missed)}`,
+    "ASKER WAIT",
+    w.median !== void 0 ? `median ${dur(w.median)} \xB7 from ${dur(w.min)} to ${dur(w.max)}, from ask to first reply (${w.n} replies)${n.four.wait.median !== void 0 ? ` \xB7 4 weeks: ${dur(n.four.wait.median)}` : ""}` : "No timed replies yet.",
+    "",
+    `Corrections: ${c.per100 !== void 0 ? `${c.per100} per 100 sends over 4 weeks (${c.n} of ${c.sends}; keep it under 2)` : `${c.n} of ${c.sends} sends over 4 weeks (keep it under 2 per 100)`}${c.codes.length ? ` \xB7 ${c.codes.join(", ")}` : ""}`,
+    "Promises kept on time: starts once work records its due dates."
+  ].join("\n");
+}
+function weekLine(n) {
+  const r = n.now.replies, m = n.now.missed;
+  if (!n.handled.n && !r.of && !m.n) return void 0;
+  return `This week: ${n.handled.n} handled for you \xB7 ${r.n} of ${r.of} replies as drafted \xB7 ${m.n} missed.`;
+}
+var WINDOWS, DAY2, SMALL, str2, num2, addDays, weekday, weekOf, isFriday, legacyClose, CORRECTS, pct, uniq, push, median2, MONTHS, DAYS3, md, dmd, LABEL, ratio, short, dur, BLOCKS, WHEN;
+var init_numbers = __esm({
+  "src/core/numbers.ts"() {
+    "use strict";
+    init_schedule();
+    init_brand();
+    WINDOWS = ["this", "last", "4w", "all"];
+    DAY2 = 864e5;
+    SMALL = 10;
+    str2 = (v) => typeof v === "string" && v ? v : void 0;
+    num2 = (v) => typeof v === "number" ? v : void 0;
+    addDays = (day3, n) => new Date(Date.parse(`${day3}T00:00:00Z`) + n * DAY2).toISOString().slice(0, 10);
+    weekday = (day3) => (/* @__PURE__ */ new Date(`${day3}T00:00:00Z`)).getUTCDay();
+    weekOf = (day3) => addDays(day3, -((weekday(day3) + 6) % 7));
+    isFriday = (day3) => weekday(day3) === 5;
+    legacyClose = (status3, prMoved2) => /^You replied yourself/.test(status3) ? "replied" : /^Skipped by you/.test(status3) ? "skipped" : /^Nothing needed:/.test(status3) && !prMoved2 ? "job" : void 0;
+    CORRECTS = /* @__PURE__ */ new Set(["undo", "marked", "notfyi", "correction"]);
+    pct = (n, of) => of >= SMALL ? { pct: Math.round(n / of * 100) } : {};
+    uniq = (xs) => [...new Set(xs)];
+    push = (m, k, v) => {
+      const l = m.get(k);
+      if (l) l.push(v);
+      else m.set(k, [v]);
+    };
+    median2 = (xs) => xs.length % 2 ? xs[(xs.length - 1) / 2] : Math.round((xs[xs.length / 2 - 1] + xs[xs.length / 2]) / 2);
+    MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    DAYS3 = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    md = (day3) => `${MONTHS[Number(day3.slice(5, 7)) - 1]} ${Number(day3.slice(8))}`;
+    dmd = (day3) => `${DAYS3[weekday(day3)]} ${md(day3)}`;
+    LABEL = { this: "This week", last: "Last week", "4w": "Last 4 weeks", all: "Since you started" };
+    ratio = (r, when2) => `${r.n} of ${r.of} ${when2}${r.pct !== void 0 ? ` (${r.pct}%)` : ""}`;
+    short = (r) => r.pct !== void 0 ? `${r.pct}%` : `${r.n} of ${r.of}`;
+    dur = (min) => min < 60 ? `${min} min` : min < 48 * 60 ? `${Math.round(min / 60)} h` : `${Math.round(min / 1440)} d`;
+    BLOCKS = "\u2581\u2582\u2583\u2584\u2585\u2586\u2587\u2588";
+    WHEN = { this: "this week", last: "last week", "4w": "in 4 weeks", all: "since you started" };
+  }
+});
+
+// src/store/numbers.ts
+var numbers_exports = {};
+__export(numbers_exports, {
+  counted: () => counted,
+  handledThisWeek: () => handledThisWeek,
+  numbersOf: () => numbersOf,
+  saveWeeks: () => saveWeeks
+});
+import { statSync as statSync6 } from "node:fs";
+function fromLog(store2, machine2, week) {
+  const files2 = store2.logFiles().filter((f) => f.machine === machine2 && f.day >= week && f.day <= addDays(week, 6));
+  return slim(files2.flatMap((f) => store2.logOf(f.file)));
+}
+function counted(store2, from = "") {
+  const saved = new Map(store2.numberWeeks().filter((w) => w.week >= from).map((w) => [`${w.machine}|${w.week}`, w.file]));
+  const pairs = /* @__PURE__ */ new Set([...saved.keys(), ...store2.logFiles().filter((f) => weekOf(f.day) >= from).map((f) => `${f.machine}|${weekOf(f.day)}`)]);
+  return [...pairs].flatMap((k) => {
+    const file2 = saved.get(k), w = file2 ? readJson(file2, void 0) : void 0;
+    return w?.schema === SCHEMA ? w.events : fromLog(store2, ...split(k));
+  });
+}
+function saveWeeks(store2, now = /* @__PURE__ */ new Date()) {
+  const week = weekOf(now.toISOString().slice(0, 10)), have = new Map(store2.numberWeeks().map((w) => [`${w.machine}|${w.week}`, w.file]));
+  const files2 = store2.logFiles(), last3 = /* @__PURE__ */ new Map();
+  for (const f of files2) if (f.day > (last3.get(f.machine) ?? "")) last3.set(f.machine, f.day);
+  const quiet = (m, w) => files2.filter((f) => f.machine === m && weekOf(f.day) === w).every((f) => now.getTime() - statSync6(f.file).mtimeMs > 6 * 36e5);
+  const synced = (m, w) => (last3.get(m) ?? "") > addDays(w, 6) && quiet(m, w);
+  const done2 = [...new Set(files2.map((f) => `${f.machine}|${weekOf(f.day)}`))].filter((k) => {
+    const [m, w] = split(k);
+    return m === store2.machine ? w < week : w < addDays(week, -7) && synced(m, w);
+  }).sort();
+  const kept = done2.filter((k) => have.has(k) && readJson(have.get(k), {}).schema !== SCHEMA);
+  let n = 0;
+  for (const k of done2.filter((k2) => !have.has(k2))) {
+    const [m, w] = split(k);
+    if (store2.saveNumberWeek(m, w, { schema: SCHEMA, machine: m, week: w, at: now.toISOString(), events: fromLog(store2, m, w) })) n++;
+    else kept.push(k);
+  }
+  if (kept.length) store2.log({ event: "numbers-weeks-kept", weeks: kept.map((k) => k.replace("|", "-")), why: "A week file is never rewritten; these are read from the log instead." });
+  return n;
+}
+function numbersOf(store2, key = "this", now = /* @__PURE__ */ new Date()) {
+  return numbers(counted(store2), store2.workflows(), now, store2.config()?.tz, key);
+}
+function handledThisWeek(store2, items2, now = /* @__PURE__ */ new Date()) {
+  const tz = store2.config()?.tz, today = dayIn(now, tz), from = addDays(weekOf(today), -7);
+  const key = [
+    today,
+    items2.length,
+    items2.reduce((n2, w) => n2 + w.msgIds.length, 0),
+    ...store2.numberWeeks().filter((w) => w.week >= from).map((w) => w.file),
+    ...store2.logFiles().filter((f) => weekOf(f.day) >= from).map((f) => {
+      try {
+        const st = statSync6(f.file);
+        return `${f.file}:${st.size}:${st.mtimeMs}`;
+      } catch {
+        return f.file;
+      }
+    })
+  ].join("|");
+  const had = handledCache.get(store2.root);
+  if (had?.key === key) return had.n;
+  const n = numbers(counted(store2, from), items2, now, tz, "this").handled.n;
+  handledCache.set(store2.root, { key, n });
+  return n;
+}
+var SCHEMA, split, handledCache;
+var init_numbers2 = __esm({
+  "src/store/numbers.ts"() {
+    "use strict";
+    init_fs();
+    init_numbers();
+    init_schedule();
+    SCHEMA = 2;
+    split = (k) => [k.slice(0, k.lastIndexOf("|")), k.slice(k.lastIndexOf("|") + 1)];
+    handledCache = /* @__PURE__ */ new Map();
+  }
+});
+
+// src/web/next.ts
+var next_exports = {};
+__export(next_exports, {
+  COMMANDS: () => COMMANDS,
+  INLINE_MAX: () => INLINE_MAX,
+  chipsOf: () => chipsOf,
+  dryText: () => dryText,
+  every: () => every,
+  factsOf: () => factsOf,
+  gerund: () => gerund,
+  mustSee: () => mustSee,
+  nextView: () => nextView,
+  place: () => place,
+  rowsOf: () => rowsOf,
+  snapshot: () => snapshot
+});
+function snapshot(store2, now = Date.now()) {
+  const cfg = store2.config(), c = store2.control(), workflows = store2.workflows();
+  const jobs = new Map(store2.jobs().map((j2) => [j2.id, j2]));
+  const cap = cfg.dailyRuns ?? 200, runs = store2.runsToday(), reading = readingOf(store2, now).state;
+  const runner = c.stopped ? "stopped" : reading === "off" || reading === "never" ? "off" : c.paused || cfg.paused ? "paused" : runs >= cap ? "capped" : "ok";
+  const held = new Set(store2.openWindows().map((w) => w.id));
+  const queued = workflows.filter((w) => w.state === "running").sort((a, b) => a.updatedAt.localeCompare(b.updatedAt));
+  const queue = /* @__PURE__ */ new Map();
+  const pacedSlots = runs < cap / 2 ? cfg.maxParallel ?? 3 : 0;
+  let paced = 0, room = cap - runs;
+  for (const w of queued) queue.set(w.id, held.has(w.id) || w.job && held.has(w.job) ? "held" : !w.paced || paced++ < pacedSlots ? "next" : "line");
+  for (const w of [...queued.filter((w2) => !w2.paced), ...queued.filter((w2) => w2.paced)]) if (queue.get(w.id) === "next" && room-- <= 0) queue.set(w.id, "limit");
+  room -= workflows.filter((w) => w.notes?.some((n) => n.a === void 0) && w.state !== "running").length;
+  const allJobs = [...jobs.values()];
+  let jobRoom = Math.min((cfg.jobs?.parallel ?? 3) - allJobs.filter((j2) => j2.state === "running" && !j2.run?.relay).length, room);
+  const slots = /* @__PURE__ */ new Set();
+  const dueWatch = (j2) => !!j2.every && j2.state === "done" && !!j2.nextAt && Date.parse(j2.nextAt) <= now;
+  for (const j2 of [...allJobs.filter(dueWatch), ...allJobs.filter((j3) => j3.state === "queued" && !j3.every && !j3.relay && !held.has(j3.id) && !(j3.retry && Date.parse(j3.retry.at) > now))]) if (jobRoom-- > 0 && !j2.every) slots.add(j2.id);
+  const first3 = cfg.owner.name.split(/\s+/)[0];
+  return {
+    workflows,
+    jobs,
+    waiting: store2.waiting(),
+    automations: store2.automations(),
+    runner,
+    queue,
+    slots,
+    catchupSeen: store2.seen().catchup ?? new Date(now - 864e5).toISOString(),
+    me: [cfg.owner.name, first3, ...cfg.aliases ?? []].filter(Boolean).map((s3) => s3.toLowerCase()),
+    tz: cfg.tz,
+    now
+  };
+}
+function factsOf(s3, sub) {
+  if (sub.kind === "waiting") return { subject: "waiting", state: sub.w.state === "waiting" ? "waiting_on_sender" : "done", runner: s3.runner, fyiUnread: false };
+  if (sub.kind === "reminder") return { subject: "reminder", state: sub.a.state === "proposed" ? "needs_human" : sub.a.state === "ended" ? "done" : "open", runner: s3.runner, fyiUnread: false };
+  const w = sub.wf, j2 = w.job ? s3.jobs.get(w.job) : void 0;
+  return {
+    subject: "item",
+    state: w.state,
+    runner: s3.runner,
+    queue: s3.queue.get(w.id),
+    job: j2 && { state: j2.state, watch: !!j2.every, retryLater: !!j2.retry && Date.parse(j2.retry.at) > s3.now, slot: s3.slots.has(j2.id), retry: !!j2.retry },
+    // A step for "them" that waits on the owner by name is the owner's step.
+    work: w.work && { open: !w.work.closed, next: nextWho(s3, w.work), waiting: !!w.work.waitingOn },
+    todos: openTodos(w).length,
+    fyiUnread: !!w.fyi && (w.fyi.at ?? w.updatedAt) > s3.catchupSeen
+  };
+}
+function nextOf(s3, sub, f, section) {
+  if (section === "done" || section === "catchup") return {};
+  if (sub.kind === "waiting") return { next: { owner: { kind: "others", text: sub.w.to.join(", ") || "them" }, what: sub.w.text } };
+  if (sub.kind === "reminder") {
+    const a = sub.a;
+    if (section === "move") return { next: { owner: { kind: "you" }, what: `start reminding ${a.to.name}` } };
+    if (a.state === "paused") return { next: { owner: { kind: "nobody" }, what: `reminding ${a.to.name} is paused` } };
+    return { next: { owner: { kind: "delegate" }, what: `reminds ${a.to.name}${a.next ? ` next ${clock2(new Date(a.next), s3.tz)}` : ""}` }, why: s3.runner === "ok" ? void 0 : runnerWhy[s3.runner] };
+  }
+  const w = sub.wf, j2 = w.job ? s3.jobs.get(w.job) : void 0;
+  if (section === "move") return { next: { owner: { kind: "you" }, what: f.state === "waiting_on_task" ? `${NAME} stopped: ${(j2?.error ?? "its run ended without a result").slice(0, 120)}` : f.work?.next === "you" && f.state !== "needs_human" ? w.work?.next?.what : void 0 } };
+  if (section === "working") return { next: { owner: { kind: "delegate" } } };
+  const busy2 = f.state === "running" || f.state === "scheduled" || f.job?.state === "queued" && !f.job.watch;
+  const onPause = s3.runner === "paused" && (f.state === "scheduled" || !!f.job?.retry);
+  const why2 = busy2 && s3.runner !== "ok" && (s3.runner !== "paused" || onPause) ? runnerWhy[s3.runner] : f.job?.retryLater && j2?.retry ? `tries again ${clock2(new Date(j2.retry.at), s3.tz)}` : f.queue === "line" ? "in line behind live asks" : f.queue === "limit" ? runnerWhy.capped : f.job?.state === "queued" && !f.job.slot && !f.job.watch ? "waits for a free run slot" : f.queue === "held" ? "open in your AI chat" : void 0;
+  if (f.job?.watch) return { next: { owner: { kind: "delegate" }, what: `checks every ${j2.every} min` }, why: why2 };
+  const n = w.work && !w.work.closed ? w.work.next : void 0;
+  if (n?.who === "them") {
+    return { next: { owner: { kind: "others", text: n.what }, what: n.what }, why: why2 };
+  }
+  if (n?.who === "me") {
+    const runs = !!j2 && (j2.state === "queued" || j2.state === "running") || !!w.work.plan?.some((p) => p.probe && !p.done);
+    return { next: { owner: runs ? { kind: "delegate" } : { kind: "nobody" }, what: n.what }, why: why2 };
+  }
+  if (f.work?.open && w.work?.waitingOn) return { next: { owner: { kind: "others", text: w.work.waitingOn.who }, what: w.work.waitingOn.where }, why: why2 };
+  if (f.state === "waiting_on_sender") return { next: { owner: { kind: "others", text: w.asker?.name ?? "them" } }, why: why2 };
+  return { next: busy2 ? { owner: { kind: "delegate" } } : { owner: { kind: "nobody" } }, why: why2 };
+}
+function place(s3) {
+  const byId = new Map(s3.workflows.map((w) => [w.id, w])), byCode = new Map(s3.workflows.map((w) => [w.code, w]));
+  const homeOf2 = (w) => w.partOf && byId.get(w.partOf) || w;
+  const subjects = [
+    ...s3.workflows.filter((w) => w.code).map((wf) => ({ home: homeOf2(wf).code, sub: { kind: "item", wf }, at: wf.changedAt ?? wf.updatedAt, who: wf.asker?.name, chat: wf.chat.name })),
+    ...s3.waiting.filter((w) => w.state === "waiting").map((w) => ({ home: w.item && byCode.get(w.item) && homeOf2(byCode.get(w.item)).code || w.code, sub: { kind: "waiting", w }, at: w.at, who: w.to.join(", "), chat: w.chat.name })),
+    ...s3.automations.filter((a) => a.state !== "ended").map((a) => ({ home: a.code, sub: { kind: "reminder", a }, at: a.updatedAt, who: a.to.name }))
+  ];
+  const threads = /* @__PURE__ */ new Map();
+  for (const x of subjects) {
+    const f = factsOf(s3, x.sub), { section, rule } = whoseMove(f);
+    const code = x.sub.kind === "item" ? x.sub.wf.code : x.sub.kind === "waiting" ? x.sub.w.code : x.sub.a.code;
+    const have = threads.get(x.home);
+    const sec = have ? URGENCY.indexOf(section) - URGENCY.indexOf(have.section) : -1, rk = have ? rankOf(rule) - rankOf(have.rule) : -1;
+    const wins = !have || sec < 0 || sec === 0 && (rk < 0 || rk === 0 && code === x.home);
+    const placed = { code: x.home, act: code, section, rule, subjects: [...have?.subjects ?? [], code], title: titleOf(x.sub).slice(0, 160), who: x.who, chat: x.chat, at: x.at, ...nextOf(s3, x.sub, f, section) };
+    if (wins) threads.set(x.home, have ? { ...placed, at: have.at > x.at ? have.at : x.at } : placed);
+    else threads.set(x.home, { ...have, subjects: [...have.subjects, code], at: have.at > x.at ? have.at : x.at });
+  }
+  return [...threads.values()].sort((a, b) => URGENCY.indexOf(a.section) - URGENCY.indexOf(b.section) || b.at.localeCompare(a.at));
+}
+function dryText(rows) {
+  const out = [];
+  for (const sec of URGENCY.filter((x) => x !== "done")) {
+    const in_ = rows.filter((r) => r.section === sec);
+    out.push(`${NAMES[sec]} \xB7 ${in_.length}`);
+    for (const r of in_) {
+      const also = r.subjects.length > 1 ? ` (+${r.subjects.filter((c) => c !== r.act).join(", ")})` : "";
+      out.push(`  ${r.act.padEnd(4)} [${r.rule}] ${r.title.replace(/\s+/g, " ").slice(0, 90)}${also}`);
+      const facts = [r.who, r.chat].filter(Boolean).join(" \xB7 ");
+      const what = r.next?.what?.replace(/\s+/g, " ").slice(0, 80);
+      const next2 = !r.next ? "" : r.next.owner.kind === "others" ? `Next: ${r.next.owner.text.replace(/\s+/g, " ").slice(0, 80)}` : `Next: ${ownerText(r.next.owner)}${what ? `: ${what}` : ""}`;
+      out.push(`       ${[facts, next2, r.why && `(${r.why})`].filter(Boolean).join(" \xB7 ")}`);
+    }
+  }
+  out.push(`DONE \xB7 ${rows.filter((r) => r.section === "done").length}`);
+  return out.join("\n");
+}
+function gerund(goal) {
+  const [w0, ...rest2] = goal.trim().split(/\s+/), w = (w0 ?? "").toLowerCase();
+  if (!w || /ing$/.test(w)) return goal.trim().replace(/^\S+/, w);
+  const g = /[^aeiou]e$/.test(w) && w !== "be" ? w.slice(0, -1) : /^[^aeiou]*[aeiou][^aeiouwxy]$/.test(w) ? w + w.at(-1) : w;
+  return [`${g}ing`, ...rest2].join(" ");
+}
+function chipsOf(w, j2, watchChanged = false) {
+  const out = [];
+  if (watchChanged) out.push({ kind: "changed", text: "Changed" });
+  if (!w) return out;
+  if (w.before) out.push({ kind: "before", text: "From before setup" });
+  if (w.missed) out.push({ kind: "pointed", text: "You pointed at this" });
+  if (j2?.retry && j2.state !== "done" && j2.state !== "failed") out.push({ kind: "retrying", text: "Retrying" });
+  if (w.chat.guests) out.push({ kind: "guests", text: "Guests in chat" });
+  if (w.startedBy === "room") out.push({ kind: "room", text: "To the room" });
+  if (w.held === "paused" && w.state === "needs_human") out.push({ kind: "held", text: "Held: you paused" });
+  if (w.fyi?.weight === "high" && w.state === "done") out.push({ kind: "worth", text: "Worth a look" });
+  return out;
+}
+function moveKind(w) {
+  if (w.work?.proposed) return "track";
+  if (!w.draft?.text && !asksReviewAgain(w.code, w.question) && (w.promise?.state === "failed" || w.promise?.state === "offered" && pendingEffects(w.effects).length)) return "promise";
+  if (w.draft?.holding) return "holding";
+  if (w.work && !w.draft && !w.choices && !w.meeting && /^No news/.test(w.status)) return "check-date";
+  const t2 = cardType(w);
+  return t2 === "reply" && !w.draft?.text ? "question" : t2;
+}
+function delegateNext(s3, p, j2) {
+  const why2 = p.why ?? "";
+  if (/^tries again/.test(why2) && j2?.retry) return { what: `tries again {at} (${triesOf(j2.retry)})`, at: j2.retry.at };
+  if (/in line/.test(why2)) return { what: "drafts it after the live asks" };
+  if (/daily limit/.test(why2)) return { what: "starts tomorrow; the daily limit is reached" };
+  if (/run slot/.test(why2)) return { what: "starts when a run slot is free" };
+  if (/AI chat/.test(why2)) return { what: "waits while it is open in your AI chat" };
+  if (s3.runner === "paused") return { what: "starts when you resume" };
+  if (s3.runner === "stopped") return { what: "starts when you start it again" };
+  if (s3.runner === "off") return { what: "starts when a machine reads your chats again" };
+  return { what: "starts next cycle" };
+}
+function itemRow(s3, p, w) {
+  const j2 = w.job ? s3.jobs.get(w.job) : void 0, name = first(w.asker?.name), c = w.code;
+  const where = w.chat.name && w.chat.name !== w.asker?.name && w.chat.name !== name ? w.chat.name : void 0;
+  const chats = new Set(p.subjects.map((c2) => s3.workflows.find((x) => x.code === c2)).filter((x) => x && x.partOf === w.id && x.chat.id !== w.chat.id).map((x) => x.chat.id)).size;
+  const ask = w.lastAsk ? { by: w.asker?.name ?? "They", verb: "asked", text: clip2(w.lastAsk, 200) } : void 0;
+  const facts = { who: w.asker?.name, ...where ? { where } : {}, at: w.createdAt, verb: "asked", ...ask ? { quote: ask } : {}, ...chats ? { also: chats } : {} };
+  const base = { who: who(w.asker?.name), facts, chips: chipsOf(w, j2), teams: teamsLink2(w), rev: w.revAt ?? w.updatedAt };
+  const open2 = { label: "Open" };
+  const goal = (t2) => t2 ? [{ label: "Goal", text: clip2(t2, 200) }] : [];
+  if (w.state === "scheduled") {
+    const rule = w.decision?.ruleId ? ` (rule ${w.decision.ruleId})` : "";
+    return { ...base, kind: "scheduled", headline: `Sends to ${name}${rule}: "${clip2(w.draft?.text, 70)}"`, ...p.section === "working" ? { next: { owner: { kind: "delegate" }, what: "sends it at {at}", ...w.sendAt ? { at: w.sendAt } : {} } } : {}, primary: { label: "Hold", command: `later ${c}` } };
+  }
+  if (p.section === "move") {
+    if (p.rule === "stopped") return { ...base, kind: "stopped", headline: `Couldn't finish ${j2?.goal ? gerund(clip2(j2.goal, 100)) : `this for ${name}`}: try again, or do it yourself`, facts: { ...facts, notes: [{ label: "Why", text: whyOf(j2?.error) }] }, primary: { label: "Try again", command: `${c}: try again` }, more: [{ label: "Close", command: `close ${c}` }] };
+    if (p.rule === "todo") return todoRow(s3, base, w);
+    if (p.rule === "your-step") return { ...base, kind: "your-step", headline: clip2(w.work?.next?.what ?? w.work?.goal, 140), facts: { ...facts, notes: goal(w.work?.goal) }, primary: { label: "Tell " + NAME, command: `${c}: {text}` } };
+    const kind = moveKind(w), d = w.draft?.text ?? "";
+    const fits = !!d && d.length <= INLINE_MAX && !pendingEffects(w.effects).length && !w.choices && !mustSee(w);
+    const clash = w.context?.find((f) => f.tone === "warn");
+    switch (kind) {
+      // A row never sends: Open shows the reply to read, edit or send (owner 10-21: Send on a row sent a reply meant to be edited).
+      case "reply":
+        return { ...base, kind, ...said(`Send reply to ${name}`, d, fits), primary: open2 };
+      case "holding":
+        return { ...base, kind, ...said(`Send ${name} a holding reply`, d, fits), primary: open2 };
+      case "question":
+        return { ...base, kind, headline: `Answer ${name}: ${clip2(w.question ?? w.lastAsk, 110)}`, primary: open2 };
+      case "choice":
+        return { ...base, kind, headline: `Pick for ${name}: ${clip2(pickPrompt(w.choices?.prompt ?? w.lastAsk), 110)}`, primary: open2 };
+      case "meeting":
+        return { ...base, kind, headline: `Meet ${name}: ${clip2(w.meeting?.subject ?? w.lastAsk, 90)}?`, when: w.meeting?.start, ...clash ? { warn: `${clash.label}: ${clash.text}` } : {}, primary: open2 };
+      case "review":
+        return { ...base, kind, headline: `Approve ${commentsOrChanges(w)}${d ? `, then reply to ${name}` : ""}`, next: { owner: { kind: "delegate" }, what: `after your ok, ${NAME} ${/comment/.test(commentsOrChanges(w)) ? "posts them" : "makes them"}${d ? " and replies" : ""}` }, primary: open2 };
+      case "check-date":
+        return { ...base, kind, headline: `No news on "${clip2(w.work?.goal, 80)}": nudge, wait, or close?`, facts: { ...facts, quote: void 0, verb: void 0, at: w.work?.steps.at(-1)?.at ?? w.createdAt, notes: w.work?.waitingOn ? [{ label: "Waiting on", text: clip2(w.work.waitingOn.who, 60), since: w.work.waitingOn.since }] : [] }, primary: { label: "Draft a nudge", command: `${c}: nudge them` }, more: [{ label: "Wait 3 days", command: `wait ${c}: 3d` }, { label: "Close", command: `close ${c}` }] };
+      // The reply already went in the owner's words; one button makes the change it promised, its meaning on the row (Slice 3).
+      case "promise": {
+        const quote = { by: "You", verb: "said", text: clip2(w.promise.text.replace(/\n/g, " "), 200) };
+        const f = { ...facts, at: w.sent?.at ?? facts.at, verb: "said", quote };
+        if (w.promise.state === "failed") return { ...base, kind, headline: `Couldn't check what you told ${name}: check again`, facts: { ...f, notes: [{ label: "Why", text: whyOf(w.promise.why) }] }, primary: { label: "Check again", command: `ok ${c}` }, more: [{ label: "Skip", command: `skip ${c}` }] };
+        const left = pendingEffects(w.effects), meant = left.map(meaningOf).filter((m) => !!m);
+        return { ...base, kind, headline: saidLine(left), facts: { ...f, notes: meant.map((m) => ({ label: "PR", text: clip2(m, 200) })) }, primary: { label: left.length === 1 ? shown(left[0]).line : `Make ${left.length} changes`, command: `ok ${c}` }, more: [{ label: "Skip", command: `skip ${c}` }] };
+      }
+      // The owner's own words proposed this work: "You said", never after the asker's name.
+      case "track":
+        return { ...base, kind, headline: `Track this? ${clip2(w.work?.goal, 110)}`, facts: { ...facts, verb: "said", quote: w.lastAsk ? { by: "You", verb: "said", text: clip2(w.lastAsk, 200) } : void 0, notes: w.work?.doneWhen ? [{ label: "Done when", text: clip2(w.work.doneWhen, 160) }] : [] }, primary: { label: "Track", command: `ok ${c}` }, more: [{ label: "Skip", command: `skip ${c}` }] };
+    }
+  }
+  if (p.section === "catchup") return { ...base, kind: "catchup", headline: clip2(w.fyi?.line ?? w.lastAsk, 140), facts: { ...facts, quote: void 0, verb: "posted", at: w.fyi?.at ?? p.at }, ...w.fyi?.gist ? { gist: w.fyi.gist } : {}, primary: { label: "Needs me", command: `mine ${c}` }, more: w.watchedAs ? [] : [{ label: "Watch", command: `watch ${c}` }] };
+  const next2 = p.next;
+  if (p.section === "working") {
+    const run2 = j2 && (j2.state === "running" || j2.state === "queued");
+    return { ...base, kind: "working", headline: run2 ? clip2(j2.goal, 120) : `Drafting a reply to ${name}`, ...run2 ? { facts: { ...facts, verb: "started", at: j2.run?.startedAt ?? w.waitingSince ?? p.at } } : {}, next: { owner: { kind: "delegate" }, what: "back to you when done" } };
+  }
+  if (j2?.every || w.kind === "tracker") {
+    const changed = w.kind === "tracker" && !!w.changedAt && (!w.ackAt || w.changedAt > w.ackAt);
+    const last3 = j2?.result?.summary ? { label: "Last check", text: clip2(j2.result.summary, 160), ...j2.result.at ? { at: j2.result.at } : {} } : { label: "Last check", text: "not checked yet" };
+    return { ...base, who: void 0, kind: "watch", chips: chipsOf(w, j2, changed), headline: clip2(watchLine(w.lastAsk ?? w.work?.goal), 120), facts: { at: w.changedAt ?? p.at, notes: [last3], ...j2?.endsAt ? { until: j2.endsAt } : {} }, next: { owner: { kind: "delegate" }, what: j2?.every ? `checks ${every(j2.every)}` : "checks soon" }, ...changed ? { primary: { label: "Got it", command: `ok ${c}` } } : {}, more: [...j2?.endsAt ? [{ label: "Extend 7 days", command: `extend ${c}` }] : [], { label: "Stop", command: `skip ${c}` }] };
+  }
+  if (next2?.owner.kind === "nobody") return { ...base, kind: "nobody", headline: clip2(w.work?.goal ?? w.lastAsk, 120), facts: { ...facts, notes: next2.what ? [{ label: "Step", text: clip2(next2.what, 160) }] : [] }, next: { owner: { kind: "nobody" } }, primary: { label: "Do it now", command: `${c}: do the next step now` }, more: [{ label: "Close", command: `close ${c}` }] };
+  if (next2?.owner.kind === "delegate" || p.why) return { ...base, kind: "waiting-delegate", headline: j2 ? clip2(j2.goal, 120) : w.work && !w.work.closed ? clip2(w.work.goal, 120) : `Draft a reply to ${name}`, next: { owner: { kind: "delegate" }, ...delegateNext(s3, p, j2) } };
+  if (w.work && !w.work.closed) {
+    const on = w.work.waitingOn?.who && !s3.me.includes(w.work.waitingOn.who.toLowerCase()) ? w.work.waitingOn.who : void 0;
+    return { ...base, kind: "waiting-others", headline: clip2(on ? `${on}: ${w.work.goal}` : w.work.goal, 140), ...on ? {} : { next: next2 }, primary: { label: "Draft a nudge", command: `${c}: nudge them` }, more: [{ label: "Close", command: `close ${c}` }] };
+  }
+  return { ...base, kind: "waiting-person", headline: `Waiting on ${name} to answer`, facts: { ...facts, quote: void 0, notes: w.decision?.reason ? [{ label: "Waiting for", text: clip2(w.decision.reason, 160) }] : [] }, primary: { label: "Draft a nudge", command: `${c}: nudge them` } };
+}
+function todoRow(s3, base, w) {
+  const open2 = openTodos(w), t2 = open2[0], [what, why2] = t2.text.split(REFUSED);
+  const where = w.chat.name && w.chat.name !== w.asker?.name ? w.chat.name : void 0;
+  const more = open2.length > 1 ? ` (+${open2.length - 1} more)` : "";
+  const to = !why2 && !CLONE.test(t2.text) && w.asker?.name && !isMe(s3, w.asker.name) && !isMe(s3, w.asker.name.split(/\s+/)[0]) ? first(w.asker.name) : void 0;
+  const promise2 = { ...to ? { to } : {}, at: t2.at, ...why2 ? { why: clip2(why2, 140) } : CLONE.test(t2.text) ? {} : { why: "no tool can do it" } };
+  return { ...base, kind: "todo", rev: open2.map((x) => x.at).sort().at(-1), headline: clip2(`To do: ${what.replace(/[.\s]+$/, "")}${more}`, 160), facts: { at: t2.at, ...where ? { where } : {}, promise: promise2 }, primary: { label: "Mark done", command: `close ${w.code}` }, more: [{ label: "Open" }] };
+}
+function workOf(s3, p, w, home) {
+  const k = home.work;
+  if (!k || k.closed || k.proposed) return void 0;
+  const who2 = nextWho(s3, k), plan2 = k.plan ?? [], items2 = new Map(s3.workflows.map((x) => [x.code, x]));
+  const on = k.waitingOn?.who && !isMe(s3, k.waitingOn.who) ? k.waitingOn.who : void 0;
+  const named2 = plan2.find((x) => !x.done && !!k.next && x.what === k.next.what);
+  const cur = named2 ?? plan2.find((x) => !x.done && x.who === who2) ?? (who2 ? void 0 : plan2.find((x) => !x.done));
+  const part = (x) => {
+    const it = x.in ? items2.get(x.in) : void 0;
+    return it && (it.id === home.id || it.partOf === home.id) ? it : void 0;
+  };
+  const person2 = (x) => {
+    const n = part(x)?.asker?.name;
+    return n && !isMe(s3, n) && !isMe(s3, n.split(/\s+/)[0]) ? n : void 0;
+  };
+  const owner2 = (x) => x.who === "you" ? { kind: "you" } : x.who === "me" ? { kind: "delegate" } : { kind: "others", text: person2(x) || x === named2 && on || "Someone else" };
+  const steps = plan2.map((x) => ({ what: x.what, owner: owner2(x), done: !!x.done, now: x === cur, ...part(x) ? { where: x.in } : {}, ...x.probe ? { build: x.probe.build } : {} }));
+  const seen = plan2.filter((x) => x.done && x.probe).sort((a, b) => b.done.localeCompare(a.done))[0];
+  const check2 = seen && { what: seen.ring ? "Deploy" : "Build", at: seen.done, build: seen.probe.build };
+  const yourNext = plan2.find((x) => !x.done && x.who === "you" && x !== cur);
+  const then = who2 && who2 !== "you" && k.next ? { owner: who2 === "me" ? { kind: "delegate" } : { kind: "others", text: on ?? "Someone else" }, what: k.next.what, ...yourNext ? { you: yourNext.what } : {} } : void 0;
+  return {
+    goal: k.goal,
+    steps,
+    ...who2 === "you" && k.next ? { yours: { what: k.next.what, ...check2 ? { check: check2 } : {} } } : {},
+    ...then ? { then } : {},
+    ...p.rule === "your-step" && w === home ? { report: `${home.code}: {result}: {text}` } : {},
+    happened: k.steps.slice(-6).reverse().map((x) => ({ at: x.at, what: x.what, news: !!x.news })),
+    total: k.steps.length
+  };
+}
+function waitRow(w) {
+  const to = firsts(w.to);
+  return { kind: "waiting-person", headline: clip2(`You asked ${to}: "${w.text}"`, 160), who: who(w.to[0]), facts: { where: w.chat.name, at: w.at, verb: "asked" }, chips: [], primary: { label: "Draft a nudge", command: `ok ${w.code}` }, more: [{ label: "Close", command: `skip ${w.code}` }], teams: w.msgId ? messageLink(w.chat.id, w.msgId) : void 0 };
+}
+function reminderRow(p, a) {
+  const facts = { who: a.to.name, where: when(a.schedule), at: a.updatedAt };
+  if (p.section === "move") return { kind: "reminder-new", headline: `Start reminding ${first(a.to.name)}: "${clip2(a.text, 90)}"?`, who: who(a.to.name), facts, chips: [], primary: { label: "Start", command: `ok ${a.code}` }, more: [{ label: "Skip", command: `skip ${a.code}` }] };
+  const next2 = a.state === "paused" ? p.next : { owner: { kind: "delegate" }, what: a.next ? `reminds ${first(a.to.name)} {at}` : `reminds ${first(a.to.name)}`, ...a.next ? { at: a.next } : {} };
+  return { kind: "reminder", headline: clip2(`Reminding ${first(a.to.name)}: "${a.text}"`, 160), who: who(a.to.name), facts, chips: [], next: next2, primary: a.state === "paused" ? { label: "Resume", command: `resume ${a.code}` } : { label: "Pause", command: `pause ${a.code}` }, more: [{ label: "Stop reminding", command: `skip ${a.code}` }] };
+}
+function freshOf(p, w, items2) {
+  if (!w) return {};
+  const changed = p.subjects.map((c) => items2.get(c)).filter((x) => x && x.kind !== "tracker").map((x) => x.changedAt).filter((x) => !!x).sort().at(-1);
+  const back = p.section === "move" && w.place?.section === "move" && w.place.since > w.createdAt ? w.place.since : void 0;
+  const msgs = p.subjects.flatMap((c) => {
+    const x = items2.get(c);
+    return x ? msgKeys(x) : [];
+  });
+  return { fresh: { born: w.createdAt, ...changed ? { changed } : {}, ...back ? { back } : {} }, ...msgs.length ? { msgs } : {} };
+}
+function rowsOf(s3, placed) {
+  const items2 = new Map(s3.workflows.map((w) => [w.code, w])), waits = new Map(s3.waiting.map((w) => [w.code, w])), autos = new Map(s3.automations.map((a) => [a.code, a]));
+  return placed.filter((p) => p.section !== "done").map((p) => {
+    const w = items2.get(p.act), wt = waits.get(p.act), a = autos.get(p.act);
+    const body = w ? itemRow(s3, p, w) : wt ? waitRow(wt) : reminderRow(p, a);
+    const home = w && (w.partOf && s3.workflows.find((x) => x.id === w.partOf) || w), work2 = w && workOf(s3, p, w, home);
+    const todos = p.subjects.map((c) => items2.get(c)).filter((x) => !!x).flatMap((x) => openTodos(x).map((t2) => ({ id: t2.id, text: t2.text, at: t2.at, code: x.code })));
+    return { code: p.code, act: p.act, section: p.section, rule: p.rule, ...body, ...freshOf(p, w, items2), ...work2 ? { work: work2 } : {}, ...todos.length ? { todos } : {} };
+  });
+}
+function nextView(store2, now = Date.now(), options = {}) {
+  const s3 = options.snapshot ?? snapshot(store2, now), rows = rowsOf(s3, place(s3));
+  const of = (sec) => rows.filter((r) => r.section === sec);
+  const soon = (r) => r.kind === "meeting" && !!r.when && Date.parse(r.when) - now < 2 * 36e5 ? 0 : 1;
+  const move2 = of("move").sort((a, b) => soon(a) - soon(b) || a.facts.at.localeCompare(b.facts.at));
+  const changed = (r) => r.chips.some((c) => c.kind === "changed") ? 0 : 1;
+  const waiting = of("waiting").sort((a, b) => changed(a) - changed(b) || b.facts.at.localeCompare(a.facts.at));
+  const working = of("working").sort((a, b) => b.facts.at.localeCompare(a.facts.at));
+  const high = (r) => s3.workflows.find((w) => w.code === r.act)?.fyi?.weight === "high" ? 0 : 1;
+  const cu = of("catchup").sort((a, b) => high(a) - high(b) || b.facts.at.localeCompare(a.facts.at));
+  const reading = readingOf(store2, now);
+  const off = s3.runner === "ok" ? void 0 : s3.runner === "paused" ? { text: "Paused: drafts go on, nothing is sent" } : s3.runner === "off" ? { text: `${NAME} is off`, ...reading.at ? { since: reading.at } : {} } : { text: s3.runner === "capped" ? "Daily limit reached; it runs again tomorrow" : `${NAME} is ${s3.runner}` };
+  return { move: move2, working, waiting, catchup: { count: cu.length, worth: cu.filter((r) => high(r) === 0).length, rows: options.allCatchup ? cu : cu.slice(0, 3) }, minute: { facts: store2.proposals().filter((p) => p.state === "needs_human").length, suggestions: store2.habits().filter((h) => h.state === "suggested").length }, ...off ? { off } : {}, ...store2.control().paused || store2.config().paused ? { paused: true } : {}, handled: handledThisWeek(store2, s3.workflows, new Date(now)) };
+}
+var isMe, nextWho, runnerWhy, titleOf, ownerText, NAMES, CARD_MORE, COMMANDS, INLINE_MAX, first, firsts, clip2, teamsLink2, triesOf, every, whyOf, mustSee, SHORT, said, commentsOrChanges, pickPrompt, watchLine, REFUSED, CLONE;
+var init_next = __esm({
+  "src/web/next.ts"() {
+    "use strict";
+    init_whose();
+    init_schedule();
+    init_effects();
+    init_channels();
+    init_automations();
+    init_retry();
+    init_view();
+    init_brand();
+    init_numbers2();
+    init_work();
+    isMe = (s3, who2) => !!who2 && s3.me.includes(who2.toLowerCase());
+    nextWho = (s3, k) => k.next?.who === "them" && isMe(s3, k.waitingOn?.who) ? "you" : k.next?.who;
+    runnerWhy = { off: `${NAME} is not reading now`, paused: `${NAME} is paused`, stopped: `${NAME} is stopped`, capped: "daily limit reached; tomorrow" };
+    titleOf = (sub) => sub.kind === "waiting" ? sub.w.text : sub.kind === "reminder" ? `Remind ${sub.a.to.name}: ${sub.a.text}` : sub.wf.work && !sub.wf.work.closed ? sub.wf.work.goal : sub.wf.fyi?.line ?? sub.wf.lastAsk ?? sub.wf.status;
+    ownerText = (o) => o.kind === "you" ? "You" : o.kind === "delegate" ? NAME : o.kind === "others" ? o.text : "nobody is on this yet";
+    NAMES = { move: "YOUR MOVE", working: `${NAME.toUpperCase()} IS WORKING`, waiting: "WAITING ON OTHERS", catchup: "CATCH UP", done: "DONE" };
+    CARD_MORE = "ok <code> except <every change> (Send reply only) | <code>: review again (Review again)";
+    COMMANDS = {
+      reply: `ok <code> (whole draft on the row) | card | ${CARD_MORE}`,
+      holding: `ok <code> (whole draft on the row) | card | ${CARD_MORE}`,
+      question: `card | ${CARD_MORE}`,
+      choice: `card | ${CARD_MORE}`,
+      meeting: `card | ${CARD_MORE}`,
+      review: `card | ${CARD_MORE}`,
+      promise: "ok <code>",
+      "check-date": "<code>: nudge them",
+      track: "ok <code>",
+      stopped: "<code>: try again",
+      "reminder-new": "ok <code>",
+      // N2: Report in the opened item ("<code>: Issues found: 403 on checkout"), and Mark done, which is close with a new meaning
+      // on an item with open to-dos: it marks them done and changes nothing else (R-NEX-05, R-NEX-07).
+      "your-step": "<code>: {text} | <code>: {result}: {text} (Report)",
+      todo: "close <code> (Mark done)",
+      "waiting-person": "ok <W code> | <code>: nudge them",
+      "waiting-others": "<code>: nudge them",
+      watch: "ok <code> (when changed)",
+      "waiting-delegate": "",
+      nobody: "<code>: do the next step now",
+      reminder: "pause <code> | resume <code>",
+      working: "",
+      scheduled: "later <code>",
+      catchup: "mine <code>"
+    };
+    INLINE_MAX = 180;
+    first = (n) => String(n || "them").split(/\s+/)[0];
+    firsts = (ns) => {
+      const f = ns.map(first);
+      return f.length > 1 ? `${f.slice(0, -1).join(", ")} and ${f.at(-1)}` : f[0] ?? "them";
+    };
+    clip2 = (t2 = "", n = 90) => {
+      const s3 = t2.replace(/\s+/g, " ").trim();
+      return s3.length > n ? `${s3.slice(0, n - 1).trimEnd()}\u2026` : s3;
+    };
+    teamsLink2 = (w) => w.chat.id && w.lastMsgId && !w.chat.test ? messageLink(w.chat.id, w.lastMsgId) : void 0;
+    triesOf = (r) => `${r.n} of ${DELAYS[r.last.kind]?.length ?? MAX_TRIES}`;
+    every = (min) => min % 1440 === 0 ? min === 1440 ? "every day" : `every ${min / 1440} days` : min % 60 === 0 ? min === 60 ? "every hour" : `every ${min / 60} hours` : `every ${min} min`;
+    whyOf = (error62) => {
+      const m = /tool not found:?\s*(.+)$/i.exec(error62 ?? "");
+      return m ? `a tool is missing (${m[1].trim()})` : clip2(error62 ?? "its run ended without a result", 140);
+    };
+    mustSee = (w) => !!w.shareHold || !!w.draft?.commitment || !!w.context?.some((f) => f.tone === "warn") || !!w.gaps?.length || !!w.draft?.sources.some((x) => x.tier === "private" || !!x.label) || /_{3,}/.test(w.draft?.text ?? "");
+    SHORT = 80;
+    said = (verb, d, fits) => !fits || d.replace(/\s+/g, " ").trim().length <= SHORT ? { headline: `${verb}: "${clip2(d, SHORT)}"` } : { headline: verb, draft: d };
+    commentsOrChanges = (w) => {
+      const e = pendingEffects(w.effects), c = e.length && e.every((x) => /comment|review/i.test(x.action));
+      return `${e.length} ${c ? e.length === 1 ? "comment" : "comments" : e.length === 1 ? "change" : "changes"}`;
+    };
+    pickPrompt = (t2 = "") => {
+      const s3 = t2.trim().replace(/^(pick|choose|select)\s+/i, "");
+      return /[?]$/.test(s3) ? s3 : `${s3}?`;
+    };
+    watchLine = (t2 = "") => t2.replace(/^Watch\s+/i, "").replace(/\s+until\s+(it\s+is\s+)?merged$/i, ", until it merges").replace(/\s+until\s+(?!it merges$)/i, ", until ");
+    REFUSED = /\.\s*Not made for you:\s*/;
+    CLONE = /^Clone \S+ on \S+ \(git clone /;
   }
 });
 
@@ -41245,13 +42054,13 @@ function workLine(w) {
   const k = w.work;
   if (!k) return void 0;
   if (k.closed) return `Closed: ${k.closed.why}`;
-  const next2 = nextOf(k);
+  const next2 = nextOf2(k);
   return `In progress${k.waitingOn ? ` \xB7 waiting on ${k.waitingOn.who}` : next2 ? ` \xB7 next: ${next2}` : ""}`;
 }
 function workView(w, home = w) {
   const k = home.work;
   if (!k) return void 0;
-  return { goal: k.goal, next: nextOf(k), waiting: k.waitingOn && `${k.waitingOn.who}${k.waitingOn.where ? ` (${k.waitingOn.where})` : ""}`, due: home === w && w.state === "needs_human" && !w.draft && /^No news/.test(w.status), steps: k.steps.slice(-6).map((x) => ({ at: x.at, what: x.what, news: !!x.news })), plan: (k.plan ?? []).map((p) => ({ what: p.what, who: p.who, done: !!p.done, ...p.in ? { where: p.in } : {}, ...p.probe ? { build: `${p.probe.build}${p.seen ? ` \xB7 ${p.seen}` : ""}` } : {} })), ...home !== w ? { home: home.code } : {}, proposed: !!k.proposed };
+  return { goal: k.goal, next: nextOf2(k), waiting: k.waitingOn && `${k.waitingOn.who}${k.waitingOn.where ? ` (${k.waitingOn.where})` : ""}`, due: home === w && w.state === "needs_human" && !w.draft && /^No news/.test(w.status), steps: k.steps.slice(-6).map((x) => ({ at: x.at, what: x.what, news: !!x.news })), plan: (k.plan ?? []).map((p) => ({ what: p.what, who: p.who, done: !!p.done, ...p.in ? { where: p.in } : {}, ...p.probe ? { build: `${p.probe.build}${p.seen ? ` \xB7 ${p.seen}` : ""}` } : {} })), ...home !== w ? { home: home.code } : {}, proposed: !!k.proposed };
 }
 function nextSteps(w) {
   const left = pendingEffects(w.effects);
@@ -41305,38 +42114,38 @@ function card(store2, w, k = knowledgeOf(store2, store2.config())) {
 function knowledge(p) {
   return { code: p.code, rev: p.revAt, topic: p.title, home: p.home ?? "personal", facts: p.ops.map((o) => ({ type: o.entry.type, text: o.entry.text, who: o.entry.src[0]?.who, date: o.entry.src[0]?.date ?? "", href: /^https:\/\//.test(o.entry.src[0]?.link ?? "") ? o.entry.src[0].link : void 0, private: o.entry.audience === "private" })) };
 }
-function itemRow(store2, w) {
+function itemRow2(store2, w) {
   const name = w.asker?.name ?? "Someone", where = w.chat.group ? ` in ${w.chat.name}` : "", first3 = name.split(/[\s,(]+/)[0];
   const made = (w.effects ?? []).filter((e) => e.done);
   const base = { code: w.code, who: who(name), teams: teamsOf(w), ask: w.redacted ? void 0 : askLine(w.lastAsk) || void 0, ...w.msgIds.length ? { msgs: msgKeys(w) } : {} };
-  if (w.sent) return { ...base, kind: made.length && w.intent === "pr_review" ? "review" : "reply", sentence: made.length && w.intent === "pr_review" ? `Reviewed for ${name} and replied${where}` : `Replied to ${name}${where}`, by: w.sent.byRule ? `by rule ${w.sent.byRule}` : "by you", at: w.sent.at, text: w.redacted ? void 0 : w.sent.text ?? w.draft?.text, said: w.redacted ? void 0 : short(w.sent.text ?? w.draft?.text), own: !w.sent.byRule, notes: w.notes ?? [], why: { reason: w.decision?.reason, confidence: w.decision?.confidence, sources: (w.draft?.sources ?? []).map((s3) => source(s3.ref, s3.tier, s3.stale, s3.label)), gaps: w.gaps ?? [] }, rule: w.sent.byRule, undoUntil: w.sent.undoUntil, work: workLine(homeOf(store2, w)) };
+  if (w.sent) return { ...base, kind: made.length && w.intent === "pr_review" ? "review" : "reply", sentence: made.length && w.intent === "pr_review" ? `Reviewed for ${name} and replied${where}` : `Replied to ${name}${where}`, by: w.sent.byRule ? `by rule ${w.sent.byRule}` : "by you", at: w.sent.at, text: w.redacted ? void 0 : w.sent.text ?? w.draft?.text, said: w.redacted ? void 0 : short2(w.sent.text ?? w.draft?.text), own: !w.sent.byRule, notes: w.notes ?? [], why: { reason: w.decision?.reason, confidence: w.decision?.confidence, sources: (w.draft?.sources ?? []).map((s3) => source(s3.ref, s3.tier, s3.stale, s3.label)), gaps: w.gaps ?? [] }, rule: w.sent.byRule, undoUntil: w.sent.undoUntil, work: workLine(homeOf(store2, w)) };
   if (w.fyi) return { ...base, kind: "catchup", sentence: w.fyi.line, gist: w.fyi.gist ?? base.ask, watch: w.fyi.watch, watchedAs: w.watchedAs, by: `${first3}${w.chat.group ? ` \xB7 ${w.chat.name}` : ""}`, at: w.fyi.at ?? w.updatedAt, high: w.fyi.weight === "high" };
   if (closedHow(w) === "replied") {
     const mine = store2.thread(w.id).filter((m) => m.byOwner).at(-1);
-    return { ...base, kind: "reply", sentence: `Replied to ${name}${where}`, by: "by you in Teams", at: w.updatedAt, said: w.redacted ? void 0 : mine ? short(mine.text) : void 0, inTeams: true, own: true, teams: (mine && teamsOf(w, mine.id)) ?? base.teams };
+    return { ...base, kind: "reply", sentence: `Replied to ${name}${where}`, by: "by you in Teams", at: w.updatedAt, said: w.redacted ? void 0 : mine ? short2(mine.text) : void 0, inTeams: true, own: true, teams: (mine && teamsOf(w, mine.id)) ?? base.teams };
   }
   if (closedHow(w) !== "skipped") return { ...base, kind: "closed", sentence: `${name}: ${w.status.replace(/: ".*$/s, "")}`, by: "", at: w.updatedAt };
   return void 0;
 }
 function itemRows(store2, codes, wfs = store2.workflows()) {
   const want = new Set(codes), out = {};
-  for (const w of wfs) if (w.code && want.has(w.code)) out[w.code] = itemRow(store2, w) ?? { code: w.code, kind: "closed", who: who(w.asker?.name), sentence: `${w.asker?.name ?? "Someone"}: ${w.status.replace(/: ".*$/s, "")}`, by: "", at: w.updatedAt, teams: teamsOf(w) };
+  for (const w of wfs) if (w.code && want.has(w.code)) out[w.code] = itemRow2(store2, w) ?? { code: w.code, kind: "closed", who: who(w.asker?.name), sentence: `${w.asker?.name ?? "Someone"}: ${w.status.replace(/: ".*$/s, "")}`, by: "", at: w.updatedAt, teams: teamsOf(w) };
   return out;
 }
 function doneRows(store2, since) {
   const rows = [];
   for (const w of store2.workflows().filter((w2) => (w2.state === "done" || w2.state === "open" && w2.sent) && w2.code && (w2.intent !== "none" || w2.fyi) && w2.updatedAt > since && w2.kind !== "tracker")) {
-    const r = itemRow(store2, w), name = w.asker?.name ?? "Someone";
+    const r = itemRow2(store2, w), name = w.asker?.name ?? "Someone";
     if (r) rows.push(r);
     for (const e of (w.effects ?? []).filter((e2) => e2.done)) if (!(w.intent === "pr_review" && COMMENT.test(e.action))) rows.push({ code: w.code, kind: "change", who: who(name), sentence: shown(e).line, by: shown(e).system, at: e.done.at, own: true, href: /^https:\/\//.test(e.done?.ref ?? "") ? e.done.ref : void 0 });
   }
   for (const e of store2.logs(7).filter((e2) => e2.event === "sent" && String(e2.approvedBy ?? "").startsWith("automation:") && String(e2.at) > since)) {
     const name = e.asker?.name ?? "someone";
-    rows.push({ code: String(e.code), kind: "reminder", who: who(name), sentence: `Reminded ${name}`, said: typeof e.text === "string" ? short(e.text) : void 0, by: String(e.code), at: String(e.at) });
+    rows.push({ code: String(e.code), kind: "reminder", who: who(name), sentence: `Reminded ${name}`, said: typeof e.text === "string" ? short2(e.text) : void 0, by: String(e.code), at: String(e.at) });
   }
   for (const p of store2.proposals().filter((p2) => p2.state === "applied" && p2.from !== "remember" && p2.applied && p2.applied.at > since)) {
     const n = p.ops.length;
-    rows.push({ code: p.code, kind: "learned", who: who(p.source ?? "your chats"), sentence: `Learned ${n} ${n === 1 ? "fact" : "facts"} about ${p.title}, from ${p.source ?? "your chats"}`, gist: p.ops[0]?.entry.text ? short(p.ops[0].entry.text) : void 0, by: `say "undo ${p.code}" to take it back`, at: p.applied.at });
+    rows.push({ code: p.code, kind: "learned", who: who(p.source ?? "your chats"), sentence: `Learned ${n} ${n === 1 ? "fact" : "facts"} about ${p.title}, from ${p.source ?? "your chats"}`, gist: p.ops[0]?.entry.text ? short2(p.ops[0].entry.text) : void 0, by: `say "undo ${p.code}" to take it back`, at: p.applied.at });
   }
   return rows.sort((a, b) => b.at.localeCompare(a.at));
 }
@@ -41368,17 +42177,20 @@ function view(store2, since, now = /* @__PURE__ */ new Date()) {
   const from = since ?? new Date(now.getTime() - 864e5).toISOString();
   const wfs = store2.workflows();
   const g = groups(wfs, from);
-  const needs = g.needs.filter((w) => w.kind !== "tracker" || pendingEffects(w.effects).length || w.question).map((w) => card(store2, w));
+  const placements = place(snapshot(store2));
+  const represented = new Set(placements.map((r) => r.act));
+  const todos = new Set(placements.filter((r) => r.rule === "todo").map((r) => r.act));
+  const needs = g.needs.filter((w) => represented.has(w.code) && !todos.has(w.code) && (w.kind !== "tracker" || pendingEffects(w.effects).length || w.question)).map((w) => card(store2, w));
   const kp = store2.proposals().filter((p) => p.state === "needs_human").sort((a, b) => a.createdAt.localeCompare(b.createdAt)).map(knowledge);
   const week = new Date(now.getTime() - 7 * 864e5).toISOString();
   const done2 = doneRows(store2, from < week ? from : week).map((r) => ({ ...r, fresh: r.at > from }));
   const autos = store2.automations().filter((a) => a.state !== "ended").map((a) => ({ code: a.code, sentence: describe3(a).replace(/^R\d+ · /, ""), to: a.to.name, text: a.text, when: when(a.schedule), state: a.state, why: a.why, next: a.next, count: a.count, rev: a.updatedAt }));
-  const watching = g.watching.map((w) => ({ code: w.code, what: (w.lastAsk ?? "").replace(/^Watch /, "").replace(` until ${DEFAULT_UNTIL}`, ""), last: w.status, changedAt: w.changedAt, update: !!w.changedAt && w.changedAt > from && (!w.ackAt || w.changedAt > w.ackAt), rev: w.revAt ?? w.updatedAt, every: (w.job ? store2.job(w.job) : void 0)?.every, endsAt: (w.job ? store2.job(w.job) : void 0)?.endsAt, by: w.watchBy, nextAt: (w.job ? store2.job(w.job) : void 0)?.nextAt, from: w.watchFrom === "catchup" ? wfs.find((x) => x.watchedAs === w.code)?.code : void 0 }));
-  const progress2 = wfs.filter((w) => w.state === "open" && homeOf(store2, w).work).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map((w) => {
-    const k = homeOf(store2, w).work, job = k.watch ? store2.job(k.watch) : void 0, last3 = k.steps.at(-1);
-    return { code: w.code, who: who(w.asker?.name), chat: w.chat.name, goal: k.goal, status: w.status, last: last3 && { at: last3.at, what: last3.what }, next: nextOf(k), checkAt: k.checkAt, every: job?.every, endsAt: job?.every ? job.endsAt : void 0, rev: w.updatedAt };
+  const watching = g.watching.filter((w) => represented.has(w.code) && !todos.has(w.code)).map((w) => ({ code: w.code, what: (w.lastAsk ?? "").replace(/^Watch /, "").replace(` until ${DEFAULT_UNTIL}`, ""), last: w.status, changedAt: w.changedAt, update: !!w.changedAt && w.changedAt > from && (!w.ackAt || w.changedAt > w.ackAt), rev: w.revAt ?? w.updatedAt, every: (w.job ? store2.job(w.job) : void 0)?.every, endsAt: (w.job ? store2.job(w.job) : void 0)?.endsAt, by: w.watchBy, nextAt: (w.job ? store2.job(w.job) : void 0)?.nextAt, from: w.watchFrom === "catchup" ? wfs.find((x) => x.watchedAs === w.code)?.code : void 0 }));
+  const progress2 = wfs.filter((w) => represented.has(w.code) && (todos.has(w.code) || w.state === "open" || w.state === "waiting_on_sender")).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map((w) => {
+    const k = homeOf(store2, w).work, job = k?.watch ? store2.job(k.watch) : void 0, last3 = k?.steps.at(-1);
+    return { code: w.code, who: who(w.asker?.name), chat: w.chat.name, goal: k?.goal ?? w.lastAsk ?? w.status, status: w.status, last: last3 && { at: last3.at, what: last3.what }, next: todos.has(w.code) ? `You: ${openTodos(w).map((t2) => t2.text).join("; ")}` : k ? nextOf2(k) : void 0, checkAt: k?.checkAt, every: job?.every, endsAt: job?.every ? job.endsAt : void 0, rev: w.updatedAt };
   });
-  const running2 = [...g.running.map((w) => ({ code: w.code, what: w.status, who: w.asker?.name, since: w.waitingSince ?? w.updatedAt })), ...bootLines(store2).map((b) => ({ code: "", what: b.what, since: b.since, ...b.total ? { progress: (b.done ?? 0) / b.total } : {} }))];
+  const running2 = [...g.running.filter((w) => represented.has(w.code) && !todos.has(w.code)).map((w) => ({ code: w.code, what: w.status, who: w.asker?.name, since: w.waitingSince ?? w.updatedAt })), ...bootLines(store2).map((b) => ({ code: "", what: b.what, since: b.since, ...b.total ? { progress: (b.done ?? 0) / b.total } : {} }))];
   const state = c.stopped ? "stopped" : c.paused || cfg.paused ? "paused" : "on";
   const health = Object.entries(store2.health()).map(([key, h]) => ({ key, text: h.text, since: h.since, fix: key === "source" ? { label: "Try again", command: "retry" } : void 0 }));
   if (state !== "on") health.unshift({ key: "paused", text: state === "stopped" ? `${NAME} is stopped. It is not reading your chats.` : `${NAME} is paused. It keeps drafting, and sends nothing.`, since: "", fix: { label: "Resume", command: "resume" } });
@@ -41421,7 +42233,7 @@ function view(store2, since, now = /* @__PURE__ */ new Date()) {
     people: [...people].map(([name, p]) => ({ name, ...p })).sort((a, b) => a.name.localeCompare(b.name))
   };
 }
-var HUES, catchUpOf, SKIP, nextOf, TASK, PR, INVITE, COMMENT, SEEN_KEYS, askLine, short, teamsOf, closedHow, msgKeys;
+var HUES, catchUpOf, SKIP, nextOf2, TASK, PR, INVITE, COMMENT, SEEN_KEYS, askLine, short2, teamsOf, closedHow, msgKeys;
 var init_view = __esm({
   "src/web/view.ts"() {
     "use strict";
@@ -41434,17 +42246,18 @@ var init_view = __esm({
     init_track();
     init_channels();
     init_brand();
+    init_next();
     HUES = [210, 160, 25, 280, 340, 45];
     catchUpOf = (rows) => ({ count: rows.length, top: [...rows].sort((a, b) => Number(!!b.high) - Number(!!a.high) || b.at.localeCompare(a.at)).slice(0, 3) });
     SKIP = /* @__PURE__ */ new Set(["state", "outcome"]);
-    nextOf = (k) => k.next && `${k.next.who === "you" ? "You: " : k.next.who === "me" ? "" : ""}${k.next.what}`;
+    nextOf2 = (k) => k.next && `${k.next.who === "you" ? "You: " : k.next.who === "me" ? "" : ""}${k.next.what}`;
     TASK = /task|work ?item|bug/i;
     PR = /pull|(^|_)pr($|_)|create_pr/i;
     INVITE = /calendar|invite|event|meeting/i;
     COMMENT = /comment|review/i;
     SEEN_KEYS = ["replies", "reviews", "changes", "reminders", "learned", "catchup"];
     askLine = (t2 = "") => t2.replace(/^\s*(hi|hello|hey|hii+|good (morning|afternoon|evening))\b[^,.!:\n]{0,40}[,.!:]?\s*/i, "").replace(/\s+/g, " ").trim().slice(0, 160);
-    short = (t2 = "") => t2.replace(/\s+/g, " ").trim().slice(0, 200);
+    short2 = (t2 = "") => t2.replace(/\s+/g, " ").trim().slice(0, 200);
     teamsOf = (w, msgId = w.lastMsgId) => w.chat.id && msgId && !w.chat.test ? messageLink(w.chat.id, msgId) : void 0;
     closedHow = (w) => w.closedBy ?? (/^You replied yourself/.test(w.status) ? "replied" : /^Skipped by you/.test(w.status) ? "skipped" : void 0);
     msgKeys = (w) => {
@@ -42211,10 +43024,16 @@ async function dispatch(store2, src, cfg, run2 = runAgent, probe) {
   const cap = cfg.dailyRuns ?? 200;
   const room = cap - store2.runsToday();
   const running2 = store2.workflows().filter((w) => w.state === "running" && heldBy(store2, w) !== "window").sort((a, b) => a.updatedAt.localeCompare(b.updatedAt));
-  const paced = running2.filter((w) => w.paced).slice(0, store2.runsToday() < cap / 2 ? cfg.maxParallel : 0);
+  const paced = running2.filter((w) => w.paced).sort((a, b) => Number(!!a.startedBy) - Number(!!b.startedBy)).slice(0, store2.runsToday() < cap / 2 ? cfg.maxParallel : 0);
   const queue = [...running2.filter((w) => !w.paced), ...paced].slice(0, Math.max(0, room));
-  for (const w of queue) if (w.paced) {
+  for (const w of running2.filter((w2) => !queue.includes(w2) && !w2.intakeDeferred)) {
+    for (const msgId of w.pending) auditSkip(store2, w.chat.id, msgId, "budget-deferred", w.id);
+    w.intakeDeferred = true;
+    store2.save(w, false);
+  }
+  for (const w of queue) if (w.paced || w.intakeDeferred) {
     w.paced = void 0;
+    w.intakeDeferred = void 0;
     store2.save(w, false);
   }
   let done2 = 0;
@@ -42342,6 +43161,14 @@ async function runOne(store2, src, cfg, wf, run2, probe) {
   const report2 = store2.peekReport(wf.id, runId) ?? salvaged;
   store2.log({ event: "worker", ...salvaged ? { salvaged: true } : {}, workflowId: wf.id, code: wf.code, runId, exitCode: res.exitCode, ms: res.ms, intent: report2?.intent, summary: report2?.summary, sources: report2?.reply?.sources, commitment: report2?.reply?.commitment, error: res.error, ...ran("draft", res.used) });
   const fresh = store2.workflow(wf.id) ?? wf;
+  if (report2 && (fresh.pending.some((id) => !wf.pending.includes(id)) || report2.work?.closed && pendingEffects(fresh.effects).length)) {
+    const newer2 = fresh.pending.some((id) => !wf.pending.includes(id));
+    Object.assign(fresh, { state: newer2 ? "running" : "needs_human", approved: void 0, status: newer2 ? "New asks arrived during this run. Checking them next." : "Earlier changes are still unverified. Review them before closing this work." });
+    store2.log({ event: "report-held", workflowId: fresh.id, reason: newer2 ? "newer-ask" : "unverified-effects" });
+    store2.save(fresh);
+    store2.archiveReport(wf.id, runId);
+    return;
+  }
   const into = report2?.same ? others.find((o) => o.code === report2.same.toUpperCase()) : void 0;
   if (into && joinInto(store2, fresh, store2.workflow(into.id) ?? into)) {
     store2.archiveReport(wf.id, runId);
@@ -42353,12 +43180,12 @@ async function runOne(store2, src, cfg, wf, run2, probe) {
   else if (report2.job) {
     fresh.intent = report2.intent;
     const h = family(store2, fresh, report2);
-    mergeWork(h, report2.work);
+    mergeReportWork(fresh, report2, h, void 0, false);
     if (h !== fresh) store2.save(h);
     attachJob(store2, cfg, fresh, report2.job);
   } else {
     const h = family(store2, fresh, report2);
-    applyReport(fresh, checked(store2, cfg, report2), h);
+    applyReport(fresh, checked(store2, cfg, report2), h, canCloseReport(store2, h, fresh));
     if (fresh.draft) fresh.prDraft = wf.prRead;
     if (report2.goalMet === false) store2.log({ event: "short-of-goal", workflowId: fresh.id, code: fresh.code, kind: blockerOf(report2.blocker).kind, why: blockerOf(report2.blocker).why, tried: blockerOf(report2.blocker).tried });
     if (h.work?.closed) {
@@ -42385,7 +43212,7 @@ async function runOne(store2, src, cfg, wf, run2, probe) {
   fresh.drewOn = drewOn.length ? drewOn : void 0;
   fresh.shareHold = drewOn.length ? await sharingHold(store2, src, fresh, drewOn) : void 0;
   if (report2 && !report2.job) await afterDraft(store2, src, cfg, fresh);
-  if (report2 && !report2.job && fresh.state === "done" && fresh.closedBy === "nothing") for (const msgId of wf.pending) store2.log({ event: "intake-skip", chat: wf.chat.id, msgId, code: wf.code, reason: fresh.fyi ? "judged FYI; no reply" : "judged no owner action or relevant news" });
+  if (report2 && !report2.job && fresh.state === "done" && fresh.closedBy === "nothing") for (const msgId of wf.pending) auditSkip(store2, wf.chat.id, msgId, fresh.fyi ? "ai-fyi" : "ai-noise", wf.id);
   if (report2?.job) await ackJob(store2, src, cfg, fresh);
   store2.save(fresh);
   store2.archiveReport(wf.id, runId);
@@ -42423,12 +43250,12 @@ ${note.a}`).slice(0, 1800));
 function checked(store2, cfg, r) {
   return r.reply ? { ...r, reply: { ...r.reply, sources: resolveEvidence(knowledgeOf(store2, cfg), cfg, r.reply.sources, store2.root) } } : r;
 }
-function applyReport(wf, r, home = wf) {
-  const changedAsk = r.work?.changedAsk && wf.pending.includes(r.work.changedAsk) && wf.msgIds.includes(r.work.changedAsk) ? r.work.changedAsk : void 0;
+function applyReport(wf, r, home = wf, allowClose = true) {
+  const changedAsk = home === wf && r.work?.changedAsk && wf.pending.includes(r.work.changedAsk) && wf.msgIds.includes(r.work.changedAsk) ? r.work.changedAsk : void 0;
   wf.intent = r.intent;
   wf.pending = [];
   const fresh = !home.work;
-  mergeWork(home, r.work, void 0, home === wf ? "" : label(wf, home), changedAsk);
+  mergeReportWork(wf, r, home, changedAsk, allowClose);
   if (wf.startedBy === "owner" && fresh && home.work && home === wf) {
     home.work.proposed = true;
     const plan2 = home.work.plan?.length ? ` Plan: ${home.work.plan.map((p) => p.what).join("; ")}.` : "";
@@ -42596,7 +43423,7 @@ function checkAgain(store2, wf) {
   const p = wf.promise;
   rest(store2, wf);
   wf.promise = { ...p, state: "pending", why: void 0 };
-  return `Checking again what you told ${first(wf)}.`;
+  return `Checking again what you told ${first2(wf)}.`;
 }
 async function tell(store2, src, wf, text3) {
   if (wf.answerSurface === "self") {
@@ -42637,7 +43464,7 @@ async function checkPromise(store2, src, cfg, wf, run2, probe) {
   if (!resting(fresh)) return again();
   if (!report2) {
     failPromise(store2, fresh, error62, said2);
-    return tell(store2, src, fresh, `${fresh.code} went to ${first(fresh)}, but I could not check what it promised. Nothing was changed. Say "ok ${fresh.code}" to check again, or "skip ${fresh.code}".`);
+    return tell(store2, src, fresh, `${fresh.code} went to ${first2(fresh)}, but I could not check what it promised. Nothing was changed. Say "ok ${fresh.code}" to check again, or "skip ${fresh.code}".`);
   }
   const v = vet(cfg, report2.effects, prTarget(store2, fresh));
   const decided = (fresh.effects ?? []).filter((e) => e.done || e.off);
@@ -42671,7 +43498,7 @@ async function checkPromise(store2, src, cfg, wf, run2, probe) {
   store2.save(fresh);
   if (lines.length) await tell(store2, src, fresh, lines.join("\n"));
 }
-var promiseDue, settled, first, resting, busy, promisesDue;
+var promiseDue, settled, first2, resting, busy, promisesDue;
 var init_promise2 = __esm({
   "src/runner/promise.ts"() {
     "use strict";
@@ -42692,300 +43519,13 @@ var init_promise2 = __esm({
     init_validate();
     promiseDue = (store2, wf, by) => !by.ruleId && !!wf.draft?.ownWords && !!prTarget(store2, wf);
     settled = (wf) => wf.promise?.state === "offered" || wf.promise?.state === "failed";
-    first = (wf) => (wf.asker?.name ?? "them").split(/\s+/)[0];
+    first2 = (wf) => (wf.asker?.name ?? "them").split(/\s+/)[0];
     resting = (w) => w.state === "done" || w.state === "open";
     busy = (store2, w) => {
       const j2 = w.job ? store2.job(w.job) : void 0;
       return !!j2 && (j2.state === "running" || executing(j2));
     };
     promisesDue = (store2, cfg) => cfg.paused || store2.control().paused ? [] : store2.workflows().filter((w) => (w.promise?.state === "pending" || w.promise?.state === "checking") && resting(w) && !store2.openWindow(w.id) && !busy(store2, w));
-  }
-});
-
-// src/core/schedule.ts
-function local(d, tz) {
-  const key = validTz(tz) ? tz : "";
-  if (!fmt.has(key)) fmt.set(key, new Intl.DateTimeFormat("en-US", { timeZone: key || void 0, weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }));
-  const p = Object.fromEntries(fmt.get(key).formatToParts(d).map((x) => [x.type, x.value]));
-  return { day: DAYS2.indexOf(p.weekday), hour: Number(p.hour), label: `${p.weekday} ${p.hour}:${p.minute}`, date: `${p.day} ${p.month}` };
-}
-function offNotice(since, now, machine2, tz) {
-  if (!since) return void 0;
-  const from = Date.parse(since);
-  let work2 = 0;
-  for (let t2 = from; t2 < now.getTime() && work2 < 30; t2 += 5 * 6e4) if (isWorkHours(new Date(t2), tz)) work2 += 5;
-  if (work2 < 30) return void 0;
-  const a = local(new Date(from), tz), b = local(now, tz);
-  const long = now.getTime() - from > 864e5;
-  const at3 = (l) => long ? `${l.label.slice(0, 3)} ${l.date} ${l.label.slice(4)}` : l.label;
-  return `I was not reading your chats from ${at3(a)} to ${at3(b)} (${machine2} was asleep or off). I have caught up; anything new from that time is in your list.`;
-}
-function dayIn(at3, tz) {
-  const key = validTz(tz) ? tz : "";
-  if (!days.has(key)) days.set(key, new Intl.DateTimeFormat("sv-SE", { timeZone: key || void 0, year: "numeric", month: "2-digit", day: "2-digit" }));
-  return days.get(key).format(typeof at3 === "string" ? new Date(at3) : at3);
-}
-function isDue(s3, now) {
-  return !s3.nextAt || Date.parse(s3.nextAt) <= now.getTime();
-}
-function plan(s3, now, poll, activity, tz) {
-  const t2 = now.getTime();
-  const fastUntil = activity ? new Date(t2 + poll.fastForMin * 6e4).toISOString() : s3.fastUntil;
-  const fast = !!fastUntil && Date.parse(fastUntil) > t2;
-  const work2 = poll.idleMin <= DEFAULT_POLL.idleMin && isWorkHours(now, tz);
-  const gapMs = (fast ? poll.fastMin : work2 ? Math.min(poll.idleMin, WORK_IDLE_MIN) : poll.idleMin) * 6e4 - 1e4;
-  return { fastUntil, nextAt: new Date(t2 + gapMs).toISOString() };
-}
-var DEFAULT_POLL, WORK_IDLE_MIN, fmt, DAYS2, validTz, isWorkHours, clock2, days;
-var init_schedule = __esm({
-  "src/core/schedule.ts"() {
-    "use strict";
-    DEFAULT_POLL = { idleMin: 15, fastMin: 1, fastForMin: 5 };
-    WORK_IDLE_MIN = 5;
-    fmt = /* @__PURE__ */ new Map();
-    DAYS2 = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-    validTz = (tz) => {
-      try {
-        return !!tz && !!new Intl.DateTimeFormat("en-US", { timeZone: tz });
-      } catch {
-        return false;
-      }
-    };
-    isWorkHours = (d, tz) => {
-      const l = local(d, tz);
-      return l.day >= 1 && l.day <= 5 && l.hour >= 9 && l.hour < 18;
-    };
-    clock2 = (d, tz) => local(d, tz).label;
-    days = /* @__PURE__ */ new Map();
-  }
-});
-
-// src/core/numbers.ts
-function drafted(e) {
-  if (str2(e.approvedBy)?.startsWith("rule:")) return true;
-  if (e.v === 2) return e.unchanged === true && e.edited === false;
-  if (e.unchanged !== true) return false;
-  if (typeof e.draft === "string") return e.draft === e.text;
-  return typeof e.text === "string" ? true : void 0;
-}
-function slim(raw) {
-  const moved = new Set(raw.filter((e) => e.event === "pr-moved").map((e) => str2(e.code)));
-  const hours = /* @__PURE__ */ new Map(), out = [];
-  for (const e of raw) {
-    const at3 = str2(e.at), code = str2(e.code);
-    if (!at3 || Number.isNaN(Date.parse(at3))) continue;
-    const opt = (k) => str2(e[k]) ? { [k]: str2(e[k]) } : {};
-    switch (e.event) {
-      case "tick": {
-        const h = hours.get(at3.slice(0, 13));
-        if (!h) hours.set(at3.slice(0, 13), [at3, at3]);
-        else if (at3 < h[0]) h[0] = at3;
-        else if (at3 > h[1]) h[1] = at3;
-        break;
-      }
-      // Replies to asks only: a reminder an automation sent is not a reply.
-      case "sent":
-        if (code && /^(owner$|rule:)/.test(str2(e.approvedBy) ?? "")) {
-          const d = drafted(e);
-          out.push({ at: at3, event: "sent", code, ...d === void 0 ? {} : { asDrafted: d }, ...e.holding === true ? { holding: true } : {}, ...num2(e.changesOff) ? { changesOff: num2(e.changesOff) } : {}, ...str2(e.msgId) ? { msgId: str2(e.msgId) } : {}, ...opt("askAt") });
-        }
-        break;
-      case "state": {
-        if (code && e.from === "new") out.push({ at: at3, event: "made", code });
-        const by = str2(e.closedBy) ?? legacyClose(str2(e.status) ?? "", moved.has(code));
-        if (code && e.to === "done") out.push({ at: at3, event: "closed", code, ...by ? { closedBy: by } : {}, ...opt("askAt"), ...opt("replyAt") });
-        break;
-      }
-      // Changes applied before item codes and counts were logged cannot be tied to an item, so they are left out.
-      case "job-executed":
-        if (Array.isArray(e.items)) out.push({ at: at3, event: "applied", items: e.items.filter((c) => typeof c === "string"), kept: num2(e.kept), removed: num2(e.removed), left: num2(e.left) });
-        break;
-      // A correction names the send it is about: undo by its message, a mark or a posted correction by sentId (from 10-21).
-      case "marked":
-      case "undo":
-      case "correction": {
-        const target2 = str2(e.event === "undo" ? e.msgId : e.sentId);
-        if (code) out.push({ at: at3, event: e.event, code, ...e.event === "marked" ? { kind: str2(e.kind) } : {}, ...target2 ? { target: target2 } : {} });
-        break;
-      }
-      case "notfyi":
-        if (code) out.push({ at: at3, event: "notfyi", code });
-        break;
-      case "missed":
-        if (str2(e.chat)) out.push({ at: at3, event: "missed", chat: str2(e.chat), msgId: str2(e.msgId) });
-        break;
-    }
-  }
-  return [...out, ...[...hours.values()].flatMap(([a, b]) => (a === b ? [a] : [a, b]).map((at3) => ({ at: at3, event: "tick" })))];
-}
-function askAtOf(thread2, ids) {
-  const last3 = thread2.findLastIndex((m) => m.byOwner);
-  return thread2.slice(last3 + 1).find((m) => !m.byOwner && ids.includes(m.id))?.at;
-}
-function handledAll(evs, items2) {
-  const sends = /* @__PURE__ */ new Map(), fixes = /* @__PURE__ */ new Map(), spoiled = /* @__PURE__ */ new Set();
-  for (const e of evs) {
-    if (e.event === "sent") push(sends, e.code, e);
-    if (CORRECTS.has(e.event)) push(fixes, e.code, e);
-    if (e.event === "applied" && (e.removed ?? 0) > 0) for (const c of e.items ?? []) spoiled.add(c);
-  }
-  for (const l of sends.values()) l.sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
-  const byMsg = /* @__PURE__ */ new Map(), missedOf = /* @__PURE__ */ new Map();
-  for (const w of items2) for (const m of w.msgIds) push(byMsg, `${w.chat.id}|${m}`, w.code);
-  for (const e of evs) if (e.event === "missed") for (const c of byMsg.get(`${e.chat}|${e.msgId}`) ?? []) push(missedOf, c, e.at);
-  const first3 = /* @__PURE__ */ new Map();
-  const put2 = (code, at3, how, msgId) => {
-    const c = first3.get(code);
-    if (!spoiled.has(code) && (!c || Date.parse(at3) < Date.parse(c.at))) first3.set(code, { code, at: at3, how, ...msgId ? { msgId } : {} });
-  };
-  for (const e of evs) {
-    if (e.event === "sent" && e.asDrafted === true && !e.holding && !e.changesOff) put2(e.code, e.at, "reply", e.msgId);
-    if (e.event === "applied" && e.left === 0 && e.removed === 0) for (const c of e.items ?? []) put2(c, e.at, "changes", sends.get(c)?.find((x) => Date.parse(x.at) >= Date.parse(e.at))?.msgId);
-    if (e.event === "closed" && e.closedBy === "job") put2(e.code, e.at, "nothing");
-  }
-  const about = (k) => k.target ?? sends.get(k.code)?.filter((x) => Date.parse(x.at) <= Date.parse(k.at)).at(-1)?.msgId;
-  const corrected = (c) => {
-    const from = Date.parse(c.at), within = (at3) => {
-      const t2 = Date.parse(at3);
-      return t2 >= from && t2 <= from + 7 * DAY2;
-    };
-    return (fixes.get(c.code) ?? []).some((k) => within(k.at) && (k.event === "notfyi" || c.msgId !== void 0 && about(k) === c.msgId)) || (missedOf.get(c.code) ?? []).some(within);
-  };
-  return [...first3.values()].filter((c) => !corrected(c)).sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
-}
-function inputs(evs, items2, inSpan, notAsks) {
-  const here3 = evs.filter(inSpan);
-  const answered = here3.filter((e) => e.event === "sent"), sends = answered.filter((e) => !e.holding);
-  const teams = here3.filter((e) => e.event === "closed" && e.closedBy === "replied").filter((e, i, all) => all.findIndex((x) => x.code === e.code) === i);
-  const drafted2 = sends.filter((e) => e.asDrafted === true).map((e) => e.code), edited = sends.filter((e) => e.asDrafted === false).map((e) => e.code);
-  const replies = { drafted: drafted2, edited, teams: teams.map((e) => e.code), unknown: sends.filter((e) => e.asDrafted === void 0).map((e) => e.code), n: drafted2.length, of: drafted2.length + edited.length + teams.length };
-  const itemOf = (e) => items2.find((w) => w.chat.id === e.chat && !!e.msgId && w.msgIds.includes(e.msgId))?.code ?? `missed:${e.msgId ?? e.at}`;
-  const pointed = uniq(here3.filter((e) => e.event === "missed").map(itemOf)), mine = uniq(here3.filter((e) => e.event === "notfyi").map((e) => e.code));
-  const watch2 = new Set(items2.filter((w) => w.kind === "tracker").map((w) => w.code));
-  const asks = /* @__PURE__ */ new Set([...here3.filter((e) => e.event === "made" && !watch2.has(e.code) && !notAsks.has(e.code)).map((e) => e.code), ...pointed, ...mine]);
-  const missed = { pointed, mine, asks: [...asks], n: pointed.length + mine.length, of: asks.size };
-  const waits = [
-    ...answered.filter((e) => e.askAt).map((e) => ({ code: e.code, min: (Date.parse(e.at) - Date.parse(e.askAt)) / 6e4 })),
-    ...teams.filter((e) => e.askAt && e.replyAt).map((e) => ({ code: e.code, min: (Date.parse(e.replyAt) - Date.parse(e.askAt)) / 6e4 }))
-  ].filter((w) => w.min >= 0).sort((a, b) => a.min - b.min);
-  const mins = waits.map((w) => Math.round(w.min));
-  const wait2 = { n: waits.length, codes: waits.map((w) => w.code), ...mins.length ? { median: median2(mins), min: mins[0], max: mins.at(-1) } : {} };
-  return { replies: { ...replies, ...pct(replies.n, replies.of) }, missed: { ...missed, ...pct(missed.n, missed.of) }, wait: wait2 };
-}
-function numbers(raw, items2, now, tz, key = "this") {
-  const seen = /* @__PURE__ */ new Set(), key_ = (e) => `${e.event}|${e.at}|${e.code ?? ""}|${e.msgId ?? ""}|${e.chat ?? ""}|${e.items?.join(",") ?? ""}`;
-  const evs = raw.filter((e) => {
-    const k = key_(e);
-    return Date.parse(e.at) <= now.getTime() && !seen.has(k) && !!seen.add(k);
-  });
-  const days2 = /* @__PURE__ */ new Map(), dayOf = (at3) => {
-    const q2 = `${at3.slice(0, 14)}${Math.floor(Number(at3.slice(14, 16)) / 15)}`;
-    return days2.get(q2) ?? days2.set(q2, dayIn(at3, tz)).get(q2);
-  };
-  const today = dayIn(now, tz), week = weekOf(today);
-  const reads = new Set(evs.filter((e) => e.event === "tick").map((e) => dayOf(e.at)));
-  const first3 = [...reads].sort()[0] ?? evs.map((e) => dayOf(e.at)).sort()[0] ?? today;
-  const spans = { this: { from: week, to: today }, last: { from: addDays(week, -7), to: addDays(week, -1) }, "4w": { from: addDays(week, -21), to: today }, all: { from: weekOf(first3), to: today } };
-  const span = spans[key];
-  const within = (s3) => (e) => {
-    const d = dayOf(e.at);
-    return d >= s3.from && d <= s3.to;
-  };
-  const all = handledAll(evs, items2);
-  const asked = new Set(evs.filter((e) => e.event === "sent" || e.event === "closed" && e.closedBy !== "nothing").map((e) => e.code));
-  const notAsks = new Set(evs.filter((e) => e.event === "closed" && e.closedBy === "nothing" && !asked.has(e.code)).map((e) => e.code));
-  const counted2 = all.filter(within(span));
-  const of = (how) => counted2.filter((c) => c.how === how).map((c) => c.code);
-  const prior = key === "this" ? spans.last : key === "last" ? { from: addDays(week, -14), to: addDays(week, -8) } : key === "4w" ? { from: addDays(week, -49), to: addDays(week, -22) } : void 0;
-  const before = prior ? all.filter(within(prior)).length : void 0;
-  const arrow = before !== void 0 && before >= SMALL && counted2.length >= SMALL ? counted2.length > before ? "up" : counted2.length < before ? "down" : "same" : void 0;
-  const bars = Array.from({ length: 8 }, (_, i) => addDays(week, (i - 7) * 7)).map((w) => {
-    const ws = { from: w, to: addDays(w, 6) }, codes = all.filter(within(ws)).map((c) => c.code);
-    const gaps = Array.from({ length: 7 }, (_, d) => addDays(w, d)).filter((d) => d >= first3 && d < today && !reads.has(d));
-    return { week: w, n: codes.length, codes, gaps, before: ws.to < first3 };
-  });
-  const four = within(spans["4w"]);
-  const sent = evs.filter((e) => e.event === "sent" && !e.holding && four(e)).map((e) => e.code), sends = sent.length;
-  const fixes = uniq(evs.filter((e) => (e.event === "marked" || e.event === "undo") && four(e)).map((e) => e.code));
-  return {
-    window: { key, ...span, label: `${LABEL[key]} (${dmd(span.from)} to ${span.to === today ? "today" : dmd(span.to)})` },
-    firstWeek: weekOf(first3) === week,
-    handled: { n: counted2.length, codes: counted2.map((c) => c.code), reply: of("reply"), changes: of("changes"), nothing: of("nothing"), provisional: counted2.filter((c) => now.getTime() - Date.parse(c.at) < 7 * DAY2).map((c) => c.code), ...before !== void 0 ? { before } : {}, ...arrow ? { arrow } : {} },
-    bars,
-    now: inputs(evs, items2, within(span), notAsks),
-    four: inputs(evs, items2, four, notAsks),
-    corrections: { n: fixes.length, sends, codes: fixes, sent, ...sends >= SMALL ? { per100: Math.round(fixes.length / sends * 1e3) / 10 } : {} }
-  };
-}
-function numbersText(n) {
-  const h = n.handled, when2 = WHEN[n.window.key], top = Math.max(1, ...n.bars.map((b) => b.n));
-  const trend = n.firstWeek ? "Your first week. Trends start next week." : h.arrow === "up" ? `\u25B2 ${h.n - h.before} more than ${n.window.key === "this" ? "last week" : "before"} (${h.before})` : h.arrow === "down" ? `\u25BC ${h.before - h.n} fewer than ${n.window.key === "this" ? "last week" : "before"} (${h.before})` : h.before !== void 0 ? `${n.window.key === "this" ? "last week" : "before"}: ${h.before}` : "";
-  const gaps = n.bars.flatMap((b) => b.gaps);
-  const bars = n.bars.map((b) => b.before ? "\xB7" : b.gaps.length ? "\u2592" : BLOCKS[Math.round(b.n / top * (BLOCKS.length - 1))]).join(" ");
-  const r = n.now.replies, m = n.now.missed, w = n.now.wait, c = n.corrections;
-  return [
-    `Numbers \xB7 ${n.window.label}`,
-    `Counted from ${NAME}'s own log on all your machines. Nothing is estimated.`,
-    "",
-    "HANDLED FOR YOU",
-    `${h.n} ask${h.n === 1 ? "" : "s"} ${when2}${trend ? ` \xB7 ${trend}` : ""}`,
-    `${bars}  the last 8 weeks (${n.bars.map((b) => b.n).join(", ")})${gaps.length ? `  \u2592 = no machine was reading: ${gaps.map(md).join(", ")}` : ""}`,
-    `${h.reply.length} repl${h.reply.length === 1 ? "y" : "ies"} as drafted \xB7 ${h.changes.length} applied as proposed \xB7 ${h.nothing.length} "nothing needed"`,
-    ...h.provisional.length ? [`${h.provisional.length} of the ${h.n} ${h.provisional.length === 1 ? "is" : "are"} still in ${h.provisional.length === 1 ? "its" : "their"} 7-day check.`] : [],
-    ...h.n ? [`See all ${h.n}: ${h.codes.join(", ")}`] : [],
-    "",
-    "REPLIES AS DRAFTED",
-    `${ratio(r, when2)} \xB7 ${r.drafted.length} as drafted \xB7 ${r.edited.length} edited \xB7 ${r.teams.length} you typed in Teams \xB7 4 weeks: ${short2(n.four.replies)}`,
-    ...r.unknown.length ? [`${r.unknown.length} sent before 10-21 can no longer be checked, so ${r.unknown.length === 1 ? "it is" : "they are"} left out.`] : [],
-    "MISSED",
-    `${m.n} of ${m.of} asks${m.pct !== void 0 ? ` (${m.pct}%)` : ""} \xB7 you pointed at ${m.pointed.length} \xB7 moved ${m.mine.length} to Needs me \xB7 4 weeks: ${short2(n.four.missed)}`,
-    "ASKER WAIT",
-    w.median !== void 0 ? `median ${dur(w.median)} \xB7 from ${dur(w.min)} to ${dur(w.max)}, from ask to first reply (${w.n} replies)${n.four.wait.median !== void 0 ? ` \xB7 4 weeks: ${dur(n.four.wait.median)}` : ""}` : "No timed replies yet.",
-    "",
-    `Corrections: ${c.per100 !== void 0 ? `${c.per100} per 100 sends over 4 weeks (${c.n} of ${c.sends}; keep it under 2)` : `${c.n} of ${c.sends} sends over 4 weeks (keep it under 2 per 100)`}${c.codes.length ? ` \xB7 ${c.codes.join(", ")}` : ""}`,
-    "Promises kept on time: starts once work records its due dates."
-  ].join("\n");
-}
-function weekLine(n) {
-  const r = n.now.replies, m = n.now.missed;
-  if (!n.handled.n && !r.of && !m.n) return void 0;
-  return `This week: ${n.handled.n} handled for you \xB7 ${r.n} of ${r.of} replies as drafted \xB7 ${m.n} missed.`;
-}
-var WINDOWS, DAY2, SMALL, str2, num2, addDays, weekday, weekOf, isFriday, legacyClose, CORRECTS, pct, uniq, push, median2, MONTHS, DAYS3, md, dmd, LABEL, ratio, short2, dur, BLOCKS, WHEN;
-var init_numbers = __esm({
-  "src/core/numbers.ts"() {
-    "use strict";
-    init_schedule();
-    init_brand();
-    WINDOWS = ["this", "last", "4w", "all"];
-    DAY2 = 864e5;
-    SMALL = 10;
-    str2 = (v) => typeof v === "string" && v ? v : void 0;
-    num2 = (v) => typeof v === "number" ? v : void 0;
-    addDays = (day3, n) => new Date(Date.parse(`${day3}T00:00:00Z`) + n * DAY2).toISOString().slice(0, 10);
-    weekday = (day3) => (/* @__PURE__ */ new Date(`${day3}T00:00:00Z`)).getUTCDay();
-    weekOf = (day3) => addDays(day3, -((weekday(day3) + 6) % 7));
-    isFriday = (day3) => weekday(day3) === 5;
-    legacyClose = (status3, prMoved2) => /^You replied yourself/.test(status3) ? "replied" : /^Skipped by you/.test(status3) ? "skipped" : /^Nothing needed:/.test(status3) && !prMoved2 ? "job" : void 0;
-    CORRECTS = /* @__PURE__ */ new Set(["undo", "marked", "notfyi", "correction"]);
-    pct = (n, of) => of >= SMALL ? { pct: Math.round(n / of * 100) } : {};
-    uniq = (xs) => [...new Set(xs)];
-    push = (m, k, v) => {
-      const l = m.get(k);
-      if (l) l.push(v);
-      else m.set(k, [v]);
-    };
-    median2 = (xs) => xs.length % 2 ? xs[(xs.length - 1) / 2] : Math.round((xs[xs.length / 2 - 1] + xs[xs.length / 2]) / 2);
-    MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-    DAYS3 = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-    md = (day3) => `${MONTHS[Number(day3.slice(5, 7)) - 1]} ${Number(day3.slice(8))}`;
-    dmd = (day3) => `${DAYS3[weekday(day3)]} ${md(day3)}`;
-    LABEL = { this: "This week", last: "Last week", "4w": "Last 4 weeks", all: "Since you started" };
-    ratio = (r, when2) => `${r.n} of ${r.of} ${when2}${r.pct !== void 0 ? ` (${r.pct}%)` : ""}`;
-    short2 = (r) => r.pct !== void 0 ? `${r.pct}%` : `${r.n} of ${r.of}`;
-    dur = (min) => min < 60 ? `${min} min` : min < 48 * 60 ? `${Math.round(min / 60)} h` : `${Math.round(min / 1440)} d`;
-    BLOCKS = "\u2581\u2582\u2583\u2584\u2585\u2586\u2587\u2588";
-    WHEN = { this: "this week", last: "last week", "4w": "in 4 weeks", all: "since you started" };
   }
 });
 
@@ -43244,22 +43784,27 @@ async function say(store2, src, text3) {
   const { msgId } = await src.sendSelf(text3);
   store2.addSent(msgId, text3);
 }
+function auditSkip(store2, chat2, msgId, reason, workflowId) {
+  const outcome2 = { prefilter: "ignored", "context-absorbed": "context", dedupe: "duplicate", "ai-noise": "noise", "ai-fyi": "fyi", "budget-deferred": "deferred" }[reason];
+  store2.log({ event: "intake-skip", reason, chat: chat2, msgId, outcome: outcome2, ...workflowId ? { workflowId } : {} });
+}
 async function intake(store2, src, cfg, cursors, chats = cfg.watch, o = {}) {
-  let asks = 0, candidates2 = 0;
+  let asks = 0;
   const backlog = !!o.backlog;
   const sent = store2.sentIds(), turns = o.backlog?.turns ?? store2.turns();
-  const claimed = backlog ? new Set(store2.workflows().flatMap((w) => w.msgIds)) : void 0;
+  const claimed = new Set(store2.workflows().flatMap((w) => w.msgIds.map((id) => `${w.chat.id}/${id}`)));
   for (const chat2 of chats) {
     const { msgs, newest: newest2, truncated } = await src.newMessages(chat2.id, cursors[chat2.id], chat2.since);
     if (newest2) cursors[chat2.id] = newest2;
     if (truncated && !backlog) store2.log({ event: "gap", chat: chat2.id, oldestRead: msgs[0]?.id, cursor: cursors[chat2.id] });
     if (!backlog) store2.setHealth(`gap:${chat2.id}`, truncated ? `${chat2.name} had more new messages than I can read at once. I read the newest ones; older ones were skipped.` : void 0);
     for (const raw of msgs) {
-      if (claimed?.has(raw.id)) {
-        store2.log({ event: "intake-skip", chat: chat2.id, msgId: raw.id, reason: "already claimed" });
+      const key = `${chat2.id}/${raw.id}`;
+      if (claimed.has(key)) {
+        auditSkip(store2, chat2.id, raw.id, "dedupe");
         continue;
       }
-      claimed?.add(raw.id);
+      claimed.add(key);
       const now = backlog ? Date.parse(raw.at) : Date.now();
       let c = classify(raw, { ownerId: cfg.owner.id, ownerName: cfg.owner.name, aliases: cfg.aliases, test: !!chat2.test, group: !!chat2.group, sentIds: sent });
       if (chat2.group) {
@@ -43272,13 +43817,13 @@ async function intake(store2, src, cfg, cursors, chats = cfg.watch, o = {}) {
         }
       }
       if (c.kind === "skip") {
-        store2.log({ event: "intake-skip", chat: chat2.id, msgId: raw.id, reason: c.why });
+        auditSkip(store2, chat2.id, raw.id, "prefilter");
         continue;
       }
       const open2 = store2.openInChat(chat2.id);
       if (c.kind === "owner") {
         if (store2.wasSentRecently(c.text)) {
-          store2.log({ event: "intake-skip", chat: chat2.id, msgId: raw.id, reason: "recently sent by us" });
+          auditSkip(store2, chat2.id, raw.id, "dedupe");
           continue;
         }
         store2.saveActivity({ ownerLastAt: raw.at });
@@ -43315,17 +43860,16 @@ async function intake(store2, src, cfg, cursors, chats = cfg.watch, o = {}) {
           store2.save(part);
           continue;
         }
-        if (!home && candidates2 < 2 && COMMIT.test(c.text) && !open2.some((o2) => inWork(store2, o2))) {
+        if (!home && COMMIT.test(c.text) && !open2.some((o2) => inWork(store2, o2))) {
           const cand = await create(store2, src, cfg, chat2);
           if (!store2.thread(cand.id).some((m) => m.id === raw.id)) appendThread(store2, cand, toMsg(raw, cfg.owner, c.text, true));
-          Object.assign(cand, { startedBy: "owner", state: "running", lastAsk: c.text, lastMsgId: raw.id, pending: [raw.id], msgIds: [raw.id], status: "Checking whether you took something on" });
+          Object.assign(cand, { startedBy: "owner", state: "running", paced: true, ...backlog ? { before: true } : {}, lastAsk: c.text, lastMsgId: raw.id, pending: [raw.id], msgIds: [raw.id], status: "Checking whether you took something on" });
           store2.save(cand);
-          candidates2++;
-        } else store2.log({ event: "intake-skip", chat: chat2.id, msgId: raw.id, reason: !home && COMMIT.test(c.text) && candidates2 >= 2 ? "owner candidate limit" : "owner context; no new ask" });
+        } else auditSkip(store2, chat2.id, raw.id, "context-absorbed");
         continue;
       }
       const sender = c.from;
-      const groupJudgment = c.kind === "context" && !backlog;
+      const groupJudgment = c.kind === "context";
       if (groupJudgment) c = { ...c, kind: "ask" };
       const ws = store2.waiting(), hit = ws.filter((w) => w.state === "waiting" && w.chat.id === chat2.id && answers(w, sender.name) && raw.at > w.at);
       if (hit.length) store2.saveWaiting(ws.map((w) => hit.includes(w) ? { ...w, state: "answered", doneAt: raw.at } : w));
@@ -43344,13 +43888,8 @@ async function intake(store2, src, cfg, cursors, chats = cfg.watch, o = {}) {
       }
       if (wf?.state === "open" && c.kind === "ask") newTurn(wf);
       const room = groupJudgment && !wf;
-      if (c.kind === "context") {
-        for (const o2 of open2) appendThread(store2, o2, toMsg(raw, c.from, c.text, false));
-        store2.log({ event: "intake-skip", chat: chat2.id, msgId: raw.id, reason: "backlog group context" });
-        continue;
-      }
       if (wf?.lastMsgId && BigInt(raw.id) <= BigInt(wf.lastMsgId)) {
-        store2.log({ event: "intake-skip", chat: chat2.id, msgId: raw.id, reason: "already read by item" });
+        auditSkip(store2, chat2.id, raw.id, "dedupe", wf.id);
         continue;
       }
       if (wf && c.kind === "ask") reopenPromise(store2, wf);
@@ -43365,7 +43904,7 @@ async function intake(store2, src, cfg, cursors, chats = cfg.watch, o = {}) {
       if (wf.draft) wf.newCount++;
       wf.pending.push(raw.id);
       wf.msgIds.push(raw.id);
-      Object.assign(wf, { asker: c.from, lastAsk: c.text, state: "running", lastMsgId: raw.id, approved: void 0, needsMe: void 0 });
+      Object.assign(wf, { asker: c.from, lastAsk: c.text, state: "running", lastMsgId: raw.id, approved: void 0, needsMe: void 0, intakeDeferred: void 0 });
       if (backlog) Object.assign(wf, { before: true, paced: true });
       else wf.paced = void 0;
       if (room) wf.paced = true;
@@ -44195,10 +44734,9 @@ async function threadSince(store2, src, cfg, wf, want, signed = false) {
   return { asker, ours: ours4, ownerReplied, ownerAt };
 }
 async function send(store2, src, cfg, wf, text3, by, probe) {
-  const target2 = prTarget(store2, wf);
   const ref = prRefOf(store2, wf);
-  const aboutPR = !!ref || wf.intent === "pr_review" || linksIn([wf.lastAsk ?? "", ...store2.thread(wf.id).filter((m) => m.from.id === wf.asker?.id).map((m) => m.text)].join("\n")).some((l) => l.startsWith("pr:"));
-  if (approvalAsk(wf.lastAsk ?? "") && !voteDropped(wf.status) && aboutPR && !wf.effects?.some((e) => e.done && isVote(e.call) && target2 !== void 0 && target2 === prIdOf(e.call))) {
+  const aboutPR = !!ref || wf.intent === "pr_review" || linksIn([text3 ?? "", wf.lastAsk ?? "", ...store2.thread(wf.id).filter((m) => m.from.id === wf.asker?.id).map((m) => m.text)].join("\n")).some((l) => l.startsWith("pr:"));
+  if ((approvalAsk(wf.lastAsk ?? "") && !voteDropped(wf.status) || approvalMention(text3 ?? "")) && aboutPR) {
     const live2 = probe ?? adoProbe(cfg);
     try {
       if (!live2?.pr) throw new Error("no live PR check is configured");
@@ -44207,8 +44745,23 @@ async function send(store2, src, cfg, wf, text3, by, probe) {
       if (!/^(active|completed|abandoned)$/i.test(st.status) || !st.votes.length && !/completed|abandoned/i.test(st.status)) throw new Error("the live PR response has no status or reviewers");
       const mine = cfg.owner.name.trim().toLowerCase();
       if (!/completed|abandoned/i.test(st.status) && (!mine || st.votes.filter((v) => v.name.trim().toLowerCase() === mine).length !== 1)) throw new Error("the owner reviewer vote is missing or ambiguous");
+      const votes = mine ? st.votes.filter((v) => v.name.trim().toLowerCase() === mine) : [];
+      let vote = votes.length === 1 ? votes[0].vote : void 0;
+      if (mine && !wf.sent && wf.draft && /^completed$/i.test(st.status) && !st.votes.length) {
+        const askedAt = Date.parse(store2.thread(wf.id).filter((m) => !m.byOwner).at(-1)?.at ?? wf.createdAt);
+        const receipts = (wf.effects ?? []).filter((e2) => e2.done && isVote(e2.call) && prIdOf(e2.call) === ref.id);
+        const e = receipts.length === 1 ? receipts[0] : void 0;
+        if (e?.done && !e.off && !e.maybe && !e.error && Date.parse(e.done.at) >= askedAt && String(e.call?.args.project ?? "").toLowerCase() === ref.project.toLowerCase() && [ref.repo, st.repo, st.repoId].some((repo) => repo && repo.toLowerCase() === String(e.call?.args.repositoryId ?? "").toLowerCase()) && (!e.head || !st.head || sameHead(e.head, st.head))) vote = voteValue(e.call);
+      }
+      if (!approvalReplyMatches(text3 ?? "", vote, ref.id)) {
+        Object.assign(wf, { state: "running", draft: void 0, prDraft: void 0, sendAt: void 0, approved: void 0, status: "The PR evidence does not support this approval reply. Redrafting.", pending: wf.pending.length ? wf.pending : wf.msgIds.slice(-1) });
+        store2.log({ event: "pr-reply-redraft", workflowId: wf.id });
+        store2.save(wf);
+        return false;
+      }
+      const before = wf.state;
       await probePRs(store2, cfg, { ...live2, pr: async () => st }, Date.now(), true, [wf]);
-      if (wf.state !== "needs_human" || !wf.draft) {
+      if (wf.state !== before || !wf.draft) {
         store2.save(wf);
         return false;
       }
@@ -44269,10 +44822,11 @@ async function send(store2, src, cfg, wf, text3, by, probe) {
   const changesOff = (wf.effects ?? []).filter((e) => e.off).length;
   wf.needsMe = void 0;
   wf.sent = { msgId, at: (/* @__PURE__ */ new Date()).toISOString(), text: text3, byRule: by.ruleId, undoUntil: new Date(Date.now() + p.undoMin * 6e4).toISOString() };
+  store2.save(wf, false);
   keepTodos(wf, wf.sent.at);
   const home = homeOf(store2, wf);
   if (home.work) {
-    afterSend(wf, out, msgId, home, canCloseApproval(store2, home));
+    afterSend(wf, out, msgId, home, canCloseApproval(store2, home), !home.pending.length && !pendingEffects(home.effects).length && !pendingParts(store2, home, wf.id));
     if (!active(home)) {
       stopWatch(store2, home);
       closeFamily(store2, realProcs, home, home.work.closed?.why ?? "closed");
@@ -44617,9 +45171,16 @@ function prOf(store2, w) {
   return void 0;
 }
 async function probePRs(store2, cfg, probe, now = Date.now(), force = false, subjects) {
-  if (!probe?.pr) return 0;
+  if (!probe?.pr) {
+    for (const w of (subjects ?? []).filter((w2) => w2.prRead || prRefOf(store2, w2))) {
+      w.prRead = void 0;
+      w.prUnknown = true;
+      store2.save(w, false);
+    }
+    return 0;
+  }
   const mark2 = store2.probeMark();
-  const items2 = (subjects ?? store2.workflows()).filter((w) => w.kind !== "tracker" && (w.state === "needs_human" || !!subjects && approvalAsk(w.lastAsk ?? ""))).map((w) => ({ w, ref: prRefOf(store2, w) })).filter((x) => !!x.ref);
+  const items2 = (subjects ?? store2.workflows()).filter((w) => w.kind !== "tracker" && (w.state === "needs_human" || !!subjects)).map((w) => ({ w, ref: prRefOf(store2, w) })).filter((x) => !!x.ref);
   if (!force && mark2.prAt && now - Date.parse(mark2.prAt) < EVERY_MS && !items2.some((x) => prChanges(x.w).some((e) => !e.pr))) return 0;
   if (!items2.length) return 0;
   store2.saveProbeMark({ ...store2.probeMark(), prAt: new Date(now).toISOString() });
@@ -44642,19 +45203,26 @@ async function probePRs(store2, cfg, probe, now = Date.now(), force = false, sub
     const w = subjects ? was : store2.workflow(was.id);
     if (!w || !subjects && (w.state !== "needs_human" || queued.has(w.code))) continue;
     const st = states.get(`${ref.project}/${ref.repo}/${ref.id}`);
-    if (!st || !/^(active|completed|abandoned)$/i.test(st.status) || !st.votes.length && !/completed|abandoned/i.test(st.status)) continue;
+    if (!st || !/^(active|completed|abandoned)$/i.test(st.status) || !st.votes.length && !/completed|abandoned/i.test(st.status)) {
+      w.prRead = void 0;
+      w.prUnknown = true;
+      store2.save(w, false);
+      continue;
+    }
     describe4(store2, w, st);
     const named2 = me ? st.votes.filter((v) => v.name.trim().toLowerCase() === me) : [];
-    const mine = named2.length === 1 ? named2[0].vote : void 0;
+    const mine = named2.length === 1 && Object.values(VOTES).includes(named2[0].vote) ? named2[0].vote : void 0;
     w.prRead = JSON.stringify([ref.id, st.status, st.head, mine]);
+    w.prUnknown = mine === void 0 ? true : void 0;
     const changed = mine !== void 0 && w.prVote !== void 0 && mine !== w.prVote && mine !== 0;
     const receipt = (w.effects ?? []).find((e) => e.done && isVote(e.call) && prIdOf(e.call) === ref.id);
     const madeHere = !!receipt && sameVote(mine ?? 0, voteValue(receipt.call));
     const approvedNow = mine !== void 0 && mine >= 5 && !madeHere && (changed || approvalAsk(w.lastAsk ?? ""));
     const asked = Date.parse(store2.thread(w.id).filter((m) => !m.byOwner).at(-1)?.at ?? w.createdAt);
     const closedNow = /completed|abandoned/i.test(st.status) && (st.closedAt ? Date.parse(st.closedAt) > asked : w.prStatus !== void 0 && !/completed|abandoned/i.test(w.prStatus));
-    const stale = !!w.draft && !!w.prDraft && w.prDraft !== w.prRead;
-    const reason = receipt && !w.sent || w.draft && w.prDraft === w.prRead ? void 0 : stale ? `PR ${ref.id} changed since this draft` : closedNow ? `PR ${ref.id} was ${/completed/i.test(st.status) ? "completed" : "abandoned"}` : approvedNow || changed ? `You ${(VOTE[String(mine)] ?? ((id) => `voted on PR ${id}`))(ref.id)} in Azure DevOps` : void 0;
+    const stale = !!w.draft && w.prDraft !== w.prRead && (!!w.prDraft || !receipt && mine !== void 0 && mine >= 5 && approvalMention(w.draft.text));
+    const ownerWriting = w.draft?.byOwner && mine !== void 0 && mine < 5 && !closedNow && approvalReplyMatches(w.draft.text, mine, ref.id);
+    const reason = receipt && !w.sent || w.draft && w.prDraft === w.prRead || ownerWriting ? void 0 : closedNow ? `PR ${ref.id} was ${/completed/i.test(st.status) ? "completed" : "abandoned"}` : approvedNow || changed ? `You ${(VOTE[String(mine)] ?? ((id) => `voted on PR ${id}`))(ref.id)} in Azure DevOps` : stale ? `PR ${ref.id} changed since this draft` : void 0;
     if (mine !== void 0 && mine !== w.prVote) w.prVote = mine;
     w.prStatus = st.status;
     if (!reason) {
@@ -44668,7 +45236,7 @@ async function probePRs(store2, cfg, probe, now = Date.now(), force = false, sub
       if (home === w && canCloseApproval(store2, home) && (approvedNow || closedNow)) closeFamily(store2, realProcs, home, reason);
       else Object.assign(w, { state: "running", status: `PR checked: ${reason}; checking the remaining ask`, pending: w.pending.length ? w.pending : w.msgIds.slice(-1) });
       if (home !== w) store2.save(home);
-    } else if (stale || /\b(?:and|then|also|after|before|plus)\b|[;&]/i.test(w.lastAsk ?? "")) Object.assign(w, { state: "running", status: `PR checked: ${reason}; checking the remaining ask`, pending: w.pending.length ? w.pending : w.msgIds.slice(-1) });
+    } else if (stale && !approvedNow && !closedNow || reReviewAsk(w.lastAsk ?? "") || !approvalAsk(w.lastAsk ?? "") && !closedNow || /\b(?:and|then|also|after|before|plus)\b|[;&]/i.test(w.lastAsk ?? "")) Object.assign(w, { state: "running", status: `PR checked: ${reason}; checking the remaining ask`, pending: w.pending.length ? w.pending : w.msgIds.slice(-1) });
     else Object.assign(w, { state: "done", status: `Nothing needed: ${reason}`, pending: [], closedBy: "nothing" });
     store2.log({ event: "pr-moved", code: w.code, pr: ref.id, reason });
     store2.save(w);
@@ -44683,7 +45251,7 @@ function prRefOf(store2, w) {
   return prOf(store2, w) ?? (c ? { project: String(c.args.project ?? ""), repo: String(c.args.repositoryId ?? ""), id: prIdOf(c) } : void 0);
 }
 function describe4(store2, w, st) {
-  const facts = factsOf(st);
+  const facts = factsOf2(st);
   if (prChanges(w).every((e) => JSON.stringify(e.pr) === JSON.stringify(facts))) return false;
   const set3 = (es = []) => es.map((e) => isVote(e.call) && prIdOf(e.call) !== void 0 && !e.done ? { ...e, pr: facts } : e);
   setEffects(store2, w, set3);
@@ -44742,11 +45310,11 @@ async function voteNow(store2, cfg, w, effects, probe) {
   const me = cfg.owner.name.trim().toLowerCase(), named2 = st.votes.filter((v) => v.name.trim().toLowerCase() === me);
   if (named2.length === 1 && votes.every((e) => sameVote(named2[0].vote, voteValue(e.call)))) return { effects: rest2, why: `you already voted on PR ${ref.id}` };
   if (votes.some((e) => !sameHead(st.head, e.head))) return { effects: rest2, again: reviewAgain(w.code, `PR ${ref.id} changed since your review (new commits).`) };
-  const facts = factsOf(st);
+  const facts = factsOf2(st);
   return { effects: effects.map((e) => isVote(e.call) ? { ...e, pr: facts } : e) };
 }
 function prMoved(st, e) {
-  const was = e.pr, now = factsOf(st);
+  const was = e.pr, now = factsOf2(st);
   return [
     .../^active$/i.test(st.status) ? [] : [`it is ${st.status.toLowerCase()}`],
     ...sameHead(st.head, e.head) ? [] : ["new commits"],
@@ -44875,7 +45443,7 @@ async function deployMoved(store2, w, e, probe) {
     return `Could not read ${ring} right before the deploy (${String(err).slice(0, 120)}).`;
   }
 }
-var EVERY_MS, PR_LINK, VOTE, prChanges, factsOf, noVoteNeeded, voteDropped, sameVote, clock3, deploys, projectOf, sameCall;
+var EVERY_MS, PR_LINK, VOTE, prChanges, factsOf2, noVoteNeeded, voteDropped, sameVote, clock3, deploys, projectOf, sameCall;
 var init_probe = __esm({
   "src/runner/probe.ts"() {
     "use strict";
@@ -44892,7 +45460,7 @@ var init_probe = __esm({
     PR_LINK = /https?:\/\/(?:[\w-]+\.visualstudio\.com|dev\.azure\.com\/[\w-]+)\/([^/\s]+)\/_git\/([^/\s?#]+)\/pullrequest\/(\d+)/i;
     VOTE = { "10": (id) => `approved PR ${id}`, "5": (id) => `approved PR ${id} with suggestions`, "-5": (id) => `voted "Waiting for author" on PR ${id}`, "-10": (id) => `rejected PR ${id}` };
     prChanges = (w) => pendingEffects(w.effects).filter((e) => isVote(e.call) && prIdOf(e.call) !== void 0);
-    factsOf = (st) => ({ title: st.title ?? "", author: st.author ?? "", required: st.required ?? [], autoComplete: !!st.autoComplete });
+    factsOf2 = (st) => ({ title: st.title ?? "", author: st.author ?? "", required: st.required ?? [], autoComplete: !!st.autoComplete });
     noVoteNeeded = (id, state) => `PR ${id} is ${state}, so no vote is needed`;
     voteDropped = (status3 = "") => /^PR \d+ is \w+, so no vote is needed$/.test(status3);
     sameVote = (a, b) => a === b || a >= 5 && (b ?? 0) >= 5;
@@ -45099,7 +45667,7 @@ function startJobs(store2, cfg, procs, hold = []) {
   }
   return n;
 }
-async function checkJobs(store2, src, cfg, procs) {
+async function checkJobs(store2, src, cfg, procs, probe) {
   let n = 0;
   const minutes = cfg.jobs?.minutes ?? 30;
   for (const job of store2.jobs().filter((j2) => j2.state === "running" && j2.run)) {
@@ -45142,7 +45710,7 @@ async function checkJobs(store2, src, cfg, procs) {
     ended.set(job.id, readUse(store2, job));
     try {
       if (r) {
-        if (run2.purpose === "execute") await finishExecute(store2, src, cfg, job);
+        if (run2.purpose === "execute") await finishExecute(store2, src, cfg, job, probe);
         else finishWork(store2, job, r, run2.asks);
         store2.archiveReport(job.id, run2.id);
         n++;
@@ -45194,6 +45762,16 @@ function finishWork(store2, job, r, asksAtStart) {
   Object.assign(job, job.every ? { retry: void 0 } : { retry: void 0, nextAt: void 0 });
   const nothing = r.state === "done" && !r.reply && !r.question && !effects.length;
   if (!again) for (const wf of parentsOf(store2, job)) {
+    if (wf.pending.length) {
+      Object.assign(wf, { state: "running", waitingSince: void 0, status: "New asks arrived after this job started. Checking them next." });
+      store2.save(wf);
+      continue;
+    }
+    if (wf.effects?.some((e) => !e.off && !e.done && (r.work?.closed || e.maybe || e.error))) {
+      Object.assign(wf, { state: "needs_human", waitingSince: void 0, approved: void 0, status: "Earlier changes are still failed or unverified. Review them before closing this work." });
+      store2.save(wf);
+      continue;
+    }
     if (wf.sent) reopenPromise(store2, wf);
     const decision = r.reply ? { action: "draft", reason: "A review or investigation result always waits for you", confidence: confidence(r.reply.sources ?? []) } : wf.decision;
     Object.assign(wf, { state: nothing ? wf.work || wf.partOf ? "open" : "done" : "needs_human", closedBy: nothing && !(wf.work || wf.partOf) ? "job" : void 0, learnAfter: r.reply ? void 0 : wf.learnAfter, status: nothing ? `Nothing needed: ${r.summary}` : r.summary, question: r.question, draft: r.reply ? { ...r.reply } : nothing ? void 0 : wf.draft, effects, decision, waitingSince: void 0, approved: void 0, newCount: 0, revAt: (/* @__PURE__ */ new Date()).toISOString(), ...r.context ? { context: r.context } : {} });
@@ -45201,10 +45779,10 @@ function finishWork(store2, job, r, asksAtStart) {
     if (wf.todos?.some(allowedNow)) wf.todos = wf.todos.filter((t2) => !allowedNow(t2));
     if (v.todos.length) Object.assign(wf, { todos: [.../* @__PURE__ */ new Set([...wf.todos ?? [], ...v.todos])], question: wf.question ?? (wf.draft ? refusedAsk(wf.code, v.todos.length) : void 0) });
     const home = homeOf(store2, wf);
-    mergeWork(home, r.work);
+    mergeReportWork(wf, r, home, void 0, canCloseReport(store2, home, wf));
     if (nothing) wf.completionSeen = `job:${job.id}:${hashOf(r.summary)}`;
-    if (nothing && home === wf && (r.work?.closed || canCloseApproval(store2, home))) {
-      closeFamily(store2, realProcs, home, r.work?.closed ?? r.summary);
+    if (nothing && home === wf && (home.work?.closed || canCloseApproval(store2, home))) {
+      closeFamily(store2, realProcs, home, home.work?.closed?.why ?? r.summary);
       wf.closedBy = "job";
     } else if (nothing && home !== wf) {
       Object.assign(wf, { state: "done", closedBy: "job" });
@@ -45217,7 +45795,17 @@ function finishWork(store2, job, r, asksAtStart) {
   if (!again) store2.log({ event: "job-done", job: job.id, key: job.key, summary: r.summary, effects: effects.length, ...usedBy(job) });
 }
 function settleCompleted(store2, procs = realProcs) {
-  for (const wf of store2.workflows().filter((w) => w.state === "open" || w.state === "done")) {
+  for (const wf of store2.workflows().filter((w) => w.state === "open" || w.state === "done" || !!w.sent)) {
+    if (wf.sent && wf.closeWorkAfterSend && !wf.pending.length && !wf.question) {
+      const home = homeOf(store2, wf);
+      if (active(home) && !home.pending.length && !pendingParts(store2, home, wf.id) && !pendingEffects(home.effects).length && !pendingEffects(wf.effects).length) {
+        afterSend(wf, wf.sent.text ?? "", wf.sent.msgId, home, false);
+        if (home.work?.closed) closeFamily(store2, procs, home, home.work.closed.why);
+        if (home !== wf) store2.save(home);
+        store2.save(wf);
+        continue;
+      }
+    }
     if (wf.work?.closed) {
       if (wf.state !== "done") {
         closeFamily(store2, procs, wf, wf.work.closed.why);
@@ -45245,7 +45833,7 @@ function settleCompleted(store2, procs = realProcs) {
     store2.log({ event: "work-completed", code: wf.code, reason: "persisted completion receipt" });
   }
 }
-async function finishExecute(store2, src, cfg, job) {
+async function finishExecute(store2, src, cfg, job, probe) {
   const effects = foldChanges(store2, job);
   const stale = Object.values(store2.changes(job.id, job.run.id)).find((c) => c.stale);
   const vote = voteValue(effects.find((e) => e.done && isVote(e.call))?.call);
@@ -45296,7 +45884,7 @@ async function finishExecute(store2, src, cfg, job) {
     Object.assign(wf, { state: "needs_human", waitingSince: void 0 });
     store2.save(wf);
     try {
-      const sent = await send(store2, src, cfg, wf, wf.draft?.text, {});
+      const sent = await send(store2, src, cfg, wf, wf.draft?.text, {}, probe);
       if (!sent && wf.state === "needs_human") wf.status = `Changes made. The reply was not sent. Reply "ok ${wf.code}" to send it`;
     } catch (e) {
       wf.status = `Changes made. Could not send the reply: ${String(e).slice(0, 100)}. Reply "ok ${wf.code}" to retry`;
@@ -45679,6 +46267,11 @@ function mergeWork(wf, w, now = /* @__PURE__ */ new Date(), from = "", changedAs
   if (w.plan) k.plan = mergePlan(k.plan ?? [], w.plan, at3, !!from);
   if (w.closed) k.closed = { at: at3, why: w.closed };
 }
+function mergeReportWork(wf, r, home = wf, changedAsk, allowClose = true) {
+  const deferred = !!(r.reply || r.question || r.effects?.length || r.job);
+  wf.closeWorkAfterSend = deferred ? r.work?.closed : void 0;
+  mergeWork(home, r.work && (deferred || !allowClose) ? { ...r.work, closed: void 0 } : r.work, void 0, label(wf, home), changedAsk);
+}
 function mergePlan(old, next2, at3, keep = false) {
   let n = old.reduce((m, p) => Math.max(m, Number(p.id.replace(/\D/g, "")) || 0), 0);
   const merged = next2.slice(0, 10).map((p) => {
@@ -45691,7 +46284,7 @@ function mergePlan(old, next2, at3, keep = false) {
   return [...old.map((o) => merged.find((m) => m.id === o.id) ?? o), ...merged.filter((m) => !old.some((o) => o.id === m.id))].slice(0, 12);
 }
 function newTurn(wf, keepSent = false) {
-  Object.assign(wf, { draft: void 0, prDraft: void 0, choices: void 0, question: void 0, effects: void 0, promised: void 0, decision: void 0, approved: void 0, picked: void 0, sendAt: void 0, correction: void 0, todos: void 0, newCount: 0, ...keepSent ? {} : { sent: void 0 } });
+  Object.assign(wf, { draft: void 0, prDraft: void 0, closeWorkAfterSend: void 0, choices: void 0, question: void 0, effects: void 0, promised: void 0, decision: void 0, approved: void 0, picked: void 0, sendAt: void 0, correction: void 0, todos: void 0, newCount: 0, ...keepSent ? {} : { sent: void 0 } });
 }
 function keepTodos(wf, at3) {
   const kept = wf.kept ?? [];
@@ -45717,13 +46310,15 @@ function settle3(wf, r, home = wf) {
   }
   return false;
 }
-function afterSend(wf, text3, msgId, home = wf, closeApproval = true) {
+function afterSend(wf, text3, msgId, home = wf, closeApproval = true, closeReport = true) {
   if (!home.work) return false;
   wf.completionSeen = `sent:${msgId}`;
   step(home, `${label(wf, home)}Replied: ${text3}`, { ref: `sent:${msgId}` });
   const effects = (wf.effects ?? []).filter((e) => !e.off);
-  if (closeApproval && wf === home && approvalOnly(home) && !wf.follow && effects.length && effects.every((e) => e.done) && effects.some((e) => isVote(e.call) && (voteValue(e.call) ?? 0) >= 5 && linksIn(wf.lastAsk ?? "").includes(`pr:${prIdOf(e.call)}`))) {
-    home.work.closed = { at: (/* @__PURE__ */ new Date()).toISOString(), why: "Approval recorded and reply sent" };
+  const reported = closeReport && !wf.pending.length && !wf.question && effects.every((e) => e.done) && !wf.effects?.some((e) => e.off) && wf.closeWorkAfterSend;
+  wf.closeWorkAfterSend = void 0;
+  if (reported || closeApproval && wf === home && approvalOnly(home) && !wf.follow && effects.length && effects.every((e) => e.done) && effects.some((e) => isVote(e.call) && (voteValue(e.call) ?? 0) >= 5 && linksIn(wf.lastAsk ?? "").includes(`pr:${prIdOf(e.call)}`))) {
+    home.work.closed = { at: (/* @__PURE__ */ new Date()).toISOString(), why: reported || "Approval recorded and reply sent" };
     home.work.next = void 0;
     home.work.waitingOn = void 0;
   }
@@ -45734,11 +46329,31 @@ function afterSend(wf, text3, msgId, home = wf, closeApproval = true) {
   Object.assign(wf, { state: "open", status: statusOf(home), pending: [] });
   return true;
 }
-function canCloseApproval(store2, home) {
-  return approvalOnly(home) && !/\b(?:then|also|after|before|plus)\b|[;&]|\band\b(?!\s+approve)/i.test(home.lastAsk ?? "") && !(home.work?.parts ?? []).some((id) => {
+function approvalReplyMatches(text3, vote, pr) {
+  if (!approvalMention(text3)) return true;
+  const line2 = text3.trim().replace(/\u2019/g, "'").replace(/[.!]$/, "");
+  const target2 = "(?:\\s+(?:(?:the\\s+)?(?:PR|pull request)(?:\\s*#?\\s*\\d+)?|it|\\d+))?";
+  const condition = "(?:\\s+(?:after|once|when|until)\\s+(?:(?:the\\s+)?(?:build|tests?|checks?|requested changes|null check|comments?)(?:\\s+(?:is|are)\\s+(?:green|fixed|addressed|resolved|complete|done))?|checking the comments))?";
+  const future = new RegExp(`^(?:(?:(?:Rechecked,?\\s+)?looks good(?: to me)?[.!;]|Yes,)\\s+)?(?:I|we)(?:'ll| will(?: not)?| won't)\\s+(?:approve|sign[ -]?off)${target2}(?:\\s+too)?${condition}(?:, and add [a-z][a-z -]{0,60} as a reviewer)?$`, "i");
+  if (future.test(line2)) return true;
+  if ((line2.match(/\d+/g) ?? []).some((id) => Number(id) !== pr)) return false;
+  if (vote === void 0 || !Object.values(VOTES).includes(vote)) return false;
+  const negative = new RegExp(`^(?:(?:I|we)\\s+(?:have not|haven't|did not|didn't|have never|never)\\s+(?:approved|signed[ -]?off)${target2}(?:\\s+yet)?|(?:Not yet,\\s*)?(?:my|our)\\s+approval\\s+(?:has not been|hasn't been|is not|isn't)\\s+(?:recorded|given))$`, "i");
+  if (negative.test(line2)) return vote !== void 0 && vote < 5;
+  const positive = new RegExp(`^(?:(?:I|we)\\s+(?:have\\s+)?)?(?:approved|signed[ -]?off)${target2}(?:,\\s*(?:thanks|with suggestions))?$|^LGTM$`, "i");
+  return vote !== void 0 && vote >= 5 && positive.test(line2);
+}
+function pendingParts(store2, home, except) {
+  return (home.work?.parts ?? []).filter((id) => id !== except).some((id) => {
     const part = store2.workflow(id);
-    return part && part.state !== "done" && (part.pending.length || part.question || part.draft || part.state === "running" || part.state === "waiting_on_task" || active(part));
+    return part && (pendingEffects(part.effects).length > 0 || part.state !== "done" && (part.pending.length || part.question || part.draft || part.state === "running" || part.state === "waiting_on_task" || active(part)));
   });
+}
+function canCloseReport(store2, home, reporter) {
+  return !pendingParts(store2, home, reporter.id) && (home === reporter || !home.pending.length && !pendingEffects(home.effects).length);
+}
+function canCloseApproval(store2, home) {
+  return approvalOnly(home) && approvalAsk(home.lastAsk ?? "") && !/\b(?:then|also|after|before|plus)\b|[;&]|\band\b(?!\s+approve)/i.test(home.lastAsk ?? "") && !pendingParts(store2, home);
 }
 function statusOf(wf) {
   const k = wf.work;
@@ -45801,7 +46416,7 @@ function ownerStep(wf, text3, msgId, home = wf) {
   newTurn(wf, !!wf.sent);
   Object.assign(wf, { state: "open", status: statusOf(home), pending: [] });
 }
-var DAY3, MAX_STEPS, active, inWork, label, sameLink, openTodos, approvalAsk, approvalOnly;
+var DAY3, MAX_STEPS, active, inWork, label, sameLink, openTodos, approvalMention, reReviewAsk, approvalAsk, approvalOnly;
 var init_work = __esm({
   "src/runner/work.ts"() {
     "use strict";
@@ -45815,7 +46430,9 @@ var init_work = __esm({
     label = (wf, home) => wf === home || wf.id === home.id ? "" : `${wf.asker?.name?.split(" ")[0] ?? wf.chat.name} (${wf.chat.group ? wf.chat.name : "1:1"}, ${wf.code}): `;
     sameLink = (a, b) => a.split(":")[0].toLowerCase() === b.split(":")[0].toLowerCase() && a.split(/[:/]/).at(-1) === b.split(/[:/]/).at(-1);
     openTodos = (wf) => (wf.kept ?? []).filter((t2) => !t2.done);
-    approvalAsk = (text3) => /approv|sign[ -]?off|\blgtm\b/i.test(text3) && !/re[ -]?review|review again|recheck/i.test(text3);
+    approvalMention = (text3) => /approv|sign[ -]?off|\blgtm\b/i.test(text3);
+    reReviewAsk = (text3) => /re[ -]?review|review again|recheck/i.test(text3);
+    approvalAsk = (text3) => approvalMention(text3) && !reReviewAsk(text3);
     approvalOnly = (wf) => {
       const k = wf.work;
       if (!k || !/^(?:please\s+)?(?:review\s+(?:and|&)\s+)?(?:approve|sign[ -]?off)\s+(?:PR|pull request)\s*#?\s*\d{4,}[.!]?$/i.test(k.goal)) return false;
@@ -45823,527 +46440,6 @@ var init_work = __esm({
       const goal = linksIn(k.goal).filter((l) => l.startsWith("pr:")), ask = linksIn(wf.lastAsk ?? "").filter((l) => l.startsWith("pr:"));
       return new Set([...k.links.filter((l) => /^pr:/i.test(l)), ...goal, ...ask].map((l) => l.split(/[:/]/).at(-1))).size <= 1;
     };
-  }
-});
-
-// src/store/numbers.ts
-var numbers_exports = {};
-__export(numbers_exports, {
-  counted: () => counted,
-  handledThisWeek: () => handledThisWeek,
-  numbersOf: () => numbersOf,
-  saveWeeks: () => saveWeeks
-});
-import { statSync as statSync7 } from "node:fs";
-function fromLog(store2, machine2, week) {
-  const files2 = store2.logFiles().filter((f) => f.machine === machine2 && f.day >= week && f.day <= addDays(week, 6));
-  return slim(files2.flatMap((f) => store2.logOf(f.file)));
-}
-function counted(store2, from = "") {
-  const saved = new Map(store2.numberWeeks().filter((w) => w.week >= from).map((w) => [`${w.machine}|${w.week}`, w.file]));
-  const pairs = /* @__PURE__ */ new Set([...saved.keys(), ...store2.logFiles().filter((f) => weekOf(f.day) >= from).map((f) => `${f.machine}|${weekOf(f.day)}`)]);
-  return [...pairs].flatMap((k) => {
-    const file2 = saved.get(k), w = file2 ? readJson(file2, void 0) : void 0;
-    return w?.schema === SCHEMA ? w.events : fromLog(store2, ...split(k));
-  });
-}
-function saveWeeks(store2, now = /* @__PURE__ */ new Date()) {
-  const week = weekOf(now.toISOString().slice(0, 10)), have = new Map(store2.numberWeeks().map((w) => [`${w.machine}|${w.week}`, w.file]));
-  const files2 = store2.logFiles(), last3 = /* @__PURE__ */ new Map();
-  for (const f of files2) if (f.day > (last3.get(f.machine) ?? "")) last3.set(f.machine, f.day);
-  const quiet = (m, w) => files2.filter((f) => f.machine === m && weekOf(f.day) === w).every((f) => now.getTime() - statSync7(f.file).mtimeMs > 6 * 36e5);
-  const synced = (m, w) => (last3.get(m) ?? "") > addDays(w, 6) && quiet(m, w);
-  const done2 = [...new Set(files2.map((f) => `${f.machine}|${weekOf(f.day)}`))].filter((k) => {
-    const [m, w] = split(k);
-    return m === store2.machine ? w < week : w < addDays(week, -7) && synced(m, w);
-  }).sort();
-  const kept = done2.filter((k) => have.has(k) && readJson(have.get(k), {}).schema !== SCHEMA);
-  let n = 0;
-  for (const k of done2.filter((k2) => !have.has(k2))) {
-    const [m, w] = split(k);
-    if (store2.saveNumberWeek(m, w, { schema: SCHEMA, machine: m, week: w, at: now.toISOString(), events: fromLog(store2, m, w) })) n++;
-    else kept.push(k);
-  }
-  if (kept.length) store2.log({ event: "numbers-weeks-kept", weeks: kept.map((k) => k.replace("|", "-")), why: "A week file is never rewritten; these are read from the log instead." });
-  return n;
-}
-function numbersOf(store2, key = "this", now = /* @__PURE__ */ new Date()) {
-  return numbers(counted(store2), store2.workflows(), now, store2.config()?.tz, key);
-}
-function handledThisWeek(store2, items2, now = /* @__PURE__ */ new Date()) {
-  const tz = store2.config()?.tz, today = dayIn(now, tz), from = addDays(weekOf(today), -7);
-  const key = [
-    today,
-    items2.length,
-    items2.reduce((n2, w) => n2 + w.msgIds.length, 0),
-    ...store2.numberWeeks().filter((w) => w.week >= from).map((w) => w.file),
-    ...store2.logFiles().filter((f) => weekOf(f.day) >= from).map((f) => {
-      try {
-        const st = statSync7(f.file);
-        return `${f.file}:${st.size}:${st.mtimeMs}`;
-      } catch {
-        return f.file;
-      }
-    })
-  ].join("|");
-  const had = handledCache.get(store2.root);
-  if (had?.key === key) return had.n;
-  const n = numbers(counted(store2, from), items2, now, tz, "this").handled.n;
-  handledCache.set(store2.root, { key, n });
-  return n;
-}
-var SCHEMA, split, handledCache;
-var init_numbers2 = __esm({
-  "src/store/numbers.ts"() {
-    "use strict";
-    init_fs();
-    init_numbers();
-    init_schedule();
-    SCHEMA = 2;
-    split = (k) => [k.slice(0, k.lastIndexOf("|")), k.slice(k.lastIndexOf("|") + 1)];
-    handledCache = /* @__PURE__ */ new Map();
-  }
-});
-
-// src/core/whose.ts
-function whoseMove(f) {
-  const r = RULES2.find((r2) => r2.when(f));
-  return { section: r.section, rule: r.id };
-}
-var running, startsNext, RULES2, URGENCY, PRECEDENCE, rankOf;
-var init_whose = __esm({
-  "src/core/whose.ts"() {
-    "use strict";
-    running = (f) => f.job?.state === "running" && !f.job.watch;
-    startsNext = (f) => {
-      const draft2 = f.state === "running" && f.queue === "next", run2 = f.job?.state === "queued" && !f.job.watch && !f.job.retryLater && !!f.job.slot;
-      return f.runner === "ok" ? draft2 || f.state === "scheduled" || run2 : f.runner === "paused" && (draft2 || run2 && !f.job.retry);
-    };
-    RULES2 = [
-      // An item with an open to-do is not done for the owner, whatever its state (rule 5).
-      { id: "catchup", section: "catchup", when: (f) => f.state === "done" && f.fyiUnread && !f.todos },
-      { id: "done", section: "done", when: (f) => f.state === "done" && !f.todos },
-      { id: "needs-you", section: "move", when: (f) => f.state === "needs_human" },
-      // A watch between checks is waiting_on_task with its job done: that is waiting, not stopped.
-      { id: "stopped", section: "move", when: (f) => f.state === "waiting_on_task" && (!f.job || f.job.state === "failed" || f.job.state === "done" && !f.job.watch) },
-      // Rule 5 (design §3), before Working as its number says. Only where rule 4 places the item (the owner's step, nothing running)
-      // does it say that step instead; while Delegate runs, the to-do keeps the item in Your move (review N2 P2-3).
-      // A rule send that is due places the item until it goes, with its time; then the to-do is back (re-review N2 P2-B).
-      { id: "todo", section: "move", when: (f) => !!f.todos && f.state !== "scheduled" && !(f.work?.open && f.work.next === "you" && !running(f) && !startsNext(f)) },
-      { id: "job-running", section: "working", when: running },
-      { id: "starts-next", section: "working", when: startsNext },
-      { id: "your-step", section: "move", when: (f) => !!f.work?.open && f.work.next === "you" },
-      { id: "partner-wait", section: "waiting", when: (f) => !!f.work?.open && !!f.work.waiting },
-      { id: "waiting", section: "waiting", when: () => true }
-    ];
-    URGENCY = ["move", "working", "waiting", "catchup", "done"];
-    PRECEDENCE = ["needs-you", "stopped", "your-step", "todo", "job-running", "starts-next", "partner-wait", "waiting", "catchup", "done"];
-    rankOf = (id) => {
-      const i = PRECEDENCE.indexOf(id);
-      return i < 0 ? PRECEDENCE.length : i;
-    };
-  }
-});
-
-// src/web/next.ts
-var next_exports = {};
-__export(next_exports, {
-  COMMANDS: () => COMMANDS,
-  INLINE_MAX: () => INLINE_MAX,
-  chipsOf: () => chipsOf,
-  dryText: () => dryText,
-  every: () => every,
-  factsOf: () => factsOf2,
-  gerund: () => gerund,
-  mustSee: () => mustSee,
-  nextView: () => nextView,
-  place: () => place,
-  rowsOf: () => rowsOf,
-  snapshot: () => snapshot
-});
-function snapshot(store2, now = Date.now()) {
-  const cfg = store2.config(), c = store2.control(), workflows = store2.workflows();
-  const jobs = new Map(store2.jobs().map((j2) => [j2.id, j2]));
-  const cap = cfg.dailyRuns ?? 200, runs = store2.runsToday(), reading = readingOf(store2, now).state;
-  const runner = c.stopped ? "stopped" : reading === "off" || reading === "never" ? "off" : c.paused || cfg.paused ? "paused" : runs >= cap ? "capped" : "ok";
-  const held = new Set(store2.openWindows().map((w) => w.id));
-  const queued = workflows.filter((w) => w.state === "running").sort((a, b) => a.updatedAt.localeCompare(b.updatedAt));
-  const queue = /* @__PURE__ */ new Map();
-  const pacedSlots = runs < cap / 2 ? cfg.maxParallel ?? 3 : 0;
-  let paced = 0, room = cap - runs;
-  for (const w of queued) queue.set(w.id, held.has(w.id) || w.job && held.has(w.job) ? "held" : !w.paced || paced++ < pacedSlots ? "next" : "line");
-  for (const w of [...queued.filter((w2) => !w2.paced), ...queued.filter((w2) => w2.paced)]) if (queue.get(w.id) === "next" && room-- <= 0) queue.set(w.id, "limit");
-  room -= workflows.filter((w) => w.notes?.some((n) => n.a === void 0) && w.state !== "running").length;
-  const allJobs = [...jobs.values()];
-  let jobRoom = Math.min((cfg.jobs?.parallel ?? 3) - allJobs.filter((j2) => j2.state === "running" && !j2.run?.relay).length, room);
-  const slots = /* @__PURE__ */ new Set();
-  const dueWatch = (j2) => !!j2.every && j2.state === "done" && !!j2.nextAt && Date.parse(j2.nextAt) <= now;
-  for (const j2 of [...allJobs.filter(dueWatch), ...allJobs.filter((j3) => j3.state === "queued" && !j3.every && !j3.relay && !held.has(j3.id) && !(j3.retry && Date.parse(j3.retry.at) > now))]) if (jobRoom-- > 0 && !j2.every) slots.add(j2.id);
-  const first3 = cfg.owner.name.split(/\s+/)[0];
-  return {
-    workflows,
-    jobs,
-    waiting: store2.waiting(),
-    automations: store2.automations(),
-    runner,
-    queue,
-    slots,
-    catchupSeen: store2.seen().catchup ?? new Date(now - 864e5).toISOString(),
-    me: [cfg.owner.name, first3, ...cfg.aliases ?? []].filter(Boolean).map((s3) => s3.toLowerCase()),
-    tz: cfg.tz,
-    now
-  };
-}
-function factsOf2(s3, sub) {
-  if (sub.kind === "waiting") return { subject: "waiting", state: sub.w.state === "waiting" ? "waiting_on_sender" : "done", runner: s3.runner, fyiUnread: false };
-  if (sub.kind === "reminder") return { subject: "reminder", state: sub.a.state === "proposed" ? "needs_human" : sub.a.state === "ended" ? "done" : "open", runner: s3.runner, fyiUnread: false };
-  const w = sub.wf, j2 = w.job ? s3.jobs.get(w.job) : void 0;
-  return {
-    subject: "item",
-    state: w.state,
-    runner: s3.runner,
-    queue: s3.queue.get(w.id),
-    job: j2 && { state: j2.state, watch: !!j2.every, retryLater: !!j2.retry && Date.parse(j2.retry.at) > s3.now, slot: s3.slots.has(j2.id), retry: !!j2.retry },
-    // A step for "them" that waits on the owner by name is the owner's step.
-    work: w.work && { open: !w.work.closed, next: nextWho(s3, w.work), waiting: !!w.work.waitingOn },
-    todos: openTodos(w).length,
-    fyiUnread: !!w.fyi && (w.fyi.at ?? w.updatedAt) > s3.catchupSeen
-  };
-}
-function nextOf2(s3, sub, f, section) {
-  if (section === "done" || section === "catchup") return {};
-  if (sub.kind === "waiting") return { next: { owner: { kind: "others", text: sub.w.to.join(", ") || "them" }, what: sub.w.text } };
-  if (sub.kind === "reminder") {
-    const a = sub.a;
-    if (section === "move") return { next: { owner: { kind: "you" }, what: `start reminding ${a.to.name}` } };
-    if (a.state === "paused") return { next: { owner: { kind: "nobody" }, what: `reminding ${a.to.name} is paused` } };
-    return { next: { owner: { kind: "delegate" }, what: `reminds ${a.to.name}${a.next ? ` next ${clock2(new Date(a.next), s3.tz)}` : ""}` }, why: s3.runner === "ok" ? void 0 : runnerWhy[s3.runner] };
-  }
-  const w = sub.wf, j2 = w.job ? s3.jobs.get(w.job) : void 0;
-  if (section === "move") return { next: { owner: { kind: "you" }, what: f.state === "waiting_on_task" ? `${NAME} stopped: ${(j2?.error ?? "its run ended without a result").slice(0, 120)}` : f.work?.next === "you" && f.state !== "needs_human" ? w.work?.next?.what : void 0 } };
-  if (section === "working") return { next: { owner: { kind: "delegate" } } };
-  const busy2 = f.state === "running" || f.state === "scheduled" || f.job?.state === "queued" && !f.job.watch;
-  const onPause = s3.runner === "paused" && (f.state === "scheduled" || !!f.job?.retry);
-  const why2 = busy2 && s3.runner !== "ok" && (s3.runner !== "paused" || onPause) ? runnerWhy[s3.runner] : f.job?.retryLater && j2?.retry ? `tries again ${clock2(new Date(j2.retry.at), s3.tz)}` : f.queue === "line" ? "in line behind live asks" : f.queue === "limit" ? runnerWhy.capped : f.job?.state === "queued" && !f.job.slot && !f.job.watch ? "waits for a free run slot" : f.queue === "held" ? "open in your AI chat" : void 0;
-  if (f.job?.watch) return { next: { owner: { kind: "delegate" }, what: `checks every ${j2.every} min` }, why: why2 };
-  const n = w.work && !w.work.closed ? w.work.next : void 0;
-  if (n?.who === "them") {
-    return { next: { owner: { kind: "others", text: n.what }, what: n.what }, why: why2 };
-  }
-  if (n?.who === "me") {
-    const runs = !!j2 && (j2.state === "queued" || j2.state === "running") || !!w.work.plan?.some((p) => p.probe && !p.done);
-    return { next: { owner: runs ? { kind: "delegate" } : { kind: "nobody" }, what: n.what }, why: why2 };
-  }
-  if (f.work?.open && w.work?.waitingOn) return { next: { owner: { kind: "others", text: w.work.waitingOn.who }, what: w.work.waitingOn.where }, why: why2 };
-  if (f.state === "waiting_on_sender") return { next: { owner: { kind: "others", text: w.asker?.name ?? "them" } }, why: why2 };
-  return { next: busy2 ? { owner: { kind: "delegate" } } : { owner: { kind: "nobody" } }, why: why2 };
-}
-function place(s3) {
-  const byId = new Map(s3.workflows.map((w) => [w.id, w])), byCode = new Map(s3.workflows.map((w) => [w.code, w]));
-  const homeOf2 = (w) => w.partOf && byId.get(w.partOf) || w;
-  const subjects = [
-    ...s3.workflows.filter((w) => w.code).map((wf) => ({ home: homeOf2(wf).code, sub: { kind: "item", wf }, at: wf.changedAt ?? wf.updatedAt, who: wf.asker?.name, chat: wf.chat.name })),
-    ...s3.waiting.filter((w) => w.state === "waiting").map((w) => ({ home: w.item && byCode.get(w.item) && homeOf2(byCode.get(w.item)).code || w.code, sub: { kind: "waiting", w }, at: w.at, who: w.to.join(", "), chat: w.chat.name })),
-    ...s3.automations.filter((a) => a.state !== "ended").map((a) => ({ home: a.code, sub: { kind: "reminder", a }, at: a.updatedAt, who: a.to.name }))
-  ];
-  const threads = /* @__PURE__ */ new Map();
-  for (const x of subjects) {
-    const f = factsOf2(s3, x.sub), { section, rule } = whoseMove(f);
-    const code = x.sub.kind === "item" ? x.sub.wf.code : x.sub.kind === "waiting" ? x.sub.w.code : x.sub.a.code;
-    const have = threads.get(x.home);
-    const sec = have ? URGENCY.indexOf(section) - URGENCY.indexOf(have.section) : -1, rk = have ? rankOf(rule) - rankOf(have.rule) : -1;
-    const wins = !have || sec < 0 || sec === 0 && (rk < 0 || rk === 0 && code === x.home);
-    const placed = { code: x.home, act: code, section, rule, subjects: [...have?.subjects ?? [], code], title: titleOf(x.sub).slice(0, 160), who: x.who, chat: x.chat, at: x.at, ...nextOf2(s3, x.sub, f, section) };
-    if (wins) threads.set(x.home, have ? { ...placed, at: have.at > x.at ? have.at : x.at } : placed);
-    else threads.set(x.home, { ...have, subjects: [...have.subjects, code], at: have.at > x.at ? have.at : x.at });
-  }
-  return [...threads.values()].sort((a, b) => URGENCY.indexOf(a.section) - URGENCY.indexOf(b.section) || b.at.localeCompare(a.at));
-}
-function dryText(rows) {
-  const out = [];
-  for (const sec of URGENCY.filter((x) => x !== "done")) {
-    const in_ = rows.filter((r) => r.section === sec);
-    out.push(`${NAMES[sec]} \xB7 ${in_.length}`);
-    for (const r of in_) {
-      const also = r.subjects.length > 1 ? ` (+${r.subjects.filter((c) => c !== r.act).join(", ")})` : "";
-      out.push(`  ${r.act.padEnd(4)} [${r.rule}] ${r.title.replace(/\s+/g, " ").slice(0, 90)}${also}`);
-      const facts = [r.who, r.chat].filter(Boolean).join(" \xB7 ");
-      const what = r.next?.what?.replace(/\s+/g, " ").slice(0, 80);
-      const next2 = !r.next ? "" : r.next.owner.kind === "others" ? `Next: ${r.next.owner.text.replace(/\s+/g, " ").slice(0, 80)}` : `Next: ${ownerText(r.next.owner)}${what ? `: ${what}` : ""}`;
-      out.push(`       ${[facts, next2, r.why && `(${r.why})`].filter(Boolean).join(" \xB7 ")}`);
-    }
-  }
-  out.push(`DONE \xB7 ${rows.filter((r) => r.section === "done").length}`);
-  return out.join("\n");
-}
-function gerund(goal) {
-  const [w0, ...rest2] = goal.trim().split(/\s+/), w = (w0 ?? "").toLowerCase();
-  if (!w || /ing$/.test(w)) return goal.trim().replace(/^\S+/, w);
-  const g = /[^aeiou]e$/.test(w) && w !== "be" ? w.slice(0, -1) : /^[^aeiou]*[aeiou][^aeiouwxy]$/.test(w) ? w + w.at(-1) : w;
-  return [`${g}ing`, ...rest2].join(" ");
-}
-function chipsOf(w, j2, watchChanged = false) {
-  const out = [];
-  if (watchChanged) out.push({ kind: "changed", text: "Changed" });
-  if (!w) return out;
-  if (w.before) out.push({ kind: "before", text: "From before setup" });
-  if (w.missed) out.push({ kind: "pointed", text: "You pointed at this" });
-  if (j2?.retry && j2.state !== "done" && j2.state !== "failed") out.push({ kind: "retrying", text: "Retrying" });
-  if (w.chat.guests) out.push({ kind: "guests", text: "Guests in chat" });
-  if (w.startedBy === "room") out.push({ kind: "room", text: "To the room" });
-  if (w.held === "paused" && w.state === "needs_human") out.push({ kind: "held", text: "Held: you paused" });
-  if (w.fyi?.weight === "high" && w.state === "done") out.push({ kind: "worth", text: "Worth a look" });
-  return out;
-}
-function moveKind(w) {
-  if (w.work?.proposed) return "track";
-  if (!w.draft?.text && !asksReviewAgain(w.code, w.question) && (w.promise?.state === "failed" || w.promise?.state === "offered" && pendingEffects(w.effects).length)) return "promise";
-  if (w.draft?.holding) return "holding";
-  if (w.work && !w.draft && !w.choices && !w.meeting && /^No news/.test(w.status)) return "check-date";
-  const t2 = cardType(w);
-  return t2 === "reply" && !w.draft?.text ? "question" : t2;
-}
-function delegateNext(s3, p, j2) {
-  const why2 = p.why ?? "";
-  if (/^tries again/.test(why2) && j2?.retry) return { what: `tries again {at} (${triesOf(j2.retry)})`, at: j2.retry.at };
-  if (/in line/.test(why2)) return { what: "drafts it after the live asks" };
-  if (/daily limit/.test(why2)) return { what: "starts tomorrow; the daily limit is reached" };
-  if (/run slot/.test(why2)) return { what: "starts when a run slot is free" };
-  if (/AI chat/.test(why2)) return { what: "waits while it is open in your AI chat" };
-  if (s3.runner === "paused") return { what: "starts when you resume" };
-  if (s3.runner === "stopped") return { what: "starts when you start it again" };
-  if (s3.runner === "off") return { what: "starts when a machine reads your chats again" };
-  return { what: "starts next cycle" };
-}
-function itemRow2(s3, p, w) {
-  const j2 = w.job ? s3.jobs.get(w.job) : void 0, name = first2(w.asker?.name), c = w.code;
-  const where = w.chat.name && w.chat.name !== w.asker?.name && w.chat.name !== name ? w.chat.name : void 0;
-  const chats = new Set(p.subjects.map((c2) => s3.workflows.find((x) => x.code === c2)).filter((x) => x && x.partOf === w.id && x.chat.id !== w.chat.id).map((x) => x.chat.id)).size;
-  const ask = w.lastAsk ? { by: w.asker?.name ?? "They", verb: "asked", text: clip2(w.lastAsk, 200) } : void 0;
-  const facts = { who: w.asker?.name, ...where ? { where } : {}, at: w.createdAt, verb: "asked", ...ask ? { quote: ask } : {}, ...chats ? { also: chats } : {} };
-  const base = { who: who(w.asker?.name), facts, chips: chipsOf(w, j2), teams: teamsLink2(w), rev: w.revAt ?? w.updatedAt };
-  const open2 = { label: "Open" };
-  const goal = (t2) => t2 ? [{ label: "Goal", text: clip2(t2, 200) }] : [];
-  if (w.state === "scheduled") {
-    const rule = w.decision?.ruleId ? ` (rule ${w.decision.ruleId})` : "";
-    return { ...base, kind: "scheduled", headline: `Sends to ${name}${rule}: "${clip2(w.draft?.text, 70)}"`, ...p.section === "working" ? { next: { owner: { kind: "delegate" }, what: "sends it at {at}", ...w.sendAt ? { at: w.sendAt } : {} } } : {}, primary: { label: "Hold", command: `later ${c}` } };
-  }
-  if (p.section === "move") {
-    if (p.rule === "stopped") return { ...base, kind: "stopped", headline: `Couldn't finish ${j2?.goal ? gerund(clip2(j2.goal, 100)) : `this for ${name}`}: try again, or do it yourself`, facts: { ...facts, notes: [{ label: "Why", text: whyOf(j2?.error) }] }, primary: { label: "Try again", command: `${c}: try again` }, more: [{ label: "Close", command: `close ${c}` }] };
-    if (p.rule === "todo") return todoRow(s3, base, w);
-    if (p.rule === "your-step") return { ...base, kind: "your-step", headline: clip2(w.work?.next?.what ?? w.work?.goal, 140), facts: { ...facts, notes: goal(w.work?.goal) }, primary: { label: "Tell " + NAME, command: `${c}: {text}` } };
-    const kind = moveKind(w), d = w.draft?.text ?? "";
-    const fits = !!d && d.length <= INLINE_MAX && !pendingEffects(w.effects).length && !w.choices && !mustSee(w);
-    const clash = w.context?.find((f) => f.tone === "warn");
-    switch (kind) {
-      // A row never sends: Open shows the reply to read, edit or send (owner 10-21: Send on a row sent a reply meant to be edited).
-      case "reply":
-        return { ...base, kind, ...said(`Send reply to ${name}`, d, fits), primary: open2 };
-      case "holding":
-        return { ...base, kind, ...said(`Send ${name} a holding reply`, d, fits), primary: open2 };
-      case "question":
-        return { ...base, kind, headline: `Answer ${name}: ${clip2(w.question ?? w.lastAsk, 110)}`, primary: open2 };
-      case "choice":
-        return { ...base, kind, headline: `Pick for ${name}: ${clip2(pickPrompt(w.choices?.prompt ?? w.lastAsk), 110)}`, primary: open2 };
-      case "meeting":
-        return { ...base, kind, headline: `Meet ${name}: ${clip2(w.meeting?.subject ?? w.lastAsk, 90)}?`, when: w.meeting?.start, ...clash ? { warn: `${clash.label}: ${clash.text}` } : {}, primary: open2 };
-      case "review":
-        return { ...base, kind, headline: `Approve ${commentsOrChanges(w)}${d ? `, then reply to ${name}` : ""}`, next: { owner: { kind: "delegate" }, what: `after your ok, ${NAME} ${/comment/.test(commentsOrChanges(w)) ? "posts them" : "makes them"}${d ? " and replies" : ""}` }, primary: open2 };
-      case "check-date":
-        return { ...base, kind, headline: `No news on "${clip2(w.work?.goal, 80)}": nudge, wait, or close?`, facts: { ...facts, quote: void 0, verb: void 0, at: w.work?.steps.at(-1)?.at ?? w.createdAt, notes: w.work?.waitingOn ? [{ label: "Waiting on", text: clip2(w.work.waitingOn.who, 60), since: w.work.waitingOn.since }] : [] }, primary: { label: "Draft a nudge", command: `${c}: nudge them` }, more: [{ label: "Wait 3 days", command: `wait ${c}: 3d` }, { label: "Close", command: `close ${c}` }] };
-      // The reply already went in the owner's words; one button makes the change it promised, its meaning on the row (Slice 3).
-      case "promise": {
-        const quote = { by: "You", verb: "said", text: clip2(w.promise.text.replace(/\n/g, " "), 200) };
-        const f = { ...facts, at: w.sent?.at ?? facts.at, verb: "said", quote };
-        if (w.promise.state === "failed") return { ...base, kind, headline: `Couldn't check what you told ${name}: check again`, facts: { ...f, notes: [{ label: "Why", text: whyOf(w.promise.why) }] }, primary: { label: "Check again", command: `ok ${c}` }, more: [{ label: "Skip", command: `skip ${c}` }] };
-        const left = pendingEffects(w.effects), meant = left.map(meaningOf).filter((m) => !!m);
-        return { ...base, kind, headline: saidLine(left), facts: { ...f, notes: meant.map((m) => ({ label: "PR", text: clip2(m, 200) })) }, primary: { label: left.length === 1 ? shown(left[0]).line : `Make ${left.length} changes`, command: `ok ${c}` }, more: [{ label: "Skip", command: `skip ${c}` }] };
-      }
-      // The owner's own words proposed this work: "You said", never after the asker's name.
-      case "track":
-        return { ...base, kind, headline: `Track this? ${clip2(w.work?.goal, 110)}`, facts: { ...facts, verb: "said", quote: w.lastAsk ? { by: "You", verb: "said", text: clip2(w.lastAsk, 200) } : void 0, notes: w.work?.doneWhen ? [{ label: "Done when", text: clip2(w.work.doneWhen, 160) }] : [] }, primary: { label: "Track", command: `ok ${c}` }, more: [{ label: "Skip", command: `skip ${c}` }] };
-    }
-  }
-  if (p.section === "catchup") return { ...base, kind: "catchup", headline: clip2(w.fyi?.line ?? w.lastAsk, 140), facts: { ...facts, quote: void 0, verb: "posted", at: w.fyi?.at ?? p.at }, ...w.fyi?.gist ? { gist: w.fyi.gist } : {}, primary: { label: "Needs me", command: `mine ${c}` }, more: w.watchedAs ? [] : [{ label: "Watch", command: `watch ${c}` }] };
-  const next2 = p.next;
-  if (p.section === "working") {
-    const run2 = j2 && (j2.state === "running" || j2.state === "queued");
-    return { ...base, kind: "working", headline: run2 ? clip2(j2.goal, 120) : `Drafting a reply to ${name}`, ...run2 ? { facts: { ...facts, verb: "started", at: j2.run?.startedAt ?? w.waitingSince ?? p.at } } : {}, next: { owner: { kind: "delegate" }, what: "back to you when done" } };
-  }
-  if (j2?.every || w.kind === "tracker") {
-    const changed = w.kind === "tracker" && !!w.changedAt && (!w.ackAt || w.changedAt > w.ackAt);
-    const last3 = j2?.result?.summary ? { label: "Last check", text: clip2(j2.result.summary, 160), ...j2.result.at ? { at: j2.result.at } : {} } : { label: "Last check", text: "not checked yet" };
-    return { ...base, who: void 0, kind: "watch", chips: chipsOf(w, j2, changed), headline: clip2(watchLine(w.lastAsk ?? w.work?.goal), 120), facts: { at: w.changedAt ?? p.at, notes: [last3], ...j2?.endsAt ? { until: j2.endsAt } : {} }, next: { owner: { kind: "delegate" }, what: j2?.every ? `checks ${every(j2.every)}` : "checks soon" }, ...changed ? { primary: { label: "Got it", command: `ok ${c}` } } : {}, more: [...j2?.endsAt ? [{ label: "Extend 7 days", command: `extend ${c}` }] : [], { label: "Stop", command: `skip ${c}` }] };
-  }
-  if (next2?.owner.kind === "nobody") return { ...base, kind: "nobody", headline: clip2(w.work?.goal ?? w.lastAsk, 120), facts: { ...facts, notes: next2.what ? [{ label: "Step", text: clip2(next2.what, 160) }] : [] }, next: { owner: { kind: "nobody" } }, primary: { label: "Do it now", command: `${c}: do the next step now` }, more: [{ label: "Close", command: `close ${c}` }] };
-  if (next2?.owner.kind === "delegate" || p.why) return { ...base, kind: "waiting-delegate", headline: j2 ? clip2(j2.goal, 120) : w.work && !w.work.closed ? clip2(w.work.goal, 120) : `Draft a reply to ${name}`, next: { owner: { kind: "delegate" }, ...delegateNext(s3, p, j2) } };
-  if (w.work && !w.work.closed) {
-    const on = w.work.waitingOn?.who && !s3.me.includes(w.work.waitingOn.who.toLowerCase()) ? w.work.waitingOn.who : void 0;
-    return { ...base, kind: "waiting-others", headline: clip2(on ? `${on}: ${w.work.goal}` : w.work.goal, 140), ...on ? {} : { next: next2 }, primary: { label: "Draft a nudge", command: `${c}: nudge them` }, more: [{ label: "Close", command: `close ${c}` }] };
-  }
-  return { ...base, kind: "waiting-person", headline: `Waiting on ${name} to answer`, facts: { ...facts, quote: void 0, notes: w.decision?.reason ? [{ label: "Waiting for", text: clip2(w.decision.reason, 160) }] : [] }, primary: { label: "Draft a nudge", command: `${c}: nudge them` } };
-}
-function todoRow(s3, base, w) {
-  const open2 = openTodos(w), t2 = open2[0], [what, why2] = t2.text.split(REFUSED);
-  const where = w.chat.name && w.chat.name !== w.asker?.name ? w.chat.name : void 0;
-  const more = open2.length > 1 ? ` (+${open2.length - 1} more)` : "";
-  const to = !why2 && !CLONE.test(t2.text) && w.asker?.name && !isMe(s3, w.asker.name) && !isMe(s3, w.asker.name.split(/\s+/)[0]) ? first2(w.asker.name) : void 0;
-  const promise2 = { ...to ? { to } : {}, at: t2.at, ...why2 ? { why: clip2(why2, 140) } : CLONE.test(t2.text) ? {} : { why: "no tool can do it" } };
-  return { ...base, kind: "todo", rev: open2.map((x) => x.at).sort().at(-1), headline: clip2(`To do: ${what.replace(/[.\s]+$/, "")}${more}`, 160), facts: { at: t2.at, ...where ? { where } : {}, promise: promise2 }, primary: { label: "Mark done", command: `close ${w.code}` }, more: [{ label: "Open" }] };
-}
-function workOf(s3, p, w, home) {
-  const k = home.work;
-  if (!k || k.closed || k.proposed) return void 0;
-  const who2 = nextWho(s3, k), plan2 = k.plan ?? [], items2 = new Map(s3.workflows.map((x) => [x.code, x]));
-  const on = k.waitingOn?.who && !isMe(s3, k.waitingOn.who) ? k.waitingOn.who : void 0;
-  const named2 = plan2.find((x) => !x.done && !!k.next && x.what === k.next.what);
-  const cur = named2 ?? plan2.find((x) => !x.done && x.who === who2) ?? (who2 ? void 0 : plan2.find((x) => !x.done));
-  const part = (x) => {
-    const it = x.in ? items2.get(x.in) : void 0;
-    return it && (it.id === home.id || it.partOf === home.id) ? it : void 0;
-  };
-  const person2 = (x) => {
-    const n = part(x)?.asker?.name;
-    return n && !isMe(s3, n) && !isMe(s3, n.split(/\s+/)[0]) ? n : void 0;
-  };
-  const owner2 = (x) => x.who === "you" ? { kind: "you" } : x.who === "me" ? { kind: "delegate" } : { kind: "others", text: person2(x) || x === named2 && on || "Someone else" };
-  const steps = plan2.map((x) => ({ what: x.what, owner: owner2(x), done: !!x.done, now: x === cur, ...part(x) ? { where: x.in } : {}, ...x.probe ? { build: x.probe.build } : {} }));
-  const seen = plan2.filter((x) => x.done && x.probe).sort((a, b) => b.done.localeCompare(a.done))[0];
-  const check2 = seen && { what: seen.ring ? "Deploy" : "Build", at: seen.done, build: seen.probe.build };
-  const yourNext = plan2.find((x) => !x.done && x.who === "you" && x !== cur);
-  const then = who2 && who2 !== "you" && k.next ? { owner: who2 === "me" ? { kind: "delegate" } : { kind: "others", text: on ?? "Someone else" }, what: k.next.what, ...yourNext ? { you: yourNext.what } : {} } : void 0;
-  return {
-    goal: k.goal,
-    steps,
-    ...who2 === "you" && k.next ? { yours: { what: k.next.what, ...check2 ? { check: check2 } : {} } } : {},
-    ...then ? { then } : {},
-    ...p.rule === "your-step" && w === home ? { report: `${home.code}: {result}: {text}` } : {},
-    happened: k.steps.slice(-6).reverse().map((x) => ({ at: x.at, what: x.what, news: !!x.news })),
-    total: k.steps.length
-  };
-}
-function waitRow(w) {
-  const to = firsts(w.to);
-  return { kind: "waiting-person", headline: clip2(`You asked ${to}: "${w.text}"`, 160), who: who(w.to[0]), facts: { where: w.chat.name, at: w.at, verb: "asked" }, chips: [], primary: { label: "Draft a nudge", command: `ok ${w.code}` }, more: [{ label: "Close", command: `skip ${w.code}` }], teams: w.msgId ? messageLink(w.chat.id, w.msgId) : void 0 };
-}
-function reminderRow(p, a) {
-  const facts = { who: a.to.name, where: when(a.schedule), at: a.updatedAt };
-  if (p.section === "move") return { kind: "reminder-new", headline: `Start reminding ${first2(a.to.name)}: "${clip2(a.text, 90)}"?`, who: who(a.to.name), facts, chips: [], primary: { label: "Start", command: `ok ${a.code}` }, more: [{ label: "Skip", command: `skip ${a.code}` }] };
-  const next2 = a.state === "paused" ? p.next : { owner: { kind: "delegate" }, what: a.next ? `reminds ${first2(a.to.name)} {at}` : `reminds ${first2(a.to.name)}`, ...a.next ? { at: a.next } : {} };
-  return { kind: "reminder", headline: clip2(`Reminding ${first2(a.to.name)}: "${a.text}"`, 160), who: who(a.to.name), facts, chips: [], next: next2, primary: a.state === "paused" ? { label: "Resume", command: `resume ${a.code}` } : { label: "Pause", command: `pause ${a.code}` }, more: [{ label: "Stop reminding", command: `skip ${a.code}` }] };
-}
-function freshOf(p, w, items2) {
-  if (!w) return {};
-  const changed = p.subjects.map((c) => items2.get(c)).filter((x) => x && x.kind !== "tracker").map((x) => x.changedAt).filter((x) => !!x).sort().at(-1);
-  const back = p.section === "move" && w.place?.section === "move" && w.place.since > w.createdAt ? w.place.since : void 0;
-  const msgs = p.subjects.flatMap((c) => {
-    const x = items2.get(c);
-    return x ? msgKeys(x) : [];
-  });
-  return { fresh: { born: w.createdAt, ...changed ? { changed } : {}, ...back ? { back } : {} }, ...msgs.length ? { msgs } : {} };
-}
-function rowsOf(s3, placed) {
-  const items2 = new Map(s3.workflows.map((w) => [w.code, w])), waits = new Map(s3.waiting.map((w) => [w.code, w])), autos = new Map(s3.automations.map((a) => [a.code, a]));
-  return placed.filter((p) => p.section !== "done").map((p) => {
-    const w = items2.get(p.act), wt = waits.get(p.act), a = autos.get(p.act);
-    const body = w ? itemRow2(s3, p, w) : wt ? waitRow(wt) : reminderRow(p, a);
-    const home = w && (w.partOf && s3.workflows.find((x) => x.id === w.partOf) || w), work2 = w && workOf(s3, p, w, home);
-    const todos = p.subjects.map((c) => items2.get(c)).filter((x) => !!x).flatMap((x) => openTodos(x).map((t2) => ({ id: t2.id, text: t2.text, at: t2.at, code: x.code })));
-    return { code: p.code, act: p.act, section: p.section, rule: p.rule, ...body, ...freshOf(p, w, items2), ...work2 ? { work: work2 } : {}, ...todos.length ? { todos } : {} };
-  });
-}
-function nextView(store2, now = Date.now(), options = {}) {
-  const s3 = options.snapshot ?? snapshot(store2, now), rows = rowsOf(s3, place(s3));
-  const of = (sec) => rows.filter((r) => r.section === sec);
-  const soon = (r) => r.kind === "meeting" && !!r.when && Date.parse(r.when) - now < 2 * 36e5 ? 0 : 1;
-  const move2 = of("move").sort((a, b) => soon(a) - soon(b) || a.facts.at.localeCompare(b.facts.at));
-  const changed = (r) => r.chips.some((c) => c.kind === "changed") ? 0 : 1;
-  const waiting = of("waiting").sort((a, b) => changed(a) - changed(b) || b.facts.at.localeCompare(a.facts.at));
-  const working = of("working").sort((a, b) => b.facts.at.localeCompare(a.facts.at));
-  const high = (r) => s3.workflows.find((w) => w.code === r.act)?.fyi?.weight === "high" ? 0 : 1;
-  const cu = of("catchup").sort((a, b) => high(a) - high(b) || b.facts.at.localeCompare(a.facts.at));
-  const reading = readingOf(store2, now);
-  const off = s3.runner === "ok" ? void 0 : s3.runner === "paused" ? { text: "Paused: drafts go on, nothing is sent" } : s3.runner === "off" ? { text: `${NAME} is off`, ...reading.at ? { since: reading.at } : {} } : { text: s3.runner === "capped" ? "Daily limit reached; it runs again tomorrow" : `${NAME} is ${s3.runner}` };
-  return { move: move2, working, waiting, catchup: { count: cu.length, worth: cu.filter((r) => high(r) === 0).length, rows: options.allCatchup ? cu : cu.slice(0, 3) }, minute: { facts: store2.proposals().filter((p) => p.state === "needs_human").length, suggestions: store2.habits().filter((h) => h.state === "suggested").length }, ...off ? { off } : {}, ...store2.control().paused || store2.config().paused ? { paused: true } : {}, handled: handledThisWeek(store2, s3.workflows, new Date(now)) };
-}
-var isMe, nextWho, runnerWhy, titleOf, ownerText, NAMES, CARD_MORE, COMMANDS, INLINE_MAX, first2, firsts, clip2, teamsLink2, triesOf, every, whyOf, mustSee, SHORT, said, commentsOrChanges, pickPrompt, watchLine, REFUSED, CLONE;
-var init_next = __esm({
-  "src/web/next.ts"() {
-    "use strict";
-    init_whose();
-    init_schedule();
-    init_effects();
-    init_channels();
-    init_automations();
-    init_retry();
-    init_view();
-    init_brand();
-    init_numbers2();
-    init_work();
-    isMe = (s3, who2) => !!who2 && s3.me.includes(who2.toLowerCase());
-    nextWho = (s3, k) => k.next?.who === "them" && isMe(s3, k.waitingOn?.who) ? "you" : k.next?.who;
-    runnerWhy = { off: `${NAME} is not reading now`, paused: `${NAME} is paused`, stopped: `${NAME} is stopped`, capped: "daily limit reached; tomorrow" };
-    titleOf = (sub) => sub.kind === "waiting" ? sub.w.text : sub.kind === "reminder" ? `Remind ${sub.a.to.name}: ${sub.a.text}` : sub.wf.work && !sub.wf.work.closed ? sub.wf.work.goal : sub.wf.fyi?.line ?? sub.wf.lastAsk ?? sub.wf.status;
-    ownerText = (o) => o.kind === "you" ? "You" : o.kind === "delegate" ? NAME : o.kind === "others" ? o.text : "nobody is on this yet";
-    NAMES = { move: "YOUR MOVE", working: `${NAME.toUpperCase()} IS WORKING`, waiting: "WAITING ON OTHERS", catchup: "CATCH UP", done: "DONE" };
-    CARD_MORE = "ok <code> except <every change> (Send reply only) | <code>: review again (Review again)";
-    COMMANDS = {
-      reply: `ok <code> (whole draft on the row) | card | ${CARD_MORE}`,
-      holding: `ok <code> (whole draft on the row) | card | ${CARD_MORE}`,
-      question: `card | ${CARD_MORE}`,
-      choice: `card | ${CARD_MORE}`,
-      meeting: `card | ${CARD_MORE}`,
-      review: `card | ${CARD_MORE}`,
-      promise: "ok <code>",
-      "check-date": "<code>: nudge them",
-      track: "ok <code>",
-      stopped: "<code>: try again",
-      "reminder-new": "ok <code>",
-      // N2: Report in the opened item ("<code>: Issues found: 403 on checkout"), and Mark done, which is close with a new meaning
-      // on an item with open to-dos: it marks them done and changes nothing else (R-NEX-05, R-NEX-07).
-      "your-step": "<code>: {text} | <code>: {result}: {text} (Report)",
-      todo: "close <code> (Mark done)",
-      "waiting-person": "ok <W code> | <code>: nudge them",
-      "waiting-others": "<code>: nudge them",
-      watch: "ok <code> (when changed)",
-      "waiting-delegate": "",
-      nobody: "<code>: do the next step now",
-      reminder: "pause <code> | resume <code>",
-      working: "",
-      scheduled: "later <code>",
-      catchup: "mine <code>"
-    };
-    INLINE_MAX = 180;
-    first2 = (n) => String(n || "them").split(/\s+/)[0];
-    firsts = (ns) => {
-      const f = ns.map(first2);
-      return f.length > 1 ? `${f.slice(0, -1).join(", ")} and ${f.at(-1)}` : f[0] ?? "them";
-    };
-    clip2 = (t2 = "", n = 90) => {
-      const s3 = t2.replace(/\s+/g, " ").trim();
-      return s3.length > n ? `${s3.slice(0, n - 1).trimEnd()}\u2026` : s3;
-    };
-    teamsLink2 = (w) => w.chat.id && w.lastMsgId && !w.chat.test ? messageLink(w.chat.id, w.lastMsgId) : void 0;
-    triesOf = (r) => `${r.n} of ${DELAYS[r.last.kind]?.length ?? MAX_TRIES}`;
-    every = (min) => min % 1440 === 0 ? min === 1440 ? "every day" : `every ${min / 1440} days` : min % 60 === 0 ? min === 60 ? "every hour" : `every ${min / 60} hours` : `every ${min} min`;
-    whyOf = (error62) => {
-      const m = /tool not found:?\s*(.+)$/i.exec(error62 ?? "");
-      return m ? `a tool is missing (${m[1].trim()})` : clip2(error62 ?? "its run ended without a result", 140);
-    };
-    mustSee = (w) => !!w.shareHold || !!w.draft?.commitment || !!w.context?.some((f) => f.tone === "warn") || !!w.gaps?.length || !!w.draft?.sources.some((x) => x.tier === "private" || !!x.label) || /_{3,}/.test(w.draft?.text ?? "");
-    SHORT = 80;
-    said = (verb, d, fits) => !fits || d.replace(/\s+/g, " ").trim().length <= SHORT ? { headline: `${verb}: "${clip2(d, SHORT)}"` } : { headline: verb, draft: d };
-    commentsOrChanges = (w) => {
-      const e = pendingEffects(w.effects), c = e.length && e.every((x) => /comment|review/i.test(x.action));
-      return `${e.length} ${c ? e.length === 1 ? "comment" : "comments" : e.length === 1 ? "change" : "changes"}`;
-    };
-    pickPrompt = (t2 = "") => {
-      const s3 = t2.trim().replace(/^(pick|choose|select)\s+/i, "");
-      return /[?]$/.test(s3) ? s3 : `${s3}?`;
-    };
-    watchLine = (t2 = "") => t2.replace(/^Watch\s+/i, "").replace(/\s+until\s+(it\s+is\s+)?merged$/i, ", until it merges").replace(/\s+until\s+(?!it merges$)/i, ", until ");
-    REFUSED = /\.\s*Not made for you:\s*/;
-    CLONE = /^Clone \S+ on \S+ \(git clone /;
   }
 });
 
@@ -47065,7 +47161,7 @@ init_state();
 
 // src/store/retention.ts
 init_state();
-import { existsSync as existsSync22, readdirSync as readdirSync7, readFileSync as readFileSync18, rmSync as rmSync6, statSync as statSync6, writeFileSync as writeFileSync11 } from "node:fs";
+import { existsSync as existsSync22, readdirSync as readdirSync7, readFileSync as readFileSync18, rmSync as rmSync6, statSync as statSync7, writeFileSync as writeFileSync11 } from "node:fs";
 import { join as join23 } from "node:path";
 var CONTENT = ["text", "summary", "lastAsk", "sent", "answer", "ask", "draft", "note"];
 function sweep2(store2, days2 = 30, now = Date.now()) {
@@ -47101,7 +47197,7 @@ function sweep2(store2, days2 = 30, now = Date.now()) {
   const sessions2 = join23(store2.root, "sessions");
   if (existsSync22(sessions2)) for (const id of readdirSync7(sessions2)) {
     const p = join23(sessions2, id);
-    if (!live2.has(id) && statSync6(p).mtimeMs < now - days2 * 864e5) {
+    if (!live2.has(id) && statSync7(p).mtimeMs < now - days2 * 864e5) {
       rmSync6(p, { recursive: true, force: true });
       n++;
     }
@@ -47145,7 +47241,7 @@ function removeOlder(dir, beforeMs) {
   let n = 0;
   for (const f of readdirSync7(dir)) {
     const p = join23(dir, f);
-    if (statSync6(p).mtimeMs < beforeMs) {
+    if (statSync7(p).mtimeMs < beforeMs) {
       rmSync6(p, { recursive: true, force: true });
       n++;
     }
@@ -47236,7 +47332,7 @@ function stampPlaces(store2, now = Date.now()) {
   let n = 0;
   for (const wf of s3.workflows.filter((w) => w.code)) {
     if (wf.state === "done" && (!wf.place || !OPEN.has(wf.place.section))) continue;
-    const { section, rule } = whoseMove(factsOf2(s3, { kind: "item", wf }));
+    const { section, rule } = whoseMove(factsOf(s3, { kind: "item", wf }));
     const was = wf.place, prev = parse3(was?.sig), sig = sigOf(wf, prev), key = `${sig.turn}|${sig.draft}|${sig.news}`;
     if (was?.section === section && was.rule === rule && was.sig === key) continue;
     let changedAt = wf.changedAt;
@@ -51253,7 +51349,7 @@ async function tick(store2, deps = {}) {
       if (throttled) store2.saveSchedule({ ...store2.schedule(), nextAt: new Date(Date.now() + backoff(store2) * 6e4).toISOString(), backoff: backoff(store2) });
       if (answers3) await applyAnswers(store2, src, cfg, procs, true);
       checkOpen(store2, procs, procs.bootMs?.());
-      await checkJobs(store2, src, cfg, procs);
+      await checkJobs(store2, src, cfg, procs, deps.probe);
       return { skipped: "source unavailable", ...empty, ms: Date.now() - t0 };
     };
     let commands;
@@ -51263,7 +51359,7 @@ async function tick(store2, deps = {}) {
       return await down(e, true);
     }
     store2.saveCursors(cursors);
-    const jobsEarly = await checkJobs(store2, src, cfg, procs);
+    const jobsEarly = await checkJobs(store2, src, cfg, procs, deps.probe);
     legacyEffects(store2);
     settleCompleted(store2, procs);
     const cli = cliServers(cfg.agent.flavor);
@@ -51282,7 +51378,7 @@ async function tick(store2, deps = {}) {
       closeProbe();
       store2.setHealth("source");
       checkOpen(store2, procs, procs.bootMs?.());
-      await checkJobs(store2, src, cfg, procs);
+      await checkJobs(store2, src, cfg, procs, deps.probe);
       reschedule(store2, cfg, false, t0);
       return { skipped: "stopped", commands, answers: answers2, asks: 0, runs: 0, nudged: false, ms: Date.now() - t0 };
     }
@@ -51327,7 +51423,7 @@ async function tick(store2, deps = {}) {
     }
     const runs = await dispatch(store2, src, cfg, deps.run, probe).finally(closeProbe);
     const handedBack = checkOpen(store2, procs, procs.bootMs?.());
-    const jobsDone = await checkJobs(store2, src, cfg, procs);
+    const jobsDone = await checkJobs(store2, src, cfg, procs, deps.probe);
     saveLearned(store2);
     try {
       closeDead(store2.root, store2.machine);
@@ -51354,7 +51450,7 @@ async function tick(store2, deps = {}) {
       }
     }
     await applyAnswers(store2, src, cfg, procs, true);
-    const autoSent = await dueSends(store2, src, cfg) + await dueAutomations(store2, src, cfg);
+    const autoSent = await dueSends(store2, src, cfg, deps.probe) + await dueAutomations(store2, src, cfg);
     const nudged = await nudge(store2, src, cfg);
     try {
       const mark2 = store2.probeMark();
@@ -52006,7 +52102,7 @@ async function seed() {
   writeFileSync15(join32(ROOT2, "knowledge", "topics", "meeting-options", "architecture.md"), "---\ntitle: Meeting options \xB7 architecture\ntype: card\ntopic: meeting-options\ncard: architecture\naudience: team\naliases: []\n---\n## Observations\n- [fact] Admin policy and sensitivity labels lock some meeting options; organizers cannot change those. ^demo (src: https://teams.microsoft.com/l/message/demo/1, 2026-10-01, Priya)\n");
   const src = new DemoSource(ROOT2);
   src.post("self", { id: "owner", name: "You" }, "notes to self");
-  src.post(CHAT, { id: "sam", name: "Sam" }, "Morning all!");
+  src.post(CHAT, { id: "owner", name: "You" }, "Morning all!");
   await tick(store2, { force: true });
   src.post(CHAT, { id: "vikram", name: "Vikram" }, "Can you review PR 1234 when you get a chance?");
   src.post(CHAT, { id: "priya", name: "Priya" }, "Why do some meeting options show as locked for organizers?");

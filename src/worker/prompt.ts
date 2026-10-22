@@ -36,6 +36,7 @@ export function buildPrompt(wf: Workflow, thread: Msg[], cfg: Config, root: stri
 		...lines,
 	]
 	if (wf.prRead) parts.push('', `Runner PR evidence [PR id, status, head, owner vote]: ${wf.prRead}. The reply must agree with these facts; a vote of 10 or 5 is approval. Answer any remaining owned questions too.`)
+	if (wf.prUnknown) parts.push('', 'The current PR owner approval could not be verified. Older votes and earlier conversation are historical context, not proof of current approval. Do not claim approval or non-approval; report the verification gap or read a fresh source.')
 	if (others.length) parts.push('', 'Other open items in this chat. If the new message asks for the same thing as one of them, even from someone else, set `same` to its code and leave out reply:', ...others.map(o => `- ${o.code} · ${o.asker?.name ?? 'someone'}: "${(o.lastAsk ?? '').slice(0, 200)}"`))
 	if (wf.kind === 'reply') parts.push('', ...allowed(cfg, 'every action the reply promises goes in `todos`'))
 	if (corrected.length) parts.push('', 'How the owner corrected your recent drafts. Learn the pattern (tone, length, what they leave out or add). Never copy facts from these into this reply:', ...corrected.map(c => `- ${c}`))

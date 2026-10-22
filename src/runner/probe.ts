@@ -1,12 +1,12 @@
 import type { BuildFacts, Config, Effect, PrFacts, RingFacts, RunFact, Workflow } from '../core/types.ts'
 import { buildCheck, buildOf, deployLine, isDeploy, pipelineOf, ringMeaning, ringMoved, targetOf } from '../core/deploy.ts'
 import { remoteOf } from './repos.ts'
-import { isVote, pendingEffects, prIdOf, reviewAgain, sameHead, voteValue } from '../core/effects.ts'
+import { isVote, pendingEffects, prIdOf, reviewAgain, sameHead, VOTES, voteValue } from '../core/effects.ts'
 import { effectLine } from '../core/render.ts'
 import type { Store } from '../store/state.ts'
 import { clientFor, toolServers } from '../adapters/mcp-client.ts'
 import { NAME } from '../brand.ts'
-import { active, approvalAsk, canCloseApproval, homeOf, linksIn, newTurn, statusOf, step, wake } from './work.ts'
+import { active, approvalAsk, approvalMention, approvalReplyMatches, canCloseApproval, homeOf, linksIn, newTurn, reReviewAsk, statusOf, step, wake } from './work.ts'
 import { closeFamily } from './apply.ts'
 import { realProcs } from './jobs.ts'
 
@@ -132,9 +132,12 @@ const VOTE: Record<string, (id: number) => string> = { '10': id => `approved PR 
 // Items waiting on the owner about a pull request are checked against Azure DevOps every 10 minutes, or at once on Check now:
 // a PR completed or abandoned, or the owner's own vote there, takes the item out of Needs you (dogfood 10-20: A12).
 export async function probePRs(store: Store, cfg: Config, probe: BuildProbe | undefined, now = Date.now(), force = false, subjects?: Workflow[]): Promise<number> {
-	if (!probe?.pr) return 0
+	if (!probe?.pr) {
+		for (const w of (subjects ?? []).filter(w => w.prRead || prRefOf(store, w))) { w.prRead = undefined; w.prUnknown = true; store.save(w, false) }
+		return 0
+	}
 	const mark = store.probeMark()
-	const items = (subjects ?? store.workflows()).filter(w => w.kind !== 'tracker' && (w.state === 'needs_human' || !!subjects && approvalAsk(w.lastAsk ?? ''))).map(w => ({ w, ref: prRefOf(store, w) })).filter((x): x is { w: Workflow; ref: PrRef } => !!x.ref)
+	const items = (subjects ?? store.workflows()).filter(w => w.kind !== 'tracker' && (w.state === 'needs_human' || !!subjects)).map(w => ({ w, ref: prRefOf(store, w) })).filter((x): x is { w: Workflow; ref: PrRef } => !!x.ref)
 	// A PR change not yet described is read at once, so the owner sees what it means before the ok.
 	if (!force && mark.prAt && now - Date.parse(mark.prAt) < EVERY_MS && !items.some(x => prChanges(x.w).some(e => !e.pr))) return 0
 	if (!items.length) return 0
@@ -156,12 +159,16 @@ export async function probePRs(store: Store, cfg: Config, probe: BuildProbe | un
 		if (!w || !subjects && (w.state !== 'needs_human' || queued.has(w.code))) continue
 		const st = states.get(`${ref.project}/${ref.repo}/${ref.id}`)
 		// A reply without a status or reviewers says nothing; it never moves an item or its baseline.
-		if (!st || !/^(active|completed|abandoned)$/i.test(st.status) || !st.votes.length && !/completed|abandoned/i.test(st.status)) continue
+		if (!st || !/^(active|completed|abandoned)$/i.test(st.status) || !st.votes.length && !/completed|abandoned/i.test(st.status)) {
+			w.prRead = undefined; w.prUnknown = true; store.save(w, false)
+			continue
+		}
 		describe(store, w, st)
 		// The owner is the one reviewer with their name; two with the same name prove nothing.
 		const named = me ? st.votes.filter(v => v.name.trim().toLowerCase() === me) : []
-		const mine = named.length === 1 ? named[0].vote : undefined
+		const mine = named.length === 1 && Object.values(VOTES).includes(named[0].vote) ? named[0].vote : undefined
 		w.prRead = JSON.stringify([ref.id, st.status, st.head, mine])
+		w.prUnknown = mine === undefined ? true : undefined
 		const changed = mine !== undefined && w.prVote !== undefined && mine !== w.prVote && mine !== 0
 		// Already approved when the ask came in counts only when the ask was for approval (A12: "approve kardo"); a re-review ask keeps waiting.
 		const receipt = (w.effects ?? []).find(e => e.done && isVote(e.call) && prIdOf(e.call) === ref.id)
@@ -170,10 +177,12 @@ export async function probePRs(store: Store, cfg: Config, probe: BuildProbe | un
 		// Closed before the ask came in is context, not news ("it merged yesterday and broke the build"): only a close after it counts.
 		const asked = Date.parse(store.thread(w.id).filter(m => !m.byOwner).at(-1)?.at ?? w.createdAt)
 		const closedNow = /completed|abandoned/i.test(st.status) && (st.closedAt ? Date.parse(st.closedAt) > asked : w.prStatus !== undefined && !/completed|abandoned/i.test(w.prStatus))
-		const stale = !!w.draft && !!w.prDraft && w.prDraft !== w.prRead
-		const reason = receipt && !w.sent || w.draft && w.prDraft === w.prRead ? undefined : stale ? `PR ${ref.id} changed since this draft`
+		const stale = !!w.draft && w.prDraft !== w.prRead && (!!w.prDraft || !receipt && mine !== undefined && mine >= 5 && approvalMention(w.draft.text))
+		const ownerWriting = w.draft?.byOwner && mine !== undefined && mine < 5 && !closedNow && approvalReplyMatches(w.draft.text, mine, ref.id)
+		const reason = receipt && !w.sent || w.draft && w.prDraft === w.prRead || ownerWriting ? undefined
 			: closedNow ? `PR ${ref.id} was ${/completed/i.test(st.status) ? 'completed' : 'abandoned'}`
-			: approvedNow || changed ? `You ${(VOTE[String(mine)] ?? (id => `voted on PR ${id}`))(ref.id)} in Azure DevOps` : undefined
+			: approvedNow || changed ? `You ${(VOTE[String(mine)] ?? (id => `voted on PR ${id}`))(ref.id)} in Azure DevOps`
+			: stale ? `PR ${ref.id} changed since this draft` : undefined
 		if (mine !== undefined && mine !== w.prVote) w.prVote = mine
 		w.prStatus = st.status
 		if (!reason) { store.save(w, false); continue }
@@ -184,7 +193,7 @@ export async function probePRs(store: Store, cfg: Config, probe: BuildProbe | un
 			if (home === w && canCloseApproval(store, home) && (approvedNow || closedNow)) closeFamily(store, realProcs, home, reason)
 			else Object.assign(w, { state: 'running', status: `PR checked: ${reason}; checking the remaining ask`, pending: w.pending.length ? w.pending : w.msgIds.slice(-1) })
 			if (home !== w) store.save(home)
-		} else if (stale || /\b(?:and|then|also|after|before|plus)\b|[;&]/i.test(w.lastAsk ?? '')) Object.assign(w, { state: 'running', status: `PR checked: ${reason}; checking the remaining ask`, pending: w.pending.length ? w.pending : w.msgIds.slice(-1) })
+		} else if (stale && !approvedNow && !closedNow || reReviewAsk(w.lastAsk ?? '') || !approvalAsk(w.lastAsk ?? '') && !closedNow || /\b(?:and|then|also|after|before|plus)\b|[;&]/i.test(w.lastAsk ?? '')) Object.assign(w, { state: 'running', status: `PR checked: ${reason}; checking the remaining ask`, pending: w.pending.length ? w.pending : w.msgIds.slice(-1) })
 		else Object.assign(w, { state: 'done', status: `Nothing needed: ${reason}`, pending: [], closedBy: 'nothing' })
 		store.log({ event: 'pr-moved', code: w.code, pr: ref.id, reason })
 		store.save(w)

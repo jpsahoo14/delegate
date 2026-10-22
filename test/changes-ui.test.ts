@@ -30,7 +30,7 @@ const ui = (): CardUi => ({ status: 'ready', msg: '', lost: false, stale: false,
 async function send(s: S, command: string, code: string) {
 	const said = actResult(s, command, cardOf(s, code)?.rev, 'page')
 	assert.ok(said.accepted, `${command}: ${said.text}`)
-	await applyAnswers(s, stub, s.config(), procs as never)
+	await applyAnswers(s, stub, s.config(), procs as never, false, { async builds() { return new Map() }, async pr() { return { status: 'active', votes: [{ name: s.config().owner.name, vote: 0 }] } } })
 	return said.ids.map(id => s.outcome(id) ?? '').join(' ')
 }
 
@@ -186,7 +186,10 @@ test('changes ui: "Send reply only" sends nothing until the second ok, and the f
 	// review P1-1: also when the owner wrote the reply themselves; it still counted on the change that failed or was dropped.
 	for (const [code, byOwner] of [['A62', false], ['A63', false], ['A62', true], ['A63', true]] as const) {
 		const s = fresh()
-		if (byOwner) { const w = s.byCode(code)!; s.save({ ...w, draft: { ...w.draft!, text: 'Approved, thanks!', byOwner: true } }, false) }
+		const w = s.byCode(code)!
+		s.saveThread(w.id, [{ id: w.lastMsgId, at: w.createdAt, from: w.asker!, text: `${w.lastAsk} https://dev.azure.com/acme/Canvas/_git/widget/pullrequest/${code === 'A62' ? 4200004 : 4200003}`, byOwner: false }])
+		if (code === 'A63') s.save({ ...w, draft: { ...w.draft!, text: 'The PR is completed; no vote is needed.' } }, false)
+		if (byOwner) { const w = s.byCode(code)!; s.save({ ...w, draft: { ...w.draft!, text: 'I will approve it after checking the comments.', byOwner: true } }, false) }
 		const text = s.byCode(code)!.draft!.text
 		const out = await send(s, cardOf(s, code).replyOnly!, code)
 		assert.match(out, new RegExp(`^Only the reply goes now, and it says: "${text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}" It was written counting on the changes you left out\\. Say "ok ${code}"`))
@@ -194,7 +197,7 @@ test('changes ui: "Send reply only" sends nothing until the second ok, and the f
 		assert.equal(s.jobs().some(j => j.purpose === 'execute'), false, 'and no change made')
 		await send(s, `ok ${code}`, code)
 		assert.equal(s.byCode(code)!.sent?.text ?? s.byCode(code)!.draft?.text, text)
-		assert.equal(s.byCode(code)!.state, 'done', `${code}: the second ok sends it`)
+		assert.equal(s.byCode(code)!.state, 'done', `${code}: the second ok sends it: ${s.byCode(code)!.status}`)
 	}
 })
 

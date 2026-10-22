@@ -1,9 +1,9 @@
 import { planRetry, retryStatus } from './retry.ts'
-import { active, afterSend, canCloseApproval, homeOf, mergeWork, step, watchNews } from './work.ts'
+import { active, afterSend, canCloseApproval, canCloseReport, homeOf, mergeReportWork, pendingParts, step, watchNews } from './work.ts'
 import { confidence } from '../core/policy.ts'
 import { uptime } from 'node:os'
 import { allows, changeName, changeSays, isVote, unsafeRead, pendingEffects, refusal, refusedAsk, reviewAgain, carryMarks, shown, vet, voteValue } from '../core/effects.ts'
-import { prOf, prTarget } from './probe.ts'
+import { prOf, prTarget, type BuildProbe } from './probe.ts'
 import { cloneFor, cloneTodo, repoRef } from './repos.ts'
 import { deployed, deployRunning, findingNotBlocker, isValidate, proposeTargets, shellInClone, shellTool, telemetryNote, telemetryTools } from './validate.ts'
 import { toolServers } from '../adapters/mcp-client.ts'
@@ -186,7 +186,7 @@ const WRAP_UP = (id: string) => `Your time for this job is up. Stop looking furt
 
 // Apply finished runs; stop runs that died or ran past their budget (R-LNG-03, R-LNG-04).
 // Items are updated before the job, and the report is archived last, so a crash in between repeats the hand-off safely.
-export async function checkJobs(store: Store, src: Source, cfg: Config, procs: Procs): Promise<number> {
+export async function checkJobs(store: Store, src: Source, cfg: Config, procs: Procs, probe?: BuildProbe): Promise<number> {
 	let n = 0
 	const minutes = cfg.jobs?.minutes ?? 30
 	for (const job of store.jobs().filter(j => j.state === 'running' && j.run)) {
@@ -221,7 +221,7 @@ export async function checkJobs(store: Store, src: Source, cfg: Config, procs: P
 		ended.set(job.id, readUse(store, job))
 		try {
 			if (r) {
-				if (run.purpose === 'execute') await finishExecute(store, src, cfg, job)
+				if (run.purpose === 'execute') await finishExecute(store, src, cfg, job, probe)
 				else finishWork(store, job, r, run.asks)
 				store.archiveReport(job.id, run.id)
 				n++
@@ -283,6 +283,16 @@ export function finishWork(store: Store, job: Job, r: Report, asksAtStart: numbe
 	// The job found nothing for the owner (a PR already merged, or approved by others): no card, a Done row, and a step on open work (dogfood 10-20).
 	const nothing = r.state === 'done' && !r.reply && !r.question && !effects.length
 	if (!again) for (const wf of parentsOf(store, job)) {
+		if (wf.pending.length) {
+			Object.assign(wf, { state: 'running', waitingSince: undefined, status: 'New asks arrived after this job started. Checking them next.' })
+			store.save(wf)
+			continue
+		}
+		if (wf.effects?.some(e => !e.off && !e.done && (r.work?.closed || e.maybe || e.error))) {
+			Object.assign(wf, { state: 'needs_human', waitingSince: undefined, approved: undefined, status: 'Earlier changes are still failed or unverified. Review them before closing this work.' })
+			store.save(wf)
+			continue
+		}
 		// The reply already went and its promised change waits, or its check failed: a new result is a new turn, whose own reply can
 		// go; the owner's words are checked again once it rests (Slice 3, re-review).
 		if (wf.sent) reopenPromise(store, wf)
@@ -295,10 +305,10 @@ export function finishWork(store: Store, job: Job, r: Report, asksAtStart: numbe
 		if (v.todos.length) Object.assign(wf, { todos: [...new Set([...(wf.todos ?? []), ...v.todos])], question: wf.question ?? (wf.draft ? refusedAsk(wf.code, v.todos.length) : undefined) })
 		// A job's finding is a step on the work its item belongs to, the home or a part's home (review part 2 #5).
 		const home = homeOf(store, wf)
-		mergeWork(home, r.work)
+		mergeReportWork(wf, r, home, undefined, canCloseReport(store, home, wf))
 		if (nothing) wf.completionSeen = `job:${job.id}:${hashOf(r.summary)}`
-		if (nothing && home === wf && (r.work?.closed || canCloseApproval(store, home))) {
-			closeFamily(store, realProcs, home, r.work?.closed ?? r.summary)
+		if (nothing && home === wf && (home.work?.closed || canCloseApproval(store, home))) {
+			closeFamily(store, realProcs, home, home.work?.closed?.why ?? r.summary)
 			wf.closedBy = 'job'
 		} else if (nothing && home !== wf) {
 			Object.assign(wf, { state: 'done', closedBy: 'job' })
@@ -314,7 +324,17 @@ export function finishWork(store: Store, job: Job, r: Report, asksAtStart: numbe
 
 // Repair receipts written before completion closed approval work. No new work or external writes.
 export function settleCompleted(store: Store, procs: Procs = realProcs) {
-	for (const wf of store.workflows().filter(w => w.state === 'open' || w.state === 'done')) {
+	for (const wf of store.workflows().filter(w => w.state === 'open' || w.state === 'done' || !!w.sent)) {
+		if (wf.sent && wf.closeWorkAfterSend && !wf.pending.length && !wf.question) {
+			const home = homeOf(store, wf)
+			if (active(home) && !home.pending.length && !pendingParts(store, home, wf.id) && !pendingEffects(home.effects).length && !pendingEffects(wf.effects).length) {
+				afterSend(wf, wf.sent.text ?? '', wf.sent.msgId, home, false)
+				if (home.work?.closed) closeFamily(store, procs, home, home.work.closed.why)
+				if (home !== wf) store.save(home)
+				store.save(wf)
+				continue
+			}
+		}
 		if (wf.work?.closed) {
 			if (wf.state !== 'done') { closeFamily(store, procs, wf, wf.work.closed.why); store.save(wf) }
 			continue
@@ -341,7 +361,7 @@ export function settleCompleted(store: Store, procs: Procs = realProcs) {
 }
 
 // The approved changes ran. The reply goes out only to items whose ok still matches what they approved.
-async function finishExecute(store: Store, src: Source, cfg: Config, job: Job) {
+async function finishExecute(store: Store, src: Source, cfg: Config, job: Job, probe?: BuildProbe) {
 	// A change counts as made only when make_change recorded it, never because the run says so (next action).
 	const effects = foldChanges(store, job)
 	// A vote refused because the PR changed since the review: the owner reviews again; nothing is sent (review 10-21 P1-3).
@@ -404,7 +424,7 @@ async function finishExecute(store: Store, src: Source, cfg: Config, job: Job) {
 		Object.assign(wf, { state: 'needs_human', waitingSince: undefined })
 		store.save(wf)
 		try {
-			const sent = await send(store, src, cfg, wf, wf.draft?.text, {})
+			const sent = await send(store, src, cfg, wf, wf.draft?.text, {}, probe)
 			if (!sent && wf.state === 'needs_human') wf.status = `Changes made. The reply was not sent. Reply "ok ${wf.code}" to send it`
 		} catch (e) {
 			wf.status = `Changes made. Could not send the reply: ${String(e).slice(0, 100)}. Reply "ok ${wf.code}" to retry`
