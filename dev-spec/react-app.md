@@ -176,6 +176,13 @@ exactly once, and Settings Turn on, Save style and Undo in New and Classic at 12
   successful recovery cycle (333/213 ms with the stub). A legacy refusal also
   cleared in one cycle without changing thread order or the approval revision.
   Zero browser errors and zero new owner Copilot session entries.
+- Follow-up: the pre-change approval path also uses this non-gating fallback;
+  it had retained the old unknown-check refusal. Existing actual-owner-reply,
+  changed-message, exact approval, write allowlist and change-ledger gates stay.
+  In Edge, both experiences accepted the explicit approval with an unrelated
+  owner FYI and queued only the allowed change, with zero owner-check AI runs.
+  An exact owner post instead closed as "You sent it yourself", with no approval,
+  change or duplicate post. No real external effect was run by this proof.
 
 ## PR-review gate: review or vote only when asked and a reviewer (owner rule 10-23)
 

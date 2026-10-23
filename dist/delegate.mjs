@@ -46064,10 +46064,10 @@ async function applyOne(store2, src, cfg, wf, a, procs, probe) {
           return;
         }
         const t2 = await threadSince(store2, src, cfg, wf, "");
-        if (t2.ownerUnknown && !t2.ownerReplied) return reply(store2, src, a, `${MARK} Not done ${wf.code}: I could not check whether you already replied. Nothing was changed.`, true);
+        if (t2.ownerUnknown && !t2.ownerReplied) store2.log({ event: "owner-reply-fallback", code: wf.code, before: "approved-changes", note: OWNER_REPLY_UNCHECKED });
         if (t2.ownerReplied || t2.asker) {
           if (t2.ownerReplied) {
-            close(wf, "You replied yourself");
+            close(wf, t2.ownerExact ? "You sent it yourself" : "You replied yourself");
             wf.closedBy = "replied";
           } else Object.assign(wf, { state: "running", status: "New messages arrived. Redrafting." });
           store2.save(wf, true, t2.ownerReplied ? { askAt: askAtOf(store2.thread(wf.id), wf.msgIds), replyAt: t2.ownerAt } : void 0);

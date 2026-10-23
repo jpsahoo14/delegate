@@ -253,9 +253,9 @@ async function applyOne(store: Store, src: Source, cfg: Config, wf: Workflow, a:
 			if (wf.job && (pendingEffects(wf.effects).length > 0)) {
 				if (await askGone(store, src, cfg, wf, a)) { store.save(wf); return }
 				const t = await threadSince(store, src, cfg, wf, '')
-				if (t.ownerUnknown && !t.ownerReplied) return reply(store, src, a, `${MARK} Not done ${wf.code}: I could not check whether you already replied. Nothing was changed.`, true)
+				if (t.ownerUnknown && !t.ownerReplied) store.log({ event: 'owner-reply-fallback', code: wf.code, before: 'approved-changes', note: OWNER_REPLY_UNCHECKED })
 				if (t.ownerReplied || t.asker) {
-					if (t.ownerReplied) { close(wf, 'You replied yourself'); wf.closedBy = 'replied' }
+					if (t.ownerReplied) { close(wf, t.ownerExact ? 'You sent it yourself' : 'You replied yourself'); wf.closedBy = 'replied' }
 					else Object.assign(wf, { state: 'running', status: 'New messages arrived. Redrafting.' })
 					store.save(wf, true, t.ownerReplied ? { askAt: askAtOf(store.thread(wf.id), wf.msgIds), replyAt: t.ownerAt } : undefined)
 					return reply(store, src, a, `${MARK} Not done ${wf.code}: ${t.ownerReplied ? 'you already replied in the chat' : 'new messages since the draft. I will redraft first'}.`)
