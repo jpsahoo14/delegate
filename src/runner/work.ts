@@ -34,15 +34,65 @@ export function linksIn(text: string): string[] {
 	return [...out]
 }
 const sameLink = (a: string, b: string) => a.split(':')[0].toLowerCase() === b.split(':')[0].toLowerCase() && a.split(/[:/]/).at(-1) === b.split(/[:/]/).at(-1)
-// The one active home whose links the text names; none when it names none or several.
-export function homeNamed(homes: Workflow[], text: string): Workflow | undefined {
+// An item's own links: what its own asks name, and its PR job's key; never links its parts brought (queue-new #9).
+export function askLinks(store: Store, w: Workflow): string[] {
+	return [...new Set([w.lastAsk ?? '', ...store.thread(w.id).filter(m => !m.byOwner && w.msgIds.includes(m.id)).map(m => m.text)].flatMap(linksIn))]
+}
+export function ownLinks(store: Store, w: Workflow): string[] {
+	const job = w.job ? store.job(w.job) : undefined, key = job ? canonicalKey(job.key) : ''
+	return [...new Set([...askLinks(store, w), ...(/^pr:/i.test(key) ? [`pr:${key.split(/[:/]/).at(-1)}`] : [])])]
+}
+const prIds = (ls: string[]) => ls.filter(l => /^pr:/i.test(l)).map(l => l.split(/[:/]/).at(-1)!)
+// Why an item may not join a home as its part, or undefined when they share a subject (queue-new #9): the same typed link, or the
+// same chat and asker. Two items about different PRs never join; an AI join into a home whose own ask names no link is refused.
+export function joinWhy(store: Store, home: Workflow, part: Workflow, ai = false): string | undefined {
+	const mine = ownLinks(store, home), theirs = ownLinks(store, part)
+	const other = prIds(theirs).filter(id => !prIds(mine).includes(id))
+	if (other.length) return `it is about PR ${other.join(', PR ')}, and ${home.code} is about ${prIds(mine).length ? `PR ${prIds(mine).join(', PR ')}` : 'no PR'}`
+	const sameAsker = home.chat.id === part.chat.id && !!home.asker?.id && home.asker.id === part.asker?.id
+	if (ai && !askLinks(store, home).length && !sameAsker) return `${home.code}'s own ask names no link`
+	if (theirs.some(l => mine.some(x => sameLink(l, x))) || sameAsker) return undefined
+	return mine.length ? `it names none of ${home.code}'s links` : `${home.code} has no link to share`
+}
+// The one active home whose own links the text names, about no other PR; none when it names none or several.
+export function homeNamed(store: Store, homes: Workflow[], text: string): Workflow | undefined {
 	const ls = linksIn(text)
-	const hit = ls.length ? homes.filter(h => active(h) && !h.partOf && h.work!.links.some(l => ls.some(x => sameLink(l, x)))) : []
+	const hit = ls.length ? homes.filter(h => {
+		if (!active(h) || h.partOf) return false
+		const own = ownLinks(store, h)
+		return own.some(l => ls.some(x => sameLink(l, x))) && prIds(ls).every(id => prIds(own).includes(id))
+	}) : []
 	return hit.length === 1 ? hit[0] : undefined
 }
 export function addPart(home: Workflow, part: Workflow) {
 	part.partOf = home.id
 	home.work!.parts = [...new Set([...(home.work!.parts ?? []), part.id])]
+}
+// Once per store (queue-new #9): parts that share no subject with their home (another PR, or no shared link from another chat) are
+// detached and become their own items again, keeping their state; the links only they brought leave the home. Logged per part,
+// with what it took back, so it can be undone by hand.
+export function repairParts(store: Store): number {
+	let n = 0
+	for (const home of store.workflows().filter(w => w.work?.parts?.length && !w.partOf)) {
+		const parts = home.work!.parts!.map(id => store.workflow(id)).filter((p): p is Workflow => !!p)
+		const off = parts.map(p => ({ p, why: joinWhy(store, home, p) })).filter((x): x is { p: Workflow; why: string } => !!x.why)
+		if (!off.length) continue
+		const kept = parts.filter(p => !off.some(x => x.p.id === p.id))
+		const keep = new Set([...ownLinks(store, home), ...kept.flatMap(p => ownLinks(store, p))])
+		const brought = new Set(off.flatMap(x => ownLinks(store, x.p)))
+		const dropped = home.work!.links.filter(l => [...brought].some(b => sameLink(b, l)) && ![...keep].some(k => sameLink(k, l)))
+		home.work!.links = home.work!.links.filter(l => !dropped.includes(l))
+		home.work!.parts = kept.length ? kept.map(p => p.id) : undefined
+		for (const { p, why } of off) {
+			p.partOf = undefined
+			store.save(p, false)
+			store.log({ event: 'part-detached', home: home.code, part: p.code, reason: why, links: ownLinks(store, p) })
+			n++
+		}
+		store.save(home, false)
+		store.log({ event: 'parts-repaired', home: home.code, detached: off.map(x => x.p.code), linksDropped: dropped })
+	}
+	return n
 }
 
 // A step with a ref is added once, so a replayed report adds nothing.
@@ -76,7 +126,8 @@ export function mergeWork(wf: Workflow, w: WorkReport | undefined, now = new Dat
 	if (w.step) step(wf, `${from}${w.step}`, { at })
 	if (w.next) k.next = w.next
 	if (w.waitingOn) k.waitingOn = { ...w.waitingOn, since: k.waitingOn?.who === w.waitingOn.who ? k.waitingOn.since : at }
-	for (const l of w.links ?? []) { const key = canonicalKey(l); if (!k.links.includes(key)) k.links.push(key) }
+	// A part never brings a second PR to a home that already has one (queue-new #9: one wrong join snowballed through its links).
+	for (const l of w.links ?? []) { const key = canonicalKey(l); if (!k.links.includes(key) && !(from && /^pr:/i.test(key) && k.links.some(x => /^pr:/i.test(x) && !sameLink(x, key)))) k.links.push(key) }
 	k.checkAt = new Date(now.getTime() + (w.checkInDays ?? 3) * DAY).toISOString()
 	// A part sees the whole plan but works on its own chat's steps: it updates and adds, and never drops the home's (live run 10-19).
 	if (w.plan) k.plan = mergePlan(k.plan ?? [], w.plan, at, !!from)

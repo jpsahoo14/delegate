@@ -1,6 +1,6 @@
 import { CMD, NAME } from '../brand.ts'
 import { blockerOf } from './retry.ts'
-import { active, addPart, canCloseReport, hasDecisions, homeOf, mergeReportWork, settle, step } from './work.ts'
+import { active, addPart, canCloseReport, hasDecisions, homeOf, joinWhy, mergeReportWork, settle, step } from './work.ts'
 import { assertTestSafe } from '../store/fs.ts'
 import { closeFamily } from './apply.ts'
 import { realProcs } from './jobs.ts'
@@ -510,6 +510,9 @@ function family(store: Store, wf: Workflow, r: Report): Workflow {
 	if (home !== wf || wf.work || !r.partOf) return home.id === wf.id ? wf : store.workflow(home.id) ?? home
 	const to = store.byCode(r.partOf.toUpperCase())
 	if (!to || to.id === wf.id || !active(to) || to.partOf) return wf
+	// The worker's join needs a shared subject: the same link, or the same chat and asker (queue-new #9).
+	const why = joinWhy(store, to, wf, true)
+	if (why) { store.log({ event: 'join-refused', code: wf.code, home: to.code, by: 'worker', reason: why }); return wf }
 	addPart(to, wf)
 	step(to, `${wf.asker?.name?.split(' ')[0] ?? 'Someone'} (${wf.chat.group ? wf.chat.name : '1:1'}, ${wf.code}): ${(wf.lastAsk ?? '').slice(0, 200)}`, { ref: `part:${wf.id}` })
 	return to

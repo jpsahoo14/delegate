@@ -1,5 +1,19 @@
 # React preview
 
+## A join needs a shared subject; parts never bring other PRs; related asks show their chat (queue-new #9)
+
+`joinWhy` decides every join of an item into another's work: the same typed link (an item about a PR the home is not about never
+joins), or the same chat and asker. The worker's `partOf` goes through it, and a home whose own ask names no link takes no worker
+join; a refusal is logged as `join-refused` with the reason. `homeNamed` matches only the home's own links (its asks and its PR
+job's key, `ownLinks`), never links its parts brought, and a message naming another PR as well does not join. A part's report
+never adds a second PR to a home that has one. When a card's asks span several chats, the list says "N related asks" and each
+line shows where it was asked ("1:1", "in Web check-in"). Once per store, `repairParts` detaches parts that share no subject with
+their home, keeps their state, drops the links only they brought, and logs `part-detached` per part. Fictional root, stub worker
+(quota) reporting `partOf`: an ask about another PR from another chat was refused ("it is about PR 4600099, and A1 is about PR
+4600001") and a later mention of that PR elsewhere did not join; a home with no link of its own took no join; a same-PR ask from
+a group joined and showed "2 related asks" with "1:1" and "in Web check-in" in New and Classic at 1280; an A48-shaped root (a 1:1
+home with a PR job and 6 parts from 2 other chats) came out as the home alone with its own PR, 6 parts detached, nothing sent.
+
 ## A failed AI run is a reason on the card, never a question; setup failures wait and re-run (queue-new #11)
 
 A run with no result sets `runFailed: { at, kind, why }` instead of the old "Check this item, then answer or skip it" question.

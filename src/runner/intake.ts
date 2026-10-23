@@ -136,7 +136,7 @@ export async function intake(store: Store, src: Source, cfg: Config, cursors: Re
 				const replied = await ownerReplies(store, cfg, raw, c.text, open)
 				for (const o of open) recordOwnerReply(store, o, toMsg(raw, cfg.owner, c.text, true), replied.get(o.id), ownReplyText(raw, c.text))
 				// Naming a link of work that started in another chat makes this chat a part of it (R-WRK-10).
-				const home = open.some(o => inWork(store, o)) ? undefined : homeNamed(store.workflows(), c.text)
+				const home = open.some(o => inWork(store, o)) ? undefined : homeNamed(store, store.workflows(), c.text)
 				if (home && home.chat.id !== chat.id) {
 					const part = await create(store, src, cfg, chat)
 					if (!store.thread(part.id).some(m => m.id === raw.id)) appendThread(store, part, toMsg(raw, cfg.owner, c.text, true))
@@ -170,7 +170,7 @@ export async function intake(store: Store, src: Source, cfg: Config, cursors: Re
 			if (groupJudgment && !follows) for (const o of open) appendThread(store, o, toMsg(raw, c.from, c.text, false))
 			let wf = follows ?? (groupJudgment ? undefined : route(store, live, raw, c.kind === 'ask' || c.kind === 'context' ? c.from.id : '', c.kind === 'ask' && !backlog ? recentItem(store, chat.id, c.from.id, hours, now) : undefined, c.text))
 			// An ask that names a link of work from another chat goes to that work's part here, or starts one.
-			const named = c.kind === 'ask' && !groupJudgment && !(wf && inWork(store, wf)) ? homeNamed(store.workflows(), c.text) : undefined
+			const named = c.kind === 'ask' && !groupJudgment && !(wf && inWork(store, wf)) ? homeNamed(store, store.workflows(), c.text) : undefined
 			const elsewhere = named && named.chat.id !== chat.id ? named : undefined
 			if (elsewhere) wf = live.find(o => o.partOf === elsewhere.id && freshAsk(store, o, Date.parse(raw.at)) && askRelation(store, o, c.text) === 'same')
 			// "Fixed, please recheck" reopens the same item, which keeps its code (scenario 04 step 5, tester P2-14).
@@ -387,7 +387,7 @@ export function workOfAsk(store: Store, open: Workflow[], raw: RawMsg, text: str
 	const asked = { to } as Waiting
 	const waited = homes.filter(h => !!h.work!.waitingOn?.who && answers(asked, h.work!.waitingOn.who))
 	const theirs = homes.filter(h => waited.includes(h) || (!!h.asker?.name && answers(asked, h.asker.name)))
-	const named = homeNamed(homes, text)
+	const named = homeNamed(store, homes, text)
 	const hit = [...new Set([...theirs, ...(named ? [named] : [])])]
 	if (hit.length !== 1) return undefined
 	// The asker alone is a weak sign (code review round 4, P2-2): "Kim, lunch?" in Kim's chat is not about Kim's work. With more

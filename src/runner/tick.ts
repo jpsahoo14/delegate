@@ -1,4 +1,4 @@
-import { askWhatNext, due as dueWork } from './work.ts'
+import { askWhatNext, due as dueWork, repairParts } from './work.ts'
 import { adoProbe, describeDeploys, probeBuilds, probePRs, type BuildProbe } from './probe.ts'
 import { describeTargets } from './validate.ts'
 import { cliServers } from '../adapters/mcp-client.ts'
@@ -97,6 +97,8 @@ export async function tick(store: Store, deps: { source?: Source; run?: RunWorke
 		legacyEffects(store)
 		// Once per store: items an older version left with the failed-run question (queue-new #11).
 		if (!store.probeMark().runFailRepairAt) { repairRunFailures(store); store.saveProbeMark({ ...store.probeMark(), runFailRepairAt: new Date().toISOString() }) }
+		// Once per store: parts an unchecked join attached to work about something else (queue-new #9).
+		if (!store.probeMark().partsRepairAt) { repairParts(store); store.saveProbeMark({ ...store.probeMark(), partsRepairAt: new Date().toISOString() }) }
 		settleCompleted(store, procs)
 		// The owner's ok re-reads a pull request before voting on it, through the same read the PR checks use.
 		// The AI CLI's tool list is read for it; one that cannot be read is named in Health and never stops the cycle (review 10-21b P1).

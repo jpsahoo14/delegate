@@ -1,0 +1,1 @@
+import{rt as e}from"./index-BbOtXkY_.js";var t=e();function n({person:e,large:n=!1}){return(0,t.jsx)(`span`,{className:`classic-avatar${n?` classic-avatar-large`:``}`,style:{"--hue":e.hue},"aria-hidden":`true`,children:e.initials})}export{n as t};

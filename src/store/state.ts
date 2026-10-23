@@ -236,8 +236,8 @@ export class Store {
 	saveHabits(h: Habit[]) { this.w(this.p('state', 'habits.json'), h) }
 	habit(code: string): Habit | undefined { return this.habits().find(h => h.code === code.toUpperCase()) }
 	// When build steps were last checked; only the runner writes it (R-WRK-13).
-	probeMark(): { checkedAt?: string; habitsAt?: string; prAt?: string; placedAt?: string; runFailRepairAt?: string } { return readJson(this.p('state', 'probe.json'), {}) }
-	saveProbeMark(m: { checkedAt?: string; habitsAt?: string; prAt?: string; placedAt?: string; runFailRepairAt?: string }) { this.w(this.p('state', 'probe.json'), m) }
+	probeMark(): { checkedAt?: string; habitsAt?: string; prAt?: string; placedAt?: string; runFailRepairAt?: string; partsRepairAt?: string } { return readJson(this.p('state', 'probe.json'), {}) }
+	saveProbeMark(m: { checkedAt?: string; habitsAt?: string; prAt?: string; placedAt?: string; runFailRepairAt?: string; partsRepairAt?: string }) { this.w(this.p('state', 'probe.json'), m) }
 	missed(): (Missed & { file: string })[] {
 		const old = this.p('state', 'missed.json')
 		if (existsSync(old)) { for (const m of readJson<Missed[]>(old, [])) this.addMissed(m); rmSync(old, { force: true }) }

@@ -44599,6 +44599,11 @@ function family(store2, wf, r) {
   if (home !== wf || wf.work || !r.partOf) return home.id === wf.id ? wf : store2.workflow(home.id) ?? home;
   const to = store2.byCode(r.partOf.toUpperCase());
   if (!to || to.id === wf.id || !active(to) || to.partOf) return wf;
+  const why2 = joinWhy(store2, to, wf, true);
+  if (why2) {
+    store2.log({ event: "join-refused", code: wf.code, home: to.code, by: "worker", reason: why2 });
+    return wf;
+  }
   addPart(to, wf);
   step(to, `${wf.asker?.name?.split(" ")[0] ?? "Someone"} (${wf.chat.group ? wf.chat.name : "1:1"}, ${wf.code}): ${(wf.lastAsk ?? "").slice(0, 200)}`, { ref: `part:${wf.id}` });
   return to;
@@ -45308,7 +45313,7 @@ async function intake(store2, src, cfg, cursors, chats = cfg.watch, o = {}) {
         if (to && !store2.waiting().some((w) => w.msgId === raw.id)) store2.saveWaiting([...store2.waiting(), { code: store2.nextCode("W"), chat: { id: chat2.id, name: chat2.name }, msgId: raw.id, at: raw.at, to, text: c.text.slice(0, 600), state: "waiting", ...item2 ? { item: item2 } : {} }]);
         const replied = await ownerReplies(store2, cfg, raw, c.text, open2);
         for (const o2 of open2) recordOwnerReply(store2, o2, toMsg(raw, cfg.owner, c.text, true), replied.get(o2.id), ownReplyText(raw, c.text));
-        const home = open2.some((o2) => inWork(store2, o2)) ? void 0 : homeNamed(store2.workflows(), c.text);
+        const home = open2.some((o2) => inWork(store2, o2)) ? void 0 : homeNamed(store2, store2.workflows(), c.text);
         if (home && home.chat.id !== chat2.id) {
           const part = await create(store2, src, cfg, chat2);
           if (!store2.thread(part.id).some((m) => m.id === raw.id)) appendThread(store2, part, toMsg(raw, cfg.owner, c.text, true));
@@ -45338,7 +45343,7 @@ async function intake(store2, src, cfg, cursors, chats = cfg.watch, o = {}) {
       const follows = groupJudgment ? route(store2, live2.filter((o2) => o2.asker?.id === c.from.id), raw, c.from.id, void 0, c.text) : void 0;
       if (groupJudgment && !follows) for (const o2 of open2) appendThread(store2, o2, toMsg(raw, c.from, c.text, false));
       let wf = follows ?? (groupJudgment ? void 0 : route(store2, live2, raw, c.kind === "ask" || c.kind === "context" ? c.from.id : "", c.kind === "ask" && !backlog ? recentItem(store2, chat2.id, c.from.id, hours, now) : void 0, c.text));
-      const named = c.kind === "ask" && !groupJudgment && !(wf && inWork(store2, wf)) ? homeNamed(store2.workflows(), c.text) : void 0;
+      const named = c.kind === "ask" && !groupJudgment && !(wf && inWork(store2, wf)) ? homeNamed(store2, store2.workflows(), c.text) : void 0;
       const elsewhere = named && named.chat.id !== chat2.id ? named : void 0;
       if (elsewhere) wf = live2.find((o2) => o2.partOf === elsewhere.id && freshAsk(store2, o2, Date.parse(raw.at)) && askRelation(store2, o2, c.text) === "same");
       if (wf?.state === "done") {
@@ -45547,7 +45552,7 @@ function workOfAsk(store2, open2, raw, text3, to) {
   const asked = { to };
   const waited = homes.filter((h) => !!h.work.waitingOn?.who && answers(asked, h.work.waitingOn.who));
   const theirs = homes.filter((h) => waited.includes(h) || !!h.asker?.name && answers(asked, h.asker.name));
-  const named = homeNamed(homes, text3);
+  const named = homeNamed(store2, homes, text3);
   const hit = [.../* @__PURE__ */ new Set([...theirs, ...named ? [named] : []])];
   if (hit.length !== 1) return void 0;
   const chat2 = open2[0].chat.id;
@@ -48449,14 +48454,57 @@ function linksIn(text3) {
   for (const m of text3.matchAll(/\b(?:work ?item|bug|task)\s*#?\s*(\d{6,})/gi)) out.add(`workItem:${m[1]}`);
   return [...out];
 }
-function homeNamed(homes, text3) {
+function askLinks(store2, w) {
+  return [...new Set([w.lastAsk ?? "", ...store2.thread(w.id).filter((m) => !m.byOwner && w.msgIds.includes(m.id)).map((m) => m.text)].flatMap(linksIn))];
+}
+function ownLinks(store2, w) {
+  const job = w.job ? store2.job(w.job) : void 0, key = job ? canonicalKey2(job.key) : "";
+  return [.../* @__PURE__ */ new Set([...askLinks(store2, w), .../^pr:/i.test(key) ? [`pr:${key.split(/[:/]/).at(-1)}`] : []])];
+}
+function joinWhy(store2, home, part, ai = false) {
+  const mine = ownLinks(store2, home), theirs = ownLinks(store2, part);
+  const other = prIds(theirs).filter((id) => !prIds(mine).includes(id));
+  if (other.length) return `it is about PR ${other.join(", PR ")}, and ${home.code} is about ${prIds(mine).length ? `PR ${prIds(mine).join(", PR ")}` : "no PR"}`;
+  const sameAsker = home.chat.id === part.chat.id && !!home.asker?.id && home.asker.id === part.asker?.id;
+  if (ai && !askLinks(store2, home).length && !sameAsker) return `${home.code}'s own ask names no link`;
+  if (theirs.some((l) => mine.some((x) => sameLink(l, x))) || sameAsker) return void 0;
+  return mine.length ? `it names none of ${home.code}'s links` : `${home.code} has no link to share`;
+}
+function homeNamed(store2, homes, text3) {
   const ls = linksIn(text3);
-  const hit = ls.length ? homes.filter((h) => active(h) && !h.partOf && h.work.links.some((l) => ls.some((x) => sameLink(l, x)))) : [];
+  const hit = ls.length ? homes.filter((h) => {
+    if (!active(h) || h.partOf) return false;
+    const own3 = ownLinks(store2, h);
+    return own3.some((l) => ls.some((x) => sameLink(l, x))) && prIds(ls).every((id) => prIds(own3).includes(id));
+  }) : [];
   return hit.length === 1 ? hit[0] : void 0;
 }
 function addPart(home, part) {
   part.partOf = home.id;
   home.work.parts = [.../* @__PURE__ */ new Set([...home.work.parts ?? [], part.id])];
+}
+function repairParts(store2) {
+  let n = 0;
+  for (const home of store2.workflows().filter((w) => w.work?.parts?.length && !w.partOf)) {
+    const parts2 = home.work.parts.map((id) => store2.workflow(id)).filter((p) => !!p);
+    const off = parts2.map((p) => ({ p, why: joinWhy(store2, home, p) })).filter((x) => !!x.why);
+    if (!off.length) continue;
+    const kept = parts2.filter((p) => !off.some((x) => x.p.id === p.id));
+    const keep = /* @__PURE__ */ new Set([...ownLinks(store2, home), ...kept.flatMap((p) => ownLinks(store2, p))]);
+    const brought = new Set(off.flatMap((x) => ownLinks(store2, x.p)));
+    const dropped = home.work.links.filter((l) => [...brought].some((b) => sameLink(b, l)) && ![...keep].some((k) => sameLink(k, l)));
+    home.work.links = home.work.links.filter((l) => !dropped.includes(l));
+    home.work.parts = kept.length ? kept.map((p) => p.id) : void 0;
+    for (const { p, why: why2 } of off) {
+      p.partOf = void 0;
+      store2.save(p, false);
+      store2.log({ event: "part-detached", home: home.code, part: p.code, reason: why2, links: ownLinks(store2, p) });
+      n++;
+    }
+    store2.save(home, false);
+    store2.log({ event: "parts-repaired", home: home.code, detached: off.map((x) => x.p.code), linksDropped: dropped });
+  }
+  return n;
 }
 function step(wf, what, o = {}) {
   if (!wf.work) return false;
@@ -48489,7 +48537,7 @@ function mergeWork(wf, w, now = /* @__PURE__ */ new Date(), from = "", changedAs
   if (w.waitingOn) k.waitingOn = { ...w.waitingOn, since: k.waitingOn?.who === w.waitingOn.who ? k.waitingOn.since : at3 };
   for (const l of w.links ?? []) {
     const key = canonicalKey2(l);
-    if (!k.links.includes(key)) k.links.push(key);
+    if (!k.links.includes(key) && !(from && /^pr:/i.test(key) && k.links.some((x) => /^pr:/i.test(x) && !sameLink(x, key)))) k.links.push(key);
   }
   k.checkAt = new Date(now.getTime() + (w.checkInDays ?? 3) * DAY3).toISOString();
   if (w.plan) k.plan = mergePlan(k.plan ?? [], w.plan, at3, !!from);
@@ -48709,7 +48757,7 @@ function ownerStep(wf, text3, msgId, home = wf) {
   newTurn(wf, !!wf.sent);
   Object.assign(wf, { state: "open", status: statusOf(home), pending: [] });
 }
-var DAY3, MAX_STEPS, active, inWork, label, sameLink, hasDecisions, openTodos, approvalMention2, untagged, sentencesOf, prNumbersIn, reReviewAsk, FIRST_PERSON, NAMED_APPROVED, APPROVED_BY, PENDING, VOTE_SAID, claimsApproval, approvalAsk2, approvalOnly;
+var DAY3, MAX_STEPS, active, inWork, label, sameLink, prIds, hasDecisions, openTodos, approvalMention2, untagged, sentencesOf, prNumbersIn, reReviewAsk, FIRST_PERSON, NAMED_APPROVED, APPROVED_BY, PENDING, VOTE_SAID, claimsApproval, approvalAsk2, approvalOnly;
 var init_work = __esm({
   "src/runner/work.ts"() {
     "use strict";
@@ -48722,6 +48770,7 @@ var init_work = __esm({
     inWork = (store2, wf) => active(homeOf(store2, wf));
     label = (wf, home) => wf === home || wf.id === home.id ? "" : `${wf.asker?.name?.split(" ")[0] ?? wf.chat.name} (${wf.chat.group ? wf.chat.name : "1:1"}, ${wf.code}): `;
     sameLink = (a, b) => a.split(":")[0].toLowerCase() === b.split(":")[0].toLowerCase() && a.split(/[:/]/).at(-1) === b.split(/[:/]/).at(-1);
+    prIds = (ls) => ls.filter((l) => /^pr:/i.test(l)).map((l) => l.split(/[:/]/).at(-1));
     hasDecisions = (r) => !!r.choices || !!r.effects?.length;
     openTodos = (wf) => (wf.kept ?? []).filter((t2) => !t2.done);
     approvalMention2 = (text3) => /approv|sign[ -]?off|\blgtm\b/i.test(text3);
@@ -54465,6 +54514,10 @@ async function tick(store2, deps = {}) {
     if (!store2.probeMark().runFailRepairAt) {
       repairRunFailures(store2);
       store2.saveProbeMark({ ...store2.probeMark(), runFailRepairAt: (/* @__PURE__ */ new Date()).toISOString() });
+    }
+    if (!store2.probeMark().partsRepairAt) {
+      repairParts(store2);
+      store2.saveProbeMark({ ...store2.probeMark(), partsRepairAt: (/* @__PURE__ */ new Date()).toISOString() });
     }
     settleCompleted(store2, procs);
     const cli = cliServers(cfg.agent.flavor);

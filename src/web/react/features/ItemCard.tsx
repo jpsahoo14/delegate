@@ -310,10 +310,14 @@ export function AsksList({ codes, current, entities, onOpen }: { codes: string[]
 	const { classic, navigate } = useScreenNavigation()
 	const items = codes.map(code => entities.items[code]).filter((item): item is Item => !!item)
 	if (items.length < 2) return null
-	return <section className="card-block card-asks" aria-label={`${items.length} asks in this conversation`}><h3>{items.length} asks in this conversation</h3>
+	// Asks from more than one chat are "related asks", each with where it was asked (queue-new #9).
+	const spread = new Set(items.map(item => item.chatId)).size > 1
+	const heading = spread ? `${items.length} related asks` : `${items.length} asks in this conversation`
+	return <section className="card-block card-asks" aria-label={heading}><h3>{heading}</h3>
 		<ul>{items.map(item => {
 			const person = entities.people[item.personId], 			words = messageText(item.ask ?? item.status).replace(/\s+/g, ' ').slice(0, 60), at = sentAt(item)
-			return <li key={item.code}><button type="button" className="ask-line" aria-current={item.code === current || undefined} title={`${person.name}: ${words} (${item.code})`} onClick={() => onOpen ? onOpen(item.code) : navigate(classic ? `focus/${item.code}` : `now/${item.code}`)}>
-				<span className="card-avatar small" style={{ '--hue': person.hue } as CSSProperties} aria-hidden="true">{person.initials}</span><strong>{firstName(person.name)}</strong><span className="ask-words">{words}</span><SentTime at={at.at} added={at.added} /></button></li>
+			const chat = entities.chats[item.chatId], where = chat?.group ? `in ${chat.name}` : '1:1'
+			return <li key={item.code}><button type="button" className="ask-line" aria-current={item.code === current || undefined} title={`${person.name}${spread ? ` (${where})` : ''}: ${words} (${item.code})`} onClick={() => onOpen ? onOpen(item.code) : navigate(classic ? `focus/${item.code}` : `now/${item.code}`)}>
+				<span className="card-avatar small" style={{ '--hue': person.hue } as CSSProperties} aria-hidden="true">{person.initials}</span><strong>{firstName(person.name)}</strong>{spread && <span className="ask-where">{where}</span>}<span className="ask-words">{words}</span><SentTime at={at.at} added={at.added} /></button></li>
 		})}</ul></section>
 }
