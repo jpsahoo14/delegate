@@ -180,10 +180,10 @@ export function aboutText(store: Store): string {
 	].join('\n')
 }
 
-export function settingsView(store: Store): { rows: SettingRow[]; fixed: ReadOnlyRow[]; about: AboutView; models: ModelsView } {
+export function settingsView(store: Store, experience?: 'classic' | 'new'): { rows: SettingRow[]; fixed: ReadOnlyRow[]; about: AboutView; models: ModelsView } {
 	const cfg = store.config()
 	// The new experience names its places differently: Waiting, and the foot of Now (PM review of N1a, 7).
-	const words = (t: string) => store.ui().ui !== 'classic' ? t.replace('Waiting on others', 'Waiting').replace('Check for updates on Home', 'Check for updates at the foot of Now') : t
+	const words = (t: string) => (experience ?? store.ui().ui) !== 'classic' ? t.replace('Waiting on others', 'Waiting').replace('Check for updates on Home', 'Check for updates at the foot of Now') : t
 	return {
 		rows: specsOf(cfg).map(s => ({ key: s.key, label: words(s.label), help: words(typeof s.help === 'function' ? s.help(cfg) : s.help), kind: s.kind, section: s.section, value: s.read(cfg, store), options: s.options, ...(s.advanced ? { advanced: true as const } : {}) })),
 		about: aboutView(store),

@@ -163,12 +163,13 @@ export async function probePRs(store: Store, cfg: Config, probe: BuildProbe | un
 			w.prRead = undefined; w.prUnknown = true; store.save(w, false)
 			continue
 		}
-		describe(store, w, st)
 		// The owner is the one reviewer with their name; two with the same name prove nothing.
 		const named = me ? st.votes.filter(v => v.name.trim().toLowerCase() === me) : []
 		const mine = named.length === 1 && Object.values(VOTES).includes(named[0].vote) ? named[0].vote : undefined
 		w.prRead = JSON.stringify([ref.id, st.status, st.head, mine])
 		w.prUnknown = mine === undefined ? true : undefined
+		clearResetVotes(store, w, ref.id, st, mine)
+		describe(store, w, st)
 		const changed = mine !== undefined && w.prVote !== undefined && mine !== w.prVote && mine !== 0
 		// Already approved when the ask came in counts only when the ask was for approval (A12: "approve kardo"); a re-review ask keeps waiting.
 		const receipt = (w.effects ?? []).find(e => e.done && isVote(e.call) && prIdOf(e.call) === ref.id)
@@ -230,20 +231,39 @@ function setEffects(store: Store, w: Workflow, f: (es?: Effect[]) => Effect[]) {
 	w.revAt = new Date().toISOString()
 }
 
+function clearResetVotes(store: Store, w: Workflow, id: number, state: PrState, vote: number | undefined) {
+	if (vote === undefined || !/^active$/i.test(state.status)) return
+	const stale = (e: Effect) => e.done && isVote(e.call) && prIdOf(e.call) === id &&
+		(!sameVote(vote, voteValue(e.call)) || !!e.head && !!state.head && !sameHead(e.head, state.head))
+	const job = w.job ? store.job(w.job) : undefined
+	if (!w.effects?.some(stale) && !job?.result?.effects?.some(stale)) return
+	setEffects(store, w, (effects = []) => effects.map(e => stale(e) ? { ...e, done: undefined } : e))
+	store.log({ event: 'vote-receipt-reset', workflowId: w.id, code: w.code, pr: id, vote })
+}
+
 // At ok, a vote on a pull request is checked against the PR as it is now: still the item's, still open, and at the commit the review read.
 // Returns why nothing was done, or undefined to go ahead (next action, R-HIL-21).
 // The status of an item whose vote was dropped because its PR is completed or abandoned; the page offers "Send reply only" on it.
 export const noVoteNeeded = (id: number, state: string) => `PR ${id} is ${state}, so no vote is needed`
 export const voteDropped = (status = '') => /^PR \d+ is \w+, so no vote is needed$/.test(status)
 export async function recheckPr(store: Store, w: Workflow, probe?: BuildProbe): Promise<string | undefined> {
-	const left = prChanges(w)
-	if (!left.length) return undefined
-	const ref = prRefOf(store, w), code = w.code, id = prIdOf(left[0].call)!
+	const before = prChanges(w)
+	const votes = (w.effects ?? []).filter(e => !e.off && isVote(e.call) && prIdOf(e.call) !== undefined)
+	if (!votes.length) return undefined
+	const ref = prRefOf(store, w), code = w.code, id = prIdOf(votes[0].call)!
 	if (!ref || ref.id !== id || id !== prTarget(store, w)) return `Not done ${code}: PR ${id} is not this item's PR. Nothing was changed.`
 	if (!probe?.pr) return `Not done ${code}: PR ${id} must be checked first, and no Azure DevOps server is set up. Nothing was changed.`
 	let st: PrState
 	try { st = await probe.pr(ref.project, ref.repo, id) } catch (e) { return `Not done ${code}: could not read PR ${id} first (${String(e).slice(0, 120)}). Nothing was changed. Say "ok ${code}" to try again.` }
-	if (/^unknown$/i.test(st.status)) return `Not done ${code}: Azure DevOps did not say what state PR ${id} is in. Nothing was changed. Say "ok ${code}" to try again.`
+	if (!/^(active|completed|abandoned)$/i.test(st.status)) return `Not done ${code}: Azure DevOps did not say what state PR ${id} is in. Nothing was changed. Say "ok ${code}" to try again.`
+	const me = store.config().owner.name.trim().toLowerCase(), named = st.votes.filter(v => v.name.trim().toLowerCase() === me)
+	const mine = named.length === 1 && Object.values(VOTES).includes(named[0].vote) ? named[0].vote : undefined
+	w.prRead = JSON.stringify([id, st.status, st.head, mine])
+	w.prUnknown = mine === undefined ? true : undefined
+	clearResetVotes(store, w, id, st, mine)
+	const left = prChanges(w)
+	if (!left.length) return /^active$/i.test(st.status) && mine === undefined
+		? `Not done ${code}: the current owner vote on PR ${id} could not be verified. Nothing was changed or sent.` : undefined
 	if (/completed|abandoned/i.test(st.status)) {
 		setEffects(store, w, (es = []) => es.map(e => (isVote(e.call) && !e.done ? { ...e, off: true } : e)))
 		const rest = pendingEffects(w.effects).length, state = st.status.toLowerCase()
@@ -256,6 +276,11 @@ export async function recheckPr(store: Store, w: Workflow, probe?: BuildProbe): 
 		Object.assign(w, { question: reviewAgain(code, `PR ${id} changed since your review (new commits).`), status: `PR ${id} changed since your review`, revAt: new Date().toISOString() })
 		return `Not done ${code}: ${reviewAgain(code, `PR ${id} changed since your review (new commits).`)} Nothing was changed or sent.`
 	}
+	if (!before.length) {
+		describe(store, w, st)
+		w.status = `The recorded vote on PR ${id} is no longer in place. Review the newly required change.`
+		return `Not done ${code}: ${w.status} Nothing was changed or sent.`
+	}
 	if (describe(store, w, st)) return `Before you ok ${code}: ${effectLine(pendingEffects(w.effects))}. Say "ok ${code}" to go ahead.`
 	return undefined
 }
@@ -264,20 +289,23 @@ export async function recheckPr(store: Store, w: Workflow, probe?: BuildProbe): 
 // there already says the same: none is needed. New commits since the review: none, and the owner reviews again. A PR that cannot
 // be read keeps the vote, since ok reads it again before any vote.
 export const sameVote = (a: number, b?: number) => a === b || (a >= 5 && (b ?? 0) >= 5)
-export async function voteNow(store: Store, cfg: Config, w: Workflow, effects: Effect[], probe?: BuildProbe): Promise<{ effects: Effect[]; why?: string; again?: string }> {
+export async function voteNow(store: Store, cfg: Config, w: Workflow, effects: Effect[], probe?: BuildProbe): Promise<{ effects: Effect[]; why?: string; again?: string; vote?: number; head?: string }> {
 	const votes = effects.filter(e => isVote(e.call))
 	if (!votes.length || !probe?.pr) return { effects }
 	const c = votes[0].call!, ref = prOf(store, w) ?? { project: String(c.args.project ?? ''), repo: String(c.args.repositoryId ?? ''), id: prIdOf(c)! }
 	let st: PrState
 	try { st = await probe.pr(ref.project, ref.repo, ref.id) } catch (e) { store.log({ event: 'pr-check-failed', pr: ref.id, error: String(e).slice(0, 200) }); return { effects } }
-	if (/^unknown$/i.test(st.status)) return { effects }
+	if (!/^(active|completed|abandoned)$/i.test(st.status)) return { effects }
 	const rest = effects.filter(e => !isVote(e.call))
 	if (/completed|abandoned/i.test(st.status)) return { effects: rest, why: `PR ${ref.id} is ${st.status.toLowerCase()}` }
 	const me = cfg.owner.name.trim().toLowerCase(), named = st.votes.filter(v => v.name.trim().toLowerCase() === me)
-	if (named.length === 1 && votes.every(e => sameVote(named[0].vote, voteValue(e.call)))) return { effects: rest, why: `you already voted on PR ${ref.id}` }
-	if (votes.some(e => !sameHead(st.head, e.head))) return { effects: rest, again: reviewAgain(w.code, `PR ${ref.id} changed since your review (new commits).`) }
+	const vote = named.length === 1 && Object.values(VOTES).includes(named[0].vote) ? named[0].vote : undefined
+	clearResetVotes(store, w, ref.id, st, vote)
+	const current = { vote, head: st.head }
+	if (named.length === 1 && votes.every(e => sameVote(named[0].vote, voteValue(e.call)))) return { effects: rest, why: `you already voted on PR ${ref.id}`, ...current }
+	if (votes.some(e => !sameHead(st.head, e.head))) return { effects: rest, again: reviewAgain(w.code, `PR ${ref.id} changed since your review (new commits).`), ...current }
 	const facts = factsOf(st)
-	return { effects: effects.map(e => (isVote(e.call) ? { ...e, pr: facts } : e)) }
+	return { effects: effects.map(e => (isVote(e.call) ? { ...e, pr: facts } : e)), ...current }
 }
 
 // What changed on a PR since the owner was shown its vote: its state, its commit, or what an approval would do (review 10-21 P1-3).

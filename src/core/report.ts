@@ -12,7 +12,8 @@ export const ClaimSchema = z.object({
 })
 
 // The exact tool call that makes a change: the only call a change run may make for it.
-const CallSchema = z.object({ tool: z.string().describe('One of the listed changes\' tools, as listed'), args: z.record(z.string(), z.unknown()).describe('Its exact arguments, with "action" when the tool does several') }).describe('The exact call that makes this change')
+const CallSchema = z.object({ tool: z.string().describe('The listed change tool name, without any :action suffix'), args: z.record(z.string(), z.unknown()).describe('Its exact arguments, with "action" when the tool does several') }).describe('The exact call that makes this change')
+const EffectSchema = z.object({ system: z.string(), action: z.string(), target: z.string(), summary: z.string(), payload: z.unknown().optional(), call: CallSchema.optional(), head: z.string().optional().describe('For a pull request vote: the head commit ID of the iteration your review read. For a deploy: the PR head commit its build is from') })
 export const ReportSchema = {
 	workflowId: z.string(),
 	intent: z.string().describe('One intent id from the list in your prompt'),
@@ -21,11 +22,12 @@ export const ReportSchema = {
 	question: z.string().optional(),
 	choices: z.object({
 		prompt: z.string(), multi: z.boolean().optional(), other: z.boolean().optional(),
-		options: z.array(z.object({ label: z.string(), reply: z.string().optional().describe('The full reply if the owner picks this'), effects: z.array(z.object({ system: z.string(), action: z.string(), target: z.string(), summary: z.string(), payload: z.unknown().optional() })).optional().describe('Changes this option makes, such as creating a calendar event'), note: z.string().optional() })).min(2).max(6),
+		options: z.array(z.object({ label: z.string(), reply: z.string().optional().describe('The full reply if the owner picks this'), effects: z.array(EffectSchema).optional().describe('Changes this option makes, such as creating a calendar event'), note: z.string().optional() })).min(2).max(6),
 	}).optional().describe('When the owner must choose between a few clear options, such as flag A or B, or meet now, later, or async'),
 	context: z.array(z.object({ label: z.string(), text: z.string(), tone: z.enum(['info', 'warn']).optional() })).max(4).optional().describe('Up to 4 short facts that help the owner decide, such as a calendar conflict'),
 	meeting: z.object({ subject: z.string(), start: z.string().describe('ISO date and time'), minutes: z.number(), attendees: z.array(z.string()) }).optional().describe('When the ask is to meet: what, when, who'),
 	answer: z.string().optional().describe('Ask workflow only: your answer to the owner'),
+	answeredItems: z.array(z.string()).optional().describe('Owner-reply judgment only: IDs of the listed items that this owner message actually answers; empty when unrelated'),
 	gaps: z.array(z.string()).optional().describe('Each attachment, image, or link the ask depends on that you could not open, such as "screenshot.png (image)"'),
 	partOf: z.string().optional().describe('Code of open work listed in your prompt that this ask belongs to, even though it is in another chat'),
 	same: z.string().optional().describe('Code of another open item in this chat that asks for the same thing, even from someone else. This ask then joins it; leave out reply.'),
@@ -44,7 +46,7 @@ export const ReportSchema = {
 	checkpoint: z.string().optional().describe('Bootstrap only: the newest date or ID you read, so a rerun starts after it'),
 	done: z.boolean().optional().describe('Tracker only: true when the stop condition holds'),
 	job: z.object({ key: z.string(), goal: z.string(), repo: z.string().optional().describe('The repo by its remote or its link, never a folder'), branch: z.string().optional().describe('The PR\'s source branch, when the work is a PR'), owner: z.string().optional() }).optional().describe('Reply workflow only: this ask needs real work in its own session. Leave out reply.'),
-	effects: z.array(z.object({ system: z.string(), action: z.string(), target: z.string(), summary: z.string(), payload: z.unknown().optional(), call: CallSchema.optional(), head: z.string().optional().describe('For a pull request vote: the head commit ID of the iteration your review read. For a deploy: the PR head commit its build is from') })).optional().describe('Job or reply workflow: changes on other systems the reply promises or the job proposes, made by a separate run only after the owner approves. Only with the changes the prompt lists.'),
+	effects: z.array(EffectSchema).optional().describe('Job or reply workflow: changes on other systems the reply promises or the job proposes, made by a separate run only after the owner approves. Only with the changes the prompt lists.'),
 	deployTargets: z.array(z.object({ pipelineId: z.number().int().positive(), ring: z.string(), project: z.string().optional(), from: z.string().optional().describe('The repo file and commit you read it from') })).max(12).optional().describe('Validate jobs, when the prompt says no deploy pipeline is confirmed yet: every deploy pipeline the repo\'s own config lists, by ID and ring name, including int and production ones, so the owner can confirm the test rings'),
 	todos: z.array(z.string()).optional().describe('Reply workflow: actions the reply promises that no listed write tool can do, so the owner must do them. One short line each.'),
 	follow: z.object({ target: z.string(), until: z.string(), everyHours: z.number().min(1).max(24).optional() }).optional().describe('Reply workflow: when the reply promises to check back (for a partner team\'s answer, a fix, a rollout), what to watch, until when, and how often (hours; pick from urgency, default 4).'),

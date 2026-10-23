@@ -4,13 +4,14 @@ import type { Waiting } from '../core/waiting.ts'
 import { type Facts, rankOf, type Section, URGENCY, whoseMove } from '../core/whose.ts'
 import { clock } from '../core/schedule.ts'
 import { meaningOf, pendingEffects, saidLine, shown, asksReviewAgain } from '../core/effects.ts'
-import { messageLink } from '../adapters/channels.ts'
-import { when } from '../runner/automations.ts'
+import { messageLink, teamsChat } from '../adapters/channels.ts'
+import { describe } from '../runner/automations.ts'
 import { DELAYS, MAX_TRIES } from '../runner/retry.ts'
 import { cardType, msgKeys, readingOf, who as whoOf, type Who } from './view.ts'
 import { NAME } from '../brand.ts'
 import { handledThisWeek } from '../store/numbers.ts'
 import { openTodos } from '../runner/work.ts'
+import { htmlToText } from '../core/intake.ts'
 
 // The new experience's placement (dev-spec/new-experience.md §0, phase N0): one thread per home code, in one section, with its Next owner.
 export type Owner = { kind: 'you' } | { kind: 'delegate' } | { kind: 'others'; text: string } | { kind: 'nobody' }
@@ -257,8 +258,9 @@ export type NextView = {
 export const INLINE_MAX = 180
 const first = (n?: string) => String(n || 'them').split(/\s+/)[0]
 const firsts = (ns: string[]) => { const f = ns.map(first); return f.length > 1 ? `${f.slice(0, -1).join(', ')} and ${f.at(-1)}` : f[0] ?? 'them' }
-const clip = (t = '', n = 90) => { const s = t.replace(/\s+/g, ' ').trim(); return s.length > n ? `${s.slice(0, n - 1).trimEnd()}…` : s }
-const teamsLink = (w: Workflow) => w.chat.id && w.lastMsgId && !w.chat.test ? messageLink(w.chat.id, w.lastMsgId) : undefined
+const clipPlain = (t = '', n = 90) => { const s = t.replace(/\s+/g, ' ').trim(); return s.length > n ? `${s.slice(0, n - 1).trimEnd()}…` : s }
+const clip = (t = '', n = 90) => clipPlain(htmlToText(t), n)
+const teamsLink = (w: Workflow) => w.chat.id && w.lastMsgId && (!w.chat.test || teamsChat(w.chat.id)) ? messageLink(w.chat.id, w.lastMsgId) : undefined
 const triesOf = (r: NonNullable<Job['retry']>) => `${r.n} of ${DELAYS[r.last.kind]?.length ?? MAX_TRIES}`
 // "every hour", "every 2 hours", "every day", "every 30 min".
 export const every = (min: number) => min % 1440 === 0 ? (min === 1440 ? 'every day' : `every ${min / 1440} days`) : min % 60 === 0 ? (min === 60 ? 'every hour' : `every ${min / 60} hours`) : `every ${min} min`
@@ -269,7 +271,7 @@ export function gerund(goal: string): string {
 	const g = /[^aeiou]e$/.test(w) && w !== 'be' ? w.slice(0, -1) : /^[^aeiou]*[aeiou][^aeiouwxy]$/.test(w) ? w + w.at(-1) : w
 	return [`${g}ing`, ...rest].join(' ')
 }
-const whyOf = (error?: string) => { const m = /tool not found:?\s*(.+)$/i.exec(error ?? ''); return m ? `a tool is missing (${m[1].trim()})` : clip(error ?? 'its run ended without a result', 140) }
+const whyOf = (error?: string) => { const m = /tool not found:?\s*(.+)$/i.exec(error ?? ''); return m ? `a tool is missing (${htmlToText(m[1])})` : clip(error ?? 'its run ended without a result', 140) }
 
 // The markers that have data today (R-NEX-09, N1a). New and Back to you need per-item marks (N1b).
 export function chipsOf(w: Workflow | undefined, j: Job | undefined, watchChanged = false): Chip[] {
@@ -305,7 +307,7 @@ export const mustSee = (w: Workflow) => !!w.shareHold || !!w.draft?.commitment |
 	|| !!w.draft?.sources.some(x => x.tier === 'private' || !!x.label) || /_{3,}/.test(w.draft?.text ?? '')
 // A short draft reads whole in the headline; a longer one that fits goes under it; one that does not fit is clipped, and opens.
 const SHORT = 80
-const said = (verb: string, d: string, fits: boolean): { headline: string; draft?: string } => !fits || d.replace(/\s+/g, ' ').trim().length <= SHORT ? { headline: `${verb}: "${clip(d, SHORT)}"` } : { headline: verb, draft: d }
+const said = (verb: string, d: string, fits: boolean): { headline: string; draft?: string } => !fits || d.replace(/\s+/g, ' ').trim().length <= SHORT ? { headline: `${verb}: "${clip(d, SHORT)}"` } : { headline: verb, draft: htmlToText(d) }
 const commentsOrChanges = (w: Workflow) => { const e = pendingEffects(w.effects), c = e.length && e.every(x => /comment|review/i.test(x.action)); return `${e.length} ${c ? (e.length === 1 ? 'comment' : 'comments') : (e.length === 1 ? 'change' : 'changes')}` }
 // "Pick what goes in the demo" reads "what goes in the demo?" after "Pick for Sam:".
 const pickPrompt = (t = '') => { const s = t.trim().replace(/^(pick|choose|select)\s+/i, ''); return /[?]$/.test(s) ? s : `${s}?` }
@@ -314,7 +316,11 @@ const watchLine = (t = '') => t.replace(/^Watch\s+/i, '').replace(/\s+until\s+(i
 // Why Delegate has not started a thread that waits for it, as what it will do next (PM review 9: never a bare "Delegate").
 function delegateNext(s: Snap, p: Placed, j: Job | undefined): { what: string; at?: string } {
 	const why = p.why ?? ''
-	if (/^tries again/.test(why) && j?.retry) return { what: `tries again {at} (${triesOf(j.retry)})`, at: j.retry.at }
+	if (/^tries again/.test(why) && j?.retry) return {
+		what: j.retry.last.kind === 'not_ready'
+			? `waits for ${j.retry.last.waitFor || j.retry.last.why}; checks again {at}`
+			: `tries again {at} (${triesOf(j.retry)})`, at: j.retry.at,
+	}
 	if (/in line/.test(why)) return { what: 'drafts it after the live asks' }
 	if (/daily limit/.test(why)) return { what: 'starts tomorrow; the daily limit is reached' }
 	if (/run slot/.test(why)) return { what: 'starts when a run slot is free' }
@@ -333,7 +339,11 @@ function itemRow(s: Snap, p: Placed, w: Workflow): Body {
 	// "+1 chat": parts of this work in other chats (U37). The owner's own folded ask is not one.
 	const chats = new Set(p.subjects.map(c => s.workflows.find(x => x.code === c)).filter(x => x && x.partOf === w.id && x.chat.id !== w.chat.id).map(x => x!.chat.id)).size
 	const ask: Quote | undefined = w.lastAsk ? { by: w.asker?.name ?? 'They', verb: 'asked', text: clip(w.lastAsk, 200) } : undefined
-	const facts: NextRow['facts'] = { who: w.asker?.name, ...(where ? { where } : {}), at: w.createdAt, verb: 'asked', ...(ask ? { quote: ask } : {}), ...(chats ? { also: chats } : {}) }
+	// A run the engine refused to start says why on the row, not just "Answer" with a blank (bug 10-23 E33).
+	const refused = w.state === 'needs_human' && /^Could not start: /.test(w.status) ? [{ label: 'Why', text: clip(((r: string) => r.startsWith(`${NAME} `) ? r : `${NAME} could not start: ${r}`)(w.status.replace(/^Could not start: /, '')), 240) }]
+		// A send whose answer was lost and that the chat did not show: the owner checks Teams before anything goes again (bug 10-23 R4).
+		: w.state === 'needs_human' && /^Not sure it was sent/.test(w.status) ? [{ label: 'Why', text: clip(w.status, 240) }] : []
+	const facts: NextRow['facts'] = { who: w.asker?.name, ...(where ? { where } : {}), at: w.createdAt, verb: 'asked', ...(ask ? { quote: ask } : {}), ...(chats ? { also: chats } : {}), ...(refused.length ? { notes: refused } : {}) }
 	const base = { who: whoOf(w.asker?.name), facts, chips: chipsOf(w, j), teams: teamsLink(w), rev: w.revAt ?? w.updatedAt }
 	const open: RowAction = { label: 'Open' }
 	const goal = (t?: string): Note[] => t ? [{ label: 'Goal', text: clip(t, 200) }] : []
@@ -341,7 +351,10 @@ function itemRow(s: Snap, p: Placed, w: Workflow): Body {
 	// promises a send after resume (PM verification of N1a).
 	if (w.state === 'scheduled') {
 		const rule = w.decision?.ruleId ? ` (rule ${w.decision.ruleId})` : ''
-		return { ...base, kind: 'scheduled', headline: `Sends to ${name}${rule}: "${clip(w.draft?.text, 70)}"`, ...(p.section === 'working' ? { next: { owner: { kind: 'delegate' } as Owner, what: 'sends it at {at}', ...(w.sendAt ? { at: w.sendAt } : {}) } } : {}), primary: { label: 'Hold', command: `later ${c}` } }
+		// Due while the owner is at the keyboard, the engine holds it and says so only in the status (runner/autosend.ts, as core/render.ts).
+		const held = /^Held: you are active in Teams/.test(w.status)
+		const next = held ? { owner: { kind: 'delegate' } as Owner, what: 'holds it because you are active in Teams; sends it once you step away' } : { owner: { kind: 'delegate' } as Owner, what: 'sends it at {at}', ...(w.sendAt ? { at: w.sendAt } : {}) }
+		return { ...base, ...(held ? { chips: [...base.chips, { kind: 'held', text: 'Held: you are active in Teams' }] } : {}), kind: 'scheduled', headline: `Sends to ${name}${rule}: "${clip(w.draft?.text, 70)}"`, ...(p.section === 'working' ? { next } : {}), primary: { label: 'Hold', command: `later ${c}` } }
 	}
 	if (p.section === 'move') {
 		if (p.rule === 'stopped') return { ...base, kind: 'stopped', headline: `Couldn't finish ${j?.goal ? gerund(clip(j.goal, 100)) : `this for ${name}`}: try again, or do it yourself`, facts: { ...facts, notes: [{ label: 'Why', text: whyOf(j?.error) }] }, primary: { label: 'Try again', command: `${c}: try again` }, more: [{ label: 'Close', command: `close ${c}` }] }
@@ -356,7 +369,7 @@ function itemRow(s: Snap, p: Placed, w: Workflow): Body {
 			case 'holding': return { ...base, kind, ...said(`Send ${name} a holding reply`, d, fits), primary: open }
 			case 'question': return { ...base, kind, headline: `Answer ${name}: ${clip(w.question ?? w.lastAsk, 110)}`, primary: open }
 			case 'choice': return { ...base, kind, headline: `Pick for ${name}: ${clip(pickPrompt(w.choices?.prompt ?? w.lastAsk), 110)}`, primary: open }
-			case 'meeting': return { ...base, kind, headline: `Meet ${name}: ${clip(w.meeting?.subject ?? w.lastAsk, 90)}?`, when: w.meeting?.start, ...(clash ? { warn: `${clash.label}: ${clash.text}` } : {}), primary: open }
+			case 'meeting': return { ...base, kind, headline: `Meet ${name}: ${clip(w.meeting?.subject ?? w.lastAsk, 90)}?`, when: w.meeting?.start, ...(clash ? { warn: htmlToText(`${clash.label}: ${clash.text}`) } : {}), primary: open }
 			case 'review': return { ...base, kind, headline: `Approve ${commentsOrChanges(w)}${d ? `, then reply to ${name}` : ''}`, next: { owner: { kind: 'delegate' }, what: `after your ok, ${NAME} ${/comment/.test(commentsOrChanges(w)) ? 'posts them' : 'makes them'}${d ? ' and replies' : ''}` }, primary: open }
 			case 'check-date': return { ...base, kind, headline: `No news on "${clip(w.work?.goal, 80)}": nudge, wait, or close?`, facts: { ...facts, quote: undefined, verb: undefined, at: w.work?.steps.at(-1)?.at ?? w.createdAt, notes: w.work?.waitingOn ? [{ label: 'Waiting on', text: clip(w.work.waitingOn.who, 60), since: w.work.waitingOn.since }] : [] }, primary: { label: 'Draft a nudge', command: `${c}: nudge them` }, more: [{ label: 'Wait 3 days', command: `wait ${c}: 3d` }, { label: 'Close', command: `close ${c}` }] }
 			// The reply already went in the owner's words; one button makes the change it promised, its meaning on the row (Slice 3).
@@ -371,7 +384,7 @@ function itemRow(s: Snap, p: Placed, w: Workflow): Body {
 			case 'track': return { ...base, kind, headline: `Track this? ${clip(w.work?.goal, 110)}`, facts: { ...facts, verb: 'said', quote: w.lastAsk ? { by: 'You', verb: 'said', text: clip(w.lastAsk, 200) } : undefined, notes: w.work?.doneWhen ? [{ label: 'Done when', text: clip(w.work.doneWhen, 160) }] : [] }, primary: { label: 'Track', command: `ok ${c}` }, more: [{ label: 'Skip', command: `skip ${c}` }] }
 		}
 	}
-	if (p.section === 'catchup') return { ...base, kind: 'catchup', headline: clip(w.fyi?.line ?? w.lastAsk, 140), facts: { ...facts, quote: undefined, verb: 'posted', at: w.fyi?.at ?? p.at }, ...(w.fyi?.gist ? { gist: w.fyi.gist } : {}), primary: { label: 'Needs me', command: `mine ${c}` }, more: w.watchedAs ? [] : [{ label: 'Watch', command: `watch ${c}` }] }
+	if (p.section === 'catchup') return { ...base, kind: 'catchup', headline: clip(w.fyi?.line ?? w.lastAsk, 140), facts: { ...facts, quote: undefined, verb: 'posted', at: w.fyi?.at ?? p.at }, ...(w.fyi?.gist ? { gist: htmlToText(w.fyi.gist) } : {}), primary: { label: 'Needs me', command: `mine ${c}` }, more: w.watchedAs ? [] : [{ label: 'Watch', command: `watch ${c}` }] }
 	const next = p.next
 	if (p.section === 'working') {
 		const run = j && (j.state === 'running' || j.state === 'queued')
@@ -401,14 +414,14 @@ function itemRow(s: Snap, p: Placed, w: Workflow): Body {
 // Only a to-do the reply promised to someone says "You promised <them>": a change Delegate refused says why, a clone to make
 // says nothing more, and the owner never promised themself (review N2 P2-7).
 const REFUSED = /\.\s*Not made for you:\s*/, CLONE = /^Clone \S+ on \S+ \(git clone /
+export const todoHeadline = (text: string, remaining = 0) => clip(`To do: ${text.split(REFUSED)[0].replace(/[.\s]+$/, '')}${remaining ? ` (+${remaining} more)` : ''}`, 160)
 function todoRow(s: Snap, base: Omit<Body, 'kind' | 'headline'>, w: Workflow): Body {
-	const open = openTodos(w), t = open[0], [what, why] = t.text.split(REFUSED)
+	const open = openTodos(w), t = open[0], [, why] = t.text.split(REFUSED)
 	const where = w.chat.name && w.chat.name !== w.asker?.name ? w.chat.name : undefined
-	const more = open.length > 1 ? ` (+${open.length - 1} more)` : ''
 	const to = !why && !CLONE.test(t.text) && w.asker?.name && !isMe(s, w.asker.name) && !isMe(s, w.asker.name.split(/\s+/)[0]) ? first(w.asker.name) : undefined
 	const promise: Promise_ = { ...(to ? { to } : {}), at: t.at, ...(why ? { why: clip(why, 140) } : CLONE.test(t.text) ? {} : { why: 'no tool can do it' }) }
 	// Its rev is the newest to-do it shows, so Mark done marks no to-do kept after the page drew it (re-review N2 P2-C).
-	return { ...base, kind: 'todo', rev: open.map(x => x.at).sort().at(-1)!, headline: clip(`To do: ${what.replace(/[.\s]+$/, '')}${more}`, 160), facts: { at: t.at, ...(where ? { where } : {}), promise }, primary: { label: 'Mark done', command: `close ${w.code}` }, more: [{ label: 'Open' }] }
+	return { ...base, kind: 'todo', rev: open.map(x => x.at).sort().at(-1)!, headline: todoHeadline(t.text, open.length - 1), facts: { at: t.at, ...(where ? { where } : {}), promise }, primary: { label: 'Mark done', command: `close ${w.code}` }, more: [{ label: 'Open' }] }
 }
 
 // Who does a plan step: the owner, Delegate, or someone else in the AI's words: the person in the chat of a part of this work the
@@ -423,18 +436,18 @@ function workOf(s: Snap, p: Placed, w: Workflow, home: Workflow): NextWork | und
 	const part = (x: PlanStep) => { const it = x.in ? items.get(x.in) : undefined; return it && (it.id === home.id || it.partOf === home.id) ? it : undefined }
 	const person = (x: PlanStep) => { const n = part(x)?.asker?.name; return n && !isMe(s, n) && !isMe(s, n.split(/\s+/)[0]) ? n : undefined }
 	const owner = (x: PlanStep): Owner => x.who === 'you' ? { kind: 'you' } : x.who === 'me' ? { kind: 'delegate' }
-		: { kind: 'others', text: person(x) || (x === named && on) || 'Someone else' }
-	const steps = plan.map(x => ({ what: x.what, owner: owner(x), done: !!x.done, now: x === cur, ...(part(x) ? { where: x.in } : {}), ...(x.probe ? { build: x.probe.build } : {}) }))
+		: { kind: 'others', text: htmlToText(person(x) || (x === named && on) || 'Someone else') }
+	const steps = plan.map(x => ({ what: htmlToText(x.what), owner: owner(x), done: !!x.done, now: x === cur, ...(part(x) ? { where: x.in } : {}), ...(x.probe ? { build: x.probe.build } : {}) }))
 	const seen = plan.filter(x => x.done && x.probe).sort((a, b) => b.done!.localeCompare(a.done!))[0]
 	const check = seen && { what: seen.ring ? 'Deploy' as const : 'Build' as const, at: seen.done!, build: seen.probe!.build }
 	const yourNext = plan.find(x => !x.done && x.who === 'you' && x !== cur)
-	const then = who && who !== 'you' && k.next ? { owner: who === 'me' ? { kind: 'delegate' } as Owner : { kind: 'others', text: on ?? 'Someone else' } as Owner, what: k.next.what, ...(yourNext ? { you: yourNext.what } : {}) } : undefined
+	const then = who && who !== 'you' && k.next ? { owner: who === 'me' ? { kind: 'delegate' } as Owner : { kind: 'others', text: htmlToText(on ?? 'Someone else') } as Owner, what: htmlToText(k.next.what), ...(yourNext ? { you: htmlToText(yourNext.what) } : {}) } : undefined
 	return {
-		goal: k.goal, steps,
-		...(who === 'you' && k.next ? { yours: { what: k.next.what, ...(check ? { check } : {}) } } : {}),
+		goal: htmlToText(k.goal), steps,
+		...(who === 'you' && k.next ? { yours: { what: htmlToText(k.next.what), ...(check ? { check } : {}) } } : {}),
 		...(then ? { then } : {}),
 		...(p.rule === 'your-step' && w === home ? { report: `${home.code}: {result}: {text}` } : {}),
-		happened: k.steps.slice(-6).reverse().map(x => ({ at: x.at, what: x.what, news: !!x.news })), total: k.steps.length,
+		happened: k.steps.slice(-6).reverse().map(x => ({ at: x.at, what: htmlToText(x.what), news: !!x.news })), total: k.steps.length,
 	}
 }
 
@@ -444,10 +457,10 @@ function waitRow(w: Waiting): Body {
 }
 
 function reminderRow(p: Placed, a: Automation): Body {
-	const facts = { who: a.to.name, where: when(a.schedule), at: a.updatedAt }
-	if (p.section === 'move') return { kind: 'reminder-new', headline: `Start reminding ${first(a.to.name)}: "${clip(a.text, 90)}"?`, who: whoOf(a.to.name), facts, chips: [], primary: { label: 'Start', command: `ok ${a.code}` }, more: [{ label: 'Skip', command: `skip ${a.code}` }] }
+	const facts = { who: a.to.name, where: describe(a).replace(/^R\d+ · /, ''), at: a.updatedAt }
+	if (p.section === 'move') return { kind: 'reminder-new', headline: `Start reminding ${first(a.to.name)}: "${clipPlain(a.text, 90)}"?`, who: whoOf(a.to.name), facts, chips: [], primary: { label: 'Start', command: `ok ${a.code}` }, more: [{ label: 'Skip', command: `skip ${a.code}` }] }
 	const next = a.state === 'paused' ? p.next : { owner: { kind: 'delegate' } as Owner, what: a.next ? `reminds ${first(a.to.name)} {at}` : `reminds ${first(a.to.name)}`, ...(a.next ? { at: a.next } : {}) }
-	return { kind: 'reminder', headline: clip(`Reminding ${first(a.to.name)}: "${a.text}"`, 160), who: whoOf(a.to.name), facts, chips: [], next, primary: a.state === 'paused' ? { label: 'Resume', command: `resume ${a.code}` } : { label: 'Pause', command: `pause ${a.code}` }, more: [{ label: 'Stop reminding', command: `skip ${a.code}` }] }
+	return { kind: 'reminder', headline: clipPlain(`Reminding ${first(a.to.name)}: "${a.text}"`, 160), who: whoOf(a.to.name), facts, chips: [], next, primary: a.state === 'paused' ? { label: 'Resume', command: `resume ${a.code}` } : { label: 'Pause', command: `pause ${a.code}` }, more: [{ label: 'Stop reminding', command: `skip ${a.code}` }] }
 }
 
 // What New and Back to you compare (N1b). Only items change: a W entry is the owner's own ask, and a reminder is the owner's.
@@ -468,8 +481,10 @@ export function rowsOf(s: Snap, placed: Placed[]): NextRow[] {
 		const body = w ? itemRow(s, p, w) : wt ? waitRow(wt) : reminderRow(p, a!)
 		const home = w && ((w.partOf && s.workflows.find(x => x.id === w.partOf)) || w), work = w && workOf(s, p, w, home!)
 		// Every item's open to-dos in the thread, the home's and its parts', each with its own code (review N2 P1-1).
-		const todos = p.subjects.map(c => items.get(c)).filter((x): x is Workflow => !!x).flatMap(x => openTodos(x).map(t => ({ id: t.id, text: t.text, at: t.at, code: x.code })))
-		return { code: p.code, act: p.act, section: p.section, rule: p.rule, ...body, ...freshOf(p, w, items), ...(work ? { work } : {}), ...(todos.length ? { todos } : {}) }
+		const todos = p.subjects.map(c => items.get(c)).filter((x): x is Workflow => !!x).flatMap(x => openTodos(x).map(t => ({ id: t.id, text: htmlToText(t.text), at: t.at, code: x.code })))
+		const next = body.next && { ...body.next, what: body.next.what === undefined ? undefined : htmlToText(body.next.what),
+			owner: body.next.owner.kind === 'others' ? { ...body.next.owner, text: htmlToText(body.next.owner.text) } : body.next.owner }
+		return { code: p.code, act: p.act, section: p.section, rule: p.rule, ...body, ...(next ? { next } : {}), ...freshOf(p, w, items), ...(work ? { work } : {}), ...(todos.length ? { todos } : {}) }
 	})
 }
 

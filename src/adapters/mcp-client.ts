@@ -6,6 +6,20 @@ import type { Config } from '../core/types.ts'
 import { inTemp, readJson } from '../store/fs.ts'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 
+const sessionLost = (error: unknown) => {
+	if (typeof error === 'object' && error !== null && 'code' in error && error.code === -32001) return true
+	return /-32001\b|Session not found/i.test(error instanceof Error ? error.message : String(error))
+}
+// Only reads are called again after a lost session: a send or a change may have landed although its answer was lost
+// (bug 10-23 R4: a rule reply posted twice). Anything not on this list is treated as a write.
+const ADO_READS = new Set(['repo_pull_request', 'repo_pull_request_thread', 'repo_repository', 'repo_file', 'repo_branch', 'repo_search_commits', 'pipelines_build', 'pipelines_build_log', 'pipelines_definition', 'pipelines_run', 'pipelines_artifact', 'wit_work_item', 'wit_query', 'wit_backlog', 'search_wiki', 'search_workitem', 'search_code', 'core_list_projects', 'core_list_project_teams', 'wiki', 'work', 'advsec_alerts'])
+export const readOnlyTool = (tool: string) => /^(?:List|Get|Search|Find|Read|Fetch)[A-Z_]|^(?:list|get|search|find|read|fetch)[A-Z_]|^fetch_blob$|^readSmallBinaryFile$/.test(tool) || ADO_READS.has(tool)
+// A write whose answer was lost: it may or may not have been made. Never repeated automatically; the caller reads back.
+export class LostResponse extends Error {
+	readonly tool: string
+	constructor(tool: string, cause: unknown) { super(`${tool}: the tool server lost its session before answering, so it may or may not have been done (${String(cause).slice(0, 160)})`); this.tool = tool }
+}
+
 export class McpClient {
 	private client = new Client({ name: 'delegate', version: '0.1.0' })
 	private connecting?: Promise<void>
@@ -21,24 +35,68 @@ export class McpClient {
 		return this.connecting
 	}
 
+	private async request(tool: string, args: Record<string, unknown>, retry = true): Promise<Awaited<ReturnType<Client['callTool']>>> {
+		const client = this.client
+		let result: Awaited<ReturnType<Client['callTool']>>
+		try {
+			await this.connect()
+			result = await client.callTool({ name: tool, arguments: args })
+		} catch (error) {
+			if (!retry || !sessionLost(error)) throw error
+			await this.reconnect(client)
+			if (!readOnlyTool(tool)) throw new LostResponse(tool, error)
+			console.warn(`MCP session lost for ${tool}; reconnecting once.`)
+			return this.request(tool, args, false)
+		}
+		const text = (result.content as { type: string; text?: string }[] | undefined)?.map(c => c.text ?? '').join('') ?? ''
+		if (retry && result.isError && sessionLost(text)) {
+			await this.reconnect(client)
+			if (!readOnlyTool(tool)) throw new LostResponse(tool, text)
+			console.warn(`MCP session lost for ${tool}; reconnecting once.`)
+			return this.request(tool, args, false)
+		}
+		return result
+	}
+
+	private async reconnect(client: Client) {
+		// Concurrent failures from the same connection must not close its replacement.
+		if (client !== this.client) return
+		await this.close()
+	}
+
 	async call<T = unknown>(tool: string, args: Record<string, unknown>): Promise<T> {
-		await this.connect()
-		const r = await this.client.callTool({ name: tool, arguments: args })
+		const r = await this.request(tool, args)
 		const text = (r.content as { type: string; text?: string }[] | undefined)?.map(c => c.text ?? '').join('') ?? ''
 		if (r.isError) throw new Error(`${tool} failed: ${text.slice(0, 300)}`)
 		return parseLoose<T>(text, r.structuredContent)
 	}
 
+	// The tool's own input schema, read once: a change whose arguments it would reject is never called (bug 10-23 E16).
+	private schemas?: Promise<Map<string, { properties?: Record<string, unknown>; required?: string[] }>>
+	async argsProblem(tool: string, args: Record<string, unknown>): Promise<string | undefined> {
+		this.schemas ??= this.connect().then(() => this.client.listTools()).then(r => new Map(r.tools.map(t => [t.name, t.inputSchema as { properties?: Record<string, unknown>; required?: string[] }])), e => { this.schemas = undefined; throw e })
+		const schema = (await this.schemas).get(tool)
+		if (!schema) return `the tool server has no tool ${tool}`
+		const known = Object.keys(schema.properties ?? {}), unknown = known.length ? Object.keys(args).filter(k => !known.includes(k)) : []
+		const missing = (schema.required ?? []).filter(k => args[k] === undefined || args[k] === '')
+		if (!unknown.length && !missing.length) return undefined
+		return `${tool} would reject it (${[unknown.length ? `it does not take ${unknown.join(', ')}` : '', missing.length ? `it needs ${missing.join(', ')}` : ''].filter(Boolean).join('; ')}; it takes ${known.join(', ')}), so it was not called`
+	}
+
 	// The text parts as sent, for tools whose result is not JSON (such as a file's base64).
 	async texts(tool: string, args: Record<string, unknown>): Promise<string[]> {
-		await this.connect()
-		const r = await this.client.callTool({ name: tool, arguments: args })
+		const r = await this.request(tool, args)
 		const parts = (r.content as { type: string; text?: string }[] | undefined)?.map(c => c.text ?? '') ?? []
 		if (r.isError) throw new Error(`${tool} failed: ${parts.join('').slice(0, 300)}`)
 		return parts
 	}
 
-	async close() { if (this.connecting) { this.connecting = undefined; await this.client.close() } }
+	async close() {
+		const client = this.client, connecting = this.connecting
+		this.client = new Client({ name: 'delegate', version: '0.1.0' })
+		this.connecting = undefined
+		if (connecting) await client.close()
+	}
 }
 
 // Some servers append a correlation line after the JSON body.

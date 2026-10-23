@@ -12,7 +12,8 @@ import { renderList } from '../core/render.ts'
 import { YOURS, type BootSource } from './bootstrap.ts'
 import { offRecord } from '../core/levels.ts'
 import { fromOffChat } from './sharing.ts'
-import { parseMessageLink } from '../adapters/channels.ts'
+import { openLink, parseMessageLink } from '../adapters/channels.ts'
+import { literalLearning } from '../core/learning.ts'
 import { scrub } from '../core/secrets.ts'
 
 export const knowledgeOf = (store: Store, cfg: Config): Knowledge => openKnowledge(cfg.cards?.root ?? join(store.root, 'knowledge'), store.machine, cfg.cards?.team)
@@ -32,10 +33,13 @@ export function propose(store: Store, k: Knowledge, claims: Claim[], from: Propo
 	const pending = store.proposals().filter(p => p.state === 'needs_human').flatMap(p => p.ops)
 	const byTopic = new Map<string, { title: string; ops: Op[] }>()
 	const titles = new Map(k.topics().map(t => [t.topic, t.title])), cfg = store.config()
+	const withdrawn = new Set(store.withdrawnKnowledgeSources().map(openLink))
 	for (const raw of claims) {
-		const src = (raw.src ?? []).map(s => ({ link: clean(s.link ?? ''), date: (s.date ?? '').slice(0, 10), who: s.who && clean(s.who) })).filter(s => s.link)
+		if (raw.src?.some(source => withdrawn.has(openLink(source.link ?? '')))) store.log({ event: 'learning-source-rejected', reason: 'source withdrawn', from })
+		const src = (raw.src ?? []).map(s => ({ link: clean(s.link ?? ''), date: (s.date ?? '').slice(0, 10), who: s.who && clean(s.who) })).filter(s => s.link && !withdrawn.has(openLink(s.link)))
 		const c: Claim = { ...raw, topic: clean(raw.topic ?? ''), text: scrub(clean(raw.text ?? '')), src }
 		if (!c.text || !src.length) continue
+		if (from === 'edit' && literalLearning(`${c.topic} ${c.text}`)) { store.log({ event: 'learning-rejected', reason: 'claim contains literal control text or item code' }); continue }
 		// Nothing is learned from a chat kept off the record, unless the owner says it themselves.
 		if (from !== 'remember' && src.some(s => offRecord(cfg, parseMessageLink(s.link)?.chatId))) continue
 		const topicSlug = slug(c.topic)
@@ -126,7 +130,8 @@ function undoProposal(store: Store, k: Knowledge, p: Proposal): string {
 		const id = done.ids[i]
 		if (k.line(p.topic, o.card, id) !== done.lines![i]) { kept.push(id); return }
 		const prev = done.prev![i] && parseLine(done.prev![i]!, { topic: p.topic, card: o.card, audience: 'team' })
-		ops.push(prev ? { op: 'update', id, card: o.card, entry: prev } : { op: 'retire', id, card: o.card, entry: o.entry })
+		if (prev) prev.src = prev.src.filter(source => !store.withdrawnKnowledgeSources().some(link => openLink(link) === openLink(source.link)))
+		ops.push(prev && prev.src.length ? { op: 'update', id, card: o.card, entry: prev } : { op: 'retire', id, card: o.card, entry: o.entry })
 	})
 	if (ops.length) k.apply({ ...p, id: ulid(), ops, base: Object.fromEntries([...new Set(ops.map(o => o.card))].map(c => [c, k.cardHash(p.topic, c, p.home)])) })
 	Object.assign(p, { state: 'dropped', status: 'Undone by you' })

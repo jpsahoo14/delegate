@@ -3,7 +3,7 @@
 // item, through the same vet, ok, and make_change as every other change. Nothing is made without that ok.
 import { ulid } from '../core/ids.ts'
 import { MARK } from '../core/render.ts'
-import { isVote, prIdOf, saidLine, vet, voteValue } from '../core/effects.ts'
+import { isVote, prIdOf, proposalEffects, saidLine, vet, voteValue } from '../core/effects.ts'
 import type { Config, Effect, Workflow } from '../core/types.ts'
 import type { Source } from '../adapters/source.ts'
 import type { Store } from '../store/state.ts'
@@ -11,7 +11,7 @@ import { buildPromisePrompt } from '../worker/prompt.ts'
 import { readDirs, WORKER_TOOLS, workerMcp, type RunWorker } from './dispatch.ts'
 import { prTarget, voteNow, type BuildProbe } from './probe.ts'
 import { carry, executing } from './jobs.ts'
-import { active, homeOf, newTurn, statusOf } from './work.ts'
+import { active, homeOf, keepTodos, newTurn, statusOf } from './work.ts'
 import { close, say } from './intake.ts'
 import { backupSession, restoreSession } from './own.ts'
 import { startFollow, startWatch } from './track.ts'
@@ -130,7 +130,7 @@ export async function checkPromise(store: Store, src: Source, cfg: Config, wf: W
 	const decided = (fresh.effects ?? []).filter(e => e.done || e.off)
 	const same = (a: Effect, b: Effect) => isVote(a.call) && isVote(b.call) ? prIdOf(a.call) === prIdOf(b.call) && voteValue(a.call) === voteValue(b.call) && (a.head ?? null) === (b.head ?? null) : JSON.stringify(a.call) === JSON.stringify(b.call)
 	const cast = (e: Effect) => isVote(e.call) && fresh.prVote !== undefined && fresh.prVote !== 0 && fresh.prVote === voteValue(e.call)
-	const wanted = v.effects.filter(e => !decided.some(m => same(m, e)) && !cast(e)).map(e => ({ ...e, done: undefined, error: undefined }))
+	const wanted = proposalEffects(v.effects.filter(e => !decided.some(m => same(m, e)) && !cast(e)).map(e => ({ ...e, done: undefined, error: undefined })), [fresh])
 	// A vote is checked against the PR as it is now, as at ok.
 	const now = await voteNow(store, cfg, fresh, wanted, probe)
 	const left = [...(report.todos ?? []), ...v.todos]
@@ -154,7 +154,10 @@ export async function checkPromise(store: Store, src: Source, cfg: Config, wf: W
 		if (shared) left.push(...now.effects.map(e => `${e.summary.replace(/[.\s]+$/, '')}. Not made for you: another open item on this review has changes waiting; ok or skip it first, then say it again, or make it by hand`))
 		fresh.promise = undefined
 	}
-	if (left.length) fresh.todos = [...new Set([...(fresh.todos ?? []), ...left])]
+	if (left.length) {
+		fresh.todos = [...new Set([...(fresh.todos ?? []), ...left])]
+		keepTodos(fresh, wf.sent?.at ?? wf.promise!.at, left)
+	}
 	// A promise that waits on a condition can be watched, as a reply's check-back is.
 	const home = homeOf(store, fresh)
 	const watching = report.follow && !now.again ? (active(home) ? startWatch(store, home, report.follow) : startFollow(store, report.follow)) : undefined

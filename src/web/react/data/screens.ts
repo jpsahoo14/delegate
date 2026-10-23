@@ -12,16 +12,16 @@ export const useSettingsDrafts = create<{ drafts: Record<string, string>; set: (
 		return { drafts }
 	}) },
 }))
-export const useSettings = () => useQuery({ queryKey: ['settings'], queryFn: ({ signal }) => fetchSettings(signal), retry: false })
+export const useSettings = (experience: 'new' | 'classic' = 'new') => useQuery({ queryKey: experience === 'classic' ? ['settings', 'classic'] : ['settings'], queryFn: ({ signal }) => fetchSettings(signal, experience), retry: false, refetchInterval: 20_000 })
 export function useSetting(row: Settings['rows'][number]) {
 	const value = useSettingsDrafts(state => state.drafts[row.key]) ?? row.value
 	const client = useQueryClient()
 	const mutation = useMutation({
-		mutationFn: () => saveSetting(row.key, value),
-		async onSuccess(result) {
+		mutationFn: (nextValue: string) => saveSetting(row.key, nextValue),
+		async onSuccess(result, submittedValue) {
 			if (result.ok) {
 				await client.invalidateQueries({ queryKey: ['settings'] })
-				useSettingsDrafts.getState().set(row.key)
+				if (useSettingsDrafts.getState().drafts[row.key] === submittedValue) useSettingsDrafts.getState().set(row.key)
 				void client.invalidateQueries({ queryKey: ['page'] })
 			}
 		},
@@ -31,12 +31,16 @@ export function useSetting(row: Settings['rows'][number]) {
 		text: mutation.error?.message ?? mutation.data?.text,
 		error: !!mutation.error || mutation.data?.ok === false,
 		setValue: (value: string) => useSettingsDrafts.getState().set(row.key, value === row.value ? undefined : value),
-		save: () => mutation.mutate(),
+		save: () => mutation.mutate(value),
+		toggle: () => mutation.mutate(value === 'true' ? 'false' : 'true'),
 	}
 }
 export function useNumbers(window: string) {
 	return useQuery({ queryKey: ['numbers', window], queryFn: ({ signal }) => fetchNumbers(window, signal), retry: false, refetchOnWindowFocus: false, refetchOnReconnect: false, refetchOnMount: 'always' })
 }
+export const useNumberWindow = create<{ window: string; setWindow: (window: string) => void }>(set => ({
+	window: 'this', setWindow: window => set({ window }),
+}))
 export function useCopySummary() {
 	const [message, setMessage] = useState<string>()
 	return { message, copy: async (summary: string) => {

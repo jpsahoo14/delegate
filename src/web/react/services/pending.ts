@@ -1,7 +1,7 @@
 import { z } from 'zod'
 
 const key = 'delegate-react-pending-v1'
-const schema = z.array(z.object({ submissionId: z.uuid(), item: z.string(), rev: z.string(), action: z.string() }).strict())
+const schema = z.array(z.object({ submissionId: z.uuid(), item: z.string(), rev: z.string(), action: z.string(), at: z.number().optional() }).strict())
 export type Pending = z.infer<typeof schema>[number]
 export function pendingSubmissions(): Pending[] {
 	const value = sessionStorage.getItem(key)

@@ -5,6 +5,12 @@ export type ReadOpts = { maxPages?: number; stop?: (m: RawMsg) => boolean }
 
 export type SendOpts = { replyTo?: { name: string; text: string }; mentions?: { id: string; name: string }[] }
 
+// A send whose answer was lost and that reading the chat back did not find: it may still have been posted. Never sent again
+// automatically; the item waits for the owner to check Teams (bug 10-23 R4).
+export class SendUncertain extends Error {
+	constructor(detail: string) { super(`Not sure it was sent; check Teams. ${detail}`) }
+}
+
 export interface Source {
 	readonly selfChatId: string
 	// stop: read newest first and end after the message it returns true for. maxPages bounds the read.

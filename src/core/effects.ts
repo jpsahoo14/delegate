@@ -1,5 +1,5 @@
 import { site } from './site.ts'
-import type { Call, Config, Effect, PrFacts } from './types.ts'
+import type { Call, Config, Effect, PrFacts, Workflow } from './types.ts'
 import { NAME } from '../brand.ts'
 import { DEPLOY, deployLine, deployRefusal, isDeploy, isPipelineTool, pipelineOf, ringParts, targetOf } from './deploy.ts'
 
@@ -8,8 +8,14 @@ export const pendingEffects = (es: Effect[] = []): Effect[] => es.filter(e => !e
 // The same change: the same call, or the same payload when there is no call. Two comments on one PR are two changes (review 10-21c P2-2).
 // A vote names no commit in its call, so its head tells a re-approval apart; a comment is the same comment at any head (review 10-21e P1-3).
 export const sameChange = (a: Effect, b: Effect) => JSON.stringify([a.system, a.action, a.target, a.call ?? a.payload ?? null]) === JSON.stringify([b.system, b.action, b.target, b.call ?? b.payload ?? null]) && (!isVote(a.call) || (a.head ?? null) === (b.head ?? null))
+export function proposalEffects(effects: Effect[], items: Pick<Workflow, 'id' | 'lastMsgId'>[]): Effect[] {
+	const turns = items.map(w => `${w.id}:${w.lastMsgId}`)
+	return effects.map(e => ({ ...e, turns }))
+}
+export const sameProposal = (a: Effect, b: Effect) => sameChange(a, b) && (a.turns && b.turns ? a.turns.some(turn => b.turns?.includes(turn)) : !a.turns && !b.turns)
 // A list takes what is known about each of its changes from another list of the same changes: made, or may have been made (review 10-21d P1).
-export const carryMarks = (list: Effect[], from: Effect[] = []) => list.map(e => { if (e.done) return e; const m = from.find(x => (x.done || x.maybe) && sameChange(x, e)); return m ? { ...e, done: m.done, maybe: m.maybe, error: m.error } : e })
+// Vote receipts are retained only by the live-checked report path, never by generic list adoption.
+export const carryMarks = (list: Effect[], from: Effect[] = []) => list.map(e => { if (e.done) return e; const m = from.find(x => (x.maybe || x.done && !isVote(e.call)) && sameProposal(x, e)); return m ? { ...e, done: m.done, maybe: m.maybe, error: m.error } : e })
 
 // An allowed change is a tool, or one action of a tool that does several ("ado-repo_pull_request_write:vote").
 // An entry without an action allows the whole tool, as before (R-HIL-21).
@@ -40,6 +46,9 @@ export function unsafeRead(tools: string[], servers: string[]): string | undefin
 	const t = tools.find(t => /_write(?:[:(]|$)/i.test(t) || /pipelines?_write|run_?pipeline/i.test(t) || whole(t) || verbWrite(t))
 	return t && `${t} is never a read tool: it can change things, and workers would hold it before your ok. Remove it from the read tools in setup`
 }
+// A refusal of the owner's setup (a write tool as a read tool, a shell in a clone, a tool the AI CLI cannot name) is the
+// same on every try: refused once, never retried, shown whole (bug 10-23 E33).
+export const SETUP_REFUSAL = /is never a read tool|never runs in your clone with a shell|no known Claude Code name/
 
 // A pull request is named by number in pullRequestId, at the top of the arguments; any other way names none.
 export const prIdOf = (c?: Call): number | undefined => { const v = c?.args.pullRequestId; return typeof v === 'number' && Number.isInteger(v) || typeof v === 'string' && /^\d+$/.test(v) ? Number(v) : undefined }
@@ -56,6 +65,26 @@ export function voteValue(c?: Call): number | undefined {
 }
 // The same commit, also when one side is a short id of at least 7 characters.
 export const sameHead = (a?: string, b?: string) => { const [x, y] = [a?.toLowerCase() ?? '', b?.toLowerCase() ?? '']; return !!x && !!y && (x === y || Math.min(x.length, y.length) >= 7 && (x.startsWith(y) || y.startsWith(x))) }
+// The vote a message plainly asks to set ("set my review vote to WaitingForAuthor"), never one under a condition ("if ready,
+// set my vote to Approved") or a review ask; undefined when it names none or several (bug 10-23 E28).
+const ASK_VOTE = /\b(?:set|change|make|cast|switch|update|reset)\s+(?:my|the owner's|\w+'s)?\s*(?:review\s+)?vote\s+(?:on\s+(?:PR\s+)?\S+\s+)?(?:to|as)\s+["'“]?(approved with suggestions|approvedwithsuggestions|approved|approve|waiting for author|waitingforauthor|wait for author|rejected|reject|no vote|novote)\b/gi
+export function askedVote(text: string): number | undefined {
+	const found = new Set<number>()
+	for (const sentence of text.split(/(?<=[.!?;])\s+|\n+/)) for (const m of sentence.matchAll(ASK_VOTE)) {
+		if (/\b(?:if|when|once|unless|after)\b/i.test(sentence.slice(0, m.index))) continue
+		const v = VOTE_WORDS[m[1].toLowerCase().replace(/[\s_-]/g, '')]
+		if (v !== undefined) found.add(v)
+	}
+	return found.size === 1 ? [...found][0] : undefined
+}
+export const voteName = (n: number) => ({ 10: 'Approved', 5: 'Approved with suggestions', 0: 'No vote', [-5]: 'Waiting for author', [-10]: 'Rejected' } as Record<number, string>)[n] ?? String(n)
+// A calendar invite change (bug 10-23 E16).
+export const isInvite = (e?: Pick<Effect, 'system' | 'action' | 'call'>) => !!e && (/(?:^|[-_])CreateEvent$/i.test(e.call?.tool ?? '') || /calendar/i.test(e.system ?? '') && /create_event|invite/i.test(e.action ?? ''))
+// An explicit ask to book a meeting or send an invite ("can we set up a 30-minute sync…", "please send an invite for…"); a negated one is none.
+const BOOK = /\b(?:send|set up|setup|book|schedule|arrange)\b[^.?!]{0,60}\b(?:invite|invitation|meeting|call|sync|catch[- ]?up)\b|\bcan (?:we|you) (?:do|have|set up|book|schedule)\b[^.?!]{0,60}\b(?:meeting|call|sync|catch[- ]?up)\b/i
+export const asksInvite = (text: string) => text.split(/(?<=[.!?;])\s+|\n+/).some(s => { const m = BOOK.exec(s); return !!m && !/\b(?:do not|don't|dont|no need to|not|never|without)\b/i.test(s.slice(0, m.index)) })
+// Words that say an invite already went ("I've sent an invite", "the invite is sent"); true only once the invite exists.
+export const claimsInvite = (text: string) => /\b(?:I(?:'|’)ve|I have|I(?:'|’)ve just|we(?:'|’)ve|we have)\s+(?:just\s+)?(?:sent|booked|scheduled|set up)\b[^.!?]{0,80}\b(?:invite|invitation|meeting|call|sync)\b|\b(?:invite|invitation)\b[^.!?]{0,40}\b(?:is|was|has been)\s+(?:sent|booked)\b|\bsent (?:you |them |everyone )?(?:an? |the )?(?:invite|invitation)\b/i.test(text)
 
 // Why a proposed change cannot be made, or undefined when it can. pr: the item's own pull request.
 export function refusal(cfg: Config, e: Effect, pr?: number): string | undefined {
@@ -75,12 +104,32 @@ export function refusal(cfg: Config, e: Effect, pr?: number): string | undefined
 	return undefined
 }
 
+// A calendar invite as the owner's calendar tool takes it (bug 10-23 E16): the meeting shape a worker writes,
+// { subject, start, minutes, attendees }, becomes { subject, attendeeEmails, startDateTime, endDateTime, timeZone } in UTC.
+// A call already in the tool's shape is kept as it is.
+export function toolShape(c?: Call): Call | undefined {
+	if (!c || !/(?:^|[-_])CreateEvent$/i.test(c.tool)) return c
+	const a = c.args, start = Date.parse(String(a.start ?? '')), utc = (ms: number) => new Date(ms).toISOString().slice(0, 19)
+	// Times with an offset are read as UTC, so a time zone name next to them can never shift the meeting.
+	const offset = (v: unknown) => typeof v === 'string' && /(?:[zZ]|[+-]\d\d:?\d\d)$/.test(v) && !Number.isNaN(Date.parse(v))
+	if (a.startDateTime !== undefined) return offset(a.startDateTime) && offset(a.endDateTime) ? { ...c, args: { ...a, startDateTime: utc(Date.parse(String(a.startDateTime))), endDateTime: utc(Date.parse(String(a.endDateTime))), timeZone: 'UTC' } } : c
+	if (Number.isNaN(start)) return c
+	const minutes = Number(a.minutes ?? a.durationMinutes ?? 30) || 30
+	const { start: _s, minutes: _m, durationMinutes: _d, attendees, ...rest } = a
+	const emails = ([] as unknown[]).concat(attendees ?? a.attendeeEmails ?? []).map(String).filter(Boolean)
+	return { ...c, args: { ...rest, subject: a.subject, attendeeEmails: emails, startDateTime: utc(start), endDateTime: utc(start + minutes * 60_000), timeZone: 'UTC' } }
+}
+
 // When a report lands: a change that cannot be made becomes a to-do with the reason; it never vanishes (next action).
 // A deploy goes alone: one pending change per work item at a time, so a run never stacks changes on a ring (owned work).
 export function vet(cfg: Config, effects: Effect[] = [], pr?: number): { effects: Effect[]; todos: string[] } {
 	const ok: Effect[] = [], todos: string[] = []
 	const todo = (e: Effect, why: string) => todos.push(`${e.summary.replace(/[.\s]+$/, '')}. Not made for you: ${why}`)
-	for (const e of effects) {
+	for (const raw of effects) {
+		const [tool, action] = parts(raw.call?.tool ?? '')
+		const split = raw.call && action && action.toLowerCase() === String(raw.call.args.action ?? '').toLowerCase()
+			? { ...raw, call: { ...raw.call, tool } } : raw
+		const e = split.call ? { ...split, call: toolShape(split.call) } : split
 		const why = refusal(cfg, e, pr)
 		if (why) todo(e, why)
 		else ok.push(isDeploy(e.call) ? { ...e, deploy: { ring: targetOf(cfg, pipelineOf(e.call))!.ring, pr: pr! } } : e)

@@ -26,7 +26,7 @@ mkdirSync('dist/mesh', { recursive: true })
 for (const f of ['extension.mjs', 'inbox.mjs']) copyFileSync(join('src/mesh', f), join('dist/mesh', f))
 
 // A hash per shipped file; doctor checks them (learning 02).
-const files = (d: string): string[] => readdirSync(d).flatMap(f => { const p = join(d, f); return statSync(p).isDirectory() ? files(p) : [p] })
+const files = (d: string): string[] => readdirSync(d).filter(f => f !== '.DS_Store').flatMap(f => { const p = join(d, f); return statSync(p).isDirectory() ? files(p) : [p] })
 const shipped = [...files('dist'), ...files('skills'), '.mcp.json', '.claude-plugin/plugin.json'].filter(f => !f.endsWith('INTEGRITY.json'))
 const hashes = Object.fromEntries(shipped.sort().map(f => [relative('.', f).replaceAll('\\', '/'), createHash('sha256').update(readFileSync(f, 'utf8').replace(/\r\n/g, '\n')).digest('hex')]))
 writeFileSync('INTEGRITY.json', JSON.stringify({ version: JSON.parse(readFileSync('package.json', 'utf8')).version, files: hashes }, null, '\t') + '\n')

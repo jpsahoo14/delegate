@@ -47,6 +47,10 @@ export type UiChoice = { ui: 'new' | 'classic' | 'react'; at?: string; tried?: s
 export type PageSubmission = {
 	id: string; answerId: string; fingerprint: string; item: string; rev: string; at: string
 	phase: 'prepared' | 'queued' | 'refused'; accepted: boolean; ids: string[]; text: string; processed?: boolean; status: number
+	immediate?: boolean
+	refused?: boolean
+	uncertain?: boolean
+	intent?: import('../web/react/domain/contracts.ts').Intent
 }
 export type Control = { paused: boolean; stopped: boolean; autoSend?: boolean; at?: string }
 type Notify = { lastNudgeAt?: string; previews?: Record<string, Preview | Preview[]>; snapshot?: string; summaryDay?: string; sweepDay?: string }
@@ -96,9 +100,12 @@ export class Store {
 	addRun() { this.w(this.p('state', 'runs.json'), { day: localDay(), n: this.runsToday() + 1 }) }
 
 	// What applying each queued action said, by answer id, so the page or panel that acted shows the real result.
-	addOutcome(id: string, text: string) {
-		const all = readJson<{ id: string; text: string; at?: string }[]>(this.p('state', 'outcomes.json'), [])
-		this.w(this.p('state', 'outcomes.json'), [...all, { id, text, at: new Date().toISOString() }].slice(-100))
+	addOutcome(id: string, text: string, refused = false) {
+		const all = readJson<{ id: string; text: string; at?: string; refused?: true }[]>(this.p('state', 'outcomes.json'), [])
+		this.w(this.p('state', 'outcomes.json'), [...all, { id, text, at: new Date().toISOString(), ...(refused ? { refused: true as const } : {}) }].slice(-100))
+	}
+	outcomeRefused(id: string): boolean {
+		return readJson<{ id: string; refused?: true }[]>(this.p('state', 'outcomes.json'), []).some(result => result.id === id && result.refused)
 	}
 	pruneOutcomes(before: string) {
 		this.w(this.p('state', 'outcomes.json'), readJson<{ id: string; text: string; at?: string }[]>(this.p('state', 'outcomes.json'), []).filter(o => (o.at ?? '') >= before))
@@ -162,6 +169,8 @@ export class Store {
 	// Where each bootstrap source stopped reading, so a rerun reads only newer content (R-BOOT-10).
 	sources(): Record<string, string> { return readJson(this.p('state', 'sources.json'), {}) }
 	saveSource(key: string, checkpoint: string) { this.w(this.p('state', 'sources.json'), { ...this.sources(), [key]: checkpoint }) }
+	withdrawnKnowledgeSources(): string[] { return readJson(this.p('state', 'withdrawn-knowledge-sources.json'), []) }
+	withdrawKnowledgeSource(link: string) { this.w(this.p('state', 'withdrawn-knowledge-sources.json'), [...new Set([...this.withdrawnKnowledgeSources(), link])]) }
 
 	cursors(): Record<string, string> { return readJson(this.p('state', 'cursors.json'), {}) }
 	saveCursors(c: Record<string, string>) { this.w(this.p('state', 'cursors.json'), c) }
@@ -292,9 +301,35 @@ export class Store {
 		if (!/^[a-f0-9-]{36}$/i.test(id)) throw new Error('Invalid page submission identity.')
 		return readJson<PageSubmission | undefined>(this.p('state', 'page-submissions', `${id}.json`), undefined)
 	}
-	savePageSubmission(submission: PageSubmission): void {
-		if (!/^[a-f0-9-]{36}$/i.test(submission.id)) throw new Error('Invalid page submission identity.')
-		this.w(this.p('state', 'page-submissions', `${submission.id}.json`), submission)
+	withPageSubmission<T>(id: string, action: () => T): T {
+		if (!/^[a-f0-9-]{36}$/i.test(id)) throw new Error('Invalid page submission identity.')
+		return withReceiptLock(this.p('state', 'page-submissions', `${id}.json`), action)
+	}
+	private updatePageSubmission(id: string, update: (current: PageSubmission | undefined) => PageSubmission | undefined): PageSubmission | undefined {
+		return this.withPageSubmission(id, () => {
+			const path = this.p('state', 'page-submissions', `${id}.json`)
+			for (let attempt = 0; ; attempt++) {
+				const current = this.pageSubmission(id), next = update(current)
+				if (!next || JSON.stringify(current) === JSON.stringify(next)) return next
+				try { this.w(path, next); return next } catch (error) {
+					if ((error as NodeJS.ErrnoException).code !== 'ENOENT' || !existsSync(dirname(path)) || attempt >= 4) throw error
+					this.log({ event: 'page-receipt-race-recovered', id, attempt: attempt + 1 })
+					// Re-read under the receipt lock before deciding whether this write is still needed.
+				}
+			}
+		})
+	}
+	savePageSubmission(submission: PageSubmission): PageSubmission {
+		return this.updatePageSubmission(submission.id, current => mergeSubmission(current, submission))!
+	}
+	completePageSubmission(answer: Answer, text?: string, refused = false): void {
+		if (!answer.pageSubmissionId) return
+		this.updatePageSubmission(answer.pageSubmissionId, record => {
+			if (!record) { this.log({ event: 'page-receipt-missing', id: answer.id, code: answer.code }); return undefined }
+			const detail = text ? record.processed ? record.text === text || record.text.endsWith(` ${text}`) ? record.text : `${record.text} ${text}` : text :
+				record.processed ? record.text : 'No result detail was recorded. Open the item to verify what happened.'
+			return mergeSubmission(record, { ...record, phase: 'queued', accepted: true, ids: [answer.id], processed: true, text: detail, refused: !!record.refused || refused }, true)
+		})
 	}
 	answers(): { file: string; answer: Answer }[] {
 		return listJson(this.p('state', 'answers')).map(file => ({ file, answer: readJson<Answer>(file, null as never) }))
@@ -305,7 +340,12 @@ export class Store {
 	// OneDrive conflict copies among the records, for doctor (restart audit R8).
 	conflictCopies(): string[] { return ['workflows', 'jobs', 'automations', 'proposals'].flatMap(d => strays(this.p('state', d))) }
 	job(id: string): Job | undefined { return readJson<Job | undefined>(this.p('state', 'jobs', `${id}.json`), undefined) }
-	saveJob(j: Job) { j.updatedAt = new Date().toISOString(); this.w(this.p('state', 'jobs', `${j.id}.json`), j) }
+	// A finished job has no error: one kept from a failed earlier run would read as this run's (bug 10-23 E36).
+	saveJob(j: Job) { j.updatedAt = new Date().toISOString(); if (j.state === 'done' && j.error) j.error = undefined; this.w(this.p('state', 'jobs', `${j.id}.json`), j) }
+
+	// Images pasted inline into a message (data URIs), by content key, so a worker can open them (bug 10-23 E17).
+	saveMedia(key: string, type: string, data: string) { if (/^[0-9a-f]{16,40}$/.test(key) && !this.media(key)) this.w(this.p('state', 'media', `${key}.json`), { type, data }) }
+	media(key: string): { type: string; data: string } | undefined { return /^[0-9a-f]{16,40}$/.test(key) ? readJson<{ type: string; data: string } | undefined>(this.p('state', 'media', `${key}.json`), undefined) : undefined }
 
 	// A Continue window owns a session while this file exists. Only the window's wrapper writes it (R-HIL-08).
 	openWindows(): { id: string; o: OpenWindow }[] {
@@ -404,6 +444,65 @@ export class Store {
 		if (cur && cur.machine !== this.machine && !stale) return false
 		this.w(path, { machine: this.machine, at: new Date().toISOString() })
 		return true
+	}
+}
+
+const submissionRank = (r: PageSubmission) => r.uncertain ? 4 : r.refused || r.phase === 'refused' ? 3 : r.processed ? 2 : r.accepted || r.phase === 'queued' ? 1 : 0
+function mergeSubmission(current: PageSubmission | undefined, next: PageSubmission, detail = false): PageSubmission {
+	if (!current) return next
+	if (current.fingerprint !== next.fingerprint || current.answerId !== next.answerId || current.item !== next.item || current.rev !== next.rev) throw new Error('That submission identity was already used for a different action.')
+	const before = submissionRank(current), after = submissionRank(next)
+	const winner = after > before || after === before && (before < 2 || detail) ? next : current
+	return { ...current, ...winner, accepted: current.accepted || next.accepted, processed: current.processed || next.processed,
+		refused: current.refused || next.refused || current.phase === 'refused' || next.phase === 'refused' || undefined,
+		uncertain: current.uncertain || next.uncertain, ids: [...new Set([...current.ids, ...next.ids])] }
+}
+
+const receiptLocks = new Set<string>()
+const busyReceiptLock = (error: unknown) => ['EPERM', 'EBUSY', 'EACCES'].includes((error as NodeJS.ErrnoException).code ?? '')
+function readReceiptLock(path: string): string | null | undefined {
+	try { return readFileSync(path, 'utf8') } catch (error) {
+		if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+		if (busyReceiptLock(error)) return null
+		throw error
+	}
+}
+function tryReceiptLock(path: string, token: string): boolean {
+	try { return tryLock(path, token) } catch (error) {
+		if (busyReceiptLock(error)) return false
+		throw error
+	}
+}
+function releaseReceiptLock(path: string, token: string) {
+	const deadline = Date.now() + 10_000
+	for (;;) {
+		const holder = readReceiptLock(path)
+		if (holder !== null && holder !== token) return
+		try { if (holder === token) { rmSync(path, { force: true }); return } } catch (error) { if (!busyReceiptLock(error)) throw error }
+		if (Date.now() >= deadline) throw new Error(`Could not release page receipt lock ${basename(path)}.`)
+		Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5)
+	}
+}
+function withReceiptLock<T>(path: string, action: () => T): T {
+	assertTestSafe(path)
+	if (receiptLocks.has(path)) return action()
+	mkdirSync(dirname(path), { recursive: true })
+	const lock = `${path}.lock`, token = `${process.pid} ${Date.now()} ${Math.random()}`, deadline = Date.now() + 10_000
+	while (!tryReceiptLock(lock, token)) {
+		if (Date.now() >= deadline) throw new Error(`Timed out waiting for page receipt ${basename(path)}. Check its saved result before acting again.`)
+		const holder = readReceiptLock(lock)
+		if (holder === undefined || holder === null) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5); continue }
+		const pid = Number(holder.split(' ')[0])
+		if (Number.isSafeInteger(pid) && pid > 0 && !alive(pid)) {
+			releaseReceiptLock(lock, holder)
+			continue
+		}
+		Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5)
+	}
+	receiptLocks.add(path)
+	try { return action() } finally {
+		receiptLocks.delete(path)
+		releaseReceiptLock(lock, token)
 	}
 }
 

@@ -53,4 +53,21 @@ describe('normalized revision store', () => {
 		expect(parsed.entities.actions.future.kind).toBe('future-action')
 		expect(parsed.sections[0].id).toBe('future-section')
 	})
+	it('keeps submitted edited words when a processed action did not carry them into the new data', () => {
+		useData.getState().ingest(snapshot())
+		useData.getState().edit('A1', 'one', { editing: true, editText: 'My exact words', submittedInput: { text: 'My exact words' },
+			result: { submissionId: 'saved', item: 'A1', rev: 'one', ids: [], applied: true, accepted: true, text: 'Source changed' } })
+		useData.getState().ingest(snapshot('two'))
+		expect(useData.getState().pinned.A1.rev).toBe('one')
+		expect(useData.getState().byRevision['A1@one'].editText).toBe('My exact words')
+	})
+	it('never consumes an uncertain submission and explicit discard removes the old revision edit', () => {
+		useData.getState().ingest(snapshot())
+		useData.getState().edit('A1', 'one', { answer: 'My answer', submittedInput: { text: 'My answer' },
+			result: { submissionId: 'saved', item: 'A1', rev: 'one', ids: [], applied: true, accepted: true, uncertain: true, text: 'Cannot confirm' } })
+		useData.getState().ingest(snapshot('two'))
+		expect(useData.getState().pinned.A1.rev).toBe('one')
+		useData.getState().showLatest('A1')
+		expect(useData.getState().byRevision['A1@one']).toBeUndefined()
+	})
 })

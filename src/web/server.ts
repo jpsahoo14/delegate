@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { createServer, type Server } from 'node:http'
 import { join } from 'node:path'
 import type { Store } from '../store/state.ts'
@@ -21,6 +21,8 @@ import { reactProjection, IntentError } from './react-projection.ts'
 import { submissionReceipt, submitIntent } from './react-submissions.ts'
 import { intentSchema } from './react/domain/contracts.ts'
 import { listsOf, numbersModel, RULES as NUMBER_RULES } from './app/model/numbers.ts'
+import { ROOT } from '../paths.ts'
+import { pageDelta } from './react/domain/page-delta.ts'
 
 // What a page or panel action really did once applied, and the item's fresh card if it still needs the owner.
 export function actOutcome(store: Store, ids: string[], code: string) {
@@ -42,8 +44,11 @@ export function automateFromPage(store: Store, i: AutomateInput): { ok: boolean;
 // The running version, read at most every 30 s: the page polls often, and each read asks git.
 let ver: { at: number; v: ReturnType<typeof versionInfo> } | undefined
 const withVersion = (s: Store, v: ReturnType<typeof view>) => {
+	return { ...v, version: versionFor(s), settings: settingsView(s) }
+}
+const versionFor = (s: Store) => {
 	if (!ver || Date.now() - ver.at > 30_000) ver = { at: Date.now(), v: versionInfo(s.config()?.autoUpdate, undefined, undefined, s.config()?.updateEveryMin) }
-	return { ...v, version: ver.v, settings: settingsView(s) }
+	return ver.v
 }
 
 // The switch on this machine, and the new page's rows only when that page asks: classic never builds them (R-NEX-01).
@@ -77,14 +82,17 @@ export function saveUiFrom(s: Store, body: unknown): { ok: boolean; ui?: ReturnT
 
 // A local page with working buttons. Only this machine can reach it, and only with the token in its link (R-HIL-09).
 // probeFor: the owner's Azure DevOps read, for a setting checked there before it is saved.
-export function serveInbox(get: () => Store, port = 0, token = randomBytes(16).toString('hex'), probeFor: (cfg: Config) => BuildProbe | undefined = adoProbe): Promise<{ url: string; server: Server }> {
+export function serveInbox(get: () => Store, port = 0, token = randomBytes(16).toString('hex'), probeFor: (cfg: Config) => BuildProbe | undefined = adoProbe, previewRoot = ROOT): Promise<{ url: string; server: Server }> {
+	const initialSince = new Date(Date.now() - 86_400_000).toISOString()
+	let reactVisit: { since?: string; fallbackSince: string } | undefined
+	const reactPages = new Map<string, ReturnType<typeof reactProjection>['snapshot']>()
 	const server = createServer((req, res) => {
 		const u = new URL(req.url ?? '/', 'http://127.0.0.1')
 		const host = req.headers.host ?? ''
 		if (u.searchParams.get('t') !== token || !/^(127\.0\.0\.1|localhost):\d+$/.test(host)) { res.writeHead(403).end(`Open the link ${NAME} gave you.`); return }
 		const headers = { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'" }
 		if (u.pathname.startsWith('/api/v1/')) {
-			const json = (status: number, body: unknown) => res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' }).end(JSON.stringify(body))
+			const json = (status: number, body: unknown, extra: Record<string, string> = {}) => res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store', ...extra }).end(JSON.stringify(body))
 			const failure = (error: unknown) => {
 				if (error instanceof IntentError) json(error.status, { text: error.message })
 				else { console.error('React API request failed:', error); json(500, { text: `${NAME} could not complete this request. Nothing will be retried automatically.` }) }
@@ -92,11 +100,35 @@ export function serveInbox(get: () => Store, port = 0, token = randomBytes(16).t
 			if (req.method === 'GET' && u.pathname === '/api/v1/page') {
 				const query = u.searchParams.get('find') ?? ''
 				if (query.length > 2000) { json(422, { text: 'Find text is too long.' }); return }
-				try { json(200, reactProjection(get(), query).snapshot) } catch (error) { failure(error) }
+				try {
+					const store = get(), start = performance.now(), snapshot = reactProjection(store, query, reactVisit ?? { since: store.lastViewed(), fallbackSince: initialSince }).snapshot
+					const body = { ...snapshot, version: versionFor(store) }
+					const { now: _now, fetchedAt: _fetchedAt, ...content } = body
+					const etag = `"${createHash('sha256').update(JSON.stringify(content)).digest('hex')}"`
+					const extra = { etag, 'server-timing': `projection;dur=${(performance.now() - start).toFixed(2)}` }
+					const priorTag = req.headers['if-none-match'], prior = typeof priorTag === 'string' ? reactPages.get(priorTag) : undefined
+					reactPages.delete(etag); reactPages.set(etag, body)
+					if (reactPages.size > 4) reactPages.delete(reactPages.keys().next().value!)
+					if (priorTag === etag) res.writeHead(304, { 'cache-control': 'private, no-cache', ...extra }).end()
+					else if (req.headers['x-delegate-delta'] === '1' && prior && typeof priorTag === 'string') json(200, pageDelta(prior, body, priorTag), { ...extra, 'x-delegate-delta': '1' })
+					else json(200, body, extra)
+				} catch (error) { failure(error) }
 				return
 			}
 			if (req.method === 'GET' && u.pathname === '/api/v1/settings') {
-				try { json(200, settingsView(get())) } catch (error) { failure(error) }
+				try {
+					const store = get(), settings = settingsView(store, u.searchParams.get('experience') === 'classic' ? 'classic' : 'new')
+					const actions = reactProjection(store).snapshot.settingsActions
+					const marked = Object.entries(store.config().chatLevels ?? {}).map(([id, level]) => ({ name: level.name, actionIds: actions?.[`chat:${hashOf(id)}`] }))
+					json(200, {
+						...settings,
+						rows: settings.rows.map(row => ({
+							...row,
+							help: u.searchParams.get('experience') === 'classic' ? row.help : row.help.replace(/\bOngoing\b/g, 'Waiting on Now').replace(/\bWatching\b/g, 'Watch details at the foot of Now'),
+						})),
+						about: { ...settings.about, chats: settings.about.chats.map((chat, index) => ({ ...chat, actionIds: marked[index]?.actionIds })) },
+					})
+				} catch (error) { failure(error) }
 				return
 			}
 			if (req.method === 'GET' && u.pathname === '/api/v1/numbers') {
@@ -143,7 +175,7 @@ export function serveInbox(get: () => Store, port = 0, token = randomBytes(16).t
 		}
 		if (req.method === 'GET' && u.pathname.startsWith('/web-react/')) {
 			try {
-				const asset = reactAsset(u.pathname.slice('/web-react/'.length), token)
+				const asset = reactAsset(u.pathname.slice('/web-react/'.length), token, previewRoot)
 				if (!asset) { res.writeHead(404).end(); return }
 				res.writeHead(200, { 'content-type': asset.type, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' }).end(asset.content)
 			} catch (error) {
@@ -165,7 +197,7 @@ export function serveInbox(get: () => Store, port = 0, token = randomBytes(16).t
 				}
 				react = s.ui().ui === 'react'
 				if (react) {
-					try { page = reactPage(token) } catch (error) {
+					try { page = reactPage(token, previewRoot); reactVisit = { since: s.visitSince(), fallbackSince: new Date(Date.now() - 86_400_000).toISOString() } } catch (error) {
 						console.error('React preview unavailable; showing New instead:', error)
 						react = false
 						page = renderApp({ ...withUi(s, withVersion(s, view(s, s.visitSince())), true), ui: { ...s.ui(), ui: 'new' } }, 'page')

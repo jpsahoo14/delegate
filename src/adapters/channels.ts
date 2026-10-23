@@ -8,6 +8,8 @@ export function parseThread(id: string) { const [, teamId, channelId, rootId] = 
 export const threadLink = (id: string, msgId: string) => { const t = parseThread(id); return `https://teams.microsoft.com/l/message/${encodeURIComponent(t.channelId)}/${msgId}?groupId=${t.teamId}&parentMessageId=${t.rootId}` }
 // The shape Teams copies: the chat ID as is, and the chat context, without which Teams looks for a channel message (bug 10-21).
 export const messageLink = (chatId: string, msgId: string) => isThread(chatId) ? threadLink(chatId, msgId) : `https://teams.microsoft.com/l/message/${chatId}/${msgId}?context=%7B%22contextType%22%3A%22chat%22%7D`
+// A real Teams chat or channel thread, test chat or not: its messages open in Teams (bug 10-23 E60). A made-up demo id does not.
+export const teamsChat = (chatId = '') => isThread(chatId) || /^19:[^\s@/]+@(?:thread\.(?:v2|tacv2|skype)|unq\.gbl\.spaces)$/.test(chatId)
 // Any Teams message link, in the shape Teams opens; other links as they are. Saved links keep their shape, so a message is still known by it.
 export const openLink = (link: string) => { const m = parseMessageLink(link); return m ? messageLink(m.chatId, m.msgId) : link }
 const isChannel = (chatId = '') => /@thread\.(tacv2|skype)$/.test(chatId)

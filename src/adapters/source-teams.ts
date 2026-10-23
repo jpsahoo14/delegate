@@ -1,12 +1,14 @@
 import type { Config } from '../core/types.ts'
 import type { RawMsg } from '../core/intake.ts'
-import { McpClient } from './mcp-client.ts'
+import { LostResponse, McpClient } from './mcp-client.ts'
+import { htmlToText } from '../core/intake.ts'
+import { SendUncertain } from './source.ts'
 import { mdToHtml } from '../core/format.ts'
 import type { ReadOpts, SendOpts, Source } from './source.ts'
 import { isThread, parseThread, Threads, type ThreadCache, type WatchedChannel } from './channels.ts'
 import { NAME } from '../brand.ts'
 
-export type TeamsMsg = { id: string; createdDateTime: string; lastModifiedDateTime?: string; deletedDateTime?: string | null; from?: { id: string; displayName: string } | null; body?: { contentType: string; content: string }; attachments?: { name?: string | null; contentType?: string; contentUrl?: string | null }[] }
+export type TeamsMsg = { id: string; createdDateTime: string; lastModifiedDateTime?: string; deletedDateTime?: string | null; replyToId?: string | null; from?: { id: string; displayName: string } | null; body?: { contentType: string; content: string }; attachments?: { name?: string | null; contentType?: string; contentUrl?: string | null; content?: string | null }[] }
 type Page = { messages?: TeamsMsg[]; nextLink?: string; '@odata.nextLink'?: string }
 
 const DEFAULT_TOOLS = { list: 'ListChatMessages', send: 'SendMessageToChat', sendSelf: 'SendMessageToSelf', get: 'GetChat', chats: 'ListChats', del: 'DeleteChatMessage', edit: 'UpdateChatMessage', presence: 'GetUserPresence', members: 'ListChatMembers', message: 'GetChatMessage' }
@@ -111,8 +113,27 @@ export class TeamsSource implements Source {
 		const mentions = (o.mentions ?? []).flatMap(m => { const n = [m.name, m.name.split(' ')[0]].find(x => new RegExp(`@${x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}])`, 'u').test(text)); return n ? [{ displayName: n, id: m.id, type: 'user' }] : [] })
 		const quote = o.replyTo ? `<blockquote><b>${esc(o.replyTo.name)}</b>: ${esc(o.replyTo.text.replace(/\s+/g, ' ').slice(0, 200))}${o.replyTo.text.length > 200 ? '…' : ''}</blockquote>` : ''
 		const extra = mentions.length ? { mentions: JSON.stringify(mentions) } : {}
-		if (isThread(chatId)) { const t = parseThread(chatId); return { msgId: idOf(await this.mcp.call('ReplyToChannelMessage', { teamId: t.teamId, channelId: t.channelId, messageId: t.rootId, content: mdToHtml(text), contentType: 'html' })) } }
-		return { msgId: idOf(await this.mcp.call(this.tools.send, { chatId, content: quote + mdToHtml(text), contentType: 'html', ...extra })) }
+		if (isThread(chatId)) { const t = parseThread(chatId), content = mdToHtml(text); return this.posted(chatId, content, () => this.mcp.call('ReplyToChannelMessage', { teamId: t.teamId, channelId: t.channelId, messageId: t.rootId, content, contentType: 'html' })) }
+		const content = quote + mdToHtml(text)
+		return this.posted(chatId, mdToHtml(text), () => this.mcp.call(this.tools.send, { chatId, content, contentType: 'html', ...extra }))
+	}
+
+	// A send whose answer was lost is never sent again: the chat is read back, and the message found there is the one sent.
+	// Not found, it may still land, so the caller holds it as not sure (bug 10-23 R4: a rule reply posted twice).
+	private async posted(chatId: string, words: string, post: () => Promise<unknown>): Promise<{ msgId: string }> {
+		const started = Date.now()
+		try { return { msgId: idOf(await post()) } } catch (e) {
+			if (!(e instanceof LostResponse)) throw e
+			const want = squashText(words), since = started - 120_000
+			let recent: TeamsMsg[] = []
+			try {
+				if (isThread(chatId)) { const t = parseThread(chatId), p = await this.mcp.call<Page & { replies?: TeamsMsg[]; value?: TeamsMsg[] }>('ListChannelMessageReplies', { teamId: t.teamId, channelId: t.channelId, messageId: t.rootId, maxReplies: 20 }); recent = p.replies ?? p.messages ?? p.value ?? [] }
+				else recent = (await this.mcp.call<Page>(this.tools.list, { chatId, top: 20 })).messages ?? []
+			} catch (read) { throw new SendUncertain(`${e.message}; reading the chat back failed too (${String(read).slice(0, 120)})`) }
+			const hit = recent.filter(m => !m.deletedDateTime && Date.parse(m.createdDateTime) >= since && !!want && squashText(m.body?.content ?? '').endsWith(want)).sort((a, b) => (newer(a.id, b.id) ? -1 : 1))[0]
+			if (hit) { console.warn(`${NAME}: the send's answer was lost; found it in the chat as ${hit.id}.`); return { msgId: hit.id } }
+			throw new SendUncertain(e.message)
+		}
 	}
 
 	async sendSelf(text: string): Promise<{ msgId: string }> {
@@ -170,6 +191,14 @@ export class TeamsSource implements Source {
 }
 
 export function toRaw(m: TeamsMsg): RawMsg {
+	let replyToId = m.replyToId || undefined
+	for (const attachment of m.attachments ?? []) {
+		if (replyToId || attachment.contentType !== 'messageReference' || !attachment.content) continue
+		try {
+			const reference: unknown = JSON.parse(attachment.content)
+			if (reference && typeof reference === 'object' && 'messageId' in reference && typeof reference.messageId === 'string') replyToId = reference.messageId
+		} catch (error) { console.warn('Could not read Teams reply reference:', error) }
+	}
 	return {
 		id: m.id,
 		at: m.createdDateTime,
@@ -177,6 +206,7 @@ export function toRaw(m: TeamsMsg): RawMsg {
 		html: m.body?.contentType?.toLowerCase() === 'html',
 		body: m.body?.content ?? '',
 		deleted: !!m.deletedDateTime,
+		replyToId,
 		attachments: (m.attachments ?? []).filter(a => a.contentType !== 'messageReference').map(a => ({ name: a.name ?? '', type: a.contentType ?? 'file', url: a.contentUrl ?? undefined })),
 	}
 }
@@ -185,3 +215,5 @@ function idOf(r: unknown): string {
 	const o = r as { id?: string; messageId?: string; message?: { id?: string } }
 	return o.id ?? o.messageId ?? o.message?.id ?? ''
 }
+// Letters and digits only: the post carries our words after a quote, with mentions and markup in between.
+const squashText = (html: string) => htmlToText(html).replace(/[^\p{L}\p{N}]+/gu, '').toLowerCase()

@@ -1,6 +1,6 @@
-import { cliServers, clientFor, toolServers } from '../adapters/mcp-client.ts'
+import { cliServers, clientFor, LostResponse, toolServers } from '../adapters/mcp-client.ts'
 import { NAME } from '../brand.ts'
-import { isVote, pendingEffects, prIdOf, refusal, voteValue } from '../core/effects.ts'
+import { isVote, pendingEffects, prIdOf, refusal, toolShape, voteValue } from '../core/effects.ts'
 import type { CallRec, Config, Effect, Workflow } from '../core/types.ts'
 import type { Store } from '../store/state.ts'
 import { parentsOf, stillApproved } from './jobs.ts'
@@ -56,11 +56,19 @@ export async function makeChange(store: Store, jobId: string, runId: string, ind
 	const ledger = (r: Omit<CallRec, 'call' | 'head' | 'vote' | 'at'>) => store.saveCallRec(ledgerRec(e, r))
 	store.saveChange(jobId, runId, index, { call: key, state: 'calling', at: at() }); ledger({ state: 'calling' })
 	try {
-		const r = await call(to![0], to![1], e.call!.args) as { id?: unknown } | undefined
+		const r = await call(to![0], to![1], toolShape(e.call)!.args) as { id?: unknown } | undefined
 		const ref = String(r?.id ?? 'done')
 		store.saveChange(jobId, runId, index, { call: key, state: 'done', ref, at: at() }); ledger({ state: 'done', ref })
 		return { ref }
 	} catch (err) {
+		// The answer was lost after the call went out: never repeated, never taken as failed. A vote is a state, so the PR read
+		// decides; anything else stays "may have been made" for the owner to check (bug 10-23 R4, as E32).
+		if (err instanceof LostResponse) {
+			const read = isVote(e.call) ? await voteMoved(store, owner, e, probe) : undefined
+			if (read && 'cast' in read) { const ref = 'already on the PR'; store.saveChange(jobId, runId, index, { call: key, state: 'done', ref, at: at() }); ledger({ state: 'done', ref }); return { ref } }
+			store.log({ event: 'change-uncertain', jobId, index, tool: e.call!.tool, error: err.message.slice(0, 300) })
+			return { error: `Change ${index} may have been made already: its answer was lost, so it is not repeated. Check it, then say to make it again.` }
+		}
 		const error = String(err).slice(0, 300)
 		store.saveChange(jobId, runId, index, { call: key, state: 'failed', error, at: at() }); ledger({ state: 'failed', error })
 		return { error }
@@ -94,5 +102,9 @@ export const mcpCaller = (cfg: Config): Caller => async (server, tool, args) => 
 	const s = toolServers(cfg)[server]
 	if (!s?.command) throw new Error(s ? `The ${server} tool server is remote (${s.type ?? 'http'}); ${NAME} cannot call it yet.` : `No command for the ${server} tool server`)
 	const mcp = clientFor({ ...s, command: s.command })
-	try { return await mcp.call(tool, args) } finally { await mcp.close().catch(() => undefined) }
+	try {
+		const bad = await mcp.argsProblem(tool, args)
+		if (bad) throw new Error(bad)
+		return await mcp.call(tool, args)
+	} finally { await mcp.close().catch(() => undefined) }
 }

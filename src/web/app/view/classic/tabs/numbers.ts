@@ -72,8 +72,8 @@ function list(d: NumbersPage, key: string, l: List | undefined): H {
 	if (!l) return html`${back}<p class="empty">That list is not on this tab.</p>`
 	const all = l.groups.flatMap(g => g.codes), shown = l.groups.filter(g => g.codes.length)
 	const body = !all.length ? html`<p class="empty">Nothing counted here ${esc(WINDOW_LABEL[d.window.key].toLowerCase())}.</p>`
-		: l.groups.length > 1 ? join(shown.map(g => html`<h3 class="section-h">${esc(g.title ?? '')} · ${g.codes.length}</h3>${rows(d, g.codes)}`), '')
-		: rows(d, all)
+		: l.groups.length > 1 ? join(shown.map(g => html`<h3 class="section-h">${esc(g.title ?? '')} · ${g.codes.length}</h3>${rows(d, g.keys ?? g.codes)}`), '')
+		: rows(d, l.groups.flatMap(group => group.keys ?? group.codes))
 	return html`${back}<h2 class="num-list-h" id="num-list" tabindex="-1" data-list="${esc(key)}">${esc(l.title)} <span class="tnum">${all.length}</span></h2>${body}`
 }
 

@@ -39,13 +39,14 @@ export function unsent(): boolean {
 	return [...document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>('#main textarea, #main input')].some(el => !/^(checkbox|radio|hidden|submit|button)$/.test(el.type) && !!el.value.trim() && el.value !== el.defaultValue)
 }
 
-// Flip: ask first when a field holds unsent text, save, then reload. Done and Settings reload on the same tab; the rest opens the start.
+// Flip: React preserves the current address; legacy experience flips retain their existing shared-tab behavior.
 export async function switchUi(to: UiChoice['ui']) {
 	if (env.panel) return
 	if (unsent() && !window.confirm('Discard your edit?')) { render(); return }
 	if (!await save(to)) { say('Could not switch: offline'); render(); return }
 	const base = S.route.split('/')[0]
-	history.replaceState(null, '', location.pathname + location.search + (base === 'done' || base === 'settings' || base === 'numbers' ? location.hash : ''))
+	const hash = to === 'react' && env.ui === 'classic' ? `#classic/${location.hash.slice(1).replace(/^classic\//, '') || 'home'}` : location.hash
+	history.replaceState(null, '', location.pathname + location.search + (to === 'react' || base === 'done' || base === 'settings' || base === 'numbers' ? hash : ''))
 	location.reload()
 }
 

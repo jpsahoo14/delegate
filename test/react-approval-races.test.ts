@@ -11,8 +11,9 @@ process.env.DELEGATE_NO_KICK = '1'
 const { Store } = await import('../src/store/state.ts')
 const { reactProjection } = await import('../src/web/react-projection.ts')
 const { submitIntent, submissionReceipt } = await import('../src/web/react-submissions.ts')
-const { seedNext, seedOwned, stub } = await import('./fixture.ts')
+const { seedNext, seedOwned, stub, item } = await import('./fixture.ts')
 const { applyAnswers } = await import('../src/runner/apply.ts')
+const { enqueueParsed } = await import('../src/mcp/server.ts')
 const source: Source = stub
 const processes = { start: () => ({ pid: 1 }), alive: () => false, kill: () => true, openWindow: () => {} }
 const fresh = () => seedOwned(seedNext(new Store({ root: mkdtempSync(join(tmpdir(), 'delegate-react-races-')), machine: 'test' })))
@@ -105,4 +106,103 @@ test('React approval race: reordered options are refused instead of picking unse
 	await applyAnswers(store, source, store.config(), processes as never)
 	assert.equal(store.byCode('A3')!.picked, undefined)
 	assert.match(submissionReceipt(store, request.submissionId)!.text, /Changed since/)
+})
+
+function todoWork() {
+	const store = fresh(), at = new Date(Date.now() - 60_000).toISOString()
+	item(store, 'A501', 'Kim Lane', 'Acme test', {
+		state: 'open', answerSurface: 'chat', kept: [
+			{ id: 't1', text: 'Update the checklist', at },
+			{ id: 't2', text: 'Newer independent task', at },
+		],
+		work: { goal: 'Acme fixed', links: [], steps: [], next: { who: 'them', what: 'Kim confirms fixed' } },
+	})
+	return store
+}
+
+test('bug 10-22 E45: row marks only its named task, preserves work and timestamps, and shows the next task', async () => {
+	const store = todoWork(), snapshot = reactProjection(store).snapshot
+	const row = snapshot.entities.placements.A501
+	assert.equal(row.headline, 'To do: Update the checklist')
+	const action = snapshot.entities.actions[row.actionIds[0]], request = intent(store, action.id)
+	assert.notEqual(action.id, 'A501/todo-done')
+	const before = store.byCode('A501')!
+	before.kept!.push({ id: 't3', text: 'Kept after drawing', at: before.kept![0].at })
+	store.save(before, false)
+	assert.equal(submitIntent(store, request).status, 202)
+	assert.deepEqual(store.answers()[0].answer.todos, ['t1'])
+	assert.match(store.pageSubmission(request.submissionId)!.text, /will mark its to-do done/)
+	let sends = 0
+	await applyAnswers(store, { ...source, send: async () => ({ msgId: `unexpected-${++sends}` }) }, store.config(), processes as never)
+	const after = store.byCode('A501')!
+	assert.ok(after.kept![0].done)
+	assert.ok(after.kept!.slice(1).every(todo => !todo.done))
+	assert.deepEqual({ ...after, kept: undefined }, { ...before, kept: undefined })
+	assert.equal(sends, 0)
+	assert.match(submissionReceipt(store, request.submissionId)!.text, /Update the checklist\. A501 stays open\. Nothing was sent\./)
+	assert.equal(reactProjection(store).snapshot.entities.placements.A501.headline, 'To do: Newer independent task')
+	assert.equal(submitIntent(store, { ...request, submissionId: randomUUID() }).status, 409)
+})
+
+test('bug 10-22 E45: card binds its counted list and refuses equal/older-time additions before submission', async () => {
+	for (const delta of [0, -1]) {
+		const store = todoWork(), request = intent(store, 'A501/todo-done')
+		assert.equal(reactProjection(store).snapshot.entities.actions[request.action].label, 'Mark 2 to-dos done')
+		const workflow = store.byCode('A501')!
+		workflow.kept!.push({ id: 't3', text: 'Not on the drawn list', at: new Date(Date.parse(workflow.kept![0].at) + delta).toISOString() })
+		store.save(workflow, false)
+		assert.equal(submitIntent(store, request).status, 409)
+		assert.equal(store.answers().length, 0)
+		assert.ok(store.byCode('A501')!.kept!.every(todo => !todo.done))
+	}
+	const store = todoWork(), request = intent(store, 'A501/todo-done')
+	submitIntent(store, request)
+	const workflow = store.byCode('A501')!
+	workflow.kept!.push({ id: 't3', text: 'Kept after enqueue', at: workflow.kept![0].at })
+	store.save(workflow, false)
+	assert.deepEqual(store.answers()[0].answer.todos, ['t1', 't2'])
+	await applyAnswers(store, source, store.config(), processes as never)
+	assert.ok(store.byCode('A501')!.kept!.slice(0, 2).every(todo => todo.done))
+	assert.equal(store.byCode('A501')!.kept![2].done, undefined)
+	assert.equal(store.byCode('A501')!.state, 'open')
+})
+
+test('bug 10-22 E45: a task finished elsewhere refuses the drawn list without marking its other task', async () => {
+	const store = todoWork(), request = intent(store, 'A501/todo-done')
+	submitIntent(store, request)
+	const workflow = store.byCode('A501')!
+	workflow.kept![0].done = new Date().toISOString()
+	store.save(workflow, false)
+	await applyAnswers(store, source, store.config(), processes as never)
+	assert.equal(store.byCode('A501')!.kept![1].done, undefined)
+	assert.match(submissionReceipt(store, request.submissionId)!.text, /These to-dos changed\. Nothing was marked\./)
+})
+
+test('bug 10-22 E45: Classic lists exactly what completion means, and a later task invalidates an offered Close', () => {
+	const store = todoWork(), action = reactProjection(store).snapshot.entities.actions['A501/classic-close']
+	assert.equal(action.staleness, 'exact')
+	assert.equal(action.label, 'Mark 2 to-dos done')
+	assert.equal(action.needsConfirm, true)
+	assert.match(action.meaning!, /Update the checklist\n- Newer independent task/)
+	assert.deepEqual(action.todoIds, ['t1', 't2'])
+	const workflow = store.byCode('A501')!
+	workflow.kept = []
+	store.save(workflow, false)
+	const request = intent(store, action.id)
+	workflow.kept.push({ id: 't3', text: 'Kept later', at: workflow.createdAt })
+	store.save(workflow, false)
+	assert.equal(submitIntent(store, request).status, 409)
+	assert.equal(store.answers().length, 0)
+})
+
+test('bug 10-22 E45: chat close still marks all open tasks and the next close ends work', async () => {
+	const store = todoWork()
+	enqueueParsed(store, [{ code: 'A501', verb: 'close' }], undefined, 'chat')
+	await applyAnswers(store, source, store.config(), processes as never)
+	assert.ok(store.byCode('A501')!.kept!.every(todo => todo.done))
+	assert.equal(store.byCode('A501')!.state, 'open')
+	enqueueParsed(store, [{ code: 'A501', verb: 'close' }], undefined, 'chat')
+	await applyAnswers(store, source, store.config(), processes as never)
+	assert.equal(store.byCode('A501')!.state, 'done')
+	assert.ok(store.byCode('A501')!.work!.closed)
 })

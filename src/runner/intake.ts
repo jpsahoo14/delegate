@@ -6,7 +6,8 @@ import { outcome } from './habits.ts'
 import { answers, askedOf, type Waiting } from '../core/waiting.ts'
 import { randomUUID } from 'node:crypto'
 import type { Config, Msg, Person, WatchedChat, Workflow } from '../core/types.ts'
-import { classify, continuesOwner, htmlToText, nextTurn, type RawMsg, type Turn } from '../core/intake.ts'
+import { asSpeaker, classify, continuesOwner, htmlToText, inlineImages, nextTurn, replyTarget, type RawMsg, type Turn } from '../core/intake.ts'
+import { ownerReplies } from './owner-reply.ts'
 import { MARK, plain, renderPhone } from '../core/render.ts'
 import { catchUpLines, inbox, nextProposal } from './proposals.ts'
 import { statusText } from './status.ts'
@@ -97,6 +98,7 @@ export async function intake(store: Store, src: Source, cfg: Config, cursors: Re
 			const key = `${chat.id}/${raw.id}`
 			if (claimed.has(key)) { auditSkip(store, chat.id, raw.id, 'dedupe'); continue }
 			claimed.add(key)
+			keepImages(store, raw)
 			const now = backlog ? Date.parse(raw.at) : Date.now()
 			let c = classify(raw, { ownerId: cfg.owner.id, ownerName: cfg.owner.name, aliases: cfg.aliases, test: !!chat.test, group: !!chat.group, sentIds: sent })
 			if (chat.group) {
@@ -118,11 +120,12 @@ export async function intake(store: Store, src: Source, cfg: Config, cursors: Re
 				// carries both (bug 10-21: the new page showed one thread twice). It follows up on its own once the work closes.
 				const item = to ? workOfAsk(store, open, raw, c.text, to) : undefined
 				if (to && !store.waiting().some(w => w.msgId === raw.id)) store.saveWaiting([...store.waiting(), { code: store.nextCode('W'), chat: { id: chat.id, name: chat.name }, msgId: raw.id, at: raw.at, to, text: c.text.slice(0, 600), state: 'waiting', ...(item ? { item } : {}) }])
+				const replied = await ownerReplies(store, cfg, raw, c.text, open)
 				for (const o of open) {
 					const askAt = askAtOf(store.thread(o.id), o.msgIds)
-					appendThread(store, o, toMsg(raw, cfg.owner, c.text, true))
+					appendThread(store, o, { ...toMsg(raw, cfg.owner, c.text, true), ownerReply: { askId: o.lastMsgId, answered: replied.get(o.id) } })
 					// On open work the owner's message is a step and answers only the current turn (R-WRK-02).
-					if (ownerAnswered(c.text, o, open.length)) {
+					if (replied.get(o.id)) {
 						if (inWork(store, o)) { const h = homeOf(store, o); ownerStep(o, c.text, raw.id, h); if (h !== o) store.save(h) }
 						else {
 							// Replying in Teams instead of from Delegate teaches it the same way an edited send does (dogfood 10-20).
@@ -175,7 +178,10 @@ export async function intake(store: Store, src: Source, cfg: Config, cursors: Re
 			// "Fixed, please recheck" reopens the same item, which keeps its code (scenario 04 step 5, tester P2-14).
 			// It reattaches to its job only if the worker says the new ask is about the same entity (review 01-04 P0-2).
 			// How and why it closed last time no longer describes it: a later close says its own.
-			if (wf?.state === 'done') Object.assign(wf, { sent: undefined, sendAt: undefined, decision: undefined, effects: undefined, job: undefined, closedBy: undefined, fyi: undefined, prVote: undefined, prStatus: undefined, before: undefined, paced: undefined })
+			if (wf?.state === 'done') {
+				newTurn(wf)
+				Object.assign(wf, { job: undefined, closedBy: undefined, fyi: undefined, prVote: undefined, prStatus: undefined, before: undefined, paced: undefined })
+			}
 			if (wf?.state === 'done' && wf.work?.closed) { wf.work.closed = undefined; step(wf, `Reopened by ${c.from.name}`) }
 			if (wf?.state === 'open' && c.kind === 'ask') newTurn(wf)
 			// A request to the whole group ("hi guys, I have a PR") may be the owner's: one short run decides, using what the owner owns.
@@ -267,9 +273,12 @@ async function create(store: Store, src: Source, cfg: Config, chat: WatchedChat,
 		lastMsgId: '', pending: [], msgIds: [], status: 'Drafting a reply', newCount: 0, earlier, createdAt: now, updatedAt: now,
 	}
 	const history = await src.recent(chat.id, 20)
+	for (const r of history) keepImages(store, r)
 	store.saveThread(wf.id, history.filter(r => r.from).map(r => {
-		const own = r.from!.id === cfg.owner.id
-		return toMsg(r, own ? cfg.owner : r.from!, r.html ? r.body.replace(/<[^>]+>/g, '') : r.body, own)
+		const own = r.from!.id === cfg.owner.id, text = r.html ? htmlToText(r.body) : r.body
+		// "[as Name]" in a test chat is that person's line, here as in classify (bug 10-23 E11).
+		const as = own ? asSpeaker(text, !!chat.test) : undefined
+		return as ? toMsg(r, as.from, as.text, false) : toMsg(r, own ? cfg.owner : r.from!, text, own)
 	}))
 	return wf
 }
@@ -303,6 +312,7 @@ async function takeOne(store: Store, src: Source, cfg: Config, q: Missed): Promi
 	let raw = (await src.recent(at.chatId, 50).catch(() => [])).find(m => m.id === at.msgId), after: RawMsg[] | undefined
 	if (!raw && src.around) { const r = await src.around(at.chatId, at.msgId).catch(() => undefined); raw = r?.msg; after = r?.after }
 	if (!raw?.from) { await say(store, src, `${MARK} I could not find that message in its chat, so nothing changed.`); return false }
+	keepImages(store, raw)
 	const group = isThread(at.chatId) || kindOf(at.chatId) !== 'oneOnOne', chats = store.chats()
 	const c = classify(raw, { ownerId: cfg.owner.id, ownerName: cfg.owner.name, aliases: cfg.aliases, test: false, group, sentIds: store.sentIds() })
 	const why = c.kind === 'owner' ? 'it is your own message, so it was not an ask' : c.kind === 'skip' ? `it was skipped (${c.why})`
@@ -337,12 +347,14 @@ function threadOf(msgs: RawMsg[], cfg: Config): Msg[] {
 	return msgs.filter(m => m.from && !m.deleted).map(m => toMsg(m, m.from!.id === cfg.owner.id ? cfg.owner : { id: m.from!.id, name: m.from!.name }, (m.html ? htmlToText(m.body) : m.body).trim().slice(0, 4000), m.from!.id === cfg.owner.id))
 }
 
+// An image pasted inline is kept, so the [image … inline:<key>] line in the thread opens with image_read (bug 10-23 E17).
+function keepImages(store: Store, raw: RawMsg) { if (raw.html) for (const i of inlineImages(raw.body)) store.saveMedia(i.key, i.type, i.data) }
+
 function appendThread(store: Store, wf: Workflow, m: Msg) {
 	const t = store.thread(wf.id).filter(x => x.id !== m.id)
 	store.saveThread(wf.id, [...t, m])
 }
 
-// In a 1:1 chat any owner message answers. In a group it answers the only open item, or the one whose asker it names (review P1-9).
 // The open work an owner's @-ask in this chat belongs to, if any (bug 10-21; code review round 3, P2-2). A reply to one of a
 // work's messages belongs to it; otherwise the ask must go to someone the work waits on or its asker, or name the work's link,
 // and exactly one work may match; its asker alone is enough only when the chat has one open topic. An ask about anything else
@@ -350,7 +362,7 @@ function appendThread(store: Store, wf: Workflow, m: Msg) {
 export function workOfAsk(store: Store, open: Workflow[], raw: RawMsg, text: string, to: string[]): string | undefined {
 	const homes = [...new Map(open.filter(o => inWork(store, o)).map(o => { const h = homeOf(store, o); return [h.id, h] as const })).values()]
 	if (!homes.length) return undefined
-	const quoted = raw.html ? /<blockquote[^>]*itemtype="http:\/\/schema\.skype\.com\/Reply"[^>]*itemid="([^"]+)"/i.exec(raw.body)?.[1] ?? /<blockquote[^>]*itemid="([^"]+)"[^>]*itemtype="http:\/\/schema\.skype\.com\/Reply"/i.exec(raw.body)?.[1] : undefined
+	const quoted = replyTarget(raw)
 	if (quoted) {
 		const replied = homes.find(h => [h, ...store.workflows().filter(w => w.partOf === h.id)].some(w => w.msgIds?.includes(quoted) || w.lastMsgId === quoted))
 		if (replied) return replied.code
@@ -367,12 +379,6 @@ export function workOfAsk(store: Store, open: Workflow[], raw: RawMsg, text: str
 	const chat = open[0].chat.id
 	const topics = new Set(open.map(o => homeOf(store, o).id)).size + store.waiting().filter(w => w.state === 'waiting' && w.chat.id === chat && !w.item).length
 	return topics > 1 && hit[0] !== named && !waited.includes(hit[0]) ? undefined : hit[0].code
-}
-
-export function ownerAnswered(text: string, wf: Workflow, openInChat: number): boolean {
-	if (!wf.chat.group || openInChat <= 1) return true
-	const first = wf.asker?.name.split(/\s+/)[0]
-	return !!first && new RegExp(`\\b${first.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(text)
 }
 
 // A close starts with no reason; the caller sets one when it has it, so an earlier close's never carries over.
@@ -414,8 +420,11 @@ export function joinInto(store: Store, from: Workflow, to: Workflow): boolean {
 	if (from.work || active(to)) return false
 	const all = [to.asker, ...(to.askers ?? []), from.asker, ...(from.askers ?? [])].filter((p, i, a): p is Person => !!p && a.findIndex(q => q?.id === p.id) === i)
 	to.askers = all.filter(p => p.id !== to.asker?.id)
-	const seen = new Set<string>()
-	store.saveThread(to.id, [...store.thread(to.id), ...store.thread(from.id)].filter(m => !seen.has(m.id) && seen.add(m.id)).sort((a, b) => a.at.localeCompare(b.at)))
+	// Each message keeps the line of the item that owns it: that one was read as an ask, the other may be only history (bug 10-23 E11).
+	const own = new Set(from.msgIds), fromThread = store.thread(from.id), byId = new Map<string, Msg>()
+	for (const m of store.thread(to.id)) byId.set(m.id, m)
+	for (const m of fromThread) if (!byId.has(m.id) || own.has(m.id)) byId.set(m.id, m)
+	store.saveThread(to.id, [...byId.values()].sort((a, b) => a.at.localeCompare(b.at)))
 	to.msgIds = [...new Set([...to.msgIds, ...from.msgIds])]
 	to.pending = [...new Set([...to.pending, ...from.msgIds])]
 	if (to.state !== 'waiting_on_task') Object.assign(to, { state: 'running', status: `Redrafting to answer ${from.asker?.name ?? 'them'} too`, approved: undefined })

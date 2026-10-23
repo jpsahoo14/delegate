@@ -13,7 +13,7 @@ export const PAGE: BuildOptions = {
 // never become inputs, so the page may import types from anywhere (src/web/view.ts). Anything else would pull server code
 // into the page, so the build stops.
 export const PAGE_DIR = 'src/web/app/'
-export const SHARED = ['src/core/whose.ts']
+export const SHARED = ['src/core/whose.ts', 'src/web/react/domain/time.ts']
 export function checkInputs(meta: Metafile) {
 	const bad = Object.keys(meta.inputs).map(f => f.replaceAll('\\', '/')).filter(f => !f.startsWith(PAGE_DIR) && !SHARED.includes(f))
 	if (bad.length) throw new Error(`The page bundle may only use ${PAGE_DIR} and ${SHARED.join(', ')}; it imports ${bad.join(', ')}. Use import type, or add a pure file to SHARED.`)

@@ -19,7 +19,7 @@ export type Rule = {
 	shortcut?: { goal: string }
 }
 
-export type Msg = { id: string; at: string; from: Person; text: string; byOwner: boolean }
+export type Msg = { id: string; at: string; from: Person; text: string; byOwner: boolean; ownerReply?: { askId: string; answered?: boolean } }
 
 // stale: set by the runner when a card citation does not resolve or has expired; it then counts as no card (R-ANS-02).
 // label: the sensitivity label of a file or page the draft quotes, such as Confidential (R-SEC-08).
@@ -95,7 +95,8 @@ export type WorkReport = {
 // maybe: its call got no answer, so it may have been made; it is not made again until the owner says so (review 10-21 P2-7).
 // deploy: for a pipeline run, the ring and PR it is for, set by code from the allowlist and the item, never the AI's words.
 // ring: the ring as Azure DevOps showed it before the ok; a late ok compares it with the ring as it is then (owned work).
-export type Effect = { system: string; action: string; target: string; summary: string; payload?: unknown; call?: Call; head?: string; pr?: PrFacts; deploy?: { ring: string; pr: number }; ring?: RingFacts; build?: BuildFacts; done?: { ref?: string; at: string }; error?: string; off?: boolean; maybe?: true }
+// turns: server-owned proposal provenance, separate from the operation's write-ledger identity.
+export type Effect = { system: string; action: string; target: string; summary: string; payload?: unknown; call?: Call; head?: string; pr?: PrFacts; deploy?: { ring: string; pr: number }; ring?: RingFacts; build?: BuildFacts; turns?: string[]; done?: { ref?: string; at: string }; error?: string; off?: boolean; maybe?: true }
 // A pipeline run as Azure DevOps lists it: who started it, when, and how it stands.
 export type RunFact = { id: number; by: string; at: string; status: string; result?: string }
 export type RingFacts = { last?: RunFact; running: RunFact[]; readAt: string }
@@ -120,6 +121,7 @@ export type Job = {
 	id: Id
 	key: string
 	goal: string
+	learning?: { source: string; text: string }
 	repo?: string
 	session: { agent: string; id: string }
 	state: 'queued' | 'running' | 'done' | 'failed'
@@ -196,7 +198,7 @@ export type Workflow = {
 	ownerAnswer?: string
 	answerSurface?: 'chat' | 'self' | 'panel'
 	status: string
-	sent?: { msgId: string; at: string; byRule?: string; undoUntil?: string; text?: string }
+	sent?: { msgId: string; at: string; byRule?: string; undoUntil?: string; text?: string; sendText?: string; askMsgId?: string }
 	sendAt?: string
 	acked?: boolean
 	decision?: { action: string; ruleId?: string; reason: string; confidence: Confidence }
@@ -266,7 +268,7 @@ export type Workflow = {
 	// The owner's own words went out on an item whose PR Delegate can change: one short run maps what they promise to changes held
 	// for ok (Slice 3). pending: waits for the run; checking: the run is going; offered: its changes wait for ok; failed: it could not tell.
 	promise?: { text: string; at: string; state: 'pending' | 'checking' | 'offered' | 'failed'; why?: string }
-	approved?: { text: string; effects: string; at: string }
+	approved?: { text: string; effects: string; at: string; replyDigest?: string }
 	revAt?: string
 	newCount: number
 	// A short summary of this sender's previous, closed item, so a new item starts with that context (R-WF-09).
@@ -288,6 +290,7 @@ export type Report = {
 	context?: Fact[]
 	meeting?: Meeting
 	answer?: string
+	answeredItems?: string[]
 	split?: string[]
 	fyi?: Fyi
 	same?: string
@@ -313,15 +316,15 @@ export type Blocker = { kind: BlockerKind; why: string; tried: string[]; retryAf
 // The tries so far for one ask: when the next is due, and what each one met.
 export type Retry = { at: string; n: number; total?: number; firstAt: string; kindAt?: string; last: Blocker; tried: string[] }
 
-export type Verb = 'watch' | 'mine' | 'ok' | 'edit' | 'send' | 'later' | 'answer' | 'skip' | 'more' | 'undo' | 'continue' | 'pick' | 'ask' | 'wrong' | 'incomplete' | 'unneeded' | 'every' | 'extend' | 'close' | 'wait' | 'never' | 'pause' | 'resume' | 'stop' | 'auto-on' | 'auto-off'
+export type Verb = 'watch' | 'unwatch' | 'mine' | 'ok' | 'edit' | 'send' | 'later' | 'answer' | 'skip' | 'more' | 'undo' | 'continue' | 'pick' | 'ask' | 'wrong' | 'incomplete' | 'unneeded' | 'every' | 'extend' | 'close' | 'wait' | 'never' | 'pause' | 'resume' | 'stop' | 'auto-on' | 'auto-off'
 export const CONTROL_VERBS = ['pause', 'resume', 'stop', 'auto-on', 'auto-off'] as const
 
 // seenAt: when the owner gave the command. An ok older than the item's last change approves nothing (review 01-04 P0).
 // nums: 1-based option numbers for pick, or the only changes an ok approves.
 // again: "ok A1 again", the owner checked that a change which may have been made was not, so it is made once more.
 // todos: on a close from the page, the open to-dos the owner saw, so Mark done marks only those (review N2 P2-1).
-export type PageApproval = { kind: 'send-reply' | 'make-changes' | 'pick' | 'undo-send' | 'mark-todos' | 'approve'; expect: string; sentMessageId?: string; todoIds?: string[] }
-export type Answer = { id: Id; code: Code; verb: Verb; text?: string; nums?: number[]; except?: number[]; again?: true; surface: 'chat' | 'self' | 'panel'; at: string; seenAt?: string; todos?: string[]; page?: PageApproval }
+export type PageApproval = { kind: 'send-reply' | 'make-changes' | 'pick' | 'undo-send' | 'feedback-send' | 'mark-todos' | 'approve' | 'manage'; expect: string; sentMessageId?: string; todoIds?: string[]; replyDigest?: string }
+export type Answer = { id: Id; code: Code; verb: Verb; text?: string; nums?: number[]; except?: number[]; again?: true; surface: 'chat' | 'self' | 'panel'; at: string; seenAt?: string; todos?: string[]; page?: PageApproval; pageSubmissionId?: string }
 
 export type WatchedChat = { id: string; name: string; test?: boolean; group?: boolean; since?: string }
 

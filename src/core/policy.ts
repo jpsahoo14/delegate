@@ -1,5 +1,12 @@
 import { pendingEffects } from './effects.ts'
-import type { Confidence, Config, Person, Rule, Source, Workflow } from './types.ts'
+import type { Confidence, Config, Job, Person, Rule, Source, Workflow } from './types.ts'
+
+export function currentDraft(workflow: Workflow, job?: Job) {
+	const endedWithoutReply = job && job.id === workflow.job && job.state === 'done' && job.purpose === 'work' && job.result && !job.result.reply &&
+		(workflow.status === job.result.summary || workflow.status === `Nothing needed: ${job.result.summary}`) &&
+		Date.parse(workflow.revAt ?? workflow.updatedAt) <= Date.parse(job.result.at ?? job.updatedAt)
+	return endedWithoutReply ? undefined : workflow.draft
+}
 
 export const DEFAULT_POLICY = {
 	delayMin: 15, undoMin: 10, maxAutoPerChatHour: 3,
@@ -81,6 +88,8 @@ export function withMarker(text: string, marker: string, ownerName: string): str
 	const body = text.trimEnd().toLowerCase().endsWith(line.toLowerCase()) ? text.trimEnd().slice(0, -line.length).trimEnd() : text
 	return `${body}\n\n${line}`
 }
+export const approvedReplyText = (text: string, workflow: Workflow, cfg: Config): string =>
+	text && signsApproved(cfg) && !workflow.learnAfter && !workflow.draft?.byOwner ? withMarker(text, signatureOf(cfg), cfg.owner.name) : text
 
 export function inQuietHours(now: Date, quiet = { from: '20:00', to: '08:00' }): boolean {
 	const m = now.getHours() * 60 + now.getMinutes()

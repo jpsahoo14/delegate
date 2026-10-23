@@ -12,14 +12,14 @@ export const settingsSchema = z.object({
 	about: z.object({
 		profile: text, rules: z.array(z.object({ text, who: text, learned: optional, held: z.boolean(), code: optional })),
 		suggestions: z.array(z.object({ code: text, text, does: text, evidence: text })),
-		chats: z.array(z.object({ name: text, says: text })),
+		chats: z.array(z.object({ name: text, says: text, actionIds: strings.optional() })),
 	}),
 	models: z.object({ set: text, lines: strings }),
 })
 export const saveResultSchema = z.object({ ok: z.boolean(), text })
 const numberRow = z.object({
 	code: text, kind: text, sentence: text, who: z.object({ name: text, initials: text, hue: z.number() }), at: text, by: text,
-	teams: optional, href: optional, ask: optional, said: optional, gist: optional, work: optional,
+	teams: optional, href: optional, ask: optional, said: optional, gist: optional, work: optional, inTeams: z.boolean().optional(),
 })
 export const numbersSchema = z.object({
 	model: z.object({
@@ -37,7 +37,7 @@ export const numbersSchema = z.object({
 		unknown: link.optional(), corrections: z.array(link), promises: text, summary: text,
 	}),
 	rules: z.record(text, text),
-	lists: z.record(text, z.object({ title: text, groups: z.array(z.object({ title: optional, codes: strings })) })),
+	lists: z.record(text, z.object({ title: text, groups: z.array(z.object({ title: optional, codes: strings, keys: strings.optional() })) })),
 	rows: z.record(text, numberRow), missed: z.record(text, z.object({ at: text, teams: optional })),
 })
 export type Settings = z.infer<typeof settingsSchema>

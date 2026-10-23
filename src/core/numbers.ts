@@ -10,7 +10,7 @@ export type Ev = {
 	// asDrafted on a send: true, false, or absent when the line can no longer prove which (an old line after the 30-day redaction).
 	// target: the message id of the send a correction is about.
 	// changesOff: changes left out before a send (removed by the owner, or dropped as no longer needed).
-	code?: string; asDrafted?: boolean; holding?: true; changesOff?: number; askAt?: string; replyAt?: string; closedBy?: string; items?: string[]; kept?: number; removed?: number; left?: number; kind?: string; chat?: string; msgId?: string; target?: string
+	code?: string; asDrafted?: boolean; holding?: true; changesOff?: number; askAt?: string; askMsgId?: string; replyAt?: string; closedBy?: string; items?: string[]; kept?: number; removed?: number; left?: number; kind?: string; chat?: string; msgId?: string; target?: string
 }
 export type Item = { code: string; kind?: string; chat: { id: string }; msgIds: string[] }
 export type WindowKey = 'this' | 'last' | '4w' | 'all'
@@ -55,7 +55,7 @@ export function slim(raw: Record<string, unknown>[]): Ev[] {
 			// Replies to asks only: a reminder an automation sent is not a reply.
 			case 'sent': if (code && /^(owner$|rule:)/.test(str(e.approvedBy) ?? '')) {
 				const d = drafted(e)
-				out.push({ at, event: 'sent', code, ...(d === undefined ? {} : { asDrafted: d }), ...(e.holding === true ? { holding: true } : {}), ...(num(e.changesOff) ? { changesOff: num(e.changesOff) } : {}), ...(str(e.msgId) ? { msgId: str(e.msgId) } : {}), ...opt('askAt') })
+				out.push({ at, event: 'sent', code, ...(d === undefined ? {} : { asDrafted: d }), ...(e.holding === true ? { holding: true } : {}), ...(num(e.changesOff) ? { changesOff: num(e.changesOff) } : {}), ...(str(e.msgId) ? { msgId: str(e.msgId) } : {}), ...(str(e.askMsgId) ? { askMsgId: str(e.askMsgId) } : {}), ...opt('askAt') })
 			} break
 			case 'state': {
 				if (code && e.from === 'new') out.push({ at, event: 'made', code })
@@ -75,8 +75,8 @@ export function slim(raw: Record<string, unknown>[]): Ev[] {
 }
 
 // When the ask a reply answers was sent: the item's first message since the owner last spoke in the thread.
-export function askAtOf(thread: { id: string; at: string; byOwner: boolean }[], ids: string[]): string | undefined {
-	const last = thread.findLastIndex(m => m.byOwner)
+export function askAtOf(thread: { id: string; at: string; byOwner: boolean; ownerReply?: { answered?: boolean } }[], ids: string[]): string | undefined {
+	const last = thread.findLastIndex(m => m.byOwner && (m.ownerReply ? m.ownerReply.answered === true : true))
 	return thread.slice(last + 1).find(m => !m.byOwner && ids.includes(m.id))?.at
 }
 

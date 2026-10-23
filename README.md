@@ -102,10 +102,15 @@ Not needed: pipeline IDs, ring names, deploy steps, or queries. Delegate reads t
 ## React preview
 
 The browser's App version menu offers Classic, New and React (preview). The
-preview currently contains the new front-end foundation and version switching,
-not your items or actions yet. Choose New or Classic to use all existing
-features. The choice is remembered on this machine only and switching sends
-nothing. The chat panel continues using New when React is selected; saved
+preview provides Now, the open card, Done, Numbers and Settings, including
+watches, reminders, knowledge and private questions. Rows only open items;
+sending and making changes require their explicit buttons. Edited text stays
+on its displayed revision when newer data arrives. Unknown action results are
+checked from saved receipts, never automatically sent again.
+Inside React, Experience switches between New and Classic on the same data
+and action service. Both keep the original page's visit start and new counts.
+The choice is remembered on this machine only and switching sends
+nothing. New and Classic remain available. The chat panel continues using New when React is selected; saved
 read-only snapshots remain Classic.
 
 Development: `npm run build` builds both pages and updates integrity hashes.

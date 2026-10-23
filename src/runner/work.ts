@@ -83,8 +83,10 @@ export function mergeWork(wf: Workflow, w: WorkReport | undefined, now = new Dat
 	if (w.closed) k.closed = { at, why: w.closed }
 }
 
+export const hasDecisions = (r: Report) => !!r.choices || !!r.effects?.length
+
 export function mergeReportWork(wf: Workflow, r: Report, home = wf, changedAsk?: string, allowClose = true) {
-	const deferred = !!(r.reply || r.question || r.effects?.length || r.job)
+	const deferred = !!(r.reply || r.question || hasDecisions(r) || r.job)
 	wf.closeWorkAfterSend = deferred ? r.work?.closed : undefined
 	mergeWork(home, r.work && (deferred || !allowClose) ? { ...r.work, closed: undefined } : r.work, undefined, label(wf, home), changedAsk)
 }
@@ -95,7 +97,8 @@ export function mergePlan(old: PlanStep[], next: NonNullable<WorkReport['plan']>
 	const merged = next.slice(0, 10).map(p => {
 		const was = (p.id && old.find(o => o.id === p.id)) || old.find(o => o.what.toLowerCase() === p.what.toLowerCase())
 		const probe = p.build ? { build: p.build, project: p.project ?? was?.probe?.project ?? '' } : was?.probe
-		return { id: was?.id ?? `p${++n}`, what: p.what, who: p.who, ...(p.done ? { done: was?.done ?? at } : {}), ...(p.in ? { in: p.in.toUpperCase() } : {}), ...(probe ? { probe } : {}), ...(was?.seen && probe?.build === was.probe?.build ? { seen: was.seen } : {}), ...(was?.ring ? { ring: was.ring, ...(was.done && !p.done ? { done: was.done } : {}) } : {}) }
+		const sameProbe = !!probe && !!was?.probe && probe.build === was.probe.build && probe.project === was.probe.project
+		return { id: was?.id ?? `p${++n}`, what: p.what, who: p.who, ...(p.done || sameProbe && was?.done ? { done: was?.done ?? at } : {}), ...(p.in ? { in: p.in.toUpperCase() } : {}), ...(probe ? { probe } : {}), ...(was?.seen && sameProbe ? { seen: was.seen } : {}), ...(was?.ring ? { ring: was.ring, ...(was.done && !p.done ? { done: was.done } : {}) } : {}) }
 	})
 	// A deploy Delegate made stays on the plan, so its ring is still watched, whatever a run's new plan leaves out (owned work).
 	merged.push(...old.filter(o => o.ring && !merged.some(m => m.id === o.id)))
@@ -107,14 +110,14 @@ export function mergePlan(old: PlanStep[], next: NonNullable<WorkReport['plan']>
 // Ending a turn without new input (wait, skip, close, the owner's own message) keeps the last send for Done and "Not right?".
 // The turn's own to-dos go with it; the ones a sent reply promised (kept) stay until the owner marks them done (R-NEX-07).
 export function newTurn(wf: Workflow, keepSent = false) {
-	Object.assign(wf, { draft: undefined, prDraft: undefined, closeWorkAfterSend: undefined, choices: undefined, question: undefined, effects: undefined, promised: undefined, decision: undefined, approved: undefined, picked: undefined, sendAt: undefined, correction: undefined, todos: undefined, newCount: 0, ...(keepSent ? {} : { sent: undefined }) })
+	Object.assign(wf, { draft: undefined, prDraft: undefined, learnAfter: undefined, closeWorkAfterSend: undefined, choices: undefined, question: undefined, effects: undefined, promised: undefined, decision: undefined, approved: undefined, picked: undefined, sendAt: undefined, correction: undefined, todos: undefined, newCount: 0, ...(keepSent ? {} : { sent: undefined }) })
 }
 
 // When a reply goes out, what it promised the owner would do becomes theirs to keep, once per open text (R-NEX-07).
-export function keepTodos(wf: Workflow, at: string) {
+export function keepTodos(wf: Workflow, at: string, todos = wf.todos) {
 	const kept = wf.kept ?? []
 	let n = kept.reduce((m, t) => Math.max(m, Number(t.id.replace(/\D/g, '')) || 0), 0)
-	const add = [...new Set(wf.todos ?? [])].filter(text => !kept.some(t => !t.done && t.text === text)).map(text => ({ id: `t${++n}`, text, at }))
+	const add = [...new Set(todos ?? [])].filter(text => !kept.some(t => !t.done && t.text === text)).map(text => ({ id: `t${++n}`, text, at }))
 	// Always set, even empty: an item with no kept list was written before N2, and only those are migrated (review N2 P2-2).
 	wf.kept = [...kept, ...add]
 }
@@ -126,10 +129,10 @@ export function doneTodos(wf: Workflow, at = new Date().toISOString(), only?: st
 	return open.map(t => t.text)
 }
 
-// A report with no reply or question: active work stays open, closed work is done.
+// A report with no response or decision: active work stays open, closed work is done.
 export function settle(wf: Workflow, r: Report, home = wf): boolean {
 	if (!home.work) return false
-	if (r.reply || r.question) return false
+	if (r.reply || r.question || hasDecisions(r)) return false
 	if (active(home)) { Object.assign(wf, { state: 'open', status: r.summary || 'In progress', pending: [] }); return true }
 	if (home.work.closed) { Object.assign(wf, { state: 'done', status: `Closed: ${home.work.closed.why}`, pending: [] }); return true }
 	return false
@@ -154,15 +157,24 @@ export function afterSend(wf: Workflow, text: string, msgId: string, home = wf, 
 }
 
 export const approvalMention = (text: string) => /approv|sign[ -]?off|\blgtm\b/i.test(text)
+// A run tag such as "[E2E-… 1792751673901]" before the words is a label, not part of what they say (bug 10-23 E35).
+const untagged = (text: string) => text.trim().replace(/\u2019/g, "'").replace(/^(?:\[[^\]\n]{1,120}\]\s*)+/, '')
+const sentencesOf = (text: string) => untagged(text).split(/(?<=[.!?;])\s+|\n+/).map(s => s.trim()).filter(Boolean)
+// Only a number written as a pull request names one ("PR 12", "pull request #12", ".../pullrequest/12"); tags, times and counts never do.
+export const prNumbersIn = (text: string) => [...text.matchAll(/\b(?:PR|pull\s+request|pullrequest\/)\s*#?\s*(\d+)\b|(?:^|\s)#(\d{3,})\b/gi)].map(m => Number(m[1] ?? m[2]))
 export function approvalReplyMatches(text: string, vote: number | undefined, pr: number): boolean {
 	if (!approvalMention(text)) return true
-	const line = text.trim().replace(/\u2019/g, "'").replace(/[.!]$/, '')
+	// Every sentence that speaks of approval must be a complete, bounded statement the vote supports; the rest is free.
+	return sentencesOf(text).filter(approvalMention).every(s => approvalSentenceMatches(s, vote, pr))
+}
+function approvalSentenceMatches(sentence: string, vote: number | undefined, pr: number): boolean {
+	const line = sentence.replace(/[.!;]$/, '')
 	// Only complete, bounded statements pass. Unrecognized approval wording waits for a redraft.
 	const target = '(?:\\s+(?:(?:the\\s+)?(?:PR|pull request)(?:\\s*#?\\s*\\d+)?|it|\\d+))?'
-	const condition = '(?:\\s+(?:after|once|when|until)\\s+(?:(?:the\\s+)?(?:build|tests?|checks?|requested changes|null check|comments?)(?:\\s+(?:is|are)\\s+(?:green|fixed|addressed|resolved|complete|done))?|checking the comments))?'
+	const condition = '(?:\\s+(?:after|once|when|until)\\s+(?:(?:the\\s+|its\\s+)?(?:build|tests?|checks?|requested changes|null check|comments?)(?:\\s+(?:is|are)\\s+(?:green|fixed|addressed|resolved|complete|done))?|checking the comments))?'
 	const future = new RegExp(`^(?:(?:(?:Rechecked,?\\s+)?looks good(?: to me)?[.!;]|Yes,)\\s+)?(?:I|we)(?:'ll| will(?: not)?| won't)\\s+(?:approve|sign[ -]?off)${target}(?:\\s+too)?${condition}(?:, and add [a-z][a-z -]{0,60} as a reviewer)?$`, 'i')
 	if (future.test(line)) return true
-	if ((line.match(/\d+/g) ?? []).some(id => Number(id) !== pr)) return false
+	if ([...prNumbersIn(line), ...[...line.matchAll(/\b(?:approve|approved|sign[ -]?off|signed[ -]?off)\s+#?(\d+)\b/gi)].map(m => Number(m[1]))].some(id => id !== pr)) return false
 	if (vote === undefined || !Object.values(VOTES).includes(vote)) return false
 	const negative = new RegExp(`^(?:(?:I|we)\\s+(?:have not|haven't|did not|didn't|have never|never)\\s+(?:approved|signed[ -]?off)${target}(?:\\s+yet)?|(?:Not yet,\\s*)?(?:my|our)\\s+approval\\s+(?:has not been|hasn't been|is not|isn't)\\s+(?:recorded|given))$`, 'i')
 	if (negative.test(line)) return vote !== undefined && vote < 5
@@ -170,6 +182,21 @@ export function approvalReplyMatches(text: string, vote: number | undefined, pr:
 	return vote !== undefined && vote >= 5 && positive.test(line)
 }
 export const reReviewAsk = (text: string) => /re[ -]?review|review again|recheck/i.test(text)
+// The vote the owner's own words say is already in place: 'approval' for "I approved it" or "LGTM", a vote value for
+// "my vote is now Waiting for author"; undefined for a plan, a condition or a negation (bug 10-23 E35).
+const VOTE_SAID: Record<string, number> = { approved: 10, approvedwithsuggestions: 5, waitingforauthor: -5, rejected: -10, novote: 0 }
+export function claimedVote(text: string): number | 'approval' | undefined {
+	let out: number | 'approval' | undefined
+	for (const s of sentencesOf(text)) {
+		if (/\b(?:not|never|until|unless|if|once|after|when|before|will)\b|n't\b|'ll\b/i.test(s)) continue
+		const v = /\bmy vote (?:is|was set to|has been set to)\s+(?:now\s+)?["']?(approved with suggestions|approved|waiting for author|waitingforauthor|rejected|no vote|novote)\b/i.exec(s)
+			?? /\b(?:I|we)(?:'ve|\s+have)?\s+(?:just\s+|now\s+|already\s+)?(?:voted|set my vote(?: on \S+(?: \d+)?)? to)\s+["']?(approved with suggestions|approved|waiting for author|waitingforauthor|rejected|no vote|novote)\b/i.exec(s)
+		if (v) { out = VOTE_SAID[v[1].toLowerCase().replace(/\s+/g, '')]; continue }
+		if (/\b(?:I|we)(?:'ve|\s+have)?\s+(?:just\s+|now\s+|already\s+)?(?:approved|signed[ -]?off)\b|^\W*(?:approved|LGTM)\b/i.test(s)) out ??= 'approval'
+	}
+	return out
+}
+export const claimsApproval = (text: string) => claimedVote(text) !== undefined
 export const approvalAsk = (text: string) => approvalMention(text) && !reReviewAsk(text)
 export const approvalOnly = (wf: Workflow) => {
 	const k = wf.work
@@ -244,7 +271,8 @@ export function named(items: Workflow[], text: string): Workflow | undefined {
 export function watchNews(wf: Workflow, r: Report, ref: string, first: boolean): boolean {
 	if (!wf.work) return false
 	if (r.done) step(wf, `Watch stopped: ${r.summary}`, { ref: `${ref}:done`, news: true })
-	else if (first || !step(wf, r.summary, { ref, news: true })) return false
+	else if (first) { step(wf, r.summary, { ref }); return false }
+	else if (!step(wf, r.summary, { ref, news: true })) return false
 	wake(wf, `News: ${r.summary}`)
 	return true
 }

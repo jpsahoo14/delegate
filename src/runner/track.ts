@@ -72,13 +72,17 @@ function started(store: Store, t: TrackInput): WatchResult {
 // "watch A41" / "watch A41: <target> until <until> by YYYY-MM-DD push": a Catch up line becomes a watch (design-spec/done-v2.md).
 // One watch per line: the same command twice points at the first watch.
 export function watchItem(store: Store, wf: Workflow, body?: string): WatchResult {
+	const input = parseWatch(body)
+	return watchItemTarget(store, wf, { target: input.target, until: input.until, by: input.by, shepherd: input.push })
+}
+
+export function watchItemTarget(store: Store, wf: Workflow, input: { target?: string; until?: string; by?: string; shepherd?: boolean }): WatchResult {
 	if (wf.state !== 'done' || !wf.fyi) return { text: `${wf.code} is not in Catch up, so there is nothing to watch from it. To watch something else, say "watch: <what should get done>".`, accepted: false }
 	const live = wf.watchedAs ? store.byCode(wf.watchedAs) : undefined
 	if (live && live.state !== 'done') return { text: `${wf.code} is already watched as ${live.code}.`, accepted: true, code: live.code }
-	const w = parseWatch(body)
 	const link = teamsLink(wf)
-	const target = w.target ?? wf.fyi.watch?.target ?? wf.fyi.line
-	const r = started(store, { target, until: w.until ?? wf.fyi.watch?.until, by: w.by, endsAt: w.by ? undefined : weekOut(), shepherd: w.push || undefined, from: 'catchup', link })
+	const target = input.target ?? wf.fyi.watch?.target ?? wf.fyi.line
+	const r = started(store, { target, until: input.until ?? wf.fyi.watch?.until, by: input.by, endsAt: input.by ? undefined : weekOut(), shepherd: input.shepherd || undefined, from: 'catchup', link })
 	// Not a new event: the row keeps its place and its seen state.
 	if (r.code) { const src = store.byCode(wf.code)!; src.watchedAs = r.code; store.save(src, false) }
 	return r
@@ -88,10 +92,14 @@ export function watchItem(store: Store, wf: Workflow, body?: string): WatchResul
 export function watchSomething(store: Store, body?: string): WatchResult {
 	const w = parseWatch(body)
 	if (!w.target) return { text: 'Say what to watch, for example "watch: PR 1601234 merged by 2026-10-23".', accepted: false }
-	const until = w.until ?? DEFAULT_UNTIL
-	const live = store.workflows().find(x => x.kind === 'tracker' && x.state !== 'done' && x.watchFrom === 'owner' && x.lastAsk === `Watch ${w.target} until ${until}`)
-	if (live) return { text: `Already watching ${w.target} as ${live.code}.`, accepted: true, code: live.code }
-	return started(store, { target: w.target, until, by: w.by, endsAt: w.by ? undefined : weekOut(), shepherd: w.push || undefined, from: 'owner' })
+	return watchTarget(store, { target: w.target, until: w.until, by: w.by, shepherd: w.push || undefined })
+}
+
+export function watchTarget(store: Store, input: Pick<TrackInput, 'target' | 'until' | 'by' | 'shepherd'>): WatchResult {
+	const until = input.until ?? DEFAULT_UNTIL
+	const live = store.workflows().find(x => x.kind === 'tracker' && x.state !== 'done' && x.watchFrom === 'owner' && x.lastAsk === `Watch ${input.target} until ${until}`)
+	if (live) return { text: `Already watching ${input.target} as ${live.code}.`, accepted: true, code: live.code }
+	return started(store, { ...input, until, endsAt: input.by ? undefined : weekOut(), from: 'owner' })
 }
 
 export const watchCommand = (store: Store, p: { code?: string; text?: string }): WatchResult => {

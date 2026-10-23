@@ -1,11 +1,13 @@
 import { site } from '../core/site.ts'
 import { spawn, spawnSync } from 'node:child_process'
-import { closeSync, existsSync, openSync, readdirSync, readFileSync } from 'node:fs'
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { NAME } from '../brand.ts'
 import type { Config } from '../core/types.ts'
 import { readRun, type RunUse } from '../core/runinfo.ts'
+import { assertTestSafe } from '../store/fs.ts'
+import { ownRunFiles, promptFolder, pruneRunFiles, removeRunFiles } from './run-files.ts'
 
 export type RunInput = { sessionId: string; prompt: string; cwd: string; mcpConfigPath: string; extraTools: string[]; dirs?: string[] }
 // used: what the run used and where its time went, when the AI CLI said so (R-SET-14).
@@ -16,13 +18,17 @@ const ALWAYS = ['task_complete']
 // Copilot names a tool `view` or `server-tool`; Claude Code names it `Read` or `mcp__server__tool`.
 const CLAUDE_BUILTIN: Record<string, string> = { view: 'Read', glob: 'Glob', grep: 'Grep', edit: 'Edit', create: 'Write', bash: 'Bash', web_fetch: 'WebFetch' }
 
+// A setup the worker can never run with; the message is whole, without the command path.
+export class SetupError extends Error {}
 function claudeTool(t: string): string | undefined {
 	if (t === 'task_complete') return undefined
 	if (CLAUDE_BUILTIN[t]) return CLAUDE_BUILTIN[t]
 	const dash = t.indexOf('-')
 	if (dash > 0) return `mcp__${t.slice(0, dash)}__${t.slice(dash + 1)}`
-	throw new Error(`${NAME} cannot give a Claude worker the tool "${t}": it has no known Claude Code name. Remove it from agent.tools, or use the copilot flavor.`)
+	throw new SetupError(`${NAME} cannot give a Claude worker the tool "${t}": it has no known Claude Code name. Remove it from agent.tools, or use the copilot flavor.`)
 }
+// Checked before a run is counted or started (bug 10-23 E33).
+export function checkAgentTools(cfg: Config['agent']) { if (cfg.flavor === 'claude') for (const t of cfg.tools) claudeTool(t) }
 
 // Claude Code keeps each transcript at <config dir>/projects/<project>/<session-id>.jsonl; --resume finds it in any project.
 export function claudeSessionExists(id: string, home = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')): boolean {
@@ -43,7 +49,7 @@ export function buildArgs(cfg: Config['agent'], i: RunInput, hasSession: (id: st
 			'--tools', named.filter(t => !t.startsWith('mcp__')).join(','), '--allowedTools', named.join(','), '--permission-mode', 'dontAsk',
 			...dirs, '--output-format', 'json', ...(cfg.model ? ['--model', cfg.model] : [])]
 	}
-	return ['-p', i.prompt, '--session-id', i.sessionId, '--allow-all-tools', '--no-ask-user',
+	return ['-p', i.prompt, '--session-id', i.sessionId, '--allow-all-tools', '--no-ask-user', '--disable-builtin-mcps',
 		'--additional-mcp-config', `@${i.mcpConfigPath}`, ...dirs, '--available-tools', ...tools,
 		'--output-format', 'json',
 		...(cfg.model ? ['--model', cfg.model] : []),
@@ -58,30 +64,61 @@ export function sessionLog(flavor: string, id: string): string {
 
 // Continue: the same session, interactive, with every owner tool, opening with an orientation prompt (R-HIL-08, R-HIL-17).
 export function interactiveCommand(cfg: Config['agent'], sessionId: string, prompt: string, mcpConfigPath: string): string[] {
-	if (cfg.flavor === 'claude') return [...cfg.command, '--resume', sessionId, '--mcp-config', mcpConfigPath, prompt]
-	return [...cfg.command, '--session-id', sessionId, '--additional-mcp-config', `@${mcpConfigPath}`, '-i', prompt]
+	const input = filePrompt({ sessionId, prompt, mcpConfigPath, cwd: dirname(mcpConfigPath), extraTools: [] }, cfg.flavor)
+	ownRunFiles(mcpConfigPath, process.pid, true)
+	const dirs = input.dirs!.flatMap(d => ['--add-dir', d])
+	if (cfg.flavor === 'claude') return [...cfg.command, '--resume', sessionId, '--mcp-config', mcpConfigPath, ...dirs, input.prompt]
+	return [...cfg.command, '--session-id', sessionId, '--additional-mcp-config', `@${mcpConfigPath}`, ...dirs, '-i', input.prompt]
+}
+
+function filePrompt(input: RunInput, flavor: Config['agent']['flavor']): RunInput {
+	const parent = dirname(input.mcpConfigPath)
+	assertTestSafe(parent)
+	pruneRunFiles(parent)
+	ownRunFiles(input.mcpConfigPath, process.pid)
+	const dir = promptFolder(input.mcpConfigPath), file = join(dir, 'instructions.md')
+	writeFileSync(file, input.prompt, { encoding: 'utf8', mode: 0o600 })
+	return { ...input, prompt: `Read the complete instructions in ${JSON.stringify(file)} with ${flavor === 'claude' ? 'Read' : 'view'}, then carry out that work.`,
+		dirs: [...new Set([...(input.dirs ?? []), dir])], extraTools: [...input.extraTools, 'view'] }
 }
 
 // A long job runs detached, so the tick never waits for it (R-LNG-02). Output goes to a log beside the session.
 export function startAgent(cfg: Config['agent'], i: RunInput, logPath: string): { pid: number } {
 	const [cmd, ...pre] = cfg.command
-	const args = buildArgs(cfg, i)
-	const fd = openSync(logPath, 'a')
-	const p = spawn(cmd, [...pre, ...args], { cwd: i.cwd, detached: true, windowsHide: true, stdio: ['ignore', fd, fd], env: workerEnv(process.env) })
-	closeSync(fd)
-	// A missing command fails asynchronously; without a listener that error would crash the tick (tester P1-9).
-	p.on('error', () => {})
-	p.unref()
-	if (!p.pid) throw new Error(`Could not start ${cmd}`)
-	return { pid: p.pid }
+	let fd: number | undefined
+	try {
+		const args = buildArgs(cfg, filePrompt(i, cfg.flavor))
+		fd = openSync(logPath, 'a')
+		const p = spawn(cmd, [...pre, ...args], { cwd: i.cwd, detached: true, windowsHide: true, stdio: ['ignore', fd, fd], env: workerEnv(process.env) })
+		p.once('error', error => { console.error(`Could not start ${cmd}:`, error); cleanRunFiles(i.mcpConfigPath) })
+		p.once('close', () => { cleanRunFiles(i.mcpConfigPath) })
+		if (!p.pid) throw new Error(`Could not start ${cmd}`)
+		try { ownRunFiles(i.mcpConfigPath, p.pid) } catch (error) { stopGroup(p.pid, true); throw error }
+		p.unref()
+		return { pid: p.pid }
+	} catch (error) {
+		cleanRunFiles(i.mcpConfigPath)
+		throw error
+	} finally {
+		if (fd !== undefined) closeSync(fd)
+	}
 }
 
+function cleanRunFiles(config: string): string | undefined {
+	try { removeRunFiles(config) } catch (error) {
+		const message = `Could not remove worker run files for ${config}: ${String(error)}`
+		console.error(message)
+		return message
+	}
+}
 
 // A run started from inside an agent session inherits that session's variables and can attach to it
 // (measured: a sign-in check appeared as an owner message). Child runs always get a clean, separate session.
 export function cleanEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 	const out: NodeJS.ProcessEnv = {}
 	for (const [k, v] of Object.entries(env)) {
+		const name = k.toUpperCase()
+		if (['COPILOT_ENABLE_BUILTIN_GITHUB_MCP', 'COPILOT_MCP_APPS', 'COPILOT_CLI_ENABLED_FEATURE_FLAGS'].includes(name) || name.startsWith('COPILOT_EXP_')) continue
 		if (new RegExp(`^(COPILOT|CLAUDE${(site().processNames ?? []).map(n => `|${n.replace(/\W/g, '')}`).join('')})[A-Z_]*SESSION`, 'i').test(k) || ['COPILOT_CLI', 'COPILOT_CLI_RUN_AS_NODE', 'AI_AGENT', 'CLAUDECODE'].includes(k)) continue
 		out[k] = v
 	}
@@ -110,7 +147,14 @@ export function runAgent(cfg: Config['agent'], i: RunInput, timeoutMs = 10 * 60_
 	const t0 = Date.now()
 	return new Promise(resolve => {
 		// Detached, so the run leads its own process group and a timeout stops everything it started.
-		const p = spawn(cmd, [...pre, ...buildArgs(cfg, i)], { cwd: i.cwd, detached: true, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: workerEnv(process.env) })
+		let p: ReturnType<typeof spawn>
+		try {
+			p = spawn(cmd, [...pre, ...buildArgs(cfg, filePrompt(i, cfg.flavor))], { cwd: i.cwd, detached: true, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: workerEnv(process.env) })
+		} catch (error) {
+			const cleanup = cleanRunFiles(i.mcpConfigPath)
+			resolve({ exitCode: -1, ms: Date.now() - t0, error: `${error instanceof SetupError ? `Could not start: ${error.message}` : `Could not start ${cmd}: ${String(error)}`}${cleanup ? `. ${cleanup}` : ''}` })
+			return
+		}
 		let out = '', err = '', done = false, timedOut = false, force: NodeJS.Timeout | undefined
 		if (p.pid) live.add(p.pid)
 		const finish = (r: RunResult) => {
@@ -118,7 +162,9 @@ export function runAgent(cfg: Config['agent'], i: RunInput, timeoutMs = 10 * 60_
 			done = true
 			clearTimeout(timer); clearTimeout(force)
 			if (p.pid) live.delete(p.pid)
-			resolve(timedOut ? { ...r, exitCode: r.exitCode || -1, error: `${cmd} timed out after ${Math.round(timeoutMs / 1000)} s` } : r)
+			const result = timedOut ? { ...r, exitCode: r.exitCode || -1, error: `${cmd} timed out after ${Math.round(timeoutMs / 1000)} s` } : r
+			const cleanup = cleanRunFiles(i.mcpConfigPath)
+			resolve(cleanup ? { ...result, error: `${result.error ? `${result.error}. ` : ''}${cleanup}` } : result)
 		}
 		p.stdout?.on('data', d => { out += d })
 		p.stderr?.on('data', d => { err += d })
@@ -131,6 +177,12 @@ export function runAgent(cfg: Config['agent'], i: RunInput, timeoutMs = 10 * 60_
 			const used = readRun(out, t0, process.env, sessionLog(cfg.flavor, i.sessionId), Date.now()).use
 			finish({ exitCode: code ?? -1, ms: Date.now() - t0, summary: summaryOf(out), error: code !== 0 ? err.slice(-500) || `${cmd} stopped` : undefined, ...(Object.keys(used).length ? { used } : {}) })
 		})
+		if (p.pid) {
+			try { ownRunFiles(i.mcpConfigPath, p.pid) } catch (error) {
+				stopGroup(p.pid, true)
+				finish({ exitCode: -1, ms: Date.now() - t0, error: `Could not record worker file ownership: ${String(error)}` })
+			}
+		}
 	})
 }
 

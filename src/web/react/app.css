@@ -5,16 +5,33 @@
 	--bg: #f6f6f8;
 	--surface: #ffffff;
 	--surface-2: #f2f2f5;
+	--surface-3: #e9e9ee;
 	--border: #e4e4ea;
 	--border-strong: #cfcfd8;
 	--text: #18181b;
 	--text-2: #52525b;
 	--text-3: #6b6b75;
 	--accent: #5b5fc7;
+	--accent-hover: #4f52b2;
+	--accent-text: #4146a8;
 	--accent-soft: #eef0ff;
 	--on-accent: #ffffff;
 	--danger: #c42b3c;
 	--focus: #5b5fc7;
+	--success: #107c41;
+	--success-soft: #e7f4ec;
+	--warn: #9a5700;
+	--warn-soft: #fff3df;
+	--brand-end: #7b5fd0;
+	--logo-check: #5b5fc7;
+	--shadow-1: 0 1px 2px rgba(16,16,24,.05),0 0 0 1px var(--border);
+	--shadow-2: 0 2px 6px rgba(16,16,24,.06),0 12px 32px -12px rgba(16,16,24,.14),0 0 0 1px var(--border);
+	--shadow-3: 0 16px 48px -12px rgba(16,16,24,.28),0 0 0 1px var(--border);
+	--primary-shadow: 0 1px 0 rgba(255,255,255,.15) inset,0 1px 2px rgba(40,40,120,.25);
+	--avs: 68%; --avl: 92%; --afs: 45%; --afl: 30%;
+	--r-sm: 6px; --r-md: 10px; --r-lg: 14px; --r-xl: 18px;
+	--font: "Segoe UI Variable Text","Segoe UI",system-ui,-apple-system,"Helvetica Neue",sans-serif;
+	--mono: ui-monospace,"Cascadia Mono","SF Mono",Menlo,Consolas,monospace;
 }
 
 :root[data-theme="dark"] {
@@ -22,16 +39,27 @@
 	--bg: #0e0e11;
 	--surface: #17171b;
 	--surface-2: #1e1e23;
+	--surface-3: #28282f;
 	--border: #2a2a31;
 	--border-strong: #3a3a44;
 	--text: #ededf0;
 	--text-2: #b3b3bd;
 	--text-3: #8b8b96;
 	--accent: #8f94ff;
+	--accent-hover: #a5a9ff;
+	--accent-text: #afb2ff;
 	--accent-soft: #23244a;
 	--on-accent: #0b0b1a;
 	--danger: #ff7a87;
 	--focus: #a5a9ff;
+	--success: #5cc58a;
+	--success-soft: #132a1d;
+	--warn: #f0a83c;
+	--warn-soft: #2e2210;
+	--shadow-1: 0 0 0 1px var(--border);
+	--shadow-2: 0 0 0 1px var(--border),0 12px 32px -12px rgba(0,0,0,.6);
+	--shadow-3: 0 0 0 1px var(--border-strong),0 20px 50px -10px rgba(0,0,0,.7);
+	--avs: 30%; --avl: 22%; --afs: 75%; --afl: 80%;
 }
 
 @theme inline {
@@ -50,7 +78,7 @@
 }
 
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 "Segoe UI", -apple-system, sans-serif; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 var(--font); -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
 button, select { font: inherit; cursor: pointer; }
 button:disabled, select:disabled { cursor: wait; }
 :focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }

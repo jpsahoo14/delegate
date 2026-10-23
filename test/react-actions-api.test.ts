@@ -116,3 +116,90 @@ test('React actions API: manual Undo crosses the real HTTP gate and is applied b
 		await new Promise<void>(resolve => server.close(() => resolve()))
 	}
 })
+
+test('React actions API: a refused result stays refused after the outcome log rotates', async () => {
+	const root = mkdtempSync(join(tmpdir(), 'delegate-react-durable-refusal-'))
+	const store = seedNext(new Store({ root, machine: 'test' }))
+	const action = reactProjection(store).snapshot.entities.actions['A1/send-edit']
+	const intent: Intent = { submissionId: randomUUID(), action: action.id, item: action.item, rev: action.rev, expect: action.expect, input: { text: 'My exact unsent words' } }
+	submitIntent(store, intent)
+	const workflow = store.byCode('A1')!
+	workflow.draft!.text = 'A changed draft before application'
+	store.save(workflow, false)
+	await applyAnswers(store, stub, store.config(), { start: () => ({ pid: 1 }), alive: () => false, kill: () => true, openWindow: () => {} } as never)
+	for (let index = 0; index < 200; index++) store.addOutcome(`other-action-${index}`, 'Other activity')
+	const result = submissionReceipt(new Store({ root, machine: 'another-machine' }), intent.submissionId)!
+	assert.equal(result.applied, true)
+	assert.equal(result.refused, true)
+	assert.equal(result.uncertain, false)
+	assert.match(result.text, /changed|Changed/)
+	assert.equal(store.byCode('A1')!.sent, undefined)
+	assert.deepEqual(store.answers(), [])
+})
+
+test('React actions API: legacy processed answers with missing detail terminate as uncertainty, never queue or claim success', async () => {
+	const store = seedNext(new Store({ root: mkdtempSync(join(tmpdir(), 'delegate-react-legacy-receipt-')), machine: 'test' }))
+	const answerId = store.writeAnswer({ code: 'A1', verb: 'skip', surface: 'panel' }).id
+	const id = randomUUID()
+	store.savePageSubmission({ id, answerId, ids: [answerId], item: 'A1', rev: '', fingerprint: 'legacy', at: new Date().toISOString(), phase: 'queued', accepted: true, status: 202, text: 'Queued' })
+	await applyAnswers(store, stub, store.config(), { start: () => ({ pid: 1 }), alive: () => false, kill: () => true, openWindow: () => {} } as never)
+	for (let index = 0; index < 200; index++) store.addOutcome(`other-action-${index}`, 'Other activity')
+	const result = submissionReceipt(store, id)!
+	assert.equal(result.applied, true)
+	assert.equal(result.uncertain, true)
+	assert.match(result.text, /detailed result is no longer available/)
+	assert.deepEqual(submissionReceipt(store, id), result)
+	assert.deepEqual(store.answers(), [])
+})
+
+test('React actions API: completion before the enqueue response cannot be overwritten by queued metadata', () => {
+	class FastRunnerStore extends Store {
+		override writeAnswer(answer: Parameters<InstanceType<typeof Store>['writeAnswer']>[0], answerId?: string) {
+			const queued = super.writeAnswer(answer, answerId)
+			const text = 'Refused during concurrent application.'
+			this.addOutcome(queued.id, text, true)
+			this.completePageSubmission(queued, text, true)
+			this.doneAnswer(this.answers().find(entry => entry.answer.id === queued.id)!.file)
+			for (let index = 0; index < 200; index++) this.addOutcome(`other-action-${index}`, 'Other activity')
+			return queued
+		}
+	}
+	const store = seedNext(new FastRunnerStore({ root: mkdtempSync(join(tmpdir(), 'delegate-react-completion-race-')), machine: 'test' }))
+	const action = reactProjection(store).snapshot.entities.actions['A1/send-edit']
+	const intent: Intent = { submissionId: randomUUID(), action: action.id, item: action.item, rev: action.rev, expect: action.expect, input: { text: 'My words' } }
+	const result = submitIntent(store, intent).receipt
+	assert.equal(result.applied, true)
+	assert.equal(result.refused, true)
+	assert.equal(result.uncertain, false)
+	assert.equal(result.text, 'Refused during concurrent application.')
+	assert.deepEqual(submitIntent(store, intent).receipt, result)
+	assert.deepEqual(store.answers(), [])
+	assert.equal(store.byCode('A1')!.sent, undefined)
+})
+
+test('React actions API: lost 409, 410 and 422 refusals stay recoverable and never queue', () => {
+	for (const status of [409, 410, 422]) {
+		const store = seedNext(new Store({ root: mkdtempSync(join(tmpdir(), 'delegate-react-refusal-record-')), machine: 'test' }))
+		const action = reactProjection(store).snapshot.entities.actions['A1/send-edit']
+		const intent: Intent = { submissionId: randomUUID(), action: status === 410 ? 'unknown-action' : action.id, item: action.item, rev: status === 409 ? 'stale' : action.rev, expect: action.expect, input: status === 422 ? {} : { text: 'My words' } }
+		assert.equal(submitIntent(store, intent).status, status)
+		assert.equal(submissionReceipt(store, intent.submissionId)!.refused, true)
+		assert.equal(submitIntent(store, intent).status, status)
+		assert.deepEqual(store.answers(), [])
+	}
+})
+
+test('React actions API: prepared recovery re-resolves the stored intent and refuses a changed action without queuing from GET', () => {
+	const store = seedNext(new Store({ root: mkdtempSync(join(tmpdir(), 'delegate-react-recovery-resolve-')), machine: 'test' }))
+	const action = reactProjection(store).snapshot.entities.actions['A1/send-edit']
+	const intent: Intent = { submissionId: randomUUID(), action: action.id, item: action.item, rev: action.rev, expect: action.expect, input: { text: 'Original words' } }
+	store.savePageSubmission({ id: intent.submissionId, answerId: ulid(), intent, fingerprint: 'fixture', item: intent.item, rev: intent.rev, at: new Date().toISOString(), phase: 'prepared', accepted: false, ids: [], text: 'Preparing', status: 202 })
+	const workflow = store.byCode('A1')!
+	workflow.draft!.text = 'Changed before recovery'
+	store.save(workflow, false)
+	const result = submissionReceipt(store, intent.submissionId)!
+	assert.equal(result.refused, true)
+	assert.match(result.text, /Changed since/)
+	assert.equal(store.pageSubmission(intent.submissionId)!.status, 409)
+	assert.deepEqual(store.answers(), [])
+})

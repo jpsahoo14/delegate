@@ -1,6 +1,6 @@
 import { CMD } from '../brand.ts'
 import { blockerOf } from './retry.ts'
-import { active, addPart, canCloseReport, homeOf, mergeReportWork, settle, step } from './work.ts'
+import { active, addPart, canCloseReport, hasDecisions, homeOf, mergeReportWork, settle, step } from './work.ts'
 import { assertTestSafe } from '../store/fs.ts'
 import { closeFamily } from './apply.ts'
 import { realProcs } from './jobs.ts'
@@ -15,7 +15,7 @@ import { randomUUID } from 'node:crypto'
 import { describe } from './automations.ts'
 import { ulid } from '../core/ids.ts'
 import { MARK, plain, renderNudge, renderPreview } from '../core/render.ts'
-import { runAgent, type RunInput, type RunResult } from '../adapters/agent.ts'
+import { runAgent, sessionLog, checkAgentTools, type RunInput, type RunResult } from '../adapters/agent.ts'
 import type { Source } from '../adapters/source.ts'
 import { here, LOCAL_DIR, type Store } from '../store/state.ts'
 import { buildAskPrompt, buildPrompt } from '../worker/prompt.ts'
@@ -24,9 +24,9 @@ import { levelOf } from '../core/levels.ts'
 import { CLI } from '../paths.ts'
 import { auditSkip, joinInto, say, splitOff } from './intake.ts'
 import { ackJob, afterDraft, ownerActive } from './autosend.ts'
-import { attachJob, carry } from './jobs.ts'
-import { isVote, pendingEffects, refusedAsk, sameChange, vet } from '../core/effects.ts'
-import { probePRs, prTarget, voteNow, type BuildProbe } from './probe.ts'
+import { attachJob, carry, jobForRecheck, recheckJob } from './jobs.ts'
+import { askedVote, asksInvite, isInvite, isVote, pendingEffects, proposalEffects, refusedAsk, sameHead, sameProposal, vet, voteName, voteValue } from '../core/effects.ts'
+import { probePRs, prTarget, sameVote, voteNow, type BuildProbe } from './probe.ts'
 import { checkPromise, failPromise, promisesDue } from './promise.ts'
 import { heldBy } from './owner.ts'
 import { knowledgeOf, resolveEvidence } from './proposals.ts'
@@ -34,7 +34,7 @@ import { inQuietHours } from '../core/policy.ts'
 import { reportFromText } from '../core/report.ts'
 import { scrubDeep } from '../core/secrets.ts'
 import { intents } from '../core/intents.ts'
-import { unsafeRead } from '../core/effects.ts'
+import { unsafeRead, SETUP_REFUSAL } from '../core/effects.ts'
 import { shellInClone, shellTool } from './validate.ts'
 import { toolServers } from '../adapters/mcp-client.ts'
 import { ran } from '../core/runinfo.ts'
@@ -42,6 +42,7 @@ import { ran } from '../core/runinfo.ts'
 export type RunWorker = (cfg: Config['agent'], input: RunInput & { workflowId: string; runId: string }) => Promise<RunResult>
 
 const AUTH = /bad credentials|not logged in|please run \/login|authenticat|unauthori[sz]ed|sign[ -]?in/i
+const CATALOG_CHANGED = /MCP tool catalog changed/i
 
 // Each queued workflow runs once, with all of its new messages together (R-WF-02, R-WF-06).
 export async function dispatch(store: Store, src: Source, cfg: Config, run: RunWorker = runAgent, probe?: BuildProbe): Promise<number> {
@@ -80,22 +81,22 @@ export async function dispatch(store: Store, src: Source, cfg: Config, run: RunW
 	return done
 }
 
-const UNSAFE = /is never a read tool|never runs in your clone with a shell/
 function startFailed(store: Store, wf: Workflow, e: unknown) {
-	const why = String(e).slice(0, 160)
+	const raw = String(e).replace(/^Error: /, '')
+	// A setup refusal is kept whole: its tool name is the fix (bug 10-23 E33).
+	const setup = SETUP_REFUSAL.test(raw), why = setup ? raw : String(e).slice(0, 160)
 	store.log({ event: 'run-failed', workflowId: wf.id, code: wf.code, error: why })
 	const fresh = store.workflow(wf.id)
-	// A tool that must never reach a worker stops the run for the owner at once, a question about the item too (round 2 P2-1, P2-2).
-	if (fresh && UNSAFE.test(why)) {
-		const why2 = why.replace(/^Error: /, '')
+	// A setup the owner must change stops the run for the owner at once, a question about the item too (round 2 P2-1, P2-2).
+	if (fresh && setup) {
+		const why2 = raw.replace(/^Could not start(?: [^\n]*?)?: (?:Error: )?(?=\S)/, '').replace(/^(?:Could not start: )+/, '')
 		Object.assign(fresh, { startFails: undefined, ...(fresh.state === 'running' ? { state: 'needs_human' } : {}), status: `Could not start: ${why2}`, notes: fresh.notes?.map(n => (n.a === undefined ? { ...n, a: `Not asked: ${why2}` } : n)) })
 		store.save(fresh)
 		store.log({ event: 'run-start-refused', workflowId: wf.id, code: wf.code, error: why2 })
 		return
 	}
 	if (!fresh || fresh.state !== 'running') return
-	// A setup error (a tool the AI CLI cannot name) will not pass by trying again.
-	const n = /no known Claude Code name/.test(why) ? 3 : (fresh.startFails ?? 0) + 1
+	const n = (fresh.startFails ?? 0) + 1
 	Object.assign(fresh, n < 3 ? { startFails: n, status: `Could not start the AI run: ${why}. Trying again on the next check.` } : { startFails: undefined, state: 'needs_human', status: `Could not start the AI run 3 times: ${why}. Check the AI CLI with "${CMD} doctor".` })
 	store.save(fresh)
 	store.log({ event: 'run-start-failed', workflowId: wf.id, code: wf.code, n, error: why })
@@ -168,11 +169,12 @@ const lessonFits = (cfg: Config, chat: string | undefined, here: string) => { co
 function refuseStart(cfg: Config, folder?: string) {
 	const unsafe = unsafeRead(cfg.agent.tools, Object.keys(toolServers(cfg)))
 	if (unsafe) throw new Error(unsafe)
+	checkAgentTools(cfg.agent)
 	const shell = folder && shellTool(cfg.agent.tools)
 	if (shell) throw new Error(shellInClone(shell))
 }
 
-async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run: RunWorker, probe?: BuildProbe) {
+async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run: RunWorker, probe?: BuildProbe, catalogRetried = false): Promise<void> {
 	refuseStart(cfg)
 	if (wf.state !== 'running') return runAsk(store, src, cfg, wf, run)
 	await probePRs(store, cfg, probe, Date.now(), true, [wf])
@@ -186,6 +188,7 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 	const prompt = buildPrompt(wf, store.thread(wf.id), cfg, store.root, store.owners(), others, corrections(store.lessons().filter(l => lessonFits(cfg, (l.detail as { chat?: string } | undefined)?.chat, wf.chat.id)), wf), { home: home === wf ? undefined : home, works, parts: home.work?.parts?.map(id => store.workflow(id)).filter((p): p is Workflow => !!p) ?? [] })
 	store.addRun()
 	restoreSession(store, wf.session.id)
+	const logStart = sessionLog(cfg.agent.flavor, wf.session.id).length
 	// Reply runs read other chats only through history_search, which records them (need to know).
 	const res = await run({ ...cfg.agent, tools: cfg.agent.tools.filter(t => !UNTRACKED.test(t)) }, { workflowId: wf.id, runId, sessionId: wf.session.id, prompt, cwd, mcpConfigPath, extraTools: WORKER_TOOLS, dirs: readDirs(store, cfg) })
 	// The CLI never started: no session to keep and no report to read; it counts toward the start tries.
@@ -198,6 +201,17 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 	const report = store.peekReport(wf.id, runId) ?? salvaged
 	store.log({ event: 'worker', ...(salvaged ? { salvaged: true } : {}), workflowId: wf.id, code: wf.code, runId, exitCode: res.exitCode, ms: res.ms, intent: report?.intent, summary: report?.summary, sources: report?.reply?.sources, commitment: report?.reply?.commitment, error: res.error, ...ran('draft', res.used) })
 	const fresh = store.workflow(wf.id) ?? wf
+	if (!report && !catalogRetried && cfg.agent.flavor === 'copilot' && CATALOG_CHANGED.test(sessionLog(cfg.agent.flavor, wf.session.id).slice(logStart))) {
+		if (fresh.state !== 'running' || heldBy(store, fresh) === 'window') return
+		if (store.runsToday() < (cfg.dailyRuns ?? 200)) {
+			const sessionId = randomUUID()
+			store.log({ event: 'worker-catalog-retry', kind: 'draft', workflowId: wf.id, code: wf.code, runId, sessionId: wf.session.id, nextSessionId: sessionId })
+			fresh.session = { ...fresh.session, id: sessionId }
+			store.save(fresh, false)
+			return runOne(store, src, cfg, fresh, run, probe, true)
+		}
+		store.log({ event: 'worker-catalog-retry-blocked', kind: 'draft', workflowId: wf.id, code: wf.code, runId, reason: 'daily-run-limit' })
+	}
 	if (report && (fresh.pending.some(id => !wf.pending.includes(id)) || report.work?.closed && pendingEffects(fresh.effects).length)) {
 		const newer = fresh.pending.some(id => !wf.pending.includes(id))
 		Object.assign(fresh, { state: newer ? 'running' : 'needs_human', approved: undefined, status: newer ? 'New asks arrived during this run. Checking them next.' : 'Earlier changes are still unverified. Review them before closing this work.' })
@@ -210,8 +224,13 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 	if (into && joinInto(store, fresh, store.workflow(into.id) ?? into)) { store.archiveReport(wf.id, runId); return }
 	const auth = !report && AUTH.test(res.error ?? '')
 	store.setHealth('agent-auth', auth ? `The AI CLI is not signed in on ${store.machine}. Run "${cfg.agent.command.join(' ')}" once and sign in.` : undefined)
+	const normal = report && !report.reply && !hasDecisions(report) && (report.job ?? jobForRecheck(store, fresh, report))
+	const forced = report && !normal ? recheckJob(store, fresh) : undefined
+	if (forced && report) { store.log({ event: 'recheck-routed', workflowId: fresh.id, code: fresh.code, key: forced.key, workerIntent: report.intent, hadReply: !!report.reply }); report.intent = 'pr_review' }
+	const job = normal || forced
 	if (!report) Object.assign(fresh, { state: 'needs_human', status: auth ? 'Waiting for the AI CLI sign-in' : 'The worker did not finish', question: auth ? 'Sign in, then answer or skip this item' : 'Check this item, then answer or skip it' })
-	else if (report.job) { fresh.intent = report.intent; const h = family(store, fresh, report); mergeReportWork(fresh, report, h, undefined, false); if (h !== fresh) store.save(h); attachJob(store, cfg, fresh, report.job) }
+	// A routed recheck keeps the reply run's goal and plan, never its claim of having checked: the review job reports what it found.
+	else if (job) { fresh.intent = report.intent; const h = family(store, fresh, report); mergeReportWork(fresh, forced ? { ...report, work: report.work && { ...report.work, step: `Asked to recheck; running the review of ${forced.key}` } } : report, h, undefined, false); if (h !== fresh) store.save(h); attachJob(store, cfg, fresh, job) }
 	else {
 		// The home is read and written in one synchronous step, so a part's run and the home's run never overwrite each other (review part 2 #4).
 		const h = family(store, fresh, report)
@@ -228,31 +247,54 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 		const v = vet(cfg, report.goalMet === false ? [] : report.effects, prTarget(store, fresh))
 		// A vote is read against its PR now, so the card shows what it means and the owner's first ok casts it (bug 10-21 A12).
 		// Anything the read would change (a closed PR, new commits) is left to the check at ok, which says why.
-		const read = v.effects.some(e => isVote(e.call) && !e.pr) ? await voteNow(store, cfg, fresh, v.effects, probe) : undefined
-		const effects = read && !read.why && !read.again && read.effects.length === v.effects.length ? read.effects : v.effects
-		if (v.todos.length && fresh.draft) Object.assign(fresh, { todos: [...new Set([...(fresh.todos ?? []), ...v.todos])], question: fresh.question ?? refusedAsk(fresh.code, v.todos.length) })
-		if (fresh.kind === 'reply' && effects.length && fresh.draft) {
-			const own = fresh.job ? store.job(fresh.job) : undefined
-			// A change already made stays made when a redraft lists it again.
-			const made = [...(own?.result?.effects ?? []), ...(fresh.effects ?? [])].filter(e => e.done)
-			const list = () => effects.map(e => ({ ...e, done: made.find(m => sameChange(m, e))?.done }))
+		const read = v.effects.some(e => isVote(e.call)) ? await voteNow(store, cfg, fresh, v.effects, probe) : undefined
+		const effects = proposalEffects(read && !read.why && !read.again && read.effects.length === v.effects.length ? read.effects : v.effects, [fresh])
+		if (v.todos.length) Object.assign(fresh, { todos: [...new Set([...(fresh.todos ?? []), ...v.todos])],
+			question: fresh.question ?? (fresh.draft ? refusedAsk(fresh.code, v.todos.length) : `These changes need you: ${v.todos.join('; ')}`) })
+		if (fresh.kind === 'reply' && effects.length) {
+			// Only this turn's unfinished proposal can keep a receipt; a live reset invalidates a vote receipt.
+			const made = (fresh.effects ?? []).filter(e => e.done)
+			const list = () => effects.map(e => ({ ...e, done: made.find(m => sameProposal(m, e) &&
+				(!isVote(e.call) || read !== undefined && read.vote !== undefined && sameVote(read.vote, voteValue(e.call)) && sameHead(read.head, e.head)))?.done }))
 			// A redraft replaces the list ok will make, on a carrier or on the item's own work (a PR review), or ok would refuse it as out of date (A48).
 			// Never while a change run is making the approved list, nor on a job another open item still shows its own changes from (review 10-21c P1-1).
 			carry(store, cfg, fresh, list())
-			Object.assign(fresh, { effects: list(), promised: true })
+			Object.assign(fresh, { effects: list(), promised: !!fresh.draft })
+		}
+		else if (fresh.choices) {
+			if (fresh.job) carry(store, cfg, fresh, [])
+			Object.assign(fresh, { effects: undefined, promised: undefined })
 		}
 		else if (fresh.promised) Object.assign(fresh, { effects: undefined, promised: undefined })
+		// An explicit ask to set the owner's vote never ends as a status-only draft: the vote is proposed, the run says why
+		// it fell short, or the owner is asked here (bug 10-23 E28). A vote already in place needs no change.
+		const asked = askedVote(store.thread(wf.id).filter(m => wf.pending.includes(m.id) && !m.byOwner).map(m => m.text).join('\n'))
+		const live = (fresh.prRead ?? wf.prRead) ? JSON.parse((fresh.prRead ?? wf.prRead)!) as [number, string, string, number | null] : undefined
+		if (asked !== undefined && live && /^active$/i.test(live[1]) && typeof live[3] === 'number' && !sameVote(live[3], asked) && report.goalMet !== false && !fresh.question && !fresh.choices && !(h.work?.closed && fresh.state === 'done')
+			&& !pendingEffects(fresh.effects).some(e => isVote(e.call) && voteValue(e.call) === asked)) {
+			Object.assign(fresh, { state: 'needs_human', question: `${fresh.asker?.name ?? 'They'} asked for your ${voteName(asked)} vote on PR ${live[0]}, but this draft proposes no vote. Answer ${fresh.code} to redo it with the vote, or skip it` })
+			store.log({ event: 'vote-ask-unmet', workflowId: fresh.id, code: fresh.code, pr: live[0], asked, live: live[3] })
+		}
+		// An explicit ask to book a meeting or send an invite, which the owner lets Delegate make, never ends with a reply that
+		// only agrees: the invite is proposed (as on the clash path), the run says why not, or the owner is asked (bug 10-23 E16).
+		const askText = store.thread(wf.id).filter(m => wf.pending.includes(m.id) && !m.byOwner).map(m => m.text).join('\n')
+		const invites = (cfg.agent.effectTools ?? []).some(t => /CreateEvent/i.test(t))
+		const offered = pendingEffects(fresh.effects).some(isInvite) || !!fresh.choices?.options.some(o => o.effects?.some(isInvite))
+		if (invites && fresh.draft && asksInvite(askText) && !offered && report.goalMet !== false && !fresh.question && !(h.work?.closed && fresh.state === 'done')) {
+			Object.assign(fresh, { state: 'needs_human', question: `${fresh.asker?.name ?? 'They'} asked you to book it, but this draft sends no invite. Answer ${fresh.code} to redo it with the invite, or skip it` })
+			store.log({ event: 'invite-ask-unmet', workflowId: fresh.id, code: fresh.code })
+		}
 	}
 	if (report?.split?.length) splitOff(store, cfg, fresh, report.split)
 	// A draft that drew on another conversation not everyone here is in waits for the owner (R-SHR-01).
 	// What the run searched stays on the item for Why (queries and counts, never results).
 	fresh.looked = read.searches.length ? read.searches : undefined
-	const drewOn = report && !report.job && fresh.draft ? sourceChats(fresh, knowledgeOf(store, cfg), read.chats) : []
+	const drewOn = report && !job && fresh.draft ? sourceChats(fresh, knowledgeOf(store, cfg), read.chats) : []
 	fresh.drewOn = drewOn.length ? drewOn : undefined
 	fresh.shareHold = drewOn.length ? await sharingHold(store, src, fresh, drewOn) : undefined
-	if (report && !report.job) await afterDraft(store, src, cfg, fresh)
-	if (report && !report.job && fresh.state === 'done' && fresh.closedBy === 'nothing') for (const msgId of wf.pending) auditSkip(store, wf.chat.id, msgId, fresh.fyi ? 'ai-fyi' : 'ai-noise', wf.id)
-	if (report?.job) await ackJob(store, src, cfg, fresh)
+	if (report && !job) await afterDraft(store, src, cfg, fresh)
+	if (report && !job && fresh.state === 'done' && fresh.closedBy === 'nothing') for (const msgId of wf.pending) auditSkip(store, wf.chat.id, msgId, fresh.fyi ? 'ai-fyi' : 'ai-noise', wf.id)
+	if (job) await ackJob(store, src, cfg, fresh)
 	store.save(fresh)
 	store.archiveReport(wf.id, runId)
 	// A missed link the owner asked about always gets an answer, even when there is nothing to track.
@@ -265,18 +307,29 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 	}
 }
 
-async function runAsk(store: Store, src: Source, cfg: Config, wf: Workflow, run: RunWorker) {
+async function runAsk(store: Store, src: Source, cfg: Config, wf: Workflow, run: RunWorker, retrySession?: string): Promise<void> {
 	const runId = ulid()
 	const job = wf.job ? store.job(wf.job) : undefined
-	const session = job?.session.id ?? wf.session.id
+	const session = retrySession ?? job?.session.id ?? wf.session.id
 	refuseStart(cfg, job?.repo)
 	const { cwd, mcpConfigPath } = workerMcp(store, wf.id, runId)
 	store.addRun()
 	restoreSession(store, session)
+	const logStart = sessionLog(cfg.agent.flavor, session).length
 	const res = await run(cfg.agent, { workflowId: wf.id, runId, sessionId: session, prompt: buildAskPrompt(wf, store.thread(wf.id), cfg, store.root), cwd: job?.repo ?? cwd, mcpConfigPath, extraTools: WORKER_TOOLS, dirs: readDirs(store, cfg) })
 	backupSession(store, session)
 	const report = store.peekReport(wf.id, runId)
 	const fresh = store.workflow(wf.id)!
+	if (!report && !retrySession && cfg.agent.flavor === 'copilot' && CATALOG_CHANGED.test(sessionLog(cfg.agent.flavor, session).slice(logStart))) {
+		if (fresh.state === 'running' || heldBy(store, fresh) === 'window' || !fresh.notes?.some(note => note.a === undefined) || fresh.job && store.job(fresh.job)?.state === 'running') return
+		if (store.runsToday() < (cfg.dailyRuns ?? 200)) {
+			const sessionId = randomUUID()
+			takeRead(store.root, runId)
+			store.log({ event: 'worker-catalog-retry', kind: 'ask', workflowId: wf.id, code: wf.code, runId, sessionId: session, nextSessionId: sessionId })
+			return runAsk(store, src, cfg, fresh, run, sessionId)
+		}
+		store.log({ event: 'worker-catalog-retry-blocked', kind: 'ask', workflowId: wf.id, code: wf.code, runId, reason: 'daily-run-limit' })
+	}
 	const note = fresh.notes?.find(n => n.a === undefined)
 	if (note) Object.assign(note, report?.answer ? { a: report.answer, sources: report.reply ? checked(store, cfg, report).reply!.sources : undefined } : { a: `I could not answer that${res.error ? ` (${res.error.slice(0, 80)})` : ''}. Ask again, or open ${fresh.code} on your computer.` })
 	store.save(fresh)
@@ -286,12 +339,16 @@ async function runAsk(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 }
 
 // Card citations are resolved against the knowledge before confidence is computed (R-ANS-02).
+// A question that says there is none ("None.", "N/A") is no question: it would turn the card into one and hide Send (bug 10-23 E11).
+const NO_QUESTION = /^\s*(?:none|n\/?a|no(?:ne)?\s*(?:question|questions)?|nothing|-+|—)\s*[.!]?\s*$/i
 export function checked(store: Store, cfg: Config, r: Report): Report {
-	return r.reply ? { ...r, reply: { ...r.reply, sources: resolveEvidence(knowledgeOf(store, cfg), cfg, r.reply.sources, store.root) } } : r
+	const q = r.question !== undefined && NO_QUESTION.test(r.question) ? { ...r, question: undefined } : r
+	return q.reply ? { ...q, reply: { ...q.reply, sources: resolveEvidence(knowledgeOf(store, cfg), cfg, q.reply.sources, store.root) } } : q
 }
 
 export function applyReport(wf: Workflow, r: Report, home = wf, allowClose = true) {
 	const changedAsk = home === wf && r.work?.changedAsk && wf.pending.includes(r.work.changedAsk) && wf.msgIds.includes(r.work.changedAsk) ? r.work.changedAsk : undefined
+	if (!r.reply) { wf.draft = undefined; wf.learnAfter = undefined }
 	wf.intent = r.intent
 	wf.pending = []
 	const fresh = !home.work
@@ -305,7 +362,7 @@ export function applyReport(wf: Workflow, r: Report, home = wf, allowClose = tru
 	}
 	if (wf.startedBy === 'owner' && !home.work) { Object.assign(wf, { state: 'done', status: wf.missed ? `Nothing to track: ${r.summary || 'it did not start work'}` : r.summary || 'Nothing to track', intent: 'none' }); return }
 	// "Needs me" never quietly closes again: with nothing drafted, the owner is asked what to say (review 10-20).
-	if (wf.needsMe && !home.work && !r.reply && !r.question) { Object.assign(wf, { state: 'needs_human', question: 'You said this needs you. What should I say?', status: r.summary || 'Waiting for what you want to say' }); return }
+	if (wf.needsMe && !home.work && !r.reply && !r.question && !hasDecisions(r)) { Object.assign(wf, { state: 'needs_human', question: 'You said this needs you. What should I say?', status: r.summary || 'Waiting for what you want to say' }); return }
 	if (settle(wf, r, home)) return
 	// Short of the goal: never closed as "no reply needed", never offered as the answer. The owner sees why and what was tried (design-spec/goal-retry.md).
 	if (r.goalMet === false && !home.work) {
@@ -313,12 +370,12 @@ export function applyReport(wf: Workflow, r: Report, home = wf, allowClose = tru
 		Object.assign(wf, { state: 'needs_human', status: `Not finished: ${b.why}${b.tried.length ? `. Tried: ${b.tried.join('; ')}` : ''}`, learnAfter: r.reply ? undefined : wf.learnAfter, draft: r.reply ? { ...r.reply, text: greetBack(wf, r.reply.text), holding: true as const } : undefined, question: r.question, effects: undefined, revAt: new Date().toISOString() })
 		return
 	}
-	if (!home.work && (r.intent === 'none' || r.state === 'done') || !r.reply && !r.question) {
+	if ((!home.work && (r.intent === 'none' || r.state === 'done') || !r.reply && !r.question) && !hasDecisions(r)) {
 		Object.assign(wf, { state: 'done', status: r.summary || 'No reply needed', closedBy: 'nothing', fyi: r.fyi?.line.trim() && !wf.needsMe && (!wf.before || !!r.fyi.watch?.target) ? { line: r.fyi.line.trim(), weight: r.fyi.weight, at: new Date().toISOString(), ...(r.fyi.gist?.trim() ? { gist: r.fyi.gist.trim() } : {}), ...(r.fyi.watch?.target ? { watch: r.fyi.watch } : {}) } : undefined })
 		return
 	}
 	const preview = !!wf.ownerAnswer || !!wf.correction
-	wf.draft = r.reply ? { ...r.reply, text: greetBack(wf, r.reply.text), preview } : wf.draft
+	wf.draft = r.reply ? { ...r.reply, text: greetBack(wf, r.reply.text), preview } : undefined
 	// An edit of the draft this one replaces never went out (R-NEX-11).
 	if (r.reply) wf.learnAfter = undefined
 	wf.revAt = new Date().toISOString()

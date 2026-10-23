@@ -25,7 +25,7 @@ export function parseWatch(body?: string): WatchSpec {
 	return { target, until: u?.[2].trim() || undefined, by, push }
 }
 
-const PART = /^(?:(mine|ok|edit|send|later|dismiss|answer|skip|more|undo|continue|pick|ask|wrong|incomplete|unneeded|every|extend|close|wait|never|nudge|pause|resume|stop)\b\s*)?([A-Z]\d+(?:-[A-Z]?\d+)?)?((?:\s+#?\d+\s*,?)*)\s*(?::\s*([\s\S]*))?$/i
+const PART = /^(?:(mine|ok|edit|send|later|dismiss|answer|skip|more|undo|continue|pick|ask|wrong|incomplete|unneeded|unwatch|every|extend|close|wait|never|nudge|pause|resume|stop)\b\s*)?([A-Z]\d+(?:-[A-Z]?\d+)?)?((?:\s+#?\d+\s*,?)*)\s*(?::\s*([\s\S]*))?$/i
 
 // "pick A3 2" (choose option 2) | "ask A7: question" (ask Delegate, nothing is sent) | "ok A6 #1 #3" (make only those changes).
 // "every A12: 2h" (how often a watch checks) | "extend A12" (7 more days).

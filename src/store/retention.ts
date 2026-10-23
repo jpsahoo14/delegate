@@ -15,7 +15,7 @@ export function sweep(store: Store, days = 30, now = Date.now()): number {
 			redacted: true, fyi: undefined, lastAsk: undefined, question: undefined, ownerAnswer: undefined, learnAfter: undefined, earlier: undefined, approved: undefined,
 			draft: wf.draft && { ...wf.draft, text: '' }, status: wf.status.replace(/: ".*$/s, ''),
 			effects: wf.effects?.map(e => ({ ...e, payload: undefined })),
-			sent: wf.sent && { ...wf.sent, text: undefined },
+			sent: wf.sent && { ...wf.sent, text: undefined, sendText: undefined },
 			// Closed work keeps its goal and why, like a status line; the steps lose their words.
 			work: wf.work && { ...wf.work, steps: wf.work.steps.map(x => ({ at: x.at, what: '' })), next: undefined, waitingOn: undefined },
 		})

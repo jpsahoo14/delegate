@@ -1,6 +1,7 @@
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
+import { randomUUID } from 'node:crypto'
 
 // Under the test runner nothing is written outside the temp folder: on 10-20 a broken test wrote fixture values into the owner's real config.
 const TMP = [tmpdir(), '/tmp', '/private/tmp', '/private/var/folders', '/var/folders'].map(p => resolve(p))
@@ -11,9 +12,13 @@ export function assertTestSafe(path: string): void {
 }
 
 export function readJson<T>(path: string, fallback: T): T {
-	if (!existsSync(path)) return fallback
-	// Windows tools often save UTF-8 with a byte-order mark; JSON.parse rejects it.
-	return JSON.parse(readFileSync(path, 'utf8').replace(/^\uFEFF/, '')) as T
+	try {
+		// Windows tools often save UTF-8 with a byte-order mark; JSON.parse rejects it.
+		return JSON.parse(readFileSync(path, 'utf8').replace(/^\uFEFF/, '')) as T
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === 'ENOENT') return fallback
+		throw error
+	}
 }
 
 // Write a temp file, then rename, so a sync client never uploads half a file.
@@ -24,9 +29,14 @@ export function writeJson(path: string, value: unknown, machine: string): void {
 export function writeText(path: string, text: string, machine: string): void {
 	assertTestSafe(path)
 	mkdirSync(dirname(path), { recursive: true })
-	const tmp = `${path}.tmp-${machine}`
-	writeFileSync(tmp, text)
-	retry(() => renameSync(tmp, path))
+	const tmp = `${path}.tmp-${machine}-${process.pid}-${randomUUID()}`
+	const fd = openSync(tmp, 'wx')
+	try {
+		try { writeFileSync(fd, text) } finally { closeSync(fd) }
+		retry(() => renameSync(tmp, path))
+	} finally {
+		rmSync(tmp, { force: true })
+	}
 }
 
 // On Windows, OneDrive or antivirus can hold a file for a moment, so a rename may fail with EPERM or EBUSY.

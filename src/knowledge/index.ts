@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import type { Audience, Card, CardName, Entry, EntryType, Hit, Proposal, TopicLine } from '../core/types.ts'
 import { writeText } from '../store/fs.ts'
 import { CARDS, editCard, expired, formatLine, hashOf, newCard, parseCard } from './format.ts'
+import { openLink } from '../adapters/channels.ts'
 
 // The one boundary every part of Delegate uses for knowledge. Another store (Basic Memory, a team wiki) implements the same calls.
 export interface Knowledge {
@@ -10,6 +11,7 @@ export interface Knowledge {
 	read(ref: string): Entry | Card[] | undefined
 	topics(): TopicLine[]
 	bySource(link: string): Entry | undefined
+	withdrawSource(link: string): number
 	cardHash(topic: string, card: CardName, home?: 'personal' | 'team'): string
 	apply(p: Proposal): Applied
 	line(topic: string, card: CardName, id: string): string | undefined
@@ -81,6 +83,23 @@ export class FilesKnowledge implements Knowledge {
 
 	bySource(link: string): Entry | undefined {
 		return this.cards().flatMap(c => c.entries).find(e => e.src.some(s => s.link === link))
+	}
+
+	withdrawSource(link: string): number {
+		let removed = 0
+		for (const card of this.cards()) {
+			let text = readFileSync(card.path, 'utf8'), changed = false
+			for (const entry of card.entries) {
+				const src = entry.src.filter(source => openLink(source.link) !== openLink(link))
+				if (src.length === entry.src.length) continue
+				text = editCard(text, src.length ? 'update' : 'retire', src.length ? formatLine({ ...entry, src }) : '', entry.id)
+				changed = true
+				removed++
+			}
+			if (changed) writeText(card.path, text, this.machine)
+		}
+		if (removed) this.writeIndex()
+		return removed
 	}
 
 	private path(topic: string, card: CardName) { return join(this.root, 'topics', topic, `${card}.md`) }
@@ -165,6 +184,7 @@ export class LayeredKnowledge implements Knowledge {
 	read(ref: string) { return this.mine.read(ref) ?? this.team.read(ref) }
 	topics() { const own = this.mine.topics(); return [...own, ...this.team.topics().filter(t => !own.some(o => o.topic === t.topic))] }
 	bySource(link: string) { return this.mine.bySource(link) ?? this.team.bySource(link) }
+	withdrawSource(link: string) { return this.mine.withdrawSource(link) + this.team.withdrawSource(link) }
 	// Each step uses the proposal's destination, so a private fact under a team topic saves to the owner's own folder (review 085 P1-3).
 	cardHash(topic: string, card: CardName, home?: 'personal' | 'team') { return (home === 'personal' ? this.mine : home === 'team' ? this.team : this.at(topic) ?? this.team).cardHash(topic, card) }
 	apply(p: Proposal) { return (p.home === 'personal' ? this.mine : p.home === 'team' ? this.team : this.of(p)).apply(p) }

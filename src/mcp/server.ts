@@ -86,11 +86,17 @@ function registerKnowledgeReads(server: McpServer, get: () => Store) {
 		} catch (e) { return { ...text(`Search failed: ${String(e).slice(0, 200)}`), isError: true } } finally { await h.close() }
 	})
 	server.registerTool('image_read', {
-		description: 'Look at an image pasted into a message. Pass the link from its [image ...] line. Use it whenever the ask may depend on what the image shows.',
-		inputSchema: { link: z.string().describe('The https://graph.microsoft.com/... link from the [image ...] line') },
+		description: 'Look at an image pasted into a message. Pass the link from its [image ...] line. Use it whenever the ask may depend on what the image shows; never describe an image you did not open.',
+		inputSchema: { link: z.string().describe('The link from the [image ...] line: https://graph.microsoft.com/... or inline:<key>') },
 	}, async ({ link }) => {
+		// An image pasted inline into the message was kept in the store at intake (bug 10-23 E17).
+		const inline = /^inline:([0-9a-f]{16,40})$/.exec(link.trim())
+		if (inline) {
+			const m = get().media(inline[1])
+			return m ? { content: [{ type: 'image' as const, data: m.data, mimeType: m.type }] } : { ...text('That inline image was not kept, so it cannot be opened. Say you cannot read it; never guess what it shows.'), isError: true }
+		}
 		const m = imagesFor(get().config())
-		if (!m) return text('This setup cannot open images.')
+		if (!m) return text('This setup cannot open images. Say you cannot read it; never guess what it shows.')
 		try {
 			const r = await m.read(link)
 			return typeof r === 'string' ? { ...text(r), isError: true } : { content: [{ type: 'image' as const, data: r.data, mimeType: r.type }] }
@@ -318,9 +324,9 @@ export function actResult(store: Store, command: string, shownAt?: string, from:
 }
 
 // Typed page intents enter after chat parsing so user text remains one field.
-export function enqueueParsed(store: Store, parsed: Parsed[], shownAt?: string, from: 'chat' | 'page' = 'page', answerId?: string, page?: import('../core/types.ts').PageApproval): { text: string; accepted: boolean; ids: string[] } {
+export function enqueueParsed(store: Store, parsed: Parsed[], shownAt?: string, from: 'chat' | 'page' = 'page', answerId?: string, page?: import('../core/types.ts').PageApproval, pageSubmissionId?: string): { text: string; accepted: boolean; ids: string[] } {
 	if (answerId && parsed.length !== 1) throw new Error('A page submission must target exactly one action.')
-	const write = (answer: Parameters<Store['writeAnswer']>[0]) => store.writeAnswer({ ...answer, ...(page ? { page, ...(page.todoIds ? { todos: page.todoIds } : {}) } : {}) }, answerId)
+	const write = (answer: Parameters<Store['writeAnswer']>[0]) => store.writeAnswer({ ...answer, ...(page ? { page, ...(page.todoIds ? { todos: page.todoIds } : {}) } : {}), ...(pageSubmissionId ? { pageSubmissionId } : {}) }, answerId)
 	let shown = 0
 	const out: string[] = []
 	const ids: string[] = []
@@ -367,7 +373,12 @@ export function enqueueParsed(store: Store, parsed: Parsed[], shownAt?: string, 
 		const marks = p.verb === 'close' && openTodos(wf).length > 0
 		// A rev older than every open to-do came from a button that drew none (a Close on another row): all open, as before.
 		const drawn = marks ? openTodos(wf).filter(t => from !== 'page' || !shownAt || t.at <= shownAt) : [], seen = drawn.length ? drawn : openTodos(wf)
-		if (marks) { ids.push(write({ code: wf.code, verb: p.verb, text: p.text, surface: 'chat', seenAt: shownAt ?? store.seenRev(wf.code), todos: seen.map(t => t.id) }).id); out.push(`${wf.code} will mark ${seen.length === 1 ? 'its to-do' : `its ${seen.length} to-dos`} done. Nothing is sent.`); continue }
+		if (marks) {
+			ids.push(write({ code: wf.code, verb: p.verb, text: p.text, surface: 'chat', seenAt: shownAt ?? store.seenRev(wf.code), todos: seen.map(t => t.id) }).id)
+			const count = page?.todoIds?.length ?? seen.length
+			out.push(`${wf.code} will mark ${count === 1 ? 'its to-do' : `its ${count} to-dos`} done. Nothing is sent.`)
+			continue
+		}
 		if (wf.state === 'done' && !reopenable(wf, p.verb) && !(p.verb === 'mine' && wf.fyi) && !['undo', 'ask', 'wrong', 'incomplete', 'unneeded'].includes(p.verb) && !(p.verb === 'send' && wf.sent)) { out.push(`${wf.code} is already done: ${wf.status}`); shown++; continue }
 		if (p.verb === 'mine' && (wf.state !== 'done' || !wf.fyi)) { out.push(`${wf.code} is not in Catch up, so nothing changed.`); shown++; continue }
 		// Every sent reply can be undone inside its window, as the page offers; the runner says when it has closed (owner 10-21; review react-spec P0-2).
@@ -380,7 +391,7 @@ export function enqueueParsed(store: Store, parsed: Parsed[], shownAt?: string, 
 		// "A7: 2" on an item with options is a pick; say which option.
 		if (p.verb === 'answer' && wf.choices && /^\s*#?\d+(\s*,\s*#?\d+)*\s*$/.test(p.text ?? '')) Object.assign(p, { verb: 'pick', nums: p.text!.match(/\d+/g)!.map(Number) })
 		const opts = p.nums?.map(n => wf.choices?.options[n - 1]?.label).filter(Boolean).join('", "')
-		const what = { mine: 'will be drafted for you. It waits for your ok', pick: opts ? `will use "${opts}" and show the reply first` : 'has no such option', ask: 'will be answered here. Nothing is sent', ok: `${p.nums?.length ? `will make only change${p.nums.length > 1 ? 's' : ''} ${p.nums.join(', ')}, then ` : changes}send the draft: "${wf.draft?.text?.slice(0, 160) ?? ''}"`, edit: `will change the draft to: "${p.text}". Nothing is sent until you say ok`, send: `${changes}send your words: "${p.text}"`, later: 'stays in your inbox for later', answer: 'will redraft with your answer and show a preview', skip: 'will be dismissed without a reply', undo: 'will take back the automatic reply and keep the draft', continue: `will open its session on the computer running ${NAME}`, wrong: 'gets a correction drafted for your ok. Nothing is sent yet', incomplete: 'gets a follow-up with what was missing, drafted for your ok. Nothing is sent yet', unneeded: 'is noted as not needed, and taken back if it still can be', every: 'will check at the new interval', extend: 'keeps watching for 7 more days' }[p.verb as 'ok']
+		const what = { mine: 'will be drafted for you. It waits for your ok', pick: opts ? `will use "${opts}" and show the reply first` : 'has no such option', ask: 'will be answered here. Nothing is sent', ok: `${p.nums?.length ? `will make only change${p.nums.length > 1 ? 's' : ''} ${p.nums.join(', ')}, then ` : changes}send the draft: "${wf.draft?.text?.slice(0, 160) ?? ''}"`, edit: `will change the draft to: "${p.text}". Nothing is sent until you say ok`, send: `${changes}send your words: "${p.text}"`, later: 'stays in your inbox for later', answer: 'will redraft with your answer and show a preview', skip: 'will be dismissed without a reply', unwatch: 'will stop only the check-back; work and to-dos stay open', undo: 'will take back the automatic reply and keep the draft', continue: `will open its session on the computer running ${NAME}`, wrong: 'gets a correction drafted for your ok. Nothing is sent yet', incomplete: 'gets a follow-up with what was missing, drafted for your ok. Nothing is sent yet', unneeded: 'is noted as not needed, and taken back if it still can be', every: 'will check at the new interval', extend: 'keeps watching for 7 more days' }[p.verb as 'ok']
 		out.push(`${wf.code}${ask} ${what}.`)
 	}
 	if (ids.length && !process.env.DELEGATE_NO_KICK) { kickTick(store); out.push(from === 'page' ? 'Applying now.' : 'Applying now. It takes up to a minute, and you will see the result in "inbox".') }

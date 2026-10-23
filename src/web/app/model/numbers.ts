@@ -55,13 +55,13 @@ export type NumbersModel = {
 }
 
 // What each number opens: its rows, in groups when the number adds up kinds.
-export type List = { title: string; groups: { title?: string; codes: string[] }[] }
+export type List = { title: string; groups: { title?: string; codes: string[]; keys?: string[] }[] }
 export function listsOf(d: NumbersPage): Record<string, List> {
 	const w = WHEN[d.window.key], h = d.handled, r = d.now.replies, m = d.now.missed, f = d.four
 	const one = (title: string, codes: string[]): List => ({ title, groups: [{ codes }] })
 	const replies = (x: typeof r): List['groups'] => [{ title: 'As drafted', codes: x.drafted }, { title: 'Edited before sending', codes: x.edited }, { title: 'You typed in Teams', codes: x.teams }]
 	const missed = (x: typeof m): List['groups'] => [{ title: 'You pointed at', codes: x.pointed }, { title: 'Moved to Needs me', codes: x.mine }]
-	return {
+	const lists: Record<string, List> = {
 		handled: one(`Handled for you ${w}`, h.codes),
 		reply: one(`Replies as drafted, handled ${w}`, h.reply),
 		changes: one(`Applied as proposed, handled ${w}`, h.changes),
@@ -84,6 +84,10 @@ export function listsOf(d: NumbersPage): Record<string, List> {
 		corrections: one('Corrected in the last 4 weeks', d.corrections.codes),
 		sends: one('Sent in the last 4 weeks', d.corrections.sent),
 	}
+	for (const [key, groups] of Object.entries(d.sendKeys ?? {})) {
+		if (lists[key]) lists[key].groups.forEach((group, index) => { group.keys = groups[index] })
+	}
+	return lists
 }
 
 function trendOf(d: NumbersPage): NumbersModel['handled']['trend'] {

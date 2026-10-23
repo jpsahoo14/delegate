@@ -13,9 +13,25 @@ export { SKILL_DIR } from '../paths.ts'
 import { SKILL_DIR } from '../paths.ts'
 
 export type WorkContext = { home?: Workflow; works?: Workflow[]; parts?: Workflow[] }
+function inlineFile(root: string, path: string): string {
+	const file = join(root, path)
+	if (!existsSync(file)) return 'none'
+	const bytes = readFileSync(file), truncated = bytes.length > 4096
+	const text = new TextDecoder().decode(bytes.subarray(0, 4096), { stream: truncated })
+	return `${text || 'none'}${truncated ? '\n[truncated after 4096 bytes]' : ''}`
+}
+function ownerFiles(root: string, cfg: Config): string[] {
+	return [
+		'', 'Owner files (included below; no file read needed):',
+		`Profile:\n${inlineFile(root, 'profile.md')}`,
+		`Rules:\n${inlineFile(root, 'rules.md')}`,
+		`Knowledge index:\n${inlineFile(root, 'knowledge/index.md')}`,
+		...(cfg.cards?.team ? [`Team knowledge index: ${existsSync(join(cfg.cards.team, 'index.md')) ? join(cfg.cards.team, 'index.md') : 'none'}`] : []),
+		`Knowledge folders: ${cfg.knowledge?.length ? cfg.knowledge.map(f => resolve(root, f)).join(', ') : 'none'}`,
+	]
+}
 export function buildPrompt(wf: Workflow, thread: Msg[], cfg: Config, root: string, owners: Owner[] = [], others: Workflow[] = [], corrected: string[] = [], ctx: WorkContext = {}): string {
 	const contract = playbook(root, wf.kind)
-	const file = (p: string) => (existsSync(join(root, p)) ? join(root, p) : 'none')
 	const pending = new Set(wf.pending), mine = new Set(wf.msgIds)
 	const mark = (id: string) => (pending.has(id) ? `>> [id:${id}]` : mine.has(id) ? ` * [id:${id}]` : '  ')
 	const lines = thread.slice(-20).map(m => `${mark(m.id)} [${m.at}] ${m.byOwner ? `${cfg.owner.name} (owner)` : m.from.name}: ${m.text}`)
@@ -23,19 +39,19 @@ export function buildPrompt(wf: Workflow, thread: Msg[], cfg: Config, root: stri
 		`You are preparing work for ${cfg.owner.name} (the owner). Workflow ${wf.id}, kind "${wf.kind}".`,
 		'', 'Gates:', gateBlock(wf.kind),
 		'', contract.trim(),
-		'', 'Owner files:',
-		`- profile: ${file('profile.md')}`,
-		`- rules: ${file('rules.md')}`,
-		`- knowledge index: ${file('knowledge/index.md')}`,
-		...(cfg.cards?.team ? [`- team knowledge index: ${existsSync(join(cfg.cards.team, 'index.md')) ? join(cfg.cards.team, 'index.md') : 'none'}`] : []),
-		`- knowledge folders: ${cfg.knowledge?.length ? cfg.knowledge.map(f => resolve(root, f)).join(', ') : 'none'}`,
+		...ownerFiles(root, cfg),
 		...(owners.length ? ['', 'Sessions the owner keeps for kinds of asks. If this ask is one of them, report a job with that owner id:', ...owners.map(o => `- ${o.id}: ${o.what}`)] : []),
 		'', 'Intents (set exactly one):', ...intents(root).map(i => `- ${i.id}: ${i.when}`),
 		'', `Chat: ${wf.chat.name}. Asker: ${[wf.asker, ...(wf.askers ?? [])].filter(Boolean).map(p => p!.name).join(', ') || 'unknown'}.${wf.chat.guests ? ' This chat has guests from outside the organization.' : ''}`,
 		'Thread, oldest first. This item owns only the lines marked >> (new since your last run) and * (earlier). Other lines are context from other topics. Never answer them.',
 		...lines,
 	]
-	if (wf.prRead) parts.push('', `Runner PR evidence [PR id, status, head, owner vote]: ${wf.prRead}. The reply must agree with these facts; a vote of 10 or 5 is approval. Answer any remaining owned questions too.`)
+	if (wf.prRead) parts.push('', `Runner PR evidence [PR id, status, head, owner vote]: ${wf.prRead}. These are the live facts now; they replace any older vote in the steps, Next, plan or earlier replies. The reply must agree with them; a vote of 10 or 5 is approval. These facts are a status read, not a review: never say you rechecked or re-reviewed the PR from them; an ask to recheck or re-review it is a \`job\`. When a >> message asks to set the owner's vote and these facts show it is not that vote yet, propose exactly that vote in \`effects\` (with \`head\` from these facts) and draft the reply for after it succeeds; a reply that only reports the current vote does not answer it. If you will not propose it, report \`goalMet: false\` with why. Answer any remaining owned questions too.`)
+	// Several people's asks in one item: each is answered, none dropped for the newest (bug 10-23 E11).
+	const sentAt = wf.sent?.at ?? ''
+	const open = thread.filter(m => !m.byOwner && (pending.has(m.id) || mine.has(m.id)) && m.at > sentAt)
+	const byAsker = [...new Map(open.map(m => [m.from.id, m.from.name])).entries()]
+	if (byAsker.length > 1) parts.push('', `Several people asked in this item, and none has had a reply yet: ${byAsker.map(([, n]) => n).join(', ')}. The reply names each of them and answers every distinct question they asked (the * lines count as much as the >> ones):`, ...open.map(m => `- ${m.from.name}: "${m.text.slice(0, 200)}"`), 'If you cannot answer someone\'s question yet, say so for them in the reply or ask the owner in `question`; never leave a person out.')
 	if (wf.prUnknown) parts.push('', 'The current PR owner approval could not be verified. Older votes and earlier conversation are historical context, not proof of current approval. Do not claim approval or non-approval; report the verification gap or read a fresh source.')
 	if (others.length) parts.push('', 'Other open items in this chat. If the new message asks for the same thing as one of them, even from someone else, set `same` to its code and leave out reply:', ...others.map(o => `- ${o.code} · ${o.asker?.name ?? 'someone'}: "${(o.lastAsk ?? '').slice(0, 200)}"`))
 	if (wf.kind === 'reply') parts.push('', ...allowed(cfg, 'every action the reply promises goes in `todos`'))
@@ -48,7 +64,7 @@ export function buildPrompt(wf: Workflow, thread: Msg[], cfg: Config, root: stri
 		parts.push('', ctx.home
 			? `This chat (${wf.code}) is part of ${home.code}'s work, which started in ${home.chat.name}. Continue it from its last state; report \`work\` with this run's step, the next step, and the plan. Reply here only to the people in this chat. Set \`work.closed\` only when its done-when holds.`
 			: `This item is open work. Continue it from its last state, report \`work\` with this run's step, the next step, and the plan, and set \`work.closed\` only when its done-when holds.`,
-			`Goal: ${k.goal}`, `Done when: ${k.doneWhen}`, ...(k.next ? [`Next (${k.next.who}): ${k.next.what}`] : []), ...(k.waitingOn ? [`Waiting on: ${k.waitingOn.who}${k.waitingOn.where ? ` in ${k.waitingOn.where}` : ''} since ${k.waitingOn.since.slice(0, 16).replace('T', ' ')}`] : []),
+			`Goal: ${k.goal}`, `Done when: ${k.doneWhen}`, ...(wf.pending.length ? ['Next, Waiting on and the steps below are from before the >> messages; where a >> message or the runner evidence says otherwise, those win.'] : []), ...(k.next ? [`Next (${k.next.who}): ${k.next.what}`] : []), ...(k.waitingOn ? [`Waiting on: ${k.waitingOn.who}${k.waitingOn.where ? ` in ${k.waitingOn.where}` : ''} since ${k.waitingOn.since.slice(0, 16).replace('T', ' ')}`] : []),
 			...(k.links.length ? [`Links: ${k.links.join(', ')}`] : []),
 			...(ctx.parts?.length ? [`Chats in this work: ${home.code} (${home.chat.name}, where it started)${ctx.parts.map(p => `, ${p.code} (${p.chat.group ? p.chat.name : `1:1 with ${p.asker?.name ?? p.chat.name}`})`).join('')}. Use these codes for plan steps' \`in\`.`] : []),
 			...(k.plan?.length ? ['Plan (keep each id; mark done ones):', ...k.plan.map(p => `- [${p.id}] ${p.done ? 'done' : 'todo'} · ${p.who} · ${p.what}${where(p.in)}${p.probe ? ` · build ${p.probe.build}${p.seen ? `: ${p.seen}` : ''}` : ''}`)] : []),
@@ -76,6 +92,7 @@ export function buildAskPrompt(wf: Workflow, thread: Msg[], cfg: Config, root: s
 		`You are helping ${cfg.owner.name} (the owner) decide on item ${wf.code}. Workflow ${wf.id}, kind "ask".`,
 		'', 'Gates:', gateBlock('ask'),
 		'', playbook(root, 'ask').trim(),
+		...ownerFiles(root, cfg),
 		'', `Chat: ${wf.chat.name}. Asker: ${wf.asker?.name ?? 'unknown'}.`,
 		'Thread, oldest first:', ...thread.slice(-20).map(m => `- ${m.byOwner ? `${cfg.owner.name} (owner)` : m.from.name}: ${m.text}`),
 		'', `Current draft reply: ${wf.draft?.text ? `"${wf.draft.text}"` : 'none'}`,
@@ -114,9 +131,8 @@ export function buildJobPrompt(job: Job, cfg: Config, root: string, o: { clone?:
 	if (kind === 'execute') {
 		parts.push('', 'Approved changes, in order:', ...(job.result?.effects ?? []).map((e, i) => e.done || e.off ? '' : `${i}. ${JSON.stringify(e)}`).filter(Boolean))
 	} else {
-		const k = (p: string) => (existsSync(join(root, p)) ? join(root, p) : 'none')
 		if (job.until) parts.push('', `Stop when: ${job.until}`, `Last result: ${job.result?.summary ?? 'none yet'}`)
-		parts.push('', `Goal: ${job.goal}`, `Time: about ${cfg.jobs?.minutes ?? 30} minutes`, `Repo: ${job.repo ?? job.remote ?? 'none'}${!job.repo && job.remote ? (o.clone ? `, cloned at ${o.clone}` : '; no clone on this machine, so read its files through Azure DevOps') : ''}`, `Knowledge folders: ${cfg.knowledge?.map(f => resolve(root, f)).join(', ') || 'none'}. Profile: ${k('profile.md')}.`)
+		parts.push('', `Goal: ${job.goal}`, `Time: about ${cfg.jobs?.minutes ?? 30} minutes`, `Repo: ${job.repo ?? job.remote ?? 'none'}${!job.repo && job.remote ? (o.clone ? `, cloned at ${o.clone}` : '; no clone on this machine, so read its files through Azure DevOps') : ''}`, ...ownerFiles(root, cfg))
 		if (job.asks.length) parts.push('', 'Asks, oldest first:', ...job.asks.map(a => `- ${a}`))
 		if (job.retry) parts.push('', retryNote(job.retry), ...(job.result?.summary ? [`Your earlier result: ${job.result.summary}`] : []))
 		if (kind === 'job' || kind === 'tracker') parts.push('', ...allowed(cfg, 'propose none'))
@@ -151,7 +167,7 @@ function playbook(root: string, kind: string): string {
 function allowed(cfg: Config, none: string): string[] {
 	const e = cfg.agent.effectTools ?? [], d = cfg.deploy?.allowed ?? []
 	const lines = [...e.map(x => `- ${changeLine(x)}`), ...(d.length ? [`- ${changeLine(DEPLOY)}. Only these pipelines, by ID: ${d.map(t => `${t.ring} ${t.pipelineId}${t.project ? ` (${t.project})` : ''}`).join(', ')}`] : [])]
-	return lines.length ? ['Changes a separate run may make after the owner\'s ok, for `effects` (tool, or tool:action):', ...lines] : [`No changes are allowed, so ${none}.`]
+	return lines.length ? ['Changes a separate run may make after the owner\'s ok, for `effects` (tool, or tool:action). For tool:action, call.tool is only the tool name and call.args.action is the action:', ...lines] : [`No changes are allowed, so ${none}.`]
 }
 
 // What a validate job is told that code decides: where it may deploy, and whether it can read telemetry. Its repo and clone are on the Repo line.

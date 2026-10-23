@@ -1,5 +1,28 @@
 "use strict";
 (() => {
+  // src/web/react/domain/time.ts
+  var timeOptions = { hour: "numeric", minute: "2-digit" };
+  var times = /* @__PURE__ */ new Map();
+  function time(date) {
+    const key = `${date.getTime()}|${date.getTimezoneOffset()}|${typeof navigator === "undefined" ? "" : navigator.language}`;
+    const cached2 = times.get(key);
+    if (cached2 !== void 0) return cached2;
+    const value = date.toLocaleTimeString([], timeOptions);
+    if (times.size >= 1024) times.delete(times.keys().next().value);
+    times.set(key, value);
+    return value;
+  }
+  function when(iso) {
+    if (!iso) return "";
+    const date = new Date(iso), day2 = (value) => new Date(value.getFullYear(), value.getMonth(), value.getDate()).getTime();
+    const diff = Math.round((day2(/* @__PURE__ */ new Date()) - day2(date)) / 864e5);
+    if (diff === 0) return time(date);
+    if (diff === 1) return `yesterday ${time(date)}`;
+    if (diff === -1) return `tomorrow ${time(date)}`;
+    if (Math.abs(diff) < 7) return `${date.toLocaleDateString([], { weekday: "short" })} ${time(date)}`;
+    return date.toLocaleDateString([], { month: "short", day: "numeric" });
+  }
+
   // src/web/app/model/format.ts
   var first = (n) => String(n || "Someone").split(" ")[0];
   var plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
@@ -9,17 +32,6 @@
     return [210, 160, 25, 280, 340, 45][h % 6];
   };
   var whoOf = (name) => ({ name, initials: name.split(/\s+/).map((p) => p[0]).filter(Boolean).slice(0, 2).join("").toUpperCase(), hue: hueOf(name) });
-  var time = (d) => d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-  function when(iso) {
-    if (!iso) return "";
-    const d = new Date(iso), day2 = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
-    const diff = Math.round((day2(/* @__PURE__ */ new Date()) - day2(d)) / 864e5);
-    if (diff === 0) return time(d);
-    if (diff === 1) return `yesterday ${time(d)}`;
-    if (diff === -1) return `tomorrow ${time(d)}`;
-    if (Math.abs(diff) < 7) return `${d.toLocaleDateString([], { weekday: "short" })} ${time(d)}`;
-    return d.toLocaleDateString([], { month: "short", day: "numeric" });
-  }
   var clock = (s2) => {
     const [h, m] = s2.split(":").map(Number);
     return time(new Date(2e3, 0, 1, h, m));
@@ -35,6 +47,7 @@
   function doing(verb = "", name) {
     const v = verb.trim();
     if (/^skip\b/i.test(v)) return "Dismissing.";
+    if (/^unwatch\b/i.test(v)) return "Stopping the check-back.";
     if (/^later\b/i.test(v)) return "Moving it to later.";
     if (/^edit\b/i.test(v)) return "Saving your edit.";
     if (/^(ok|send)\b/i.test(v)) return "Sending.";
@@ -59,8 +72,8 @@
     return u.hostname.replace(/^www\./, "");
   }
   var refusalOf = (msg) => /^Before you ok\b/.test(msg) ? { label: "Check this first.", cls: "check" } : { label: "Not done.", cls: "refused" };
-  var typed = /"[^"]*\b[A-Z]\d{1,3}\b[^"]*"/;
-  var forPage = (text2 = "") => text2.replace(/^Before you ok [A-Z]\d{1,3}:/, "Before it goes ahead:").split(/(?<=[.?!])\s+(?=[A-Z])/).filter((s2) => !typed.test(s2)).join(" ").trim();
+  var typed = (sentence2) => /"(?:ok|edit|send|skip|answer|pick|undo|more|close|wait|later|dismiss|continue|ask|wrong|incomplete|unneeded|every|extend|never|nudge|pause|resume|watch)\s+[AKWRH]\d+\b[^"]*"/i.test(sentence2) || /\b(?:say|type|reply(?:\s+with)?)\s*"[AKWRH]\d+\s*:/i.test(sentence2);
+  var forPage = (text2 = "") => text2.replace(/^Before you ok [A-Z]\d{1,3}:/, "Before it goes ahead:").split(/(?<=[.?!])\s+(?=[A-Z])/).filter((s2) => !typed(s2)).join(" ").trim();
 
   // src/web/app/io/transport.ts
   var sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -827,7 +840,8 @@
       return;
     }
     const base = S.route.split("/")[0];
-    history.replaceState(null, "", location.pathname + location.search + (base === "done" || base === "settings" || base === "numbers" ? location.hash : ""));
+    const hash = to === "react" && env.ui === "classic" ? `#classic/${location.hash.slice(1).replace(/^classic\//, "") || "home"}` : location.hash;
+    history.replaceState(null, "", location.pathname + location.search + (to === "react" || base === "done" || base === "settings" || base === "numbers" ? hash : ""));
     location.reload();
   }
   function closeNote() {
@@ -869,7 +883,7 @@
     const one = (title, codes) => ({ title, groups: [{ codes }] });
     const replies = (x) => [{ title: "As drafted", codes: x.drafted }, { title: "Edited before sending", codes: x.edited }, { title: "You typed in Teams", codes: x.teams }];
     const missed2 = (x) => [{ title: "You pointed at", codes: x.pointed }, { title: "Moved to Needs me", codes: x.mine }];
-    return {
+    const lists = {
       handled: one(`Handled for you ${w}`, h.codes),
       reply: one(`Replies as drafted, handled ${w}`, h.reply),
       changes: one(`Applied as proposed, handled ${w}`, h.changes),
@@ -892,6 +906,12 @@
       corrections: one("Corrected in the last 4 weeks", d.corrections.codes),
       sends: one("Sent in the last 4 weeks", d.corrections.sent)
     };
+    for (const [key, groups] of Object.entries(d.sendKeys ?? {})) {
+      if (lists[key]) lists[key].groups.forEach((group, index) => {
+        group.keys = groups[index];
+      });
+    }
+    return lists;
   }
   function trendOf(d) {
     const h = d.handled, prior = PRIOR[d.window.key];
@@ -2173,10 +2193,10 @@
 	</section>`;
   }
   function rows(d, codes) {
-    const times = /* @__PURE__ */ new Map();
-    for (const c of codes) times.set(c, (times.get(c) ?? 0) + 1);
+    const times2 = /* @__PURE__ */ new Map();
+    for (const c of codes) times2.set(c, (times2.get(c) ?? 0) + 1);
     const one = (c) => {
-      const r = d.rows[c], x = d.missed[c], n = times.get(c);
+      const r = d.rows[c], x = d.missed[c], n = times2.get(c);
       const more = n > 1 ? html`<span class="m">Counted ${n} times: once for each send.</span>` : "";
       if (r) {
         const h = String(row(r)), coded = h.startsWith("<li data-code") ? h : h.replace(/^<li/, `<li data-code="${String(esc(c))}"`);
@@ -2185,13 +2205,13 @@
       if (c.startsWith("missed:")) return html`<li class="row" data-code="${esc(c)}"><span class="ri">${I("eye")}</span><div class="rt"><b>You pointed at this message. No item was made for it.</b><span class="m">${esc(x ? when(x.at) : "")}${x?.teams && !env.snap ? html` · <a class="ext-in" href="${esc(x.teams)}" target="_blank" rel="noopener">Open in Teams↗</a>` : ""}</span>${more}</div></li>`;
       return html`<li class="row" data-code="${esc(c)}"><span class="ri">${I("check")}</span><div class="rt"><b>${esc(c)} is no longer on file</b><span class="m">Its line in the log still counts.</span>${more}</div></li>`;
     };
-    return html`<ul class="rows">${[...times.keys()].map(one)}</ul>`;
+    return html`<ul class="rows">${[...times2.keys()].map(one)}</ul>`;
   }
   function list(d, key, l) {
     const back = html`<a class="num-back" href="#numbers">${I("left", "sm")}<span>All numbers</span></a>`;
     if (!l) return html`${back}<p class="empty">That list is not on this tab.</p>`;
     const all = l.groups.flatMap((g) => g.codes), shown = l.groups.filter((g) => g.codes.length);
-    const body6 = !all.length ? html`<p class="empty">Nothing counted here ${esc(WINDOW_LABEL[d.window.key].toLowerCase())}.</p>` : l.groups.length > 1 ? join(shown.map((g) => html`<h3 class="section-h">${esc(g.title ?? "")} · ${g.codes.length}</h3>${rows(d, g.codes)}`), "") : rows(d, all);
+    const body6 = !all.length ? html`<p class="empty">Nothing counted here ${esc(WINDOW_LABEL[d.window.key].toLowerCase())}.</p>` : l.groups.length > 1 ? join(shown.map((g) => html`<h3 class="section-h">${esc(g.title ?? "")} · ${g.codes.length}</h3>${rows(d, g.keys ?? g.codes)}`), "") : rows(d, l.groups.flatMap((group) => group.keys ?? group.codes));
     return html`${back}<h2 class="num-list-h" id="num-list" tabindex="-1" data-list="${esc(key)}">${esc(l.title)} <span class="tnum">${all.length}</span></h2>${body6}`;
   }
   function numbersView() {

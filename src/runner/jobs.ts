@@ -1,8 +1,9 @@
 import { planRetry, retryStatus } from './retry.ts'
-import { active, afterSend, canCloseApproval, canCloseReport, homeOf, mergeReportWork, pendingParts, step, watchNews } from './work.ts'
+import { active, afterSend, canCloseApproval, canCloseReport, hasDecisions, homeOf, mergeReportWork, newTurn, pendingParts, reReviewAsk, step, watchNews } from './work.ts'
 import { confidence } from '../core/policy.ts'
+import { PAGE_REPLY_CHANGED } from '../core/page-approval.ts'
 import { uptime } from 'node:os'
-import { allows, changeName, changeSays, isVote, unsafeRead, pendingEffects, refusal, refusedAsk, reviewAgain, carryMarks, shown, vet, voteValue } from '../core/effects.ts'
+import { allows, changeName, changeSays, isVote, unsafeRead, pendingEffects, proposalEffects, refusal, refusedAsk, reviewAgain, carryMarks, shown, vet, voteValue, SETUP_REFUSAL } from '../core/effects.ts'
 import { prOf, prTarget, type BuildProbe } from './probe.ts'
 import { cloneFor, cloneTodo, repoRef } from './repos.ts'
 import { deployed, deployRunning, findingNotBlocker, isValidate, proposeTargets, shellInClone, shellTool, telemetryNote, telemetryTools } from './validate.ts'
@@ -26,6 +27,7 @@ import { buildJobPrompt } from '../worker/prompt.ts'
 import { checked, WORKER_SERVER, WORKER_TOOLS, workerMcp, readDirs } from './dispatch.ts'
 import { isBootstrap, YOURS, type BootSource } from './bootstrap.ts'
 import { knowledgeOf, propose } from './proposals.ts'
+import { learnedClaims } from './learn.ts'
 import { closeFamily, send } from './apply.ts'
 import { reopenPromise, rest } from './promise.ts'
 import { forkSession, ownerFor, sessionBytes, backupSession, restoreSession } from './own.ts'
@@ -35,6 +37,7 @@ import { hashOf } from '../knowledge/format.ts'
 import { findSession, sendToSession } from '../mesh/route.ts'
 import { addr, MAX_TEXT, readReceipt, settle, TTL_MS } from '../mesh/inbox.mjs'
 import { clearCalling, maybeOf } from './ledger.ts'
+import { removeRunFiles } from '../adapters/run-files.ts'
 
 export type Procs = {
 	start: (cfg: Config['agent'], i: RunInput & { workflowId: string; runId: string }) => { pid: number }
@@ -62,6 +65,35 @@ export function canonicalKey(key: string): string {
 	return pr ? `pr:${pr[1]}/${pr[2]}` : k
 }
 
+// An explicit ask to recheck or re-review a PR, or to approve it if ready, runs that PR's review job, whatever intent or reply the
+// reply run gave (bug 10-23 E36: a status-only draft claimed a recheck no review job made). "Do not re-review" asks for none.
+const RECHECK = /\b(?:re[ -]?check(?:ed|ing)?|re[ -]?review(?:ed|ing)?|review (?:it |this |the PR )?again|check (?:it )?again)\b|\bif (?:it(?:'s| is) )?ready\b[^.?!]*\bapprov|\bapprov\w*\b[^.?!]*\bif (?:it(?:'s| is) )?ready\b/i
+export const asksRecheck = (text: string) => text.split(/(?<=[.!?;])\s+|\n+/).some(s => {
+	const m = RECHECK.exec(s)
+	return !!m && !/\b(?:do not|don't|dont|without|no need to|not|never)\b/i.test(s.slice(0, m.index))
+})
+export function recheckJob(store: Store, wf: Workflow): Report['job'] {
+	const asks = store.thread(wf.id).filter(m => wf.pending.includes(m.id)).map(m => m.text).join('\n')
+	if (!asks || !asksRecheck(asks)) return undefined
+	const ref = prOf(store, wf)
+	if (!ref) return undefined
+	const key = canonicalKey(`pr:${ref.remote ? ref.remote.split('/')[1] : ref.project}/${ref.id}`)
+	const job = store.jobs().find(j => canonicalKey(j.key) === key && (j.parents.includes(wf.id) || j.intent === 'pr_review'))
+	// A change run making approved changes is left to finish; its item takes the new ask after it.
+	if (job && executing(job)) return undefined
+	return { key: job?.key ?? key, goal: wf.lastAsk ?? job?.goal ?? `Recheck PR ${ref.id}` }
+}
+
+export function jobForRecheck(store: Store, wf: Workflow, report: Report): Report['job'] {
+	if (report.reply || hasDecisions(report) || report.intent !== 'pr_review' || !wf.pending.length || !reReviewAsk(wf.lastAsk ?? '')) return undefined
+	const ref = prOf(store, wf)
+	if (!ref?.remote) return undefined
+	const key = canonicalKey(`pr:${ref.remote.split('/')[1]}/${ref.id}`)
+	const job = store.jobs().find(j => j.parents.includes(wf.id) && canonicalKey(j.key) === key)
+	if (!job || job.intent !== 'pr_review' || job.state !== 'done' && job.state !== 'failed') return undefined
+	return { key: job.key, goal: wf.lastAsk ?? job.goal, branch: job.branch }
+}
+
 // A reply worker found real work. The same key always reaches the same job and session (R-LNG-01, R-WF-11).
 export function attachJob(store: Store, cfg: Config, wf: Workflow, raw: NonNullable<Report['job']>) {
 	const now = new Date().toISOString()
@@ -82,7 +114,13 @@ export function attachJob(store: Store, cfg: Config, wf: Workflow, raw: NonNulla
 	if (!job.parents.includes(wf.id)) job.parents.push(wf.id)
 	job.asks.push(`${wf.asker?.name ?? 'Someone'}: ${wf.lastAsk ?? want.goal}`)
 	store.saveJob(job)
-	Object.assign(wf, { job: job.id, state: 'waiting_on_task', status: `Working: ${want.goal}${job.label ? ` (${job.label})` : ''}`, waitingSince: now, pending: [], question: undefined, approved: undefined })
+	// A fresh review supersedes the old turn, not unresolved non-vote writes.
+	if (wf.intent === 'pr_review' && wf.pending.length && reReviewAsk(wf.lastAsk ?? '') && !executing(job)) {
+		const effects = wf.effects?.filter(e => !isVote(e.call))
+		newTurn(wf)
+		wf.effects = effects
+	}
+	Object.assign(wf, { job: job.id, state: 'waiting_on_task', status: `Working: ${want.goal}${job.label ? ` (${job.label})` : ''}`, waitingSince: now, pending: [], question: undefined, draft: undefined, learnAfter: undefined, approved: undefined })
 	// Other people's words reach the owner's own session, which has the owner's tools, only after the owner's ok (review 10-19 #5).
 	// People the owner already lets the assistant answer by itself are trusted to reach the owner's own session too,
 	// unless the chat has guests; anyone else waits for ok (owner, 10-20: relay should be automatic where it can be).
@@ -174,7 +212,9 @@ export function startJobs(store: Store, cfg: Config, procs: Procs, hold: string[
 			room--
 		} catch (e) {
 			// A run we cannot track must not keep running.
-			if (pid) procs.kill(pid)
+			if (!pid || procs.kill(pid)) {
+				try { removeRunFiles(mcpConfigPath) } catch (error) { store.log({ event: 'worker-files-cleanup-failed', runId, error: String(error).slice(0, 300) }); store.setHealth(`worker-files:${runId}`, `Could not remove files for failed worker ${runId}: ${String(error).slice(0, 160)}`) }
+			}
 			failOrRetry(store, job, `Could not start: ${String(e).slice(0, 120)}`)
 		}
 	}
@@ -203,6 +243,7 @@ export async function checkJobs(store: Store, src: Source, cfg: Config, procs: P
 		}
 		if (rebooted && !r && run.purpose === 'work') {
 			const used = readUse(store, job)
+			cleanJobFiles(store, run)
 			Object.assign(job, { state: 'queued', run: undefined })
 			store.saveJob(job)
 			store.log({ event: 'job-resumed-after-restart', job: job.id, key: job.key, ...used })
@@ -221,7 +262,7 @@ export async function checkJobs(store: Store, src: Source, cfg: Config, procs: P
 		ended.set(job.id, readUse(store, job))
 		try {
 			if (r) {
-				if (run.purpose === 'execute') await finishExecute(store, src, cfg, job, probe)
+				if (run.purpose === 'execute') await finishExecute(store, src, cfg, job, procs, probe)
 				else finishWork(store, job, r, run.asks)
 				store.archiveReport(job.id, run.id)
 				n++
@@ -233,12 +274,25 @@ export async function checkJobs(store: Store, src: Source, cfg: Config, procs: P
 			} else if (over) fail(store, job, `Stopped after ${run.wrapUp ? minutes + WRAP_UP_MINUTES : minutes} minutes, its time budget`)
 			else if (!live) failOrRetry(store, job, 'It stopped without a result')
 		} finally {
+			if (!live || over) cleanJobFiles(store, run)
 			// An end that logs nothing of its own (asks came in during the run, so it runs again) still records what the run used.
 			const left = usedBy(job)
 			if (Object.keys(left).length) store.log({ event: 'job-run', job: job.id, key: job.key, ...left })
 		}
 	}
 	return n
+}
+
+function cleanJobFiles(store: Store, run: NonNullable<Job['run']>) {
+	if (run.relay || run.machine !== store.machine) return
+	try {
+		removeRunFiles(join(LOCAL_DIR, 'sessions', `mcp-${run.id}.json`))
+		store.setHealth(`worker-files:${run.id}`)
+	} catch (error) {
+		const text = `Could not remove files for ended worker ${run.id}: ${String(error).slice(0, 160)}`
+		store.log({ event: 'worker-files-cleanup-failed', runId: run.id, error: String(error).slice(0, 300) })
+		store.setHealth(`worker-files:${run.id}`, text)
+	}
 }
 
 // What each run that ended here used, read once from its log, for the event that ends it (R-SET-14).
@@ -271,7 +325,7 @@ export function finishWork(store: Store, job: Job, r: Report, asksAtStart: numbe
 	// A deploy while our last one is still running waits: one change at a time, never stacked on a ring (owned work).
 	const busy = parents.map(w => deployRunning(homeOf(store, w))).find(Boolean)
 	if (busy) for (const e of v.effects.filter(e => isDeploy(e.call))) v.todos.push(`${e.summary.replace(/[.\s]+$/, '')}. Not made for you: ${busy}`)
-	const effects = v.effects.filter(e => !busy || !isDeploy(e.call)).map(e => ({ ...e, done: undefined, error: undefined }))
+	const effects = proposalEffects(v.effects.filter(e => !busy || !isDeploy(e.call)).map(e => ({ ...e, done: undefined, error: undefined })), parents)
 	const again = job.asks.length > asksAtStart
 	// A failure of the system under test is a finding in the report, not a blocker (owned work).
 	const finding = findingNotBlocker(job, r)
@@ -298,7 +352,7 @@ export function finishWork(store: Store, job: Job, r: Report, asksAtStart: numbe
 		if (wf.sent) reopenPromise(store, wf)
 		// Rules never send a review's or an investigation's result; the card says so, so the owner is not left guessing (dogfood 10-20, A34).
 		const decision = r.reply ? { action: 'draft', reason: 'A review or investigation result always waits for you', confidence: confidence(r.reply.sources ?? []) } : wf.decision
-		Object.assign(wf, { state: nothing ? (wf.work || wf.partOf ? 'open' : 'done') : 'needs_human', closedBy: nothing && !(wf.work || wf.partOf) ? 'job' : undefined, learnAfter: r.reply ? undefined : wf.learnAfter, status: nothing ? `Nothing needed: ${r.summary}` : r.summary, question: r.question, draft: r.reply ? { ...r.reply } : nothing ? undefined : wf.draft, effects, decision, waitingSince: undefined, approved: undefined, newCount: 0, revAt: new Date().toISOString(), ...(r.context ? { context: r.context } : {}) })
+		Object.assign(wf, { state: nothing ? (wf.work || wf.partOf ? 'open' : 'done') : 'needs_human', closedBy: nothing && !(wf.work || wf.partOf) ? 'job' : undefined, learnAfter: undefined, status: nothing ? `Nothing needed: ${r.summary}` : r.summary, question: r.question, draft: r.reply ? { ...r.reply } : undefined, effects, decision, waitingSince: undefined, approved: undefined, newCount: 0, revAt: new Date().toISOString(), ...(r.context ? { context: r.context } : {}) })
 		// A change refused before and allowed now loses its old refusal (dry run 10-21: the deploy list was confirmed in between).
 		const allowedNow = (t: string) => effects.some(e => t.startsWith(`${e.summary.replace(/[.\s]+$/, '')}. Not made for you: `))
 		if (wf.todos?.some(allowedNow)) wf.todos = wf.todos.filter(t => !allowedNow(t))
@@ -317,7 +371,7 @@ export function finishWork(store: Store, job: Job, r: Report, asksAtStart: numbe
 		store.save(wf)
 	}
 	// Asks that arrived during the run get one more run in the same session.
-	Object.assign(job, { result: { summary: r.summary, reply: r.reply ? { ...r.reply } : undefined, effects }, state: again ? 'queued' : 'done', purpose: 'work', run: undefined })
+	Object.assign(job, { result: { summary: r.summary, reply: r.reply ? { ...r.reply } : undefined, effects, at: new Date().toISOString() }, state: again ? 'queued' : 'done', purpose: 'work', run: undefined })
 	store.saveJob(job)
 	if (!again) store.log({ event: 'job-done', job: job.id, key: job.key, summary: r.summary, effects: effects.length, ...usedBy(job) })
 }
@@ -361,7 +415,7 @@ export function settleCompleted(store: Store, procs: Procs = realProcs) {
 }
 
 // The approved changes ran. The reply goes out only to items whose ok still matches what they approved.
-async function finishExecute(store: Store, src: Source, cfg: Config, job: Job, probe?: BuildProbe) {
+async function finishExecute(store: Store, src: Source, cfg: Config, job: Job, procs: Procs, probe?: BuildProbe) {
 	// A change counts as made only when make_change recorded it, never because the run says so (next action).
 	const effects = foldChanges(store, job)
 	// A vote refused because the PR changed since the review: the owner reviews again; nothing is sent (review 10-21 P1-3).
@@ -378,6 +432,7 @@ async function finishExecute(store: Store, src: Source, cfg: Config, job: Job, p
 	store.log({ event: 'job-executed', job: job.id, items: parents.map(w => w.code), kept: effects.filter(e => !e.off).length, removed: effects.filter(e => e.off).length, done: effects.length - left.length, left: left.length, ...usedBy(job) })
 	for (const wf of parents) {
 		const ok = stillApproved(wf, before)
+		const replyDigest = wf.approved?.replyDigest
 		// An item whose list was not the one made keeps its own, with what was made marked (review 10-21c P1-1).
 		wf.effects = ok ? effects : wf.effects && carryMarks(wf.effects, effects)
 		if (vote !== undefined) wf.prVote = vote
@@ -421,11 +476,19 @@ async function finishExecute(store: Store, src: Source, cfg: Config, job: Job, p
 			store.save(wf)
 			continue
 		}
+		if (!wf.draft?.text && !wf.question) {
+			const home = homeOf(store, wf), closed = wf.closeWorkAfterSend
+			wf.closeWorkAfterSend = undefined
+			if (closed && canCloseReport(store, home, wf)) closeFamily(store, procs, home, closed)
+			else rest(store, wf, `Made: ${effects.filter(e => e.done).map(changeText).join('; ')}`)
+			store.save(wf)
+			continue
+		}
 		Object.assign(wf, { state: 'needs_human', waitingSince: undefined })
 		store.save(wf)
 		try {
-			const sent = await send(store, src, cfg, wf, wf.draft?.text, {}, probe)
-			if (!sent && wf.state === 'needs_human') wf.status = `Changes made. The reply was not sent. Reply "ok ${wf.code}" to send it`
+			const sent = await send(store, src, cfg, wf, wf.draft?.text, { replyDigest }, probe)
+			if (!sent && wf.state === 'needs_human' && wf.status !== PAGE_REPLY_CHANGED) wf.status = `Changes made. The reply was not sent. Reply "ok ${wf.code}" to send it`
 		} catch (e) {
 			wf.status = `Changes made. Could not send the reply: ${String(e).slice(0, 100)}. Reply "ok ${wf.code}" to retry`
 		}
@@ -465,7 +528,7 @@ function adoptList(store: Store, job: Job) {
 // A picked option that makes changes, on an item with no job: a job that only carries them, so ok runs the same executor (design-spec S5).
 export function changesJob(store: Store, cfg: Config, wf: Workflow, effects: Effect[]) {
 	const now = new Date().toISOString()
-	const job: Job = { schema: 1, id: ulid(), key: `item:${wf.id}`, goal: 'Make the chosen changes', intent: wf.intent, session: { agent: cfg.agent.flavor, id: randomUUID() }, state: 'done', purpose: 'work', parents: [wf.id], asks: [], result: { summary: 'Chosen by the owner', effects }, createdAt: now, updatedAt: now }
+	const job: Job = { schema: 1, id: ulid(), key: `item:${wf.id}`, goal: 'Make the chosen changes', intent: wf.intent, session: { agent: cfg.agent.flavor, id: randomUUID() }, state: 'done', purpose: 'work', parents: [wf.id], asks: [], result: { summary: 'Chosen by the owner', reply: wf.draft, effects, at: now }, createdAt: now, updatedAt: now }
 	store.saveJob(job)
 	wf.job = job.id
 }
@@ -478,7 +541,12 @@ export function carry(store: Store, cfg: Config, wf: Workflow, effects: Effect[]
 	if (!own) { changesJob(store, cfg, wf, effects); return undefined }
 	if (executing(own)) return 'busy'
 	if (parentsOf(store, own).some(p => p.id !== wf.id && pendingEffects(p.effects).length)) return 'shared'
-	own.result = { ...own.result, summary: own.result?.summary ?? 'Chosen by the owner', effects }
+	if (own.purpose === 'work' && own.state === 'queued' && !own.every) {
+		// A complete answer replaces queued work, but not another item's review.
+		if (parentsOf(store, own).some(p => p.id !== wf.id)) { changesJob(store, cfg, wf, effects); return undefined }
+		Object.assign(own, { state: 'done', retry: undefined, nextAt: undefined, wrapUp: undefined, error: undefined })
+	}
+	own.result = { ...own.result, summary: own.result?.summary ?? 'Chosen by the owner', reply: wf.draft, effects, at: new Date().toISOString() }
 	store.saveJob(own)
 	return undefined
 }
@@ -487,7 +555,12 @@ export function carry(store: Store, cfg: Config, wf: Workflow, effects: Effect[]
 // The Settings switch that allows a call, by its label: its action's ("PR vote"), else its tool's, else the tool's name.
 const switchOf = (c: Call) => { const one = `${c.tool}:${String(c.args.action ?? '')}`; return changeName(one) !== one ? changeName(one) : changeName(c.tool) }
 export function approveEffects(store: Store, cfg: Config, wf: Workflow, again = false): string | undefined {
-	const job = wf.job ? store.job(wf.job) : undefined
+	let job = wf.job ? store.job(wf.job) : undefined
+	// Recover an already-saved reply proposal whose carrier was left queued as work.
+	if (job?.state === 'queued' && job.purpose === 'work' && !job.every && wf.state === 'needs_human' && wf.promised && wf.draft && !wf.pending.length && pendingEffects(wf.effects).length && keyOf(job.result?.effects) === effectsKey(wf)) {
+		carry(store, cfg, wf, wf.effects ?? [])
+		job = wf.job ? store.job(wf.job) : undefined
+	}
 	// No change run and no new result under way: the list the open items agree on is the one ok makes (review 10-21d P2-1).
 	if (job && !executing(job) && !(job.purpose === 'work' && (job.state === 'running' || job.state === 'queued'))) { store.save(wf); adoptList(store, job); store.saveJob(job); wf.effects = store.workflow(wf.id)?.effects ?? wf.effects }
 	const left = pendingEffects(wf.effects)
@@ -549,10 +622,50 @@ export function stopTracker(store: Store, procs: Procs, wf: Workflow) {
 	Object.assign(job, { every: undefined, nextAt: undefined })
 	if (job.state === 'running' && job.run && job.run.purpose === 'work') {
 		if (!procs.kill(job.run.pid)) { store.saveJob(job); store.setHealth(`job:${job.id}`, `Could not stop the check for ${job.key} (process ${job.run.pid}). Stop it by hand.`); return }
+		cleanJobFiles(store, job.run)
 		Object.assign(job, { state: 'done', run: undefined })
 	}
 	if (job.state === 'queued') job.state = 'done'
 	store.saveJob(job)
+}
+
+export function cancelRetry(store: Store, procs: Procs, wf: Workflow): string | undefined {
+	const job = wf.job ? store.job(wf.job) : undefined
+	if (!job?.retry || job.purpose !== 'work' || !['queued', 'running'].includes(job.state) || parentsOf(store, job).some(parent => parent.id !== wf.id)) return
+	if (job.state === 'running' && job.run) {
+		if (!procs.kill(job.run.pid)) {
+			const text = `Could not stop the retry for ${wf.code}. Stop process ${job.run.pid} by hand before dismissing it.`
+			store.setHealth(`job:${job.id}`, text)
+			return text
+		}
+		cleanJobFiles(store, job.run)
+	}
+	Object.assign(job, { state: 'done', run: undefined, retry: undefined, nextAt: undefined, wrapUp: undefined })
+	store.saveJob(job)
+	store.log({ event: 'job-retry-cancelled', job: job.id, code: wf.code })
+}
+
+export function stopPromisedWatch(store: Store, procs: Procs, wf: Workflow): string | undefined {
+	const home = homeOf(store, wf), job = home.work?.watch ? store.job(home.work.watch) : undefined
+	if (!job?.every) return `${wf.code} has no active check-back. Nothing changed.`
+	if (job.purpose !== 'work') return `This check-back is making approved changes. Wait for its result before stopping it.`
+	if (parentsOf(store, job).some(parent => parent.id !== home.id && parent.partOf !== home.id)) return `This check-back is shared with another item. Nothing changed.`
+	if (job.state === 'running' && job.run) {
+		if (job.run.machine !== store.machine) return `The check-back is running on ${job.run.machine}. Wait for its result before stopping it.`
+		if (!procs.kill(job.run.pid)) {
+			const why = `Could not stop the check-back for ${home.code}. Work stays open; stop process ${job.run.pid} by hand.`
+			store.setHealth(`job:${job.id}`, why)
+			return why
+		}
+		cleanJobFiles(store, job.run)
+	}
+	Object.assign(job, { state: 'done', every: undefined, nextAt: undefined, retry: undefined, run: undefined, wrapUp: undefined })
+	store.saveJob(job)
+	home.work!.watch = undefined
+	step(home, 'You stopped the check-back; work stays open', { ref: `watch-stop:${job.id}` })
+	store.save(home)
+	store.setHealth(`job:${job.id}`)
+	store.log({ event: 'work-watch-stopped', job: job.id, code: home.code })
 }
 
 // skip, answer, or pause: withdraw this item's ok. A change run nobody still approves is stopped before it does more.
@@ -571,6 +684,7 @@ function stopRun(store: Store, procs: Procs, job: Job, why: string) {
 	}
 	// Asks that arrived during the stopped run get a work run in the same session.
 	const again = !!job.run && job.asks.length > job.run.asks, used = readUse(store, job)
+	if (job.run) cleanJobFiles(store, job.run)
 	Object.assign(job, { result: { ...job.result!, effects: foldChanges(store, job) }, state: again ? 'queued' : 'done', purpose: 'work', run: undefined })
 	adoptList(store, job)
 	store.saveJob(job)
@@ -590,7 +704,11 @@ function finishCheck(store: Store, job: Job, r: Report, asksAtStart: number) {
 	const changed = key !== job.last
 	const now = new Date().toISOString()
 	for (const wf of parentsOf(store, job)) {
-		if (wf.work?.watch === job.id) { if (watchNews(wf, r, `watch:${job.id}:${key}`, job.last === undefined)) store.save(wf); continue }
+		if (wf.work?.watch === job.id) {
+			const first = job.last === undefined, news = watchNews(wf, r, `watch:${job.id}:${key}`, first)
+			if (news || first) store.save(wf, news)
+			continue
+		}
 		if (r.done) { close(wf, `Stopped watching: ${r.summary}`); store.save(wf); continue }
 		if (changed) { Object.assign(wf, { status: r.summary, changedAt: now }); store.save(wf) }
 	}
@@ -604,7 +722,7 @@ function finishCheck(store: Store, job: Job, r: Report, asksAtStart: number) {
 // A bootstrap source turns its claims into K proposals and remembers where it stopped (R-BOOT-05, R-BOOT-10).
 function finishBootstrap(store: Store, job: Job, r: Report) {
 	const learn = job.key.startsWith('learn:')
-	const made = propose(store, knowledgeOf(store, store.config()), r.claims ?? [], learn ? 'edit' : 'bootstrap', learn ? job.label ?? 'your edit' : job.label ?? YOURS[job.key.replace('bootstrap:', '') as BootSource] ?? job.key)
+	const made = propose(store, knowledgeOf(store, store.config()), learn ? learnedClaims(store, job, r.claims ?? []) : r.claims ?? [], learn ? 'edit' : 'bootstrap', learn ? job.label ?? 'your edit' : job.label ?? YOURS[job.key.replace('bootstrap:', '') as BootSource] ?? job.key)
 	if (r.checkpoint) store.saveSource(job.key, r.checkpoint)
 	Object.assign(job, { result: { summary: r.summary, effects: [] }, state: 'done', run: undefined })
 	store.saveJob(job)
@@ -650,7 +768,7 @@ function checkRelay(store: Store, job: Job): boolean {
 // A work run with no report (it crashed, or could not start) is a busy moment, not an answer: it tries again a few times first.
 function failOrRetry(store: Store, job: Job, why: string) {
 	// A setup error (a tool the AI CLI cannot name) will not pass by trying again.
-	if (job.purpose !== 'work' || job.relay || job.every || isBootstrap(job) || job.key.startsWith('learn:') || /no known Claude Code name/.test(why)) return fail(store, job, why)
+	if (job.purpose !== 'work' || job.relay || job.every || isBootstrap(job) || job.key.startsWith('learn:') || SETUP_REFUSAL.test(why)) return fail(store, job, why)
 	const p = planRetry(job.retry, { kind: 'transient', why, tried: [] })
 	if ('stop' in p) return fail(store, job, p.stop)
 	queueRetry(store, job, p.retry, p.fresh)

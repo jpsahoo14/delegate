@@ -12,6 +12,29 @@ const { reactProjection, resolveIntent } = await import('../src/web/react-projec
 const { seedNext, seedOwned, seedChanges, seedPromise } = await import('./fixture.ts')
 const fresh = () => seedOwned(seedChanges(seedNext(new Store({ root: mkdtempSync(join(tmpdir(), 'delegate-react-projection-')), machine: 'test' }))))
 
+test('React G2: only the generated failed-job directions survive command filtering', () => {
+	const store = fresh(), workflow = store.byCode('A2')!
+	workflow.status = 'The job did not finish: Fictional session stopped'
+	workflow.question = 'Answer A2 to retry with directions, or skip it'
+	store.save(workflow, false)
+	let entities = reactProjection(store).snapshot.entities
+	assert.equal(entities.placements.A2.headline, 'Answer Ravi: Answer A2 to retry with directions, or skip it')
+	assert.equal(entities.items.A2.question, workflow.question)
+	assert.ok(entities.items.A2.actionIds.includes('A2/answer'))
+	assert.ok(entities.items.A2.actionIds.includes('A2/dismiss'))
+	for (const question of ['Answer A2 to retry with different directions, or skip it', 'Answer A3 to retry with directions, or skip it']) {
+		workflow.question = question
+		store.save(workflow, false)
+		entities = reactProjection(store).snapshot.entities
+		assert.equal(entities.placements.A2.headline, 'Review this item')
+		assert.equal(entities.items.A2.question, undefined)
+	}
+	workflow.status = 'Needs you'
+	workflow.question = 'Answer A2 to retry with directions, or skip it'
+	store.save(workflow, false)
+	assert.equal(reactProjection(store).snapshot.entities.items.A2.question, undefined)
+})
+
 test('React projection: every fixture subject has one server placement and normalized links resolve', () => {
 	const { snapshot } = reactProjection(fresh())
 	const ids = snapshot.sections.flatMap(section => section.ids)
@@ -108,4 +131,82 @@ test('React projection: source links expose only secure web URLs', () => {
 	store.save(workflow, false)
 	const e = reactProjection(store).snapshot.entities, note = e.notes[e.items.A1.noteIds[0]]
 	assert.deepEqual(note.sourceIds.map(id => e.sources[id].href), [undefined, undefined, undefined, 'https://example.test/doc'])
+})
+
+test('bug 10-22 draft promises: the projected draft promise is distinct from earlier kept to-dos', () => {
+	const store = fresh(), workflow = store.byCode('A1')!
+	workflow.todos = ['Update the checklist']
+	workflow.kept = [{ id: 't1', text: 'An earlier promise', at: workflow.createdAt }]
+	store.save(workflow, false)
+	const e = reactProjection(store).snapshot.entities, item = e.items.A1
+	assert.deepEqual(item.todos, ['Update the checklist'])
+	assert.deepEqual(item.todoIds.map(id => e.todos[id].text), ['An earlier promise'])
+	assert.ok(item.draftId)
+	assert.ok(item.actionIds.includes('A1/send-edit'))
+})
+
+test('bug 10-22 draft promises: changed promises invalidate approval before submission and before apply', async () => {
+	const { submitIntent, submissionReceipt } = await import('../src/web/react-submissions.ts')
+	const { applyAnswers } = await import('../src/runner/apply.ts')
+	const { stub } = await import('./fixture.ts')
+	const processes = { start: () => ({ pid: 1 }), alive: () => false, kill: () => true, openWindow: () => {} }
+	for (const stage of ['submission', 'apply']) {
+		const store = fresh(), workflow = store.byCode('A1')!
+		workflow.todos = ['Update the checklist']
+		store.save(workflow, false)
+		const action = reactProjection(store).snapshot.entities.actions['A1/approve']
+		const request = { action: action.id, item: action.item, rev: action.rev, expect: action.expect, submissionId: randomUUID() }
+		if (stage === 'apply') submitIntent(store, request)
+		workflow.todos = ['Update the checklist', 'Also change the release notes']
+		store.save(workflow, false)
+		assert.notEqual(reactProjection(store).snapshot.entities.items.A1.rev, action.rev)
+		if (stage === 'submission') {
+			const result = submitIntent(store, request)
+			assert.equal(result.status, 409)
+			assert.equal(result.receipt.refused, true)
+			assert.match(result.receipt.text, /Changed since/)
+			assert.deepEqual(store.answers(), [])
+		} else {
+			let sends = 0
+			await applyAnswers(store, { ...stub, send: async () => ({ msgId: `reply-${++sends}` }) }, store.config(), processes as never)
+			assert.equal(sends, 0)
+			assert.match(submissionReceipt(store, request.submissionId)!.text, /Changed since/)
+		}
+	}
+})
+
+test('React toggle gates: a drawn Pause cannot become Resume and a queued reminder cannot change a newer schedule', async () => {
+	const { submitIntent, submissionReceipt } = await import('../src/web/react-submissions.ts')
+	const { applyAnswers } = await import('../src/runner/apply.ts')
+	const { stub } = await import('./fixture.ts')
+	const processes = { start: () => ({ pid: 1 }), alive: () => false, kill: () => true, openWindow: () => {} }
+	const request = (action: ReturnType<typeof reactProjection>['snapshot']['entities']['actions'][string]) => ({
+		action: action.id, item: action.item, rev: action.rev, expect: action.expect, submissionId: randomUUID(),
+	})
+	for (const queued of [false, true]) {
+		const store = fresh(), automation = store.automations().find(row => row.state === 'active')!
+		const action = reactProjection(store).snapshot.entities.actions[`${automation.code}/toggle`], intent = request(action)
+		assert.equal(action.label, 'Pause')
+		if (queued) submitIntent(store, intent)
+		automation.state = 'paused'
+		store.saveAutomation(automation)
+		assert.equal(reactProjection(store).snapshot.entities.actions[action.id].label, 'Resume')
+		if (queued) {
+			await applyAnswers(store, stub, store.config(), processes as never)
+			assert.equal(submissionReceipt(store, intent.submissionId)!.refused, true)
+		} else {
+			const result = submitIntent(store, intent)
+			assert.equal(result.status, 409)
+			assert.equal(result.receipt.refused, true)
+		}
+		assert.equal(store.automation(automation.code)!.state, 'paused')
+		assert.deepEqual(store.answers(), [])
+	}
+	const store = fresh(), action = reactProjection(store).snapshot.entities.actions['page/pause-resume']
+	store.saveControl({ ...store.control(), paused: true })
+	const result = submitIntent(store, request(action))
+	assert.equal(result.status, 409)
+	assert.equal(result.receipt.refused, true)
+	assert.equal(store.control().paused, true)
+	assert.deepEqual(store.answers(), [])
 })

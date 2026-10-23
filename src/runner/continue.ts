@@ -7,6 +7,7 @@ import type { Answer, Config, Workflow } from '../core/types.ts'
 import { ulid } from '../core/ids.ts'
 import { MARK } from '../core/render.ts'
 import { cleanEnv, interactiveCommand } from '../adapters/agent.ts'
+import { removeRunFiles } from '../adapters/run-files.ts'
 import type { Source } from '../adapters/source.ts'
 import { LOCAL_DIR, type Store } from '../store/state.ts'
 import { CLI } from '../paths.ts'
@@ -58,13 +59,17 @@ export function runWindow(store: Store, cfg: Config, code: string): number {
 	const open = { machine: store.machine, pid: process.pid, runId, since: new Date().toISOString() }
 	store.setOpenWindow(t.id, open)
 	const effects = pendingEffects(wf.effects).map(e => shown(e).line)
-	const [cmd, ...args] = interactiveCommand(cfg.agent, t.session, orientation(wf.code, t.id, wf.status, wf.draft?.text, effects), mcpConfigPath)
-	// On a machine other than the runner, the session comes from the storage folder and goes back there on close (R-STO-07).
-	restoreSession(store, t.session)
-	const r = spawnSync(cmd, args, { stdio: 'inherit', cwd: t.repo ?? cwd, env: cleanEnv(process.env) })
-	backupSession(store, t.session)
-	if (store.openWindow(t.id)?.runId === runId) store.setOpenWindow(t.id, { ...open, closed: true })
-	return r.status ?? 0
+	try {
+		const [cmd, ...args] = interactiveCommand(cfg.agent, t.session, orientation(wf.code, t.id, wf.status, wf.draft?.text, effects), mcpConfigPath)
+		// On a machine other than the runner, the session comes from the storage folder and goes back there on close (R-STO-07).
+		restoreSession(store, t.session)
+		const r = spawnSync(cmd, args, { stdio: 'inherit', cwd: t.repo ?? cwd, env: cleanEnv(process.env) })
+		backupSession(store, t.session)
+		return r.status ?? 0
+	} finally {
+		if (store.openWindow(t.id)?.runId === runId) store.setOpenWindow(t.id, { ...open, closed: true })
+		removeRunFiles(mcpConfigPath)
+	}
 }
 
 // Each tick: mark open items, and take back closed windows with whatever the owner decided.
@@ -95,6 +100,7 @@ export function checkOpen(store: Store, procs: Procs, bootMs = Date.now() - upti
 			store.save(fresh)
 		}
 		store.archiveReport(id, o.runId)
+		if (o.machine === store.machine && o.runId) removeRunFiles(join(LOCAL_DIR, 'sessions', `mcp-${o.runId}.json`))
 		store.setOpenWindow(id, undefined)
 		store.log({ event: 'continue-closed', target: id, report: !!r })
 		n++
