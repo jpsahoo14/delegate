@@ -16,7 +16,7 @@ import { CMD, NAME } from '../brand.ts'
 import { UPDATE_EVERY_MIN } from '../os/autoupdate.ts'
 import { nameFor, runLines, runsOf } from '../core/runinfo.ts'
 import { habitUndoable, undoMs } from '../runner/habits.ts'
-import { cachedCatalogs, denied, listable, readCatalog, workerTools } from '../runner/catalog.ts'
+import { cachedCatalogs, denied, listable, readCatalog, remoteServers, workerTools } from '../runner/catalog.ts'
 import { hostOff } from '../host/locate.ts'
 import { hostFile } from '../host/host.ts'
 import { hostDisabledUntil, hostFaultLimit } from '../host/client.ts'
@@ -198,18 +198,23 @@ function toolSpecs(cfg: Config): Spec[] {
 	return out
 }
 // Per server: how many reads drafts get, and what the owner should know (it can't be listed; a switched name it no longer offers).
-export type ToolsView = { servers: { name: string; reads: number; on: number; unknown: number; line?: string; gone: string[] }[] }
+// none: what to say in place of a count when drafts get none of its tools.
+export type ToolsView = { servers: { name: string; reads: number; on: number; unknown: number; line?: string; none?: string; gone: string[] }[] }
 export function toolsView(cfg: Config): ToolsView | undefined {
 	if (!cfg.agent.deny) return undefined
-	const cats = cachedCatalogs(cfg), names = new Set(Object.keys(cats))
-	const when = (iso?: string) => (iso ? new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '')
-	const servers = listable(cfg).map(([name]) => {
+	const cats = cachedCatalogs(cfg), names = new Set(Object.keys(cats)), specs = toolServers(cfg)
+	const when = (iso?: string) => (iso ? new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', ...(cfg.tz && validTz(cfg.tz) ? { timeZone: cfg.tz } : {}) }) : '')
+	const servers = [...listable(cfg).map(([name]) => name), ...remoteServers(cfg)].map(name => {
 		const c = cats[name], reads = c?.tools.filter(t => t.cls === 'read') ?? [], offered = new Set(c?.tools.map(t => `${name}-${t.name}`) ?? [])
 		const gone = c?.tools.length ? [...(cfg.agent.deny ?? []), ...(cfg.agent.allowRead ?? [])].filter(t => t.startsWith(`${name}-`) && !t.endsWith('-*') && !offered.has(t)) : []
-		const line = cfg.agent.pendingTrim?.includes(name) ? `Waiting for ${name} to answer, to keep your shorter list; until then drafts use your old list for it.`
-			: !c?.tools.length ? `Couldn't list ${name}'s tools${c?.error ? ` (${c.error})` : ''}; drafts can't use them until it answers.`
-			: c.error ? `Couldn't list ${name}'s tools since ${when(c.errorAt)}; using the list from ${when(c.at)}.` : undefined
-		return { name, reads: reads.length, on: reads.filter(t => !denied(cfg.agent.deny ?? [], `${name}-${t.name}`)).length, unknown: c?.tools.filter(t => t.cls === 'unknown').length ?? 0, ...(line ? { line } : {}), gone: names.has(name) ? gone : [] }
+		const again = c?.retryAt ? ` ${NAME} tries again ${when(c.retryAt)}.` : ''
+		const pending = cfg.agent.pendingTrim?.includes(name), remote = !specs[name]?.command
+		// A remote server is listed through the AI CLI, which holds its sign-in (#23); with no AI host to ask, that is said plainly.
+		const line = pending ? `Waiting for ${name} to answer, to keep your shorter list; until then drafts use your old list for it.`
+			: remote && !c ? `${NAME} can't list ${name}'s tools itself: it's a remote server the AI CLI signs in to. Its tools aren't offered to drafts.`
+			: !c?.tools.length ? (c?.error ? `${NAME} can't ${remote ? 'list' : 'start'} ${name} here: ${c.error}. Drafts aren't given its tools.${again}` : `Couldn't list ${name}'s tools yet; drafts can't use them until it answers.`)
+			: c.error ? `Couldn't list ${name}'s tools since ${when(c.errorAt)}; using the list from ${when(c.at)}.${again}` : undefined
+		return { name, reads: reads.length, on: reads.filter(t => !denied(cfg.agent.deny ?? [], `${name}-${t.name}`)).length, unknown: c?.tools.filter(t => t.cls === 'unknown').length ?? 0, ...(line ? { line } : {}), ...(!pending && !c?.tools.length && (remote || c?.error) ? { none: "its tools aren't offered" } : {}), gone: names.has(name) ? gone : [] }
 	})
 	return { servers }
 }

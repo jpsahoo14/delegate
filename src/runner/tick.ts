@@ -28,7 +28,8 @@ import { checkOpen } from './continue.ts'
 import { pruneSessionNotes } from './own.ts'
 import { refreshCatalogs } from './catalog.ts'
 import { finishTrim } from './tools-migrate.ts'
-import { hostCaller, hostRunner } from '../host/client.ts'
+import { hostCaller, hostLister, hostRunner } from '../host/client.ts'
+import { hostOff } from '../host/locate.ts'
 import { stampPlaces } from './place.ts'
 import { writeSnapshot } from '../web/server.ts'
 import { notify } from '../os/notify.ts'
@@ -129,7 +130,7 @@ export async function tick(store: Store, deps: { source?: Source; run?: RunWorke
 		if (store.control().stopped) { closeProbe(); store.setHealth('source'); checkOpen(store, procs, procs.bootMs?.()); await checkJobs(store, src, cfg, procs, deps.probe); reschedule(store, cfg, false, t0); return { skipped: 'stopped', commands, answers, asks: 0, runs: 0, nudged: false, ms: Date.now() - t0 } }
 		planSweep(store)
 		// Each tool server's tools are listed while the chats are read, and are ready before any draft runs (#17). Tests list nothing.
-		const listing = process.env.NODE_TEST_CONTEXT ? Promise.resolve(0) : refreshCatalogs(store, cfg).catch(e => { store.log({ event: 'catalog-failed', error: String(e).slice(0, 300) }); return 0 })
+		const listing = process.env.NODE_TEST_CONTEXT ? Promise.resolve(0) : refreshCatalogs(store, cfg, Date.now(), false, hostOff(cfg) ? undefined : hostLister(store, cfg)).catch(e => { store.log({ event: 'catalog-failed', error: String(e).slice(0, 300) }); return 0 })
 		let found: Awaited<ReturnType<typeof discover>>, asks: number
 		const before = store.chats()
 		// Chat cursors are saved only after a whole read, so a failure resumes in order.

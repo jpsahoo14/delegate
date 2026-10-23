@@ -36,13 +36,21 @@ export class McpClient {
 	// env: the whole environment for the server, when its config names variables of its own. name: the server's name in the config.
 	constructor(command: string[], env?: Record<string, string>, name?: string) { this.command = command; this.env = env; this.name = name }
 
+	// The end of what the server wrote to stderr: a server that exits at start says why there ("token not set"), not in MCP (#23).
+	private err = ''
+	stderrTail(): string { return this.err.trim().split(/\r?\n/).map(l => l.trim()).filter(Boolean).at(-1)?.slice(0, 200) ?? '' }
+
 	// One connection, shared by calls that start together; two connects on one client throw.
 	private connect(): Promise<void> {
 		const [cmd, ...rest] = this.command
 		if (!this.connecting && this.name) { const name = this.name; this.client.setNotificationHandler(ToolListChangedNotificationSchema, async () => { McpClient.onListChanged?.(name) }) }
 		// A server that exits drops this connection; the next call starts it again (a warm host connection outlives one server, #19).
 		if (!this.connecting) { const c = this.client; c.onclose = () => { if (this.client === c) { this.client = new Client({ name: 'delegate', version: '0.1.0' }); this.connecting = undefined } } }
-		this.connecting ??= this.client.connect(new StdioClientTransport({ command: cmd, args: rest, stderr: 'pipe', ...(this.env ? { env: this.env } : {}) })).catch(e => { this.connecting = undefined; throw e })
+		if (!this.connecting) {
+			const transport = new StdioClientTransport({ command: cmd, args: rest, stderr: 'pipe', ...(this.env ? { env: this.env } : {}) })
+			transport.stderr?.on('data', (d: Buffer) => { this.err = (this.err + d.toString('utf8')).slice(-2000) })
+			this.connecting = this.client.connect(transport).catch(e => { this.connecting = undefined; throw e })
+		}
 		return this.connecting
 	}
 
@@ -177,6 +185,8 @@ export function toolServers(cfg: Config): Record<string, ServerSpec> {
 // A client for a server with a command, started as its config says: ${VAR} taken from this process's environment,
 // and the whole environment, as the AI CLI starts it, with its own env on top (review 10-21b P2-2, 10-21c P2-1).
 const expand = (v: string) => v.replace(/\$\{(\w+)\}/g, (_, k: string) => process.env[k] ?? '')
+// Variables a server's config takes from the environment that are empty where Delegate runs (#23): the usual reason it exits at start.
+export const unsetVars = (s: ServerSpec) => [...new Set([s.command ?? '', ...(s.args ?? []), ...Object.values(s.env ?? {}).map(String)].flatMap(v => [...v.matchAll(/\$\{(\w+)\}/g)].map(m => m[1])))].filter(k => !process.env[k])
 export function clientFor(s: ServerSpec & { command: string }, name?: string): McpClient {
 	const own = Object.fromEntries(Object.entries(s.env ?? {}).map(([k, v]) => [k, expand(String(v))]))
 	const env = Object.fromEntries(Object.entries({ ...process.env, ...own }).filter((x): x is [string, string] => x[1] !== undefined))

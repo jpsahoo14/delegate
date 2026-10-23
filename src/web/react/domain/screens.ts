@@ -15,7 +15,7 @@ export const settingsSchema = z.object({
 		chats: z.array(z.object({ name: text, says: text, actionIds: strings.optional() })),
 	}),
 	models: z.object({ set: text, lines: strings }),
-	tools: z.object({ servers: z.array(z.object({ name: text, reads: z.number(), on: z.number(), unknown: z.number(), line: optional, gone: strings })) }).optional(),
+	tools: z.object({ servers: z.array(z.object({ name: text, reads: z.number(), on: z.number(), unknown: z.number(), line: optional, none: optional, gone: strings })) }).optional(),
 })
 export const saveResultSchema = z.object({ ok: z.boolean(), text })
 const numberRow = z.object({

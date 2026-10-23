@@ -1,5 +1,60 @@
 # React preview
 
+## Tool servers that can't be listed: back off, say why, list through the AI CLI (#23)
+
+The owner's live log showed one `catalog-failed {server:"github", error:"Connection closed"}` per check: the retry window (10 min)
+equalled the check interval.
+
+**Backoff** (`catalog.ts`).
+- A failure now records `fails` and `retryAt`: the next try is 1 h later, then every 6 h.
+- The count resets when the server lists, or when its config changes (the spec key now includes a remote server's url).
+- Setup's own listing (force) still tries at once.
+- The last good list stays in use meanwhile, as before.
+
+**A plain reason.**
+- `McpClient` keeps the end of the server's stderr. A failure then reads, for example, "Connection closed; it said: acme: cannot
+  reach the license server".
+- A config that names an unset `${VAR}` reads "it needs ACME_TOKEN_X, which isn't set where Delegate runs".
+- Settings › Tools shows the reason, "Drafts aren't given its tools" and when it tries again.
+- With no AI host to ask, a remote (url-only) server, which Delegate's client can't open, gets "Delegate can't list X's tools
+  itself: it's a remote server the AI CLI signs in to. Its tools aren't offered to drafts."
+
+**Listing through the AI CLI** (#23c). A probe on a fictional home found that the CLI runtime under the AI host connects every
+server in the CLI's own `mcp-config.json`, with its own sign-in for remote ones, even with `enableConfigDiscovery: false`, and
+`session.rpc.mcp.listTools` returns their tools with schema and annotations.
+- The host's new `/list` opens a short session that never reaches the model, waits for the named servers, lists them, and deletes
+  the session.
+- The catalog asks it for every remote server, and for any command server Delegate's own client can't start. Those catalogs are
+  marked `via: 'cli'`.
+- Their reads are offered to drafts, and both paths call them on the CLI's own connection: one process per run loads that config
+  too, and the host doesn't warm-connect them.
+- A command server the CLI can't start either keeps its own plain reason, with "the AI CLI couldn't start it either".
+
+**The AI host** (#23d).
+- Warm connect skips a server that is waiting for its retry time, connects it on first use once that time passes, and gives up
+  on a listing after 30 s, so a hung server never holds a run.
+- **Revised from #19b:** a server the host can't start is no longer a host fault. `/call` answers "not here", so the change uses
+  Delegate's own client, with no strike: a broken server must not set the host aside for every reply.
+
+**Found on the way** (#19).
+- Parallel first runs could each start a host. `ensureHost` is now single-flight in a process.
+- On the host, a server that is both in the CLI's config and proxied runs on the CLI's own connection, which takes priority over
+  a same-named proxy. It raised no permission request, so replies still read.
+
+**Proof** (fictional root, stub model (quota); servers: one needing an unset `${ACME_TOKEN_X}`, one that exits with a stderr line,
+and a loopback remote server):
+- **First check:** each broken server was tried once, and the host logged one `host-server-failed` each before the catalog knew
+  about them. The remote server was listed via the CLI (2 tools; `get_ticket` read offered, `close_ticket` not).
+- **Runs:** the reply read the remote ticket on the host, and on one process per run.
+- **Next two checks:** no tries and no server events; drafts unaffected.
+- **Clock:** +61 min retried once (then a 6 h step); +2 h nothing; +7 h 05 min retried once.
+- **Config:** changing the args started again at the first step; a working server cleared the count and Health.
+- **/call** to a server the host can't start: the change used the caller's own client twice, with 0 strikes.
+- **Single-flight:** three parallel `ensureHost` calls gave one pid and one `host-started`.
+- **Cleanup:** no listing sessions were left behind.
+- **Edge:** Settings › Tools lines in New and Classic at 1280 light and 400 dark, including the remote line with `agent.host`
+  false.
+
 ## Resident AI host: a host that can't run sets itself aside (#19b)
 
 The host loads the SDK from the owner's CLI package, which can change on a CLI update. Before this, a host that answered pings but

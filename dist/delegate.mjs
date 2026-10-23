@@ -40020,7 +40020,7 @@ function clientFor(s3, name) {
   const env2 = Object.fromEntries(Object.entries({ ...process.env, ...own3 }).filter((x) => x[1] !== void 0));
   return new McpClient([expand(s3.command), ...(s3.args ?? []).map(expand)], env2, name);
 }
-var sessionLost, readOnlyTool, LostResponse, McpClient, cliConfigPath, lastRead, expand;
+var sessionLost, readOnlyTool, LostResponse, McpClient, cliConfigPath, lastRead, expand, unsetVars;
 var init_mcp_client = __esm({
   "src/adapters/mcp-client.ts"() {
     "use strict";
@@ -40058,6 +40058,11 @@ var init_mcp_client = __esm({
         this.env = env2;
         this.name = name;
       }
+      // The end of what the server wrote to stderr: a server that exits at start says why there ("token not set"), not in MCP (#23).
+      err = "";
+      stderrTail() {
+        return this.err.trim().split(/\r?\n/).map((l) => l.trim()).filter(Boolean).at(-1)?.slice(0, 200) ?? "";
+      }
       // One connection, shared by calls that start together; two connects on one client throw.
       connect() {
         const [cmd2, ...rest2] = this.command;
@@ -40076,10 +40081,16 @@ var init_mcp_client = __esm({
             }
           };
         }
-        this.connecting ??= this.client.connect(new StdioClientTransport({ command: cmd2, args: rest2, stderr: "pipe", ...this.env ? { env: this.env } : {} })).catch((e) => {
-          this.connecting = void 0;
-          throw e;
-        });
+        if (!this.connecting) {
+          const transport = new StdioClientTransport({ command: cmd2, args: rest2, stderr: "pipe", ...this.env ? { env: this.env } : {} });
+          transport.stderr?.on("data", (d) => {
+            this.err = (this.err + d.toString("utf8")).slice(-2e3);
+          });
+          this.connecting = this.client.connect(transport).catch((e) => {
+            this.connecting = void 0;
+            throw e;
+          });
+        }
         return this.connecting;
       }
       // The server's own listing of a tool, read once, for deciding whether a call may be repeated.
@@ -40178,6 +40189,7 @@ var init_mcp_client = __esm({
     cliConfigPath = (flavor) => flavor === "claude" ? join8(process.env.CLAUDE_CONFIG_DIR ?? homedir5(), ".claude.json") : join8(process.env.COPILOT_HOME ?? join8(homedir5(), ".copilot"), "mcp-config.json");
     lastRead = /* @__PURE__ */ new Map();
     expand = (v) => v.replace(/\$\{(\w+)\}/g, (_, k) => process.env[k] ?? "");
+    unsetVars = (s3) => [...new Set([s3.command ?? "", ...s3.args ?? [], ...Object.values(s3.env ?? {}).map(String)].flatMap((v) => [...v.matchAll(/\$\{(\w+)\}/g)].map((m) => m[1])))].filter((k) => !process.env[k]);
   }
 });
 
@@ -49327,7 +49339,7 @@ function staleCatalog(server) {
   if (c && !c.stale) writeCatalog({ ...c, stale: true });
 }
 function cachedCatalogs(cfg) {
-  return Object.fromEntries(listable(cfg).map(([name]) => [name, readCatalog(name)]).filter((e) => !!e[1]));
+  return Object.fromEntries([...listable(cfg).map(([name]) => name), ...remoteServers(cfg)].map((name) => [name, readCatalog(name)]).filter((e) => !!e[1]));
 }
 function workerTools(cfg, kind) {
   const a = cfg.agent;
@@ -49344,52 +49356,84 @@ function catalogInfo(cfg) {
   const cats = cachedCatalogs(cfg);
   return (server, tool) => cats[server]?.tools.find((t2) => t2.name === tool)?.info;
 }
-async function refreshCatalogs(store2, cfg, now = Date.now(), force = false) {
+async function refreshCatalogs(store2, cfg, now = Date.now(), force = false, viaCli) {
   let n = 0;
-  await Promise.all(listable(cfg).map(async ([name, spec]) => {
+  const due2 = (name, spec) => {
     const had = readCatalog(name), key = specKey(spec);
     const fresh = had && !had.stale && !had.error && had.spec === key && now - Date.parse(had.at) < DAY4;
-    const resting2 = had?.error && had.triedAt && had.spec === key && now - Date.parse(had.triedAt) < RETRY;
-    if (!force && (fresh || resting2)) return;
+    return force || !(fresh || resting2(had, spec, now));
+  };
+  const listed2 = (name, spec, info, version3, via) => {
+    const had = readCatalog(name), tools = info.map((t2) => ({ name: t2.name, ...classifyTool(name, t2), ...t2.description ? { description: t2.description.split(/(?<=[.!?])\s/)[0].slice(0, 200) } : {}, info: t2 }));
+    writeCatalog({ server: name, version: version3, hash: toolsHash(info), spec: specKey(spec), tools, at: new Date(now).toISOString(), ...via ? { via } : {} });
+    store2.setHealth(`catalog:${name}`);
+    if (!had || had.hash !== toolsHash(info) || had.version !== version3) store2.log({ event: "catalog-listed", server: name, version: version3, tools: tools.length, reads: tools.filter((t2) => t2.cls === "read").length, unknown: tools.filter((t2) => t2.cls === "unknown").length, ...via ? { via } : {} });
+    n++;
+  };
+  const failed = (name, spec, why2) => {
+    const had = readCatalog(name), key = specKey(spec), at3 = new Date(now).toISOString();
+    const same2 = had?.error && had.spec === key, fails = (same2 ? had.fails ?? 1 : 0) + 1, since = same2 && had.errorAt ? had.errorAt : at3;
+    const retryAt = new Date(now + RETRY[Math.min(fails, RETRY.length) - 1]).toISOString();
+    writeCatalog({ ...had ?? { server: name, hash: "", tools: [], at: "" }, spec: key, error: why2, errorAt: since, triedAt: at3, fails, retryAt });
+    store2.setHealth(`catalog:${name}`, had?.tools.length ? `Couldn't list ${name}'s tools since ${when2(since)}; using the list from ${when2(had.at)}.` : `Couldn't start ${name} here (${why2}); drafts aren't given its tools.`);
+    store2.log({ event: "catalog-failed", server: name, error: why2, cached: !!had?.tools.length, fails, retryAt });
+  };
+  const ask = [];
+  await Promise.all(listable(cfg).filter(([name, spec]) => due2(name, spec)).map(async ([name, spec]) => {
     const client = clientFor(spec, name);
     try {
-      const listed2 = await Promise.race([client.listAll(), new Promise((_, no) => setTimeout(() => no(new Error(`no answer in ${TIMEOUT / 1e3} s`)), TIMEOUT).unref())]);
-      const tools = listed2.tools.map((t2) => ({ name: t2.name, ...classifyTool(name, t2), ...t2.description ? { description: t2.description.split(/(?<=[.!?])\s/)[0].slice(0, 200) } : {}, info: t2 }));
-      const version3 = listed2.server ? `${listed2.server.name}@${listed2.server.version}` : void 0;
-      writeCatalog({ server: name, version: version3, hash: toolsHash(listed2.tools), spec: key, tools, at: new Date(now).toISOString() });
-      store2.setHealth(`catalog:${name}`);
-      if (!had || had.hash !== toolsHash(listed2.tools) || had.version !== version3) store2.log({ event: "catalog-listed", server: name, version: version3, tools: tools.length, reads: tools.filter((t2) => t2.cls === "read").length, unknown: tools.filter((t2) => t2.cls === "unknown").length });
-      n++;
+      const got2 = await Promise.race([client.listAll(), new Promise((_, no) => setTimeout(() => no(new Error(`no answer in ${TIMEOUT / 1e3} s`)), TIMEOUT).unref())]);
+      listed2(name, spec, got2.tools, got2.server ? `${got2.server.name}@${got2.server.version}` : void 0);
     } catch (e) {
-      const why2 = String(e).replace(/^(?:Mcp)?Error: /, "").replace(/^MCP error -?\d+: /, "").slice(0, 160), at3 = new Date(now).toISOString(), since = had?.error && had.errorAt ? had.errorAt : at3;
-      if (had) writeCatalog({ ...had, error: why2, errorAt: since, triedAt: at3 });
-      else writeCatalog({ server: name, hash: "", spec: key, tools: [], at: "", error: why2, errorAt: since, triedAt: at3 });
-      store2.setHealth(`catalog:${name}`, had?.tools.length ? `Couldn't list ${name}'s tools since ${when2(since)}; using the list from ${when2(had.at)}.` : `Couldn't list ${name}'s tools (${why2}); drafts can't use them until it answers.`);
-      store2.log({ event: "catalog-failed", server: name, error: why2, cached: !!had?.tools.length });
+      const why2 = whyFailed(e, spec, client.stderrTail());
+      if (viaCli) ask.push({ name, spec, own: why2 });
+      else failed(name, spec, why2);
     } finally {
       await client.close().catch(() => void 0);
     }
   }));
+  const specs = toolServers(cfg);
+  if (viaCli) {
+    for (const name of remoteServers(cfg)) if (due2(name, specs[name])) ask.push({ name, spec: specs[name] });
+  }
+  if (!ask.length) return n;
+  const got = await viaCli(ask.map((a) => a.name)).catch(() => void 0);
+  for (const a of ask) {
+    const r = got?.[a.name];
+    if (r?.tools) listed2(a.name, a.spec, r.tools, void 0, "cli");
+    else if (a.own) failed(a.name, a.spec, !r?.error || /no server by that name/.test(r.error) ? a.own : /^the AI CLI couldn't start it either/.test(r.error) ? `${a.own}; the AI CLI couldn't start it either` : `${a.own}; through the AI CLI: ${r.error}`);
+    else if (r?.error) failed(a.name, a.spec, r.error);
+  }
   return n;
 }
-var DAY4, RETRY, TIMEOUT, OWN, dir, file3, specKey, toolsHash, listable, when2, denied;
+function whyFailed(e, spec, said2 = "") {
+  const raw = String(e).replace(/^(?:Mcp)?Error: /, "").replace(/^MCP error -?\d+: /, "").slice(0, 160), missing = unsetVars(spec);
+  if (missing.length) return `it needs ${missing.join(", ")}, which ${missing.length === 1 ? "isn't" : "aren't"} set where ${NAME} runs`;
+  return said2 && !raw.includes(said2) ? `${raw}; it said: ${said2}` : raw;
+}
+var DAY4, HOUR, TIMEOUT, RETRY, OWN, dir, file3, specKey, toolsHash, listable, remoteServers, resting2, hostSkips, when2, denied;
 var init_catalog = __esm({
   "src/runner/catalog.ts"() {
     "use strict";
     init_mcp_client();
+    init_brand();
     init_tool_class();
     init_state();
     init_sharing();
     DAY4 = 864e5;
-    RETRY = 10 * 6e4;
+    HOUR = 36e5;
     TIMEOUT = 3e4;
+    RETRY = [HOUR, 6 * HOUR];
     OWN = /* @__PURE__ */ new Set(["delegate", "delegate_worker"]);
     dir = () => join24(LOCAL_DIR, "catalog");
     file3 = (server) => join24(dir(), `${server.replace(/[^\w.-]/g, "_")}.json`);
-    specKey = (s3) => createHash7("sha256").update(JSON.stringify({ command: s3.command, args: s3.args ?? [], env: Object.keys(s3.env ?? {}).sort() })).digest("hex").slice(0, 16);
+    specKey = (s3) => createHash7("sha256").update(JSON.stringify({ command: s3.command, args: s3.args ?? [], env: Object.keys(s3.env ?? {}).sort(), ...s3.url ? { url: s3.url } : {} })).digest("hex").slice(0, 16);
     toolsHash = (tools) => createHash7("sha256").update(JSON.stringify(tools.map((t2) => [t2.name, t2.annotations ?? null, t2.inputSchema ?? null]).sort())).digest("hex").slice(0, 16);
     McpClient.onListChanged = staleCatalog;
     listable = (cfg) => Object.entries(toolServers(cfg)).filter((e) => !!e[1].command && !OWN.has(e[0]));
+    remoteServers = (cfg) => Object.entries(toolServers(cfg)).filter(([n, s3]) => !s3.command && !!s3.url && !OWN.has(n)).map(([n]) => n);
+    resting2 = (c, spec, now = Date.now()) => !!(c?.error && c.retryAt && c.spec === specKey(spec) && Date.parse(c.retryAt) > now);
+    hostSkips = (c, spec, now = Date.now()) => resting2(c, spec, now) || c?.via === "cli" && !c.error && c.spec === specKey(spec);
     when2 = (iso) => new Date(iso).toLocaleString(void 0, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
     denied = (deny, t2) => deny.some((d) => d === t2 || d.endsWith("-*") && t2.startsWith(d.slice(0, -1)));
   }
@@ -50018,7 +50062,7 @@ __export(host_exports, {
 import { createHash as createHash8, randomUUID as randomUUID11 } from "node:crypto";
 import { existsSync as existsSync28, readFileSync as readFileSync22, renameSync as renameSync5, rmSync as rmSync9, writeFileSync as writeFileSync15 } from "node:fs";
 import { createServer } from "node:http";
-import { homedir as homedir9 } from "node:os";
+import { homedir as homedir9, tmpdir as tmpdir3 } from "node:os";
 import { isAbsolute as isAbsolute6, join as join30, relative as relative4, resolve as resolve8 } from "node:path";
 import { pathToFileURL } from "node:url";
 function envProvider() {
@@ -50038,24 +50082,33 @@ async function runHost() {
   const client = new sdk.CopilotClient({ connection: { kind: "stdio", path: process.execPath, args: [pkg.runtime] }, env: env() });
   await client.start();
   const warm = /* @__PURE__ */ new Map();
-  for (const [name, spec] of listable(cfg)) {
-    const mcp = clientFor(spec, name), at3 = Date.now();
-    const tools = mcp.listAll().then((r) => {
+  const specs = new Map(listable(cfg));
+  const connect = (name) => {
+    const spec = specs.get(name), mcp = clientFor(spec, name), at3 = Date.now();
+    const listed2 = Promise.race([mcp.listAll(), new Promise((_, no) => setTimeout(() => no(new Error(`no answer in ${WARM_MS / 1e3} s`)), WARM_MS).unref())]);
+    const tools = listed2.then((r) => {
       store2.log({ event: "host-server-ready", server: name, ms: Date.now() - at3, tools: r.tools.length });
       return new Map(r.tools.map((t2) => [t2.name, t2]));
     });
-    tools.catch((e) => store2.log({ event: "host-server-failed", server: name, error: String(e).slice(0, 200) }));
-    warm.set(name, { client: mcp, tools });
+    tools.catch((e) => store2.log({ event: "host-server-failed", server: name, error: whyFailed(e, spec, mcp.stderrTail()) }));
+    const w = { client: mcp, tools };
+    warm.set(name, w);
+    return w;
+  };
+  for (const [name, spec] of specs) {
+    if (hostSkips(readCatalog(name), spec)) store2.log({ event: "host-server-skipped", server: name, ...readCatalog(name)?.via ? { via: "cli" } : { until: readCatalog(name)?.retryAt } });
+    else connect(name);
   }
+  const warmOf = (name) => warm.get(name) ?? (hostSkips(readCatalog(name), specs.get(name)) ? void 0 : connect(name));
   const limit = (cfg.maxParallel ?? 3) + (cfg.jobs?.parallel ?? 2);
   let active2 = 0, draining = false, lastRun = Date.now(), runs = 0;
-  const serverOf2 = (tool) => [...warm.keys()].filter((n) => tool.startsWith(`${n}-`)).sort((a, b) => b.length - a.length)[0];
+  const serverOf2 = (tool) => [...specs.keys()].filter((n) => tool.startsWith(`${n}-`)).sort((a, b) => b.length - a.length)[0];
   async function run2({ agent, input: input2 }) {
     const t2 = Date.now(), id = input2.sessionId;
     const names = [.../* @__PURE__ */ new Set([...agent.tools, ...input2.extraTools, "task_complete"])];
     const tools = [];
     for (const name of names) {
-      const server2 = serverOf2(name), w = server2 ? warm.get(server2) : void 0;
+      const server2 = serverOf2(name), w = server2 ? warmOf(server2) : void 0;
       if (!server2 || !w) continue;
       const tool = name.slice(server2.length + 1), info2 = (await w.tools.catch(() => /* @__PURE__ */ new Map())).get(tool);
       if (!info2) continue;
@@ -50119,6 +50172,49 @@ async function runHost() {
     }
   }
   const token = randomUUID11();
+  async function listViaCli(names) {
+    const id = `delegate-catalog-${randomUUID11()}`, out = {};
+    const provider = envProvider();
+    let s3;
+    try {
+      s3 = await client.createSession({
+        sessionId: id,
+        ...provider ? { provider, model: process.env.COPILOT_PROVIDER_MODEL_ID } : {},
+        tools: [],
+        availableTools: [],
+        workingDirectory: tmpdir3(),
+        onPermissionRequest: async () => ({ kind: "reject", feedback: "Listing only." }),
+        enableConfigDiscovery: false,
+        skipCustomInstructions: true,
+        memory: { enabled: false }
+      });
+      let l = { servers: [] };
+      for (const until = Date.now() + WARM_MS; Date.now() < until; await new Promise((r) => setTimeout(r, 250))) {
+        l = await s3.rpc.mcp.list();
+        if (names.every((n) => l.servers.find((x) => x.name === n)?.status !== "pending")) break;
+      }
+      for (const n of names) {
+        const st = l.servers.find((x) => x.name === n)?.status;
+        if (st === "connected") {
+          try {
+            out[n] = { tools: (await s3.rpc.mcp.listTools({ serverName: n })).tools };
+          } catch (e) {
+            out[n] = { error: String(e).replace(/^Error: /, "").slice(0, 160) };
+          }
+        } else {
+          const why2 = l.host?.failedServers?.[n];
+          out[n] = { error: !st ? "the AI CLI has no server by that name" : st === "needs-auth" ? "it needs you to sign in to it in the AI CLI" : st === "pending" ? `no answer in ${WARM_MS / 1e3} s` : `the AI CLI couldn't start it either${why2 ? ` (${String(typeof why2 === "string" ? why2 : why2.error ?? why2.message ?? JSON.stringify(why2)).slice(0, 120)})` : ""}` };
+        }
+      }
+    } catch (e) {
+      for (const n of names) out[n] ??= { error: `the AI host couldn't list it: ${String(e).replace(/^Error: /, "").slice(0, 120)}` };
+    } finally {
+      await s3?.disconnect().catch(() => void 0);
+      await client.deleteSession(id).catch(() => void 0);
+    }
+    store2.log({ event: "host-listed", servers: Object.fromEntries(Object.entries(out).map(([n, r]) => [n, r.tools ? r.tools.length : r.error])) });
+    return out;
+  }
   const reply2 = (res, code, body2) => {
     res.writeHead(code, { "content-type": "application/json" });
     res.end(JSON.stringify(body2));
@@ -50139,21 +50235,35 @@ async function runHost() {
     }
     if (req.method === "POST" && req.url === "/call") {
       const { server: name, tool, args: args2 } = JSON.parse(await body(req));
-      const w = warm.get(name);
-      if (!w || draining) return reply2(res, 404, { error: "not here" });
+      const w = draining || !specs.has(name) ? void 0 : warmOf(name);
+      if (!w) return reply2(res, 404, { error: "not here" });
       active2++;
       lastRun = Date.now();
       try {
         try {
           await w.tools;
         } catch (e) {
-          return reply2(res, 502, { error: String(e).replace(/^Error: /, "").slice(0, 400), hostFault: "server" });
+          return reply2(res, 404, { error: String(e).replace(/^Error: /, "").slice(0, 400), notHere: "server" });
         }
         const bad = await w.client.argsProblem(tool, args2);
         if (bad) return reply2(res, 200, { error: bad, notCalled: true });
         reply2(res, 200, { result: await w.client.call(tool, args2) });
       } catch (e) {
         reply2(res, 200, { error: String(e).replace(/^Error: /, "").slice(0, 400), lost: e instanceof LostResponse });
+      } finally {
+        active2--;
+        lastRun = Date.now();
+        maybeExit();
+      }
+      return;
+    }
+    if (req.method === "POST" && req.url === "/list") {
+      if (draining) return reply2(res, 503, { error: "draining" });
+      active2++;
+      try {
+        reply2(res, 200, { servers: await listViaCli(JSON.parse(await body(req)).servers) });
+      } catch (e) {
+        reply2(res, 500, { error: String(e).slice(0, 300) });
       } finally {
         active2--;
         lastRun = Date.now();
@@ -50221,7 +50331,7 @@ async function runHost() {
   }, LEASE_MS).unref();
   for (const sig of ["SIGINT", "SIGTERM"]) process.once(sig, () => void stop(sig));
 }
-var hostFile, WORKER_SERVER2, REPORT_JSON, IDLE_MS, LEASE_MS, RUN_MS, env, under, turnStarted, sessionFile;
+var hostFile, WORKER_SERVER2, REPORT_JSON, IDLE_MS, LEASE_MS, RUN_MS, WARM_MS, env, under, turnStarted, sessionFile;
 var init_host = __esm({
   "src/host/host.ts"() {
     "use strict";
@@ -50241,6 +50351,7 @@ var init_host = __esm({
     IDLE_MS = 20 * 6e4;
     LEASE_MS = 5 * 6e4;
     RUN_MS = 10 * 6e4;
+    WARM_MS = 3e4;
     env = () => Object.fromEntries(Object.entries(workerEnv(process.env)).filter((e) => typeof e[1] === "string"));
     under = (path, dirs2) => {
       const p = resolve8(path);
@@ -50834,7 +50945,14 @@ function call(h, method, path, body, timeoutMs = 3e3) {
 }
 var pingOk = (h) => call(h, "GET", "/ping").then((r) => r.status === 200 && !!r.body.ok, () => false);
 var current = () => readJson(hostFile(), void 0);
-async function ensureHost(store2, cfg) {
+var looking;
+function ensureHost(store2, cfg) {
+  looking ??= findOrStart(store2, cfg).finally(() => {
+    looking = void 0;
+  });
+  return looking;
+}
+async function findOrStart(store2, cfg) {
   if (hostOff(cfg) || process.env.NODE_TEST_CONTEXT || hostDisabledUntil()) return void 0;
   const h = current(), want = hostHash(cfg);
   const live2 = h && alive3(h.pid), answers2 = live2 && await pingOk(h);
@@ -50897,10 +51015,6 @@ var hostCaller = (store2, cfg, fallback = mcpCaller(cfg)) => async (server, tool
     throw new LostResponse(`${server}-${tool}`, e);
   }
   if (r.status === 404) return fallback(server, tool, args2);
-  if (r.body.hostFault) {
-    hostFault(store2, cfg, h, `call ${server}-${tool}`, r.body.error);
-    return fallback(server, tool, args2);
-  }
   if (r.body.lost) throw new LostResponse(`${server}-${tool}`, r.body.error);
   if (r.body.error) {
     if (r.body.notCalled && r.body.error.includes("has no tool")) staleCatalog(server);
@@ -50928,6 +51042,15 @@ var hostRunner = (store2, fallback = runAgent) => async (agent, input2) => {
   hostGood(store2);
   return r.body;
 };
+var hostLister = (store2, cfg) => async (servers) => {
+  const h = await ensureHost(store2, cfg);
+  if (!h) return void 0;
+  const r = await call(h, "POST", "/list", { servers }, 6e4).catch(() => void 0);
+  return r?.status === 200 ? r.body.servers : void 0;
+};
+
+// src/runner/tick.ts
+init_locate();
 
 // src/runner/place.ts
 init_whose();
@@ -52987,13 +53110,15 @@ function toolSpecs(cfg) {
 }
 function toolsView(cfg) {
   if (!cfg.agent.deny) return void 0;
-  const cats = cachedCatalogs(cfg), names = new Set(Object.keys(cats));
-  const when4 = (iso) => iso ? new Date(iso).toLocaleString(void 0, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "";
-  const servers = listable(cfg).map(([name]) => {
+  const cats = cachedCatalogs(cfg), names = new Set(Object.keys(cats)), specs = toolServers(cfg);
+  const when4 = (iso) => iso ? new Date(iso).toLocaleString(void 0, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", ...cfg.tz && validTz(cfg.tz) ? { timeZone: cfg.tz } : {} }) : "";
+  const servers = [...listable(cfg).map(([name]) => name), ...remoteServers(cfg)].map((name) => {
     const c = cats[name], reads = c?.tools.filter((t2) => t2.cls === "read") ?? [], offered = new Set(c?.tools.map((t2) => `${name}-${t2.name}`) ?? []);
     const gone = c?.tools.length ? [...cfg.agent.deny ?? [], ...cfg.agent.allowRead ?? []].filter((t2) => t2.startsWith(`${name}-`) && !t2.endsWith("-*") && !offered.has(t2)) : [];
-    const line2 = cfg.agent.pendingTrim?.includes(name) ? `Waiting for ${name} to answer, to keep your shorter list; until then drafts use your old list for it.` : !c?.tools.length ? `Couldn't list ${name}'s tools${c?.error ? ` (${c.error})` : ""}; drafts can't use them until it answers.` : c.error ? `Couldn't list ${name}'s tools since ${when4(c.errorAt)}; using the list from ${when4(c.at)}.` : void 0;
-    return { name, reads: reads.length, on: reads.filter((t2) => !denied(cfg.agent.deny ?? [], `${name}-${t2.name}`)).length, unknown: c?.tools.filter((t2) => t2.cls === "unknown").length ?? 0, ...line2 ? { line: line2 } : {}, gone: names.has(name) ? gone : [] };
+    const again = c?.retryAt ? ` ${NAME} tries again ${when4(c.retryAt)}.` : "";
+    const pending = cfg.agent.pendingTrim?.includes(name), remote = !specs[name]?.command;
+    const line2 = pending ? `Waiting for ${name} to answer, to keep your shorter list; until then drafts use your old list for it.` : remote && !c ? `${NAME} can't list ${name}'s tools itself: it's a remote server the AI CLI signs in to. Its tools aren't offered to drafts.` : !c?.tools.length ? c?.error ? `${NAME} can't ${remote ? "list" : "start"} ${name} here: ${c.error}. Drafts aren't given its tools.${again}` : `Couldn't list ${name}'s tools yet; drafts can't use them until it answers.` : c.error ? `Couldn't list ${name}'s tools since ${when4(c.errorAt)}; using the list from ${when4(c.at)}.${again}` : void 0;
+    return { name, reads: reads.length, on: reads.filter((t2) => !denied(cfg.agent.deny ?? [], `${name}-${t2.name}`)).length, unknown: c?.tools.filter((t2) => t2.cls === "unknown").length ?? 0, ...line2 ? { line: line2 } : {}, ...!pending && !c?.tools.length && (remote || c?.error) ? { none: "its tools aren't offered" } : {}, gone: names.has(name) ? gone : [] };
   });
   return { servers };
 }
@@ -55733,7 +55858,7 @@ async function tick(store2, deps = {}) {
       return { skipped: "stopped", commands, answers: answers2, asks: 0, runs: 0, nudged: false, ms: Date.now() - t0 };
     }
     planSweep(store2);
-    const listing = process.env.NODE_TEST_CONTEXT ? Promise.resolve(0) : refreshCatalogs(store2, cfg).catch((e) => {
+    const listing = process.env.NODE_TEST_CONTEXT ? Promise.resolve(0) : refreshCatalogs(store2, cfg, Date.now(), false, hostOff(cfg) ? void 0 : hostLister(store2, cfg)).catch((e) => {
       store2.log({ event: "catalog-failed", error: String(e).slice(0, 300) });
       return 0;
     });

@@ -5,7 +5,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
-import { homedir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { isAbsolute, join, relative, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { clientFor, LostResponse, McpClient } from '../adapters/mcp-client.ts'
@@ -15,7 +15,7 @@ import { readRun } from '../core/runinfo.ts'
 import type { ToolInfo } from '../core/tool-class.ts'
 import type { Config } from '../core/types.ts'
 import { VERSION } from '../paths.ts'
-import { listable } from '../runner/catalog.ts'
+import { hostSkips, listable, readCatalog, whyFailed } from '../runner/catalog.ts'
 import { LOCAL_DIR, loadLocal, Store } from '../store/state.ts'
 import { cliPackage } from './locate.ts'
 import { z } from 'zod'
@@ -28,7 +28,7 @@ export type HostRun = { agent: Config['agent']; input: RunInput & { workflowId: 
 export const hostFile = () => join(LOCAL_DIR, 'host.json')
 const WORKER_SERVER = 'delegate_worker'
 const REPORT_JSON = z.toJSONSchema(REPORT) as Record<string, unknown>
-const IDLE_MS = 20 * 60_000, LEASE_MS = 5 * 60_000, RUN_MS = 10 * 60_000
+const IDLE_MS = 20 * 60_000, LEASE_MS = 5 * 60_000, RUN_MS = 10 * 60_000, WARM_MS = 30_000
 // A provider the owner set for the CLI (COPILOT_PROVIDER_*): the CLI applies it per process, an SDK session only when told.
 function envProvider(): Record<string, unknown> | undefined {
 	const e = process.env
@@ -58,17 +58,29 @@ export async function runHost(): Promise<void> {
 	const t0 = Date.now()
 	const client = new sdk.CopilotClient({ connection: { kind: 'stdio', path: process.execPath, args: [pkg.runtime] }, env: env() })
 	await client.start()
-	// Each of the owner's tool servers connects once; a run that needs one waits only for that one, and only on the first run.
+	// Each of the owner's tool servers connects once; a run that needs one waits only for that one, and only on the first run. A server
+	// the catalog found failing waits for its retry step there (#23), and one only the CLI could list is called on the CLI's own
+	// connection, which every session has; one that doesn't answer in time is left out, never holding a run.
 	const warm = new Map<string, Warm>()
-	for (const [name, spec] of listable(cfg)) {
-		const mcp = clientFor(spec, name), at = Date.now()
-		const tools = mcp.listAll().then(r => { store.log({ event: 'host-server-ready', server: name, ms: Date.now() - at, tools: r.tools.length }); return new Map(r.tools.map(t => [t.name, t])) })
-		tools.catch(e => store.log({ event: 'host-server-failed', server: name, error: String(e).slice(0, 200) }))
-		warm.set(name, { client: mcp, tools })
+	const specs = new Map(listable(cfg))
+	const connect = (name: string) => {
+		const spec = specs.get(name)!, mcp = clientFor(spec, name), at = Date.now()
+		const listed = Promise.race([mcp.listAll(), new Promise<never>((_, no) => setTimeout(() => no(new Error(`no answer in ${WARM_MS / 1000} s`)), WARM_MS).unref())])
+		const tools = listed.then(r => { store.log({ event: 'host-server-ready', server: name, ms: Date.now() - at, tools: r.tools.length }); return new Map(r.tools.map(t => [t.name, t])) })
+		tools.catch(e => store.log({ event: 'host-server-failed', server: name, error: whyFailed(e, spec, mcp.stderrTail()) }))
+		const w = { client: mcp, tools }
+		warm.set(name, w)
+		return w
 	}
+	for (const [name, spec] of specs) {
+		if (hostSkips(readCatalog(name), spec)) store.log({ event: 'host-server-skipped', server: name, ...(readCatalog(name)?.via ? { via: 'cli' } : { until: readCatalog(name)?.retryAt }) })
+		else connect(name)
+	}
+	// A server skipped at start connects on first use once its retry time has passed (one the CLI serves stays with the CLI).
+	const warmOf = (name: string) => warm.get(name) ?? (hostSkips(readCatalog(name), specs.get(name)!) ? undefined : connect(name))
 	const limit = (cfg.maxParallel ?? 3) + (cfg.jobs?.parallel ?? 2)
 	let active = 0, draining = false, lastRun = Date.now(), runs = 0
-	const serverOf = (tool: string) => [...warm.keys()].filter(n => tool.startsWith(`${n}-`)).sort((a, b) => b.length - a.length)[0]
+	const serverOf = (tool: string) => [...specs.keys()].filter(n => tool.startsWith(`${n}-`)).sort((a, b) => b.length - a.length)[0]
 
 	async function run({ agent, input }: HostRun): Promise<HostResult> {
 		const t = Date.now(), id = input.sessionId
@@ -76,7 +88,7 @@ export async function runHost(): Promise<void> {
 		// A proxy per owner tool the run may use, with the server's own schema; its only shared state is the warm connection.
 		const tools: unknown[] = []
 		for (const name of names) {
-			const server = serverOf(name), w = server ? warm.get(server) : undefined
+			const server = serverOf(name), w = server ? warmOf(server) : undefined
 			if (!server || !w) continue
 			const tool = name.slice(server.length + 1), info = (await w.tools.catch(() => new Map<string, ToolInfo>())).get(tool)
 			if (!info) continue
@@ -126,6 +138,32 @@ export async function runHost(): Promise<void> {
 	}
 
 	const token = randomUUID()
+	// Tool lists from the AI CLI's own connections (#23c): the runtime connects the servers in the CLI's MCP config, a remote one
+	// with the CLI's own sign-in, and every run on either path calls them there. A short session that never reaches the model lists
+	// them, and is deleted after.
+	async function listViaCli(names: string[]): Promise<Record<string, { tools?: ToolInfo[]; error?: string }>> {
+		const id = `delegate-catalog-${randomUUID()}`, out: Record<string, { tools?: ToolInfo[]; error?: string }> = {}
+		const provider = envProvider()
+		type Listing = { servers: { name: string; status: string }[]; host?: { failedServers?: Record<string, unknown>; needsAuthServers?: Record<string, unknown> } }
+		let s: { rpc: { mcp: { list: () => Promise<Listing>; listTools: (p: { serverName: string }) => Promise<{ tools: ToolInfo[] }> } }; disconnect: () => Promise<void> } | undefined
+		try {
+			s = await client.createSession({ sessionId: id, ...(provider ? { provider, model: process.env.COPILOT_PROVIDER_MODEL_ID } : {}), tools: [], availableTools: [], workingDirectory: tmpdir(),
+				onPermissionRequest: async () => ({ kind: 'reject', feedback: 'Listing only.' }), enableConfigDiscovery: false, skipCustomInstructions: true, memory: { enabled: false } })
+			let l: Listing = { servers: [] }
+			for (const until = Date.now() + WARM_MS; Date.now() < until; await new Promise(r => setTimeout(r, 250))) {
+				l = await s!.rpc.mcp.list()
+				if (names.every(n => l.servers.find(x => x.name === n)?.status !== 'pending')) break
+			}
+			for (const n of names) {
+				const st = l.servers.find(x => x.name === n)?.status
+				if (st === 'connected') { try { out[n] = { tools: (await s!.rpc.mcp.listTools({ serverName: n })).tools } } catch (e) { out[n] = { error: String(e).replace(/^Error: /, '').slice(0, 160) } } }
+				else { const why = l.host?.failedServers?.[n] as { error?: string; message?: string } | string | undefined; out[n] = { error: !st ? 'the AI CLI has no server by that name' : st === 'needs-auth' ? 'it needs you to sign in to it in the AI CLI' : st === 'pending' ? `no answer in ${WARM_MS / 1000} s` : `the AI CLI couldn't start it either${why ? ` (${String(typeof why === 'string' ? why : why.error ?? why.message ?? JSON.stringify(why)).slice(0, 120)})` : ''}` } }
+			}
+		} catch (e) { for (const n of names) out[n] ??= { error: `the AI host couldn't list it: ${String(e).replace(/^Error: /, '').slice(0, 120)}` } }
+		finally { await s?.disconnect().catch(() => undefined); await client.deleteSession(id).catch(() => undefined) }
+		store.log({ event: 'host-listed', servers: Object.fromEntries(Object.entries(out).map(([n, r]) => [n, r.tools ? r.tools.length : r.error])) })
+		return out
+	}
 	const reply = (res: ServerResponse, code: number, body: unknown) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)) }
 	const body = (req: IncomingMessage) => new Promise<string>((ok, no) => { let s = ''; req.on('data', c => (s += c)); req.on('end', () => ok(s)); req.on('error', no) })
 	const server = createServer(async (req, res) => {
@@ -135,16 +173,25 @@ export async function runHost(): Promise<void> {
 		// An approved change made on the warm connection (#7E, design §6). Not known here: the caller uses its own client instead.
 		if (req.method === 'POST' && req.url === '/call') {
 			const { server: name, tool, args } = JSON.parse(await body(req)) as { server: string; tool: string; args: Record<string, unknown> }
-			const w = warm.get(name)
-			if (!w || draining) return reply(res, 404, { error: 'not here' })
+			const w = draining || !specs.has(name) ? undefined : warmOf(name)
+			if (!w) return reply(res, 404, { error: 'not here' })
 			active++; lastRun = Date.now()
 			try {
-				// Before the call: the server would not start or list its tools here. The caller makes the call itself (#19b).
-				try { await w.tools } catch (e) { return reply(res, 502, { error: String(e).replace(/^Error: /, '').slice(0, 400), hostFault: 'server' }) }
+				// Before the call: the server would not start or list its tools here. That is the server's trouble, not the host's (#23):
+				// the caller makes the call with a client of its own, and the host is not marked down for it.
+				try { await w.tools } catch (e) { return reply(res, 404, { error: String(e).replace(/^Error: /, '').slice(0, 400), notHere: 'server' }) }
 				const bad = await w.client.argsProblem(tool, args)
 				if (bad) return reply(res, 200, { error: bad, notCalled: true })
 				reply(res, 200, { result: await w.client.call(tool, args) })
 			} catch (e) { reply(res, 200, { error: String(e).replace(/^Error: /, '').slice(0, 400), lost: e instanceof LostResponse }) }
+			finally { active--; lastRun = Date.now(); maybeExit() }
+			return
+		}
+		if (req.method === 'POST' && req.url === '/list') {
+			if (draining) return reply(res, 503, { error: 'draining' })
+			active++
+			try { reply(res, 200, { servers: await listViaCli((JSON.parse(await body(req)) as { servers: string[] }).servers) }) }
+			catch (e) { reply(res, 500, { error: String(e).slice(0, 300) }) }
 			finally { active--; lastRun = Date.now(); maybeExit() }
 			return
 		}

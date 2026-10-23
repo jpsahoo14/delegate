@@ -7,7 +7,8 @@ import { join } from 'node:path'
 import { runAgent, type RunResult } from '../adapters/agent.ts'
 import { LostResponse } from '../adapters/mcp-client.ts'
 import { mcpCaller, type Caller } from '../runner/change.ts'
-import { staleCatalog } from '../runner/catalog.ts'
+import { staleCatalog, type CliLister } from '../runner/catalog.ts'
+import type { ToolInfo } from '../core/tool-class.ts'
 import type { Config } from '../core/types.ts'
 import { CLI } from '../paths.ts'
 import type { RunWorker } from '../runner/dispatch.ts'
@@ -39,8 +40,14 @@ function call<T>(h: HostInfo, method: string, path: string, body?: unknown, time
 const pingOk = (h: HostInfo) => call<{ ok?: boolean }>(h, 'GET', '/ping').then(r => r.status === 200 && !!r.body.ok, () => false)
 const current = () => readJson<HostInfo | undefined>(hostFile(), undefined)
 
-// A live host started for this config, else a new one; undefined means "use one process per run" this time.
-export async function ensureHost(store: Store, cfg: Config): Promise<HostInfo | undefined> {
+// A live host started for this config, else a new one; undefined means "use one process per run" this time. Calls that come together
+// (the pool's first runs) share one look and one start, so one tick never starts two hosts.
+let looking: Promise<HostInfo | undefined> | undefined
+export function ensureHost(store: Store, cfg: Config): Promise<HostInfo | undefined> {
+	looking ??= findOrStart(store, cfg).finally(() => { looking = undefined })
+	return looking
+}
+async function findOrStart(store: Store, cfg: Config): Promise<HostInfo | undefined> {
 	if (hostOff(cfg) || process.env.NODE_TEST_CONTEXT || hostDisabledUntil()) return undefined
 	const h = current(), want = hostHash(cfg)
 	const live = h && alive(h.pid), answers = live && await pingOk(h!)
@@ -82,18 +89,17 @@ function hostFault(store: Store, cfg: Config, h: HostInfo, what: string, why: st
 function hostGood(store: Store) { const m = readMark(); if (m.strikes || m.disables) writeJson(markFile(), { ...m, strikes: 0, disables: 0 }, store.machine) }
 
 // An approved change made on the host's warm connection (#7E, design §6). A host that never took the call (none, not answering,
-// not connected to that server, or unable to reach it) leaves it to a client of its own, as before; one that took it and then went
+// not connected to that server, or unable to start it) leaves it to a client of its own, as before; one that took it and then went
 // away may have made it, so that is "lost", never tried again here.
 export const hostCaller = (store: Store, cfg: Config, fallback: Caller = mcpCaller(cfg)): Caller => async (server, tool, args) => {
 	const h = await ensureHost(store, cfg)
 	if (!h) return fallback(server, tool, args)
-	let r: { status: number; body: { result?: unknown; error?: string; notCalled?: boolean; lost?: boolean; hostFault?: string } }
+	let r: { status: number; body: { result?: unknown; error?: string; notCalled?: boolean; lost?: boolean } }
 	try { r = await call(h, 'POST', '/call', { server, tool, args }, 0) } catch (e) {
 		if ((e as NodeJS.ErrnoException).code === 'ECONNREFUSED') return fallback(server, tool, args)
 		throw new LostResponse(`${server}-${tool}`, e)
 	}
 	if (r.status === 404) return fallback(server, tool, args)
-	if (r.body.hostFault) { hostFault(store, cfg, h, `call ${server}-${tool}`, r.body.error); return fallback(server, tool, args) }
 	if (r.body.lost) throw new LostResponse(`${server}-${tool}`, r.body.error)
 	if (r.body.error) { if (r.body.notCalled && r.body.error.includes('has no tool')) staleCatalog(server); throw new Error(r.body.error) }
 	hostGood(store)
@@ -116,4 +122,12 @@ export const hostRunner = (store: Store, fallback: RunWorker = runAgent): RunWor
 	if (r.status !== 200) return { exitCode: 1, ms: 0, error: `The AI host refused the run (${r.status})` }
 	hostGood(store)
 	return r.body
+}
+
+// Tool lists through the AI CLI's own connections (#23c), for servers Delegate's client can't list: none without a host.
+export const hostLister = (store: Store, cfg: Config): CliLister => async servers => {
+	const h = await ensureHost(store, cfg)
+	if (!h) return undefined
+	const r = await call<{ servers?: Record<string, { tools?: ToolInfo[]; error?: string }> }>(h, 'POST', '/list', { servers }, 60_000).catch(() => undefined)
+	return r?.status === 200 ? r.body.servers : undefined
 }

@@ -38,7 +38,7 @@ export function ToolsSettings({ data, Setting, look }: { data: SettingsData; Set
 			const reads = rows.filter(row => row.group === server.name && row.key.startsWith('read:')), unknown = rows.filter(row => row.group === server.name && row.key.startsWith('allow:'))
 			return <div className={look.row} key={server.name} data-server={server.name}>
 				{server.line && <p role="status" className="tools-server-line">{server.line}</p>}
-				{server.reads + server.unknown === 0 ? <p><strong>{server.name}</strong>: no list of its tools yet</p> : <details className="tools-server"><summary><strong>{server.name}</strong>: {server.on === server.reads ? `${server.reads} read tools` : `${server.on} of ${server.reads} read tools on`}{server.unknown ? ` · ${server.unknown} not placed` : ''}</summary>
+				{server.reads + server.unknown === 0 ? <p><strong>{server.name}</strong>: {server.none ?? 'no list of its tools yet'}</p> : <details className="tools-server"><summary><strong>{server.name}</strong>: {server.on === server.reads ? `${server.reads} read tools` : `${server.on} of ${server.reads} read tools on`}{server.unknown ? ` · ${server.unknown} not placed` : ''}</summary>
 					<div className={look.rows}>{reads.map(row => <Setting key={row.key} row={row} />)}</div>
 					{unknown.length > 0 && <><h4>{server.name} doesn&apos;t say whether these read or change things</h4><div className={look.rows}>{unknown.map(row => <AllowRead key={row.key} row={row} Setting={Setting} look={look} />)}</div></>}
 					{server.gone.length > 0 && <p className={`${look.muted} tools-gone`}>Not offered by {server.name} now: {server.gone.map(name => name.slice(server.name.length + 1)).join(', ')}.</p>}
