@@ -6,7 +6,8 @@ import { useHashNavigation, useNavigation } from '../data/navigation.ts'
 import { THEME_LABEL, useInterface } from '../data/interface.ts'
 import { useData } from '../data/store.ts'
 import { useVersionUpdate } from '../data/update.ts'
-import { Button } from '../components/ui/button.tsx'
+import { Button, Hint } from '../components/ui/button.tsx'
+import { chipHover, hoverOf } from '../domain/hover.ts'
 import { Icon } from '../components/ui/icon.tsx'
 import { ActionButton } from '../features/ActionButton.tsx'
 import { NAME } from '../brand.ts'
@@ -77,13 +78,13 @@ export default function Classic() {
 	const bad = disconnected || snapshot?.status.state !== 'on' || health.length > 0 || reading?.state === 'off' || reading?.state === 'never'
 	const fullStatus = [status, reading?.at ? `Last checked ${when(reading.at)}` : undefined, reading?.machine].filter(Boolean).join(' · ')
 	const themeLabel = THEME_LABEL[themeChoice]
-	const versionPicker = (id: string, className: string) => <label className={className} htmlFor={id}><span>App version</span><select id={id} value="react" disabled={switching || disconnected || readOnly} onChange={event => { const value = event.target.value; if (value === 'classic' || value === 'new' || value === 'react') void chooseVersion(value) }}><option value="classic">Classic</option><option value="new">New</option><option value="react">React (preview)</option></select></label>
+	const versionPicker = (id: string, className: string) => <label className={className} htmlFor={id}><span>App version</span><Hint text={hoverOf('', 'App version')}><select id={id} value="react" disabled={switching || disconnected || readOnly} onChange={event => { const value = event.target.value; if (value === 'classic' || value === 'new' || value === 'react') void chooseVersion(value) }}><option value="classic">Classic</option><option value="new">New</option><option value="react">React (preview)</option></select></Hint></label>
 	return <div className="classic-experience">
 		<a className="skip-link" href="#main" onClick={event => { event.preventDefault(); main.current?.focus() }}>Skip to content</a>
 		<header className="preview-header" data-menu-open={menu || undefined}><div className="header-inner">
 			<a className="brand" href="#classic/home" aria-label={`${NAME} home`}><span className="brand-mark"><Icon name="logo" /></span><span className="brand-name">{NAME}</span></a>
 			<div className="header-controls" id="classic-view-menu">
-				<nav aria-label="Views">{tabs.map(([id, label, count]) => <a key={id} href={`#classic/${id}`} aria-current={screen === id ? 'page' : undefined} onClick={() => setMenu(false)}>{label}{count > 0 && <span className={`count${id === 'focus' ? '' : ' count-muted'}`} aria-label={`${count}${id === 'done' || id === 'ongoing' ? ' new' : ''}`}>{count}</span>}</a>)}</nav>
+				<nav aria-label="Views">{tabs.map(([id, label, count]) => <a key={id} href={`#classic/${id}`} aria-current={screen === id ? 'page' : undefined} onClick={() => setMenu(false)}>{label}{count > 0 && <Hint text={chipHover(id === 'focus' ? 'count-needs' : id === 'ongoing' ? 'count-ongoing' : id === 'knowledge' ? 'count-knowledge' : 'count-done', { n: count })}><span className={`count${id === 'focus' ? '' : ' count-muted'}`} aria-label={`${count}${id === 'done' || id === 'ongoing' ? ' new' : ''}`}>{count}</span></Hint>}</a>)}</nav>
 				{!readOnly && <div className="version-controls"><ExperienceToggle disabled={disconnected} />{versionPicker('classic-menu-version', 'classic-menu-version')}</div>}
 			</div>
 			<span className="classic-view-title">{tabs.find(([id]) => id === screen)?.[1] ?? 'Home'}</span>

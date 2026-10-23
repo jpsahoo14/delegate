@@ -59,6 +59,9 @@ const BY_KIND: Record<string, string> = {
 }
 // Controls whose kind is shared by several labels (row actions, toggles, the watch form) are told apart by their label.
 const BY_LABEL: Record<string, string> = {
+	Wrong: BY_KIND.wrong,
+	Incomplete: BY_KIND.incomplete,
+	'Should not have replied': BY_KIND.unneeded,
 	Watch: `Have ${NAME} keep an eye on this and tell you when it changes. You choose what to watch and until when.`,
 	'Start watching': `${NAME} checks [{target}|it] regularly and shows a Changed mark when it moves.[ Stops when {until}, or by the date you pick.]`,
 	'Not right?': `Tell ${NAME} this reply was wrong, incomplete or unneeded. It drafts a fix for your OK and learns from it.`,

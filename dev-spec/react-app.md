@@ -90,6 +90,13 @@ Guard (Engineer check): a style rule never decides. `decide()` skips it, so it c
 Proved with stub workers (quota) on fictional roots: the spec's checks 1-7 (including Robin's style not reaching Kim's
 draft, Edit, Undo, and the negative cases), a style rule listed before a send rule for the same person still sending
 exactly once, and Settings Turn on, Save style and Undo in New and Classic at 1280 light and 400 dark.
+## bug 10-22 Classic image labels exposed internal media keys
+
+MessageBubble, thread text, asks lists and row previews hide only the internal
+inline key inside an image marker. The label remains, such as "[image: Acme
+chart]". Ordinary inline text is unchanged. Stored asks, thread lines and media
+keys are untouched, so the worker can still open the original image.
+
 ## bug 10-22 E73: saving signature text changed approved-reply signing
 
 An unchanged signature save is a no-op, including the default text while
@@ -121,6 +128,11 @@ Explicit owner editing and work-decision/holding-reply paths remain distinct.
 
 ## Classic S1-S5/S8/S9: one card, shared messages and sent times
 
+The adapter also passes the matching placement when this item is its actor,
+just as New does. Work-step, kept-to-do and Track primaries therefore retain
+their actual action context. Edge1280/400 showed the same primary/labels in
+both experiences and queued exactly one "Issues found: 403" work answer.
+
 - ClassicCard is now only a routing adapter to ItemCard, including multi-ask
   navigation and retained snapshots; no second card layout, editor or action
   mapping remains. Classic keeps its shell, queue, tabs and feedback rows.
@@ -142,6 +154,10 @@ Explicit owner editing and work-decision/holding-reply paths remain distinct.
   reached Needs you after a stub draft, controls0tabs/body1target, no overflow/errors.
 
 ## Classic S5/S7: direct Teams links and shared accessible hover text
+
+Final coverage includes labelled local feedback controls (visible labels win
+over longer ARIA names), the App version select, tab counts and Ongoing
+interval/code hints. All use the same map and matching hidden descriptions.
 
 - Approved design: direct Open in Teams in the card head, plus sibling external
   links on queue/Home needs rows, never nested anchors or item submissions.

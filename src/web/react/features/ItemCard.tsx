@@ -28,7 +28,9 @@ export function sentAt(item: Item): { at: string; added: boolean } {
 // 20,000 characters only the first 2,000 ever reach the page, with Open in Teams for the rest.
 // The row shows up to 200 of its characters, so the page never holds more than 2,000 of a huge message.
 const HUGE = 20_000, SHOWN = 2_000, HUGE_SHOWN = 1_800
-export function MessageBubble({ text, teams, open, onToggle }: { text: string; teams?: string; open: boolean; onToggle: (open: boolean) => void }) {
+export const messageText = (text: string) => text.replace(/(\[image[^\]\n]*?)\s+inline:[0-9a-f]{16,40}(?=\])/gi, '$1')
+export function MessageBubble({ text: raw, teams, open, onToggle }: { text: string; teams?: string; open: boolean; onToggle: (open: boolean) => void }) {
+	const text = messageText(raw)
 	if (text.length > HUGE) return <div className="card-bubble-wrap"><blockquote className="card-bubble scroll">{text.slice(0, HUGE_SHOWN)}…</blockquote>
 		<p className="muted">The rest is too long to show here ({text.length.toLocaleString()} characters).{teams && <> <a href={teams} target="_blank" rel="noopener noreferrer">Open in Teams <Icon name="ext" /></a></>}</p></div>
 	const long = text.length > 600 || text.split('\n').length > 6
@@ -99,7 +101,7 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 		{item.ask && <MessageBubble text={item.ask} teams={item.teams} open={ui.folds?.ask ?? false} onToggle={open => fold('ask', open)} />}
 		{earlier > 0 && <details className="card-thread" open={ui.folds?.thread ?? false} onToggle={event => fold('thread', event.currentTarget.open)}>
 			<Hint text="Show the earlier messages of this conversation here. Nothing changes in Teams."><summary>Show {earlier} earlier message{earlier === 1 ? '' : 's'}</summary></Hint>
-			<ol className="thread-list">{item.thread.map((message, n) => <li key={n}><strong>{message.who}</strong> <time dateTime={message.at}>{when(message.at)}</time><p>{clip(message.text)}</p></li>)}</ol>
+			<ol className="thread-list">{item.thread.map((message, n) => <li key={n}><strong>{message.who}</strong> <time dateTime={message.at}>{when(message.at)}</time>			<p>{clip(messageText(message.text))}</p></li>)}</ol>
 		</details>}
 		{item.earlier && <p className="card-earlier"><Icon name="clock" /> {item.earlier}</p>}
 		{newer && <p role="status" className="warnline"><Icon name="warn" /> Changed since you looked. Your current text is kept. <Button variant="outline" onClick={showLatest} disabled={busy}>Show new version</Button></p>}
@@ -294,7 +296,7 @@ export function AsksList({ codes, current, entities, onOpen }: { codes: string[]
 	if (items.length < 2) return null
 	return <section className="card-block card-asks" aria-label={`${items.length} asks in this conversation`}><h3>{items.length} asks in this conversation</h3>
 		<ul>{items.map(item => {
-			const person = entities.people[item.personId], words = (item.ask ?? item.status).replace(/\s+/g, ' ').slice(0, 60), at = sentAt(item)
+			const person = entities.people[item.personId], 			words = messageText(item.ask ?? item.status).replace(/\s+/g, ' ').slice(0, 60), at = sentAt(item)
 			return <li key={item.code}><button type="button" className="ask-line" aria-current={item.code === current || undefined} title={`${person.name}: ${words} (${item.code})`} onClick={() => onOpen ? onOpen(item.code) : navigate(classic ? `focus/${item.code}` : `now/${item.code}`)}>
 				<span className="card-avatar small" style={{ '--hue': person.hue } as CSSProperties} aria-hidden="true">{person.initials}</span><strong>{firstName(person.name)}</strong><span className="ask-words">{words}</span><SentTime at={at.at} added={at.added} /></button></li>
 		})}</ul></section>

@@ -11,7 +11,7 @@ import { when, time } from '../domain/time.ts'
 import { revisionKey, type Entities, type Placement } from '../domain/contracts.ts'
 import { Icon } from '../components/ui/icon.tsx'
 import { ViewportList } from '../components/ViewportList.tsx'
-import { sentAt, whereOf } from './ItemCard.tsx'
+import { messageText, sentAt, whereOf } from './ItemCard.tsx'
 import { SentTime } from './SentTime.tsx'
 import { isolateRowControls } from './row-navigation.ts'
 import './rows.css'
@@ -105,7 +105,7 @@ export const NowRow = memo(function NowRow({ id, day }: { id: string; day?: stri
 	const chat = item && entities ? entities.chats[item.chatId] : undefined
 	const sent = item ? sentAt(item) : { at: row.facts.at, added: !row.facts.verb || row.facts.verb === 'item created' }
 	const quote = row.facts.quote && row.facts.quote.by !== 'You' ? row.facts.quote.text : undefined
-	const message = (quote ?? item?.ask)?.slice(0, 400).replace(/\s+/g, ' ').slice(0, 200)
+	const message = messageText(quote ?? item?.ask ?? '').replace(/\s+/g, ' ').slice(0, 200)
 	const draft = item?.draftId && entities ? entities.drafts[item.draftId] : undefined
 	const work = row.workId && entities ? entities.work[row.workId] : undefined
 	const mine: [string, string] | undefined = row.section !== 'move' ? undefined

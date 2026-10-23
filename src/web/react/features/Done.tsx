@@ -5,7 +5,7 @@ import { useActivityCard, useCardUi, useEdit, useEntities, useItemBusy, useShowL
 import { useScreenNavigation } from '../classic/navigation.tsx'
 import { ActionButton, ActionState } from './ActionButton.tsx'
 import type { Entities } from '../domain/contracts.ts'
-import { ItemCard } from './ItemCard.tsx'
+import { ItemCard, messageText } from './ItemCard.tsx'
 import { SentTime } from './SentTime.tsx'
 import { useDoneEntries, useDoneLook } from '../data/done.ts'
 import { when } from '../domain/time.ts'
@@ -49,7 +49,7 @@ export function Entry({ row: supplied, fresh = false, grouped = false, compact =
 		const expandable = !!row.text || !!reopen
 		const searched = row.why?.searched ?? item?.why.searched ?? []
 		const where = row.sentence.match(/ in (.+)$/)?.[1]
-		const exchange = reply && (row.ask || row.said) ? <>{row.ask ? <span className="qa"><strong>{person.name.split(' ')[0]} asked:</strong> {row.ask}</span> : <strong>{row.sentence}</strong>}{row.said && <span className="qa you"><strong>You{row.inTeams ? ' (in Teams)' : ''}:</strong> {row.said}</span>}</> : <><strong>{row.sentence}</strong>{(row.gist || row.said) && <span className="gist">{row.gist ?? `“${row.said}”`}</span>}</>
+		const exchange = reply && (row.ask || row.said) ? <>{row.ask ? <span className="qa"><strong>{person.name.split(' ')[0]} asked:</strong> 		{messageText(row.ask)}</span> : <strong>{row.sentence}</strong>}{row.said && <span className="qa you"><strong>You{row.inTeams ? ' (in Teams)' : ''}:</strong> {row.said}</span>}</> : <><strong>{row.sentence}</strong>{(row.gist || row.said) && <span className="gist">{row.gist ?? `“${row.said}”`}</span>}</>
 		return <article className={`done-entry${expanded ? ' done-open' : ''}`} data-activity-code={row.code} onClick={row.kind === 'catchup' ? isolateRowControls : undefined}>
 			<div className="done-row">
 				{reply ? <span className="row-avatar" style={{ '--hue': person.hue } as CSSProperties}>{person.initials}</span> : <span className="row-icon"><Icon name={row.kind === 'catchup' ? row.high ? 'warn' : 'eye' : row.kind === 'reminder' ? 'clock' : row.kind === 'learned' ? 'book' : 'check'} /></span>}
@@ -84,7 +84,7 @@ export function Entry({ row: supplied, fresh = false, grouped = false, compact =
 		{(newer || blocked) && <p role="status" className="warning">{blocked ? 'An unsent edit for this item is kept on another version.' : 'This activity changed while you were editing. Your text is kept.'} <Button variant="outline" disabled={busy} onClick={showLatest}>Review current version</Button></p>}
 		{!compact && row.ask && <p>{person.name} asked: {row.ask}</p>}
 		{!compact && row.said && <p><strong>{row.inTeams ? 'You (in Teams)' : 'You'}:</strong> {row.said}</p>}
-		{row.gist && <p className={compact ? 'classic-catchup-gist' : undefined}>{row.gist}</p>}
+		{row.gist && <p className={compact ? 'classic-catchup-gist' : undefined}>		{messageText(row.gist)}</p>}
 		<p className="muted">{!compact && `${person.name} - `}{row.by}{compact ? ' · ' : ' - '}<SentTime at={row.at} /></p>
 		{!compact && row.work && <p>{row.work}</p>}
 		{(row.teams || row.href) && <a className={compact ? 'classic-catchup-source' : undefined} aria-label={compact ? row.teams ? 'Open in Teams' : 'Open source' : undefined} href={row.teams ?? row.href} target="_blank" rel="noopener noreferrer">{compact ? <Icon name="ext" /> : row.teams ? 'Open in Teams' : 'Open source'}</a>}

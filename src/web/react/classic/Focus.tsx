@@ -9,14 +9,14 @@ import { useData } from '../data/store.ts'
 import { useNavigation } from '../data/navigation.ts'
 import type { Entities, Snapshot } from '../domain/contracts.ts'
 import { ViewportList } from '../components/ViewportList.tsx'
-import { sentAt } from '../features/ItemCard.tsx'
+import { messageText, sentAt } from '../features/ItemCard.tsx'
 import { SentTime } from '../features/SentTime.tsx'
 import { codeHover } from '../domain/hover.ts'
 
 const QueueItem = memo(function QueueItem({ item, person, chat, active, current }: { item: Entities['items'][string]; person: Entities['people'][string]; chat: Entities['chats'][string]; active: boolean; current: boolean }) {
 	const sent = sentAt(item)
 	return <div className="classic-queue-row"><a className={active ? undefined : 'classic-queue-handled'} href={`#classic/focus/${item.code}`} title={codeHover(item.code)} aria-current={current ? 'step' : undefined} data-classic-code={item.code} data-classic-live={active}>
-		{active ? <Avatar person={person} /> : <span className="classic-queue-check"><Icon name="check" /></span>}<span className="classic-queue-text"><span className="classic-queue-name"><span>{person.name.split(/[\s,(]+/)[0]}</span><SentTime at={sent.at} added={sent.added} waiting={active} code={item.code} /></span><span className="classic-queue-preview">		{(item.question || item.ask || '').slice(0, 200)}</span><span className="classic-queue-chat">{chat.group ? `in ${chat.name}` : '1:1 chat'}</span></span>
+		{active ? <Avatar person={person} /> : <span className="classic-queue-check"><Icon name="check" /></span>}<span className="classic-queue-text"><span className="classic-queue-name"><span>{person.name.split(/[\s,(]+/)[0]}</span><SentTime at={sent.at} added={sent.added} waiting={active} code={item.code} /></span><span className="classic-queue-preview">				{messageText(item.question || item.ask || '').slice(0, 200)}</span><span className="classic-queue-chat">{chat.group ? `in ${chat.name}` : '1:1 chat'}</span></span>
 	</a>{item.teams && <Button asChild variant="ghost" size="icon-xs" aria-label="Open in Teams"><a href={item.teams} target="_blank" rel="noopener noreferrer"><Icon name="ext" /></a></Button>}</div>
 })
 

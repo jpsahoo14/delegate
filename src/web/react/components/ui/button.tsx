@@ -61,7 +61,7 @@ function Button({
   }) {
   const Comp = asChild ? Slot.Root : "button"
   const id = React.useId()
-  const hover = props.title ?? hoverOf("", props["aria-label"] ?? textOf(props.children))
+  const hover = props.title ?? hoverOf("", textOf(props.children)) ?? hoverOf("", props["aria-label"] ?? "")
   const described = props["aria-describedby"] ?? (hover ? id : undefined)
 
   return (
