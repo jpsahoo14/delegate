@@ -1,4 +1,5 @@
 import { Fragment, memo, useEffect, useRef, useState, type ComponentProps, type CSSProperties, type ReactNode } from 'react'
+import { chipHover, codeHover } from '../domain/hover.ts'
 import { Button } from '../components/ui/button.tsx'
 import { useCardPresentation, useCardUi, useEdit, useEntities, useExperienceNote, useItemCard, useNowSections, usePlacement, useSnapshot } from '../data/hooks.ts'
 import { useNavigation } from '../data/navigation.ts'
@@ -102,7 +103,7 @@ export const NowRow = memo(function NowRow({ id, day }: { id: string; day?: stri
 	return <article className={`now-row${open ? ' row-open' : ''}`} data-code={row.code} data-row-kind={row.kind}>
 		<div className="row-content">
 			{person && !icon ? <span className="row-avatar" style={avatarStyle} aria-hidden="true">{person.initials}</span> : <span className="row-icon"><Icon name={icon ?? 'clock'} /></span>}
-			<div className="row-text"><div className="row-heading"><h3><button className="row-title" aria-label={`${open ? 'Hide' : 'Open'} ${row.headline}`} onClick={() => navigate(open ? 'now' : `now/${id}`)} aria-expanded={open}>{row.headline}</button></h3>{row.chips.map((chip, n) => <span key={`${chip.kind}-${n}`} className={`chip chip-${chip.kind}`}>{chip.text}</span>)}<span className="code">{row.act}</span></div>
+			<div className="row-text"><div className="row-heading"><h3><button className="row-title" aria-label={`${open ? 'Hide' : 'Open'} ${row.headline}`} onClick={() => navigate(open ? 'now' : `now/${id}`)} aria-expanded={open}>{row.headline}</button></h3>{row.chips.map((chip, n) => <span key={`${chip.kind}-${n}`} className={`chip chip-${chip.kind}`} title={chipHover(chip.kind)}>{chip.text}</span>)}<span className="code" title={codeHover(row.act)}>{row.act}</span></div>
 				<RowFacts row={row} day={day ?? calendarKey()} />
 				{row.gist && <p>{row.gist}</p>}
 				{row.warn && <p className="row-warning"><Icon name="warn" /><span>{row.warn}</span></p>}

@@ -1,4 +1,5 @@
 import { useEffect } from 'react'
+import { codeHover } from '../domain/hover.ts'
 import { Button } from '../components/ui/button.tsx'
 import { Icon } from '../components/ui/icon.tsx'
 import { useCardUi, useEdit, useItemBusy, useKnowledgeCard, useShowLatest } from '../data/hooks.ts'
@@ -12,7 +13,7 @@ function Proposal({ id }: { id: string }) {
 	if (!entities || !proposal) return null
 	const actions = proposal.actionIds.map(key => entities.actions[key])
 	const save = actions.find(action => action.kind === (ui.editing ? 'edit-fact' : 'save-facts'))
-	return <article className="item-card knowledge-card" data-proposal-code={proposal.code}><header className="knowledge-heading"><span className="row-icon"><Icon name="book" /></span><div><h2>{proposal.topic}</h2><p className="muted">{proposal.home === 'team' ? 'Saves to team knowledge' : <><Icon name="lock" /> Saves to your own knowledge</>}</p></div><span className="code">{proposal.code}</span></header>
+	return <article className="item-card knowledge-card" data-proposal-code={proposal.code}><header className="knowledge-heading"><span className="row-icon"><Icon name="book" /></span><div><h2>{proposal.topic}</h2><p className="muted">{proposal.home === 'team' ? 'Saves to team knowledge' : <><Icon name="lock" /> Saves to your own knowledge</>}</p></div><span className="code" title={codeHover(proposal.code)}>{proposal.code}</span></header>
 		{newer && <p role="status">Newer version available. Your edit is kept. <Button variant="outline" disabled={busy} onClick={showLatest}>Show new version</Button></p>}
 		<div className="knowledge-selection"><span>Facts to save</span><span>{proposal.factIds.length - (ui.excluded?.length ?? 0)} of {proposal.factIds.length} selected</span></div>
 		<div className="knowledge-facts">{proposal.factIds.map((factId, index) => {

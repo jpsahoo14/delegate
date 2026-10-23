@@ -1,116 +1,108 @@
 {
   "App.tsx": {
-    "file": "assets/App-o-nZB46J.js",
+    "file": "assets/App-DtVcCj5C.js",
     "name": "App",
     "src": "App.tsx",
     "isDynamicEntry": true,
     "imports": [
-      "_ActionButton-b2Q0amn4.js",
+      "_ActionButton-D_CRYcJf.js",
       "index.html",
       "_time-BEvaNd-3.js",
-      "_navigation-BKhBUBcF.js",
-      "_version-DCNftTI2.js"
-    ],
-    "dynamicImports": [
-      "features/Now.tsx",
-      "_Done-BkXmVBIW.js",
-      "features/Numbers.tsx",
-      "features/Settings.tsx",
-      "features/Knowledge.tsx",
-      "classic/Classic.tsx"
+      "_navigation-Cu2Ah16l.js",
+      "_version-B0kTymV-.js"
     ],
     "css": [
       "assets/App-CHG6qyOE.css"
     ]
   },
-  "_ActionButton-b2Q0amn4.js": {
-    "file": "assets/ActionButton-b2Q0amn4.js",
+  "_ActionButton-D_CRYcJf.js": {
+    "file": "assets/ActionButton-D_CRYcJf.js",
     "name": "ActionButton",
     "imports": [
       "index.html"
     ]
   },
-  "_Avatar-BKJyY_pF.js": {
-    "file": "assets/Avatar-BKJyY_pF.js",
+  "_Avatar-ELC5FedA.js": {
+    "file": "assets/Avatar-ELC5FedA.js",
     "name": "Avatar",
     "imports": [
       "index.html"
     ]
   },
-  "_Blocks-DNazrsuw.js": {
-    "file": "assets/Blocks-DNazrsuw.js",
+  "_Blocks-Bc3GMg89.js": {
+    "file": "assets/Blocks-Bc3GMg89.js",
     "name": "Blocks",
     "imports": [
-      "_ActionButton-b2Q0amn4.js",
+      "_ActionButton-D_CRYcJf.js",
       "index.html",
-      "_CardFields-CdPpYSbU.js"
+      "_CardFields-B7SNDbfA.js"
     ]
   },
-  "_CardFields-CdPpYSbU.js": {
-    "file": "assets/CardFields-CdPpYSbU.js",
+  "_CardFields-B7SNDbfA.js": {
+    "file": "assets/CardFields-B7SNDbfA.js",
     "name": "CardFields",
     "imports": [
       "index.html"
     ]
   },
-  "_CheckNow-DNIQ0hhc.js": {
-    "file": "assets/CheckNow-DNIQ0hhc.js",
+  "_CheckNow-B6VqalX0.js": {
+    "file": "assets/CheckNow-B6VqalX0.js",
     "name": "CheckNow",
     "imports": [
-      "_ActionButton-b2Q0amn4.js",
+      "_ActionButton-D_CRYcJf.js",
       "index.html"
     ]
   },
-  "_Done-BkXmVBIW.js": {
-    "file": "assets/Done-BkXmVBIW.js",
+  "_Done-DGPkLC6g.js": {
+    "file": "assets/Done-DGPkLC6g.js",
     "name": "Done",
     "imports": [
-      "_ActionButton-b2Q0amn4.js",
+      "_ActionButton-D_CRYcJf.js",
       "index.html",
       "_time-BEvaNd-3.js",
-      "_navigation-BKhBUBcF.js",
-      "_ItemCard-Bqf2drfV.js",
-      "_CardFields-CdPpYSbU.js",
-      "_dates-CdJ-RWDJ.js"
+      "_navigation-Cu2Ah16l.js",
+      "_ItemCard-BIyDkGup.js",
+      "_CardFields-B7SNDbfA.js",
+      "_dates-FOg6OU21.js"
     ]
   },
-  "_ItemCard-Bqf2drfV.js": {
-    "file": "assets/ItemCard-Bqf2drfV.js",
+  "_ItemCard-BIyDkGup.js": {
+    "file": "assets/ItemCard-BIyDkGup.js",
     "name": "ItemCard",
     "imports": [
-      "_ActionButton-b2Q0amn4.js",
+      "_ActionButton-D_CRYcJf.js",
       "index.html",
       "_time-BEvaNd-3.js",
-      "_CardFields-CdPpYSbU.js"
+      "_CardFields-B7SNDbfA.js"
     ]
   },
-  "_ViewportList-B7_sjzcn.js": {
-    "file": "assets/ViewportList-B7_sjzcn.js",
+  "_ViewportList-BWHYqxPE.js": {
+    "file": "assets/ViewportList-BWHYqxPE.js",
     "name": "ViewportList",
     "imports": [
       "index.html"
     ]
   },
-  "_dates-CdJ-RWDJ.js": {
-    "file": "assets/dates-CdJ-RWDJ.js",
+  "_dates-FOg6OU21.js": {
+    "file": "assets/dates-FOg6OU21.js",
     "name": "dates",
     "imports": [
-      "_ActionButton-b2Q0amn4.js",
+      "_ActionButton-D_CRYcJf.js",
       "index.html"
     ]
   },
-  "_knowledge-Ds_ug1tT.js": {
-    "file": "assets/knowledge-Ds_ug1tT.js",
+  "_knowledge-B8dEn2XI.js": {
+    "file": "assets/knowledge-B8dEn2XI.js",
     "name": "knowledge",
     "imports": [
       "index.html"
     ]
   },
-  "_navigation-BKhBUBcF.js": {
-    "file": "assets/navigation-BKhBUBcF.js",
+  "_navigation-Cu2Ah16l.js": {
+    "file": "assets/navigation-Cu2Ah16l.js",
     "name": "navigation",
     "imports": [
-      "_ActionButton-b2Q0amn4.js",
+      "_ActionButton-D_CRYcJf.js",
       "index.html"
     ]
   },
@@ -122,98 +114,92 @@
     "file": "assets/tools-BBmQR0xu.css",
     "src": "_tools-BBmQR0xu.css"
   },
-  "_version-BZNqDcuJ.css": {
-    "file": "assets/version-BZNqDcuJ.css",
-    "src": "_version-BZNqDcuJ.css"
-  },
-  "_version-DCNftTI2.js": {
-    "file": "assets/version-DCNftTI2.js",
+  "_version-B0kTymV-.js": {
+    "file": "assets/version-B0kTymV-.js",
     "name": "version",
     "imports": [
-      "_ActionButton-b2Q0amn4.js",
+      "_ActionButton-D_CRYcJf.js",
       "index.html",
       "_time-BEvaNd-3.js",
-      "_Avatar-BKJyY_pF.js",
-      "_navigation-BKhBUBcF.js"
+      "_Avatar-ELC5FedA.js",
+      "_navigation-Cu2Ah16l.js"
     ],
     "css": [
       "assets/version-BZNqDcuJ.css"
     ]
   },
+  "_version-BZNqDcuJ.css": {
+    "file": "assets/version-BZNqDcuJ.css",
+    "src": "_version-BZNqDcuJ.css"
+  },
   "classic/Classic.tsx": {
-    "file": "assets/Classic-DNDJMmIy.js",
+    "file": "assets/Classic-C2-ncfZn.js",
     "name": "Classic",
     "src": "classic/Classic.tsx",
     "isDynamicEntry": true,
     "imports": [
-      "_ActionButton-b2Q0amn4.js",
+      "_ActionButton-D_CRYcJf.js",
       "index.html",
       "_time-BEvaNd-3.js",
-      "_Avatar-BKJyY_pF.js",
-      "_navigation-BKhBUBcF.js",
-      "_version-DCNftTI2.js",
-      "_ItemCard-Bqf2drfV.js",
-      "_CardFields-CdPpYSbU.js",
-      "_dates-CdJ-RWDJ.js",
-      "_Done-BkXmVBIW.js",
-      "_Blocks-DNazrsuw.js",
-      "_ViewportList-B7_sjzcn.js"
-    ],
-    "dynamicImports": [
-      "classic/Done.tsx",
-      "classic/Numbers.tsx",
-      "classic/Settings.tsx",
-      "classic/Knowledge.tsx"
+      "_Avatar-ELC5FedA.js",
+      "_navigation-Cu2Ah16l.js",
+      "_version-B0kTymV-.js",
+      "_ItemCard-BIyDkGup.js",
+      "_CardFields-B7SNDbfA.js",
+      "_dates-FOg6OU21.js",
+      "_Done-DGPkLC6g.js",
+      "_Blocks-Bc3GMg89.js",
+      "_ViewportList-BWHYqxPE.js"
     ],
     "css": [
-      "assets/Classic-CilDyohr.css"
+      "assets/Classic-DMjyjHtJ.css"
     ]
   },
   "classic/Done.tsx": {
-    "file": "assets/Done-Dy7ZuI2s.js",
+    "file": "assets/Done-DB8Sxe-N.js",
     "name": "Done",
     "src": "classic/Done.tsx",
     "isDynamicEntry": true,
     "imports": [
-      "_ActionButton-b2Q0amn4.js",
+      "_ActionButton-D_CRYcJf.js",
       "index.html",
       "_time-BEvaNd-3.js",
-      "_Avatar-BKJyY_pF.js",
-      "_navigation-BKhBUBcF.js",
-      "_CardFields-CdPpYSbU.js",
-      "_dates-CdJ-RWDJ.js",
-      "_Blocks-DNazrsuw.js"
+      "_Avatar-ELC5FedA.js",
+      "_navigation-Cu2Ah16l.js",
+      "_CardFields-B7SNDbfA.js",
+      "_dates-FOg6OU21.js",
+      "_Blocks-Bc3GMg89.js"
     ],
     "css": [
       "assets/Done-BC0fgIsM.css"
     ]
   },
   "classic/Knowledge.tsx": {
-    "file": "assets/Knowledge-4-eNz8IO.js",
+    "file": "assets/Knowledge-BWbn_n3o.js",
     "name": "Knowledge",
     "src": "classic/Knowledge.tsx",
     "isDynamicEntry": true,
     "imports": [
-      "_ActionButton-b2Q0amn4.js",
+      "_ActionButton-D_CRYcJf.js",
       "index.html",
-      "_navigation-BKhBUBcF.js",
-      "_knowledge-Ds_ug1tT.js"
+      "_navigation-Cu2Ah16l.js",
+      "_knowledge-B8dEn2XI.js"
     ],
     "css": [
       "assets/tools-BBmQR0xu.css"
     ]
   },
   "classic/Numbers.tsx": {
-    "file": "assets/Numbers-CgnzXBYy.js",
+    "file": "assets/Numbers-DMYfIvAz.js",
     "name": "Numbers",
     "src": "classic/Numbers.tsx",
     "isDynamicEntry": true,
     "imports": [
-      "_ActionButton-b2Q0amn4.js",
+      "_ActionButton-D_CRYcJf.js",
       "index.html",
       "_time-BEvaNd-3.js",
-      "_Avatar-BKJyY_pF.js",
-      "_navigation-BKhBUBcF.js",
+      "_Avatar-ELC5FedA.js",
+      "_navigation-Cu2Ah16l.js",
       "classic/Done.tsx"
     ],
     "css": [
@@ -221,90 +207,90 @@
     ]
   },
   "classic/Settings.tsx": {
-    "file": "assets/Settings-DZ83I5xr.js",
+    "file": "assets/Settings-6UxeLz0d.js",
     "name": "Settings",
     "src": "classic/Settings.tsx",
     "isDynamicEntry": true,
     "imports": [
-      "_ActionButton-b2Q0amn4.js",
+      "_ActionButton-D_CRYcJf.js",
       "index.html",
-      "_navigation-BKhBUBcF.js",
-      "_CheckNow-DNIQ0hhc.js"
+      "_navigation-Cu2Ah16l.js",
+      "_CheckNow-B6VqalX0.js"
     ],
     "css": [
       "assets/tools-BBmQR0xu.css"
     ]
   },
   "features/Knowledge.tsx": {
-    "file": "assets/Knowledge-CbxyS6ns.js",
+    "file": "assets/Knowledge-Bl6b-xQk.js",
     "name": "Knowledge",
     "src": "features/Knowledge.tsx",
     "isDynamicEntry": true,
     "imports": [
-      "_ActionButton-b2Q0amn4.js",
+      "_ActionButton-D_CRYcJf.js",
       "index.html",
-      "_navigation-BKhBUBcF.js",
-      "_knowledge-Ds_ug1tT.js"
+      "_navigation-Cu2Ah16l.js",
+      "_knowledge-B8dEn2XI.js"
     ]
   },
   "features/Now.tsx": {
-    "file": "assets/Now-T_CfI13f.js",
+    "file": "assets/Now-DW69vByP.js",
     "name": "Now",
     "src": "features/Now.tsx",
     "isDynamicEntry": true,
     "imports": [
-      "_ActionButton-b2Q0amn4.js",
+      "_ActionButton-D_CRYcJf.js",
       "index.html",
       "_time-BEvaNd-3.js",
-      "_ItemCard-Bqf2drfV.js",
-      "_ViewportList-B7_sjzcn.js"
+      "_ItemCard-BIyDkGup.js",
+      "_ViewportList-BWHYqxPE.js"
     ]
   },
   "features/Numbers.tsx": {
-    "file": "assets/Numbers-BqW54rHo.js",
+    "file": "assets/Numbers-Bw_djLG3.js",
     "name": "Numbers",
     "src": "features/Numbers.tsx",
     "isDynamicEntry": true,
     "imports": [
-      "_ActionButton-b2Q0amn4.js",
+      "_ActionButton-D_CRYcJf.js",
       "index.html",
       "_time-BEvaNd-3.js",
-      "_navigation-BKhBUBcF.js",
-      "_Done-BkXmVBIW.js"
+      "_navigation-Cu2Ah16l.js",
+      "_Done-DGPkLC6g.js"
     ]
   },
   "features/Settings.tsx": {
-    "file": "assets/Settings-C-djEDHZ.js",
+    "file": "assets/Settings-C3lAtDHX.js",
     "name": "Settings",
     "src": "features/Settings.tsx",
     "isDynamicEntry": true,
     "imports": [
-      "_ActionButton-b2Q0amn4.js",
+      "_ActionButton-D_CRYcJf.js",
       "index.html",
-      "_navigation-BKhBUBcF.js",
-      "_CheckNow-DNIQ0hhc.js"
+      "_navigation-Cu2Ah16l.js",
+      "_CheckNow-B6VqalX0.js"
     ]
   },
   "index.html": {
-    "file": "assets/index-ijzEhfaT.js",
+    "file": "assets/index-CLX2dNKj.js",
     "name": "index",
     "src": "index.html",
     "isEntry": true,
     "dynamicImports": [
+      "features/Now.tsx",
+      "_Done-DGPkLC6g.js",
+      "features/Numbers.tsx",
+      "features/Settings.tsx",
+      "features/Knowledge.tsx",
       "classic/Classic.tsx",
       "classic/Done.tsx",
       "classic/Numbers.tsx",
       "classic/Settings.tsx",
       "classic/Knowledge.tsx",
-      "features/Now.tsx",
-      "_Done-BkXmVBIW.js",
-      "features/Numbers.tsx",
-      "features/Settings.tsx",
-      "features/Knowledge.tsx",
       "App.tsx"
     ],
     "css": [
-      "assets/index-CRhNKTtv.css"
+      "assets/index-ByijM-8x.css"
     ]
   }
 }

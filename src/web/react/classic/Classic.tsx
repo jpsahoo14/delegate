@@ -1,4 +1,6 @@
-import { lazy, Suspense, useEffect, useRef, useState } from 'react'
+import { Suspense, useEffect, useRef, useState } from 'react'
+import { preloadable } from '../components/preloadable.ts'
+import { CLASSIC_VIEWS } from '../data/views.ts'
 import { useAppData, useEntities, useLatestError, useLatestResult, usePendingCount, usePendingReceipts, useSnapshot } from '../data/hooks.ts'
 import { useHashNavigation, useNavigation } from '../data/navigation.ts'
 import { THEME_LABEL, useInterface } from '../data/interface.ts'
@@ -17,10 +19,10 @@ import { ClassicCard } from './Card.tsx'
 import Ongoing from './Ongoing.tsx'
 import './classic.css'
 
-const Done = lazy(() => import('./Done.tsx'))
-const Numbers = lazy(() => import('./Numbers.tsx'))
-const Settings = lazy(() => import('./Settings.tsx'))
-const Knowledge = lazy(() => import('./Knowledge.tsx'))
+const Done = preloadable(CLASSIC_VIEWS.done)
+const Numbers = preloadable(CLASSIC_VIEWS.numbers)
+const Settings = preloadable(CLASSIC_VIEWS.settings)
+const Knowledge = preloadable(CLASSIC_VIEWS.knowledge)
 
 function Snapshot() {
 	const snapshot = useSnapshot(), entities = useEntities()

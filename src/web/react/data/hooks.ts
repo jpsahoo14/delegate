@@ -30,6 +30,8 @@ export function useAppData() {
 			return snapshot
 		}, retry: false, notifyOnChangeProps: ['error'],
 		structuralSharing: false,
+		// A switch to the other experience mounts its own reader of the same page; the polled copy is current, so it is not fetched again (spec S6).
+		refetchOnMount: false,
 		refetchInterval: query => window.DELEGATE_POLL_MS ?? (Object.values(query.state.data?.entities.notes ?? {}).some(note => note.answer === undefined) ||
 			Object.values(useData.getState().byRevision).some(ui => ui.pending) ? 4000 : 20_000),
 	})

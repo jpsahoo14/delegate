@@ -1,4 +1,4 @@
-.experience-choice{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-2)}
+.classic-experience .experience-choice{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-2)}
 .classic-experience main{max-width:1200px;padding:24px 24px 96px}
 .classic-experience .preview-header .header-inner{gap:10px;max-width:1328px}
 .classic-experience .preview-header nav{flex-wrap:nowrap}

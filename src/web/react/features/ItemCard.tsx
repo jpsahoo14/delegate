@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { chipHover } from '../domain/hover.ts'
 import { Button } from '../components/ui/button.tsx'
 import { useAction, useCardPresentation, useEdit, useItemBusy, useShowLatest } from '../data/hooks.ts'
 import type { Intent } from '../domain/contracts.ts'
@@ -36,7 +37,7 @@ export function ItemCard({ code, placementId, inline = false }: { code: string; 
 	const moreView = <details className="card-more-menu"><summary aria-label="More" title="More">{inline && !work ? <Icon name="more" /> : 'More'}</summary><div className="card-more-content">
 		{item.teams && <a href={item.teams} target="_blank" rel="noopener noreferrer">Open in Teams</a>}
 		{item.teams && draft && <Button variant="outline" onClick={() => void chatEdit.open(ui.editing ? ui.editText ?? draft.text : draft.text, item.teams!)}>Edit in Teams</Button>}
-		{actions.filter(action => ['dismiss', 'continue', 'reply-only'].includes(action.kind)).map(action => <ActionButton key={action.id} action={action} disabled={newer && action.staleness === 'exact'} />)}
+		{actions.filter(action => ['dismiss', 'continue', 'reply-only'].includes(action.kind)).map(action => <ActionButton key={action.id} action={action} disabled={newer && action.staleness === 'exact'} disabledReason="stale" />)}
 		{item.debug && <><pre>{item.debug.join('\n')}</pre><Button variant="outline" onClick={() => void detailsCopy.copy(item.debug!.join('\n'))}>Copy details</Button>{detailsCopy.message && <p role="status">{detailsCopy.message}</p>}</>}
 	</div></details>
 	return <article className={`item-card${inline ? ' inline-card' : ''}${inline && !work ? ' inline-simple-card' : ''}`} aria-labelledby={`card-title-${code}`} tabIndex={-1} ref={article}
@@ -52,7 +53,7 @@ export function ItemCard({ code, placementId, inline = false }: { code: string; 
 		{newer && <div role="status" className="warning">Newer version available. Your current text is kept. <Button variant="outline" onClick={showLatest} disabled={busy}>Show new version</Button></div>}
 		{item.newCount > 0 && <p className="warning">{item.newCount} new message{item.newCount === 1 ? '' : 's'}</p>}
 		{item.before && <p>From before setup</p>}
-		{placement?.chips.some(chip => chip.kind === 'holding') && <p className="chip">Holding reply</p>}
+		{placement?.chips.some(chip => chip.kind === 'holding') && <p className="chip" title={chipHover('holding')}>Holding reply</p>}
 		{placement?.chips.some(chip => chip.kind === 'retrying') && <p className="warning">Retrying{placement.nextText ? `: ${placement.nextText.replace('{at}', placement.next?.at ? when(placement.next.at) : 'soon')}` : ''}</p>}
 		{inline && !work && <div className="inline-card-top">{moreView}</div>}
 		{inline && item.earlier && <p className="card-earlier"><Icon name="clock" /> {item.earlier}</p>}
@@ -69,7 +70,7 @@ export function ItemCard({ code, placementId, inline = false }: { code: string; 
 			{report && <fieldset className="report-form"><legend>Report your result</legend>{(['Both work', 'Issues found', 'Blocked'] as const).map(result => <label className="option" key={result}><input type="radio" name={`report-${code}`} checked={ui.resultKind === result} onChange={() => edit({ resultKind: result })} />{result}</label>)}
 				<Field code={code} rev={item.rev} field="report" label="What did you see?" value={ui.report ?? ''} edit={edit} rows={2} placeholder="What you saw: errors, IDs, links" />
 				<p className="muted">{NAME} drafts your report. Nothing is sent until you approve the reply.</p>
-				<ActionButton action={report} primary input={{ result: ui.resultKind, text: ui.report }} disabled={!ui.resultKind} />
+				<ActionButton action={report} primary input={{ result: ui.resultKind, text: ui.report }} disabled={!ui.resultKind} disabledReason="Pick how it went first." />
 			</fieldset>}
 			{!!timeline?.stepIds.length && <details><summary>What happened{workOnly && ', newest first'}{workOnly && timeline.total > timeline.stepIds.length && ` · last ${timeline.stepIds.length} steps of ${timeline.total}`}</summary><ol>{timeline.stepIds.map(id => {
 				const step = entities.workSteps[id]
@@ -132,22 +133,22 @@ export function ItemCard({ code, placementId, inline = false }: { code: string; 
 			{item.why.searched?.map((searched, n) => <p key={n}>Looked up: {searched}</p>)}
 		</details>}
 		{(!inline || work) && threadView}
-		<div className="action-bar">{primary && !report && <ActionButton primary action={primary} input={input} disabled={!!invalid || newer} />}
+		<div className="action-bar">{primary && !report && <ActionButton primary action={primary} input={input} disabled={!!invalid || newer} disabledReason={newer ? 'stale' : primary.kind === 'pick' || item.choices && !ui.other ? 'pick' : 'Type your answer first.'} />}
 			{actions.filter(action => action.kind === 'later').map(action => <ActionButton key={action.id} action={action} />)}
 			{(!inline || work) && moreView}
 		</div>
 		{chatEdit.message && <p role="status">{chatEdit.message}</p>}
-		{actions.filter(action => action.id !== primary?.id && !['approve', 'approve-again', 'send-edit', 'answer', 'pick', 'ask', 'later', 'dismiss', 'continue', 'todo-done', 'reply-only', 'review-again'].includes(action.kind)).map(action => <div key={action.id}>{action.meaning && <p>{action.meaning}</p>}<ActionButton action={action} disabled={newer && action.staleness === 'exact' || action.effect !== 'local' && !action.meaning} /></div>)}
+		{actions.filter(action => action.id !== primary?.id && !['approve', 'approve-again', 'send-edit', 'answer', 'pick', 'ask', 'later', 'dismiss', 'continue', 'todo-done', 'reply-only', 'review-again'].includes(action.kind)).map(action => <div key={action.id}>{action.meaning && <p>{action.meaning}</p>}<ActionButton action={action} disabled={newer && action.staleness === 'exact' || action.effect !== 'local' && !action.meaning} disabledReason={newer ? 'stale' : undefined} /></div>)}
 		<ActionState item={code} rev={item.rev} />
 		{primary && primary.rev !== item.rev && <ActionState item={primary.item} rev={primary.rev} />}
 		<section className="ask-thread"><h3>Ask {NAME}</h3><p className="muted">Only you see this conversation.</p>{item.noteIds.map(id => {
 			const note = entities.notes[id]
 			return <div key={id}><p><strong>You:</strong> {note.question}</p><p>{note.answer === '' ? 'The answer contained only chat instructions. Review the item using its available buttons, or ask a follow-up.' : note.answer ?? 'Waiting for an answer...'}</p><Sources ids={note.sourceIds} entities={entities} />
-				{note.useActionId && <ActionButton action={entities.actions[note.useActionId]} disabled={newer} />}
+				{note.useActionId && <ActionButton action={entities.actions[note.useActionId]} disabled={newer} disabledReason="stale" />}
 			</div>
 		})}
 			<Field code={code} rev={item.rev} field="ask" label={`Ask ${NAME} about this`} value={ui.ask ?? ''} edit={edit} rows={2} />
-			{actions.filter(action => action.kind === 'ask').map(action => <ActionButton key={action.id} action={action} input={{ text: ui.ask }} disabled={!ui.ask?.trim()} />)}
+			{actions.filter(action => action.kind === 'ask').map(action => <ActionButton key={action.id} action={action} input={{ text: ui.ask }} disabled={!ui.ask?.trim()} disabledReason="Type your question first." />)}
 		</section>
 	</article>
 }

@@ -1,4 +1,5 @@
 import { useRef, useState, type CSSProperties } from 'react'
+import { chipHover, codeHover } from '../domain/hover.ts'
 import { Button } from '../components/ui/button.tsx'
 import { useActivityCard, useCardUi, useEdit, useEntities, useItemBusy, useShowLatest, useSnapshot } from '../data/hooks.ts'
 import { useScreenNavigation } from '../classic/navigation.tsx'
@@ -76,8 +77,8 @@ export function Entry({ row: supplied, fresh = false, grouped = false, compact =
 			{watchForm}<ActionState item={row.code} rev={rev} />
 		</article>
 	}
-	return <article className={`item-card${compact ? ' classic-catchup-row' : ''}`} data-activity-code={row.code}>{compact && <span className="classic-catchup-icon"><Icon name={row.high ? 'warn' : 'eye'} /></span>}<header className="card-header"><Heading>{row.kind === 'catchup' && row.teams ? <a href={row.teams} target="_blank" rel="noopener noreferrer">{row.sentence}</a> : <button className="row-title" onClick={onToggle} aria-expanded={open}>{row.sentence}</button>}</Heading><span className="code">{row.code}</span></header>
-		{fresh && <span className="chip">New</span>}
+	return <article className={`item-card${compact ? ' classic-catchup-row' : ''}`} data-activity-code={row.code}>{compact && <span className="classic-catchup-icon"><Icon name={row.high ? 'warn' : 'eye'} /></span>}<header className="card-header"><Heading>{row.kind === 'catchup' && row.teams ? <a href={row.teams} target="_blank" rel="noopener noreferrer">{row.sentence}</a> : <button className="row-title" onClick={onToggle} aria-expanded={open}>{row.sentence}</button>}</Heading><span className="code" title={codeHover(row.code)}>{row.code}</span></header>
+		{fresh && <span className="chip" title={chipHover('new')}>New</span>}
 		{(newer || blocked) && <p role="status" className="warning">{blocked ? 'An unsent edit for this item is kept on another version.' : 'This activity changed while you were editing. Your text is kept.'} <Button variant="outline" disabled={busy} onClick={showLatest}>Review current version</Button></p>}
 		{!compact && row.ask && <p>{person.name} asked: {row.ask}</p>}
 		{!compact && row.said && <p><strong>{row.inTeams ? 'You (in Teams)' : 'You'}:</strong> {row.said}</p>}

@@ -99,3 +99,9 @@ main { max-width: 1000px; margin: 0 auto; padding: 36px 24px; }
 @media (prefers-reduced-motion: reduce) {
 	*, *::before, *::after { transition-duration: 0s !important; animation-duration: 0s !important; }
 }
+
+/* Switching experience before its code arrived: this screen stays, dimmed, with a small spinner (spec S6). */
+html[data-switching] main{opacity:.55;pointer-events:none;transition:opacity .15s}
+html[data-switching] body::after{content:'';position:fixed;top:14px;left:50%;width:18px;height:18px;margin-left:-9px;border:2px solid var(--border-strong);border-top-color:var(--accent);border-radius:50%;animation:delegate-switch-spin .8s linear infinite;z-index:1000}
+@keyframes delegate-switch-spin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion: reduce){html[data-switching] body::after{animation:none}}

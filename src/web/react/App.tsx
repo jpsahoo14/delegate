@@ -1,4 +1,6 @@
-import { lazy, Suspense, useEffect, useLayoutEffect, useRef } from 'react'
+import { Suspense, useEffect, useLayoutEffect, useRef } from 'react'
+import { preloadable } from './components/preloadable.ts'
+import { CLASSIC_VIEWS, NEW_VIEWS } from './data/views.ts'
 import { Button } from './components/ui/button.tsx'
 import { useInterface } from './data/interface.ts'
 import { useAction, useAppData, useCardUi, useLatestError, useLatestResult, useNowSections, usePendingCount, usePendingReceipts, useSnapshot } from './data/hooks.ts'
@@ -15,12 +17,12 @@ import { ActionButton, ActionState } from './features/ActionButton.tsx'
 import { versionLabel } from './domain/version.ts'
 import { Problems } from './features/Problems.tsx'
 
-const Now = lazy(() => import('./features/Now.tsx'))
-const Done = lazy(() => import('./features/Done.tsx'))
-const Numbers = lazy(() => import('./features/Numbers.tsx'))
-const Settings = lazy(() => import('./features/Settings.tsx'))
-const Knowledge = lazy(() => import('./features/Knowledge.tsx'))
-const Classic = lazy(() => import('./classic/Classic.tsx'))
+const Now = preloadable(NEW_VIEWS.now)
+const Done = preloadable(NEW_VIEWS.done)
+const Numbers = preloadable(NEW_VIEWS.numbers)
+const Settings = preloadable(NEW_VIEWS.settings)
+const Knowledge = preloadable(NEW_VIEWS.knowledge)
+const Classic = preloadable(CLASSIC_VIEWS.app)
 
 export function App() {
 	const classic = useNavigation(state => state.route.startsWith('classic/'))

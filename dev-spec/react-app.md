@@ -1,5 +1,29 @@
 # React preview
 
+## spec S6 and S7: no loading view on a switch, and one hover text per control
+
+S6:
+- Every view's code is listed once (`data/views.ts`).
+- `components/preloadable.ts` renders a view directly once its code is loaded. React's lazy fallback, and its 300 ms throttle, never show for a loaded view. The choice is fixed per mount.
+- The page loads its first view with the data, the rest of its experience once the page arrives, and the other experience when the browser is idle, at most 3 s later.
+- A switch before that code arrives keeps the screen, dimmed (0.55) with a small spinner, until it does.
+- The page query is not fetched again when the other experience mounts.
+- Classic's unscoped `.experience-choice` rule is scoped to `.classic-experience`, so loading Classic's code early never restyles New's header.
+
+S7:
+- `domain/hover.ts` is the one map from action kind (or label, for row actions) to hover text. The server's `meaning` wins.
+- `[clause|fallback]` segments drop cleanly when a value is missing. Send, Cancel, Close and other self-explanatory labels get none.
+- The shared `ActionButton` sets `title` and an `aria-describedby` hidden copy, so New and Classic say the same thing.
+- A disabled button says why: "Pick an option first.", "Type your answer first.", "Changed since you looked…", a busy, expired or submitted state, or "Offline: reconnect to act." first when offline.
+- New's chips and codes use the exported `chipHover` and `codeHover`. Classic can use the same exports for its own chips.
+
+Proved on the owner-store copy, navigation and hover only:
+- The other experience's code loaded within 4 s, both ways. Switching drew with no "Loading" text and no extra page read.
+- With Classic's code delayed 3 s, a switch kept New dimmed and showed no Loading text.
+- First tab switches took 160–330 ms, down from 360–470.
+- Titles equal their descriptions, none has a command, no plain label has one, and every title starts "Offline" when offline.
+- On a fictional choice card, both experiences' disabled primary says "Pick an option first.", then "Type your answer first." after choosing Other.
+
 ## bug 10-23 R3: the owner's own Draft reply came back as "Changed since you looked"
 
 New and Classic set `interacting` when the owner presses the primary button, and nothing clears it. The owner's own
