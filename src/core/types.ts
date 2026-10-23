@@ -427,8 +427,10 @@ export type Card = { path: string; topic: string; card: CardName; title: string;
 export type TopicLine = { topic: string; title: string; aliases: string[]; entries: number }
 export type Hit = Entry & { score: number; expired: boolean }
 
-export type Claim = { topic: string; title?: string; type: EntryType; text: string; src: Src[]; audience?: Audience; tags?: string[] }
-export type Op = { op: 'add' | 'update' | 'retire'; id?: string; card: CardName; entry: Omit<Entry, 'id' | 'topic' | 'card'> }
+// replaces: citations (card:<topic>/<card>#<id>) of entries this claim makes untrue; applied only when every gate in propose() holds (#20).
+export type Claim = { topic: string; title?: string; type: EntryType; text: string; src: Src[]; audience?: Audience; tags?: string[]; replaces?: string[] }
+// was: the text an update replaced because a newer fact superseded it (#20), for display only.
+export type Op = { op: 'add' | 'update' | 'retire'; id?: string; card: CardName; entry: Omit<Entry, 'id' | 'topic' | 'card'>; was?: string }
 export type Proposal = {
 	schema: 1; id: Id; code: Code; topic: string; title: string
 	ops: Op[]; base: Record<string, string>; from: 'bootstrap' | 'remember' | 'edit'; source?: string

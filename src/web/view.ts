@@ -52,7 +52,7 @@ export type ItemCard = {
 }
 // Open work as the page shows it: the goal, where it stands, and its latest steps (R-WRK-07).
 export type WorkView = { goal: string; next?: string; waiting?: string; due: boolean; steps: { at: string; what: string; news: boolean }[]; plan: { what: string; who: string; done: boolean; where?: string; build?: string }[]; home?: string; proposed: boolean }
-export type KnowledgeCard = { code: string; rev: string; topic: string; home: 'team' | 'personal'; facts: { type: string; text: string; who?: string; date: string; href?: string; private: boolean }[] }
+export type KnowledgeCard = { code: string; rev: string; topic: string; home: 'team' | 'personal'; facts: { type: string; text: string; who?: string; date: string; href?: string; private: boolean; replaces?: string }[] }
 export type AutomationRow = { code: string; sentence: string; to: string; text: string; when: string; state: Automation['state']; why?: string; next?: string; count: number; rev: string }
 export type DoneRow = { work?: string; code: string; kind: 'reply' | 'review' | 'change' | 'closed' | 'catchup' | 'reminder' | 'learned'; who: Who; sentence: string; high?: boolean; teams?: string; ask?: string; said?: string; inTeams?: boolean; gist?: string; watch?: { target: string; until: string }; watchedAs?: string; own?: boolean; href?: string; by: string; at: string; text?: string; undoUntil?: string; notes?: Note[]; why?: ItemCard['why']; rule?: string; fresh?: boolean ; msgs?: string[]; sentId?: string; earlier?: true }
 export type Tile = { key: string; count: number; label: string; sub?: string }
@@ -201,7 +201,7 @@ export function card(store: Store, w: Workflow, k = knowledgeOf(store, store.con
 }
 
 export function knowledge(p: Proposal): KnowledgeCard {
-	return { code: p.code, rev: p.revAt, topic: p.title, home: p.home ?? 'personal', facts: p.ops.map(o => ({ type: o.entry.type, text: o.entry.text, who: o.entry.src[0]?.who, date: o.entry.src[0]?.date ?? '', href: /^https:\/\//.test(o.entry.src[0]?.link ?? '') ? o.entry.src[0].link : undefined, private: o.entry.audience === 'private' })) }
+	return { code: p.code, rev: p.revAt, topic: p.title, home: p.home ?? 'personal', facts: p.ops.map(o => ({ type: o.entry.type, text: o.entry.text, who: o.entry.src[0]?.who, date: o.entry.src[0]?.date ?? '', href: /^https:\/\//.test(o.entry.src[0]?.link ?? '') ? o.entry.src[0].link : undefined, private: o.entry.audience === 'private', ...(o.was !== undefined ? { replaces: o.was } : {}) })) }
 }
 
 const TASK = /task|work ?item|bug/i, PR = /pull|(^|_)pr($|_)|create_pr/i, INVITE = /calendar|invite|event|meeting/i, COMMENT = /comment|review/i
@@ -266,8 +266,9 @@ function doneRows(store: Store, since: string, workflows = store.workflows()): D
 		rows.push({ code: String(e.code), kind: 'reminder', who: who(name), sentence: `Reminded ${name}`, said: typeof e.text === 'string' ? short(e.text) : undefined, by: String(e.code), at: String(e.at) })
 	}
 	for (const p of store.proposals().filter(p => p.state === 'applied' && p.from !== 'remember' && p.applied && p.applied.at > since)) {
-		const n = p.ops.length
-		rows.push({ code: p.code, kind: 'learned', who: who(p.source ?? 'your chats'), sentence: htmlToText(`Learned ${n} ${n === 1 ? 'fact' : 'facts'} about ${p.title}, from ${p.source ?? 'your chats'}`), gist: p.ops[0]?.entry.text ? short(p.ops[0].entry.text) : undefined, by: `say "undo ${p.code}" to take it back`, at: p.applied!.at })
+		// A newer fact that replaced an older one says so (#20): Replaced: "old" → "new".
+		const n = p.ops.length, swap = p.ops.find(o => o.was !== undefined), clip = (s: string) => (x => (x.length > 60 ? `${x.slice(0, 59)}…` : x))(short(s))
+		rows.push({ code: p.code, kind: 'learned', who: who(p.source ?? 'your chats'), sentence: htmlToText(`Learned ${n} ${n === 1 ? 'fact' : 'facts'} about ${p.title}, from ${p.source ?? 'your chats'}`), gist: swap ? `Replaced: "${clip(swap.was!)}" → "${clip(swap.entry.text)}"` : p.ops[0]?.entry.text ? short(p.ops[0].entry.text) : undefined, by: `say "undo ${p.code}" to take it back`, at: p.applied!.at })
 	}
 	return rows.sort((a, b) => b.at.localeCompare(a.at))
 }

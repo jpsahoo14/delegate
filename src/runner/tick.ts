@@ -196,7 +196,8 @@ export async function tick(store: Store, deps: { source?: Source; run?: RunWorke
 		const r = { commands, answers, asks, runs, nudged, ms: Date.now() - t0 }
 		const busy = store.workflows().some(w => w.state === 'scheduled') || store.jobs().some(j => j.state === 'running' || j.state === 'queued' && !(j.retry && (Date.parse(j.retry.at) > Date.now() || store.control().paused || store.control().stopped))) || store.openWindows().length > 0
 		reschedule(store, cfg, commands + answers + asks + missed + probed + due.length + runs + autoSent + handedBack + jobsEarly + jobsDone + jobsStarted + jobsNow + jobsLate > 0 || nudged || busy, t0)
-		writeSnapshot(store)
+		// The read-only snapshot is best effort: it records its own health warning and never ends the tick.
+		try { writeSnapshot(store) } catch (error) { console.error('The read-only snapshot could not be written:', error) }
 		store.log({ event: 'tick', ...r })
 		return r
 	} finally {

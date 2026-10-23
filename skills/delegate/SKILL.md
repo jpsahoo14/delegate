@@ -20,7 +20,7 @@ In this chat, `report-only` means: never send chat messages yourself. Every send
 
 | Owner says | You do |
 | --- | --- |
-| "what needs me?", "what did I miss?", "catch me up", "good morning", "inbox" | Call `inbox`. Show its text exactly as returned. If the chat cannot show the panel, offer `open_inbox` for the page. |
+| "what needs me?", "what did I miss?", "catch me up", "good morning", "inbox" | Call `inbox`. Show its text exactly as returned. Offer `open_inbox` for the page with buttons. |
 | Verbs such as `ok A7`, `edit A7: ...` (changes the draft only), `send A7: ...` (sends the owner's words), `A7: ...`, `later A7`, `dismiss A7`, `more A7`, `pick A7 2` (choose option 2), `ok A7 #1 #3` (make only those changes), or several joined by commas | Call `act` with the owner's words exactly. Show the result. |
 | A request in other words, such as "send Anita's one" | Find the code in the last `inbox` output, then confirm with the owner before you call `act`. |
 | "set up delegate", "setup", or setup is not done | Read [references/setup.md](./references/setup.md) and follow it with `setup_status` and `setup_save`. |

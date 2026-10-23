@@ -10,6 +10,7 @@ import { Button, Hint } from '../components/ui/button.tsx'
 import { chipHover } from '../domain/hover.ts'
 import { Icon } from '../components/ui/icon.tsx'
 import { ActionButton } from '../features/ActionButton.tsx'
+import { staticSnapshot } from '../services/api.ts'
 import { NAME } from '../brand.ts'
 import { nextCheck, when } from '../domain/time.ts'
 import { ExperienceToggle, useScreenNavigation } from './navigation.tsx'
@@ -27,7 +28,8 @@ const Knowledge = preloadable(CLASSIC_VIEWS.knowledge)
 
 function Snapshot() {
 	const snapshot = useSnapshot(), entities = useEntities()
-	return <><p role="note" className="warning">Read-only snapshot. <a href="#classic/home">Open the live page</a> to act. Nothing here sends or changes anything.</p><Home readOnly />
+	const saved = staticSnapshot() !== undefined
+	return <><p role="note" className="warning">Read-only snapshot{saved && snapshot ? `, saved ${when(snapshot.now)}` : ''}. {saved ? <>Open {NAME} on your own machine to act.</> : <><a href="#classic/home">Open the live page</a> to act.</>} Nothing here sends or changes anything.</p><Home readOnly />
 		<h2>Needs you</h2><div className="classic-snapshot-cards">{snapshot?.classic?.needsIds.map(code => <ClassicCard key={code} code={code} readOnly />)}</div>
 		<h2>Knowledge to review</h2>{Object.values(entities.knowledgeProposals).map(proposal => <article className="item-card" key={proposal.id}><h3>{proposal.topic}</h3>{proposal.factIds.map(id => <p key={id}>{entities.facts[id].text}</p>)}</article>)}
 	</>

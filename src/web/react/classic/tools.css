@@ -140,6 +140,7 @@
 .classic-experience .ct-fact-tags>span:first-child{background:var(--accent-soft);color:var(--accent-text)}
 .classic-experience .ct-fact-text{display:block;margin-top:4px;font-size:14px;line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere}
 .classic-experience .ct-fact-attribution{font-size:12px;color:var(--text-3)}
+.classic-experience .ct-fact-replaces{display:block;font-size:12px;color:var(--text-3)}
 .classic-experience .ct-fact-attribution a{color:inherit}
 .classic-experience .ct-fact-attribution .ui-icon{display:inline;width:12px;height:12px;vertical-align:middle}
 .classic-experience .ct-fact-stale{padding:12px 20px;background:var(--warn-soft);display:flex;align-items:center;flex-wrap:wrap;gap:10px}

@@ -5,7 +5,7 @@ Goal: read one of the owner's sources and propose the knowledge that will still 
 ## Acceptance
 
 - Work from the goal in the prompt. Use any read-only tool you can reach, and pick your own steps.
-- Keep a claim only if all four hold: someone could ask about it later; it has a source link; it is about the work, not greetings, logistics, social talk, or anything personal; and the knowledge does not already say it (check with `knowledge_search`).
+- Keep a claim only if all four hold: someone could ask about it later; it has a source link; it is about the work, not greetings, logistics, social talk, or anything personal; and the knowledge does not already say it (check with `grep` on its cards). If your claim changes or contradicts an entry you found, put that entry's citation in `replaces`, and only if your source is newer and says the old one no longer holds. Never use `replaces` for a different fact that happens to share words.
 - Topics are the areas the owner works in, such as a feature, a service, or a project: few and broad, so related claims sit together and are easy to find later. Reuse a topic name the knowledge or your earlier claims already use. Aim for at most 8 topics per run.
 - Each claim has a `topic`, a `type`, one or two short sentences of `text` in your own words (at most 300 characters), and `src` with the link, date, and person. For Teams, link the message: `https://teams.microsoft.com/l/message/<chatId>/<messageId>?context=%7B%22contextType%22%3A%22chat%22%7D`.
 - Types: `fact` (how it works, where code lives, flags), `decision` (what and why), `faq` (a standard answer or known issue), `owner` (who owns what), `status` (current state; only if newer than 30 days), `open` (a pending question, blocker, or promised action).

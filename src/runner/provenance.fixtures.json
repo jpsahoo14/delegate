@@ -1,0 +1,259 @@
+{
+ "note": "Fictional session-log events in the shape real Copilot CLI 1.0.x writes (#21b); ids and text are made up.",
+ "savedFile": {
+  "SAVED_FILE": "{\"rawResponse\":\"{\\\"value\\\":[{\\\"searchTerms\\\":[\\\"acme\\\"],\\\"hitsContainers\\\":[{\\\"hits\\\":[{\\\"hitId\\\":\\\"h0\\\",\\\"summary\\\":\\\"Acme window\\\",\\\"resource\\\":{\\\"chatId\\\":\\\"19:me_ana@unq.gbl.spaces\\\",\\\"webLink\\\":\\\"https://teams.microsoft.com/l/message/19%3ame_ana%40unq.gbl.spaces/100?context=%7B%22contextType%22%3A%22chat%22%7D\\\"}}],\\\"total\\\":1}]}]}\"}"
+ },
+ "events": [
+  {
+   "type": "session.start",
+   "data": {}
+  },
+  {
+   "type": "tool.execution_start",
+   "data": {
+    "toolCallId": "call_1",
+    "toolName": "teams-ListChatMessages",
+    "arguments": {
+     "chatId": "19:acme-room@thread.v2",
+     "top": 50
+    },
+    "turnId": "0",
+    "model": "fictional-model",
+    "toolTitle": "ListChatMessages",
+    "mcpServerName": "teams",
+    "mcpConfigServerName": "teams",
+    "mcpTransport": "stdio",
+    "mcpConfigSource": "user",
+    "mcpToolName": "ListChatMessages"
+   }
+  },
+  {
+   "type": "tool.execution_complete",
+   "data": {
+    "toolCallId": "call_1",
+    "model": "fictional-model",
+    "interactionId": "i",
+    "turnId": "0",
+    "rte": 0,
+    "success": true,
+    "toolTelemetry": {},
+    "result": {
+     "content": "Output too large to read at once (24.1 KB). Saved to: C:\\Temp\\fictional-gone-1.txt\nConsider using tools like rg (for searching), head/tail (for viewing start/end), view with view_range (for specific sections), or jq (for JSON) to examine portions of the output.\n\nPreview (first 500 chars):\n{\"messages\":[{\"id\":\"1\",\"from\":{\"displayName\":\"Kim\"}",
+     "detailedContent": ""
+    }
+   }
+  },
+  {
+   "type": "tool.execution_start",
+   "data": {
+    "toolCallId": "call_2",
+    "toolName": "teams-GetChatMessage",
+    "arguments": {
+     "chatId": "19:acme-leads@thread.v2",
+     "messageId": "42"
+    },
+    "turnId": "0",
+    "model": "fictional-model",
+    "toolTitle": "GetChatMessage",
+    "mcpServerName": "teams",
+    "mcpConfigServerName": "teams",
+    "mcpTransport": "stdio",
+    "mcpConfigSource": "user",
+    "mcpToolName": "GetChatMessage"
+   }
+  },
+  {
+   "type": "tool.execution_complete",
+   "data": {
+    "toolCallId": "call_2",
+    "model": "fictional-model",
+    "interactionId": "i",
+    "turnId": "0",
+    "rte": 0,
+    "success": true,
+    "toolTelemetry": {},
+    "result": {
+     "content": "{\"id\":\"42\",\"body\":{\"content\":\"Window moved\"}}"
+    }
+   }
+  },
+  {
+   "type": "tool.execution_start",
+   "data": {
+    "toolCallId": "call_3",
+    "toolName": "teams-SearchTeamMessagesQueryParameters",
+    "arguments": {
+     "queryString": "acme window",
+     "size": 25
+    },
+    "turnId": "0",
+    "model": "fictional-model",
+    "toolTitle": "SearchTeamMessagesQueryParameters",
+    "mcpServerName": "teams",
+    "mcpConfigServerName": "teams",
+    "mcpTransport": "stdio",
+    "mcpConfigSource": "user",
+    "mcpToolName": "SearchTeamMessagesQueryParameters"
+   }
+  },
+  {
+   "type": "tool.execution_complete",
+   "data": {
+    "toolCallId": "call_3",
+    "model": "fictional-model",
+    "interactionId": "i",
+    "turnId": "0",
+    "rte": 0,
+    "success": true,
+    "toolTelemetry": {},
+    "result": {
+     "content": "{\"rawResponse\":\"{\\\"value\\\":[{\\\"searchTerms\\\":[\\\"acme\\\"],\\\"hitsContainers\\\":[{\\\"hits\\\":[{\\\"hitId\\\":\\\"h0\\\",\\\"summary\\\":\\\"Acme window\\\",\\\"resource\\\":{\\\"chatId\\\":\\\"19:globex@thread.v2\\\",\\\"webLink\\\":\\\"https://teams.microsoft.com/l/message/19%3aglobex%40thread.v2/100?context=%7B%22contextType%22%3A%22chat%22%7D\\\"}}],\\\"total\\\":1}]}]}\"}"
+    }
+   }
+  },
+  {
+   "type": "tool.execution_start",
+   "data": {
+    "toolCallId": "call_4",
+    "toolName": "teams-SearchTeamMessagesQueryParameters",
+    "arguments": {
+     "queryString": "acme notes",
+     "size": 25
+    },
+    "turnId": "0",
+    "model": "fictional-model",
+    "toolTitle": "SearchTeamMessagesQueryParameters",
+    "mcpServerName": "teams",
+    "mcpConfigServerName": "teams",
+    "mcpTransport": "stdio",
+    "mcpConfigSource": "user",
+    "mcpToolName": "SearchTeamMessagesQueryParameters"
+   }
+  },
+  {
+   "type": "tool.execution_complete",
+   "data": {
+    "toolCallId": "call_4",
+    "model": "fictional-model",
+    "interactionId": "i",
+    "turnId": "0",
+    "rte": 0,
+    "success": true,
+    "toolTelemetry": {},
+    "result": {
+     "content": "Output too large to read at once (24.1 KB). Saved to: SAVED_FILE\nConsider using tools like rg (for searching), head/tail (for viewing start/end), view with view_range (for specific sections), or jq (for JSON) to examine portions of the output.\n\nPreview (first 500 chars):\n{\"rawResponse\":\"{\\\"value\\\":[{\\\"searchTerms\\\":[\\\"acme\\\"],\\\"hitsContainers\\\":[{\\\"h"
+    }
+   }
+  },
+  {
+   "type": "tool.execution_start",
+   "data": {
+    "toolCallId": "call_5",
+    "toolName": "teams-SearchTeamMessagesQueryParameters",
+    "arguments": {
+     "queryString": "acme leads",
+     "size": 25
+    },
+    "turnId": "0",
+    "model": "fictional-model",
+    "toolTitle": "SearchTeamMessagesQueryParameters",
+    "mcpServerName": "teams",
+    "mcpConfigServerName": "teams",
+    "mcpTransport": "stdio",
+    "mcpConfigSource": "user",
+    "mcpToolName": "SearchTeamMessagesQueryParameters"
+   }
+  },
+  {
+   "type": "tool.execution_complete",
+   "data": {
+    "toolCallId": "call_5",
+    "model": "fictional-model",
+    "interactionId": "i",
+    "turnId": "0",
+    "rte": 0,
+    "success": true,
+    "toolTelemetry": {},
+    "result": {
+     "content": "Output too large to read at once (24.1 KB). Saved to: C:\\Temp\\fictional-gone-2.txt\nConsider using tools like rg (for searching), head/tail (for viewing start/end), view with view_range (for specific sections), or jq (for JSON) to examine portions of the output.\n\nPreview (first 500 chars):\n{\"rawResponse\":\"{\\\"value\\\":[{\\\"searchTerms\\\":[\\\"acme\\\"],\\\"hitsContainers\\\":[{\\\"h"
+    }
+   }
+  },
+  {
+   "type": "tool.execution_start",
+   "data": {
+    "toolCallId": "call_6",
+    "toolName": "teams-SearchTeamMessagesQueryParameters",
+    "arguments": {
+     "queryString": "nothing here",
+     "size": 25
+    },
+    "turnId": "0",
+    "model": "fictional-model",
+    "toolTitle": "SearchTeamMessagesQueryParameters",
+    "mcpServerName": "teams",
+    "mcpConfigServerName": "teams",
+    "mcpTransport": "stdio",
+    "mcpConfigSource": "user",
+    "mcpToolName": "SearchTeamMessagesQueryParameters"
+   }
+  },
+  {
+   "type": "tool.execution_complete",
+   "data": {
+    "toolCallId": "call_6",
+    "model": "fictional-model",
+    "interactionId": "i",
+    "turnId": "0",
+    "rte": 0,
+    "success": true,
+    "toolTelemetry": {},
+    "result": {
+     "content": "{\"rawResponse\":\"{\\\"value\\\":[{\\\"searchTerms\\\":[\\\"acme\\\"],\\\"hitsContainers\\\":[{\\\"hits\\\":[],\\\"total\\\":0}]}]}\"}"
+    }
+   }
+  },
+  {
+   "type": "tool.execution_start",
+   "data": {
+    "toolCallId": "call_7",
+    "toolName": "teams-ListChatMessages",
+    "arguments": {
+     "chatId": "19:acme-room@thread.v2"
+    },
+    "turnId": "0",
+    "model": "fictional-model",
+    "toolTitle": "ListChatMessages",
+    "mcpServerName": "teams",
+    "mcpConfigServerName": "teams",
+    "mcpTransport": "stdio",
+    "mcpConfigSource": "user",
+    "mcpToolName": "ListChatMessages"
+   }
+  },
+  {
+   "type": "tool.execution_complete",
+   "data": {
+    "toolCallId": "call_7",
+    "model": "fictional-model",
+    "interactionId": "i",
+    "turnId": "0",
+    "rte": 0,
+    "success": false,
+    "toolTelemetry": {}
+   }
+  }
+ ],
+ "expect": {
+  "chats": [
+   "A (args, saved file gone: still known)",
+   "B (args)",
+   "C (search result)",
+   "D (search result read from the saved file)"
+  ],
+  "unknown": [
+   "saved file gone (the \"acme leads\" search)"
+  ],
+  "parsedCalls": "5 of 6 non-failed Teams calls"
+ }
+}

@@ -9,6 +9,7 @@ export const ClaimSchema = z.object({
 	src: z.array(z.object({ link: z.string(), date: z.string(), who: z.string().optional() })).min(1).describe('Where it came from: a Teams message link, PR, work item, or page'),
 	tags: z.array(z.string()).optional(),
 	audience: z.literal('private').optional().describe('Set private if the source is a private chat, mail, or a file marked private. Leave out otherwise'),
+	replaces: z.array(z.string()).optional().describe('Citations of entries this claim makes untrue or out of date, as card:<topic>/<card>#<id>, with the ^<id> from the card line. Only when the new source says the old one no longer holds'),
 })
 
 // The exact tool call that makes a change: the only call a change run may make for it.

@@ -1,6 +1,6 @@
 {
   "name": "delegate",
-  "version": "0.2.23",
+  "version": "0.2.24",
   "description": "An AI stand-in that drafts and answers your chat messages while you are away.",
   "type": "module",
   "license": "MIT",
@@ -12,7 +12,7 @@
   },
   "scripts": {
     "test": "node --env-file-if-exists=.env.local --test --test-concurrency=4 test/*.test.ts && npm run test:react",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p src/web/app && tsc --noEmit -p test && tsc --noEmit -p src/web/react",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p test && tsc --noEmit -p src/web/react",
     "test:react": "vitest run",
     "trace": "node scripts/trace.ts",
     "build": "node scripts/build.ts",

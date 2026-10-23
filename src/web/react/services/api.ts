@@ -8,7 +8,21 @@ export class ApiError extends Error {
 	readonly status: number
 	constructor(status: number, message: string) { super(message); this.status = status }
 }
+// A saved read-only snapshot (inbox.html) carries its page data and has no server: the page reads only that data, a seen mark or
+// an experience is not saved, and everything else refuses.
+export const staticSnapshot = () => (window as Window & { DELEGATE_SNAPSHOT?: unknown }).DELEGATE_SNAPSHOT
+export const READ_ONLY = `This is a read-only snapshot. Open ${NAME} on your own machine to act; nothing was sent or changed.`
 async function request<T>(path: string, schema: z.ZodType<T>, options: RequestInit = {}, cached?: { etag: string; data: T }, remember?: (etag: string, data: T) => void, update?: (previous: T, input: unknown, base: string) => T): Promise<T> {
+	const saved = staticSnapshot()
+	if (saved !== undefined) {
+		if (path.startsWith('/api/v1/page')) {
+			const parsed = schema.safeParse(saved)
+			if (!parsed.success) throw new Error(`This snapshot holds data this page cannot read.`)
+			return parsed.data
+		}
+		if (path === '/seen' || path === '/ui') return schema.parse({ ok: true })
+		throw new ApiError(409, READ_ONLY)
+	}
 	const token = new URLSearchParams(location.search).get('t') ?? ''
 	const url = `${path}${path.includes('?') ? '&' : '?'}t=${encodeURIComponent(token)}`
 	const response = await fetch(url, { ...options, headers: { 'content-type': 'application/json', ...(cached ? { 'if-none-match': cached.etag, ...(path.startsWith('/api/v1/page') ? { 'x-delegate-delta': '1' } : {}) } : {}), ...options.headers } })

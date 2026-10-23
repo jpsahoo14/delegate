@@ -84,7 +84,7 @@ export const entitiesSchema = z.object({
 	todos: table(z.object({ id: text, itemId: text, code: text, text, at: text, done: z.boolean() })),
 	placements: table(placement), actions: table(action), doneEntries: table(done), watches: table(watch), automations: table(automation),
 	knowledgeProposals: table(z.object({ id: text, code: text, rev: text, topic: text, home: text, state: optional, factIds: strings, actionIds: strings })),
-	facts: table(z.object({ id: text, proposalId: text, type: text, text, who: optional, date: text, href: optional, private: z.boolean() })),
+	facts: table(z.object({ id: text, proposalId: text, type: text, text, who: optional, date: text, href: optional, private: z.boolean(), replaces: optional })),
 	health: table(z.object({ id: text, text, since: text, actionIds: strings })),
 	channels: table(z.object({ id: text, name: text, link: text, actionIds: strings })),
 	waiting: table(z.object({ id: text, code: text, to: text, chat: text, text, at: text, link: optional, actionIds: strings })),

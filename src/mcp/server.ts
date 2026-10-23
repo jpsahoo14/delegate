@@ -1,7 +1,7 @@
 import { pendingEffects } from '../core/effects.ts'
 import { reopenable } from '../core/policy.ts'
 import { spawn } from 'node:child_process'
-import { dirname, join } from 'node:path'
+import { join } from 'node:path'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod'
@@ -20,14 +20,7 @@ import { openTodos } from '../runner/work.ts'
 import { statusText } from '../runner/status.ts'
 import { makeChange, mcpCaller } from '../runner/change.ts'
 import { adoProbe } from '../runner/probe.ts'
-import { actOutcome, automateFromPage, saveUiFrom, serveInbox, withUi } from '../web/server.ts'
-import { renderApp } from '../web/shell.ts'
-import { view } from '../web/view.ts'
-import { numbersPage } from '../web/numbers.ts'
-import { WINDOWS, type WindowKey } from '../core/numbers.ts'
-import { registerAppResource, registerAppTool, RESOURCE_MIME_TYPE } from '@modelcontextprotocol/ext-apps/server'
-import { existsSync, readFileSync } from 'node:fs'
-import { createRequire } from 'node:module'
+import { serveInbox } from '../web/server.ts'
 import { openUrl } from '../os/window.ts'
 import { parseVerbs, type Parsed } from '../core/verbs.ts'
 import type { Store } from '../store/state.ts'
@@ -40,7 +33,7 @@ import { intents } from '../core/intents.ts'
 import { docsFor, historyFor, imagesFor } from '../adapters/registry.ts'
 import { REPORT, report, summary as feedbackSummary } from '../store/feedback.ts'
 import { parseChannelLink } from '../adapters/channels.ts'
-import { describe, propose as proposeAutomation, type AutomateInput } from '../runner/automations.ts'
+import { describe, propose as proposeAutomation } from '../runner/automations.ts'
 
 import { ClaimSchema, ReportSchema } from '../core/report.ts'
 import { NAME } from '../brand.ts'
@@ -85,23 +78,7 @@ function registerKnowledgeReads(server: McpServer, get: () => Store) {
 			return text(hits.length ? hits.map(x => `${x.at.slice(0, 10)} ${x.who}${x.mine ? ' (owner)' : ''}: ${x.text}\n  link: ${x.link}`).join('\n') : 'No messages match. Try fewer or different words.')
 		} catch (e) { return { ...text(`Search failed: ${String(e).slice(0, 200)}`), isError: true } } finally { await h.close() }
 	})
-	server.registerTool('image_read', {
-		description: 'Look at an image pasted into a message. Pass the link from its [image ...] line. Use it whenever the ask may depend on what the image shows; never describe an image you did not open.',
-		inputSchema: { link: z.string().describe('The link from the [image ...] line: https://graph.microsoft.com/... or inline:<key>') },
-	}, async ({ link }) => {
-		// An image pasted inline into the message was kept in the store at intake (bug 10-23 E17).
-		const inline = /^inline:([0-9a-f]{16,40})$/.exec(link.trim())
-		if (inline) {
-			const m = get().media(inline[1])
-			return m ? { content: [{ type: 'image' as const, data: m.data, mimeType: m.type }] } : { ...text('That inline image was not kept, so it cannot be opened. Say you cannot read it; never guess what it shows.'), isError: true }
-		}
-		const m = imagesFor(get().config())
-		if (!m) return text('This setup cannot open images. Say you cannot read it; never guess what it shows.')
-		try {
-			const r = await m.read(link)
-			return typeof r === 'string' ? { ...text(r), isError: true } : { content: [{ type: 'image' as const, data: r.data, mimeType: r.type }] }
-		} catch (e) { return { ...text(`Could not open it: ${String(e).slice(0, 200)}`), isError: true } } finally { await m.close() }
-	})
+	registerImageRead(server, get)
 	server.registerTool('doc_read', {
 		description: 'Read a shared Word document in full, by its file name or title. Use it for a document review: one call returns the whole text.',
 		inputSchema: { name: z.string().describe('The file name or title, such as "free-text-location-dev-spec-overview-v4.docx"') },
@@ -131,8 +108,31 @@ function registerKnowledgeReads(server: McpServer, get: () => Store) {
 	})
 }
 
+// An image pasted into a message: inline ones were kept at intake; others are read through the chat source. Workers keep this one
+// (#21 §4) until the CLI's own view is shown to return images to the model.
+function registerImageRead(server: McpServer, get: () => Store) {
+	server.registerTool('image_read', {
+		description: 'Look at an image pasted into a message. Pass the link from its [image ...] line. Use it whenever the ask may depend on what the image shows; never describe an image you did not open.',
+		inputSchema: { link: z.string().describe('The link from the [image ...] line: https://graph.microsoft.com/... or inline:<key>') },
+	}, async ({ link }) => {
+		// An image pasted inline into the message was kept in the store at intake (bug 10-23 E17).
+		const inline = /^inline:([0-9a-f]{16,40})$/.exec(link.trim())
+		if (inline) {
+			const m = get().media(inline[1])
+			return m ? { content: [{ type: 'image' as const, data: m.data, mimeType: m.type }] } : { ...text('That inline image was not kept, so it cannot be opened. Say you cannot read it; never guess what it shows.'), isError: true }
+		}
+		const m = imagesFor(get().config())
+		if (!m) return text('This setup cannot open images. Say you cannot read it; never guess what it shows.')
+		try {
+			const r = await m.read(link)
+			return typeof r === 'string' ? { ...text(r), isError: true } : { content: [{ type: 'image' as const, data: r.data, mimeType: r.type }] }
+		} catch (e) { return { ...text(`Could not open it: ${String(e).slice(0, 200)}`), isError: true } } finally { await m.close() }
+	})
+}
+
 function registerWorker(server: McpServer, store: Store) {
-	registerKnowledgeReads(server, () => store)
+	// A run reads the knowledge, chats and documents with the owner's own servers and the CLI's built-ins (#21); only these stay.
+	registerImageRead(server, () => store)
 	const wfId = process.env.DELEGATE_WORKFLOW!, runId = process.env.DELEGATE_RUN!
 	let submitted = false
 	server.registerTool('submit_report', { description: 'Submit your one report for this workflow. Call exactly once, then finish.', inputSchema: ReportSchema }, async r => {
@@ -227,11 +227,8 @@ function registerOwner(server: McpServer, get: () => Store) {
 		description: 'Start the one-time reading of the owner\'s sources to propose knowledge. Each topic found becomes a K item to approve. Show the returned text exactly.',
 		inputSchema: { sources: z.array(z.enum(BOOT_SOURCES)).optional().describe('Default: chats, prs, workitems. wiki and notes only if the owner asks') },
 	}, async ({ sources }) => { const s = get(); return text(startBootstrap(s, sources, s.runnerLive())) })
-	// In chats that support MCP Apps the inbox also opens as a panel with buttons; elsewhere it is text (R-HIL-09).
-	registerAppResource(server, `${NAME} inbox`, PANEL_URI, {}, async () => ({
-		contents: [{ uri: PANEL_URI, mimeType: RESOURCE_MIME_TYPE, text: renderApp(withUi(get(), view(get(), get().visitSince())), 'panel', appBundle()) }],
-	}))
-	registerAppTool(server, 'inbox', { description: 'Show what needs the owner, what was done while away, and what is running. Show the returned text exactly.', _meta: { ui: { resourceUri: PANEL_URI } } }, async () => {
+	// The inbox is text in every chat; open_inbox opens the page with buttons (R-HIL-09).
+	server.registerTool('inbox', { description: 'Show what needs the owner, what was done while away, and what is running. Show the returned text exactly.' }, async () => {
 		const store = get()
 		const since = store.lastViewed()
 		const out = inbox(store, since)
@@ -240,34 +237,8 @@ function registerOwner(server: McpServer, get: () => Store) {
 	})
 	server.registerTool('act', {
 		description: 'Apply the owner\'s verbs exactly as typed, for example "ok A7", "watch A41" (watch a Catch up item until it is done), "watch A41: what until when it is done by YYYY-MM-DD", "edit A7: text", "A7: answer", "pick A7 2", "ask A7: question", "ok A7 #1 #3", "skip A7", "more A7", and for a reply already sent "wrong A7: what it should say", "incomplete A7: what was missing", "unneeded A7"; "missed <Teams message link>" for a message that should have been picked up. Several can be joined by commas.',
-		inputSchema: { command: z.string(), seenAt: z.string().optional().describe('Only for the inbox panel: the revision the panel showed') },
-	}, async ({ command, seenAt }) => { const r = actResult(get(), command, seenAt, seenAt ? 'page' : 'chat'); return { ...text(r.text), structuredContent: { ids: r.ids }, isError: !r.accepted } })
-	// Only the panel calls these: fresh data, and a reminder from its form, which is the owner's approval (design-spec/automations.md).
-	registerAppTool(server, 'inbox_view', { description: 'For the inbox panel only: the current view.', inputSchema: { since: z.string().optional(), ui: z.enum(['new']).optional().describe('The new page asks for its rows') }, _meta: { ui: { resourceUri: PANEL_URI, visibility: ['app'] } } },
-		async ({ since, ui }: { since?: string; ui?: 'new' }) => ({ ...text('ok'), structuredContent: withUi(get(), view(get(), since), ui === 'new') as unknown as Record<string, unknown> }))
-	// Only the panel calls this: the New experience switch on this machine (R-NEX-01), as the page's POST /ui.
-	registerAppTool(server, 'ui_save', {
-		description: 'For the inbox panel only: save the New experience switch on this machine.',
-		inputSchema: { ui: z.enum(['new', 'classic']).optional(), noted: z.boolean().optional() },
-		_meta: { ui: { resourceUri: PANEL_URI, visibility: ['app'] } },
-	}, async (b: { ui?: 'new' | 'classic'; noted?: boolean }) => { const r = saveUiFrom(get(), b); return { ...text(r.ok ? 'ok' : 'not saved'), structuredContent: r } })
-	registerAppTool(server, 'automate_now', {
-		description: 'For the inbox panel only: create and start a reminder from the panel form.',
-		inputSchema: { to: z.string(), chatId: z.string().optional(), text: z.string(), every: z.enum(['day', 'weekday', 'week']), at: z.string(), day: z.number().optional(), until: z.string().optional() },
-		_meta: { ui: { resourceUri: PANEL_URI, visibility: ['app'] } },
-	}, async (i: AutomateInput) => { const r = automateFromPage(get(), i); return { ...text(r.text), structuredContent: r } })
-	// Only the panel calls this: the Numbers tab, when it opens and when its window changes, as the page's GET /numbers (R-NEX-11).
-	registerAppTool(server, 'numbers_view', {
-		description: 'For the inbox panel only: the Numbers tab for one window, with the rows each number counted.',
-		inputSchema: { window: z.enum(WINDOWS as [WindowKey, ...WindowKey[]]).optional() },
-		_meta: { ui: { resourceUri: PANEL_URI, visibility: ['app'] } },
-	}, async ({ window }: { window?: WindowKey }) => ({ ...text('ok'), structuredContent: numbersPage(get(), window ?? 'this') as unknown as Record<string, unknown> }))
-	// Only the panel calls this: what its action really did, and the item's fresh card (final review P1-1, P1-2).
-	registerAppTool(server, 'act_result', {
-		description: 'For the inbox panel only: the applied result of its last action.',
-		inputSchema: { ids: z.array(z.string()), code: z.string() },
-		_meta: { ui: { resourceUri: PANEL_URI, visibility: ['app'] } },
-	}, async ({ ids, code }: { ids: string[]; code: string }) => { const o = actOutcome(get(), ids, code); return { ...text(o.text), structuredContent: o } })
+		inputSchema: { command: z.string() },
+	}, async ({ command }) => { const r = actResult(get(), command, undefined, 'chat'); return { ...text(r.text), structuredContent: { ids: r.ids }, isError: !r.accepted } })
 }
 
 function registerSetup(server: McpServer) {
@@ -412,19 +383,4 @@ let page: Promise<string> | undefined
 export function openInboxPage(get: () => Store): Promise<string> {
 	page ??= serveInbox(get).then(({ url }) => url)
 	return page.then(url => { openUrl(url); return `Opened your inbox in the browser: ${url}\nIt works while this chat is open. Buttons do the same as typing ok, skip, or edit.` })
-}
-
-const PANEL_URI = 'ui://delegate/inbox.html'
-let bundle: string | undefined
-
-// The official MCP Apps client, inlined. Its trailing ESM export list becomes a global, because a panel cannot import files.
-function appBundle(): string {
-	if (bundle) return bundle
-	const shipped = join(dirname(CLI), 'ext-apps.js')
-	const file = CLI.endsWith('.mjs') && existsSync(shipped) ? shipped : createRequire(import.meta.url).resolve('@modelcontextprotocol/ext-apps/app-with-deps')
-	const src = readFileSync(file, 'utf8')
-	const m = src.match(/export\s*\{([^}]*)\};?\s*$/)
-	if (!m) throw new Error('Unexpected MCP Apps bundle format')
-	const names = m[1].split(',').map(p => p.trim().split(/\s+as\s+/)).map(([local, name]) => `${JSON.stringify(name ?? local)}:${local}`)
-	return (bundle = `${src.slice(0, m.index)}\nglobalThis.McpExtApps={${names.join(',')}};`)
 }

@@ -5,7 +5,8 @@ import { assertTestSafe } from '../store/fs.ts'
 import { closeFamily } from './apply.ts'
 import { realProcs } from './jobs.ts'
 import { stopWatch } from './track.ts'
-import { sharingHold, sourceChats, takeRead } from './sharing.ts'
+import { sharingHold, sourceChats } from './sharing.ts'
+import { readsOf, type Reads } from './provenance.ts'
 import { catalogInfo, workerTools } from './catalog.ts'
 import { existsSync } from 'node:fs'
 import { backupSession, restoreSession } from './own.ts'
@@ -200,11 +201,20 @@ export async function judgeReply(store: Store, cfg: Config, a: Automation, run: 
 // Only folders that exist: the AI CLI refuses to start when one is missing (a new store has no knowledge folder yet; found in the live Q3 run).
 export const readDirs = (store: Store, cfg: Config): string[] => [...new Set([...(cfg.knowledge ?? []).map(f => here(store.root, f)), cfg.cards?.root ?? join(store.root, 'knowledge'), ...(cfg.cards?.team ? [cfg.cards.team] : [])])].filter(d => existsSync(d))
 
+// What a run read, from its slice of the session log (#21). A Claude run writes no Copilot log; its reply runs never get Teams reads
+// (workerTools keeps that filter for it), so only its draft's own sources count, as before.
+export function runReads(store: Store, cfg: Config, session: string, logStart: number): Reads {
+	if (cfg.agent.flavor !== 'copilot') return { chats: [], searches: [], unknown: false, calls: [], knowledge: 0 }
+	return readsOf(sessionLog(cfg.agent.flavor, session).slice(logStart), knowledgeOf(store, cfg), readDirs(store, cfg))
+}
+
 // Every agent run gets the delegate MCP server in worker mode, scoped to one target and run (R-SEC-02).
-// What every worker may call on the delegate server: read the knowledge, and report once.
+// What every worker may call on the delegate server: report once, and open an image kept at intake. It reads everything else with the
+// owner's own servers and the CLI's built-ins (#21).
 // Its own server name: the owner's global "delegate" server (from install) would otherwise shadow it, and the worker would get no tools.
 export const WORKER_SERVER = 'delegate_worker'
-export const WORKER_TOOLS = ['submit_report', 'knowledge_search', 'knowledge_read', 'history_search', 'doc_read', 'image_read'].map(t => `${WORKER_SERVER}-${t}`)
+// Only Delegate's contract (#21): the report, and image_read for an image kept at intake, until the CLI's view is shown to return images.
+export const WORKER_TOOLS = ['submit_report', 'image_read'].map(t => `${WORKER_SERVER}-${t}`)
 
 export function workerMcp(store: Store, targetId: string, runId: string, interactive = false): { cwd: string; mcpConfigPath: string } {
 	const cwd = join(LOCAL_DIR, 'sessions')
@@ -254,11 +264,12 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 	store.addRun()
 	restoreSession(store, wf.session.id)
 	const logStart = sessionLog(cfg.agent.flavor, wf.session.id).length
-	// Reply runs read other chats only through history_search, which records them (need to know).
+	// What the run read is taken from the AI CLI's own session log (#21), so a reply may read Teams with Teams' own tools.
 	const res = await run({ ...cfg.agent, tools }, { workflowId: wf.id, runId, sessionId: wf.session.id, prompt, cwd, mcpConfigPath, extraTools: WORKER_TOOLS, dirs: readDirs(store, cfg) })
 	// The CLI never started: no session to keep and no report to read; it counts toward the start tries.
-	if (res.error?.startsWith('Could not start')) { takeRead(store.root, runId); throw new Error(res.error) }
-	const read = takeRead(store.root, runId)
+	if (res.error?.startsWith('Could not start')) throw new Error(res.error)
+	const read = runReads(store, cfg, wf.session.id, logStart)
+	if (read.unknown) store.log({ event: 'reads-unknown', code: wf.code, why: [...new Set(read.calls.map(c => c.unknown).filter(Boolean))] })
 	backupSession(store, wf.session.id)
 	// A report salvaged from the run's last words is scrubbed as one written by submit_report is (review 10-21 P2-6).
 	const raw = store.peekReport(wf.id, runId) ? undefined : reportFromText(res.summary, wf.id, intents(store.root).map(i => i.id))
@@ -392,7 +403,7 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 	fresh.looked = read.searches.length ? read.searches : undefined
 	const drewOn = report && !job && fresh.draft ? sourceChats(fresh, knowledgeOf(store, cfg), read.chats) : []
 	fresh.drewOn = drewOn.length ? drewOn : undefined
-	fresh.shareHold = drewOn.length ? await sharingHold(store, src, fresh, drewOn) : undefined
+	fresh.shareHold = report && !job && fresh.draft && read.unknown ? "It searched your chats and I couldn't tell which ones it read" : drewOn.length ? await sharingHold(store, src, fresh, drewOn) : undefined
 	if (report && !job) await afterDraft(store, src, cfg, fresh)
 	// A person answering the owner (in a 1:1, or right after his own message) is never silent noise: with no reply needed it is a
 	// Catch up line with their words (queue-new #18). Bots and group chatter not addressed to him stay silent.
@@ -437,7 +448,6 @@ async function runAsk(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 		if (fresh.state === 'running' || heldBy(store, fresh) === 'window' || !fresh.notes?.some(note => note.a === undefined) || fresh.job && store.job(fresh.job)?.state === 'running') return
 		if (store.runsToday() < (cfg.dailyRuns ?? 200)) {
 			const sessionId = randomUUID()
-			takeRead(store.root, runId)
 			store.log({ event: 'worker-catalog-retry', kind: 'ask', workflowId: wf.id, code: wf.code, runId, sessionId: session, nextSessionId: sessionId })
 			return runAsk(store, src, cfg, fresh, run, sessionId)
 		}

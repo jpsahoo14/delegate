@@ -5,7 +5,7 @@ import type { Store } from '../store/state.ts'
 import { offRecord } from '../core/levels.ts'
 import { messageLink, openLink } from '../adapters/channels.ts'
 import { literalLearning } from '../core/learning.ts'
-import { knowledgeOf } from './proposals.ts'
+import { knowledgeOf, undoSuperseding } from './proposals.ts'
 import { editKinds, noticeHabits } from './habits.ts'
 
 // One detached run per edited reply; its claims become a K proposal from "your edit of A7" (R-LRN-01..03).
@@ -37,7 +37,9 @@ export function learnedClaims(store: Store, job: Job, claims: Claim[]): Claim[] 
 export function withdrawLearning(store: Store, cfg: Config, chat: string, msgId: string): number {
 	const link = openLink(messageLink(chat, msgId))
 	store.withdrawKnowledgeSource(link)
-	const removed = knowledgeOf(store, cfg).withdrawSource(link)
+	const k = knowledgeOf(store, cfg)
+	undoSuperseding(store, k, link)
+	const removed = k.withdrawSource(link)
 	for (const proposal of store.proposals()) {
 		const ops = proposal.ops.map((op, i) => ({ op: { ...op, entry: { ...op.entry, src: op.entry.src.filter(source => openLink(source.link) !== link) } }, i }))
 		if (ops.every(({ op, i }) => op.entry.src.length === proposal.ops[i].entry.src.length)) continue

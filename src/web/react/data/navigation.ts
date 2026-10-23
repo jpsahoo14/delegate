@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { create } from 'zustand'
-import { saveExperience } from '../services/api.ts'
+import { saveExperience, staticSnapshot } from '../services/api.ts'
 
 // A link that chooses an experience: #ui=new or #ui=classic.
 const chosenIn = (hash: string) => (/^#?ui=(new|classic)$/.exec(hash)?.[1] as 'new' | 'classic' | undefined)
@@ -16,6 +16,7 @@ export function rememberExperience(experience: 'new' | 'classic') {
 // Old addresses keep working: the old Classic's screens open in React Classic (its Running, Watching and Automations are
 // sections of Ongoing); every other address is already a React one.
 function routeOf(hash: string): string {
+	if (staticSnapshot() !== undefined) return 'classic/snapshot'
 	const route = hash.replace(/^#/, ''), chosen = chosenIn(route), base = route.split('/')[0]
 	if (!route) return savedExperience() === 'classic' ? 'classic/home' : 'now'
 	if (chosen) return chosen === 'classic' ? 'classic/home' : 'now'

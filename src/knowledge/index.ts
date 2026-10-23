@@ -1,5 +1,5 @@
-import { existsSync, readdirSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs'
+import { dirname, join, relative } from 'node:path'
 import type { Audience, Card, CardName, Entry, EntryType, Hit, Proposal, TopicLine } from '../core/types.ts'
 import { readText, scoped, writeText } from '../store/fs.ts'
 import { CARDS, editCard, expired, formatLine, hashOf, newCard, parseCard } from './format.ts'
@@ -17,9 +17,17 @@ export interface Knowledge {
 	line(topic: string, card: CardName, id: string): string | undefined
 	// Where a proposal saves: the owner's own folder, or the team's shared folder (R-KNO-06).
 	home?(p: Pick<Proposal, 'topic' | 'ops'>): 'personal' | 'team'
+	// Where one entry lives, when there is a team layer (#20 G3).
+	homeOf?(ref: string): 'personal' | 'team' | undefined
+	// The owner's own cards only (#21 §2c): a team card is shared, and a run that reads one is still held by need to know.
+	moveOut?(match: (e: Entry) => boolean): { path: string; line: string; at: number }[]
+	moveBack?(items: { path: string; line: string; at: number }[]): number
 }
 
 export class StaleCard extends Error {}
+// Best score first; at equal score a live entry before an expired one, then the newest source first, so a draft quotes the newer fact (#20).
+const newestSrc = (h: Hit) => h.src.map(s => s.date).sort().at(-1) ?? ''
+const byRank = (a: Hit, b: Hit) => b.score - a.score || Number(a.expired) - Number(b.expired) || newestSrc(b).localeCompare(newestSrc(a))
 
 // What each op wrote and what was there before, so undo can restore exactly that and nothing else.
 export type Applied = { ids: string[]; lines: string[]; prev: (string | undefined)[] }
@@ -57,7 +65,7 @@ export class FilesKnowledge implements Knowledge {
 				if (score) hits.push({ ...e, score, expired: expired(e) })
 			}
 		}
-		return hits.sort((a, b) => b.score - a.score || Number(a.expired) - Number(b.expired)).slice(0, f.limit ?? 12)
+		return hits.sort(byRank).slice(0, f.limit ?? 12)
 	}
 
 	// "card:topic/card#id" resolves only on that card (tester 05 P1-7). Also "topic", "topic/card", or a bare unique id.
@@ -102,6 +110,32 @@ export class FilesKnowledge implements Knowledge {
 		}
 		if (removed) this.writeIndex()
 		return removed
+	}
+
+	// A chat marked off the record (#21 §2c): its facts leave the cards a run may read, kept line for line with where they stood, so
+	// unmarking puts them back byte for byte. match picks the entries; the caller keeps what this returns.
+	moveOut(match: (e: Entry) => boolean): { path: string; line: string; at: number }[] {
+		const out: { path: string; line: string; at: number }[] = []
+		for (const card of this.cards()) {
+			const ids = new Set(card.entries.filter(match).map(e => e.id))
+			if (!ids.size) continue
+			const lines = readFileSync(card.path, 'utf8').split('\n'), keep: string[] = []
+			lines.forEach((l, at) => { const id = /^- \[/.test(l) ? [...ids].find(i => new RegExp(`\\s\\^${i}(?:\\s|$)`).test(l)) : undefined; if (id) out.push({ path: relative(this.root, card.path), line: l, at }); else keep.push(l) })
+			writeText(card.path, keep.join('\n'), this.machine)
+		}
+		if (out.length) this.writeIndex()
+		return out
+	}
+	moveBack(items: { path: string; line: string; at: number }[]): number {
+		let n = 0
+		for (const path of [...new Set(items.map(i => i.path))]) {
+			const file = join(this.root, path), lines = existsSync(file) ? readFileSync(file, 'utf8').split('\n') : []
+			for (const i of items.filter(x => x.path === path).sort((a, b) => a.at - b.at)) if (!lines.includes(i.line)) { lines.splice(Math.min(i.at, lines.length), 0, i.line); n++ }
+			mkdirSync(dirname(file), { recursive: true })
+			writeText(file, lines.join('\n'), this.machine)
+		}
+		if (n) this.writeIndex()
+		return n
 	}
 
 	private path(topic: string, card: CardName) { return join(this.root, 'topics', topic, `${card}.md`) }
@@ -181,9 +215,12 @@ export class LayeredKnowledge implements Knowledge {
 	}
 	private of(p: Pick<Proposal, 'topic' | 'ops'>) { return this.home(p) === 'team' ? this.team : this.mine }
 	search(q: string, f?: Parameters<Knowledge['search']>[1]): Hit[] {
-		return [...this.mine.search(q, f), ...this.team.search(q, f)].sort((a, b) => b.score - a.score).slice(0, f?.limit ?? 12)
+		return [...this.mine.search(q, f), ...this.team.search(q, f)].sort(byRank).slice(0, f?.limit ?? 12)
 	}
 	read(ref: string) { return this.mine.read(ref) ?? this.team.read(ref) }
+	moveOut(match: (e: Entry) => boolean) { return this.mine.moveOut(match) }
+	moveBack(items: { path: string; line: string; at: number }[]) { return this.mine.moveBack(items) }
+	homeOf(ref: string) { const m = this.mine.read(ref), t = this.team.read(ref); return m && !Array.isArray(m) ? 'personal' as const : t && !Array.isArray(t) ? 'team' as const : undefined }
 	topics() { const own = this.mine.topics(); return [...own, ...this.team.topics().filter(t => !own.some(o => o.topic === t.topic))] }
 	bySource(link: string) { return this.mine.bySource(link) ?? this.team.bySource(link) }
 	withdrawSource(link: string) { return this.mine.withdrawSource(link) + this.team.withdrawSource(link) }

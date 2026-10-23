@@ -7,11 +7,12 @@ import { parseMessageLink } from '../adapters/channels.ts'
 import { LEVEL_SAYS, levelOf, offRecord } from '../core/levels.ts'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { moveOffRecord, restoreOffRecord } from './offrecord.ts'
 
 // Need to know, first slice: a reply may go by itself only when everyone in its chat could already see every other
 // conversation it drew on (dev-spec/sharing.md). Owner-approved sends are not held; the owner sees the sources.
 
-// Reply runs read other chats only through history_search, which records the chats its hits came from.
+// The owner's own AI chat records what history_search found; a worker run's reads come from its session log (provenance.ts, #21).
 export const provenanceFile = (root: string, runId: string) => join(root, 'state', 'provenance', `${runId}.json`)
 // What a run looked at through Delegate's own tools: the chats its hits came from and each search with its hit count.
 // Queries and counts only, never result text (round 3 review: traces must not copy other chats' words).
@@ -97,12 +98,17 @@ export function setChatLevel(store: Store, chat: string, level: ChatLevel | 'nor
 	if (!ids.length) return `I don't know a chat called "${q}". Paste a link to any message in it.`
 	if (ids.length > 1) return `More than one chat matches "${q}": ${ids.map(i => known.get(i)).join('; ')}. Say which one, or paste a link to a message in it.`
 	const id = ids[0], name = said?.trim() || known.get(id) || 'That chat'
+	// Off the record takes the chat's facts out of the cards runs read, and back when it is no longer off (#21 §2c).
+	const wasOff = levels[id]?.level === 'off'
 	if (level === 'normal') {
 		if (!levels[id]) return `${name} was not marked, so nothing changed.`
 		delete levels[id]
 		store.saveConfig({ ...cfg, chatLevels: levels })
+		if (wasOff) restoreOffRecord(store, id)
 		return `${name} is normal again.`
 	}
 	store.saveConfig({ ...cfg, chatLevels: { ...levels, [id]: { level, name, at: new Date().toISOString() } } })
+	if (level === 'off' && !wasOff) moveOffRecord(store, id)
+	else if (level !== 'off' && wasOff) restoreOffRecord(store, id)
 	return `${name} is ${LEVEL_SAYS[level]}. Say "${name} is normal again" to undo.`
 }

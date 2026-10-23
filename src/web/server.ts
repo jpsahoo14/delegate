@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { createServer, type Server } from 'node:http'
+import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Store } from '../store/state.ts'
 import { experienceOf } from '../store/state.ts'
@@ -7,7 +8,6 @@ import { hashOf } from '../knowledge/format.ts'
 import { readScope, writeText } from '../store/fs.ts'
 import { actResult } from '../mcp/server.ts'
 import { SEEN_KEYS, view } from './view.ts'
-import { renderApp } from './shell.ts'
 import { answerAutomation, propose as proposeAutomation, type AutomateInput } from '../runner/automations.ts'
 import { NAME, CMD } from '../brand.ts'
 import { versionInfo, versionInfoLater, type VersionInfo } from '../os/autoupdate.ts'
@@ -17,7 +17,7 @@ import type { Config } from '../core/types.ts'
 import { numbersPage } from './numbers.ts'
 import { WINDOWS, type WindowKey } from '../core/numbers.ts'
 import { nextView } from './next.ts'
-import { reactAsset, reactPage } from './react-build.ts'
+import { reactAsset, reactPage, snapshotPage, SNAPSHOT_TEMPLATE } from './react-build.ts'
 import { chatNormalActionId, reactProjection, IntentError } from './react-projection.ts'
 import { submissionReceipt, submitIntent } from './react-submissions.ts'
 import { intentSchema } from './react/domain/contracts.ts'
@@ -297,13 +297,23 @@ export function serveInbox(get: () => Store, port = 0, token = randomBytes(16).t
 	}))
 }
 
-// A read-only copy in the synced folder, so any machine can open it. Written only when something changed, to spare the sync.
+// A read-only copy in the synced folder, so any machine can open it: Classic's snapshot screen with the page data inside.
+// Written only when something changed, to spare the sync. Best effort: a missing template or a failed write keeps the previous
+// copy and says so in health, and never stops the runner.
 export function writeSnapshot(store: Store): boolean {
-	const v = view(store, store.lastViewed())
-	const key = hashOf(JSON.stringify({ ...v, now: '' }))
-	const page = renderApp(v, 'snapshot')
-	if (store.notify().snapshot === key) return false
-	writeText(join(store.root, 'inbox.html'), page, store.machine)
-	store.saveNotify({ ...store.notify(), snapshot: key })
-	return true
+	try {
+		if (!existsSync(join(ROOT, SNAPSHOT_TEMPLATE))) throw new Error(`${SNAPSHOT_TEMPLATE} is missing`)
+		// Its own warning goes first, so a copy written now never says it could not be written.
+		store.setHealth('snapshot')
+		const snapshot = readScope(() => reactProjection(store, '', { since: store.lastViewed(), fallbackSince: new Date(Date.now() - 86_400_000).toISOString() }).snapshot)
+		const key = hashOf(JSON.stringify({ ...snapshot, now: '', fetchedAt: '' }))
+		if (store.notify().snapshot === key) return false
+		writeText(join(store.root, 'inbox.html'), snapshotPage(snapshot), store.machine)
+		store.saveNotify({ ...store.notify(), snapshot: key })
+		return true
+	} catch (error) {
+		console.error('The read-only snapshot could not be written:', error)
+		try { store.setHealth('snapshot', `The read-only snapshot (inbox.html) could not be updated, so the previous one is kept: ${String((error as Error)?.message ?? error).split('\n')[0]}. Run "${CMD} update" to restore ${NAME}'s files.`) } catch { /* health is best effort too */ }
+		return false
+	}
 }

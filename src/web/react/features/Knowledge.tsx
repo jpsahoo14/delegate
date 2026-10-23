@@ -20,7 +20,7 @@ function Proposal({ id }: { id: string }) {
 			const fact = entities.facts[factId], n = index + 1
 			return <label className="option" key={factId}><input type="checkbox" checked={!ui.excluded?.includes(n)} disabled={busy || ui.editing}
 				onChange={() => edit({ excluded: ui.excluded?.includes(n) ? ui.excluded.filter(value => value !== n) : [...(ui.excluded ?? []), n] })} />
-				<span className="knowledge-check"><Icon name="check" /></span><span className="knowledge-fact"><span className="knowledge-tags"><span className="chip">{fact.type}</span>{fact.private && <span className="chip"><Icon name="lock" /> From a private chat</span>}</span><span>{fact.text}</span><small>{fact.href ? <a href={fact.href} target="_blank" rel="noopener noreferrer">{[fact.who, fact.date].filter(Boolean).join(', ')}</a> : [fact.who, fact.date].filter(Boolean).join(', ')}</small></span>
+				<span className="knowledge-check"><Icon name="check" /></span><span className="knowledge-fact"><span className="knowledge-tags"><span className="chip">{fact.type}</span>{fact.private && <span className="chip"><Icon name="lock" /> From a private chat</span>}</span><span>{fact.text}</span>{fact.replaces && <small className="knowledge-replaces">Replaces: {fact.replaces}</small>}<small>{fact.href ? <a href={fact.href} target="_blank" rel="noopener noreferrer">{[fact.who, fact.date].filter(Boolean).join(', ')}</a> : [fact.who, fact.date].filter(Boolean).join(', ')}</small></span>
 			</label>
 		})}</div>
 		{ui.editing && <label className="field-label">Edit this fact<textarea value={ui.editText ?? ''} onChange={event => edit({ editText: event.target.value })}

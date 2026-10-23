@@ -17,7 +17,6 @@ import { active, homeOf, keepTodos, newTurn, statusOf } from './work.ts'
 import { close, say } from './intake.ts'
 import { backupSession, restoreSession } from './own.ts'
 import { startFollow, startWatch } from './track.ts'
-import { takeRead } from './sharing.ts'
 import { catalogInfo, workerTools } from './catalog.ts'
 import { unsafeRead } from '../core/effects.ts'
 import { toolServers } from '../adapters/mcp-client.ts'
@@ -115,7 +114,6 @@ export async function checkPromise(store: Store, src: Source, cfg: Config, wf: W
 		store.addRun()
 		restoreSession(store, session)
 		const res = await run({ ...cfg.agent, tools }, { workflowId: wf.id, runId, sessionId: session, prompt: buildPromisePrompt(wf, store.thread(wf.id), cfg, store.root, prTarget(store, wf)), cwd: job?.repo ?? cwd, mcpConfigPath, extraTools: WORKER_TOOLS, dirs: readDirs(store, cfg) })
-		takeRead(store.root, runId)
 		backupSession(store, session)
 		report = store.peekReport(wf.id, runId)
 		store.archiveReport(wf.id, runId)

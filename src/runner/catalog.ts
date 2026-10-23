@@ -50,7 +50,7 @@ const when = (iso: string) => new Date(iso).toLocaleString(undefined, { month: '
 // "<server>-<tool>" matches itself and "<server>-*".
 export const denied = (deny: string[], t: string) => deny.some(d => d === t || (d.endsWith('-*') && t.startsWith(d.slice(0, -1))))
 // The tools a run is given to read (design §2): the owner's built-ins, every read his servers list, and the tools he allowed as reads,
-// minus what he switched off. A reply run never calls Teams reads directly, so every chat it reads is recorded (UNTRACKED).
+// minus what he switched off. A Claude reply run never calls Teams reads directly, so every chat it reads is known (UNTRACKED).
 // Before the tools migration (no deny list yet) it is his old list, as before. A server whose part of a trimmed old list waits for
 // a listing keeps that part (pendingTrim), never all its reads.
 export function workerTools(cfg: Config, kind: 'reply' | 'job'): string[] {
@@ -62,7 +62,8 @@ export function workerTools(cfg: Config, kind: 'reply' | 'job'): string[] {
 		const kept = (a.trimmedFrom ?? []).filter(t => [...pending].some(s => t.startsWith(`${s}-`)))
 		tools = [...a.tools, ...reads, ...kept, ...(a.allowRead ?? [])].filter(t => !denied(a.deny!, t))
 	}
-	return [...new Set(kind === 'reply' ? tools.filter(t => !UNTRACKED.test(t)) : tools)]
+	// Copilot runs read Teams with its own tools; what they read comes from the session log (#21). A Claude run has no such log.
+	return [...new Set(kind === 'reply' && a.flavor !== 'copilot' ? tools.filter(t => !UNTRACKED.test(t)) : tools)]
 }
 // Each tool's own listing, for the write backstop (unsafeRead), from the cached catalogs.
 export function catalogInfo(cfg: Config): (server: string, tool: string) => ToolInfo | undefined {

@@ -5,7 +5,7 @@ Goal: answer the owner's question about this item, so they can decide what to se
 ## Acceptance
 
 - Answer the owner, not the asker. Be short: a few sentences or a short list.
-- Find the facts yourself first, the same way as a reply: `knowledge_search`, `history_search` for what was said before, the owner's knowledge folders, then any read-only tool you can reach. Open source links when you need the original context.
+- Find the facts yourself first, the same way as a reply: the owner's knowledge cards (`grep`, `view`), the chat server's own search for what was said before, the owner's knowledge folders, then any read-only tool you can reach. Open source links when you need the original context.
 - Say where each fact came from. Put the sources in `reply.sources` with an empty `reply.text`, the same tiers as a reply.
 - If you do not know, say so, and say what would tell you.
 - Never change the draft, and never write anything for the asker.

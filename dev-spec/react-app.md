@@ -1,5 +1,138 @@
 # React preview
 
+## readsOf checked against real Copilot session logs (#21b)
+
+The reply provenance from #21 was proven on stub-written events, so `readsOf` was run read-only over the 139 real CLI 1.0.x
+session logs in the owner copy (counts only; nothing from them was kept).
+
+The event shape matched: `mcpServerName: "teams"`, `mcpToolName`, `arguments.chatId`, and string `result.content`. One case did
+not. A large result is replaced by "Output too large to read at once (N KB). Saved to: <path>" plus a preview, and the old parser
+called every such result unknown. That would have held 25 of 139 logs. Fixes in `provenance.ts`:
+- A Teams read whose arguments name its chat (`chatId`, or team and channel) is known from them, whatever its result.
+- A saved result is read from its file. Only a search whose file is gone, or which has no result or never finished, is unknown.
+- Chat ids are matched percent-encoded and JSON-escaped, without decoding the whole text.
+- Each Teams call records how its chats were known, or why they could not be (`ReadCall`). A held reply logs `reads-unknown` with
+  the reasons.
+
+Results on the real logs:
+- 553 Teams read calls; 513 parsed (92.8%); 509 with chat ids. 471 were known from their arguments, 42 from results.
+- All 40 unknowns are searches whose saved file is gone from this machine (temp files from the owner's runs). At run time the file
+  is still there.
+- The 4 parsed searches with no chat ids are empty results.
+- 6 knowledge card reads were mapped. These logs predate #21, so knowledge was mostly read through the old wrapper.
+
+`src/runner/provenance.fixtures.json` holds fictional events in the observed shape: a saved `ListChatMessages` known from its
+arguments, a `GetChatMessage`, a search with hits, a search read from its saved file, a search whose file is gone, an empty
+search, and a failed call. `readsOf` gave chats A, B, C, D with exactly one unknown ("saved file gone"), as the fixture expects.
+The #21 proof (steps 1-3) still holds.
+
+## Off the record moves a chat's facts out of the cards runs read (#21 step 4, §2 accepted)
+
+Runs now read the knowledge files directly, so Delegate can't filter what they see. Marking a chat off the record therefore moves
+its learned facts out of the owner's cards into `knowledge-offrecord/<chat>.json` in the storage folder, which no run is given
+(`offrecord.ts`, `FilesKnowledge.moveOut`/`moveBack`). Each line is kept with its position. Leaving 'off' (normal again, from the
+chat command or the Settings "Mark normal again", or switching to private) puts the lines back where they stood.
+
+What doesn't move:
+- A fact that carries the owner's own "remember" source.
+- Team cards: they are shared with teammates. A run that reads one is still held by need to know, through the card's source chats.
+
+A run that read the chat with Teams' own tools is held as off the record (`markedHold`). Learning from it was already dropped. The
+Settings confirm now says the set-aside facts come back.
+
+Proof (fictional Temp root):
+- **Mark off:** chat B's learned decision left the cards and was kept in `knowledge-offrecord/`, which is not in the run's
+  folders. The owner's corrected B fact stayed.
+- **Hold:** a run whose log shows it read B was held "which you marked off the record".
+- **Unmark from Settings in Edge (New):** the confirm said "Facts set aside from it come back to your knowledge"; both card files
+  were byte-identical to before.
+- **Unmark from the chat command:** off, then normal, gave byte-identical cards again (`offrecord-moved:1`,
+  `offrecord-restored:1`).
+
+## Use the tools that are already there: no wrapper worker tools (#21, steps 1-3)
+
+Design: reviews/advisers/engineer-native-tools.md.
+- **What a run read.** New `src/runner/provenance.ts` `readsOf(slice, k, dirs)` reads the run's slice of Copilot's session log
+  (`tool.execution_start`/`_complete`). It collects:
+  - chats named in a Teams read's arguments, and every chat id or message link in its result;
+  - for a built-in `view`/`grep`/`glob` touching the knowledge folders, every chat behind each card file it read;
+  - searches (tool, query, hit count; never result text).
+- **Unknown reads hold.** A Teams result that can't be parsed (saved to a file, truncated), a Teams call that never finished, or
+  an empty log gives `unknown`. A drafted reply is then held: "It searched your chats and I couldn't tell which ones it read".
+- **Wiring.** `dispatch.ts runReads` replaces `takeRead` for reply runs. The ask and promise runs no longer clean up provenance
+  files, since none are written.
+- **Teams reads for replies.** A Copilot reply run now gets Teams' own read tools (`workerTools` drops `UNTRACKED` for Copilot). A
+  Claude run has no Copilot log, so it keeps the filter.
+- **Wrappers removed.** `knowledge_search`, `knowledge_read`, `history_search` and `doc_read` leave the workers. The worker MCP
+  serves `submit_report` (and `make_change` in change runs) plus `image_read`. That is the §4 fallback, because the CLI's `view`
+  returning images to the model could not be checked with the quota out. The owner's own AI chat keeps every tool.
+- **Prompts.** `knowledgeLine` (in the reply, ask and job prompts) says where the cards are, their line format, to find with
+  `grep` and read with `view`, and how to cite. reply, job, ask, learn and bootstrap now name `grep`/`view`, the chat server's own
+  search and the document server's own read tool.
+
+Proof (fictional Temp root, real tick, stub worker (quota) that writes the session-log events a run writes, fictional `teams`
+stub server):
+- **readsOf:** a fixture with GetChatMessage (B), a search naming C and D, and a grep of the card whose source is chat E gave chats
+  B, C, D, E and both searches. A truncated result, and an empty log, each gave `unknown`.
+- **Run setup:** the reply run's `--available-tools` had `teams-ListChats` and `teams-SearchTeamsMessages`, with only
+  `submit_report` and `image_read` from Delegate. Its prompt carried the knowledge line and none of the old tool names.
+- **Auto-send rule for Kim in room A (Sam is in A but not in chat B):**
+  - reading B was held ("Uses something from Acme leads, and Sam is not in it"), and the owner's ok then sent it once;
+  - reading only A plus a card from E (everyone in A is in E) was sent by the rule;
+  - with E marked private, it was held "which you marked private";
+  - with B off the record, it was held "which you marked off the record".
+- **Sources:** the cited card shows as a Knowledge source linking to E on the page's item.
+
+## A review ask split over two messages is one ask (#22)
+
+`review-gate.ts` `reviewAsked`: a room ask counted only when one message held both the ask and the PR. The owner's A178 shape
+("please review", then the PR link in its own message) was refused as "nobody asked you". Now, in a room, a pending message with
+the PR's link counts when the same person asked for a review in the item's thread within 15 minutes, in either order. A link
+alone, or an ask by one person and a link by another, is still refused. Stored messages have no reply-to id, so a reply to the ask
+counts only through the same-person window.
+
+Proof (fictional root, real tick, stub worker (quota), stub PR reader, fictional ado stub):
+- **Split ask, same person:** Priya's "please review", one check, then her separate PR link message. That item passed the gate,
+  the review job read the file via `ado-repo_file`, and the card showed "Reviewed it. One point: …" in New and Classic.
+- **Link alone:** Sam's link alone was refused ("nobody asked you"), and closed quietly as before.
+- **Different people:** Kim's ask plus Sam's link were both refused.
+
+## Newer facts replace older ones in Knowledge (#20)
+
+Design: reviews/advisers/engineer-knowledge-supersede.md.
+- A `Claim` may carry `replaces` (citations as `knowledge_search` prints them). `propose()` (`supersedes`) applies one target
+  as an in-place update only when all five gates hold:
+  - G1: the entry exists;
+  - G2: the claim's source is no older;
+  - G3: a team entry is never overwritten by a private claim (`Knowledge.homeOf`);
+  - G4: one target per claim;
+  - G5: not from an off-record chat unless the owner said it.
+- A refused ref is logged `supersede-refused` with its reason, and the claim goes on as before (usually an add).
+- The update keeps the entry's id, type and card. Its sources are the new ones only. `Op.was` holds the replaced text, and Undo
+  restores it through `applied.prev`. Logged `knowledge-superseded`.
+- The stale re-propose path carries `replaces`. Withdrawing the source message undoes the replacement first
+  (`undoSuperseding`), so the old fact comes back instead of both being lost.
+- An update now writes where its entry lives (`homeOf`). Before, a topic present in both layers sent it to the other card, where it
+  was stale on every apply and re-proposed each tick.
+- Search breaks equal scores by the newest source date, after not-expired, in both the file and the layered search.
+- `learn.md` and `bootstrap.md` say when to use `replaces`.
+- Done › Learned reads `Replaced: "old" → "new"`. `renderProposal` says `replaces "old" with`. To learn shows "Replaces: …" under
+  the fact in New and Classic.
+
+Proof (fictional Temp root, real knowledge files, stub worker (quota) returning fixed claims):
+- **Scenario 1:** one entry saying Monday, with the new source only, the Done gist, and Undo bringing Friday back.
+- **Scenario 2:** an older history claim was refused (`older`) and added separately; Monday ranks first.
+- **Scenario 3:** a wrong target was applied (the known residual risk), shown in Done, and undone.
+- **Scenario 4:** a 1:1 claim against a team entry was refused (`private over team`) and added privately.
+- **Scenario 5:** withdrawing the Monday message brought Friday back with its own source.
+- **Scenario 6:** a stale card gave a fresh K that is still an update with `was`.
+- **Scenario 7:** with `reviewLearning` on, the K waited and showed "replaces"; skip left Friday.
+- **Scenario 8:** the same source updated in place, the same text only merged sources, and `remember` saved as before.
+- **Search:** equal scores came newest first; an unrelated query kept its old order.
+- **Real learn job:** through the tick, the prompt carried the rule, and the stub worker's `replaces` was applied with the sent
+  message as the only source.
+- **Display:** Done › Learned and To learn in New and Classic, 1280 light and 400 dark, with no overflow.
+
 ## Generic read tools, step 6: a review that can't read a file (#17)
 
 **Prompt.** `job.md` now tells review workers: when the PR's change list leaves out a file's content (too large, binary or

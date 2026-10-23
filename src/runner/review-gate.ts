@@ -57,8 +57,14 @@ export function reviewAsked(store: Store, wf: Workflow, pr: number): boolean {
 	if (own || wf.startedBy === 'owner' && REVIEW_ASK.test(wf.lastAsk ?? '')) return true
 	const theirs = pending.filter(m => !m.byOwner)
 	const about = (t: string) => new RegExp(`(?:\\bPR\\s*#?\\s*${pr}\\b|pullrequest/${pr}\\b|\\b${pr}\\b)`, 'i').test(t)
-	return theirs.some(m => REVIEW_ASK.test(m.text) && (wf.startedBy !== 'room' || about(m.text)))
+	if (theirs.some(m => REVIEW_ASK.test(m.text) && (wf.startedBy !== 'room' || about(m.text)))) return true
+	// A room ask split over two messages (#22): "please review" and the PR's link from the same person within a few minutes,
+	// in either order, is one ask. A link alone, or someone else's ask, still is not.
+	if (wf.startedBy !== 'room') return false
+	const said = store.thread(wf.id).filter(m => !m.byOwner)
+	return theirs.filter(m => about(m.text)).some(link => said.some(ask => ask.id !== link.id && ask.from.id === link.from.id && REVIEW_ASK.test(ask.text) && Math.abs(Date.parse(ask.at) - Date.parse(link.at)) <= SPLIT_ASK_MS))
 }
+const SPLIT_ASK_MS = 15 * 60_000
 
 export type Gate = { ok: true } | { ok: false; role: PrRole | 'unread' | 'not-asked'; status: string; question: string; note?: string; addMe?: Effect }
 // The decision, from the role this turn's PR read stored on the item (probePRs runs before every reply run). With no Azure DevOps

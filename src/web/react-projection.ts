@@ -25,6 +25,7 @@ import { approvedReplyText, currentDraft, reopenable } from '../core/policy.ts'
 import { madeBefore, maybeOf } from '../runner/ledger.ts'
 import { stillApproved } from '../runner/jobs.ts'
 import { prOf, prTarget } from '../runner/probe.ts'
+import { restoreOffRecord } from '../runner/offrecord.ts'
 import { pageText } from './page-text.ts'
 import { pageManagementRev, workflowManagementRev } from '../store/page-revision.ts'
 import { active } from '../runner/work.ts'
@@ -551,14 +552,16 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 	for (const [chatId, level] of Object.entries(store.config().chatLevels ?? {})) {
 		const key = chatLevelKey(chatId)
 		const actionId = tool(key, 'chat-normal', 'Mark normal again', () => {
-			const config = store.config(), levels = { ...config.chatLevels }
+			const config = store.config(), levels = { ...config.chatLevels }, wasOff = levels[chatId]?.level === 'off'
 			delete levels[chatId]
 			store.saveConfig({ ...config, chatLevels: levels })
-			return { accepted: true, text: 'This chat is normal again. Existing drafts and source checks are unchanged.' }
+			// Facts moved out when the chat went off the record come back to the cards (#21 §2c).
+			const back = wasOff ? restoreOffRecord(store, chatId) : 0
+			return { accepted: true, text: `This chat is normal again.${back ? ` ${back} fact${back === 1 ? '' : 's'} from it ${back === 1 ? 'is' : 'are'} back in your knowledge.` : ''} Existing drafts and source checks are unchanged.` }
 		}, undefined, key)
 		Object.assign(entities.actions[actionId], {
 			effect: 'changes-system', rev: pageDigest([chatId, level]), expect: pageDigest([chatId, level]), staleness: 'exact', needsConfirm: true,
-			meaning: `Stop treating ${level.name} as ${level.level === 'off' ? 'off the record' : 'private'}? Future learning and replies use the normal privacy checks. Existing stored facts are not changed.`,
+			meaning: `Stop treating ${level.name} as ${level.level === 'off' ? 'off the record' : 'private'}? Future learning and replies use the normal privacy checks.${level.level === 'off' ? ' Facts set aside from it come back to your knowledge.' : ' Existing stored facts are not changed.'}`,
 		})
 		settingsActions[key] = [actionId]
 	}

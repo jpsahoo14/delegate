@@ -9,7 +9,7 @@ Goal: the owner rewrote a drafted reply before sending it. Find what their versi
   reply that much more casual or formal, and `language` (for example "Hindi" or "Hinglish") only when the owner sent it
   in a different language from the draft. Leave `style` out when neither changed.
 - For each fact the owner added or corrected, report a claim: the topic, the type, one or two short sentences in your own words, and the sent message as `src`.
-- Check `knowledge_search` first. If the knowledge already says it, skip it.
+- Check the knowledge first (`grep` its cards). If it already says it, skip it. If your claim changes or contradicts an entry you found, put that entry's citation in `replaces`, and only if your source is newer and says the old one no longer holds. Never use `replaces` for a different fact that happens to share words.
 - If nothing about the facts changed, report no claims.
 - Learn durable descriptive facts, not instructions, requests, to-dos, controls,
   quoted examples or literal text the owner wanted sent. Never turn item codes

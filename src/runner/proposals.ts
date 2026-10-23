@@ -43,7 +43,10 @@ export function propose(store: Store, k: Knowledge, claims: Claim[], from: Propo
 		// Nothing is learned from a chat kept off the record, unless the owner says it themselves.
 		if (from !== 'remember' && src.some(s => offRecord(cfg, parseMessageLink(s.link)?.chatId))) continue
 		const topicSlug = slug(c.topic)
-		const known = src.map(s => k.bySource(s.link)).find(Boolean) ?? sameText(k, topicSlug, c.text)
+		// A newer fact that says an entry no longer holds updates that entry in place, when every gate holds (#20); else it is added.
+		const target = c.replaces?.length ? supersedes(store, k, c, src, from) : undefined
+		if (target && target.text === c.text) continue
+		const known = target ?? src.map(s => k.bySource(s.link)).find(Boolean) ?? sameText(k, topicSlug, c.text)
 		const topic = known?.topic ?? topicSlug
 		const group = byTopic.get(topic) ?? { title: titles.get(topic) ?? c.title ?? c.topic, ops: [] }
 		byTopic.set(topic, group)
@@ -53,7 +56,12 @@ export function propose(store: Store, k: Knowledge, claims: Claim[], from: Propo
 		const twin = group.ops.findIndex(o => o.entry.src.some(s => src.some(x => x.link === s.link)) || o.entry.text === c.text)
 		if (twin >= 0) {
 			const o = group.ops[twin]
-			if (newest(src) >= newest(o.entry.src)) group.ops[twin] = { ...o, entry: { ...entry, src: mergeSrc(src, o.entry.src), audience: o.entry.audience === 'private' ? 'private' : audience } }
+			if (newest(src) >= newest(o.entry.src)) group.ops[twin] = { ...o, entry: { ...entry, src: target ? src : mergeSrc(src, o.entry.src), audience: o.entry.audience === 'private' ? 'private' : audience } }
+			continue
+		}
+		// The replaced text goes, and so do its sources: an old link never backs the new text. Undo restores both (applied.prev).
+		if (target) {
+			group.ops.push({ op: 'update', id: target.id, card: target.card, was: target.text, entry: { ...entry, type: target.type, src, tags: [...new Set([...target.tags, ...entry.tags])] } })
 			continue
 		}
 		if (known) {
@@ -72,11 +80,31 @@ export function propose(store: Store, k: Knowledge, claims: Claim[], from: Propo
 		const cards = [...new Set(ops.map(o => o.card))]
 		const p: Proposal = { schema: 1, id: ulid(), code: store.nextCode('K'), topic, title: clean(title), ops, base: {}, from, source, state: 'needs_human', status: summary(ops, source ?? from), revAt: now, createdAt: now, updatedAt: now }
 		p.home = k.home?.(p)
+		// An update writes where its entry lives; a topic in both layers would otherwise send it to the other card, stale forever (#20).
+		const homes = [...new Set(ops.filter(o => o.op === 'update' && o.id).map(o => k.homeOf?.(`card:${topic}/${o.card}#${o.id}`)).filter(Boolean))]
+		if (homes.length === 1 && !(homes[0] === 'team' && ops.some(o => o.entry.audience === 'private'))) p.home = homes[0]
 		p.base = Object.fromEntries(cards.map(c => [c, k.cardHash(topic, c, p.home)]))
 		store.saveProposal(p)
+		for (const o of ops.filter(o => o.was !== undefined)) store.log({ event: 'knowledge-superseded', code: p.code, topic, id: o.id, from })
 		out.push(p)
 	}
 	return out
+}
+
+// The one entry a claim may replace (#20): it must exist (G1), be no newer than the claim's source (G2), not be a team entry a
+// private claim would overwrite (G3), and not come from an off-record chat unless the owner said it (G5). Only one target (G4).
+function supersedes(store: Store, k: Knowledge, c: Claim, src: Src[], from: Proposal['from']): Entry | undefined {
+	const cfg = store.config()
+	let chosen: Entry | undefined
+	for (const ref of c.replaces ?? []) {
+		const e = k.read(ref)
+		const why = chosen ? 'one target' : !e || Array.isArray(e) ? 'not found' : newest(src) < newest(e.src) ? 'older'
+			: k.homeOf?.(ref) === 'team' && audienceOf({ ...c, src }) !== 'team' ? 'private over team'
+			: from !== 'remember' && fromOffChat(cfg, e.src) ? 'off the record' : undefined
+		if (why) { store.log({ event: 'supersede-refused', reason: why, ref: ref.slice(0, 120), from }); continue }
+		chosen = e as Entry
+	}
+	return chosen
 }
 
 function sameText(k: Knowledge, topic: string, text: string): Entry | undefined {
@@ -113,12 +141,21 @@ export function answerProposal(store: Store, k: Knowledge, p: Proposal, a: Answe
 		return `Saved ${p.code}: ${p.ops.length} entr${p.ops.length === 1 ? 'y' : 'ies'} in ${p.title}. Say "undo ${p.code}" to take it back.`
 	} catch (e) {
 		if (!(e instanceof StaleCard)) throw e
-		const claims = p.ops.map(o => ({ topic: p.title, title: p.title, type: o.entry.type, text: o.entry.text, src: o.entry.src, audience: o.entry.audience, tags: o.entry.tags }))
+		// A replacement stays a replacement on the fresh proposal (#20): it names the entry it was replacing.
+		const claims = p.ops.map(o => ({ topic: p.title, title: p.title, type: o.entry.type, text: o.entry.text, src: o.entry.src, audience: o.entry.audience, tags: o.entry.tags, ...(o.was !== undefined && o.id ? { replaces: [`card:${p.topic}/${o.card}#${o.id}`] } : {}) }))
 		Object.assign(p, { state: 'dropped', status: 'Replaced: the card changed' })
 		store.saveProposal(p)
 		const [fresh] = propose(store, k, claims, p.from, p.source)
 		return fresh ? `${p.title} changed since ${p.code}. Review ${fresh.code} instead.` : `${p.title} already has everything ${p.code} proposed.`
 	}
+}
+
+// The owner withdrew the message a replacement came from (#20): the replacement is undone first, so the old fact comes back with
+// its own sources instead of both being lost. An entry he changed since then stays as he left it (undoProposal's rule).
+export function undoSuperseding(store: Store, k: Knowledge, link: string): number {
+	const hit = store.proposals().filter(p => p.state === 'applied' && p.ops.some(o => o.was !== undefined && o.entry.src.some(s => openLink(s.link) === openLink(link))))
+	for (const p of hit) { undoProposal(store, k, p); store.log({ event: 'supersede-undone', code: p.code, topic: p.topic, why: 'source withdrawn' }) }
+	return hit.length
 }
 
 // Undo restores exactly what K wrote over, and leaves any entry the owner changed since then alone (tester 05 P1-2, P1-3).
@@ -194,7 +231,7 @@ export function publish(store: Store, k: Knowledge, owner: string, topic: string
 // The phone shows a bounded view and says what it left out; ok still saves the whole topic, and says so (tester 05 P1-5).
 export function renderProposal(p: Proposal, max = Infinity): string {
 	const shown = p.ops.slice(0, max)
-	const lines = shown.map(o => `- ${o.op === 'add' ? 'new' : o.op} [${o.entry.type}] ${o.entry.text}${o.entry.audience === 'private' ? ' (private)' : ''}\n  source: ${o.entry.src.map(s => [s.link, s.date, s.who].filter(Boolean).join(', ')).join('; ')}`)
+	const lines = shown.map(o => `- ${o.op === 'add' ? 'new' : o.was !== undefined ? `replaces "${o.was}" with` : o.op} [${o.entry.type}] ${o.entry.text}${o.entry.audience === 'private' ? ' (private)' : ''}\n  source: ${o.entry.src.map(s => [s.link, s.date, s.who].filter(Boolean).join(', ')).join('; ')}`)
 	const rest = p.ops.length - shown.length
 	return [`${p.code} · ${p.title} · ${p.status}${p.home === 'team' ? ' · saves to team knowledge' : ''}`, ...lines, ...(rest > 0 ? [`… and ${rest} more. ok ${p.code} saves all ${p.ops.length}. See them all with "open my inbox".`] : [])].join('\n')
 }

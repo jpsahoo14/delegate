@@ -111,12 +111,15 @@ explicit buttons. Edited text stays on its displayed revision when newer data
 arrives. Unknown action results are checked from saved receipts, never
 automatically sent again. Old links keep working: Classic addresses such as
 `#home`, `#focus/A12` or `#ongoing` open Classic, and `?ui=new` or `?ui=classic`
-chooses the experience. The chat panel and the saved read-only snapshot still
-use the previous page.
+chooses the experience. The read-only snapshot (`inbox.html` in your storage
+folder) opens from any machine without a server: Classic's Home and Needs you,
+with nothing that sends or changes anything. If it cannot be updated, the
+previous copy stays and Doctor says why. In your AI chat, `inbox` answers in
+text, and `open_inbox` opens this page.
 
 Development: `npm run build` builds the page into `dist/web-react` and updates
 integrity hashes; run it once before `delegate open` from source.
-`npm run typecheck` covers both front ends; `npm run test:react` runs the React
+`npm run typecheck` covers the server and the page; `npm run test:react` runs the React
 component tests. The built page is shipped under `dist/web-react`, so
 installed machines do not need the front-end development dependencies.
 
@@ -194,7 +197,7 @@ Nothing goes to a Delegate server. There is none.
 ```sh
 npm ci
 npm test              # every test is named for its scenario or requirement
-npm run typecheck     # server (no DOM), the page (src/web/app), and the tests
+npm run typecheck     # server (no DOM), the tests, and the page (src/web/react)
 npm run build         # dist/ and INTEGRITY.json, checked in CI
 ```
 

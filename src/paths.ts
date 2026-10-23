@@ -13,8 +13,6 @@ function up(rel: string): string {
 export const ROOT = dirname(up('package.json'))
 export const VERSION: string = (() => { try { return JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version } catch { return '0.0.0' } })()
 export const SKILL_DIR = up(join('skills', 'delegate'))
-// The page's own files: app.css, and app.js built from app.ts (src/web/page-bundle.ts). The bundle carries both next to it.
-export const WEB_DIR = here.endsWith('dist') ? join(here, 'web') : join(ROOT, 'src', 'web', 'app')
 // The Copilot CLI extension's files (extension.mjs, inbox.mjs). The bundle carries a copy next to it.
 export const MESH_DIR = here.endsWith('dist') ? join(here, 'mesh') : join(ROOT, 'src', 'mesh')
 // The entry other processes start: the bundle when running from it, else the source CLI.

@@ -24,6 +24,11 @@ function inlineFile(root: string, path: string): string {
 	const text = new TextDecoder().decode(bytes.subarray(0, 4096), { stream: truncated })
 	return `${text || 'none'}${truncated ? '\n[truncated after 4096 bytes]' : ''}`
 }
+// The knowledge is plain files the run may read (#21): grep finds a fact, view reads its card, and the citation names the line.
+export function knowledgeLine(root: string, cfg: Config): string {
+	const cards = [cfg.cards?.root ?? join(root, 'knowledge'), ...(cfg.cards?.team ? [cfg.cards.team] : [])]
+	return `Your knowledge is in ${cards.map(c => join(c, 'topics', '<topic>', '<card>.md')).join(' and ')}: one fact per line, as "- [type] text ^<id> (src: link, date, who)". Find facts with grep, read a card with view, and cite a fact as card:<topic>/<card>#<id>.`
+}
 function ownerFiles(root: string, cfg: Config): string[] {
 	return [
 		'', 'Owner files (included below; no file read needed):',
@@ -31,6 +36,7 @@ function ownerFiles(root: string, cfg: Config): string[] {
 		`Rules:\n${inlineFile(root, 'rules.md')}`,
 		`Knowledge index:\n${inlineFile(root, 'knowledge/index.md')}`,
 		...(cfg.cards?.team ? [`Team knowledge index: ${existsSync(join(cfg.cards.team, 'index.md')) ? join(cfg.cards.team, 'index.md') : 'none'}`] : []),
+		knowledgeLine(root, cfg),
 		`Knowledge folders: ${cfg.knowledge?.length ? cfg.knowledge.map(f => resolve(root, f)).join(', ') : 'none'}`,
 	]
 }
