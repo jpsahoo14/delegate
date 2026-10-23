@@ -15,7 +15,7 @@ import type { settingsView } from './settings.ts'
 import type { UiChoice } from '../store/state.ts'
 import { place, snapshot, type NextView } from './next.ts'
 import { currentDraft } from '../core/policy.ts'
-import { htmlToText } from '../core/intake.ts'
+import { htmlToText, isPersona } from '../core/intake.ts'
 
 // The one shape every surface renders: the browser page, the chat panel, and the synced snapshot (design-spec/data.md).
 // Only what the owner should see: no ids, paths, or raw citations.
@@ -135,7 +135,8 @@ function source(ref: string, tier: string, stale?: boolean, label?: string, k?: 
 export function cardType(w: Workflow): CardType {
 	if (w.meeting) return 'meeting'
 	if (w.choices) return 'choice'
-	if (pendingEffects(w.effects).length && w.job && !w.promised) return 'review'
+	// A review the gate did not start is not a review result: its card shows why, with Add me as its change.
+	if (pendingEffects(w.effects).length && w.job && !w.promised && !w.reviewDecline) return 'review'
 	if (w.question && !w.draft?.preview) return 'question'
 	return 'reply'
 }
@@ -313,7 +314,8 @@ export function view(store: Store, since: string | undefined, now = new Date(), 
 	const health = Object.entries(store.health()).map(([key, h]) => ({ key, text: h.text, since: h.since, fix: key === 'source' ? { label: 'Try again', command: 'retry' } : undefined }))
 	if (state !== 'on') health.unshift({ key: 'paused', text: state === 'stopped' ? `${NAME} is stopped. It is not reading your chats.` : `${NAME} is paused. It keeps drafting, and sends nothing.`, since: '', fix: { label: 'Resume', command: 'resume' } })
 	const people = new Map<string, { chat: string; group: boolean }>()
-	for (const w of wfs) if (!w.chat.test && w.asker && !isThread(w.chat.id)) people.set(w.chat.group ? w.chat.name : w.asker.name, { chat: w.chat.id, group: !!w.chat.group })
+	// A test chat is a real chat: its group, or a real person in it, can get a reminder; a "[as Name]" persona never can.
+	for (const w of wfs) if (w.asker && !isThread(w.chat.id) && (w.chat.group || !(w.chat.test && isPersona(w.asker.id)))) people.set(w.chat.group ? w.chat.name : w.asker.name, { chat: w.chat.id, group: !!w.chat.group })
 	// The owner's asks nobody answered for followUpHours (default 24) (design: Waiting on others).
 	const due = now.getTime() - (cfg.followUpHours ?? 24) * 3_600_000
 	// A wait with an open follow-up item is shown as that item; once the item closes, it returns after another followUpHours.

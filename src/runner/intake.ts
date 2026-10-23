@@ -21,6 +21,8 @@ import type { Missed, Store } from '../store/state.ts'
 import { isThread, parseMessageLink } from '../adapters/channels.ts'
 import { kindOf } from './discover.ts'
 import { REPORT, report } from '../store/feedback.ts'
+import { NAME } from '../brand.ts'
+import { prTarget } from './probe.ts'
 
 const toMsg = (r: RawMsg, from: { id: string; name: string }, text: string, byOwner: boolean): Msg =>
 	({ id: r.id, at: r.at, from, text, byOwner })
@@ -42,6 +44,16 @@ export async function readOwnerCommands(store: Store, src: Source, cursors: Reco
 		if (rep) { await say(store, src, `${MARK} ${report(store, rep[2].trim(), rep[1])}`); continue }
 		const miss = text.match(MISSED)
 		if (miss) { store.addMissed({ link: miss[1], note: miss[2]?.trim() || undefined, at: m.at }); n++; continue }
+		// "review PR 12" or "review <PR link>": the owner's own ask to review counts as asked (owner decision, review gate).
+		// It reaches the open item about that PR; with none, the reply says how to start one, never silence (G10).
+		const rv = text.match(REVIEW_CMD)
+		if (rv) {
+			const id = Number(rv[1] ?? rv[2])
+			const item = store.workflows().filter(w => w.state !== 'done' && w.kind !== 'tracker' && prTarget(store, w) === id).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0]
+			if (item) { store.writeAnswer({ code: item.code, verb: 'answer', text: `review PR ${id}`, surface: 'self', seenAt: store.seenRev(item.code, m.at) }); n++ }
+			else await say(store, src, `${MARK} No open item is about PR ${id}, so there is nothing to review it for. ${NAME} reviews a PR when someone asks you in a chat it reads; to start from an ask it missed, say "missed <link to that message>".`)
+			continue
+		}
 		const parsed = parseVerbs(text)
 		if (!parsed) continue
 		for (const p of parsed) {
@@ -169,8 +181,11 @@ export async function intake(store: Store, src: Source, cfg: Config, cursors: Re
 			// An open reply item that went quiet does not absorb a new conversation; it stays for the owner, and a new item starts (review 085 P1-1).
 			const hours = cfg.quietHours ?? 48
 			const live = open.filter(w => (w.job || inWork(store, w) || !quietFor(store, w, hours, now)) && (!backlog || w.before))
-			if (groupJudgment) for (const o of open) appendThread(store, o, toMsg(raw, c.from, c.text, false))
-			let wf = groupJudgment ? undefined : route(live, c.kind === 'ask' || c.kind === 'context' ? c.from.id : '', c.kind === 'ask' && !backlog ? recentItem(store, chat.id, c.from.id, hours, now) : undefined, c.text)
+			// A follow-up from someone who already has a live item in this chat joins it, decided by code before any judgment: it
+			// never starts a second item beside the first one's draft, which then answers only half (bug 10-23 E08).
+			const follows = groupJudgment ? route(live.filter(o => o.asker?.id === c.from.id), c.from.id, undefined, c.text) : undefined
+			if (groupJudgment && !follows) for (const o of open) appendThread(store, o, toMsg(raw, c.from, c.text, false))
+			let wf = follows ?? (groupJudgment ? undefined : route(live, c.kind === 'ask' || c.kind === 'context' ? c.from.id : '', c.kind === 'ask' && !backlog ? recentItem(store, chat.id, c.from.id, hours, now) : undefined, c.text))
 			// An ask that names a link of work from another chat goes to that work's part here, or starts one.
 			const named = c.kind === 'ask' && !groupJudgment && !(wf && inWork(store, wf)) ? homeNamed(store.workflows(), c.text) : undefined
 			const elsewhere = named && named.chat.id !== chat.id ? named : undefined
@@ -209,7 +224,7 @@ export async function intake(store: Store, src: Source, cfg: Config, cursors: Re
 			else if (!groupJudgment && wf.startedBy === 'room') wf.startedBy = undefined
 			if (truncated && !backlog) wf.status = 'Older messages skipped'
 			store.save(wf)
-			store.log({ event: 'intake-routed', chat: chat.id, msgId: raw.id, code: wf.code, reason: room ? 'group judgment' : 'owned ask' })
+			store.log({ event: 'intake-routed', chat: chat.id, msgId: raw.id, code: wf.code, reason: room ? 'group judgment' : follows ? 'same asker follow-up' : 'owned ask' })
 			asks++
 		}
 	}
@@ -287,6 +302,7 @@ async function create(store: Store, src: Source, cfg: Config, chat: WatchedChat,
 export const toRoom = (t: string) => /\b(guys|everyone|everybody|folks|anyone|anybody|someone|somebody)\b|\b(hi|hey|hello)\s+(all|team)\b/i.test(t) && /pullrequest\/\d+|\bPR\b|\breview\b|\?/i.test(t)
 
 export const MISSED = /^missed\s+(https?:\/\/\S+)\s*(?::\s*([\s\S]*))?$/i
+export const REVIEW_CMD = /^(?:re-?)?review\s+(?:(?:the\s+)?PR\s*#?\s*(\d+)|https?:\/\/\S*?pullrequest\/(\d+)\S*)\s*[.!]?$/i
 
 // The owner pointed at a message that was missed (B21): it becomes an item like any ask, and why it was missed goes to the feedback log.
 export async function takeMissed(store: Store, src: Source, cfg: Config): Promise<number> {

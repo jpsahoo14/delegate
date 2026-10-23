@@ -7,6 +7,10 @@ export type State = 'running' | 'needs_human' | 'waiting_on_task' | 'waiting_on_
 export type Intent = string
 
 export type Person = { id: string; name: string }
+// Where an owner's edit was made, so a learned drafting style can be kept to that person or chat (edit habits).
+export type EditScope = { item: string; chat: string; chatName?: string; group: boolean; asker?: Person }
+// Who the owner is on a pull request: a reviewer by name, a member of a reviewer team that has not approved, its author, or none.
+export type PrRole = 'reviewer' | 'group' | 'group-approved' | 'group-unknown' | 'author' | 'declined' | 'none' | 'ambiguous'
 export type Confidence = 'high' | 'medium' | 'low'
 
 export type Rule = {
@@ -17,6 +21,9 @@ export type Rule = {
 	// A rule accepted from a habit, with what it was learned from (dev-spec/habits.md).
 	learned?: { key: string; at: string; evidence: string }
 	shortcut?: { goal: string }
+	// A drafting style learned from the owner's edits: it only shapes the draft's words. Rule matching skips it, so it never
+	// decides who gets an automatic reply or shadows a send, ack or ignore rule (edit habits, Engineer check 10-23).
+	style?: string
 }
 
 export type Msg = { id: string; at: string; from: Person; text: string; byOwner: boolean; ownerReply?: { askId: string; answered?: boolean } }
@@ -121,7 +128,7 @@ export type Job = {
 	id: Id
 	key: string
 	goal: string
-	learning?: { source: string; text: string }
+	learning?: { source: string; text: string; style?: EditScope }
 	repo?: string
 	session: { agent: string; id: string }
 	state: 'queued' | 'running' | 'done' | 'failed'
@@ -183,6 +190,9 @@ export type Workflow = {
 	// PR identity, status, head and owner vote read before drafting; the reply keeps that basis until the next turn.
 	prRead?: string
 	prUnknown?: true
+	// The owner's place on the item's PR at the last read, and why a review was not started (PR review gate, owner rule 10-23).
+	prRole?: PrRole
+	reviewDecline?: { pr: number; role: PrRole | 'unread' | 'not-asked'; at: string; ask?: string }
 	prDraft?: string
 	completionSeen?: string
 	draft?: Draft
@@ -307,6 +317,8 @@ export type Report = {
 	work?: WorkReport
 	partOf?: string
 	claims?: Claim[]
+	// Learn runs only: how the owner's edit changed the tone or the language (edit habits).
+	style?: { tone?: 'casual' | 'formal'; language?: string }
 	checkpoint?: string
 	goalMet?: boolean
 	blocker?: Blocker
@@ -332,7 +344,7 @@ export type WatchedChat = { id: string; name: string; test?: boolean; group?: bo
 
 export type Config = {
 	schema: 1
-	owner: Person
+	owner: Person & { upn?: string }
 	// IANA zone of the owner's wall clock, saved at setup; work hours use it (Bet 1).
 	tz?: string
 	source: { kind?: string; command: string[]; docs?: string[]; selfChatId: string; tools?: Partial<Record<'list' | 'send' | 'sendSelf' | 'get' | 'chats' | 'del' | 'edit' | 'presence' | 'members' | 'message', string>> }

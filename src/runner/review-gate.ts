@@ -1,0 +1,117 @@
+import { NAME } from '../brand.ts'
+import { allows, isVote } from '../core/effects.ts'
+import type { Config, Effect, PrRole, Workflow } from '../core/types.ts'
+import type { Store } from '../store/state.ts'
+import { prTarget, type BuildProbe, type PrRef, type PrState } from './probe.ts'
+
+// The owner's rule (10-23): Delegate reviews a pull request, or votes on it, only when someone asked him (his own command
+// counts) and he is a reviewer: by name, required or optional and not declined, or as a member of a reviewer team that
+// has not approved yet. Never on his own PR. A PR that cannot be read is not reviewed until it can be.
+export const MAY_REVIEW: PrRole[] = ['reviewer', 'group']
+
+const norm = (s = '') => s.trim().toLowerCase()
+export function ownerRole(cfg: Config, st: PrState, teams?: string[]): PrRole {
+	const name = norm(cfg.owner.name), upn = norm(cfg.owner.upn)
+	const isMe = (display?: string, unique?: string) => upn && unique ? norm(unique) === upn : !!name && norm(display) === name
+	if (isMe(st.author, st.authorUnique)) return 'author'
+	const all = st.reviewers ?? st.votes.map(v => ({ name: v.name, vote: v.vote, required: false, group: false, declined: false } as NonNullable<PrState['reviewers']>[number]))
+	const me = all.filter(r => !r.group && isMe(r.name, r.unique))
+	if (me.length > 1) return 'ambiguous'
+	if (me.length === 1) return me[0].declined ? 'declined' : 'reviewer'
+	const groups = all.filter(r => r.group)
+	if (!groups.length) return 'none'
+	// A team reviewer is "[Project]\Team"; the owner's teams are read by name. A group that is not one of them (a security
+	// group, or a team he is not in) cannot be told apart, so it is never taken as his.
+	const short = (n: string) => norm(n.split('\\').at(-1))
+	const mine = teams ? groups.filter(g => teams.some(t => norm(t) === short(g.name))) : []
+	if (!mine.length) return 'group-unknown'
+	return mine.some(g => g.vote < 5 && !g.declined) ? 'group' : 'group-approved'
+}
+
+// The owner's teams per project, read at most hourly; a failed read is "not known", never "none".
+const teamCache = new Map<string, { at: number; names: string[] }>()
+export async function teamsFor(probe: BuildProbe | undefined, project: string, now = Date.now()): Promise<string[] | undefined> {
+	const hit = teamCache.get(project)
+	if (hit && now - hit.at < 3_600_000) return hit.names
+	if (!probe?.myTeams) return undefined
+	try { const names = await probe.myTeams(project); teamCache.set(project, { at: now, names }); return names } catch { return undefined }
+}
+export async function roleOn(cfg: Config, probe: BuildProbe | undefined, ref: PrRef, st: PrState): Promise<PrRole> {
+	const first = ownerRole(cfg, st)
+	return first === 'group-unknown' ? ownerRole(cfg, st, await teamsFor(probe, ref.project)) : first
+}
+
+// Someone asked the owner to review (or recheck, approve, look at) a PR. A message to the whole room counts only when it is about
+// this PR: its number or link is in the same message. The owner's own words (an answer, his message in the thread) count too.
+export const REVIEW_ASK = /\b(?:re-?review|review|re-?check|look at|take a look|have a look|approve|approval|sign[- ]?off|lgtm|can you check|could you check|please check|vote|waiting for (?:the )?author|wait for (?:the )?author|reject)\b/i
+export function reviewAsked(store: Store, wf: Workflow, pr: number): boolean {
+	const pending = store.thread(wf.id).filter(m => wf.pending.includes(m.id))
+	const own = [wf.ownerAnswer ?? '', ...pending.filter(m => m.byOwner).map(m => m.text)].some(t => REVIEW_ASK.test(t))
+	if (own || wf.startedBy === 'owner' && REVIEW_ASK.test(wf.lastAsk ?? '')) return true
+	const theirs = pending.filter(m => !m.byOwner)
+	const about = (t: string) => new RegExp(`(?:\\bPR\\s*#?\\s*${pr}\\b|pullrequest/${pr}\\b|\\b${pr}\\b)`, 'i').test(t)
+	return theirs.some(m => REVIEW_ASK.test(m.text) && (wf.startedBy !== 'room' || about(m.text)))
+}
+
+export type Gate = { ok: true } | { ok: false; role: PrRole | 'unread' | 'not-asked'; status: string; question: string; note?: string; addMe?: Effect }
+// The decision, from the role this turn's PR read stored on the item (probePRs runs before every reply run). With no Azure DevOps
+// reader set up at all, the reviewer check cannot run; the ask check still does, and no vote can be cast there (change.ts).
+export function reviewGate(store: Store, cfg: Config, wf: Workflow, ref: PrRef, title?: string, canRead = true): Gate {
+	const pr = ref.id, who = wf.asker?.name.split(' ')[0] ?? 'They'
+	if (!reviewAsked(store, wf, pr)) return { ok: false, role: 'not-asked', status: `Not reviewing PR ${pr}: nobody asked you to review it`, question: `Nobody asked you to review PR ${pr}. Answer "review it" to have ${NAME} review it, or skip.` }
+	const role = wf.prUnknown && !wf.prRole ? undefined : wf.prRole
+	if (!role && !canRead) return { ok: true }
+	if (!role) return { ok: false, role: 'unread', status: `Checking you're a reviewer on PR ${pr}: it could not be read; ${NAME} tries again at the next check`, question: `${NAME} could not read PR ${pr} to check you are a reviewer. It tries again by itself; answer to try now, or skip.` }
+	if (MAY_REVIEW.includes(role)) return { ok: true }
+	const name = title ? ` "${title}"` : ''
+	if (role === 'author') return { ok: false, role, status: `Not reviewing: PR ${pr} is yours`, question: `${who} wrote about your PR${name}. A review or vote on your own PR is never made; answer with what to do, or skip.` }
+	if (role === 'declined') return { ok: false, role, status: `Not reviewing: you declined PR ${pr} in Azure DevOps`, question: `${who} asked you to review PR ${pr}${name}, which you declined in Azure DevOps. Reply without reviewing, or skip.` }
+	const addMe = addMeEffect(cfg, wf, ref)
+	const why = roleWhy(cfg, role)
+	const status = role === 'group-approved' ? `Not reviewing: your group already approved PR ${pr}` : `Not reviewing: you aren't a reviewer on PR ${pr} (${why})`
+	return { ok: false, role, status, ...(addMe
+		? { question: '', note: `${who} asked you to review PR ${pr}${name}, but ${why}. Approve adding you as an optional reviewer, and the review then starts. To answer without reviewing, reply with what to say, or skip.`, addMe }
+		: { question: `${who} asked you to review PR ${pr}${name}, but ${why}. Add yourself as a reviewer in Azure DevOps${cfg.owner.upn ? ' (or allow "repo_pull_request_write:update_reviewers" in Settings)' : ''}, and the review starts by itself; or reply without reviewing, or skip.` }) }
+}
+
+// A review job: the worker's pr: key, or a review of the item's PR under another name.
+export const isReviewJob = (key: string, intent?: string) => /^pr:/i.test(key.trim()) || intent === 'pr_review'
+
+// Not reviewing, applied to the item: no job, the reason as its status, and the question (with Add me when it can be made).
+// A room message (nobody asked him, or a room ask while he is not a reviewer: G8, G9) is context, closed quietly with the reason.
+export function decline(store: Store, cfg: Config, wf: Workflow, ref: PrRef | undefined, gate: Extract<Gate, { ok: false }>) {
+	const at = new Date().toISOString(), pr = ref?.id ?? 0
+	store.log({ event: 'review-declined', workflowId: wf.id, code: wf.code, pr, role: gate.role })
+	const quiet = wf.startedBy === 'room' && gate.role !== 'unread'
+	if (quiet) {
+		Object.assign(wf, { state: 'done', closedBy: 'nothing', status: gate.status, pending: [], question: undefined, draft: undefined, effects: undefined, promised: undefined, job: undefined, reviewDecline: { pr, role: gate.role, at, ask: wf.lastAsk } })
+		return
+	}
+	// With Add me there is no open question: ok makes that one change (an open question would hold ok back).
+	Object.assign(wf, { state: 'needs_human', status: gate.status, question: gate.question || undefined, pending: [], draft: undefined, promised: undefined, effects: gate.addMe ? [gate.addMe] : undefined, reviewDecline: { pr, role: gate.role, at, ask: wf.lastAsk }, revAt: at, newCount: 0,
+		context: gate.note ? [{ label: 'Not reviewing', text: gate.note, tone: 'warn' as const }] : undefined })
+}
+
+// A vote is offered only on a PR the owner may review: a vote by a non-reviewer adds him to the PR (G7, G11). Any other vote
+// becomes a to-do with the reason, as a change the owner does not allow does.
+export function voteGate(store: Store, cfg: Config, wf: Workflow, effects: Effect[], todos: string[], checkAsk = true): Effect[] {
+	if (!effects.some(e => isVote(e.call))) return effects
+	const pr = prTarget(store, wf) ?? 0
+	const why = checkAsk && !reviewAsked(store, wf, pr) ? `nobody asked you to review PR ${pr}` : wf.prRole && !MAY_REVIEW.includes(wf.prRole) ? roleWhy(cfg, wf.prRole) : undefined
+	if (!why) return effects
+	for (const e of effects.filter(e => isVote(e.call))) todos.push(`${e.summary.replace(/[.\s]+$/, '')}. Not made for you: ${why}`)
+	store.log({ event: 'vote-gated', workflowId: wf.id, code: wf.code, pr, role: wf.prRole, why })
+	return effects.filter(e => !isVote(e.call))
+}
+export const roleWhy = (cfg: Config, role: PrRole) => role === 'author' ? 'the PR is yours' : role === 'declined' ? 'you declined it in Azure DevOps'
+	: role === 'group-approved' ? 'your team already approved it' : role === 'group-unknown' ? `${NAME} cannot tell whether you are in the group that reviews it`
+	: role === 'ambiguous' ? `two reviewers there are named ${cfg.owner.name}` : role === 'none' ? 'you are not on its reviewer list' : 'you are a reviewer'
+
+// The one change that may fix it: add the owner, and only the owner, as an optional reviewer on this item's PR, after one ok.
+export function addMeEffect(cfg: Config, wf: Workflow, ref: PrRef): Effect | undefined {
+	if (!cfg.owner.upn) return undefined
+	const call = { tool: 'ado-repo_pull_request_write', args: { action: 'update_reviewers', project: ref.project, repositoryId: ref.repo, pullRequestId: ref.id, reviewerIds: [cfg.owner.upn], reviewerAction: 'add' } }
+	if (!allows(cfg.agent.effectTools, call)) return undefined
+	return { system: 'azure devops', action: 'add reviewer', target: `PR ${ref.id}`, summary: `Add you as an optional reviewer on PR ${ref.id}`, call }
+}
+export const isAddMe = (e?: Effect) => e?.call?.args.action === 'update_reviewers' && e.call.args.reviewerAction === 'add'

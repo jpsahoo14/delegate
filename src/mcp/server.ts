@@ -343,9 +343,10 @@ export function enqueueParsed(store: Store, parsed: Parsed[], shownAt?: string, 
 		const hb = code?.startsWith('H') ? store.habit(code) : undefined
 		if (hb) {
 			if (p.verb === 'more') { out.push(answerHabit(store, hb, 'more')); shown++; continue }
-			if (!['ok', 'skip', 'never'].includes(p.verb)) { out.push(`${hb.code} takes ok (turn it on), skip (not now), never, or more.`); continue }
-			ids.push(write({ code: hb.code, verb: p.verb, surface: 'chat' }).id)
-			out.push(`${hb.code} ${{ ok: 'will turn on', skip: 'will wait 14 days', never: 'will not come back' }[p.verb as 'ok']}.`)
+			const style = hb.kind === 'style' && !hb.removes
+			if (!['ok', 'skip', 'never', ...(style ? ['edit', 'undo'] : [])].includes(p.verb)) { out.push(`${hb.code} takes ok (turn it on), skip (not now), never, or more${style ? '; once on, edit or undo' : ''}.`); continue }
+			ids.push(write({ code: hb.code, verb: p.verb, text: p.text, surface: 'chat' }).id)
+			out.push(`${hb.code} ${{ ok: 'will turn on', skip: 'will wait 14 days', never: 'will not come back', edit: 'will change its style', undo: 'will be undone' }[p.verb as 'ok']}.`)
 			continue
 		}
 		const auto = code?.startsWith('R') ? store.automation(code) : undefined

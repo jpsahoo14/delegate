@@ -10,8 +10,8 @@ export const settingsSchema = z.object({
 	})),
 	fixed: z.array(z.object({ label: text, value: text, how: text })),
 	about: z.object({
-		profile: text, rules: z.array(z.object({ text, who: text, learned: optional, held: z.boolean(), code: optional })),
-		suggestions: z.array(z.object({ code: text, text, does: text, evidence: text })),
+		profile: text, rules: z.array(z.object({ text, who: text, learned: optional, held: z.boolean(), code: optional, style: optional, undoUntil: optional })),
+		suggestions: z.array(z.object({ code: text, text, does: text, evidence: text, links: strings.optional() })),
 		chats: z.array(z.object({ name: text, says: text, actionIds: strings.optional() })),
 	}),
 	models: z.object({ set: text, lines: strings }),

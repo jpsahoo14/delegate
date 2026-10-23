@@ -308,7 +308,7 @@ export const mustSee = (w: Workflow) => !!w.shareHold || !!w.draft?.commitment |
 // A short draft reads whole in the headline; a longer one that fits goes under it; one that does not fit is clipped, and opens.
 const SHORT = 80
 const said = (verb: string, d: string, fits: boolean): { headline: string; draft?: string } => !fits || d.replace(/\s+/g, ' ').trim().length <= SHORT ? { headline: `${verb}: "${clip(d, SHORT)}"` } : { headline: verb, draft: htmlToText(d) }
-const commentsOrChanges = (w: Workflow) => { const e = pendingEffects(w.effects), c = e.length && e.every(x => /comment|review/i.test(x.action)); return `${e.length} ${c ? (e.length === 1 ? 'comment' : 'comments') : (e.length === 1 ? 'change' : 'changes')}` }
+const commentsOrChanges = (w: Workflow) => { const e = pendingEffects(w.effects), c = e.length && e.every(x => /comment|review(?!er)/i.test(x.action)); return `${e.length} ${c ? (e.length === 1 ? 'comment' : 'comments') : (e.length === 1 ? 'change' : 'changes')}` }
 // "Pick what goes in the demo" reads "what goes in the demo?" after "Pick for Sam:".
 const pickPrompt = (t = '') => { const s = t.trim().replace(/^(pick|choose|select)\s+/i, ''); return /[?]$/.test(s) ? s : `${s}?` }
 // "Watch PR 2203 until merged" reads "PR 2203, until it merges".
@@ -363,6 +363,8 @@ function itemRow(s: Snap, p: Placed, w: Workflow): Body {
 		const kind = moveKind(w), d = w.draft?.text ?? ''
 		const fits = !!d && d.length <= INLINE_MAX && !pendingEffects(w.effects).length && !w.choices && !mustSee(w)
 		const clash = w.context?.find(f => f.tone === 'warn')
+		// A review the gate did not start says why on the row; Open shows Add me when it can fix it (review gate, owner rule 10-23).
+		if (w.reviewDecline) return { ...base, kind: 'question', headline: clip(w.status, 140), facts: { ...facts, notes: [{ label: 'Why', text: clip(w.context?.find(f => f.label === 'Not reviewing')?.text ?? w.question, 240) }] }, primary: open }
 		switch (kind) {
 			// A row never sends: Open shows the reply to read, edit or send (owner 10-21: Send on a row sent a reply meant to be edited).
 			case 'reply': return { ...base, kind, ...said(`Send reply to ${name}`, d, fits), primary: open }

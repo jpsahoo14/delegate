@@ -1,10 +1,13 @@
 import { planRetry, retryStatus } from './retry.ts'
+import { NAME } from '../brand.ts'
 import { active, afterSend, canCloseApproval, canCloseReport, hasDecisions, homeOf, mergeReportWork, newTurn, pendingParts, reReviewAsk, step, watchEnded, watchNews } from './work.ts'
 import { confidence } from '../core/policy.ts'
 import { PAGE_REPLY_CHANGED } from '../core/page-approval.ts'
 import { uptime } from 'node:os'
-import { allows, changeName, changeSays, isVote, unsafeRead, pendingEffects, proposalEffects, refusal, refusedAsk, reviewAgain, carryMarks, shown, vet, voteValue, SETUP_REFUSAL } from '../core/effects.ts'
+import { allows, changeName, changeSays, isVote, unsafeRead, pendingEffects, proposalEffects, refusal, refusedAsk, reviewAgain, carryMarks, shown, vet, voteValue, SETUP_REFUSAL, OLD_INVITE, OLD_INVITE_ASK } from '../core/effects.ts'
 import { prOf, prTarget, type BuildProbe } from './probe.ts'
+import { isAddMe, voteGate } from './review-gate.ts'
+import { noticeHabits } from './habits.ts'
 import { cloneFor, cloneTodo, repoRef } from './repos.ts'
 import { deployed, deployRunning, findingNotBlocker, isValidate, proposeTargets, shellInClone, shellTool, telemetryNote, telemetryTools } from './validate.ts'
 import { toolServers } from '../adapters/mcp-client.ts'
@@ -322,6 +325,9 @@ export function finishWork(store: Store, job: Job, r: Report, asksAtStart: numbe
 	// Each proposed change must be one the owner allows, on this item's PR; any other becomes a to-do with the reason (owner, 2026-10-20).
 	const parents = parentsOf(store, job)
 	const v = vet(cfg, r.effects, parents.map(w => prTarget(store, w)).find(Boolean))
+	// A review's vote only while the owner may review the PR, at its last read (review gate G7).
+	const reader = parents.find(w => w.prRole)
+	if (reader) v.effects = voteGate(store, cfg, reader, v.effects, v.todos, false)
 	// A deploy while our last one is still running waits: one change at a time, never stacked on a ring (owned work).
 	const busy = parents.map(w => deployRunning(homeOf(store, w))).find(Boolean)
 	if (busy) for (const e of v.effects.filter(e => isDeploy(e.call))) v.todos.push(`${e.summary.replace(/[.\s]+$/, '')}. Not made for you: ${busy}`)
@@ -450,10 +456,26 @@ async function finishExecute(store: Store, src: Source, cfg: Config, job: Job, p
 		// A deploy made is a plan step with a build check, and its ring is watched after it (owned work).
 		const moving = effects.filter(e => e.done && isDeploy(e.call)).map(e => deployed(store, wf, e, e.done!.ref, job.goal)).filter((x): x is string => !!x)
 		if (left.length) {
+			// An old invite that cannot be made: a retry cannot work, so the owner is offered a new draft (legacy E16).
+			const old = left.find(e => e.error?.includes(OLD_INVITE))
+			if (old) {
+				Object.assign(wf, { state: 'needs_human', waitingSince: undefined, status: `Not made: ${changeText(old)}. ${old.error!.replace(/^Change \d+ cannot be made: /, '').replace(/^./, c => c.toUpperCase())} Nothing was created, and the reply was not sent`,
+					question: OLD_INVITE_ASK })
+				store.save(wf)
+				continue
+			}
 			const how = left.some(e => e.maybe) ? `Check whether it was made, then reply "ok ${wf.code} again" to make it once more` : `Reply "ok ${wf.code}" to retry`
 			// The owner's own words already went, so there is no reply left to send on its own (Slice 3).
 			const or = wf.promise && wf.sent && !wf.draft?.text ? `, or "skip ${wf.code}"` : `, or "ok ${wf.code} except ${left.map((_, i) => i + 1).join(' ')}" to send only the reply`
 			Object.assign(wf, { state: 'needs_human', waitingSince: undefined, status: `Made ${effects.length - left.length} of ${effects.length} changes. Not done: ${left.map(e => `${changeText(e)}${e.error ? ` (${e.error.slice(0, 80)})` : ''}`).join('; ')}. ${how}${or}` })
+			store.save(wf)
+			continue
+		}
+		// Added as a reviewer by Add me: the declined review starts now, on the ask that asked for it (review gate).
+		const added = effects.find(e => e.done && isAddMe(e))
+		if (added && wf.reviewDecline) {
+			Object.assign(wf, { state: 'running', waitingSince: undefined, question: undefined, reviewDecline: undefined, context: wf.context?.filter(c => c.label !== 'Not reviewing'), status: `Added you as an optional reviewer on PR ${wf.reviewDecline.pr}; starting the review`, pending: wf.msgIds.slice(-1) })
+			store.log({ event: 'review-gate-added', code: wf.code, pr: added.call?.args.pullRequestId })
 			store.save(wf)
 			continue
 		}
@@ -727,6 +749,9 @@ function finishBootstrap(store: Store, job: Job, r: Report) {
 	Object.assign(job, { result: { summary: r.summary, effects: [] }, state: 'done', run: undefined })
 	store.saveJob(job)
 	store.log({ event: 'bootstrap-done', job: job.id, key: job.key, claims: r.claims?.length ?? 0, proposals: made.map(p => p.code), ...usedBy(job) })
+	// Edit habits: the learn run's tone and language, logged as another kind of edit on the same item (pm-edit-habits.md).
+	const scope = job.learning?.style, kinds = [...(r.style?.tone ? [`tone:${r.style.tone}`] : []), ...(r.style?.language ? [`language:${r.style.language}`] : [])]
+	if (learn && scope && kinds.length) { store.log({ event: 'edit-style', at: new Date().toISOString(), ...scope, kinds, ai: true, ...(job.learning?.source ? { link: job.learning.source } : {}) }); noticeHabits(store, store.config()) }
 }
 
 // The ask goes to the owner's open session as a message; the session does the work with its own history and approvals.

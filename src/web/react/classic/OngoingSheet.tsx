@@ -20,7 +20,8 @@ export function OngoingSheet({ reminderOnly = false }: { reminderOnly?: boolean 
 	const { route, navigate } = useScreenNavigation()
 	const [opened, setOpened] = useState<Snapshot>()
 	const [summaryHelp, setSummaryHelp] = useState(false)
-	useEffect(() => { if (route === 'automations/new') open(reminderOnly ? 'remind-someone' : 'pick') }, [route, reminderOnly])
+	// The automations address opens the chooser in both experiences, as today's New does (E98); "+ Remind someone" opens the form.
+	useEffect(() => { if (route === 'automations/new') open('pick') }, [route, reminderOnly])
 	const fields = usePageForms(state => state.fields), setField = usePageForms(state => state.setField)
 	const snapshot = opened ?? live, recipients = snapshot?.recipients ?? []
 	const actions = (snapshot?.pageActionIds ?? []).map(id => snapshot?.entities.actions[id]).filter(action => !!action)
@@ -83,6 +84,7 @@ export function OngoingSheet({ reminderOnly = false }: { reminderOnly?: boolean 
 					{summaryHelp && <p role="status">Say it in chat: &quot;send me a summary every day at 6 pm&quot;.</p>}
 				</div> : <div className="ongoing-form">
 					{kind === 'remind-someone' && <div><span className="ongoing-field-label" id="ongoing-recipient-label">Send to</span><div className="ongoing-chips" role="group" aria-labelledby="ongoing-recipient-label">{people.map(person => <Button variant="outline" className="ongoing-chip" key={person.id} aria-pressed={recipientId === person.id} disabled={busy} onClick={() => choose(person.id)}>{initials(person.name)}{person.name}</Button>)}{recipients.length > people.length && <Button variant="outline" className="ongoing-chip" aria-expanded={someone} onClick={() => setField('classic-reminder/someone', String(!someone))}>Someone else…</Button>}</div>
+						{!recipients.length && snapshot?.recipientsNote && <p className="ongoing-description" role="note">{snapshot.recipientsNote}</p>}
 						{someone && <label className="ongoing-other-person"><span className="sr-only">Person or chat</span><select aria-label="Person or chat" value={recipientId} disabled={busy} onChange={event => choose(event.target.value)}>{!recipient && <option value={recipientId}>Choose a person or chat</option>}{recipients.map(person => <option value={person.id} key={person.id}>{person.name}</option>)}</select></label>}
 					</div>}
 					<div><label htmlFor="ongoing-sheet-text">{kind === 'watch-something' ? 'What should I make sure gets done?' : 'Message'}</label><input id="ongoing-sheet-text" autoComplete="off" value={value} placeholder={kind === 'watch-something' ? 'PR 1601234 merged, or: Ana sends the trace IDs' : undefined} onChange={event => setField(textKey, event.target.value)} /></div>

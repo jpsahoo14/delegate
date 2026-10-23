@@ -12,6 +12,7 @@ import { Icon } from '../components/ui/icon.tsx'
 import { Field, Sources } from './CardFields.tsx'
 import { NAME } from '../brand.ts'
 import { deadlineChoices, deadlineDate } from '../classic/dates.ts'
+import { isolateRowControls } from './row-navigation.ts'
 
 export function Entry({ row: supplied, fresh = false, grouped = false, compact = false, feedbackOnly = false, newView = false, open, onToggle }: { row: Entities['doneEntries'][string]; fresh?: boolean; grouped?: boolean; compact?: boolean; feedbackOnly?: boolean; newView?: boolean; open: boolean; onToggle: () => void }) {
 	const { row, entities, rev, newer, blocked } = useActivityCard(supplied.code, supplied.id)
@@ -48,7 +49,7 @@ export function Entry({ row: supplied, fresh = false, grouped = false, compact =
 		const searched = row.why?.searched ?? item?.why.searched ?? []
 		const where = row.sentence.match(/ in (.+)$/)?.[1]
 		const exchange = reply && (row.ask || row.said) ? <>{row.ask ? <span className="qa"><strong>{person.name.split(' ')[0]} asked:</strong> {row.ask}</span> : <strong>{row.sentence}</strong>}{row.said && <span className="qa you"><strong>You{row.inTeams ? ' (in Teams)' : ''}:</strong> {row.said}</span>}</> : <><strong>{row.sentence}</strong>{(row.gist || row.said) && <span className="gist">{row.gist ?? `“${row.said}”`}</span>}</>
-		return <article className={`done-entry${expanded ? ' done-open' : ''}`} data-activity-code={row.code}>
+		return <article className={`done-entry${expanded ? ' done-open' : ''}`} data-activity-code={row.code} onClick={row.kind === 'catchup' ? isolateRowControls : undefined}>
 			<div className="done-row">
 				{reply ? <span className="row-avatar" style={{ '--hue': person.hue } as CSSProperties}>{person.initials}</span> : <span className="row-icon"><Icon name={row.kind === 'catchup' ? row.high ? 'warn' : 'eye' : row.kind === 'reminder' ? 'clock' : row.kind === 'learned' ? 'book' : 'check'} /></span>}
 				<div className="done-body">{row.kind === 'catchup' && row.teams ? <a className="done-title" href={row.teams} target="_blank" rel="noopener noreferrer">{exchange}</a> : expandable ? <button className="done-title" onClick={onToggle} aria-expanded={expanded}>{exchange}</button> : <div className="done-title">{exchange}</div>}
@@ -57,7 +58,7 @@ export function Entry({ row: supplied, fresh = false, grouped = false, compact =
 					{(newer || blocked) && <p role="status" className="warning">This activity changed. Your unsent words are kept. <Button variant="outline" disabled={busy} onClick={showLatest}>Review current version</Button></p>}
 				</div>
 				{row.kind === 'catchup' && link && <a className="done-source" href={link} target="_blank" rel="noopener noreferrer" aria-label="Open in Teams"><Icon name="ext" /></a>}
-				<div className="done-row-actions">{actions.filter(action => action.kind === 'undo' || row.kind === 'learned' && action.kind === 'undo-facts').map(action => <ActionButton key={action.id} action={action} />)}
+				<div className="done-row-actions" data-row-controls>{actions.filter(action => action.kind === 'undo' || row.kind === 'learned' && action.kind === 'undo-facts').map(action => <ActionButton key={action.id} action={action} />)}
 					{actions.some(action => action.kind === 'watch-fyi') && !row.watchedAs && <Button variant="ghost" disabled={blocked} onClick={() => edit({ folds: { ...ui.folds, watch: !watching } })}>Watch</Button>}
 					{actions.filter(action => action.kind === 'needs-me').map(action => <ActionButton key={action.id} action={action} />)}
 				</div>
@@ -77,7 +78,7 @@ export function Entry({ row: supplied, fresh = false, grouped = false, compact =
 			{watchForm}<ActionState item={row.code} rev={rev} />
 		</article>
 	}
-	return <article className={`item-card${compact ? ' classic-catchup-row' : ''}`} data-activity-code={row.code}>{compact && <span className="classic-catchup-icon"><Icon name={row.high ? 'warn' : 'eye'} /></span>}<header className="card-header"><Heading>{row.kind === 'catchup' && row.teams ? <a href={row.teams} target="_blank" rel="noopener noreferrer">{row.sentence}</a> : <button className="row-title" onClick={onToggle} aria-expanded={open}>{row.sentence}</button>}</Heading><span className="code" title={codeHover(row.code)}>{row.code}</span></header>
+	return <article className={`item-card${compact ? ' classic-catchup-row' : ''}`} data-activity-code={row.code} onClick={row.kind === 'catchup' ? isolateRowControls : undefined}>{compact && <span className="classic-catchup-icon"><Icon name={row.high ? 'warn' : 'eye'} /></span>}<header className="card-header"><Heading>{row.kind === 'catchup' && row.teams ? <a href={row.teams} target="_blank" rel="noopener noreferrer">{row.sentence}</a> : <button className="row-title" onClick={onToggle} aria-expanded={open}>{row.sentence}</button>}</Heading><span className="code" title={codeHover(row.code)}>{row.code}</span></header>
 		{fresh && <span className="chip" title={chipHover('new')}>New</span>}
 		{(newer || blocked) && <p role="status" className="warning">{blocked ? 'An unsent edit for this item is kept on another version.' : 'This activity changed while you were editing. Your text is kept.'} <Button variant="outline" disabled={busy} onClick={showLatest}>Review current version</Button></p>}
 		{!compact && row.ask && <p>{person.name} asked: {row.ask}</p>}
@@ -86,7 +87,7 @@ export function Entry({ row: supplied, fresh = false, grouped = false, compact =
 		<p className="muted">{!compact && `${person.name} - `}{row.by}{compact ? ' · ' : ' - '}<time dateTime={row.at}>{when(row.at)}</time></p>
 		{!compact && row.work && <p>{row.work}</p>}
 		{(row.teams || row.href) && <a className={compact ? 'classic-catchup-source' : undefined} aria-label={compact ? row.teams ? 'Open in Teams' : 'Open source' : undefined} href={row.teams ?? row.href} target="_blank" rel="noopener noreferrer">{compact ? <Icon name="ext" /> : row.teams ? 'Open in Teams' : 'Open source'}</a>}
-		<div className="action-bar">{actions.filter(action => !['wrong', 'incomplete', 'unneeded', 'watch-fyi'].includes(action.kind)).map(action => <ActionButton key={action.id} action={action} />)}
+		<div className="action-bar" data-row-controls>{actions.filter(action => !['wrong', 'incomplete', 'unneeded', 'watch-fyi'].includes(action.kind)).map(action => <ActionButton key={action.id} action={action} />)}
 			{actions.some(action => action.kind === 'watch-fyi') && <Button variant="outline" disabled={blocked} onClick={() => edit({ folds: { ...ui.folds, watch: !watching } })}>Watch</Button>}
 			{actions.some(action => ['wrong', 'incomplete', 'unneeded'].includes(action.kind)) && <Button variant="outline" aria-label={feedbackLabel} disabled={blocked} onClick={() => edit({ feedbackKind: kind ? undefined : 'wrong' })}>Not right?</Button>}
 		</div>

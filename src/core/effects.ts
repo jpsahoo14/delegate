@@ -101,7 +101,28 @@ export function refusal(cfg: Config, e: Effect, pr?: number): string | undefined
 	if (id !== undefined && id !== pr) return `PR ${id} is not this item's PR${pr ? ` (${pr})` : ''}`
 	if (isVote(c) && voteValue(c) === undefined) return 'a vote must be Approved, ApprovedWithSuggestions, WaitingForAuthor, Rejected, or NoVote'
 	if (isVote(c) && !e.head) return 'a vote must name the commit the review read'
+	// A reviewer change may only add the owner, alone, to this item's PR (review gate, owner rule 10-23).
+	if (prTool(c) && String(c.args.action ?? '').toLowerCase() === 'update_reviewers') {
+		const ids = Array.isArray(c.args.reviewerIds) ? c.args.reviewerIds.map(String) : []
+		const upn = (cfg.owner.upn ?? '').trim().toLowerCase()
+		if (!(String(c.args.reviewerAction ?? '').toLowerCase() === 'add' && ids.length === 1 && upn && ids[0].trim().toLowerCase() === upn)) return `${NAME} may only add you as a reviewer, never remove anyone or add someone else`
+	}
+	const invite = inviteShapeProblem(c)
+	if (invite) return invite
 	return undefined
+}
+
+// A stored invite from before calendar calls were converted is converted when it is made; one that cannot be converted
+// (no readable start, no subject) is refused before any call, and the owner is offered a new draft (legacy E16).
+export const OLD_INVITE = 'this invite was proposed in an older form'
+export const OLD_INVITE_ASK = `The invite was proposed in an older form ${NAME} cannot make. Answer to have ${NAME} draft the invite again; nothing is sent until you OK the new draft.`
+export function inviteShapeProblem(c?: Call): string | undefined {
+	if (!c || !/(?:^|[-_])CreateEvent$/i.test(c.tool)) return undefined
+	const a = toolShape(c)!.args
+	const missing = [!String(a.subject ?? '').trim() && 'subject', !a.startDateTime && 'start time', !a.endDateTime && 'end time'].filter(Boolean)
+	const old = ['start', 'minutes', 'durationMinutes', 'attendees'].filter(k => k in a)
+	if (!missing.length && !old.length) return undefined
+	return `${OLD_INVITE} that ${NAME} cannot turn into a calendar call (${missing.length ? `no ${missing.join(', ')}` : `old fields: ${old.join(', ')}`})`
 }
 
 // A calendar invite as the owner's calendar tool takes it (bug 10-23 E16): the meeting shape a worker writes,
@@ -153,6 +174,7 @@ const LINES: Record<string, [string, string]> = {
 	[DEPLOY]: ['Deploy', `run a pipeline on "Where ${NAME} may deploy" with a PR's build as its resource`],
 	'ado-repo_pull_request_thread_write': ['PR comment', 'comment on a pull request, or reply in one of its threads'],
 	'ado-repo_pull_request_write:vote': ['PR vote', 'cast the owner\'s vote on a pull request: Approved, ApprovedWithSuggestions, WaitingForAuthor, Rejected, or NoVote'],
+	'ado-repo_pull_request_write:update_reviewers': ['Add you as a PR reviewer', 'add the owner, and only the owner, as an optional reviewer on the item\'s pull request, so a review he was asked for can start'],
 	'ado-wit_work_item_write:update': ['Work item update', 'change fields on one work item; the update must fail if the item changed since it was read'],
 	'calendar-CreateEvent': ['Calendar invite', 'create a meeting on the owner\'s calendar and invite people'],
 }
@@ -194,6 +216,9 @@ function known(c: Call, pr: string, e?: Effect): Format | undefined {
 	// A deploy names its build, PR, commit, and ring; any resource besides the one build stays in detail as sent.
 	if (isDeploy(c) && e) { const r = a.resources as Record<string, Record<string, unknown>> | undefined, only = !!r && Object.keys(r).length === 1 && Object.keys(Object.values(r)[0] ?? {}).length === 1; return { line: deployLine(e), loc: e.deploy?.ring ?? '', keys: ['action', 'pipelineId', ...(only ? ['resources'] : [])] } }
 	if (isVote(c)) { const v = voteValue(c); return { line: v === undefined ? `Vote ${str(a.vote)} on ${pr}` : VOTE_SAYS[v](pr), loc: pr, keys: ['action', ...prKey, 'vote'] } }
+	// Add me (review gate): the one reviewer change offered, said in words; any other shape is shown with every argument.
+	if (/pull_?request_write$/i.test(c.tool) && /^update_reviewers$/i.test(action) && /^add$/i.test(String(a.reviewerAction ?? '')) && Array.isArray(a.reviewerIds) && a.reviewerIds.length === 1)
+		return { line: `add ${str(a.reviewerIds[0])} as an optional reviewer on ${pr}`, loc: pr, keys: ['action', ...prKey, 'reviewerIds', 'reviewerAction'] }
 	if (/pull_?request_thread/i.test(c.tool)) {
 		// Only the actions a line can say in words; any other is shown with every argument (review 10-21e P2-1).
 		if (!/^(create|reply)$|^update|status/i.test(action)) return undefined

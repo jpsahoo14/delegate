@@ -16145,13 +16145,13 @@ function _promise(Class2, innerType) {
 }
 // @__NO_SIDE_EFFECTS__
 function _custom(Class2, fn, _params) {
-  const norm3 = normalizeParams(_params);
-  norm3.abort ?? (norm3.abort = true);
+  const norm4 = normalizeParams(_params);
+  norm4.abort ?? (norm4.abort = true);
   const schema = new Class2({
     type: "custom",
     check: "custom",
     fn,
-    ...norm3
+    ...norm4
   });
   return schema;
 }
@@ -21280,7 +21280,22 @@ function refusal(cfg, e, pr) {
   if (id !== void 0 && id !== pr) return `PR ${id} is not this item's PR${pr ? ` (${pr})` : ""}`;
   if (isVote(c) && voteValue(c) === void 0) return "a vote must be Approved, ApprovedWithSuggestions, WaitingForAuthor, Rejected, or NoVote";
   if (isVote(c) && !e.head) return "a vote must name the commit the review read";
+  if (prTool(c) && String(c.args.action ?? "").toLowerCase() === "update_reviewers") {
+    const ids = Array.isArray(c.args.reviewerIds) ? c.args.reviewerIds.map(String) : [];
+    const upn = (cfg.owner.upn ?? "").trim().toLowerCase();
+    if (!(String(c.args.reviewerAction ?? "").toLowerCase() === "add" && ids.length === 1 && upn && ids[0].trim().toLowerCase() === upn)) return `${NAME} may only add you as a reviewer, never remove anyone or add someone else`;
+  }
+  const invite = inviteShapeProblem(c);
+  if (invite) return invite;
   return void 0;
+}
+function inviteShapeProblem(c) {
+  if (!c || !/(?:^|[-_])CreateEvent$/i.test(c.tool)) return void 0;
+  const a = toolShape(c).args;
+  const missing = [!String(a.subject ?? "").trim() && "subject", !a.startDateTime && "start time", !a.endDateTime && "end time"].filter(Boolean);
+  const old = ["start", "minutes", "durationMinutes", "attendees"].filter((k) => k in a);
+  if (!missing.length && !old.length) return void 0;
+  return `${OLD_INVITE} that ${NAME} cannot turn into a calendar call (${missing.length ? `no ${missing.join(", ")}` : `old fields: ${old.join(", ")}`})`;
 }
 function toolShape(c) {
   if (!c || !/(?:^|[-_])CreateEvent$/i.test(c.tool)) return c;
@@ -21319,6 +21334,8 @@ function known(c, pr, e) {
     const v = voteValue(c);
     return { line: v === void 0 ? `Vote ${str(a.vote)} on ${pr}` : VOTE_SAYS[v](pr), loc: pr, keys: ["action", ...prKey, "vote"] };
   }
+  if (/pull_?request_write$/i.test(c.tool) && /^update_reviewers$/i.test(action2) && /^add$/i.test(String(a.reviewerAction ?? "")) && Array.isArray(a.reviewerIds) && a.reviewerIds.length === 1)
+    return { line: `add ${str(a.reviewerIds[0])} as an optional reviewer on ${pr}`, loc: pr, keys: ["action", ...prKey, "reviewerIds", "reviewerAction"] };
   if (/pull_?request_thread/i.test(c.tool)) {
     if (!/^(create|reply)$|^update|status/i.test(action2)) return void 0;
     const keys = ["action", ...prKey];
@@ -21359,11 +21376,11 @@ function shown(e) {
 }
 function changeSays(e) {
   const x = shown(e), where = x.loc.split(", ").filter((p) => p && !x.line.toLowerCase().includes(p.toLowerCase())).join(", ");
-  const says = !x.line.toLowerCase().includes(x.text.toLowerCase()) ? `: ${x.text}` : "";
+  const says2 = !x.line.toLowerCase().includes(x.text.toLowerCase()) ? `: ${x.text}` : "";
   const rest2 = x.detail.replace(/\n/g, "; ");
-  return `${x.line}${where ? ` at ${where}` : ""}${says}${rest2 ? says ? ` (${rest2})` : `: ${rest2}` : ""}`;
+  return `${x.line}${where ? ` at ${where}` : ""}${says2}${rest2 ? says2 ? ` (${rest2})` : `: ${rest2}` : ""}`;
 }
-var pendingEffects, sameChange, sameProposal, carryMarks, parts, allows, toolOf, NEVER_KEY, never2, prTool, forbidden, WRITE_VERBS, verbWrite, SETUP_REFUSAL, prIdOf, isVote, VOTES, VOTE_NAME, VOTE_WORDS, sameHead, ASK_VOTE, voteName, isInvite, BOOK, asksInvite, claimsInvite, reviewAgainCmd, reviewAgain, asksReviewAgain, refusedAsk, LINES, WRITE_DEFAULTS, offerable, line, changeName, changeLine, prParts, meaningParts, meaningOf, str, VOTE_SAYS, at, doLine, saidLine;
+var pendingEffects, sameChange, sameProposal, carryMarks, parts, allows, toolOf, NEVER_KEY, never2, prTool, forbidden, WRITE_VERBS, verbWrite, SETUP_REFUSAL, prIdOf, isVote, VOTES, VOTE_NAME, VOTE_WORDS, sameHead, ASK_VOTE, voteName, isInvite, BOOK, asksInvite, claimsInvite, OLD_INVITE, OLD_INVITE_ASK, reviewAgainCmd, reviewAgain, asksReviewAgain, refusedAsk, LINES, WRITE_DEFAULTS, offerable, line, changeName, changeLine, prParts, meaningParts, meaningOf, str, VOTE_SAYS, at, doLine, saidLine;
 var init_effects = __esm({
   "src/core/effects.ts"() {
     "use strict";
@@ -21419,6 +21436,8 @@ var init_effects = __esm({
       return !!m && !/\b(?:do not|don't|dont|no need to|not|never|without)\b/i.test(s3.slice(0, m.index));
     });
     claimsInvite = (text3) => /\b(?:I(?:'|’)ve|I have|I(?:'|’)ve just|we(?:'|’)ve|we have)\s+(?:just\s+)?(?:sent|booked|scheduled|set up)\b[^.!?]{0,80}\b(?:invite|invitation|meeting|call|sync)\b|\b(?:invite|invitation)\b[^.!?]{0,40}\b(?:is|was|has been)\s+(?:sent|booked)\b|\bsent (?:you |them |everyone )?(?:an? |the )?(?:invite|invitation)\b/i.test(text3);
+    OLD_INVITE = "this invite was proposed in an older form";
+    OLD_INVITE_ASK = `The invite was proposed in an older form ${NAME} cannot make. Answer to have ${NAME} draft the invite again; nothing is sent until you OK the new draft.`;
     reviewAgainCmd = (code) => `${code}: review again`;
     reviewAgain = (code, why2) => `${why2} Review again? Reply "${reviewAgainCmd(code)}", or "skip ${code}".`;
     asksReviewAgain = (code, question) => !!question?.includes(`Reply "${reviewAgainCmd(code)}"`);
@@ -21427,6 +21446,7 @@ var init_effects = __esm({
       [DEPLOY]: ["Deploy", `run a pipeline on "Where ${NAME} may deploy" with a PR's build as its resource`],
       "ado-repo_pull_request_thread_write": ["PR comment", "comment on a pull request, or reply in one of its threads"],
       "ado-repo_pull_request_write:vote": ["PR vote", "cast the owner's vote on a pull request: Approved, ApprovedWithSuggestions, WaitingForAuthor, Rejected, or NoVote"],
+      "ado-repo_pull_request_write:update_reviewers": ["Add you as a PR reviewer", "add the owner, and only the owner, as an optional reviewer on the item's pull request, so a review he was asked for can start"],
       "ado-wit_work_item_write:update": ["Work item update", "change fields on one work item; the update must fail if the item changed since it was read"],
       "calendar-CreateEvent": ["Calendar invite", "create a meeting on the owner's calendar and invite people"]
     };
@@ -39813,8 +39833,8 @@ var init_retry = __esm({
     capOf = (r) => r.last.kind === "not_ready" ? void 0 : DELAYS[r.last.kind]?.length;
     retryNote = (r) => `The last attempt fell short of the goal: ${r.last.why}.${r.tried.length ? ` Already tried, do not repeat: ${r.tried.join("; ")}.` : ""} Take a different route; search for tools by what they do before you decide one is missing.${r.last.waitFor ? ` It was waiting for ${r.last.waitFor}; check it first.` : ""}`;
     retryStatus = (r, time4) => {
-      const cap = capOf(r);
-      return r.last.kind === "not_ready" ? `Waiting${r.last.waitFor ? ` for ${r.last.waitFor}` : ""}; checking again at ${time4(r.at)}: ${r.last.why}` : `Retrying (${r.n} of ${cap}) at ${time4(r.at)}: ${r.last.why}`;
+      const cap2 = capOf(r);
+      return r.last.kind === "not_ready" ? `Waiting${r.last.waitFor ? ` for ${r.last.waitFor}` : ""}; checking again at ${time4(r.at)}: ${r.last.why}` : `Retrying (${r.n} of ${cap2}) at ${time4(r.at)}: ${r.last.why}`;
     };
   }
 });
@@ -39842,7 +39862,7 @@ function matches(r, wf, conf) {
 }
 function decide(wf, rules, ctx) {
   const conf = confidence(wf.draft?.sources ?? []);
-  const rule = rules.find((r) => matches(r, wf, conf));
+  const rule = rules.find((r) => !r.style && matches(r, wf, conf));
   const d = (action2, reason) => ({ action: action2, ruleId: rule?.id, reason, confidence: conf });
   if (wf.before) return d("draft", "It came before setup; replies to older messages wait for you");
   if (wf.draft?.holding) return d("draft", "A holding reply: the work is not finished, so it waits for you");
@@ -40138,6 +40158,7 @@ var init_levels = __esm({
 // src/runner/habits.ts
 import { existsSync as existsSync8, readFileSync as readFileSync8, writeFileSync as writeFileSync4 } from "node:fs";
 import { join as join9 } from "node:path";
+import { createHash as createHash3 } from "node:crypto";
 function outcome(store2, wf, how, o = {}) {
   const edited = how === "sent" && !!o.draft && !!o.sent && norm(o.draft) !== norm(o.sent);
   const link2 = o.msgId ? messageLink(wf.chat.id, o.msgId) : void 0;
@@ -40182,39 +40203,169 @@ function noticeHabits(store2, cfg, now = Date.now()) {
       rule: { id: `learned-${asker.slice(0, 8)}-${intent}`, text: `Learned: replies to ${name} in 1:1 about ${label2} go by themselves`, who: { accounts: [{ id: asker, name }] }, when: { chat: "direct", intent }, then: "send" }
     });
   }
-  const best = found.sort((a, b) => b.evidence.count - a.evidence.count)[0];
+  const best = found.sort((a, b) => b.evidence.count - a.evidence.count)[0] ?? styleHabit(store2, cfg, habits, now);
   if (!best) return void 0;
   best.code = store2.nextCode("H");
   store2.saveHabits([...habits.filter((h) => h.key !== best.key), best]);
   store2.log({ event: "habit-suggested", code: best.code, key: best.key, evidence: best.evidence });
   return best;
 }
-function answerHabit(store2, h, verb) {
+function answerHabit(store2, h, verb, text3) {
   const now = /* @__PURE__ */ new Date();
   const save2 = (x) => store2.saveHabits(store2.habits().map((y) => y.key === h.key ? { ...y, ...x } : y));
+  const evidence = h.kind === "style" ? `${h.evidence.count} edited replies on ${h.evidence.days} day${h.evidence.days === 1 ? "" : "s"}` : `${h.evidence.count} unedited replies on ${h.evidence.days} days`;
   if (verb === "more") return `${h.code} \xB7 ${h.text}
 ${h.does}
-Evidence: ${h.evidence.count} unedited replies on ${h.evidence.days} days, out of ${h.evidence.total}.${h.evidence.links.length ? `
+Evidence: ${evidence}, out of ${h.evidence.total}.${h.evidence.links.length ? `
 ${h.evidence.links.map((l) => `- ${l}`).join("\n")}` : ""}`;
   if (verb === "ok") {
     if (h.state === "accepted") return `${h.code} is already on.`;
-    setRules(store2, [...store2.rules().filter((r) => r.id !== h.rule.id), { ...h.rule, learned: { key: h.key, at: now.toISOString(), evidence: `${h.evidence.count} unedited replies on ${h.evidence.days} days` } }]);
+    if (h.removes) {
+      setRules(store2, store2.rules().filter((r) => r.id !== h.removes));
+      store2.saveHabits(store2.habits().map((y) => y.rule.id === h.removes && y.key !== h.key ? { ...y, state: "declined" } : y.key === h.key ? { ...y, state: "accepted", at: now.toISOString() } : y));
+      store2.log({ event: "habit-accepted", code: h.code, key: h.key, removed: h.removes });
+      return `${h.code}: done, drafts no longer follow that style.`;
+    }
+    setRules(store2, [...store2.rules().filter((r) => r.id !== h.rule.id), { ...h.rule, learned: { key: h.key, at: now.toISOString(), evidence } }]);
     save2({ state: "accepted", at: now.toISOString() });
     store2.log({ event: "habit-accepted", code: h.code, key: h.key });
     return `${h.code} is on: ${h.does} Say "never ${h.code}" to turn it off.`;
+  }
+  if (verb === "edit" && h.kind === "style" && !h.removes) {
+    const style = (text3 ?? "").replace(/\s+/g, " ").trim();
+    if (!style) return `Say "edit ${h.code}: <how drafts should be written>".`;
+    const rule = store2.rules().find((r) => r.id === h.rule.id);
+    if (!rule || h.state !== "accepted") return `${h.code} is not on, so there is no style to change. Turn it on first.`;
+    const edited = { ...rule, style, text: `Learned: ${styleTitle(h.rule)}: ${style}` };
+    setRules(store2, store2.rules().map((r) => r.id === rule.id ? edited : r));
+    save2({ rule: edited });
+    store2.log({ event: "habit-edited", code: h.code, key: h.key });
+    return `${h.code} now says: ${style}`;
+  }
+  if (verb === "undo" && h.state === "accepted" && !h.removes) {
+    if (now.getTime() - Date.parse(h.at) > undoMs(store2)) return `The undo time for ${h.code} is over. Say "never ${h.code}" to turn it off.`;
+    setRules(store2, store2.rules().filter((r) => r.id !== h.rule.id));
+    save2({ state: "suggested", at: now.toISOString(), told: true });
+    store2.log({ event: "habit-undone", code: h.code, key: h.key });
+    return `Undone: ${h.code} is off again, and its suggestion is back in Settings.`;
   }
   if (verb === "skip") {
     save2({ state: "snoozed", until: new Date(now.getTime() + 14 * DAY).toISOString() });
     return `Not now. ${h.code} stays away for 14 days.`;
   }
   if (verb === "never") {
-    const had = store2.rules().some((r) => r.id === h.rule.id);
+    const had = !h.removes && store2.rules().some((r) => r.id === h.rule.id);
     if (had) setRules(store2, store2.rules().filter((r) => r.id !== h.rule.id));
     save2({ state: "declined" });
     store2.log({ event: "habit-declined", code: h.code, key: h.key, removed: had });
     return had ? `${h.code} is off; that rule is removed.` : `${h.code} will not be suggested again.`;
   }
-  return `${h.code} takes ok, skip (not now), never, or more.`;
+  return `${h.code} takes ok, skip (not now), never, or more${h.kind === "style" ? ", and once on, edit or undo" : ""}.`;
+}
+function editKinds(draft2, sent) {
+  const k = [], d = wordsOf(draft2), s3 = wordsOf(sent);
+  if (d >= 6 && s3 <= 0.7 * d) k.push("shorter");
+  if (d >= 3 && s3 >= 1.4 * d) k.push("longer");
+  if (linesOf(sent).filter((l) => LIST.test(l)).length >= 2 && !linesOf(draft2).some((l) => LIST.test(l))) k.push("bullets");
+  const gd = GREETING.test(linesOf(draft2)[0] ?? ""), gs = GREETING.exec(linesOf(sent)[0] ?? "");
+  if (gs && !gd) k.push(`greeting:${gs[1].toLowerCase()}`);
+  if (gd && !gs) k.push("no-greeting");
+  const c = closing(sent);
+  if (c && bare(c) && !bare(draft2).endsWith(bare(c))) k.push(`signoff:${c}`);
+  const had = urlKinds(draft2);
+  if ([...urlKinds(sent)].some((x) => !had.has(x))) k.push("link");
+  return k;
+}
+function says(k) {
+  if (k === "shorter") return { did: "shortened the draft", rule: "Keep replies short: about half of what you would write.", against: "made drafts longer" };
+  if (k === "longer") return { did: "made the draft longer", rule: "Give fuller replies, with the reasoning.", against: "shortened drafts" };
+  if (k === "bullets") return { did: "used bullet points", rule: "Use bullet points when there is more than one point.", against: "removed bullet points" };
+  if (k.startsWith("greeting:")) return { did: `started with "${cap(k.slice(9))}"`, rule: `Start with "${cap(k.slice(9))} <first name>,".`, against: "removed the greeting" };
+  if (k === "no-greeting") return { did: "removed the greeting", rule: "No greeting: start with the answer.", against: "added a greeting" };
+  if (k.startsWith("signoff:")) return { did: `ended with "${k.slice(8)}"`, rule: `End with "${k.slice(8)}".`, against: "changed the ending" };
+  if (k === "link") return { did: "added the link you meant", rule: "Include the link to the PR or document you mean.", against: "removed the link" };
+  if (k === "tone:casual") return { did: "wrote more casually", rule: "Write more casually.", against: "wrote more formally" };
+  if (k === "tone:formal") return { did: "wrote more formally", rule: "Write more formally.", against: "wrote more casually" };
+  if (k.startsWith("language:")) return { did: `wrote in ${k.slice(9)}`, rule: `Reply in ${k.slice(9)}.`, against: "wrote in another language" };
+  return { did: k, rule: k, against: k };
+}
+function scopeOf(es, language) {
+  const askers = new Set(es.map((e) => e.asker?.id ?? "")), chats = new Set(es.map((e) => e.chat));
+  const a = es.at(-1).asker;
+  if (askers.size === 1 && a?.id) return { key: `person:${a.id}`, to: ` to ${a.name.split(/\s+/)[0]}`, for: ` for replies to ${a.name}`, who: { accounts: [{ id: a.id, name: a.name }] }, when: {} };
+  if (language) return void 0;
+  if (chats.size === 1) {
+    const name = es.at(-1).chatName ?? "this chat";
+    return { key: `chat:${es[0].chat}`, to: ` in ${name}`, for: ` for replies in ${name}`, who: {}, when: { chat: es[0].chat } };
+  }
+  return { key: "everywhere", to: "", for: " for every reply", who: {}, when: {} };
+}
+function styleHabit(store2, cfg, habits, now) {
+  const since = now - 14 * DAY;
+  const all = store2.logs(15).filter((e) => e.event === "edit-style").filter((e) => Date.parse(e.at) >= since && !offRecord(cfg, e.chat)).sort((a, b) => a.at.localeCompare(b.at));
+  if (!all.length) return void 0;
+  const at3 = new Date(now).toISOString();
+  const sendOf = (e) => e.link ?? `${e.item}@${e.at}`;
+  const items2 = (es2) => new Set(es2.map(sendOf));
+  const days2 = (es2) => new Set(es2.map((e) => e.at.slice(0, 10))).size;
+  const links = (es2) => [...new Set(es2.filter((e) => e.link).map((e) => e.link))].slice(-5);
+  for (const h of habits.filter((x) => x.kind === "style" && x.state === "accepted" && !x.removes && x.scope && x.kinds && store2.rules().some((r) => r.id === x.rule.id))) {
+    const key2 = `style-off:${h.key}`;
+    if (habits.some((x) => x.key === key2 && (x.state !== "snoozed" || Date.parse(x.until ?? "") > now))) continue;
+    const against = all.filter((e) => Date.parse(e.at) > Date.parse(h.at) && inScope(h.scope, e) && e.kinds.some((k) => h.kinds.some((mine) => opposite(kindKey(mine))(kindKey(k)))));
+    if (items2(against).size < 3) continue;
+    const opposed = h.kinds.filter((mine) => against.some((e) => e.kinds.some((k) => opposite(kindKey(mine))(kindKey(k)))));
+    const did = listed([...new Set(opposed.map((k) => says(kindKey(k)).against))]), style2 = store2.rules().find((r) => r.id === h.rule.id)?.style ?? h.rule.style;
+    return {
+      key: key2,
+      code: "",
+      kind: "style",
+      state: "suggested",
+      at: at3,
+      removes: h.rule.id,
+      scope: h.scope,
+      kinds: h.kinds,
+      rule: h.rule,
+      text: `You ${did} in your last ${items2(against).size} replies, against ${h.code} ("${style2}"). Stop drafting that way?`,
+      does: `Drafts no longer follow ${h.code}; they are written as before it.`,
+      evidence: { count: items2(against).size, days: days2(against), total: items2(all.filter((e) => inScope(h.scope, e))).size, links: links(against) }
+    };
+  }
+  const taken = (scope3, k) => habits.some((h) => h.kind === "style" && !h.removes && h.scope === scope3 && h.kinds?.some((x) => kindKey(x) === k) && (h.state !== "snoozed" || Date.parse(h.until ?? "") > now));
+  const byScope = /* @__PURE__ */ new Map();
+  for (const key2 of new Set(all.flatMap((e) => e.kinds.map(kindKey)))) {
+    const es2 = all.filter((e) => e.kinds.some((k) => kindKey(k) === key2));
+    if (items2(es2).size < 3) continue;
+    const scope3 = scopeOf(es2, key2.startsWith("language:"));
+    if (!scope3 || taken(scope3.key, key2)) continue;
+    const last3 = [...new Map(all.filter((e) => inScope(scope3.key, e)).map((e) => [sendOf(e), e])).keys()].slice(-3);
+    if (all.some((e) => last3.includes(sendOf(e)) && e.kinds.some((k) => opposite(key2)(kindKey(k))))) continue;
+    const raw = es2.at(-1).kinds.find((k) => kindKey(k) === key2);
+    const at0 = byScope.get(scope3.key) ?? { scope: scope3, kinds: [], es: [] };
+    byScope.set(scope3.key, { scope: scope3, kinds: [...at0.kinds, raw], es: [...at0.es, ...es2] });
+  }
+  const best = [...byScope.values()].sort((a, b) => items2(b.es).size - items2(a.es).size || b.kinds.length - a.kinds.length)[0];
+  if (!best) return void 0;
+  const { scope: scope2, kinds } = best, es = best.es, n = items2(es).size;
+  const style = kinds.map((k) => says(k).rule).join(" ");
+  const key = `style:${scope2.key}:${kinds.map(kindKey).sort().join("+")}`;
+  const id = `style-${createHash3("sha256").update(key).digest("hex").slice(0, 10)}`;
+  return {
+    key,
+    code: "",
+    kind: "style",
+    state: "suggested",
+    at: at3,
+    scope: scope2.key,
+    kinds,
+    text: `In your last ${n} edited replies${scope2.to}, you ${listed(kinds.map((k) => says(k).did))}. Draft that way from now on?`,
+    does: `Drafts${scope2.for} follow this: ${style} It only shapes the wording: nothing is sent by itself, and your own edits still win.`,
+    evidence: { count: n, days: days2(es), total: items2(all.filter((e) => inScope(scope2.key, e))).size, links: links(es) },
+    rule: { id, text: `Learned: Drafting style${scope2.for}: ${style}`, who: scope2.who, when: scope2.when, then: "draft", style }
+  };
+}
+function stylesFor(rules, wf) {
+  return rules.filter((r) => r.style && (!r.who.accounts?.length || r.who.accounts.some((a) => a.id === wf.asker?.id)) && (!r.when.chat || r.when.chat === wf.chat.id));
 }
 function setRules(store2, rules) {
   const file2 = join9(store2.root, "rules.compiled.json");
@@ -40233,7 +40384,7 @@ ${learned.join("\n")}
 ${END}` : ""}
 `.replace(/^\n+/, ""));
 }
-var DAY, norm, covered, BEGIN, END;
+var DAY, norm, covered, undoMs, habitUndoable, GREETING, LIST, wordsOf, linesOf, urlKinds, closing, bare, kindKey, OPPOSITE, opposite, cap, listed, inScope, styleTitle, BEGIN, END;
 var init_habits = __esm({
   "src/runner/habits.ts"() {
     "use strict";
@@ -40242,6 +40393,31 @@ var init_habits = __esm({
     DAY = 864e5;
     norm = (t2) => t2.replace(/\s+/g, " ").trim().toLowerCase();
     covered = (rules, asker, intent) => rules.some((r) => r.then === "send" && r.who.accounts?.some((a) => a.id === asker) && (!r.when.intent || r.when.intent === intent) && (!r.when.chat || r.when.chat === "direct"));
+    undoMs = (store2) => (store2.config().policy?.undoMin ?? 10) * 6e4;
+    habitUndoable = (store2, h, now = Date.now()) => h.kind === "style" && !h.removes && h.state === "accepted" && now - Date.parse(h.at) <= undoMs(store2);
+    GREETING = /^(hi+|hello|hey|dear|good (?:morning|afternoon|evening)|namaste|greetings)\b/i;
+    LIST = /^\s*(?:[-*•]|\d+[.)])\s+/;
+    wordsOf = (t2) => t2.split(/\s+/).filter(Boolean).length;
+    linesOf = (t2) => t2.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    urlKinds = (t2) => new Set([...t2.matchAll(/https?:\/\/\S+/gi)].map((m) => /pullrequest\//i.test(m[0]) ? "pr" : /_wiki|\/wiki\//i.test(m[0]) ? "wiki" : /sharepoint|\.(?:docx?|pptx?|xlsx?|loop)\b/i.test(m[0]) ? "doc" : "link"));
+    closing = (t2) => {
+      const ls = linesOf(t2), l = ls.at(-1) ?? "";
+      return ls.length > 1 && wordsOf(l) <= 4 && !LIST.test(l) && !/https?:/i.test(l) ? l : "";
+    };
+    bare = (t2) => t2.toLowerCase().replace(/[^\p{L}\p{N} ]/gu, "").replace(/\s+/g, " ").trim();
+    kindKey = (k) => k.startsWith("signoff:") ? `signoff:${bare(k.slice(8))}` : k.startsWith("language:") ? `language:${bare(k.slice(9))}` : k;
+    OPPOSITE = {
+      shorter: (k) => k === "longer",
+      longer: (k) => k === "shorter",
+      "no-greeting": (k) => k.startsWith("greeting:"),
+      "tone:casual": (k) => k === "tone:formal",
+      "tone:formal": (k) => k === "tone:casual"
+    };
+    opposite = (key) => OPPOSITE[key] ?? (key.startsWith("greeting:") ? (k) => k === "no-greeting" : () => false);
+    cap = (s3) => s3.charAt(0).toUpperCase() + s3.slice(1);
+    listed = (xs) => xs.length < 2 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs.at(-1)}`;
+    inScope = (scope2, e) => scope2 === "everywhere" || scope2 === `person:${e.asker?.id}` || scope2 === `chat:${e.chat}`;
+    styleTitle = (r) => r.text.replace(/^Learned: /, "").replace(/:.*$/, "");
     BEGIN = "<!-- learned rules: generated, do not edit -->";
     END = "<!-- end learned rules -->";
   }
@@ -40435,7 +40611,7 @@ function nextTurn(t2, by) {
   if (by.owner) return { last: t2?.last, owner: { at: by.at, to: by.to ?? (t2?.last ? [t2.last.id] : []), text: by.text.slice(0, 600) } };
   return { last: { id: by.from.id, at: by.at }, owner: continuesOwner(t2, by.from, by.at) ? t2.owner : void 0 };
 }
-var replyTarget, ENT, DATA_IMG, keyOf, DISCLOSURE, AS, TURN_HOURS, escape2;
+var replyTarget, ENT, DATA_IMG, keyOf, DISCLOSURE, AS, isPersona, TURN_HOURS, escape2;
 var init_intake = __esm({
   "src/core/intake.ts"() {
     "use strict";
@@ -40469,6 +40645,7 @@ var init_intake = __esm({
     };
     DISCLOSURE = /\(sent by [^)]*assistant\)\s*$/i;
     AS = /^\[as ([^\]]{1,60})\]\s*/i;
+    isPersona = (id) => id.startsWith("test:");
     TURN_HOURS = 7 * 24;
     escape2 = (s3) => s3.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }
@@ -40573,6 +40750,10 @@ function buildPrompt(wf, thread2, cfg, root, owners = [], others = [], corrected
   const byAsker = [...new Map(open2.map((m) => [m.from.id, m.from.name])).entries()];
   if (byAsker.length > 1) parts2.push("", `Several people asked in this item, and none has had a reply yet: ${byAsker.map(([, n]) => n).join(", ")}. The reply names each of them and answers every distinct question they asked (the * lines count as much as the >> ones):`, ...open2.map((m) => `- ${m.from.name}: "${m.text.slice(0, 200)}"`), "If you cannot answer someone's question yet, say so for them in the reply or ask the owner in `question`; never leave a person out.");
   if (wf.prUnknown) parts2.push("", "The current PR owner approval could not be verified. Older votes and earlier conversation are historical context, not proof of current approval. Do not claim approval or non-approval; report the verification gap or read a fresh source.");
+  const notReviewer = { author: "the PR is the owner's own", declined: "the owner declined it in Azure DevOps", none: "the owner is not on its reviewer list", "group-approved": "the owner's team already approved it", "group-unknown": "the owner is only reviewer through a group the runner cannot match to him", ambiguous: "two reviewers have the owner's name" };
+  if (wf.prRole && notReviewer[wf.prRole]) parts2.push("", `The owner may not review or vote on this PR: ${notReviewer[wf.prRole]}. Do not report a \`pr:\` job or a vote for it, and never say it was reviewed; answer the rest, and reply without reviewing when the owner says so.`);
+  const styles = stylesFor(compiledRules(root), wf);
+  if (styles.length && wf.kind === "reply") parts2.push("", "How the owner wants replies written here (learned from his edits; it shapes the wording only, and anything the owner says in this item or his own rules wins):", ...styles.map((r) => `- ${r.style}`));
   if (others.length) parts2.push("", "Other open items in this chat. If the new message asks for the same thing as one of them, even from someone else, set `same` to its code and leave out reply:", ...others.map((o) => `- ${o.code} \xB7 ${o.asker?.name ?? "someone"}: "${(o.lastAsk ?? "").slice(0, 200)}"`));
   if (wf.kind === "reply") parts2.push("", ...allowed(cfg, "every action the reply promises goes in `todos`"));
   if (corrected.length) parts2.push("", "How the owner corrected your recent drafts. Learn the pattern (tone, length, what they leave out or add). Never copy facts from these into this reply:", ...corrected.map((c) => `- ${c}`));
@@ -40712,6 +40893,7 @@ function validateLines(cfg, telemetry = []) {
     telemetry.length ? `Telemetry: read it with ${telemetry.join(", ")}.` : "Telemetry: no telemetry tool server is set up, so you cannot read it. Say in the report that telemetry was not read."
   ];
 }
+var compiledRules;
 var init_prompt = __esm({
   "src/worker/prompt.ts"() {
     "use strict";
@@ -40722,13 +40904,21 @@ var init_prompt = __esm({
     init_effects();
     init_deploy();
     init_secrets();
+    init_habits();
     init_paths();
     init_paths();
+    compiledRules = (root) => {
+      try {
+        return JSON.parse(readFileSync11(join12(root, "rules.compiled.json"), "utf8")).rules ?? [];
+      } catch {
+        return [];
+      }
+    };
   }
 });
 
 // src/knowledge/format.ts
-import { createHash as createHash3 } from "node:crypto";
+import { createHash as createHash4 } from "node:crypto";
 function reviewDate(e) {
   if (e.review) return e.review;
   const days2 = TTL_DAYS[e.type];
@@ -40817,7 +41007,7 @@ var init_format2 = __esm({
       const r = reviewDate(e);
       return !!r && r < now.toISOString().slice(0, 10);
     };
-    hashOf = (text3) => createHash3("sha1").update(text3).digest("hex").slice(0, 12);
+    hashOf = (text3) => createHash4("sha1").update(text3).digest("hex").slice(0, 12);
     LINE = /^- \[(\w+)\]\s+(.*)$/;
     DATE = /^\d{4}-\d{2}-\d{2}$/;
     GROUP = /\s*\((src|review|audience):\s*([^()]*)\)\s*$/;
@@ -40912,7 +41102,7 @@ var init_inbox = __esm({
 });
 
 // src/mesh/route.ts
-import { createHash as createHash4 } from "node:crypto";
+import { createHash as createHash5 } from "node:crypto";
 import { copyFileSync, existsSync as existsSync13, mkdirSync as mkdirSync6, readFileSync as readFileSync13, rmSync as rmSync6, writeFileSync as writeFileSync7 } from "node:fs";
 import { join as join14 } from "node:path";
 function readSettings(copilotHome, forWriting = false) {
@@ -41026,7 +41216,7 @@ var init_route = __esm({
     EXTENSION = "delegate-inbox";
     FILES = ["extension.mjs", "inbox.mjs"];
     MARK2 = "delegate.json";
-    hash2 = (f) => createHash4("sha256").update(readFileSync13(f, "utf8").replace(/\r\n/g, "\n")).digest("hex");
+    hash2 = (f) => createHash5("sha256").update(readFileSync13(f, "utf8").replace(/\r\n/g, "\n")).digest("hex");
     extensionDir = (copilotHome) => join14(copilotHome, "extensions", EXTENSION);
     ours2 = (dir) => existsSync13(join14(dir, MARK2));
     extensionsOn = (copilotHome) => {
@@ -41497,8 +41687,8 @@ function findChat(store2, to) {
   const want = to.trim().toLowerCase();
   const seen = /* @__PURE__ */ new Map();
   for (const w of store2.workflows()) {
-    if (w.chat.test) continue;
     if (isThread(w.chat.id)) continue;
+    if (!w.chat.group && w.chat.test && w.asker && isPersona(w.asker.id)) continue;
     if (!w.chat.group && w.asker?.name.toLowerCase().includes(want)) seen.set(w.chat.id, { chatId: w.chat.id, name: w.asker.name, group: false });
     if (w.chat.group && w.chat.name.toLowerCase() === want) seen.set(w.chat.id, { chatId: w.chat.id, name: w.chat.name, group: true });
   }
@@ -41628,6 +41818,7 @@ var DAYS, localDay3, at2, clock, stamp, textsOf, HHMM;
 var init_automations = __esm({
   "src/runner/automations.ts"() {
     "use strict";
+    init_intake();
     init_ids();
     init_policy();
     init_channels();
@@ -41741,6 +41932,115 @@ var init_autosend = __esm({
     init_apply();
     init_intake2();
     policy = (cfg) => ({ ...DEFAULT_POLICY, ...cfg.policy });
+  }
+});
+
+// src/runner/review-gate.ts
+function ownerRole(cfg, st, teams) {
+  const name = norm2(cfg.owner.name), upn = norm2(cfg.owner.upn);
+  const isMe2 = (display, unique) => upn && unique ? norm2(unique) === upn : !!name && norm2(display) === name;
+  if (isMe2(st.author, st.authorUnique)) return "author";
+  const all = st.reviewers ?? st.votes.map((v) => ({ name: v.name, vote: v.vote, required: false, group: false, declined: false }));
+  const me = all.filter((r) => !r.group && isMe2(r.name, r.unique));
+  if (me.length > 1) return "ambiguous";
+  if (me.length === 1) return me[0].declined ? "declined" : "reviewer";
+  const groups2 = all.filter((r) => r.group);
+  if (!groups2.length) return "none";
+  const short3 = (n) => norm2(n.split("\\").at(-1));
+  const mine = teams ? groups2.filter((g) => teams.some((t2) => norm2(t2) === short3(g.name))) : [];
+  if (!mine.length) return "group-unknown";
+  return mine.some((g) => g.vote < 5 && !g.declined) ? "group" : "group-approved";
+}
+async function teamsFor(probe, project, now = Date.now()) {
+  const hit = teamCache.get(project);
+  if (hit && now - hit.at < 36e5) return hit.names;
+  if (!probe?.myTeams) return void 0;
+  try {
+    const names = await probe.myTeams(project);
+    teamCache.set(project, { at: now, names });
+    return names;
+  } catch {
+    return void 0;
+  }
+}
+async function roleOn(cfg, probe, ref, st) {
+  const first3 = ownerRole(cfg, st);
+  return first3 === "group-unknown" ? ownerRole(cfg, st, await teamsFor(probe, ref.project)) : first3;
+}
+function reviewAsked(store2, wf, pr) {
+  const pending = store2.thread(wf.id).filter((m) => wf.pending.includes(m.id));
+  const own3 = [wf.ownerAnswer ?? "", ...pending.filter((m) => m.byOwner).map((m) => m.text)].some((t2) => REVIEW_ASK.test(t2));
+  if (own3 || wf.startedBy === "owner" && REVIEW_ASK.test(wf.lastAsk ?? "")) return true;
+  const theirs = pending.filter((m) => !m.byOwner);
+  const about = (t2) => new RegExp(`(?:\\bPR\\s*#?\\s*${pr}\\b|pullrequest/${pr}\\b|\\b${pr}\\b)`, "i").test(t2);
+  return theirs.some((m) => REVIEW_ASK.test(m.text) && (wf.startedBy !== "room" || about(m.text)));
+}
+function reviewGate(store2, cfg, wf, ref, title, canRead = true) {
+  const pr = ref.id, who2 = wf.asker?.name.split(" ")[0] ?? "They";
+  if (!reviewAsked(store2, wf, pr)) return { ok: false, role: "not-asked", status: `Not reviewing PR ${pr}: nobody asked you to review it`, question: `Nobody asked you to review PR ${pr}. Answer "review it" to have ${NAME} review it, or skip.` };
+  const role = wf.prUnknown && !wf.prRole ? void 0 : wf.prRole;
+  if (!role && !canRead) return { ok: true };
+  if (!role) return { ok: false, role: "unread", status: `Checking you're a reviewer on PR ${pr}: it could not be read; ${NAME} tries again at the next check`, question: `${NAME} could not read PR ${pr} to check you are a reviewer. It tries again by itself; answer to try now, or skip.` };
+  if (MAY_REVIEW.includes(role)) return { ok: true };
+  const name = title ? ` "${title}"` : "";
+  if (role === "author") return { ok: false, role, status: `Not reviewing: PR ${pr} is yours`, question: `${who2} wrote about your PR${name}. A review or vote on your own PR is never made; answer with what to do, or skip.` };
+  if (role === "declined") return { ok: false, role, status: `Not reviewing: you declined PR ${pr} in Azure DevOps`, question: `${who2} asked you to review PR ${pr}${name}, which you declined in Azure DevOps. Reply without reviewing, or skip.` };
+  const addMe = addMeEffect(cfg, wf, ref);
+  const why2 = roleWhy(cfg, role);
+  const status3 = role === "group-approved" ? `Not reviewing: your group already approved PR ${pr}` : `Not reviewing: you aren't a reviewer on PR ${pr} (${why2})`;
+  return { ok: false, role, status: status3, ...addMe ? { question: "", note: `${who2} asked you to review PR ${pr}${name}, but ${why2}. Approve adding you as an optional reviewer, and the review then starts. To answer without reviewing, reply with what to say, or skip.`, addMe } : { question: `${who2} asked you to review PR ${pr}${name}, but ${why2}. Add yourself as a reviewer in Azure DevOps${cfg.owner.upn ? ' (or allow "repo_pull_request_write:update_reviewers" in Settings)' : ""}, and the review starts by itself; or reply without reviewing, or skip.` } };
+}
+function decline(store2, cfg, wf, ref, gate) {
+  const at3 = (/* @__PURE__ */ new Date()).toISOString(), pr = ref?.id ?? 0;
+  store2.log({ event: "review-declined", workflowId: wf.id, code: wf.code, pr, role: gate.role });
+  const quiet = wf.startedBy === "room" && gate.role !== "unread";
+  if (quiet) {
+    Object.assign(wf, { state: "done", closedBy: "nothing", status: gate.status, pending: [], question: void 0, draft: void 0, effects: void 0, promised: void 0, job: void 0, reviewDecline: { pr, role: gate.role, at: at3, ask: wf.lastAsk } });
+    return;
+  }
+  Object.assign(wf, {
+    state: "needs_human",
+    status: gate.status,
+    question: gate.question || void 0,
+    pending: [],
+    draft: void 0,
+    promised: void 0,
+    effects: gate.addMe ? [gate.addMe] : void 0,
+    reviewDecline: { pr, role: gate.role, at: at3, ask: wf.lastAsk },
+    revAt: at3,
+    newCount: 0,
+    context: gate.note ? [{ label: "Not reviewing", text: gate.note, tone: "warn" }] : void 0
+  });
+}
+function voteGate(store2, cfg, wf, effects, todos, checkAsk = true) {
+  if (!effects.some((e) => isVote(e.call))) return effects;
+  const pr = prTarget(store2, wf) ?? 0;
+  const why2 = checkAsk && !reviewAsked(store2, wf, pr) ? `nobody asked you to review PR ${pr}` : wf.prRole && !MAY_REVIEW.includes(wf.prRole) ? roleWhy(cfg, wf.prRole) : void 0;
+  if (!why2) return effects;
+  for (const e of effects.filter((e2) => isVote(e2.call))) todos.push(`${e.summary.replace(/[.\s]+$/, "")}. Not made for you: ${why2}`);
+  store2.log({ event: "vote-gated", workflowId: wf.id, code: wf.code, pr, role: wf.prRole, why: why2 });
+  return effects.filter((e) => !isVote(e.call));
+}
+function addMeEffect(cfg, wf, ref) {
+  if (!cfg.owner.upn) return void 0;
+  const call = { tool: "ado-repo_pull_request_write", args: { action: "update_reviewers", project: ref.project, repositoryId: ref.repo, pullRequestId: ref.id, reviewerIds: [cfg.owner.upn], reviewerAction: "add" } };
+  if (!allows(cfg.agent.effectTools, call)) return void 0;
+  return { system: "azure devops", action: "add reviewer", target: `PR ${ref.id}`, summary: `Add you as an optional reviewer on PR ${ref.id}`, call };
+}
+var MAY_REVIEW, norm2, teamCache, REVIEW_ASK, isReviewJob, roleWhy, isAddMe;
+var init_review_gate = __esm({
+  "src/runner/review-gate.ts"() {
+    "use strict";
+    init_brand();
+    init_effects();
+    init_probe();
+    MAY_REVIEW = ["reviewer", "group"];
+    norm2 = (s3 = "") => s3.trim().toLowerCase();
+    teamCache = /* @__PURE__ */ new Map();
+    REVIEW_ASK = /\b(?:re-?review|review|re-?check|look at|take a look|have a look|approve|approval|sign[- ]?off|lgtm|can you check|could you check|please check|vote|waiting for (?:the )?author|wait for (?:the )?author|reject)\b/i;
+    isReviewJob = (key, intent) => /^pr:/i.test(key.trim()) || intent === "pr_review";
+    roleWhy = (cfg, role) => role === "author" ? "the PR is yours" : role === "declined" ? "you declined it in Azure DevOps" : role === "group-approved" ? "your team already approved it" : role === "group-unknown" ? `${NAME} cannot tell whether you are in the group that reviews it` : role === "ambiguous" ? `two reviewers there are named ${cfg.owner.name}` : role === "none" ? "you are not on its reviewer list" : "you are a reviewer";
+    isAddMe = (e) => e?.call?.args.action === "update_reviewers" && e.call.args.reviewerAction === "add";
   }
 });
 
@@ -42183,13 +42483,13 @@ __export(next_exports, {
 function snapshot(store2, now = Date.now()) {
   const cfg = store2.config(), c = store2.control(), workflows = store2.workflows();
   const jobs = new Map(store2.jobs().map((j2) => [j2.id, j2]));
-  const cap = cfg.dailyRuns ?? 200, runs = store2.runsToday(), reading = readingOf(store2, now).state;
-  const runner = c.stopped ? "stopped" : reading === "off" || reading === "never" ? "off" : c.paused || cfg.paused ? "paused" : runs >= cap ? "capped" : "ok";
+  const cap2 = cfg.dailyRuns ?? 200, runs = store2.runsToday(), reading = readingOf(store2, now).state;
+  const runner = c.stopped ? "stopped" : reading === "off" || reading === "never" ? "off" : c.paused || cfg.paused ? "paused" : runs >= cap2 ? "capped" : "ok";
   const held = new Set(store2.openWindows().map((w) => w.id));
   const queued = workflows.filter((w) => w.state === "running").sort((a, b) => a.updatedAt.localeCompare(b.updatedAt));
   const queue = /* @__PURE__ */ new Map();
-  const pacedSlots = runs < cap / 2 ? cfg.maxParallel ?? 3 : 0;
-  let paced = 0, room = cap - runs;
+  const pacedSlots = runs < cap2 / 2 ? cfg.maxParallel ?? 3 : 0;
+  let paced = 0, room = cap2 - runs;
   for (const w of queued) queue.set(w.id, held.has(w.id) || w.job && held.has(w.job) ? "held" : !w.paced || paced++ < pacedSlots ? "next" : "line");
   for (const w of [...queued.filter((w2) => !w2.paced), ...queued.filter((w2) => w2.paced)]) if (queue.get(w.id) === "next" && room-- <= 0) queue.set(w.id, "limit");
   room -= workflows.filter((w) => w.notes?.some((n) => n.a === void 0) && w.state !== "running").length;
@@ -42360,6 +42660,7 @@ function itemRow(s3, p, w) {
     const kind = moveKind(w), d = w.draft?.text ?? "";
     const fits = !!d && d.length <= INLINE_MAX && !pendingEffects(w.effects).length && !w.choices && !mustSee(w);
     const clash = w.context?.find((f) => f.tone === "warn");
+    if (w.reviewDecline) return { ...base, kind: "question", headline: clip2(w.status, 140), facts: { ...facts, notes: [{ label: "Why", text: clip2(w.context?.find((f) => f.label === "Not reviewing")?.text ?? w.question, 240) }] }, primary: open2 };
     switch (kind) {
       // A row never sends: Open shows the reply to read, edit or send (owner 10-21: Send on a row sent a reply meant to be edited).
       case "reply":
@@ -42565,7 +42866,7 @@ var init_next = __esm({
     SHORT = 80;
     said = (verb, d, fits) => !fits || d.replace(/\s+/g, " ").trim().length <= SHORT ? { headline: `${verb}: "${clip2(d, SHORT)}"` } : { headline: verb, draft: htmlToText(d) };
     commentsOrChanges = (w) => {
-      const e = pendingEffects(w.effects), c = e.length && e.every((x) => /comment|review/i.test(x.action));
+      const e = pendingEffects(w.effects), c = e.length && e.every((x) => /comment|review(?!er)/i.test(x.action));
       return `${e.length} ${c ? e.length === 1 ? "comment" : "comments" : e.length === 1 ? "change" : "changes"}`;
     };
     pickPrompt = (t2 = "") => {
@@ -42626,7 +42927,7 @@ function source(ref, tier, stale, label2, k) {
 function cardType(w) {
   if (w.meeting) return "meeting";
   if (w.choices) return "choice";
-  if (pendingEffects(w.effects).length && w.job && !w.promised) return "review";
+  if (pendingEffects(w.effects).length && w.job && !w.promised && !w.reviewDecline) return "review";
   if (w.question && !w.draft?.preview) return "question";
   return "reply";
 }
@@ -42716,18 +43017,18 @@ function itemRows(store2, codes, wfs = store2.workflows()) {
   return out;
 }
 function doneRows(store2, since, workflows = store2.workflows()) {
-  const rows = [], listed = /* @__PURE__ */ new Set();
+  const rows = [], listed2 = /* @__PURE__ */ new Set();
   for (const w of workflows.filter((w2) => (w2.state === "done" || w2.state === "open" && w2.sent) && w2.code && (w2.intent !== "none" || w2.fyi) && w2.updatedAt > since && w2.kind !== "tracker")) {
     const r = itemRow2(store2, w), name = w.asker?.name ?? "Someone";
     if (r) rows.push(r);
-    if (w.sent?.msgId) listed.add(w.sent.msgId);
+    if (w.sent?.msgId) listed2.add(w.sent.msgId);
     for (const e of (w.effects ?? []).filter((e2) => e2.done)) if (!(w.intent === "pr_review" && COMMENT.test(e.action))) rows.push({ code: w.code, kind: "change", who: who(name), sentence: htmlToText(shown(e).line), by: shown(e).system, at: e.done.at, own: true, href: /^https:\/\//.test(e.done?.ref ?? "") ? e.done.ref : void 0 });
   }
   const byCode = new Map(workflows.map((w) => [w.code, w]));
-  for (const e of store2.logs(7).filter((e2) => e2.event === "sent" && String(e2.at) > since && typeof e2.msgId === "string" && !listed.has(e2.msgId) && !String(e2.approvedBy ?? "").startsWith("automation:"))) {
+  for (const e of store2.logs(7).filter((e2) => e2.event === "sent" && String(e2.at) > since && typeof e2.msgId === "string" && !listed2.has(e2.msgId) && !String(e2.approvedBy ?? "").startsWith("automation:"))) {
     const w = byCode.get(String(e.code)), asker = e.asker, name = asker?.name ?? w?.asker?.name ?? "Someone";
     const rule = String(e.approvedBy ?? "").startsWith("rule:") ? String(e.approvedBy).slice(5) : void 0, chat2 = typeof e.chat === "string" ? e.chat : w?.chat.id;
-    listed.add(String(e.msgId));
+    listed2.add(String(e.msgId));
     rows.push({ code: String(e.code), kind: "reply", who: who(name), sentence: `Replied to ${name}${w?.chat.group ? ` in ${w.chat.name}` : ""}`, by: rule ? `by rule ${rule}` : "by you", at: String(e.at), text: typeof e.text === "string" && !w?.redacted ? htmlToText(e.text) : void 0, said: typeof e.text === "string" && !w?.redacted ? short2(e.text) : void 0, own: !rule, rule, sentId: String(e.msgId), earlier: true, teams: chat2 && (!w?.chat.test || teamsChat(chat2)) ? messageLink(chat2, String(e.msgId)) : void 0 });
   }
   for (const e of store2.logs(7).filter((e2) => e2.event === "sent" && String(e2.approvedBy ?? "").startsWith("automation:") && String(e2.at) > since)) {
@@ -42787,7 +43088,7 @@ function view(store2, since, now = /* @__PURE__ */ new Date(), workflows = store
   const health = Object.entries(store2.health()).map(([key, h]) => ({ key, text: h.text, since: h.since, fix: key === "source" ? { label: "Try again", command: "retry" } : void 0 }));
   if (state !== "on") health.unshift({ key: "paused", text: state === "stopped" ? `${NAME} is stopped. It is not reading your chats.` : `${NAME} is paused. It keeps drafting, and sends nothing.`, since: "", fix: { label: "Resume", command: "resume" } });
   const people = /* @__PURE__ */ new Map();
-  for (const w of wfs) if (!w.chat.test && w.asker && !isThread(w.chat.id)) people.set(w.chat.group ? w.chat.name : w.asker.name, { chat: w.chat.id, group: !!w.chat.group });
+  for (const w of wfs) if (w.asker && !isThread(w.chat.id) && (w.chat.group || !(w.chat.test && isPersona(w.asker.id)))) people.set(w.chat.group ? w.chat.name : w.asker.name, { chat: w.chat.id, group: !!w.chat.group });
   const due2 = now.getTime() - (cfg.followUpHours ?? 24) * 36e5;
   const quietSince = (w) => {
     const f = w.item ? store2.byCode(w.item) : void 0;
@@ -42872,16 +43173,16 @@ async function discover(store2, src, cfg) {
   const pinned2 = new Map(cfg.watch.map((w) => [w.id, w]));
   const exclude = /* @__PURE__ */ new Set([...cfg.exclude ?? [], src.selfChatId]);
   const readAt = (/* @__PURE__ */ new Date()).toISOString();
-  const listed = cfg.discover === false ? [] : await src.recentChats();
+  const listed2 = cfg.discover === false ? [] : await src.recentChats();
   let gapOpen = false, gapFailAt = state.gapFailAt;
-  const oldest = listed.map((c) => c.lastAt).filter(Boolean).sort()[0];
+  const oldest = listed2.map((c) => c.lastAt).filter(Boolean).sort()[0];
   const last3 = state.readAt && new Date(Math.max(Date.parse(state.readAt), Date.now() - 3 * 864e5)).toISOString();
   const waiting = !!gapFailAt && Date.now() - Date.parse(gapFailAt) < 15 * 6e4;
-  if (cfg.discover !== false && last3 && !waiting && listed.length >= 45 && oldest && Date.parse(oldest) > Date.parse(last3) && src.awaiting) {
+  if (cfg.discover !== false && last3 && !waiting && listed2.length >= 45 && oldest && Date.parse(oldest) > Date.parse(last3) && src.awaiting) {
     try {
-      const have = new Set(listed.map((c) => c.id));
+      const have = new Set(listed2.map((c) => c.id));
       for (const c of await src.awaiting(last3, oldest)) if (!have.has(c.id)) {
-        listed.push(c);
+        listed2.push(c);
         have.add(c.id);
       }
       gapFailAt = void 0;
@@ -42892,7 +43193,7 @@ async function discover(store2, src, cfg) {
       store2.log({ event: "gap-search-failed", since: last3, until: oldest, error: String(e).slice(0, 200) });
       store2.setHealth("gap-search", `Could not search for chats missed since ${last3.slice(0, 16).replace("T", " ")}. It tries again in 15 minutes.`);
     }
-  } else if (last3 && waiting && listed.length >= 45 && oldest && Date.parse(oldest) > Date.parse(last3)) gapOpen = true;
+  } else if (last3 && waiting && listed2.length >= 45 && oldest && Date.parse(oldest) > Date.parse(last3)) gapOpen = true;
   else if (!waiting) {
     gapFailAt = void 0;
     store2.setHealth("gap-search");
@@ -42901,10 +43202,10 @@ async function discover(store2, src, cfg) {
   if (cfg.discover !== false && cfg.channels !== false && src.channelThreads) {
     const r = await src.channelThreads(store2.threadCache(), new Date(Date.now() - 7 * 864e5).toISOString(), cfg.channels || []);
     threadCache = r.cache;
-    listed.push(...r.list);
+    listed2.push(...r.list);
   }
   const out = [];
-  for (const c of listed) {
+  for (const c of listed2) {
     if (exclude.has(c.id) || !c.lastAt) continue;
     const prev = state.seen[c.id];
     state.seen[c.id] = c.lastAt;
@@ -42914,7 +43215,7 @@ async function discover(store2, src, cfg) {
     out.push({ id: c.id, name: pin?.name ?? c.name, test: !!pin?.test, group: pin ? !!pin.group : isThread(c.id) ? !c.mine : kindOf(c.id) !== "oneOnOne", since: prev ?? state.startedAt });
     pinned2.delete(c.id);
   }
-  const listedIds = new Set(listed.map((c) => c.id));
+  const listedIds = new Set(listed2.map((c) => c.id));
   for (const w of pinned2.values()) if (!listedIds.has(w.id) && !exclude.has(w.id)) out.push(w);
   return { chats: out, commit: () => {
     store2.saveChats({ ...store2.chats(), startedAt: state.startedAt, seen: state.seen, ...gapOpen ? {} : { readAt }, gapFailAt, goodAt: readAt });
@@ -43525,6 +43826,7 @@ var init_report = __esm({
         waitFor: external_exports.string().optional().describe('not_ready: what it waits for, such as "build 991"')
       }).optional().describe("With goalMet false: why the goal is not met, so the runner can try again by another route"),
       claims: external_exports.array(ClaimSchema).optional().describe("Bootstrap only: lasting facts found in the source"),
+      style: external_exports.object({ tone: external_exports.enum(["casual", "formal"]).optional(), language: external_exports.string().max(40).optional() }).optional().describe(`Learn only: "casual" or "formal" when the owner's edit clearly changed the tone that way; the language the owner sent in, only when it differs from the draft's`),
       checkpoint: external_exports.string().optional().describe("Bootstrap only: the newest date or ID you read, so a rerun starts after it"),
       done: external_exports.boolean().optional().describe("Tracker only: true when the stop condition holds"),
       job: external_exports.object({ key: external_exports.string(), goal: external_exports.string(), repo: external_exports.string().optional().describe("The repo by its remote or its link, never a folder"), branch: external_exports.string().optional().describe("The PR's source branch, when the work is a PR"), owner: external_exports.string().optional() }).optional().describe("Reply workflow only: this ask needs real work in its own session. Leave out reply."),
@@ -43657,10 +43959,10 @@ import { mkdirSync as mkdirSync8, writeFileSync as writeFileSync9 } from "node:f
 import { join as join18 } from "node:path";
 import { randomUUID as randomUUID5 } from "node:crypto";
 async function dispatch(store2, src, cfg, run2 = runAgent, probe) {
-  const cap = cfg.dailyRuns ?? 200;
-  const room = cap - store2.runsToday();
+  const cap2 = cfg.dailyRuns ?? 200;
+  const room = cap2 - store2.runsToday();
   const running2 = store2.workflows().filter((w) => w.state === "running" && heldBy(store2, w) !== "window").sort((a, b) => a.updatedAt.localeCompare(b.updatedAt));
-  const paced = running2.filter((w) => w.paced).sort((a, b) => Number(!!a.startedBy) - Number(!!b.startedBy)).slice(0, store2.runsToday() < cap / 2 ? cfg.maxParallel : 0);
+  const paced = running2.filter((w) => w.paced).sort((a, b) => Number(!!a.startedBy) - Number(!!b.startedBy)).slice(0, store2.runsToday() < cap2 / 2 ? cfg.maxParallel : 0);
   const queue = [...running2.filter((w) => !w.paced), ...paced].slice(0, Math.max(0, room));
   for (const w of running2.filter((w2) => !queue.includes(w2) && !w2.intakeDeferred)) {
     for (const msgId of w.pending) auditSkip(store2, w.chat.id, msgId, "budget-deferred", w.id);
@@ -43833,8 +44135,23 @@ async function runOne(store2, src, cfg, wf, run2, probe, catalogRetried = false)
     report2.intent = "pr_review";
   }
   const job = normal2 || forced;
+  const reviewRef = job && isReviewJob(job.key, report2?.intent) ? prRefOf(store2, fresh) : void 0;
+  const gate = job && isReviewJob(job.key, report2?.intent) ? reviewGate(store2, cfg, wf, reviewRef ?? { project: "", repo: "", id: Number(/(\d+)\s*$/.exec(job.key)?.[1] ?? 0) }, void 0, !!probe?.pr) : void 0;
+  const declined = gate && !gate.ok ? gate : void 0;
   if (!report2) Object.assign(fresh, { state: "needs_human", status: auth ? "Waiting for the AI CLI sign-in" : "The worker did not finish", question: auth ? "Sign in, then answer or skip this item" : "Check this item, then answer or skip it" });
-  else if (job) {
+  else if (declined) {
+    fresh.intent = report2.intent;
+    if (declined.addMe) fresh.job = void 0;
+    decline(store2, cfg, fresh, reviewRef, declined);
+    if (declined.addMe) {
+      carry(store2, cfg, fresh, fresh.effects ?? []);
+      const carrier = fresh.job ? store2.job(fresh.job) : void 0;
+      if (carrier) {
+        carrier.goal = declined.addMe.summary;
+        store2.saveJob(carrier);
+      }
+    }
+  } else if (job) {
     fresh.intent = report2.intent;
     const h = family(store2, fresh, report2);
     mergeReportWork(fresh, forced ? { ...report2, work: report2.work && { ...report2.work, step: `Asked to recheck; running the review of ${forced.key}` } } : report2, h, void 0, false);
@@ -43852,6 +44169,7 @@ async function runOne(store2, src, cfg, wf, run2, probe, catalogRetried = false)
     if (h !== fresh) store2.save(h);
     if (report2.goalMet === false && fresh.draft && !fresh.draft.holding) fresh.draft = { ...fresh.draft, holding: true };
     const v = vet(cfg, report2.goalMet === false ? [] : report2.effects, prTarget(store2, fresh));
+    v.effects = voteGate(store2, cfg, wf, v.effects, v.todos);
     const read4 = v.effects.some((e) => isVote(e.call)) ? await voteNow(store2, cfg, fresh, v.effects, probe) : void 0;
     const effects = proposalEffects(read4 && !read4.why && !read4.again && read4.effects.length === v.effects.length ? read4.effects : v.effects, [fresh]);
     if (v.todos.length) Object.assign(fresh, {
@@ -43869,7 +44187,7 @@ async function runOne(store2, src, cfg, wf, run2, probe, catalogRetried = false)
     } else if (fresh.promised) Object.assign(fresh, { effects: void 0, promised: void 0 });
     const asked = askedVote(store2.thread(wf.id).filter((m) => wf.pending.includes(m.id) && !m.byOwner).map((m) => m.text).join("\n"));
     const live2 = fresh.prRead ?? wf.prRead ? JSON.parse(fresh.prRead ?? wf.prRead) : void 0;
-    if (asked !== void 0 && live2 && /^active$/i.test(live2[1]) && typeof live2[3] === "number" && !sameVote(live2[3], asked) && report2.goalMet !== false && !fresh.question && !fresh.choices && !(h.work?.closed && fresh.state === "done") && !pendingEffects(fresh.effects).some((e) => isVote(e.call) && voteValue(e.call) === asked)) {
+    if (asked !== void 0 && live2 && /^active$/i.test(live2[1]) && typeof live2[3] === "number" && !sameVote(live2[3], asked) && report2.goalMet !== false && !fresh.question && !fresh.choices && !(h.work?.closed && fresh.state === "done") && !(wf.prRole && !MAY_REVIEW.includes(wf.prRole)) && !pendingEffects(fresh.effects).some((e) => isVote(e.call) && voteValue(e.call) === asked)) {
       Object.assign(fresh, { state: "needs_human", question: `${fresh.asker?.name ?? "They"} asked for your ${voteName(asked)} vote on PR ${live2[0]}, but this draft proposes no vote. Answer ${fresh.code} to redo it with the vote, or skip it` });
       store2.log({ event: "vote-ask-unmet", workflowId: fresh.id, code: fresh.code, pr: live2[0], asked, live: live2[3] });
     }
@@ -43888,7 +44206,7 @@ async function runOne(store2, src, cfg, wf, run2, probe, catalogRetried = false)
   fresh.shareHold = drewOn.length ? await sharingHold(store2, src, fresh, drewOn) : void 0;
   if (report2 && !job) await afterDraft(store2, src, cfg, fresh);
   if (report2 && !job && fresh.state === "done" && fresh.closedBy === "nothing") for (const msgId of wf.pending) auditSkip(store2, wf.chat.id, msgId, fresh.fyi ? "ai-fyi" : "ai-noise", wf.id);
-  if (job) await ackJob(store2, src, cfg, fresh);
+  if (job && !declined) await ackJob(store2, src, cfg, fresh);
   store2.save(fresh);
   store2.archiveReport(wf.id, runId);
   if (report2 && fresh.missed && fresh.startedBy === "owner" && fresh.state === "done") await say(store2, src, `${MARK} ${fresh.code}: ${fresh.status}`);
@@ -43974,6 +44292,7 @@ function applyReport(wf, r, home = wf, allowClose = true) {
   const preview = !!wf.ownerAnswer || !!wf.correction;
   wf.draft = r.reply ? { ...r.reply, text: greetBack(wf, r.reply.text), preview } : void 0;
   if (r.reply) wf.learnAfter = void 0;
+  if (r.reply) wf.newCount = 0;
   wf.revAt = (/* @__PURE__ */ new Date()).toISOString();
   wf.question = preview ? void 0 : r.question;
   wf.gaps = r.gaps?.length ? r.gaps : void 0;
@@ -44012,7 +44331,7 @@ function family(store2, wf, r) {
 }
 function greetBack(wf, text3) {
   const ask = wf.lastAsk ?? "";
-  if (!GREETING.test(ask) || GREETING.test(text3) || !wf.asker?.name || /^_{3,}/.test(text3.trim())) return text3;
+  if (!GREETING2.test(ask) || GREETING2.test(text3) || !wf.asker?.name || /^_{3,}/.test(text3.trim())) return text3;
   const first3 = wf.asker.name.replace(/\s*\(.*\)\s*$/, "").trim().split(/\s+/)[0];
   if (text3.startsWith("@")) return `Hi ${text3}`;
   if (text3.toLowerCase().startsWith(first3.toLowerCase())) return text3;
@@ -44020,7 +44339,7 @@ function greetBack(wf, text3) {
   const body = OPENERS.test(text3) ? text3[0].toLowerCase() + text3.slice(1) : text3;
   return `Hi ${first3}, ${body}`;
 }
-var AUTH, CATALOG_CHANGED, readDirs, WORKER_SERVER, WORKER_TOOLS, lessonFits, NO_QUESTION, GREETING, OPENERS;
+var AUTH, CATALOG_CHANGED, readDirs, WORKER_SERVER, WORKER_TOOLS, lessonFits, NO_QUESTION, GREETING2, OPENERS;
 var init_dispatch = __esm({
   "src/runner/dispatch.ts"() {
     "use strict";
@@ -44047,6 +44366,7 @@ var init_dispatch = __esm({
     init_jobs();
     init_effects();
     init_probe();
+    init_review_gate();
     init_promise2();
     init_owner();
     init_proposals();
@@ -44068,7 +44388,7 @@ var init_dispatch = __esm({
       return !l || l === "private" && chat2 === here3;
     };
     NO_QUESTION = /^\s*(?:none|n\/?a|no(?:ne)?\s*(?:question|questions)?|nothing|-+|—)\s*[.!]?\s*$/i;
-    GREETING = /^\s*(hi|hello|hey|hii+|good (morning|afternoon|evening))\b/i;
+    GREETING2 = /^\s*(hi|hello|hey|hii+|good (morning|afternoon|evening))\b/i;
     OPENERS = /^(Yes|No|Sure|Thanks|Thank|The|It|It's|That|This|Not|Done|Good|Great|Ok|Okay|Will|We|You|Just|Let|Looks|Sounds|All|There|Left|Added|Fixed|Merged|Pushed|Checked|Updated|Replied|Shared|Sent|Got|Happy|Can|Could|Should|Here|Yep|Yeah|Nope)\b/;
   }
 });
@@ -44455,7 +44775,7 @@ function statusText(store2, now = /* @__PURE__ */ new Date()) {
 function suggestions(store2) {
   const started2 = store2.chats().startedAt;
   if (!started2 || Date.now() - Date.parse(started2) < 7 * 864e5) return [];
-  const ruled = new Set(store2.rules().flatMap((r) => r.who.accounts?.map((a) => `${a.id}|${r.when.intent ?? ""}`) ?? []));
+  const ruled = new Set(store2.rules().filter((r) => !r.style).flatMap((r) => r.who.accounts?.map((a) => `${a.id}|${r.when.intent ?? ""}`) ?? []));
   const by = /* @__PURE__ */ new Map();
   for (const e of store2.logs(30).filter((e2) => e2.event === "sent" && e2.asker && !String(e2.approvedBy ?? "").startsWith("rule:"))) {
     const who2 = e.asker, intent = String(e.intent ?? "other"), key = `${who2.id}|${intent}`;
@@ -44514,6 +44834,16 @@ ${caught.join("\n")}` : ""));
     if (miss) {
       store2.addMissed({ link: miss[1], note: miss[2]?.trim() || void 0, at: m.at });
       n++;
+      continue;
+    }
+    const rv = text3.match(REVIEW_CMD);
+    if (rv) {
+      const id = Number(rv[1] ?? rv[2]);
+      const item2 = store2.workflows().filter((w) => w.state !== "done" && w.kind !== "tracker" && prTarget(store2, w) === id).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+      if (item2) {
+        store2.writeAnswer({ code: item2.code, verb: "answer", text: `review PR ${id}`, surface: "self", seenAt: store2.seenRev(item2.code, m.at) });
+        n++;
+      } else await say(store2, src, `${MARK} No open item is about PR ${id}, so there is nothing to review it for. ${NAME} reviews a PR when someone asks you in a chat it reads; to start from an ask it missed, say "missed <link to that message>".`);
       continue;
     }
     const parsed = parseVerbs(text3);
@@ -44646,8 +44976,9 @@ async function intake(store2, src, cfg, cursors, chats = cfg.watch, o = {}) {
       hearReply(store2, chat2, c.from.name, c.text, raw.at);
       const hours = cfg.quietHours ?? 48;
       const live2 = open2.filter((w) => (w.job || inWork(store2, w) || !quietFor(store2, w, hours, now)) && (!backlog || w.before));
-      if (groupJudgment) for (const o2 of open2) appendThread(store2, o2, toMsg(raw, c.from, c.text, false));
-      let wf = groupJudgment ? void 0 : route(live2, c.kind === "ask" || c.kind === "context" ? c.from.id : "", c.kind === "ask" && !backlog ? recentItem(store2, chat2.id, c.from.id, hours, now) : void 0, c.text);
+      const follows = groupJudgment ? route(live2.filter((o2) => o2.asker?.id === c.from.id), c.from.id, void 0, c.text) : void 0;
+      if (groupJudgment && !follows) for (const o2 of open2) appendThread(store2, o2, toMsg(raw, c.from, c.text, false));
+      let wf = follows ?? (groupJudgment ? void 0 : route(live2, c.kind === "ask" || c.kind === "context" ? c.from.id : "", c.kind === "ask" && !backlog ? recentItem(store2, chat2.id, c.from.id, hours, now) : void 0, c.text));
       const named2 = c.kind === "ask" && !groupJudgment && !(wf && inWork(store2, wf)) ? homeNamed(store2.workflows(), c.text) : void 0;
       const elsewhere = named2 && named2.chat.id !== chat2.id ? named2 : void 0;
       if (elsewhere) wf = live2.find((o2) => o2.partOf === elsewhere.id);
@@ -44685,7 +45016,7 @@ async function intake(store2, src, cfg, cursors, chats = cfg.watch, o = {}) {
       else if (!groupJudgment && wf.startedBy === "room") wf.startedBy = void 0;
       if (truncated && !backlog) wf.status = "Older messages skipped";
       store2.save(wf);
-      store2.log({ event: "intake-routed", chat: chat2.id, msgId: raw.id, code: wf.code, reason: room ? "group judgment" : "owned ask" });
+      store2.log({ event: "intake-routed", chat: chat2.id, msgId: raw.id, code: wf.code, reason: room ? "group judgment" : follows ? "same asker follow-up" : "owned ask" });
       asks++;
     }
   }
@@ -44913,7 +45244,7 @@ function hearReply(store2, chat2, name, text3, at3) {
     store2.log({ event: "automation-heard", code: a.code, chat: chat2.id });
   }
 }
-var isControl, toMsg, COMMIT, closedBy, MISSED;
+var isControl, toMsg, COMMIT, closedBy, MISSED, REVIEW_CMD;
 var init_intake2 = __esm({
   "src/runner/intake.ts"() {
     "use strict";
@@ -44934,11 +45265,14 @@ var init_intake2 = __esm({
     init_channels();
     init_discover();
     init_feedback();
+    init_brand();
+    init_probe();
     isControl = (v) => CONTROL_VERBS.includes(v);
     toMsg = (r, from, text3, byOwner) => ({ id: r.id, at: r.at, from, text: text3, byOwner });
     COMMIT = /\b(I(?:'|’)ll|I will|I(?:'|’)d be|I would be|I can take|I(?:'|’)m on it|let me (?:check|take|look|handle|test|try|do))\b/i;
     closedBy = (store2, chatId, senderId) => store2.workflows().filter((w) => w.state === "done" && !w.redacted && w.chat.id === chatId && w.asker?.id === senderId).sort((a, b) => a.updatedAt.localeCompare(b.updatedAt));
     MISSED = /^missed\s+(https?:\/\/\S+)\s*(?::\s*([\s\S]*))?$/i;
+    REVIEW_CMD = /^(?:re-?)?review\s+(?:(?:the\s+)?PR\s*#?\s*(\d+)|https?:\/\/\S*?pullrequest\/(\d+)\S*)\s*[.!]?$/i;
   }
 });
 
@@ -45062,8 +45396,11 @@ function learnFrom(store2, cfg, wf, draft2, sent) {
   }
   const now = (/* @__PURE__ */ new Date()).toISOString();
   const link2 = wf.sent?.msgId ? messageLink(wf.chat.id, wf.sent.msgId) : "";
+  const scope2 = { item: wf.id, chat: wf.chat.id, chatName: wf.chat.name, group: !!wf.chat.group, ...wf.asker ? { asker: { id: wf.asker.id, name: wf.asker.name } } : {} };
+  store2.log({ event: "edit-style", at: now, ...scope2, kinds: editKinds(draft2, sent), ...link2 ? { link: link2 } : {} });
+  noticeHabits(store2, cfg);
   const goal = [`Draft: "${draft2}"`, `Sent by the owner: "${sent}"`, `Sent message: ${link2 || "no link"}, ${now.slice(0, 10)}, ${cfg.owner.name}`, `Chat: ${wf.chat.name}. Asker: ${wf.asker?.name ?? "unknown"}.`].join("\n");
-  store2.saveJob({ schema: 1, id: ulid3(), key: `learn:${wf.id}:${ulid3()}`, goal, learning: { source: link2, text: sent }, label: `your edit of ${wf.code}`, session: { agent: cfg.agent.flavor, id: randomUUID8() }, state: "queued", purpose: "work", parents: [], asks: [], createdAt: now, updatedAt: now });
+  store2.saveJob({ schema: 1, id: ulid3(), key: `learn:${wf.id}:${ulid3()}`, goal, learning: { source: link2, text: sent, style: scope2 }, label: `your edit of ${wf.code}`, session: { agent: cfg.agent.flavor, id: randomUUID8() }, state: "queued", purpose: "work", parents: [], asks: [], createdAt: now, updatedAt: now });
 }
 function learnedClaims(store2, job, claims) {
   const text3 = job.learning?.text ?? job.goal.match(/Sent by the owner: "([\s\S]*?)"\nSent message:/)?.[1];
@@ -45107,6 +45444,7 @@ var init_learn = __esm({
     init_channels();
     init_learning();
     init_proposals();
+    init_habits();
   }
 });
 
@@ -45201,7 +45539,7 @@ async function applyAnswers(store2, src, cfg, procs = realProcs, controlsOnly = 
       const auto = answer.code?.startsWith("R") ? store2.automation(answer.code) : void 0;
       const wt = answer.code?.startsWith("W") ? store2.waiting().find((w) => w.code === answer.code) : void 0;
       const hb = answer.code?.startsWith("H") ? store2.habit(answer.code) : void 0;
-      if (hb) await reply(store2, src, answer, `${MARK} ${answerHabit(store2, hb, answer.verb)}`);
+      if (hb) await reply(store2, src, answer, `${MARK} ${answerHabit(store2, hb, answer.verb, answer.text)}`);
       else if (wt) await reply(store2, src, answer, `${MARK} ${await followUp(store2, src, cfg, wt, answer)}`);
       else if (auto) await reply(store2, src, answer, `${MARK} ${answerAutomation(store2, auto, answer)}`);
       else if (isControl(answer.verb)) await control(store2, src, answer, procs);
@@ -45415,6 +45753,11 @@ async function applyOne(store2, src, cfg, wf, a, procs, probe) {
       const denied = pendingEffects(wf.effects).map((effect) => ({ effect, why: refusal(cfg, effect, prTarget(store2, wf)) })).find((entry) => entry.why);
       if (denied) {
         wf.status = `${shown(denied.effect).line} cannot be made: ${denied.why}.`;
+        if (denied.why.startsWith(OLD_INVITE)) {
+          wf.status += " Nothing was created, and the reply was not sent.";
+          wf.question = OLD_INVITE_ASK;
+          wf.revAt = (/* @__PURE__ */ new Date()).toISOString();
+        }
         store2.save(wf);
         store2.markShown([wf]);
         return reply(store2, src, a, `${MARK} Not done ${wf.code}: ${wf.status} Nothing was changed.`, true);
@@ -45565,7 +45908,7 @@ async function askGone(store2, src, cfg, wf, a) {
   const now = classify(m, { ownerId: cfg.owner.id, ownerName: cfg.owner.name, aliases: cfg.aliases, test: wf.chat.test, group: !!wf.chat.group, sentIds: /* @__PURE__ */ new Set() });
   const thread2 = store2.thread(wf.id);
   const was = thread2.find((x) => x.id === id);
-  if (!was || now.kind === "skip" || norm2(now.text) === norm2(was.text)) return false;
+  if (!was || now.kind === "skip" || norm3(now.text) === norm3(was.text)) return false;
   store2.saveThread(wf.id, thread2.map((x) => x.id === id ? { ...x, text: now.text } : x));
   Object.assign(wf, { state: "running", lastAsk: now.text, pending: [id], approved: void 0, status: "The message was edited. Redrafting." });
   await reply(store2, src, a, `${MARK} Not sent ${wf.code}: ${wf.asker?.name ?? "they"} edited the message. I will redraft first.`);
@@ -45578,7 +45921,7 @@ async function threadSince(store2, src, cfg, wf, want, signed = false) {
   const claimed = new Set(openHere.filter((o) => o.id !== wf.id).flatMap((o) => o.msgIds));
   let asker, ours4 = false, ownerReplied = false, ownerAt, ownerUnknown = false;
   for (const m of fresh.msgs) {
-    if (m.from?.id === cfg.owner.id && want && !c.sentIds.has(m.id) && (norm2(m.body) === want || signed && squash(m.body).endsWith(squash(want)))) {
+    if (m.from?.id === cfg.owner.id && want && !c.sentIds.has(m.id) && (norm3(m.body) === want || signed && squash(m.body).endsWith(squash(want)))) {
       ours4 = true;
       continue;
     }
@@ -45689,7 +46032,7 @@ async function send(store2, src, cfg, wf, text3, by, probe) {
     return false;
   }
   if (await askGone(store2, src, cfg, wf, a)) return false;
-  const { asker, ours: ours4, ownerReplied, ownerAt, ownerUnknown } = await threadSince(store2, src, cfg, wf, out ? norm2(mdToHtml(out)) : "", !!out && out !== text3);
+  const { asker, ours: ours4, ownerReplied, ownerAt, ownerUnknown } = await threadSince(store2, src, cfg, wf, out ? norm3(mdToHtml(out)) : "", !!out && out !== text3);
   if (ownerUnknown && !ownerReplied && !ours4) {
     Object.assign(wf, { state: "needs_human", sendAt: void 0, status: "Not sent: I could not check whether you already replied in the chat. Try again after the check succeeds." });
     store2.save(wf);
@@ -45957,7 +46300,7 @@ async function correct(store2, src, wf, a) {
   }
   await reply(store2, src, a, `${MARK} Posted your correction for ${wf.code}.`);
 }
-var norm2, flat, squash, CONTROL_REPLY;
+var norm3, flat, squash, CONTROL_REPLY;
 var init_apply = __esm({
   "src/runner/apply.ts"() {
     "use strict";
@@ -45990,9 +46333,9 @@ var init_apply = __esm({
     init_deploy();
     init_page_approval();
     init_page_revision();
-    norm2 = (t2) => htmlToText(t2).replace(/\s+/g, " ").trim();
+    norm3 = (t2) => htmlToText(t2).replace(/\s+/g, " ").trim();
     flat = (t2) => t2.replace(/\s+/g, " ").trim();
-    squash = (t2) => norm2(t2).replace(/[^\p{L}\p{N}]+/gu, "").toLowerCase();
+    squash = (t2) => norm3(t2).replace(/[^\p{L}\p{N}]+/gu, "").toLowerCase();
     CONTROL_REPLY = {
       "auto-on": "Auto-send is on. Replies that your rules allow go out after the delay, with a marker, and you can undo them for a few minutes.",
       "auto-off": "Auto-send is off. Every reply waits for your ok.",
@@ -46028,8 +46371,15 @@ function adoProbe(cfg) {
         ...r.sourceRefName ? { branch: String(r.sourceRefName) } : {},
         ...r.lastMergeCommit?.commitId ? { merge: r.lastMergeCommit.commitId } : {},
         ...r.repository?.name ? { repo: r.repository.name } : {},
-        ...r.repository?.id ? { repoId: r.repository.id } : {}
+        ...r.repository?.id ? { repoId: r.repository.id } : {},
+        reviewers: reviewers.map((v) => ({ name: String(v.displayName ?? ""), ...v.uniqueName ? { unique: String(v.uniqueName) } : {}, vote: Number(v.vote ?? 0), required: !!v.isRequired, group: !!v.isContainer, declined: !!v.hasDeclined })),
+        ...r.createdBy?.uniqueName ? { authorUnique: String(r.createdBy.uniqueName) } : {}
       };
+    },
+    async myTeams(project) {
+      const r = await mcp.call("core_list_project_teams", { project, mine: true, top: 200 });
+      const list2 = Array.isArray(r) ? r : r.value ?? r.items ?? [];
+      return list2.map((t2) => String(t2.name ?? "")).filter(Boolean);
     },
     async runs(project, pipelineId) {
       const r = await mcp.call("pipelines_build", { action: "list", project, definitions: [pipelineId], top: 10, queryOrder: "QueueTimeDescending" });
@@ -46143,7 +46493,25 @@ async function probePRs(store2, cfg, probe, now = Date.now(), force = false, sub
     if (!st || !/^(active|completed|abandoned)$/i.test(st.status) || !st.votes.length && !/completed|abandoned/i.test(st.status)) {
       w.prRead = void 0;
       w.prUnknown = true;
+      w.prRole = void 0;
       store2.save(w, false);
+      continue;
+    }
+    w.prRole = await roleOn(cfg, probe, ref, st);
+    const declined = w.reviewDecline;
+    if (!subjects && declined && declined.pr === ref.id && declined.role !== "not-asked" && (MAY_REVIEW.includes(w.prRole) || declined.role === "unread") && /^active$/i.test(st.status) && now - Date.parse(declined.at) < 7 * 864e5) {
+      Object.assign(w, {
+        state: "running",
+        status: MAY_REVIEW.includes(w.prRole) ? `You're a reviewer on PR ${ref.id} now; starting the review` : `PR ${ref.id} can be read again; checking whether you are a reviewer`,
+        reviewDecline: void 0,
+        question: void 0,
+        context: w.context?.filter((c) => c.label !== "Not reviewing"),
+        effects: (w.effects ?? []).filter((e) => !isAddMe(e)),
+        pending: w.pending.length ? w.pending : w.msgIds.slice(-1)
+      });
+      store2.log({ event: "review-gate-reopened", code: w.code, pr: ref.id, role: w.prRole, was: declined.role });
+      store2.save(w);
+      n++;
       continue;
     }
     const named2 = me ? st.votes.filter((v) => v.name.trim().toLowerCase() === me) : [];
@@ -46418,6 +46786,7 @@ var init_probe = __esm({
     init_work();
     init_apply();
     init_jobs();
+    init_review_gate();
     EVERY_MS = 10 * 6e4;
     PR_LINK = /https?:\/\/(?:[\w-]+\.visualstudio\.com|dev\.azure\.com\/[\w-]+)\/([^/\s]+)\/_git\/([^/\s?#]+)\/pullrequest\/(\d+)/i;
     VOTE = { "10": (id) => `approved PR ${id}`, "5": (id) => `approved PR ${id} with suggestions`, "-5": (id) => `voted "Waiting for author" on PR ${id}`, "-10": (id) => `rejected PR ${id}` };
@@ -46758,6 +47127,8 @@ function finishWork(store2, job, r, asksAtStart) {
   if (r.reply) r = checked(store2, cfg, r);
   const parents = parentsOf(store2, job);
   const v = vet(cfg, r.effects, parents.map((w) => prTarget(store2, w)).find(Boolean));
+  const reader = parents.find((w) => w.prRole);
+  if (reader) v.effects = voteGate(store2, cfg, reader, v.effects, v.todos, false);
   const busy2 = parents.map((w) => deployRunning(homeOf(store2, w))).find(Boolean);
   if (busy2) for (const e of v.effects.filter((e2) => isDeploy(e2.call))) v.todos.push(`${e.summary.replace(/[.\s]+$/, "")}. Not made for you: ${busy2}`);
   const effects = proposalEffects(v.effects.filter((e) => !busy2 || !isDeploy(e.call)).map((e) => ({ ...e, done: void 0, error: void 0 })), parents);
@@ -46866,9 +47237,27 @@ async function finishExecute(store2, src, cfg, job, procs, probe) {
     }
     const moving = effects.filter((e) => e.done && isDeploy(e.call)).map((e) => deployed(store2, wf, e, e.done.ref, job.goal)).filter((x) => !!x);
     if (left.length) {
+      const old = left.find((e) => e.error?.includes(OLD_INVITE));
+      if (old) {
+        Object.assign(wf, {
+          state: "needs_human",
+          waitingSince: void 0,
+          status: `Not made: ${changeText(old)}. ${old.error.replace(/^Change \d+ cannot be made: /, "").replace(/^./, (c) => c.toUpperCase())} Nothing was created, and the reply was not sent`,
+          question: OLD_INVITE_ASK
+        });
+        store2.save(wf);
+        continue;
+      }
       const how = left.some((e) => e.maybe) ? `Check whether it was made, then reply "ok ${wf.code} again" to make it once more` : `Reply "ok ${wf.code}" to retry`;
       const or = wf.promise && wf.sent && !wf.draft?.text ? `, or "skip ${wf.code}"` : `, or "ok ${wf.code} except ${left.map((_, i) => i + 1).join(" ")}" to send only the reply`;
       Object.assign(wf, { state: "needs_human", waitingSince: void 0, status: `Made ${effects.length - left.length} of ${effects.length} changes. Not done: ${left.map((e) => `${changeText(e)}${e.error ? ` (${e.error.slice(0, 80)})` : ""}`).join("; ")}. ${how}${or}` });
+      store2.save(wf);
+      continue;
+    }
+    const added = effects.find((e) => e.done && isAddMe(e));
+    if (added && wf.reviewDecline) {
+      Object.assign(wf, { state: "running", waitingSince: void 0, question: void 0, reviewDecline: void 0, context: wf.context?.filter((c) => c.label !== "Not reviewing"), status: `Added you as an optional reviewer on PR ${wf.reviewDecline.pr}; starting the review`, pending: wf.msgIds.slice(-1) });
+      store2.log({ event: "review-gate-added", code: wf.code, pr: added.call?.args.pullRequestId });
       store2.save(wf);
       continue;
     }
@@ -47124,6 +47513,11 @@ function finishBootstrap(store2, job, r) {
   Object.assign(job, { result: { summary: r.summary, effects: [] }, state: "done", run: void 0 });
   store2.saveJob(job);
   store2.log({ event: "bootstrap-done", job: job.id, key: job.key, claims: r.claims?.length ?? 0, proposals: made.map((p) => p.code), ...usedBy(job) });
+  const scope2 = job.learning?.style, kinds = [...r.style?.tone ? [`tone:${r.style.tone}`] : [], ...r.style?.language ? [`language:${r.style.language}`] : []];
+  if (learn && scope2 && kinds.length) {
+    store2.log({ event: "edit-style", at: (/* @__PURE__ */ new Date()).toISOString(), ...scope2, kinds, ai: true, ...job.learning?.source ? { link: job.learning.source } : {} });
+    noticeHabits(store2, store2.config());
+  }
 }
 function relayJob(store2, job) {
   const to = job.relay;
@@ -47231,11 +47625,14 @@ var init_jobs = __esm({
   "src/runner/jobs.ts"() {
     "use strict";
     init_retry();
+    init_brand();
     init_work();
     init_policy();
     init_page_approval();
     init_effects();
     init_probe();
+    init_review_gate();
+    init_habits();
     init_repos();
     init_validate();
     init_mcp_client();
@@ -48097,16 +48494,16 @@ async function sweep(store2, src, cfg, now = Date.now) {
   if (!s3.cut) try {
     const cut = store2.chats().startedAt, since = s3.since;
     const skip = (id) => id === src.selfChatId || (cfg.exclude ?? []).includes(id) || offRecord(cfg, id);
-    const listed = (await src.recentChats()).filter((c) => c.lastAt);
+    const listed2 = (await src.recentChats()).filter((c) => c.lastAt);
     const threads = cfg.channels !== false && src.channelThreads ? (await src.channelThreads(store2.threadCache(), since, cfg.channels || [])).list : [];
     const chats = /* @__PURE__ */ new Map();
     const add = (c) => {
       if (t(c.lastAt) > t(since) && t(c.lastAt) <= t(cut) && !skip(c.id) && !chats.has(c.id)) chats.set(c.id, { id: c.id, name: c.name, group: isThread(c.id) || kindOf(c.id) !== "oneOnOne" });
     };
-    for (const c of [...listed, ...threads]) add(c);
+    for (const c of [...listed2, ...threads]) add(c);
     let reach = since;
-    const oldest = listed.map((c) => c.lastAt).sort((a, b) => t(a) - t(b))[0];
-    if (listed.length >= FULL && t(oldest) > t(since)) {
+    const oldest = listed2.map((c) => c.lastAt).sort((a, b) => t(a) - t(b))[0];
+    if (listed2.length >= FULL && t(oldest) > t(since)) {
       try {
         for (const c of await src.awaiting?.(since, oldest) ?? []) if (!chats.has(c.id)) add(isThread(c.id) || kindOf(c.id) !== "oneOnOne" ? { ...c, name: await src.chatName?.(c.id).catch(() => c.name) ?? c.name } : c);
         if (!src.awaiting) reach = oldest;
@@ -48528,7 +48925,7 @@ function stampPlaces(store2, now = Date.now()) {
 // src/web/server.ts
 init_format2();
 init_fs();
-import { createHash as createHash5, randomBytes as randomBytes3 } from "node:crypto";
+import { createHash as createHash6, randomBytes as randomBytes3 } from "node:crypto";
 import { createServer } from "node:http";
 import { join as join31 } from "node:path";
 
@@ -50146,6 +50543,7 @@ init_brand();
 import { existsSync as existsSync24, readFileSync as readFileSync20, statSync as statSync9, writeFileSync as writeFileSync14 } from "node:fs";
 import { join as join26 } from "node:path";
 init_runinfo();
+init_habits();
 var set2 = (patch) => ({ ok: true, save: (cfg) => ({ ...cfg, ...patch }) });
 var list = (raw) => raw.split(/[,\n]/).map((s3) => s3.trim()).filter(Boolean);
 var num3 = (raw, min, max, key) => {
@@ -50448,8 +50846,19 @@ function aboutView(store2) {
   const habits = store2.habits(), held = store2.heldRules(), cfg = store2.config();
   return {
     profile: existsSync24(join26(store2.root, "profile.md")) ? readFileSync20(join26(store2.root, "profile.md"), "utf8").trim() : "",
-    rules: store2.rules().map((r) => ({ text: r.text.replace(/^Learned: /, ""), who: whoOf(r), ...r.learned ? { learned: `Learned ${r.learned.at.slice(0, 10)} from ${r.learned.evidence}` } : {}, held: !!held[r.id], ...r.learned ? { code: habits.find((h) => h.key === r.learned.key)?.code } : {} })),
-    suggestions: habits.filter((h) => h.state === "suggested").map((h) => ({ code: h.code, text: h.text, does: h.does, evidence: `${h.evidence.count} unedited replies on ${h.evidence.days} days, out of ${h.evidence.total}` })),
+    rules: store2.rules().map((r) => {
+      const h = r.learned ? habits.find((x) => x.key === r.learned.key) : void 0;
+      return {
+        text: r.text.replace(/^Learned: /, ""),
+        who: whoOf(r),
+        ...r.learned ? { learned: `Learned ${r.learned.at.slice(0, 10)} from ${r.learned.evidence}` } : {},
+        held: !!held[r.id],
+        ...h ? { code: h.code } : {},
+        ...r.style ? { style: r.style } : {},
+        ...h && habitUndoable(store2, h) ? { undoUntil: new Date(Date.parse(h.at) + undoMs(store2)).toISOString() } : {}
+      };
+    }),
+    suggestions: habits.filter((h) => h.state === "suggested").map((h) => ({ code: h.code, text: h.text, does: h.does, evidence: h.kind === "style" ? `${h.evidence.count} edited replies on ${h.evidence.days} day${h.evidence.days === 1 ? "" : "s"}, out of ${h.evidence.total} edited in that time${h.evidence.links.length ? ` (${h.evidence.links.length} linked below)` : ""}` : `${h.evidence.count} unedited replies on ${h.evidence.days} days, out of ${h.evidence.total}`, links: h.evidence.links })),
     chats: Object.values(cfg.chatLevels ?? {}).map((c) => ({ name: c.name, says: LEVEL_SAYS[c.level] }))
   };
 }
@@ -50516,8 +50925,8 @@ async function saveSetting(store2, key, raw, deps = {}) {
 async function checkTargets(raw, store2, { probe }) {
   const r = parseTargets(raw, store2.config());
   if (!r.ok) return r;
-  const bare = r.targets.find((t2) => !t2.project);
-  if (bare) return { ok: false, why: `Name the project of ${bare.ring}, such as ${bare.ring} Globex/${bare.pipelineId}.` };
+  const bare2 = r.targets.find((t2) => !t2.project);
+  if (bare2) return { ok: false, why: `Name the project of ${bare2.ring}, such as ${bare2.ring} Globex/${bare2.pipelineId}.` };
   if (r.targets.length && !probe?.definition) return { ok: false, why: `Each pipeline is checked in Azure DevOps before it is saved, and ${NAME} has no Azure DevOps tool server set up.` };
   const out = [];
   for (const t2 of r.targets) {
@@ -50548,6 +50957,7 @@ init_brand();
 init_effects();
 init_jobs();
 init_probe();
+init_review_gate();
 init_deploy();
 init_ledger();
 async function makeChange(store2, jobId, runId, index, call, probe) {
@@ -50563,7 +50973,11 @@ async function makeChange(store2, jobId, runId, index, call, probe) {
   if (!pendingEffects([e]).length || !owner2) return { error: `Change ${index} was not approved by the owner.` };
   const cfg = store2.config();
   const why2 = refusal(cfg, e, prTarget(store2, owner2));
-  if (why2) return { error: `Change ${index} cannot be made: ${why2}.` };
+  if (why2) {
+    const error62 = `Change ${index} cannot be made: ${why2}.`;
+    if (why2.startsWith(OLD_INVITE)) store2.saveChange(jobId, runId, index, { call: JSON.stringify(e.call), state: "failed", error: error62, at: (/* @__PURE__ */ new Date()).toISOString() });
+    return { error: error62 };
+  }
   const key = JSON.stringify(e.call), at3 = () => (/* @__PURE__ */ new Date()).toISOString();
   const to = serverOf(cfg, e.call.tool), spec = to && toolServers(cfg)[to[0]], cli = cliServers(cfg.agent.flavor);
   const unusable = !to ? `No tool server is set up for ${e.call.tool}${cli.error ? `: ${cli.path} could not be read (${cli.error})` : ""}.` : !spec?.command ? `The ${to[0]} tool server is remote (${spec?.type ?? "http"}); ${NAME} cannot call it yet.` : void 0;
@@ -50625,7 +51039,9 @@ async function voteMoved(store2, wf, e, probe) {
     const st = await probe.pr(ref.project, ref.repo, ref.id), why2 = prMoved(st, e);
     if (why2.length) return { error: `PR ${ref.id} changed since your review (${why2.join(", ")}).`, stale: true };
     const me = store2.config().owner.name.trim().toLowerCase(), mine = st.votes.filter((v) => v.name.trim().toLowerCase() === me);
-    return me && mine.length === 1 && sameVote(mine[0].vote, voteValue(c)) ? { cast: true } : void 0;
+    if (me && mine.length === 1 && sameVote(mine[0].vote, voteValue(c))) return { cast: true };
+    const role = await roleOn(store2.config(), probe, ref, st);
+    return MAY_REVIEW.includes(role) ? void 0 : { error: `No vote was cast on PR ${ref.id}: ${roleWhy(store2.config(), role)}.` };
   } catch (err) {
     return { error: `Could not read PR ${ref.id} right before the vote (${String(err).slice(0, 120)}).` };
   }
@@ -51390,12 +51806,13 @@ function enqueueParsed(store2, parsed, shownAt, from = "page", answerId, page2, 
         shown2++;
         continue;
       }
-      if (!["ok", "skip", "never"].includes(p.verb)) {
-        out.push(`${hb.code} takes ok (turn it on), skip (not now), never, or more.`);
+      const style = hb.kind === "style" && !hb.removes;
+      if (!["ok", "skip", "never", ...style ? ["edit", "undo"] : []].includes(p.verb)) {
+        out.push(`${hb.code} takes ok (turn it on), skip (not now), never, or more${style ? "; once on, edit or undo" : ""}.`);
         continue;
       }
-      ids.push(write({ code: hb.code, verb: p.verb, surface: "chat" }).id);
-      out.push(`${hb.code} ${{ ok: "will turn on", skip: "will wait 14 days", never: "will not come back" }[p.verb]}.`);
+      ids.push(write({ code: hb.code, verb: p.verb, text: p.text, surface: "chat" }).id);
+      out.push(`${hb.code} ${{ ok: "will turn on", skip: "will wait 14 days", never: "will not come back", edit: "will change its style", undo: "will be undone" }[p.verb]}.`);
       continue;
     }
     const auto = code?.startsWith("R") ? store2.automation(code) : void 0;
@@ -51771,6 +52188,7 @@ var snapshotSchema = external_exports.object({
   }),
   pageActionIds: strings.optional(),
   recipients: external_exports.array(external_exports.object({ id: text2, name: text2, group: external_exports.boolean() })).optional(),
+  recipientsNote: optional2,
   reminderDefaults: external_exports.object({ text: text2, every: external_exports.enum(["day", "weekday", "week"]), at: text2 }).optional(),
   doneNew: external_exports.number().optional(),
   showExperienceNote: external_exports.boolean().optional(),
@@ -51971,6 +52389,7 @@ function sinceOf(v) {
 
 // src/web/react-projection.ts
 init_brand();
+init_intake();
 init_page_approval();
 init_effects();
 init_track();
@@ -52001,6 +52420,7 @@ function pageText(text3 = "") {
 // src/web/react-projection.ts
 init_page_revision();
 init_work();
+init_habits();
 var IntentError = class extends Error {
   status;
   constructor(status3, message) {
@@ -52544,7 +52964,14 @@ ${code} stays ${byCode.get(code)?.state === "done" ? "done" : "open"}. Nothing i
       offer(habit.code, "", "defer-habit", "Not now", () => ({ code: habit.code, verb: "skip" })),
       offer(habit.code, "", "never-habit", "Never", () => ({ code: habit.code, verb: "never" }))
     ];
-    else settingsActions[habit.code] = [offer(habit.code, "", "remove-rule", "Remove", () => ({ code: habit.code, verb: "never" }))];
+    else {
+      settingsActions[habit.code] = [offer(habit.code, "", "remove-rule", "Remove", () => ({ code: habit.code, verb: "never" }))];
+      if (habit.kind === "style" && !habit.removes && habit.state === "accepted") {
+        const rule = store2.rules().find((r) => r.id === habit.rule.id), rev = "";
+        if (rule) settingsActions[habit.code].unshift(offer(habit.code, rev, "edit-style", "Save style", (input2) => ({ code: habit.code, verb: "edit", text: requiredText(input2) }), { input: "text", effect: "changes-system", meaning: "Saves these words as the drafting style. New drafts follow them; nothing is sent." }));
+        if (habitUndoable(store2, habit)) settingsActions[habit.code].push(offer(habit.code, rev, "undo-habit", "Undo", () => ({ code: habit.code, verb: "undo" }), { effect: "changes-system", expiresAt: new Date(Date.parse(habit.at) + undoMs(store2)).toISOString(), meaning: "Turns this style off again and brings its suggestion back." }));
+      }
+    }
   }
   for (const [chatId, level] of Object.entries(store2.config().chatLevels ?? {})) {
     const key = chatLevelKey(chatId);
@@ -52638,6 +53065,8 @@ ${code} stays ${byCode.get(code)?.state === "done" ? "done" : "open"}. Nothing i
     pageActionIds,
     reminderDefaults: newReminder(""),
     recipients: peopleOf(base).map((person3) => ({ id: hashOf(person3.chat), name: person3.name, group: person3.group })),
+    // An empty list says why, so the owner knows to type a name (reminder recipients, 10-23).
+    ...base.people.length ? {} : { recipientsNote: `No one to choose yet: reminders go to people and group chats ${NAME} has seen asks from.${store2.workflows().some((w) => w.chat.test && !w.chat.group && w.asker && isPersona(w.asker.id)) ? ' People played with "[as Name]" in test chats are not real, so they are not listed.' : ""} They appear here once they write to you.` },
     settingsActions,
     doneNew: newCount(base),
     sinceLine: sinceOf({ ...base, since: base.since ?? visit2?.fallbackSince, next: next2 }),
@@ -52954,7 +53383,7 @@ function serveInbox(get, port = 0, token = randomBytes3(16).toString("hex"), pro
           const store2 = get(), start = performance.now(), snapshot2 = readScope(() => reactProjection(store2, query, reactVisit ?? { since: store2.lastViewed(), fallbackSince: initialSince }).snapshot);
           const body = { ...snapshot2, version: versionFor(store2) };
           const { now: _now, fetchedAt: _fetchedAt, ...content } = body;
-          const etag = `"${createHash5("sha256").update(JSON.stringify(content)).digest("hex")}"`;
+          const etag = `"${createHash6("sha256").update(JSON.stringify(content)).digest("hex")}"`;
           const extra = { etag, "server-timing": `projection;dur=${(performance.now() - start).toFixed(2)}` };
           const priorTag = req.headers["if-none-match"], prior = typeof priorTag === "string" ? reactPages.get(priorTag) : void 0;
           reactPages.delete(etag);
@@ -53424,8 +53853,8 @@ function reschedule(store2, cfg, activity, startedMs) {
   store2.saveSchedule(due2 && s3.nextAt && due2 < s3.nextAt ? { ...s3, nextAt: due2 } : s3);
 }
 function capHealth(store2, cfg) {
-  const cap = cfg.dailyRuns ?? 200;
-  store2.setHealth("runs", store2.runsToday() >= cap ? `Reached today's limit of ${cap} AI runs. New asks wait until tomorrow; raise dailyRuns in config.json to change it.` : void 0);
+  const cap2 = cfg.dailyRuns ?? 200;
+  store2.setHealth("runs", store2.runsToday() >= cap2 ? `Reached today's limit of ${cap2} AI runs. New asks wait until tomorrow; raise dailyRuns in config.json to change it.` : void 0);
 }
 function backoff(store2) {
   return Math.min(15, (store2.schedule().backoff ?? 1) * 2);
@@ -53693,7 +54122,7 @@ init_state();
 init_fs();
 init_scheduler();
 import { execFileSync as execFileSync4, spawn as spawn6, spawnSync as spawnSync5 } from "node:child_process";
-import { createHash as createHash6 } from "node:crypto";
+import { createHash as createHash7 } from "node:crypto";
 import { cpSync as cpSync2, existsSync as existsSync29, lstatSync as lstatSync3, mkdirSync as mkdirSync12, readFileSync as readFileSync24, readlinkSync, rmSync as rmSync9, symlinkSync, writeFileSync as writeFileSync16 } from "node:fs";
 import { homedir as homedir9 } from "node:os";
 import { basename as basename5, join as join33 } from "node:path";
@@ -53927,7 +54356,7 @@ function uninstall2(purge) {
   out.push(root ? `Your data is still in ${root}. Delete that folder yourself if you want it gone.` : "Done.");
   return out;
 }
-var fileHash = (f) => createHash6("sha256").update(readFileSync24(f, "utf8").replace(/\r\n/g, "\n")).digest("hex");
+var fileHash = (f) => createHash7("sha256").update(readFileSync24(f, "utf8").replace(/\r\n/g, "\n")).digest("hex");
 var pluginListed = (out = spawnSync5("copilot", ["plugin", "list"], { encoding: "utf8", windowsHide: true }).stdout ?? "") => /^\s*\W?\s*delegate(@\S+)?\s+\(v/m.test(out);
 var version2 = () => VERSION;
 

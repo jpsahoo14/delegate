@@ -4,7 +4,10 @@ Goal: the owner rewrote a drafted reply before sending it. Find what their versi
 
 ## Acceptance
 
-- Compare the draft and the sent text in the prompt. Ignore tone, wording, and length.
+- Compare the draft and the sent text in the prompt. Ignore tone, wording, and length when you look for facts.
+- Also report `style`, for the owner's editing habits: `tone` "casual" or "formal" only when the edit clearly made the
+  reply that much more casual or formal, and `language` (for example "Hindi" or "Hinglish") only when the owner sent it
+  in a different language from the draft. Leave `style` out when neither changed.
 - For each fact the owner added or corrected, report a claim: the topic, the type, one or two short sentences in your own words, and the sent message as `src`.
 - Check `knowledge_search` first. If the knowledge already says it, skip it.
 - If nothing about the facts changed, report no claims.
@@ -18,7 +21,7 @@ Goal: the owner rewrote a drafted reply before sending it. Find what their versi
 
 ## Report
 
-Call `submit_report` once, with `workflowId` as given, `state` `done`, intent `other`, `claims`, and a one-line `summary`.
+Call `submit_report` once, with `workflowId` as given, `state` `done`, intent `other`, `claims`, `style` when the tone or language changed, and a one-line `summary`.
 
 ## Gates
 

@@ -8,6 +8,10 @@ import { intentPlaybook, intents } from '../core/intents.ts'
 import { changeLine } from '../core/effects.ts'
 import { DEPLOY } from '../core/deploy.ts'
 import { scrub } from '../core/secrets.ts'
+import type { Rule } from '../core/types.ts'
+import { stylesFor } from '../runner/habits.ts'
+
+const compiledRules = (root: string): Rule[] => { try { return (JSON.parse(readFileSync(join(root, 'rules.compiled.json'), 'utf8')) as { rules?: Rule[] }).rules ?? [] } catch { return [] } }
 
 export { SKILL_DIR } from '../paths.ts'
 import { SKILL_DIR } from '../paths.ts'
@@ -53,6 +57,12 @@ export function buildPrompt(wf: Workflow, thread: Msg[], cfg: Config, root: stri
 	const byAsker = [...new Map(open.map(m => [m.from.id, m.from.name])).entries()]
 	if (byAsker.length > 1) parts.push('', `Several people asked in this item, and none has had a reply yet: ${byAsker.map(([, n]) => n).join(', ')}. The reply names each of them and answers every distinct question they asked (the * lines count as much as the >> ones):`, ...open.map(m => `- ${m.from.name}: "${m.text.slice(0, 200)}"`), 'If you cannot answer someone\'s question yet, say so for them in the reply or ask the owner in `question`; never leave a person out.')
 	if (wf.prUnknown) parts.push('', 'The current PR owner approval could not be verified. Older votes and earlier conversation are historical context, not proof of current approval. Do not claim approval or non-approval; report the verification gap or read a fresh source.')
+	// The review gate (owner rule 10-23) is the runner's; this line only saves a run it would decline.
+	const notReviewer: Record<string, string> = { author: 'the PR is the owner\'s own', declined: 'the owner declined it in Azure DevOps', none: 'the owner is not on its reviewer list', 'group-approved': 'the owner\'s team already approved it', 'group-unknown': 'the owner is only reviewer through a group the runner cannot match to him', ambiguous: 'two reviewers have the owner\'s name' }
+	if (wf.prRole && notReviewer[wf.prRole]) parts.push('', `The owner may not review or vote on this PR: ${notReviewer[wf.prRole]}. Do not report a \`pr:\` job or a vote for it, and never say it was reviewed; answer the rest, and reply without reviewing when the owner says so.`)
+	// Edit habits: the drafting styles the owner turned on that fit this reply. They shape the wording only.
+	const styles = stylesFor(compiledRules(root), wf)
+	if (styles.length && wf.kind === 'reply') parts.push('', 'How the owner wants replies written here (learned from his edits; it shapes the wording only, and anything the owner says in this item or his own rules wins):', ...styles.map(r => `- ${r.style}`))
 	if (others.length) parts.push('', 'Other open items in this chat. If the new message asks for the same thing as one of them, even from someone else, set `same` to its code and leave out reply:', ...others.map(o => `- ${o.code} · ${o.asker?.name ?? 'someone'}: "${(o.lastAsk ?? '').slice(0, 200)}"`))
 	if (wf.kind === 'reply') parts.push('', ...allowed(cfg, 'every action the reply promises goes in `todos`'))
 	if (corrected.length) parts.push('', 'How the owner corrected your recent drafts. Learn the pattern (tone, length, what they leave out or add). Never copy facts from these into this reply:', ...corrected.map(c => `- ${c}`))

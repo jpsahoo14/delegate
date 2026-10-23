@@ -1,5 +1,95 @@
 # React preview
 
+## Edit habits: drafts follow how the owner keeps editing (Core 10 J6, pm-edit-habits.md)
+
+Each owner-edited send (never a rule send, never an off-record chat) logs `edit-style` with the kinds code can measure:
+shorter, longer, bullets, a greeting added or removed, a closing line such as "Thanks!", and an added link. The learn run
+adds tone and language as one optional `style` field. Three edited sends of one kind within 14 days, in 1:1 or group
+chats, with none of the last 3 edited sends there going the other way, become one H suggestion. Its scope is the narrowest
+the evidence allows: one person, one chat, or every reply; a language is always per person. Kinds found together in a
+scope come as one suggestion, at most one new suggestion a day, and a kind turned on, waiting, snoozed or declined is not
+offered again for that scope. Turn on saves a learned rule with `style`; the generated Learned block in rules.md shows
+it; Settings › What it knows shows it with its words editable (Save style), Remove, and Undo during the undo window.
+Editing against an accepted style 3 times offers to remove it.
+
+Guard (Engineer check): a style rule never decides. `decide()` skips it, so it can't shadow a send, ack or ignore rule;
+`suggestions()` ignores it. Only the drafting prompt reads it, and only the styles that fit the item's person or chat.
+Proved with stub workers (quota) on fictional roots: the spec's checks 1-7 (including Robin's style not reaching Kim's
+draft, Edit, Undo, and the negative cases), a style rule listed before a send rule for the same person still sending
+exactly once, and Settings Turn on, Save style and Undo in New and Classic at 1280 light and 400 dark.
+
+## PR-review gate: review or vote only when asked and a reviewer (owner rule 10-23)
+
+A PR review job (the worker's `pr:` job, `jobForRecheck`, or the forced recheck) starts only when someone asked the owner
+to review this PR (his own answer or message counts; a room message must name the PR), and the live PR read shows him
+as a reviewer: by name (required or optional, not declined), or in a reviewer team he belongs to (`core_list_project_teams`,
+`mine: true`, cached hourly per project) whose vote is below approved. Never on his own PR. Otherwise the item says why
+(`reviewDecline`), with no job:
+- not on the list, team approved, or a group he can't be matched to: "Add you as an optional reviewer" as its one
+  change (`update_reviewers`, add only `owner.upn`, refused in `refusal()` otherwise). Once made, the review starts;
+- his own PR, or declined in Azure DevOps: a question, no Add me;
+- PR unreadable: held; the 10-minute PR check restarts it when the PR can be read, or when he becomes a reviewer;
+- a room message: closed quietly with the reason.
+The owner's own "review PR N" (or "review <PR link>") in the self-chat counts as asked and reruns the open item about
+that PR; with no such item he is told how to start one, never left without an answer. A team that already approved
+reads "Not reviewing: your group already approved PR N".
+Votes follow the same rule: one from a reply run becomes a to-do with the reason, a review job's vote is dropped when
+he is no longer a reviewer, and `make_change` casts no vote unless the PR read right before it shows him as a reviewer.
+With no Azure DevOps reader set up, only the ask check applies (no vote can be cast there).
+Proved on fictional roots with the real tick, stub workers and a stub PR reader with reviewers and teams; the page
+shows the decline with its reason and Add me in New and Classic at 1280 light and 400 dark.
+
+## E98: New's automation chooser matches today's New
+
+Today's New reaches its automation chooser (Remind someone, Watch something, Daily summary) from the automations
+address, and from Back on the reminder form. Its "+ Remind someone" opens the form directly. React New did the same,
+except that the address opened the reminder form. The address now opens the chooser in both experiences.
+Proved on a fictional root in New at 1280 light and 400 dark:
+- `#automations/new` opened "New automation, step 1 of 2" with the three choices.
+- "+ Remind someone" opened the form (step 2), and Back returned to the chooser.
+- No automation was created.
+
+## reminder recipients: real people in test chats, never "[as Name]" personas, and an empty list says why
+
+The reminder recipient list (and `findChat` for a typed name) skipped test chats entirely, so test runs had no
+one to choose and no reason shown. A test chat is a real chat. Its group chat, or a real person in a 1:1, can now
+be chosen. A "[as Name]" persona (id `test:*`) is never listed or matched. When the list is empty, the page says
+why and when people appear, and mentions personas when that is the reason. The note is shown in the shared reminder
+sheet ("Send to") in New and Classic.
+
+Proved on fictional roots in New and Classic at 1280:
+- **Real people and groups:** a test group chat played with personas, a persona 1:1 and a real person's 1:1 offered "Pat Real" and the group, never Kim or Ines. `findChat` resolved Pat and the group, and refused Kim.
+- **Personas only:** the list was empty, and both sheets explained why.
+
+## bug 10-23 E08: a same-asker follow-up in a group chat started a second item
+
+Ines asked the owner by name (A9537, drafted), then followed up in the same group chat without naming him. A message
+that doesn't name the owner skipped routing and went to group judgment, which started A9545 beside A9537's
+half-answering draft. Now such a message from someone who already has a live item in that chat joins it, decided by
+code before any judgment (reason "same asker follow-up"). Like any ask that joins, it withdraws an ok and marks the old
+draft with "1 new message" while it is redrafted with both messages. Unaddressed messages from others still go to group judgment. A draft written
+by the inline run now also resets the new-message count, as a job's draft already did, so the mark clears once the new
+draft covers the message.
+
+Proved on a fictional root with real intake and dispatch, a stub source and a stub worker:
+- **Join:** Ines's follow-up joined A1 (2 messages, running, the old draft marked "1 new message" in New), and the redraft prompt had both questions.
+- **Redraft:** the new draft answered both, with the mark cleared, in New and Classic at 1280.
+- **Control:** Paz's unaddressed question still started a group-judgment item.
+
+## legacy E16: an invite stored in the old meeting shape, made or refused with a redraft offer
+
+An invite proposed before calendar calls were converted is stored as `{ subject, start, minutes, attendees }`.
+- **Converted at execution:** `makeChange` converts it with `toolShape`, so the owner's calendar tool gets exactly `{ subject, attendeeEmails, startDateTime, endDateTime, timeZone }` in UTC, in one call.
+- **Refused when it cannot be converted:** `refusal()` now checks the converted shape, and `inviteShapeProblem` names the gap: no readable start, no subject, or old fields left. This runs at approval and at execution.
+  - The refusal happens before any call: nothing is created, and the reply (which says the invite was sent) is not sent.
+  - The item asks one question: answer to have Delegate draft the invite again.
+- **Card:** the owner's own refused approval carried no typed words, so the card now adopts the new revision with the offer, never the stale banner. A refusal of the owner's typed words still keeps them.
+
+Proved on a fictional root with a stub calendar MCP server that has the real CreateEvent schema, approving from the page in New and Classic at 1280:
+- **Readable start:** the legacy invite made exactly one call, with `startDateTime 2026-10-26T06:00:00`, `endDateTime 06:30:00` and `timeZone UTC`. Then the reply was sent once.
+- **Unreadable start:** zero calls, no reply, the card showed the reason, the redraft question and Draft reply.
+- **R3 checks:** still pass in all four.
+
 ## spec S6 and S7: no loading view on a switch, and one hover text per control
 
 S6:
@@ -1453,6 +1543,31 @@ Measure a 500-row update in a production browser; report the timing and method,
 not just a threshold assertion. No real-owner data is needed or accessed.
 
 ## Decisions
+
+- bug 10-22 catchup-row-controls (owner, 0.2.1): a row's interactive controls
+  must never become its surrounding Teams navigation. Explicitly isolate
+  buttons, watch fields, labels and local disclosures at the React Catch up
+  article boundary, after each control runs its own handler. Preserve native
+  form defaults; prevent control-zone anchor defaults only if an
+  enclosing link exists. Use the original event path even when a control
+  removes itself during its handler. The ordinary source anchor is untouched.
+  Apply the shared boundary to Classic Done/Numbers, Classic Home's compact
+  rows and New Done/Now. No new hover text: today's Watch and Needs me have no
+  title/aria-description. Initial standalone legacy/React checks did not
+  reproduce the owner's runtime; verify the explicit boundary with a
+  surrounding navigation listener as well as ordinary links, rather than
+  claiming that baseline reproduction. Manual Edge acceptance1280light and
+  400dark: Watch saves exactly one tracker, Needs me moves its item to
+  Needs you/Your move, neither opens Teams, and the body link still does.
+  Fictional store/effects only; no tests or changes to runner verbs.
+  Before/after scope: standalone baseline passed; with a surrounding
+  navigation listener, the old Watch opened both its form and a Teams tab.
+  The fixed bundle isolates all controls at both sizes in all four React
+  surfaces, with zero ancestor activations and one explicit source tab.
+  Mark the controls zone too: disabled buttons use pointer-events:none and
+  must not turn a click through their footprint into row navigation.
+  A containing-anchor check preserves Watch but cancels its link default;
+  a native submit inside a row still submits once.
 
 - bug 10-22 E16.classic.invite-attendees (R2): the meeting strip reduced
   attendee identities to three decorative, aria-hidden initials. Show every

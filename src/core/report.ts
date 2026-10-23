@@ -43,6 +43,7 @@ export const ReportSchema = {
 		waitFor: z.string().optional().describe('not_ready: what it waits for, such as "build 991"'),
 	}).optional().describe('With goalMet false: why the goal is not met, so the runner can try again by another route'),
 	claims: z.array(ClaimSchema).optional().describe('Bootstrap only: lasting facts found in the source'),
+	style: z.object({ tone: z.enum(['casual', 'formal']).optional(), language: z.string().max(40).optional() }).optional().describe('Learn only: "casual" or "formal" when the owner\'s edit clearly changed the tone that way; the language the owner sent in, only when it differs from the draft\'s'),
 	checkpoint: z.string().optional().describe('Bootstrap only: the newest date or ID you read, so a rerun starts after it'),
 	done: z.boolean().optional().describe('Tracker only: true when the stop condition holds'),
 	job: z.object({ key: z.string(), goal: z.string(), repo: z.string().optional().describe('The repo by its remote or its link, never a folder'), branch: z.string().optional().describe('The PR\'s source branch, when the work is a PR'), owner: z.string().optional() }).optional().describe('Reply workflow only: this ask needs real work in its own session. Leave out reply.'),

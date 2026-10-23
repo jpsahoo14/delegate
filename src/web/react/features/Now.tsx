@@ -11,6 +11,7 @@ import { when, time } from '../domain/time.ts'
 import { revisionKey, type Entities, type Placement } from '../domain/contracts.ts'
 import { Icon } from '../components/ui/icon.tsx'
 import { ViewportList } from '../components/ViewportList.tsx'
+import { isolateRowControls } from './row-navigation.ts'
 
 const calendarKey = () => `${new Date().toDateString()}|${new Intl.DateTimeFormat().resolvedOptions().timeZone}`
 const day = (iso: string) => {
@@ -100,7 +101,7 @@ export const NowRow = memo(function NowRow({ id, day }: { id: string; day?: stri
 	const icons: Partial<Record<string, ComponentProps<typeof Icon>['name']>> = { working: 'bolt', scheduled: 'clock', watch: 'eye', 'waiting-delegate': 'clock', reminder: 'clock', 'reminder-new': 'clock', catchup: 'eye', stopped: 'warn' }
 	const icon = icons[row.kind]
 	const avatarStyle: CSSProperties & { '--hue': number } = { '--hue': person?.hue ?? 210 }
-	return <article className={`now-row${open ? ' row-open' : ''}`} data-code={row.code} data-row-kind={row.kind}>
+	return <article className={`now-row${open ? ' row-open' : ''}`} data-code={row.code} data-row-kind={row.kind} onClick={row.kind === 'catchup' ? isolateRowControls : undefined}>
 		<div className="row-content">
 			{person && !icon ? <span className="row-avatar" style={avatarStyle} aria-hidden="true">{person.initials}</span> : <span className="row-icon"><Icon name={icon ?? 'clock'} /></span>}
 			<div className="row-text"><div className="row-heading"><h3><button className="row-title" aria-label={`${open ? 'Hide' : 'Open'} ${row.headline}`} onClick={() => navigate(open ? 'now' : `now/${id}`)} aria-expanded={open}>{row.headline}</button></h3>{row.chips.map((chip, n) => <span key={`${chip.kind}-${n}`} className={`chip chip-${chip.kind}`} title={chipHover(chip.kind)}>{chip.text}</span>)}<span className="code" title={codeHover(row.act)}>{row.act}</span></div>
@@ -108,9 +109,9 @@ export const NowRow = memo(function NowRow({ id, day }: { id: string; day?: stri
 				{row.gist && <p>{row.gist}</p>}
 				{row.warn && <p className="row-warning"><Icon name="warn" /><span>{row.warn}</span></p>}
 				{row.nextText && <p className="next-line">Next: {row.nextText.replace('{at}', row.next?.at ? when(row.next.at) : 'soon')}</p>}
-				{hasRowAnswer && !(open && hasReport) && <div className="row-inline-tell"><RowControls row={row} open={open} toggle={() => navigate(open ? 'now' : `now/${id}`)} /></div>}
+				{hasRowAnswer && !(open && hasReport) && <div className="row-inline-tell" data-row-controls><RowControls row={row} open={open} toggle={() => navigate(open ? 'now' : `now/${id}`)} /></div>}
 			</div>
-			{!hasRowAnswer && !(open && hasReport) && <div className="row-controls">
+			{!hasRowAnswer && !(open && hasReport) && <div className="row-controls" data-row-controls>
 				<RowControls row={row} open={open} toggle={() => navigate(open ? 'now' : `now/${id}`)} />
 			</div>}
 		</div>

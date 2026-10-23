@@ -100,6 +100,7 @@ export const snapshotSchema = z.object({
 	}),
 	pageActionIds: strings.optional(),
 	recipients: z.array(z.object({ id: text, name: text, group: z.boolean() })).optional(),
+	recipientsNote: optional,
 	reminderDefaults: z.object({ text, every: z.enum(['day', 'weekday', 'week']), at: text }).optional(),
 	doneNew: z.number().optional(),
 	showExperienceNote: z.boolean().optional(),

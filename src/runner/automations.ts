@@ -1,4 +1,5 @@
 import type { Answer, Automation, Config, Rotation, Schedule } from '../core/types.ts'
+import { isPersona } from '../core/intake.ts'
 import { ulid } from '../core/ids.ts'
 import { DEFAULT_POLICY, signatureOf, withMarker } from '../core/policy.ts'
 import type { Source } from '../adapters/source.ts'
@@ -64,8 +65,9 @@ export function findChat(store: Store, to: string): { chatId: string; name: stri
 	const want = to.trim().toLowerCase()
 	const seen = new Map<string, { chatId: string; name: string; group: boolean }>()
 	for (const w of store.workflows()) {
-		if (w.chat.test) continue
 		if (isThread(w.chat.id)) continue
+		// A test chat is a real chat, but a "[as Name]" persona in it is no one to send to.
+		if (!w.chat.group && w.chat.test && w.asker && isPersona(w.asker.id)) continue
 		if (!w.chat.group && w.asker?.name.toLowerCase().includes(want)) seen.set(w.chat.id, { chatId: w.chat.id, name: w.asker.name, group: false })
 		if (w.chat.group && w.chat.name.toLowerCase() === want) seen.set(w.chat.id, { chatId: w.chat.id, name: w.chat.name, group: true })
 	}

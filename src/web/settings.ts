@@ -15,6 +15,7 @@ import { here } from '../store/state.ts'
 import { CMD, NAME } from '../brand.ts'
 import { UPDATE_EVERY_MIN } from '../os/autoupdate.ts'
 import { nameFor, runLines, runsOf } from '../core/runinfo.ts'
+import { habitUndoable, undoMs } from '../runner/habits.ts'
 
 // The settings the page can change, in one table: how each is shown, read, checked, and saved (B13).
 // Each saves to the shared config (or profile.md) in the storage folder, so every machine and the next cycle use it.
@@ -147,8 +148,8 @@ export type ReadOnlyRow = { label: string; value: string; how: string }
 // What Delegate knows about the owner and acts on, in one place (R-HAB-03): standing instructions, said or learned, and suggestions.
 export type AboutView = {
 	profile: string
-	rules: { text: string; who: string; learned?: string; held: boolean; code?: string }[]
-	suggestions: { code: string; text: string; does: string; evidence: string }[]
+	rules: { text: string; who: string; learned?: string; held: boolean; code?: string; style?: string; undoUntil?: string }[]
+	suggestions: { code: string; text: string; does: string; evidence: string; links?: string[] }[]
 	chats: { name: string; says: string }[]
 }
 // Who a rule covers, by name, so a rule that says "approved accounts" shows which ones (dogfood 10-20).
@@ -162,8 +163,12 @@ export function aboutView(store: Store): AboutView {
 	const habits = store.habits(), held = store.heldRules(), cfg = store.config()
 	return {
 		profile: existsSync(join(store.root, 'profile.md')) ? readFileSync(join(store.root, 'profile.md'), 'utf8').trim() : '',
-		rules: store.rules().map(r => ({ text: r.text.replace(/^Learned: /, ''), who: whoOf(r), ...(r.learned ? { learned: `Learned ${r.learned.at.slice(0, 10)} from ${r.learned.evidence}` } : {}), held: !!held[r.id], ...(r.learned ? { code: habits.find(h => h.key === r.learned!.key)?.code } : {}) })),
-		suggestions: habits.filter(h => h.state === 'suggested').map(h => ({ code: h.code, text: h.text, does: h.does, evidence: `${h.evidence.count} unedited replies on ${h.evidence.days} days, out of ${h.evidence.total}` })),
+		rules: store.rules().map(r => {
+			const h = r.learned ? habits.find(x => x.key === r.learned!.key) : undefined
+			return { text: r.text.replace(/^Learned: /, ''), who: whoOf(r), ...(r.learned ? { learned: `Learned ${r.learned.at.slice(0, 10)} from ${r.learned.evidence}` } : {}), held: !!held[r.id], ...(h ? { code: h.code } : {}),
+				...(r.style ? { style: r.style } : {}), ...(h && habitUndoable(store, h) ? { undoUntil: new Date(Date.parse(h.at) + undoMs(store)).toISOString() } : {}) }
+		}),
+		suggestions: habits.filter(h => h.state === 'suggested').map(h => ({ code: h.code, text: h.text, does: h.does, evidence: h.kind === 'style' ? `${h.evidence.count} edited replies on ${h.evidence.days} day${h.evidence.days === 1 ? '' : 's'}, out of ${h.evidence.total} edited in that time${h.evidence.links.length ? ` (${h.evidence.links.length} linked below)` : ''}` : `${h.evidence.count} unedited replies on ${h.evidence.days} days, out of ${h.evidence.total}`, links: h.evidence.links })),
 		chats: Object.values(cfg.chatLevels ?? {}).map(c => ({ name: c.name, says: LEVEL_SAYS[c.level] })),
 	}
 }

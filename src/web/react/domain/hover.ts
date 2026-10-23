@@ -11,6 +11,8 @@ const BY_KIND: Record<string, string> = {
 	'mark-all-read': 'Mark the Catch up items shown here as read. They stay in Done › Catch up, and nothing is sent.',
 	undo: 'Delete this reply from the Teams chat and put the item back in Waiting on you.[ Possible for {left} more.] Changes already made are not reversed.',
 	'undo-facts': `Take back the[ {n}] facts this saved[ about {topic}]. Each one goes back to what it was before. Facts you edited since then are kept.`,
+	'edit-style': `Save these words as the drafting style. New drafts follow them; drafts already shown are not changed.`,
+	'undo-habit': 'Turn this style off again and bring its suggestion back. Drafts are written as before it.',
 	wrong: `${NAME} drafts a correction for your OK.`,
 	incomplete: `${NAME} drafts what was missing for your OK.`,
 	unneeded: `${NAME} notes it and replies less in cases like this. Within the Undo time, it also takes the reply back.`,

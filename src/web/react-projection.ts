@@ -9,6 +9,7 @@ import { knowledgeOf } from '../runner/proposals.ts'
 import { find } from './app/model/find.ts'
 import { freshOf, rowMark } from './app/model/derive.ts'
 import { NAME } from '../brand.ts'
+import { isPersona } from '../core/intake.ts'
 import { PAGE_REPLY_CHANGED, automationApprovalRev, pageChangeId, pageDigest, pageOptionId, proposalApprovalRev, workflowApprovalRev } from '../core/page-approval.ts'
 import type { Config, PageApproval, Workflow } from '../core/types.ts'
 import { meaningParts, pendingEffects, refusal, shown } from '../core/effects.ts'
@@ -27,6 +28,7 @@ import { prTarget } from '../runner/probe.ts'
 import { pageText } from './page-text.ts'
 import { pageManagementRev, workflowManagementRev } from '../store/page-revision.ts'
 import { active } from '../runner/work.ts'
+import { habitUndoable, undoMs } from '../runner/habits.ts'
 
 type Immediate = { accepted: boolean; text: string }
 export type Binding = { action: Action; resolve: (input: Intent['input']) => Parsed; execute?: (input: Intent['input']) => Immediate; management?: boolean }
@@ -482,7 +484,15 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 			offer(habit.code, '', 'defer-habit', 'Not now', () => ({ code: habit.code, verb: 'skip' })),
 			offer(habit.code, '', 'never-habit', 'Never', () => ({ code: habit.code, verb: 'never' })),
 		]
-		else settingsActions[habit.code] = [offer(habit.code, '', 'remove-rule', 'Remove', () => ({ code: habit.code, verb: 'never' }))]
+		else {
+			settingsActions[habit.code] = [offer(habit.code, '', 'remove-rule', 'Remove', () => ({ code: habit.code, verb: 'never' }))]
+			// A drafting style the owner turned on: its words can be changed, and the turn-on taken back within the undo window (edit habits).
+			if (habit.kind === 'style' && !habit.removes && habit.state === 'accepted') {
+				const rule = store.rules().find(r => r.id === habit.rule.id), rev = ''
+				if (rule) settingsActions[habit.code].unshift(offer(habit.code, rev, 'edit-style', 'Save style', input => ({ code: habit.code, verb: 'edit', text: requiredText(input) }), { input: 'text', effect: 'changes-system', meaning: 'Saves these words as the drafting style. New drafts follow them; nothing is sent.' }))
+				if (habitUndoable(store, habit)) settingsActions[habit.code].push(offer(habit.code, rev, 'undo-habit', 'Undo', () => ({ code: habit.code, verb: 'undo' }), { effect: 'changes-system', expiresAt: new Date(Date.parse(habit.at) + undoMs(store)).toISOString(), meaning: 'Turns this style off again and brings its suggestion back.' }))
+			}
+		}
 	}
 	for (const [chatId, level] of Object.entries(store.config().chatLevels ?? {})) {
 		const key = chatLevelKey(chatId)
@@ -554,7 +564,10 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 	const snapshot = snapshotSchema.parse({
 		schemaVersion: 1, fetchedAt: new Date().toISOString(), now: base.now, since: base.since, owner: base.owner,
 		entities, sections, seen: base.seen, status: base.status, running: base.running.filter(run => !run.code), classic, lastUndoId,
-		pageActionIds, reminderDefaults: newReminder(''), recipients: peopleOf(base).map(person => ({ id: hashOf(person.chat), name: person.name, group: person.group })), settingsActions, doneNew: newCount(base), sinceLine: sinceOf({ ...base, since: base.since ?? visit?.fallbackSince, next }),
+		pageActionIds, reminderDefaults: newReminder(''), recipients: peopleOf(base).map(person => ({ id: hashOf(person.chat), name: person.name, group: person.group })),
+		// An empty list says why, so the owner knows to type a name (reminder recipients, 10-23).
+		...(base.people.length ? {} : { recipientsNote: `No one to choose yet: reminders go to people and group chats ${NAME} has seen asks from.${store.workflows().some(w => w.chat.test && !w.chat.group && w.asker && isPersona(w.asker.id)) ? ' People played with "[as Name]" in test chats are not real, so they are not listed.' : ''} They appear here once they write to you.` }),
+		settingsActions, doneNew: newCount(base), sinceLine: sinceOf({ ...base, since: base.since ?? visit?.fallbackSince, next }),
 		summary: { minute: next.minute, handled: next.handled, catchup: { count: next.catchup.count, worth: next.catchup.worth }, off: next.off, paused: next.paused },
 		showExperienceNote: !store.ui().noted,
 		search: found ? {

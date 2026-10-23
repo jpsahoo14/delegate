@@ -26,7 +26,8 @@ import { auditSkip, joinInto, say, splitOff } from './intake.ts'
 import { ackJob, afterDraft, ownerActive } from './autosend.ts'
 import { attachJob, carry, jobForRecheck, recheckJob } from './jobs.ts'
 import { askedVote, asksInvite, isInvite, isVote, pendingEffects, proposalEffects, refusedAsk, sameHead, sameProposal, vet, voteName, voteValue } from '../core/effects.ts'
-import { probePRs, prTarget, sameVote, voteNow, type BuildProbe } from './probe.ts'
+import { probePRs, prRefOf, prTarget, sameVote, voteNow, type BuildProbe } from './probe.ts'
+import { decline, isReviewJob, MAY_REVIEW, reviewGate, voteGate } from './review-gate.ts'
 import { checkPromise, failPromise, promisesDue } from './promise.ts'
 import { heldBy } from './owner.ts'
 import { knowledgeOf, resolveEvidence } from './proposals.ts'
@@ -228,7 +229,22 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 	const forced = report && !normal ? recheckJob(store, fresh) : undefined
 	if (forced && report) { store.log({ event: 'recheck-routed', workflowId: fresh.id, code: fresh.code, key: forced.key, workerIntent: report.intent, hadReply: !!report.reply }); report.intent = 'pr_review' }
 	const job = normal || forced
+	// The review gate (owner rule 10-23): a PR review starts only when someone asked the owner (his own ask counts) and he may
+	// review it, on the role this run's PR read stored; otherwise the item says why, with Add me when that can fix it (G1-G13).
+	const reviewRef = job && isReviewJob(job.key, report?.intent) ? prRefOf(store, fresh) : undefined
+	const gate = job && isReviewJob(job.key, report?.intent) ? reviewGate(store, cfg, wf, reviewRef ?? { project: '', repo: '', id: Number(/(\d+)\s*$/.exec(job.key)?.[1] ?? 0) }, undefined, !!probe?.pr) : undefined
+	const declined = gate && !gate.ok ? gate : undefined
 	if (!report) Object.assign(fresh, { state: 'needs_human', status: auth ? 'Waiting for the AI CLI sign-in' : 'The worker did not finish', question: auth ? 'Sign in, then answer or skip this item' : 'Check this item, then answer or skip it' })
+	else if (declined) {
+		fresh.intent = report.intent
+		if (declined.addMe) fresh.job = undefined
+		decline(store, cfg, fresh, reviewRef, declined)
+		if (declined.addMe) {
+			carry(store, cfg, fresh, fresh.effects ?? [])
+			const carrier = fresh.job ? store.job(fresh.job) : undefined
+			if (carrier) { carrier.goal = declined.addMe.summary; store.saveJob(carrier) }
+		}
+	}
 	// A routed recheck keeps the reply run's goal and plan, never its claim of having checked: the review job reports what it found.
 	else if (job) { fresh.intent = report.intent; const h = family(store, fresh, report); mergeReportWork(fresh, forced ? { ...report, work: report.work && { ...report.work, step: `Asked to recheck; running the review of ${forced.key}` } } : report, h, undefined, false); if (h !== fresh) store.save(h); attachJob(store, cfg, fresh, job) }
 	else {
@@ -245,6 +261,8 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 		if (report.goalMet === false && fresh.draft && !fresh.draft.holding) fresh.draft = { ...fresh.draft, holding: true }
 		// Each promised change must be one the owner allows, on this item's PR; any other becomes a to-do with the reason (next action).
 		const v = vet(cfg, report.goalMet === false ? [] : report.effects, prTarget(store, fresh))
+		// A vote only when he was asked and may review the PR (review gate G11); any other becomes a to-do with the reason.
+		v.effects = voteGate(store, cfg, wf, v.effects, v.todos)
 		// A vote is read against its PR now, so the card shows what it means and the owner's first ok casts it (bug 10-21 A12).
 		// Anything the read would change (a closed PR, new commits) is left to the check at ok, which says why.
 		const read = v.effects.some(e => isVote(e.call)) ? await voteNow(store, cfg, fresh, v.effects, probe) : undefined
@@ -271,6 +289,7 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 		const asked = askedVote(store.thread(wf.id).filter(m => wf.pending.includes(m.id) && !m.byOwner).map(m => m.text).join('\n'))
 		const live = (fresh.prRead ?? wf.prRead) ? JSON.parse((fresh.prRead ?? wf.prRead)!) as [number, string, string, number | null] : undefined
 		if (asked !== undefined && live && /^active$/i.test(live[1]) && typeof live[3] === 'number' && !sameVote(live[3], asked) && report.goalMet !== false && !fresh.question && !fresh.choices && !(h.work?.closed && fresh.state === 'done')
+			&& !(wf.prRole && !MAY_REVIEW.includes(wf.prRole))
 			&& !pendingEffects(fresh.effects).some(e => isVote(e.call) && voteValue(e.call) === asked)) {
 			Object.assign(fresh, { state: 'needs_human', question: `${fresh.asker?.name ?? 'They'} asked for your ${voteName(asked)} vote on PR ${live[0]}, but this draft proposes no vote. Answer ${fresh.code} to redo it with the vote, or skip it` })
 			store.log({ event: 'vote-ask-unmet', workflowId: fresh.id, code: fresh.code, pr: live[0], asked, live: live[3] })
@@ -294,7 +313,7 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 	fresh.shareHold = drewOn.length ? await sharingHold(store, src, fresh, drewOn) : undefined
 	if (report && !job) await afterDraft(store, src, cfg, fresh)
 	if (report && !job && fresh.state === 'done' && fresh.closedBy === 'nothing') for (const msgId of wf.pending) auditSkip(store, wf.chat.id, msgId, fresh.fyi ? 'ai-fyi' : 'ai-noise', wf.id)
-	if (job) await ackJob(store, src, cfg, fresh)
+	if (job && !declined) await ackJob(store, src, cfg, fresh)
 	store.save(fresh)
 	store.archiveReport(wf.id, runId)
 	// A missed link the owner asked about always gets an answer, even when there is nothing to track.
@@ -378,6 +397,8 @@ export function applyReport(wf: Workflow, r: Report, home = wf, allowClose = tru
 	wf.draft = r.reply ? { ...r.reply, text: greetBack(wf, r.reply.text), preview } : undefined
 	// An edit of the draft this one replaces never went out (R-NEX-11).
 	if (r.reply) wf.learnAfter = undefined
+	// The new draft was written with every message so far: none is "new" since it, as when a job drafts (bug 10-23 E08).
+	if (r.reply) wf.newCount = 0
 	wf.revAt = new Date().toISOString()
 	wf.question = preview ? undefined : r.question
 	wf.gaps = r.gaps?.length ? r.gaps : undefined

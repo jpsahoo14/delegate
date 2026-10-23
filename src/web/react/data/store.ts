@@ -75,7 +75,10 @@ export const useData = create<DataState>((set, get) => ({
 				fields?.picks && JSON.stringify([...fields.picks].sort()) !== JSON.stringify([...(input?.picks ?? [])].sort()) ||
 				fields?.excluded && JSON.stringify([...fields.excluded].sort()) !== JSON.stringify([...(input?.excluded ?? [])].sort()) ||
 				fields?.other && !ui?.lastAction?.endsWith('/answer')
-			if (currentRev !== pin.rev && ui?.result?.applied && ui.result.accepted && !ui.result.refused && !ui.result.uncertain && !changedAfterSubmit) {
+			// The owner's own submission brought this revision: adopted, never shown as someone else's change. A refusal is adopted
+			// too when it carried no typed words to keep (an approval refused with the reason and a new offer: legacy E16).
+			const own = ui?.result?.applied && ui.result.accepted && !ui.result.uncertain && (!ui.result.refused || !input?.text?.trim())
+			if (currentRev !== pin.rev && own && !changedAfterSubmit) {
 				const consumed = { editing: false, editText: undefined, answer: undefined, ask: undefined, report: undefined, other: false, feedback: undefined, feedbackKind: undefined, watchText: undefined, watchUntil: undefined, watchBy: undefined, watchByChoice: undefined }
 				byRevision = { ...byRevision, [revisionKey(code, pin.rev)]: { ...fields, ...consumed }, [revisionKey(code, pin.actionRev ?? pin.rev)]: { ...ui, ...consumed } }
 				return []

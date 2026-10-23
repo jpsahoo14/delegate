@@ -54,6 +54,8 @@ export function asSpeaker(text: string, test: boolean): { from: Person; text: st
 	const name = as[1].trim()
 	return { from: { id: `test:${name.toLowerCase()}`, name }, text: text.slice(as[0].length) }
 }
+// Someone the owner played in a test chat ("[as Name] …"): never a real person to send to.
+export const isPersona = (id: string) => id.startsWith('test:')
 
 export function classify(m: RawMsg, c: Ctx): Classified {
 	if (c.sentIds.has(m.id)) return { kind: 'skip', why: 'sent by us' }

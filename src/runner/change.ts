@@ -1,10 +1,11 @@
 import { cliServers, clientFor, LostResponse, toolServers } from '../adapters/mcp-client.ts'
 import { NAME } from '../brand.ts'
-import { isVote, pendingEffects, prIdOf, refusal, toolShape, voteValue } from '../core/effects.ts'
+import { isVote, OLD_INVITE, pendingEffects, prIdOf, refusal, toolShape, voteValue } from '../core/effects.ts'
 import type { CallRec, Config, Effect, Workflow } from '../core/types.ts'
 import type { Store } from '../store/state.ts'
 import { parentsOf, stillApproved } from './jobs.ts'
 import { deployMoved, prMoved, prOf, prTarget, sameVote, type BuildProbe } from './probe.ts'
+import { MAY_REVIEW, roleOn, roleWhy } from './review-gate.ts'
 import { isDeploy } from '../core/deploy.ts'
 import { callKey, ledgerRec, madeBefore } from './ledger.ts'
 export { madeBefore }
@@ -31,7 +32,12 @@ export async function makeChange(store: Store, jobId: string, runId: string, ind
 	if (!pendingEffects([e]).length || !owner) return { error: `Change ${index} was not approved by the owner.` }
 	const cfg = store.config()
 	const why = refusal(cfg, e, prTarget(store, owner))
-	if (why) return { error: `Change ${index} cannot be made: ${why}.` }
+	if (why) {
+		const error = `Change ${index} cannot be made: ${why}.`
+		// An old invite that cannot be converted is recorded, so the item offers a new draft instead of a retry that cannot work.
+		if (why.startsWith(OLD_INVITE)) store.saveChange(jobId, runId, index, { call: JSON.stringify(e.call), state: 'failed', error, at: new Date().toISOString() })
+		return { error }
+	}
 	const key = JSON.stringify(e.call), at = () => new Date().toISOString()
 	// A server that is not there, or cannot be started from here, is a reason the item shows (review 10-21b P1, P2-2).
 	const to = serverOf(cfg, e.call!.tool), spec = to && toolServers(cfg)[to[0]], cli = cliServers(cfg.agent.flavor)
@@ -86,7 +92,10 @@ async function voteMoved(store: Store, wf: Workflow, e: Effect, probe?: BuildPro
 		if (why.length) return { error: `PR ${ref.id} changed since your review (${why.join(', ')}).`, stale: true }
 		const me = store.config().owner.name.trim().toLowerCase(), mine = st.votes.filter(v => v.name.trim().toLowerCase() === me)
 		// An unset name matches no one: a vote the owner approved is never skipped for someone else's (re-review 3c P2-a).
-		return me && mine.length === 1 && sameVote(mine[0].vote, voteValue(c)) ? { cast: true } : undefined
+		if (me && mine.length === 1 && sameVote(mine[0].vote, voteValue(c))) return { cast: true }
+		// The last backstop of the review gate (G7): a vote by someone who is not a reviewer would add him to the PR.
+		const role = await roleOn(store.config(), probe, ref, st)
+		return MAY_REVIEW.includes(role) ? undefined : { error: `No vote was cast on PR ${ref.id}: ${roleWhy(store.config(), role)}.` }
 	} catch (err) { return { error: `Could not read PR ${ref.id} right before the vote (${String(err).slice(0, 120)}).` } }
 }
 

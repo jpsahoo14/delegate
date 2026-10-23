@@ -9,6 +9,7 @@ import { NAME } from '../brand.ts'
 import { active, approvalAsk, approvalMention, approvalReplyMatches, canCloseApproval, homeOf, linksIn, newTurn, reReviewAsk, statusOf, step, wake } from './work.ts'
 import { closeFamily } from './apply.ts'
 import { realProcs } from './jobs.ts'
+import { isAddMe, MAY_REVIEW, roleOn } from './review-gate.ts'
 
 // Checklist steps that wait on a build are checked by the runner, not the AI (R-WRK-13).
 // branch, version, repo: where the build is from, for a deploy's build check (review 10-21 P1-3).
@@ -16,9 +17,13 @@ export type BuildState = { status: string; result?: string; branch?: string; ver
 // head: the newest commit; required: required reviewers; autoComplete: an approval may complete it.
 // branch: the PR's source branch, so a machine with several clones picks the one on it (owned work).
 // merge: the PR's merge commit, which its PR builds are from; repo, repoId: its repository (review 10-21 P1-3).
-export type PrState = { status: string; closedAt?: string; votes: { name: string; vote: number }[]; head?: string; title?: string; author?: string; required?: string[]; autoComplete?: boolean; branch?: string; merge?: string; repo?: string; repoId?: string }
+export type PrState = { status: string; closedAt?: string; votes: { name: string; vote: number }[]; head?: string; title?: string; author?: string; required?: string[]; autoComplete?: boolean; branch?: string; merge?: string; repo?: string; repoId?: string
+	// Every reviewer as Azure DevOps lists them, and the author's sign-in name, for the review gate (owner rule 10-23).
+	reviewers?: Reviewer[]; authorUnique?: string }
+export type Reviewer = { name: string; unique?: string; vote: number; required: boolean; group: boolean; declined: boolean }
 // runs: a pipeline's newest runs, newest first, for the ring table and the overwrite check (owned work).
-export type BuildProbe = { builds(project: string, ids: number[]): Promise<Map<number, BuildState>>; pr?(project: string, repo: string, id: number): Promise<PrState>; runs?(project: string, pipelineId: number): Promise<RunFact[]>; definition?(project: string, id: number): Promise<{ name: string; path?: string } | undefined>; close?(): Promise<void> }
+// myTeams: the teams the owner is a member of in a project, so a team reviewer can count as the owner (review gate).
+export type BuildProbe = { builds(project: string, ids: number[]): Promise<Map<number, BuildState>>; pr?(project: string, repo: string, id: number): Promise<PrState>; runs?(project: string, pipelineId: number): Promise<RunFact[]>; definition?(project: string, id: number): Promise<{ name: string; path?: string } | undefined>; myTeams?(project: string): Promise<string[]>; close?(): Promise<void> }
 
 const EVERY_MS = 10 * 60_000
 
@@ -33,14 +38,22 @@ export function adoProbe(cfg: Config): BuildProbe | undefined {
 			return new Map((r.items ?? []).map(b => [b.id, { status: String(b.status ?? 'unknown'), result: b.result ? String(b.result) : undefined, ...(b.sourceBranch ? { branch: String(b.sourceBranch) } : {}), ...(b.sourceVersion ? { version: String(b.sourceVersion) } : {}), ...(b.repository?.name ?? b.repository?.id ? { repo: String(b.repository.name ?? b.repository.id) } : {}) }]))
 		},
 		async pr(project, repo, id) {
-			const r = await mcp.call<{ status?: string; closedDate?: string; title?: string; createdBy?: { displayName?: string }; autoCompleteSetBy?: unknown; lastMergeSourceCommit?: { commitId?: string }; sourceRefName?: string; lastMergeCommit?: { commitId?: string }; repository?: { name?: string; id?: string }; reviewers?: { displayName?: string; vote?: number; isRequired?: boolean }[] }>('repo_pull_request', { action: 'get', project, repositoryId: repo, pullRequestId: id })
+			type Rev = { displayName?: string; uniqueName?: string; vote?: number; isRequired?: boolean; isContainer?: boolean; hasDeclined?: boolean }
+			const r = await mcp.call<{ status?: string; closedDate?: string; title?: string; createdBy?: { displayName?: string; uniqueName?: string }; autoCompleteSetBy?: unknown; lastMergeSourceCommit?: { commitId?: string }; sourceRefName?: string; lastMergeCommit?: { commitId?: string }; repository?: { name?: string; id?: string }; reviewers?: Rev[] }>('repo_pull_request', { action: 'get', project, repositoryId: repo, pullRequestId: id })
 			const reviewers = r.reviewers ?? []
 			return {
 				status: String(r.status ?? 'unknown'), ...(r.closedDate ? { closedAt: String(r.closedDate) } : {}), votes: reviewers.map(v => ({ name: String(v.displayName ?? ''), vote: Number(v.vote ?? 0) })),
 				head: r.lastMergeSourceCommit?.commitId, title: r.title, author: r.createdBy?.displayName, required: reviewers.filter(v => v.isRequired).map(v => String(v.displayName ?? '')), autoComplete: !!r.autoCompleteSetBy,
 				...(r.sourceRefName ? { branch: String(r.sourceRefName) } : {}), ...(r.lastMergeCommit?.commitId ? { merge: r.lastMergeCommit.commitId } : {}),
 				...(r.repository?.name ? { repo: r.repository.name } : {}), ...(r.repository?.id ? { repoId: r.repository.id } : {}),
+				reviewers: reviewers.map(v => ({ name: String(v.displayName ?? ''), ...(v.uniqueName ? { unique: String(v.uniqueName) } : {}), vote: Number(v.vote ?? 0), required: !!v.isRequired, group: !!v.isContainer, declined: !!v.hasDeclined })),
+				...(r.createdBy?.uniqueName ? { authorUnique: String(r.createdBy.uniqueName) } : {}),
 			}
+		},
+		async myTeams(project) {
+			const r = await mcp.call<unknown>('core_list_project_teams', { project, mine: true, top: 200 })
+			const list = Array.isArray(r) ? r : (r as { value?: unknown[]; items?: unknown[] }).value ?? (r as { items?: unknown[] }).items ?? []
+			return list.map(t => String((t as { name?: string }).name ?? '')).filter(Boolean)
 		},
 		async runs(project, pipelineId) {
 			// The owner's server lists the starter flat, in requestedForDisplayName (dry run 10-21); the REST shape nests it.
@@ -160,7 +173,19 @@ export async function probePRs(store: Store, cfg: Config, probe: BuildProbe | un
 		const st = states.get(`${ref.project}/${ref.repo}/${ref.id}`)
 		// A reply without a status or reviewers says nothing; it never moves an item or its baseline.
 		if (!st || !/^(active|completed|abandoned)$/i.test(st.status) || !st.votes.length && !/completed|abandoned/i.test(st.status)) {
-			w.prRead = undefined; w.prUnknown = true; store.save(w, false)
+			w.prRead = undefined; w.prUnknown = true; w.prRole = undefined; store.save(w, false)
+			continue
+		}
+		w.prRole = await roleOn(cfg, probe, ref, st)
+		// A review declined by the gate starts by itself once the owner is a reviewer (added in Azure DevOps, or by Add me), within
+		// a week of the ask; a PR that could not be read is decided again now that it can be (review gate G6, G13).
+		const declined = w.reviewDecline
+		if (!subjects && declined && declined.pr === ref.id && declined.role !== 'not-asked' && (MAY_REVIEW.includes(w.prRole) || declined.role === 'unread') && /^active$/i.test(st.status) && now - Date.parse(declined.at) < 7 * 86_400_000) {
+			Object.assign(w, { state: 'running', status: MAY_REVIEW.includes(w.prRole) ? `You're a reviewer on PR ${ref.id} now; starting the review` : `PR ${ref.id} can be read again; checking whether you are a reviewer`,
+				reviewDecline: undefined, question: undefined, context: w.context?.filter(c => c.label !== 'Not reviewing'), effects: (w.effects ?? []).filter(e => !isAddMe(e)), pending: w.pending.length ? w.pending : w.msgIds.slice(-1) })
+			store.log({ event: 'review-gate-reopened', code: w.code, pr: ref.id, role: w.prRole, was: declined.role })
+			store.save(w)
+			n++
 			continue
 		}
 		// The owner is the one reviewer with their name; two with the same name prove nothing.

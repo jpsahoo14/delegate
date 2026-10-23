@@ -38,10 +38,11 @@ function matches(r: Rule, wf: Workflow, conf: Confidence): boolean {
 	return !r.when.minConfidence || RANK[conf] >= RANK[r.when.minConfidence]
 }
 
-// The first matching rule decides; every check that blocks an automatic send names its reason (R-POL-01).
+// The first matching rule decides; every check that blocks an automatic send names its reason (R-POL-01). A drafting style
+// learned from edits never decides: it would shadow a send, ack or ignore rule for the same people (edit habits guard).
 export function decide(wf: Workflow, rules: Rule[], ctx: PolicyContext): Decision {
 	const conf = confidence(wf.draft?.sources ?? [])
-	const rule = rules.find(r => matches(r, wf, conf))
+	const rule = rules.find(r => !r.style && matches(r, wf, conf))
 	const d = (action: Decision['action'], reason: string): Decision => ({ action, ruleId: rule?.id, reason, confidence: conf })
 	if (wf.before) return d('draft', 'It came before setup; replies to older messages wait for you')
 	if (wf.draft?.holding) return d('draft', 'A holding reply: the work is not finished, so it waits for you')

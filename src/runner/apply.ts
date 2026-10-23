@@ -1,7 +1,7 @@
 import { answerHabit, outcome } from './habits.ts'
 import { membersOf } from './sharing.ts'
 import { active, afterSend, approvalAsk, approvalMention, approvalReplyMatches, canCloseApproval, claimedVote, claimsApproval, closeWork, doneTodos, homeOf, inWork, keepTodos, linksIn, newTurn, openTodos, pendingParts, statusOf, step, wait } from './work.ts'
-import { asksReviewAgain, claimsInvite, doLine, isInvite, isVote, pendingEffects, prIdOf, proposalEffects, refusal, refusedAsk, saidLine, sameChange, sameHead, shown, vet, voteName, voteValue } from '../core/effects.ts'
+import { asksReviewAgain, claimsInvite, doLine, isInvite, isVote, OLD_INVITE, OLD_INVITE_ASK, pendingEffects, prIdOf, proposalEffects, refusal, refusedAsk, saidLine, sameChange, sameHead, shown, vet, voteName, voteValue } from '../core/effects.ts'
 import type { Answer, Config, Effect, Person, Workflow } from '../core/types.ts'
 import { sendGate } from '../core/gate.ts'
 import { classify, htmlToText } from '../core/intake.ts'
@@ -62,7 +62,7 @@ export async function applyAnswers(store: Store, src: Source, cfg: Config, procs
 			const auto = answer.code?.startsWith('R') ? store.automation(answer.code) : undefined
 			const wt = answer.code?.startsWith('W') ? store.waiting().find(w => w.code === answer.code) : undefined
 			const hb = answer.code?.startsWith('H') ? store.habit(answer.code) : undefined
-			if (hb) await reply(store, src, answer, `${MARK} ${answerHabit(store, hb, answer.verb)}`)
+			if (hb) await reply(store, src, answer, `${MARK} ${answerHabit(store, hb, answer.verb, answer.text)}`)
 			else if (wt) await reply(store, src, answer, `${MARK} ${await followUp(store, src, cfg, wt, answer)}`)
 			else if (auto) await reply(store, src, answer, `${MARK} ${answerAutomation(store, auto, answer)}`)
 			else if (isControl(answer.verb)) await control(store, src, answer, procs)
@@ -279,6 +279,8 @@ async function applyOne(store: Store, src: Source, cfg: Config, wf: Workflow, a:
 			const denied = pendingEffects(wf.effects).map(effect => ({ effect, why: refusal(cfg, effect, prTarget(store, wf)) })).find(entry => entry.why)
 			if (denied) {
 				wf.status = `${shown(denied.effect).line} cannot be made: ${denied.why}.`
+				// An old invite cannot be retried as it is: the owner is offered a new draft (legacy E16).
+				if (denied.why!.startsWith(OLD_INVITE)) { wf.status += ' Nothing was created, and the reply was not sent.'; wf.question = OLD_INVITE_ASK; wf.revAt = new Date().toISOString() }
 				store.save(wf); store.markShown([wf])
 				return reply(store, src, a, `${MARK} Not done ${wf.code}: ${wf.status} Nothing was changed.`, true)
 			}

@@ -2,6 +2,7 @@ import { Button } from '../components/ui/button.tsx'
 import { useSetting, useSettings, useSettingsDrafts } from '../data/screens.ts'
 import type { Settings as SettingsData } from '../domain/screens.ts'
 import { useEffect } from 'react'
+import { StyleEditor } from './StyleEditor.tsx'
 import { useScreenNavigation } from '../classic/navigation.tsx'
 import { useEntities, useSnapshot } from '../data/hooks.ts'
 import { ActionButton, ActionState } from './ActionButton.tsx'
@@ -53,11 +54,14 @@ export default function Settings() {
 				<p className="muted">Ask your AI chat &quot;what do you know about me?&quot; for the same list. To change a rule you wrote, say &quot;change my rules&quot; there.</p>
 				{data.about.suggestions.length > 0 && <><h3>Suggestions</h3><div className="settings-rows">{data.about.suggestions.map(suggestion => {
 					const actions = snapshot?.settingsActions?.[suggestion.code]?.map(id => entities.actions[id]).filter(Boolean) ?? []
-					return <div className="setting-row" data-code={suggestion.code} key={suggestion.code}><strong>{suggestion.text}</strong><small>{suggestion.does}</small><small>Evidence: {suggestion.evidence}</small><div className="action-bar">{actions.map(action => <ActionButton key={action.id} action={action} primary={action.kind === 'accept-habit'} />)}</div>{actions[0] && <ActionState item={actions[0].item} rev={actions[0].rev} />}</div>
+					return <div className="setting-row" data-code={suggestion.code} key={suggestion.code}><strong>{suggestion.text}</strong><small>{suggestion.does}</small><small>Evidence: {suggestion.evidence}</small>{suggestion.links?.length ? <small className="evidence-links">{suggestion.links.map((link, i) => <span key={link}>{i > 0 && ' · '}<a href={link} target="_blank" rel="noreferrer">{`Reply ${i + 1}`}</a></span>)}</small> : null}<div className="action-bar">{actions.map(action => <ActionButton key={action.id} action={action} primary={action.kind === 'accept-habit'} />)}</div>{actions[0] && <ActionState item={actions[0].item} rev={actions[0].rev} />}</div>
 				})}</div></>}
 				<h3>Standing instructions</h3><div className="settings-rows">{data.about.rules.length ? data.about.rules.map((rule, n) => {
 					const actions = rule.code ? snapshot?.settingsActions?.[rule.code]?.map(id => entities.actions[id]).filter(Boolean) ?? [] : []
-					return <div className="setting-row" key={n}><strong>{rule.text}</strong>{rule.who && <small>For: {rule.who}</small>}<small>{rule.learned ?? 'You said this.'}{rule.held ? ' · On hold' : ''}</small><div className="action-bar">{actions.map(action => <ActionButton key={action.id} action={action} />)}</div>{actions[0] && <ActionState item={actions[0].item} rev={actions[0].rev} />}</div>
+					const edit = actions.find(action => action.kind === 'edit-style')
+					return <div className="setting-row" key={n}><strong>{rule.text}</strong>{rule.who && <small>For: {rule.who}</small>}<small>{rule.learned ?? 'You said this.'}{rule.held ? ' · On hold' : ''}</small>
+						{edit && rule.style !== undefined && <StyleEditor action={edit} style={rule.style} />}
+						<div className="action-bar">{actions.filter(action => action !== edit).map(action => <ActionButton key={action.id} action={action} />)}</div>{actions[0] && <ActionState item={actions[0].item} rev={actions[0].rev} />}</div>
 				}) : <p className="setting-row muted">None: every reply waits for your ok.</p>}</div>
 				{data.about.chats.length > 0 && <><h3>Chats you marked</h3><div className="settings-rows">{data.about.chats.map((chat, n) => <div className="setting-row" key={n}><strong>{chat.name}</strong><small>{chat.says}</small><div className="action-bar">{chat.actionIds?.filter(id => entities.actions[id]).map(id => <ActionButton key={id} action={entities.actions[id]} />)}</div>{chat.actionIds?.[0] && entities.actions[chat.actionIds[0]] && <ActionState item={entities.actions[chat.actionIds[0]].item} rev={entities.actions[chat.actionIds[0]].rev} />}</div>)}</div></>}
 				<h3>Learning</h3>
