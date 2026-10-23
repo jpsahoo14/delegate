@@ -1,7 +1,7 @@
 import type { Answer, Automation, Config, Rotation, Schedule } from '../core/types.ts'
 import { isPersona } from '../core/intake.ts'
 import { ulid } from '../core/ids.ts'
-import { DEFAULT_POLICY, signatureOf, withMarker } from '../core/policy.ts'
+import { DEFAULT_POLICY, REPLY_BLANK, replyGap, signatureOf, withMarker } from '../core/policy.ts'
 import type { Source } from '../adapters/source.ts'
 import type { Store } from '../store/state.ts'
 import { isThread } from '../adapters/channels.ts'
@@ -159,6 +159,14 @@ export async function dueAutomations(store: Store, src: Source, cfg: Config, now
 	let n = 0
 	// A reply waiting for a decision holds the next send (B4).
 	for (const a of store.automations().filter(a => a.state === 'active' && !a.heard && a.next && Date.parse(a.next) <= now.getTime())) {
+		const text = textFor(a), out = withMarker(text, signatureOf(cfg), cfg.owner.name)
+		if (replyGap(out)) {
+			Object.assign(a, { state: 'paused', next: undefined, why: REPLY_BLANK })
+			store.saveAutomation(a)
+			store.setHealth(`auto:${a.code}`, `${a.code}: ${REPLY_BLANK}. The automation is paused; nothing was sent.`)
+			store.log({ event: 'rule-held-gap', code: a.code, reason: REPLY_BLANK })
+			continue
+		}
 		const due = new Date(a.next!), next = nextAt(a.schedule, now)
 		const after = (t?: Date) => !t || (!!a.until && localDay(t) > a.until)
 		const end = (why: string) => { Object.assign(a, { state: 'ended', next: undefined, why }); store.saveAutomation(a); store.log({ event: 'automation-ended', code: a.code, why }) }
@@ -177,12 +185,11 @@ export async function dueAutomations(store: Store, src: Source, cfg: Config, now
 			store.log({ event: 'automation-skipped', code: a.code, why: skip })
 			continue
 		}
-		const text = textFor(a), count = a.count + 1
+		const count = a.count + 1
 		const spent = count >= (a.maxSends ?? Infinity) || (a.rotation === 'once-each' && count >= textsOf(a).length)
 		Object.assign(a, { count, next: spent || after(next) ? undefined : next!.toISOString(), state: spent || after(next) ? 'ended' : 'active', lastAt: now.toISOString() })
 		store.saveAutomation(a)
 		store.addAuto(a.to.chatId, 'send')
-		const out = withMarker(text, signatureOf(cfg), cfg.owner.name)
 		try {
 			const { msgId } = await src.send(a.to.chatId, out)
 			store.addSent(msgId, out)

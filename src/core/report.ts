@@ -18,7 +18,7 @@ export const ReportSchema = {
 	workflowId: z.string(),
 	intent: z.string().describe('One intent id from the list in your prompt'),
 	state: z.enum(['needs_human', 'done', 'waiting_on_sender']),
-	reply: z.object({ text: z.string(), commitment: z.boolean(), sources: z.array(SourceSchema) }).optional(),
+	reply: z.object({ text: z.string().describe('Complete sendable words only, with no blanks or placeholders. When a fact is missing, use question or goalMet false instead.'), commitment: z.boolean(), sources: z.array(SourceSchema) }).optional(),
 	question: z.string().optional(),
 	choices: z.object({
 		prompt: z.string(), multi: z.boolean().optional(), other: z.boolean().optional(),

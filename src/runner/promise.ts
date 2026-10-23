@@ -9,6 +9,8 @@ import type { Source } from '../adapters/source.ts'
 import type { Store } from '../store/state.ts'
 import { buildPromisePrompt } from '../worker/prompt.ts'
 import { readDirs, WORKER_TOOLS, workerMcp, type RunWorker } from './dispatch.ts'
+import { agentSetupFailure } from '../core/agent-failure.ts'
+import { blockedAgent, holdAgent } from './agent-health.ts'
 import { prTarget, voteNow, type BuildProbe } from './probe.ts'
 import { carry, executing } from './jobs.ts'
 import { active, homeOf, keepTodos, newTurn, statusOf } from './work.ts'
@@ -94,6 +96,7 @@ const busy = (store: Store, w: Workflow) => { const j = w.job ? store.job(w.job)
 export const promisesDue = (store: Store, cfg: Config) => cfg.paused || store.control().paused ? [] : store.workflows().filter(w => (w.promise?.state === 'pending' || w.promise?.state === 'checking') && resting(w) && !store.openWindow(w.id) && !busy(store, w))
 
 export async function checkPromise(store: Store, src: Source, cfg: Config, wf: Workflow, run: RunWorker, probe?: BuildProbe) {
+	if (blockedAgent(store, cfg)) return
 	const job = wf.job ? store.job(wf.job) : undefined
 	// The item's own session: for a PR review, the job's, which read the commit a vote must name.
 	const session = job?.session.id ?? wf.session.id, runId = ulid(), said = wf.promise!.text
@@ -114,6 +117,14 @@ export async function checkPromise(store: Store, src: Source, cfg: Config, wf: W
 		backupSession(store, session)
 		report = store.peekReport(wf.id, runId)
 		store.archiveReport(wf.id, runId)
+		const account = !report && (res.setup ?? agentSetupFailure(`${res.error ?? ''}\n${res.summary ?? ''}`))
+		if (account) {
+			holdAgent(store, cfg, account)
+			const fresh = store.workflow(wf.id) ?? wf
+			fresh.promise = { ...fresh.promise!, text: said, state: 'pending', why: account.text }
+			store.save(fresh, false)
+			return
+		}
 		error = res.error
 	} catch (e) { error = String(e).replace(/^Error: /, '') }
 	const fresh = store.workflow(wf.id) ?? wf

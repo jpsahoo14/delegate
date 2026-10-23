@@ -13,6 +13,7 @@ export type Facts = {
 	job?: { state: 'queued' | 'running' | 'done' | 'failed'; watch: boolean; retryLater: boolean; slot?: boolean; retry?: boolean }
 	// A draft queued for the AI: starts next cycle, waits in line behind live asks, waits for tomorrow's runs, or is held by the owner's open window.
 	queue?: 'next' | 'line' | 'limit' | 'held'
+	aiBlocked?: boolean
 	// Whether the runner will run anything next cycle. paused means a machine is reading and nothing is sent: when none
 	// reads, the runner is off, whatever the pause (web/next.ts snapshot).
 	runner: 'ok' | 'off' | 'paused' | 'stopped' | 'capped'
@@ -29,7 +30,7 @@ export type Rule = { id: string; section: Section; when: (f: Facts) => boolean }
 // retry wait while a queued draft or run still starts next cycle.
 const running = (f: Facts) => f.job?.state === 'running' && !f.job.watch
 const startsNext = (f: Facts) => {
-	const draft = f.state === 'running' && f.queue === 'next', run = f.job?.state === 'queued' && !f.job.watch && !f.job.retryLater && !!f.job.slot
+	const draft = !f.aiBlocked && f.state === 'running' && f.queue === 'next', run = !f.aiBlocked && f.job?.state === 'queued' && !f.job.watch && !f.job.retryLater && !!f.job.slot
 	return f.runner === 'ok' ? draft || f.state === 'scheduled' || run : f.runner === 'paused' && (draft || (run && !f.job!.retry))
 }
 

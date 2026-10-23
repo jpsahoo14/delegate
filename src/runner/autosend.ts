@@ -1,17 +1,19 @@
 import type { Config, Workflow } from '../core/types.ts'
 import { markedHold } from './sharing.ts'
-import { DEFAULT_POLICY, decide, signatureOf, withMarker } from '../core/policy.ts'
+import { DEFAULT_POLICY, decide, REPLY_BLANK, replyGap, signatureOf, withMarker } from '../core/policy.ts'
 import type { Source } from '../adapters/source.ts'
 import type { Store } from '../store/state.ts'
 import { send } from './apply.ts'
 import { close } from './intake.ts'
 import type { BuildProbe } from './probe.ts'
+import { holdReplyGap } from './reply-gap.ts'
 
 const policy = (cfg: Config) => ({ ...DEFAULT_POLICY, ...cfg.policy })
 
 // After a worker drafts, the owner's rules decide: send later, acknowledge now, keep as a draft, or ignore (R-POL-01).
 export async function afterDraft(store: Store, src: Source, cfg: Config, wf: Workflow): Promise<void> {
 	if (wf.state !== 'needs_human' || !wf.draft || wf.draft.preview) return
+	if (holdReplyGap(store, wf, wf.draft.text, true)) return
 	const p = policy(cfg)
 	const d = decide(wf, store.rules(), { autoSend: !!store.control().autoSend, autoSendsThisHour: autoCount(store, wf), maxPerHour: p.maxAutoPerChatHour, never: p.never, held: Object.keys(store.heldRules()) })
 	wf.decision = d
@@ -38,12 +40,13 @@ export async function ackJob(store: Store, src: Source, cfg: Config, wf: Workflo
 async function ack(store: Store, src: Source, cfg: Config, wf: Workflow, ruleId?: string) {
 	const p = policy(cfg)
 	if (!wf.sent && !wf.acked && !store.control().paused && !(await ownerActive(store, src))) {
-		// Marked and saved before posting: an acknowledgement goes out at most once, even if the result is lost.
-		wf.acked = true
-		store.save(wf)
 		const first = cfg.owner.name.split(/\s+/)[0]
 		const oof = await src.presence().then(r => r.oof, () => undefined)
 		const text = withMarker([p.ackText.replace('{first}', first), oof && awayLine(first, oof)].filter(Boolean).join(' '), signatureOf(cfg), cfg.owner.name)
+		if (replyGap(text)) { holdReplyGap(store, wf, text, true); store.setHealth(`ack:${wf.code}`, REPLY_BLANK); return }
+		// Marked and saved before posting: an acknowledgement goes out at most once, even if the result is lost.
+		wf.acked = true
+		store.save(wf)
 		const { msgId } = await src.send(wf.chat.id, text)
 		store.addSent(msgId, text)
 		store.addAuto(wf.chat.id, 'ack')
@@ -73,7 +76,7 @@ export async function ownerActive(store: Store, src: Source): Promise<boolean> {
 
 // Send every scheduled reply whose delay has passed, through the same pre-send checks as an owner send (R-POL-03).
 export async function dueSends(store: Store, src: Source, cfg: Config, probe?: BuildProbe): Promise<number> {
-	const due = store.workflows().filter(w => w.state === 'scheduled' && w.sendAt && Date.parse(w.sendAt) <= Date.now())
+	const due = store.workflows().filter(w => w.state === 'scheduled' && w.sendAt && Date.parse(w.sendAt) <= Date.now()).filter(w => !holdReplyGap(store, w, w.draft?.text, true))
 	for (const w of due.filter(w => w.draft?.preview)) { Object.assign(w, { state: 'needs_human', sendAt: undefined, status: 'Edited by you; waits for your ok' }); store.save(w) }
 	if (!due.length) return 0
 	if (await ownerActive(store, src)) {

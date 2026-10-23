@@ -553,11 +553,520 @@ var init_run_files = __esm({
   }
 });
 
+// src/core/deploy.ts
+function buildOf(c) {
+  const r = c?.args.resources;
+  if (!obj2(r) || Object.keys(r).length !== 1) return void 0;
+  const [kind, aliases] = Object.entries(r)[0];
+  if (!obj2(aliases) || Object.keys(aliases).length !== 1) return void 0;
+  const ref = Object.values(aliases)[0];
+  if (!obj2(ref) || Object.keys(ref).length !== 1) return void 0;
+  const [k, v] = Object.entries(ref)[0];
+  return kind === "pipelines" && k === "runId" || kind === "builds" && (k === "id" || k === "version") ? int(v) : void 0;
+}
+function deployRefusal(cfg, e, pr) {
+  const c = e.call, id = pipelineOf(c), t2 = targetOf(cfg, id);
+  if (!id) return "a deploy must name its pipeline by number in pipelineId";
+  if (neverId(cfg, id) || t2 && (NEVER_RING.test(t2.ring) || NEVER_RING.test(t2.name ?? ""))) return `pipeline ${id} is ${t2 ? `${t2.ring}, ` : ""}a shared or production ring; ${NAME} never deploys there`;
+  if (!t2) return `pipeline ${id} is not on "Where ${NAME} may deploy" in Settings`;
+  if (!t2.project) return `pipeline ${id} has no project on "Where ${NAME} may deploy"; save it again in Settings`;
+  if (typeof c.args.project !== "string" || !c.args.project) return "a deploy must name its project";
+  if (c.args.project.toLowerCase() !== t2.project.toLowerCase()) return `pipeline ${id} is in ${t2.project}, not ${c.args.project}`;
+  const extra = Object.keys(c.args).filter((k) => !KEYS.has(k) && !(k === "templateParameters" && t2.params));
+  if (extra.length) return `a deploy runs the pipeline as it is; ${extra.join(", ")} is not allowed`;
+  const tp = c.args.templateParameters;
+  if (tp !== void 0) {
+    if (!obj2(tp)) return "templateParameters must be names and values";
+    const off = Object.entries(tp).find(([k, v]) => t2.params?.[k] === void 0 || typeof v !== "string" || v !== t2.params[k]);
+    if (off) return `templateParameters ${off[0]} is not one you confirmed for ${t2.ring}`;
+  }
+  if (!buildOf(c)) return "a deploy's resources must be exactly one PR build";
+  if (!e.head) return "a deploy must name the PR head commit its build is from";
+  if (!pr) return "a deploy must be for this item's PR";
+  return void 0;
+}
+function buildCheck(id, b, pr) {
+  if (!b) return { why: `build ${id} could not be read` };
+  if (!/^completed$/i.test(b.status) || !/^succeeded$/i.test(b.result ?? "")) return { why: `build ${id} has not succeeded (${[b.status, b.result].filter(Boolean).join(", ").toLowerCase()})` };
+  if (!pr.head) return { why: `the head of PR ${pr.id} could not be read` };
+  const branches = [`refs/pull/${pr.id}/merge`, pr.branch].filter(Boolean);
+  if (!branches.includes(b.branch ?? "")) return { why: `build ${id} is from ${b.branch || "an unknown branch"}, not PR ${pr.id}` };
+  if (!same(b.version, pr.head) && !same(b.version, pr.merge)) return { why: `build ${id} is from commit ${(b.version ?? "unknown").slice(0, 7)}, not PR ${pr.id} at its head ${pr.head.slice(0, 7)}` };
+  if (b.repo && ![pr.repo, pr.repoId].some((r) => r && r.toLowerCase() === b.repo.toLowerCase())) return { why: `build ${id} is from repo ${b.repo}, not ${pr.repo ?? "the PR's"}` };
+  return { facts: { id, pr: pr.id, head: pr.head, version: b.version, branch: b.branch, readAt: (/* @__PURE__ */ new Date()).toISOString() } };
+}
+function ringMoved(was, now) {
+  const newer2 = now.last && (!was.last || now.last.id !== was.last.id) ? now.last : void 0;
+  if (newer2) return `a new ${runLine(newer2)}`;
+  const ids = (f) => f.running.map((r) => r.id).sort().join(",");
+  if (ids(was) !== ids(now)) return now.running.length ? `running now: ${now.running.map(runLine).join("; ")}` : "the run that was going has stopped";
+  return void 0;
+}
+function deployLine(e) {
+  const c = e.call, b = buildOf(c), id = pipelineOf(c), ring = e.deploy?.ring ?? (id ? `pipeline ${id}` : "an unnamed pipeline");
+  if (e.build && e.build.id === b) return `Deploy build ${b} (PR ${e.build.pr} @ ${e.build.head.slice(0, 7)}) to ${ring}`;
+  return `Deploy ${b ? `build ${b}` : "a build"} to ${ring} (build not checked yet)`;
+}
+function parseTargets(raw, cfg) {
+  const out = [];
+  for (const part of raw.split(/[,\n]/).map((s3) => s3.trim()).filter(Boolean)) {
+    const words3 = part.split(/\s+/), params = Object.fromEntries(words3.filter((w) => w.includes("=")).map((w) => [w.slice(0, w.indexOf("=")), w.slice(w.indexOf("=") + 1)]));
+    const rest2 = words3.filter((w) => !w.includes("=")), at3 = rest2.findIndex((w) => /^(?:[^/\s]+\/)?\d+$/.test(w));
+    if (at3 < 0 || rest2.length !== 2) return { ok: false, why: `Give each as a ring and its pipeline, such as TEST3 Globex/3003. Not: ${part}` };
+    const [project, idText] = rest2[at3].includes("/") ? rest2[at3].split("/") : [void 0, rest2[at3]], id = Number(idText), ring = rest2[1 - at3];
+    if (NEVER_RING.test(ring) || neverId(cfg, id) || Object.entries(params).some(([k, v]) => NEVER_RING.test(k) || NEVER_RING.test(v))) return { ok: false, why: `${ring} (${id}) is a shared or production ring. ${NAME} never deploys there.` };
+    const known2 = [...cfg.deploy?.allowed ?? [], ...cfg.deploy?.proposed ?? []].find((t2) => t2.pipelineId === id);
+    out.push({ pipelineId: id, ring, ...project ?? known2?.project ? { project: project ?? known2.project } : {}, ...Object.keys(params).length ? { params } : {} });
+  }
+  return { ok: true, targets: out };
+}
+var DEPLOY, isPipelineTool, isDeploy, int, pipelineOf, obj2, NEVER_RING, KEYS, targetOf, neverId, same, hhmm, runLine, ringParts, ringMeaning, paramText, targetsText;
+var init_deploy = __esm({
+  "src/core/deploy.ts"() {
+    "use strict";
+    init_brand();
+    DEPLOY = "ado-pipelines_write:run_pipeline";
+    isPipelineTool = (c) => !!c && /pipelines?_write$/i.test(c.tool);
+    isDeploy = (c) => isPipelineTool(c) && /^run_?pipeline$/i.test(String(c.args.action ?? ""));
+    int = (v) => typeof v === "number" && Number.isInteger(v) && v > 0 ? v : typeof v === "string" && /^\d+$/.test(v) ? Number(v) : void 0;
+    pipelineOf = (c) => int(c?.args.pipelineId);
+    obj2 = (v) => !!v && typeof v === "object" && !Array.isArray(v);
+    NEVER_RING = /(^|[^a-z0-9])(int|integration|prod|production|ppe|pre-?prod|live|canary|msit|dogfood)\d*([^a-z0-9]|$)/i;
+    KEYS = /* @__PURE__ */ new Set(["action", "project", "pipelineId", "resources"]);
+    targetOf = (cfg, id) => id ? cfg.deploy?.allowed.find((t2) => t2.pipelineId === id) : void 0;
+    neverId = (cfg, id) => !!id && (cfg.deploy?.never ?? []).includes(id);
+    same = (a, b) => !!a && !!b && (a.toLowerCase() === b.toLowerCase() || Math.min(a.length, b.length) >= 7 && (a.toLowerCase().startsWith(b.toLowerCase()) || b.toLowerCase().startsWith(a.toLowerCase())));
+    hhmm = (iso) => new Date(iso).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+    runLine = (r) => `run ${r.id} by ${r.by || "someone"} at ${hhmm(r.at)}${r.result ? `, ${r.result.toLowerCase()}` : r.status ? `, ${r.status.toLowerCase()}` : ""}`;
+    ringParts = (f) => [{ text: f.running.length ? `running now: ${f.running.map(runLine).join("; ")}` : "nothing running" }, { text: f.last ? `last ${runLine(f.last)}` : "no runs yet" }];
+    ringMeaning = (f) => ringParts(f).map((p) => p.text).join("; ");
+    paramText = (p) => Object.entries(p ?? {}).map(([k, v]) => ` ${k}=${v}`).join("");
+    targetsText = (ts = []) => ts.map((t2) => `${t2.ring} ${t2.project ? `${t2.project}/` : ""}${t2.pipelineId}${paramText(t2.params)}`).join(", ");
+  }
+});
+
+// src/core/effects.ts
+function proposalEffects(effects, items2) {
+  const turns = items2.map((w) => `${w.id}:${w.lastMsgId}`);
+  return effects.map((e) => ({ ...e, turns }));
+}
+function unsafeRead(tools, servers) {
+  const whole = (t3) => t3 === "*" || servers.includes(t3.replace(/(?:-\*|\(\*\))$/, ""));
+  const t2 = tools.find((t3) => /_write(?:[:(]|$)/i.test(t3) || /pipelines?_write|run_?pipeline/i.test(t3) || whole(t3) || verbWrite(t3));
+  return t2 && `${t2} is never a read tool: it can change things, and workers would hold it before your ok. Remove it from the read tools in setup`;
+}
+function voteValue(c) {
+  const v = c?.args.vote;
+  if (typeof v === "number" || typeof v === "string" && /^-?\d+$/.test(v)) return VOTE_NAME[Number(v)] ? Number(v) : void 0;
+  return VOTE_WORDS[String(v ?? "").toLowerCase().replace(/[\s_-]/g, "")];
+}
+function askedVote(text3) {
+  const found = /* @__PURE__ */ new Set();
+  for (const sentence of text3.split(/(?<=[.!?;])\s+|\n+/)) for (const m of sentence.matchAll(ASK_VOTE)) {
+    if (/\b(?:if|when|once|unless|after)\b/i.test(sentence.slice(0, m.index))) continue;
+    const v = VOTE_WORDS[m[1].toLowerCase().replace(/[\s_-]/g, "")];
+    if (v !== void 0) found.add(v);
+  }
+  return found.size === 1 ? [...found][0] : void 0;
+}
+function refusal(cfg, e, pr) {
+  const c = e.call;
+  if (!c) return "it names no exact call";
+  if (isPipelineTool(c) && !isDeploy(c)) return `${NAME} never creates, renames, or changes a pipeline, or cancels or retries its stages`;
+  if (forbidden(c)) return `${NAME} never completes, merges, abandons, bypasses, or deletes`;
+  if (isDeploy(c)) return deployRefusal(cfg, e, pr);
+  if (!allows(cfg.agent.effectTools, c)) return `${c.tool}${c.args.action ? `:${String(c.args.action)}` : ""} is not one of the changes you allow`;
+  const id = prIdOf(c);
+  if (id === void 0 && (prTool(c) || isVote(c))) return "a pull request change must name its PR by number in pullRequestId";
+  if (id !== void 0 && id !== pr) return `PR ${id} is not this item's PR${pr ? ` (${pr})` : ""}`;
+  if (isVote(c) && voteValue(c) === void 0) return "a vote must be Approved, ApprovedWithSuggestions, WaitingForAuthor, Rejected, or NoVote";
+  if (isVote(c) && !e.head) return "a vote must name the commit the review read";
+  if (prTool(c) && String(c.args.action ?? "").toLowerCase() === "update_reviewers") {
+    const ids = Array.isArray(c.args.reviewerIds) ? c.args.reviewerIds.map(String) : [];
+    const upn = (cfg.owner.upn ?? "").trim().toLowerCase();
+    if (!(String(c.args.reviewerAction ?? "").toLowerCase() === "add" && ids.length === 1 && upn && ids[0].trim().toLowerCase() === upn)) return `${NAME} may only add you as a reviewer, never remove anyone or add someone else`;
+  }
+  const invite = inviteShapeProblem(c);
+  if (invite) return invite;
+  return void 0;
+}
+function inviteShapeProblem(c) {
+  if (!c || !/(?:^|[-_])CreateEvent$/i.test(c.tool)) return void 0;
+  const a = toolShape(c).args;
+  const missing = [!String(a.subject ?? "").trim() && "subject", !a.startDateTime && "start time", !a.endDateTime && "end time"].filter(Boolean);
+  const old = ["start", "minutes", "durationMinutes", "attendees"].filter((k) => k in a);
+  if (!missing.length && !old.length) return void 0;
+  return `${OLD_INVITE} that ${NAME} cannot turn into a calendar call (${missing.length ? `no ${missing.join(", ")}` : `old fields: ${old.join(", ")}`})`;
+}
+function toolShape(c) {
+  if (!c || !/(?:^|[-_])CreateEvent$/i.test(c.tool)) return c;
+  const a = c.args, start = Date.parse(String(a.start ?? "")), utc = (ms) => new Date(ms).toISOString().slice(0, 19);
+  const offset = (v) => typeof v === "string" && /(?:[zZ]|[+-]\d\d:?\d\d)$/.test(v) && !Number.isNaN(Date.parse(v));
+  if (a.startDateTime !== void 0) return offset(a.startDateTime) && offset(a.endDateTime) ? { ...c, args: { ...a, startDateTime: utc(Date.parse(String(a.startDateTime))), endDateTime: utc(Date.parse(String(a.endDateTime))), timeZone: "UTC" } } : c;
+  if (Number.isNaN(start)) return c;
+  const minutes = Number(a.minutes ?? a.durationMinutes ?? 30) || 30;
+  const { start: _s, minutes: _m, durationMinutes: _d, attendees, ...rest2 } = a;
+  const emails = [].concat(attendees ?? a.attendeeEmails ?? []).map(String).filter(Boolean);
+  return { ...c, args: { ...rest2, subject: a.subject, attendeeEmails: emails, startDateTime: utc(start), endDateTime: utc(start + minutes * 6e4), timeZone: "UTC" } };
+}
+function vet(cfg, effects = [], pr) {
+  const ok = [], todos = [];
+  const todo = (e, why2) => todos.push(`${e.summary.replace(/[.\s]+$/, "")}. Not made for you: ${why2}`);
+  for (const raw of effects) {
+    const [tool, action2] = parts(raw.call?.tool ?? "");
+    const split2 = raw.call && action2 && action2.toLowerCase() === String(raw.call.args.action ?? "").toLowerCase() ? { ...raw, call: { ...raw.call, tool } } : raw;
+    const e = split2.call ? { ...split2, call: toolShape(split2.call) } : split2;
+    const why2 = refusal(cfg, e, pr);
+    if (why2) todo(e, why2);
+    else ok.push(isDeploy(e.call) ? { ...e, deploy: { ring: targetOf(cfg, pipelineOf(e.call)).ring, pr } } : e);
+  }
+  const first3 = ok.find((e) => isDeploy(e.call));
+  if (!first3) return { effects: ok, todos };
+  for (const e of ok.filter((x) => x !== first3)) todo(e, `one change at a time with a deploy; propose it again after the deploy to ${first3.deploy.ring} is made`);
+  return { effects: [first3], todos };
+}
+function known(c, pr, e) {
+  const a = c.args, action2 = a.action === void 0 ? "" : String(a.action), prKey = pr ? ["pullRequestId"] : [];
+  if (isDeploy(c) && e) {
+    const r = a.resources, only2 = !!r && Object.keys(r).length === 1 && Object.keys(Object.values(r)[0] ?? {}).length === 1;
+    return { line: deployLine(e), loc: e.deploy?.ring ?? "", keys: ["action", "pipelineId", ...only2 ? ["resources"] : []] };
+  }
+  if (isVote(c)) {
+    const v = voteValue(c);
+    return { line: v === void 0 ? `Vote ${str(a.vote)} on ${pr}` : VOTE_SAYS[v](pr), loc: pr, keys: ["action", ...prKey, "vote"] };
+  }
+  if (/pull_?request_write$/i.test(c.tool) && /^update_reviewers$/i.test(action2) && /^add$/i.test(String(a.reviewerAction ?? "")) && Array.isArray(a.reviewerIds) && a.reviewerIds.length === 1)
+    return { line: `add ${str(a.reviewerIds[0])} as an optional reviewer on ${pr}`, loc: pr, keys: ["action", ...prKey, "reviewerIds", "reviewerAction"] };
+  if (/pull_?request_thread/i.test(c.tool)) {
+    if (!/^(create|reply)$|^update|status/i.test(action2)) return void 0;
+    const keys = ["action", ...prKey];
+    if (/status/i.test(action2)) return { line: `set thread ${str(a.threadId)} to ${str(a.status)} on ${pr}`, loc: pr, keys: [...keys, "threadId", "status"] };
+    if (a.content === void 0) return void 0;
+    const reply2 = /reply/i.test(action2), edit = /update/i.test(action2), lineKey = a.rightFileStartLine !== void 0 ? "rightFileStartLine" : "line";
+    const what = reply2 ? `reply in thread ${str(a.threadId)}` : edit ? `edit comment ${str(a.commentId)} in thread ${str(a.threadId)}` : "comment";
+    const file2 = a.filePath === void 0 ? "" : `${str(a.filePath)}${a[lineKey] === void 0 ? "" : `:${str(a[lineKey])}`}`;
+    const where = [...edit ? [`comment ${str(a.commentId)} in thread ${str(a.threadId)}`] : reply2 ? [`thread ${str(a.threadId)}`] : [], pr].join(", ");
+    return { line: `${what} on ${pr}`, loc: file2 ? `${file2}, ${where}` : where, text: str(a.content), keys: [...keys, "content", ...file2 ? ["filePath", lineKey] : [], ...reply2 || edit ? ["threadId"] : [], ...edit ? ["commentId"] : []] };
+  }
+  if (/work_?item/i.test(c.tool) && /update/i.test(action2) && Array.isArray(a.updates)) {
+    const lines = a.updates.map((u) => {
+      const { op, path, value, ...rest2 } = u;
+      const more = Object.entries(rest2).map(([k, x]) => `${k}: ${str(x)}`).join(", ");
+      return `${op === void 0 ? "" : `${str(op)} `}${str(path)}${value === void 0 ? "" : `: ${str(value)}`}${more ? ` (${more})` : ""}`;
+    });
+    return { line: `update work item ${str(a.id)}`, loc: `Work item ${str(a.id)}`, keys: ["action", "id", "updates"], lines };
+  }
+  if (/createevent/i.test(c.tool)) {
+    const who2 = [...[].concat(a.attendeeEmails ?? []), ...[].concat(a.attendees ?? [])].map(str).join(", ");
+    const startKey = a.startDateTime !== void 0 ? "startDateTime" : "start", endKey = a.endDateTime !== void 0 ? "endDateTime" : "end";
+    const start = a[startKey], end = a[endKey], offset = /(Z|[+-]\d\d:?\d\d)$/.test(String(start ?? ""));
+    const when3 = `${at(start)}${end === void 0 ? "" : ` to ${at(end)}`}${a.timeZone !== void 0 ? ` (${str(a.timeZone)})` : offset ? "" : " (your calendar's time zone)"}`;
+    const what = who2 ? `invite ${who2} to "${str(a.subject)}"` : `create "${str(a.subject)}"`;
+    return { line: `${what}, ${when3}`, loc: when3, text: what[0].toUpperCase() + what.slice(1), keys: ["subject", startKey, endKey, "timeZone", "attendeeEmails", "attendees"] };
+  }
+  return void 0;
+}
+function shown(e) {
+  const c = e.call;
+  if (!c) return { line: e.summary, loc: e.target, text: e.summary, detail: "", system: e.system };
+  const a = c.args, action2 = a.action === void 0 ? "" : String(a.action), id = prIdOf(c), pr = id === void 0 ? "" : `PR ${id}`;
+  const name = LINES[`${c.tool}:${action2}`]?.[0] ?? (LINES[c.tool] ? `${LINES[c.tool][0]}${action2 ? ` (${action2})` : ""}` : `${c.tool.replace(/^[^-]*-/, "")}${action2 ? ` ${action2}` : ""}`);
+  const f = known(c, pr, e) ?? { line: `${name}${pr ? ` on ${pr}` : ""}`, loc: pr, keys: ["action", ...pr ? ["pullRequestId"] : []] };
+  const rest2 = Object.entries(a).filter(([k]) => !f.keys.includes(k)).map(([k, x]) => `${k}: ${str(x)}`);
+  return { line: f.line, loc: f.loc, text: f.text ?? f.line, detail: [...f.lines ?? [], ...rest2].join("\n"), system: c.tool.replace(/-.*$/, "") };
+}
+function changeSays(e) {
+  const x = shown(e), where = x.loc.split(", ").filter((p) => p && !x.line.toLowerCase().includes(p.toLowerCase())).join(", ");
+  const says2 = !x.line.toLowerCase().includes(x.text.toLowerCase()) ? `: ${x.text}` : "";
+  const rest2 = x.detail.replace(/\n/g, "; ");
+  return `${x.line}${where ? ` at ${where}` : ""}${says2}${rest2 ? says2 ? ` (${rest2})` : `: ${rest2}` : ""}`;
+}
+var pendingEffects, sameChange, sameProposal, carryMarks, parts, allows, toolOf, NEVER_KEY, never, prTool, forbidden, WRITE_VERBS, verbWrite, SETUP_REFUSAL, prIdOf, isVote, VOTES, VOTE_NAME, VOTE_WORDS, sameHead, ASK_VOTE, voteName, isInvite, BOOK, asksInvite, claimsInvite, OLD_INVITE, OLD_INVITE_ASK, reviewAgainCmd, reviewAgain, asksReviewAgain, refusedAsk, LINES, WRITE_DEFAULTS, offerable, line, changeName, changeLine, prParts, meaningParts, meaningOf, str, VOTE_SAYS, at, doLine, saidLine;
+var init_effects = __esm({
+  "src/core/effects.ts"() {
+    "use strict";
+    init_site();
+    init_brand();
+    init_deploy();
+    pendingEffects = (es = []) => es.filter((e) => !e.done && !e.off);
+    sameChange = (a, b) => JSON.stringify([a.system, a.action, a.target, a.call ?? a.payload ?? null]) === JSON.stringify([b.system, b.action, b.target, b.call ?? b.payload ?? null]) && (!isVote(a.call) || (a.head ?? null) === (b.head ?? null));
+    sameProposal = (a, b) => sameChange(a, b) && (a.turns && b.turns ? a.turns.some((turn) => b.turns?.includes(turn)) : !a.turns && !b.turns);
+    carryMarks = (list2, from = []) => list2.map((e) => {
+      if (e.done) return e;
+      const m = from.find((x) => (x.maybe || x.done && !isVote(e.call)) && sameProposal(x, e));
+      return m ? { ...e, done: m.done, maybe: m.maybe, error: m.error } : e;
+    });
+    parts = (entry) => {
+      const i = entry.indexOf(":");
+      return i < 0 ? [entry] : [entry.slice(0, i), entry.slice(i + 1)];
+    };
+    allows = (entries = [], c) => entries.some((x) => {
+      const [tool, action2] = parts(x);
+      return tool === c.tool && (!action2 || action2.toLowerCase() === String(c.args.action ?? "").toLowerCase());
+    });
+    toolOf = (entry) => parts(entry)[0];
+    NEVER_KEY = /bypass|autocomplete|completionoptions|deletesourcebranch|mergestrategy/i;
+    never = (v, pr) => Array.isArray(v) ? v.some((x) => never(x, pr)) : !!v && typeof v === "object" && Object.entries(v).some(([k, x]) => NEVER_KEY.test(k) || /^action$/i.test(k) && /complet|merge|abandon|bypass|delete/i.test(String(x)) || /^status$/i.test(k) && (/^(completed|abandoned)$/i.test(String(x)) || pr && /^[23]$/.test(String(x))) || never(x, pr));
+    prTool = (c) => /pull_?request|_pr_/i.test(c.tool);
+    forbidden = (c) => /delete/i.test(c.tool) || never(c.args, prTool(c) && !/thread/i.test(c.tool));
+    WRITE_VERBS = /* @__PURE__ */ new Set(["send", "create", "update", "delete", "cancel", "accept", "tentatively", "decline", "forward", "reply", "move", "rename", "share", "upload", "set", "add", "remove", "flag", "post", "reactivate", "request", "do", "ingest", "copy", "resolve"]);
+    verbWrite = (tool) => {
+      const name = tool.replace(/^[^-]*-/, "").replace(/[:(].*$/, "");
+      const words3 = name.replace(/([a-z])([A-Z])/g, "$1_$2").toLowerCase().split("_").filter(Boolean);
+      return WRITE_VERBS.has(words3[0] ?? "") || words3[0] === "kusto" && ["command", "ingest"].includes(words3[1] ?? "");
+    };
+    SETUP_REFUSAL = /is never a read tool|never runs in your clone with a shell|no known Claude Code name/;
+    prIdOf = (c) => {
+      const v = c?.args.pullRequestId;
+      return typeof v === "number" && Number.isInteger(v) || typeof v === "string" && /^\d+$/.test(v) ? Number(v) : void 0;
+    };
+    isVote = (c) => !!c && (/vote/i.test(String(c.args.action ?? "")) || /vote/i.test(c.tool));
+    VOTES = { Approved: 10, ApprovedWithSuggestions: 5, NoVote: 0, WaitingForAuthor: -5, Rejected: -10 };
+    VOTE_NAME = Object.fromEntries(Object.entries(VOTES).map(([k, n]) => [n, k]));
+    VOTE_WORDS = { approved: 10, approve: 10, approvedwithsuggestions: 5, approvewithsuggestions: 5, waitingforauthor: -5, waitforauthor: -5, rejected: -10, reject: -10, novote: 0, reset: 0 };
+    sameHead = (a, b) => {
+      const [x, y] = [a?.toLowerCase() ?? "", b?.toLowerCase() ?? ""];
+      return !!x && !!y && (x === y || Math.min(x.length, y.length) >= 7 && (x.startsWith(y) || y.startsWith(x)));
+    };
+    ASK_VOTE = /\b(?:set|change|make|cast|switch|update|reset)\s+(?:my|the owner's|\w+'s)?\s*(?:review\s+)?vote\s+(?:on\s+(?:PR\s+)?\S+\s+)?(?:to|as)\s+["'“]?(approved with suggestions|approvedwithsuggestions|approved|approve|waiting for author|waitingforauthor|wait for author|rejected|reject|no vote|novote)\b/gi;
+    voteName = (n) => ({ 10: "Approved", 5: "Approved with suggestions", 0: "No vote", [-5]: "Waiting for author", [-10]: "Rejected" })[n] ?? String(n);
+    isInvite = (e) => !!e && (/(?:^|[-_])CreateEvent$/i.test(e.call?.tool ?? "") || /calendar/i.test(e.system ?? "") && /create_event|invite/i.test(e.action ?? ""));
+    BOOK = /\b(?:send|set up|setup|book|schedule|arrange)\b[^.?!]{0,60}\b(?:invite|invitation|meeting|call|sync|catch[- ]?up)\b|\bcan (?:we|you) (?:do|have|set up|book|schedule)\b[^.?!]{0,60}\b(?:meeting|call|sync|catch[- ]?up)\b/i;
+    asksInvite = (text3) => text3.split(/(?<=[.!?;])\s+|\n+/).some((s3) => {
+      const m = BOOK.exec(s3);
+      return !!m && !/\b(?:do not|don't|dont|no need to|not|never|without)\b/i.test(s3.slice(0, m.index));
+    });
+    claimsInvite = (text3) => /\b(?:I(?:'|’)ve|I have|I(?:'|’)ve just|we(?:'|’)ve|we have)\s+(?:just\s+)?(?:sent|booked|scheduled|set up)\b[^.!?]{0,80}\b(?:invite|invitation|meeting|call|sync)\b|\b(?:invite|invitation)\b[^.!?]{0,40}\b(?:is|was|has been)\s+(?:sent|booked)\b|\bsent (?:you |them |everyone )?(?:an? |the )?(?:invite|invitation)\b/i.test(text3);
+    OLD_INVITE = "this invite was proposed in an older form";
+    OLD_INVITE_ASK = `The invite was proposed in an older form ${NAME} cannot make. Answer to have ${NAME} draft the invite again; nothing is sent until you OK the new draft.`;
+    reviewAgainCmd = (code) => `${code}: review again`;
+    reviewAgain = (code, why2) => `${why2} Review again? Reply "${reviewAgainCmd(code)}", or "skip ${code}".`;
+    asksReviewAgain = (code, question) => !!question?.includes(`Reply "${reviewAgainCmd(code)}"`);
+    refusedAsk = (code, n) => `The reply counts on ${n === 1 ? "a change" : `${n} changes`} ${NAME} cannot make, listed as yours to do. Change the reply with "edit ${code}: <text>", or skip ${code}.`;
+    LINES = {
+      [DEPLOY]: ["Deploy", `run a pipeline on "Where ${NAME} may deploy" with a PR's build as its resource`],
+      "ado-repo_pull_request_thread_write": ["PR comment", "comment on a pull request, or reply in one of its threads"],
+      "ado-repo_pull_request_write:vote": ["PR vote", "cast the owner's vote on a pull request: Approved, ApprovedWithSuggestions, WaitingForAuthor, Rejected, or NoVote"],
+      "ado-repo_pull_request_write:update_reviewers": ["Add you as a PR reviewer", "add the owner, and only the owner, as an optional reviewer on the item's pull request, so a review he was asked for can start"],
+      "ado-wit_work_item_write:update": ["Work item update", "change fields on one work item; the update must fail if the item changed since it was read"],
+      "calendar-CreateEvent": ["Calendar invite", "create a meeting on the owner's calendar and invite people"]
+    };
+    WRITE_DEFAULTS = { ado: ["repo_pull_request_thread_write", "repo_pull_request_write:vote", "wit_work_item_write:update"], calendar: ["CreateEvent"] };
+    offerable = (entry) => {
+      const [tool, action2] = parts(entry);
+      return !/complet|merge|abandon|bypass|delete/i.test(entry) && !/pipelines?_write|run_?pipeline/i.test(tool) && !(/pull_?request_write$/i.test(tool) && !action2);
+    };
+    line = (entry) => LINES[entry] ?? site().actions?.[entry];
+    changeName = (entry) => line(entry)?.[0] ?? entry;
+    changeLine = (entry) => {
+      const l = line(entry);
+      return l ? `${entry}: ${l[1]}` : entry;
+    };
+    prParts = (p) => [{ text: `"${p.title}" by ${p.author}` }, ...p.required.length ? [{ text: `required reviewers: ${p.required.join(", ")}` }] : [], ...p.autoComplete ? [{ text: "autocomplete is on: your approval may complete it", warn: true }] : []];
+    meaningParts = (e) => e.pr ? prParts(e.pr) : e.ring ? ringParts(e.ring) : void 0;
+    meaningOf = (e) => meaningParts(e)?.map((p) => p.text).join("; ");
+    str = (v) => typeof v === "string" ? v : JSON.stringify(v);
+    VOTE_SAYS = { 10: (pr) => `Approve ${pr}`, 5: (pr) => `Approve ${pr} with suggestions`, 0: (pr) => `Reset your vote on ${pr}`, [-5]: (pr) => `Wait for author on ${pr}`, [-10]: (pr) => `Reject ${pr}` };
+    at = (v) => {
+      const t2 = String(v ?? ""), z2 = /(Z|[+-]\d\d:?\d\d)$/.exec(t2)?.[1];
+      return `${t2.replace("T", " ").slice(0, 16)}${z2 ? ` ${z2}` : ""}`;
+    };
+    doLine = (effects) => effects.map((e) => {
+      const l = shown(e).line;
+      return l[0].toLowerCase() + l.slice(1);
+    }).join(" and ");
+    saidLine = (effects) => `You said you'd ${doLine(effects)}`;
+  }
+});
+
+// src/core/policy.ts
+function currentDraft(workflow, job) {
+  const endedWithoutReply = job && job.id === workflow.job && job.state === "done" && job.purpose === "work" && job.result && !job.result.reply && (workflow.status === job.result.summary || workflow.status === `Nothing needed: ${job.result.summary}`) && Date.parse(workflow.revAt ?? workflow.updatedAt) <= Date.parse(job.result.at ?? job.updatedAt);
+  return endedWithoutReply ? void 0 : workflow.draft;
+}
+function replyGap(text3) {
+  return !!text3 && /_{3,}|\b(?:XX|TODO|TBD)\b|\[(?:TBD|TODO|missing\b[^\]\n]*|unknown|insert\b[^\]\n]*|fill\b[^\]\n]*|your\b[^\]\n]*here)\]|(?:<|\{)\s*(?:\.{3}|\u2026|(?:insert|fill|missing|your)\b[^<>{}\n]*|name|location|date|time|answer|value|address|email|link|amount)\s*(?:>|\})|\{\{[^{}\n]+\}\}/.test(text3);
+}
+function confidence(sources) {
+  sources = sources.filter((s3) => !s3.stale);
+  const extracted = sources.filter((s3) => s3.origin === "extracted");
+  const level = (s3) => !s3.some((x) => x.tier === "card") ? 0 : s3.some((x) => x.tier === "live") ? 2 : 1;
+  const n = extracted.length ? level(extracted) : Math.max(0, level(sources) - 1);
+  return ["low", "medium", "high"][n];
+}
+function matches(r, wf, conf) {
+  const who2 = !!wf.asker && !!r.who.accounts?.some((a) => a.id === wf.asker.id);
+  if (!who2) return false;
+  if (r.when.intent && r.when.intent !== wf.intent) return false;
+  if (r.when.chat === "direct") {
+    if (wf.chat.group || wf.chat.test || wf.chat.id.startsWith("ch|")) return false;
+  } else if (r.when.chat && r.when.chat !== wf.chat.id) return false;
+  return !r.when.minConfidence || RANK[conf] >= RANK[r.when.minConfidence];
+}
+function decide(wf, rules, ctx) {
+  const conf = confidence(wf.draft?.sources ?? []);
+  const rule = rules.find((r) => !r.style && matches(r, wf, conf));
+  const d = (action2, reason) => ({ action: action2, ruleId: rule?.id, reason, confidence: conf });
+  if (replyGap(wf.draft?.text)) return d("draft", REPLY_BLANK);
+  if (wf.before) return d("draft", "It came before setup; replies to older messages wait for you");
+  if (wf.draft?.holding) return d("draft", "A holding reply: the work is not finished, so it waits for you");
+  if (ctx.never?.some((p) => p.id === wf.asker?.id)) return d("draft", "This person never gets automatic replies");
+  if (wf.chat.id.startsWith("ch|")) return d("draft", "Channel replies always wait for you");
+  if (wf.correction) return d("draft", "A correction always waits for you");
+  if (wf.needsMe) return d("draft", "You said this one needs you");
+  if (wf.startedBy === "room") return d("draft", "It was sent to the whole chat; a reply there waits for you");
+  if (wf.work || wf.partOf) return d("draft", "Replies on open work always wait for you");
+  if (wf.shareHold) return d("draft", wf.shareHold);
+  if (pendingEffects(wf.effects).length || wf.todos?.length || wf.follow) return d("draft", "It promises changes, a follow-up, or something you must do");
+  if (!rule) return d("draft", "No rule covers this sender and ask");
+  if (ctx.held?.includes(rule.id)) return d("draft", `Rule ${rule.id} is on hold: you said one of its replies was not needed`);
+  if (rule.then === "ignore") return d("ignore", `Rule ${rule.id}: ignore`);
+  if (rule.then === "draft") return d("draft", `Rule ${rule.id}: always draft`);
+  if (rule.then === "shortcut") return d("draft", `Rule ${rule.id}: shortcut actions arrive later`);
+  if (!ctx.autoSend) return d("draft", "Auto-send is off");
+  if (ctx.autoSendsThisHour >= ctx.maxPerHour) return d("draft", `Already ${ctx.maxPerHour} automatic replies in this chat this hour`);
+  if (rule.then === "ack") return d("ack", `Rule ${rule.id}: acknowledge`);
+  if (commits(wf)) return d("draft", "It commits you to something");
+  if (labeledToGuests(wf)) return d("draft", "It quotes labeled content, and this chat has guests");
+  if (wf.gaps?.length) return d("draft", `It could not read ${wf.gaps.join(", ")}`);
+  if (wf.draft?.sources.some((s3) => s3.tier === "private")) return d("draft", "It uses a private source");
+  if (conf === "low") return d("draft", "Not enough evidence to send on its own");
+  return d("send", `Rule ${rule.id}, confidence ${conf}`);
+}
+function withMarker(text3, marker, ownerName) {
+  const line2 = marker.replace("{first}", ownerName.split(/\s+/)[0]);
+  const body = text3.trimEnd().toLowerCase().endsWith(line2.toLowerCase()) ? text3.trimEnd().slice(0, -line2.length).trimEnd() : text3;
+  return `${body}
+
+${line2}`;
+}
+function inQuietHours(now, quiet = { from: "20:00", to: "08:00" }) {
+  const m = now.getHours() * 60 + now.getMinutes();
+  const [f, t2] = [quiet.from, quiet.to].map((s3) => {
+    const [h, mm] = s3.split(":").map(Number);
+    return h * 60 + mm;
+  });
+  return f <= t2 ? m >= f && m < t2 : m >= f || m < t2;
+}
+var DEFAULT_POLICY, RANK, REPLY_BLANK, reopenable, labeledToGuests, commits, signsApproved, signatureOf, approvedReplyText;
+var init_policy = __esm({
+  "src/core/policy.ts"() {
+    "use strict";
+    init_effects();
+    DEFAULT_POLICY = {
+      delayMin: 15,
+      undoMin: 10,
+      maxAutoPerChatHour: 3,
+      marker: "(sent by {first}'s assistant)",
+      ackText: "Got it, {first} will get back to you."
+    };
+    RANK = { low: 0, medium: 1, high: 2 };
+    REPLY_BLANK = "This reply still has a blank: fill it or edit";
+    reopenable = (wf, verb) => wf.state === "done" && verb === "answer" && wf.kind !== "tracker" && !wf.sent && !wf.work && !wf.redacted;
+    labeledToGuests = (wf) => wf.chat.guests !== false && !!wf.draft?.sources.some((s3) => !!s3.label && !/^(public|general|non-?business)$/i.test(s3.label));
+    commits = (wf) => !!wf.draft?.commitment || wf.intent === "commitment_decision";
+    signsApproved = (cfg) => cfg.signApproved ?? !!cfg.signature?.trim();
+    signatureOf = (cfg) => cfg.signature?.trim() || cfg.policy?.marker || DEFAULT_POLICY.marker;
+    approvedReplyText = (text3, workflow, cfg) => text3 && signsApproved(cfg) && !workflow.learnAfter && !workflow.draft?.byOwner ? withMarker(text3, signatureOf(cfg), cfg.owner.name) : text3;
+  }
+});
+
+// src/core/page-approval.ts
+import { createHash } from "node:crypto";
+function pageAnswerRefusal(answer, workflow, automation2, proposal, cfg, managementRev, job) {
+  const guard = answer.page;
+  if (!guard) return void 0;
+  if (guard.kind === "manage") return managementRev === guard.expect ? void 0 : "Changed since you looked. Nothing was sent or changed. Open the new version first.";
+  if (guard.kind === "send-reply" && workflow?.state === "done") return "Already sent. Nothing else was sent. Open the current item before posting a correction.";
+  if (guard.kind === "send-reply" && (!workflow || !currentDraft(workflow, job)?.text)) return "The latest turn proposes no reply. Nothing was sent. Open the current item.";
+  if (guard.kind === "mark-todos") {
+    if (!workflow || !guard.todoIds?.length || guard.todoIds.some((id) => !workflow.kept?.some((todo) => todo.id === id && !todo.done))) return "These to-dos changed. Nothing was marked. Open the current list.";
+    return void 0;
+  }
+  if (answer.verb === "close" && workflow?.kept?.some((todo) => !todo.done)) return "These to-dos changed. Nothing was marked. Open the current list.";
+  if (guard.kind === "undo-send" && (!workflow?.sent || workflow.sent.msgId !== guard.sentMessageId)) return "That reply is no longer the current sent reply. Nothing was deleted.";
+  if (guard.kind === "feedback-send" && (!workflow?.sent || workflow.sent.msgId !== guard.sentMessageId)) return "That reply changed. Nothing was sent, deleted or redrafted. Open its current activity first.";
+  const current = workflow ? workflowApprovalRev(workflow) : automation2 ? automationApprovalRev(automation2) : proposal ? proposalApprovalRev(proposal) : void 0;
+  if (current !== guard.expect) return "Changed since you looked. Nothing was sent or changed. Open the new version first.";
+  if (guard.replyDigest && (!cfg || !workflow?.draft || pageDigest(approvedReplyText(workflow.draft.text, workflow, cfg)) !== guard.replyDigest)) return "The reply signature changed since you looked. Nothing was sent or changed. Open the new version first.";
+  return void 0;
+}
+var canonical, pageDigest, PAGE_REPLY_CHANGED, pageChangeId, pageOptionId, workflowApprovalRev, automationApprovalRev, proposalApprovalRev;
+var init_page_approval = __esm({
+  "src/core/page-approval.ts"() {
+    "use strict";
+    init_effects();
+    init_policy();
+    canonical = (value) => Array.isArray(value) ? value.map(canonical) : value && typeof value === "object" ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])])) : value;
+    pageDigest = (value) => createHash("sha256").update(JSON.stringify(canonical(value))).digest("hex");
+    PAGE_REPLY_CHANGED = "The reply changed since you approved it. It was not sent. Review the current reply.";
+    pageChangeId = (effect) => pageDigest([effect.call ?? effect.payload, effect.system, effect.action, effect.target, effect.head]);
+    pageOptionId = (option) => pageDigest(option);
+    workflowApprovalRev = (workflow) => pageDigest({
+      state: workflow.state,
+      draft: workflow.draft,
+      turn: workflow.revAt,
+      conversation: [workflow.chat.id, workflow.chat.guests, workflow.lastMsgId, workflow.lastAsk, workflow.pending, workflow.msgIds, workflow.newCount],
+      changes: pendingEffects(workflow.effects).map((effect) => ({ id: pageChangeId(effect), meaning: [effect.pr, effect.ring, effect.build, effect.deploy], summary: effect.summary, maybe: effect.maybe })),
+      choices: workflow.choices && { ...workflow.choices, options: workflow.choices.options.map(pageOptionId) },
+      question: workflow.question,
+      meeting: workflow.meeting,
+      sent: workflow.sent?.msgId,
+      fyi: workflow.fyi,
+      watchedAs: workflow.watchedAs,
+      promises: workflow.todos,
+      todos: workflow.kept?.filter((todo) => !todo.done).map((todo) => [todo.id, todo.text, todo.at]),
+      work: workflow.work && { goal: workflow.work.goal, next: workflow.work.next, proposed: workflow.work.proposed }
+    });
+    automationApprovalRev = (automation2) => pageDigest({
+      state: automation2.state,
+      to: automation2.to,
+      text: automation2.text,
+      texts: automation2.texts,
+      rotation: automation2.rotation,
+      schedule: automation2.schedule,
+      until: automation2.until,
+      maxSends: automation2.maxSends,
+      stopOnReply: automation2.stopOnReply
+    });
+    proposalApprovalRev = (proposal) => pageDigest({ state: proposal.state, title: proposal.title, ops: proposal.ops });
+  }
+});
+
+// src/core/agent-failure.ts
+function activeAgentHold(hold, agent, now = Date.now()) {
+  return hold && hold.config === pageDigest(agent) && !(hold.retryAt && Date.parse(hold.retryAt) <= now) ? hold : void 0;
+}
+function agentSetupFailure(text3, now = Date.now()) {
+  if (/exceeded your monthly quota|quota[_ -]exceeded/i.test(text3)) {
+    const milliseconds = /retry[_-]after[_-]ms["']?\s*[:=]\s*["']?(\d+(?:\.\d+)?)/i.exec(text3);
+    const seconds = /retry[_-]after["']?\s*[:=]\s*["']?(\d+(?:\.\d+)?)/i.exec(text3);
+    const delay = milliseconds ? Number(milliseconds[1]) : seconds ? Number(seconds[1]) * 1e3 : void 0;
+    let retryAt, wait2;
+    if (delay !== void 0 && Number.isFinite(delay) && delay > 0 && now + delay < 864e13) {
+      retryAt = new Date(now + delay).toISOString();
+      const days2 = delay >= 864e5, amount = days2 ? Math.round(delay / 864e4) / 10 : Math.max(1, Math.ceil(delay / 36e5));
+      wait2 = `${amount} ${days2 ? "day" : "hour"}${amount === 1 ? "" : "s"}`;
+    }
+    return { kind: "quota", retryAt, text: `The AI quota for this account is used up${wait2 ? ` (Copilot says: try again in about ${wait2})` : ""}. Raise the budget in GitHub Copilot settings, or set another model in Settings.` };
+  }
+  if (/\bunknown model\b|\bmodel_not_found\b|\bmodel\s+(?:["'][^"'\r\n]{1,160}["']|[\w./:-]+)(?:\s+from\s+--model\s+flag)?\s+(?:is\s+)?(?:not available|unavailable|not found)/i.test(text3)) {
+    return { kind: "model", text: "The selected AI model is not available to this account. Set another model in Settings." };
+  }
+  return void 0;
+}
+var init_agent_failure = __esm({
+  "src/core/agent-failure.ts"() {
+    "use strict";
+    init_page_approval();
+  }
+});
+
 // src/adapters/agent.ts
 import { spawn, spawnSync as spawnSync2 } from "node:child_process";
 import { closeSync as closeSync2, existsSync as existsSync4, openSync as openSync2, readdirSync as readdirSync3, readFileSync as readFileSync4, writeFileSync as writeFileSync3 } from "node:fs";
 import { homedir as homedir2 } from "node:os";
-import { dirname as dirname3, join as join4 } from "node:path";
+import { basename as basename3, dirname as dirname3, join as join4 } from "node:path";
 function claudeTool(t2) {
   if (t2 === "task_complete") return void 0;
   if (CLAUDE_BUILTIN[t2]) return CLAUDE_BUILTIN[t2];
@@ -613,6 +1122,8 @@ function buildArgs(cfg, i, hasSession = claudeSessionExists) {
     ...tools,
     "--output-format",
     "json",
+    "--log-dir",
+    agentLogDir(i.mcpConfigPath),
     ...cfg.model ? ["--model", cfg.model] : [],
     ...cfg.maxCredits ? ["--max-ai-credits", String(cfg.maxCredits)] : []
   ];
@@ -624,6 +1135,15 @@ function sessionLog(flavor, id) {
   } catch {
     return "";
   }
+}
+function agentProcessLog(flavor, mcpConfigPath) {
+  const folder = agentLogDir(mcpConfigPath);
+  if (flavor !== "copilot" || !existsSync4(folder)) return "";
+  return readdirSync3(folder).filter((name) => name.endsWith(".log")).map((name) => {
+    const file2 = join4(folder, name), raw = readFileSync4(file2, "utf8"), clean3 = scrub(raw);
+    if (raw !== clean3) writeFileSync3(file2, clean3, { encoding: "utf8", mode: 384 });
+    return clean3.slice(-65536);
+  }).join("\n");
 }
 function interactiveCommand(cfg, sessionId, prompt, mcpConfigPath) {
   const input2 = filePrompt({ sessionId, prompt, mcpConfigPath, cwd: dirname3(mcpConfigPath), extraTools: [] }, cfg.flavor);
@@ -752,7 +1272,17 @@ function runAgent(cfg, i, timeoutMs = 10 * 6e4, graceMs = 5e3) {
     p.on("error", (e) => finish({ exitCode: -1, ms: Date.now() - t0, error: `Could not start ${cmd2}: ${e.message}` }));
     p.on("close", (code) => {
       const used = readRun(out, t0, process.env, sessionLog(cfg.flavor, i.sessionId), Date.now()).use;
-      finish({ exitCode: code ?? -1, ms: Date.now() - t0, summary: summaryOf(out), error: code !== 0 ? err.slice(-500) || `${cmd2} stopped` : void 0, ...Object.keys(used).length ? { used } : {} });
+      let log;
+      try {
+        log = agentProcessLog(cfg.flavor, i.mcpConfigPath);
+      } catch (error62) {
+        finish({ exitCode: -1, ms: Date.now() - t0, error: `Could not read the AI run log: ${String(error62)}` });
+        return;
+      }
+      const setup = agentSetupFailure(`${out}
+${err}
+${log}`);
+      finish({ exitCode: code ?? -1, ms: Date.now() - t0, summary: summaryOf(out), error: code !== 0 ? err.slice(-500) || setup?.text || `${cmd2} stopped` : void 0, ...Object.keys(used).length ? { used } : {}, ...setup ? { setup } : {} });
     });
     if (p.pid) {
       try {
@@ -774,7 +1304,7 @@ function summaryOf(jsonl) {
   }
   return void 0;
 }
-var ALWAYS, CLAUDE_BUILTIN, SetupError, workerEnv, live, hooked;
+var ALWAYS, CLAUDE_BUILTIN, SetupError, agentLogDir, workerEnv, live, hooked;
 var init_agent = __esm({
   "src/adapters/agent.ts"() {
     "use strict";
@@ -783,10 +1313,13 @@ var init_agent = __esm({
     init_runinfo();
     init_fs();
     init_run_files();
+    init_agent_failure();
+    init_secrets();
     ALWAYS = ["task_complete"];
     CLAUDE_BUILTIN = { view: "Read", glob: "Glob", grep: "Grep", edit: "Edit", create: "Write", bash: "Bash", web_fetch: "WebFetch" };
     SetupError = class extends Error {
     };
+    agentLogDir = (mcpConfigPath) => join4(dirname3(mcpConfigPath), "logs", basename3(mcpConfigPath, ".json"));
     workerEnv = (env) => ({ ...cleanEnv(env), DELEGATE_WORKER: "1" });
     live = /* @__PURE__ */ new Set();
     hooked = false;
@@ -18268,7 +18801,7 @@ __export(schemas_exports2, {
   httpUrl: () => httpUrl,
   iban: () => iban2,
   instanceof: () => _instanceof,
-  int: () => int,
+  int: () => int2,
   int32: () => int32,
   int64: () => int64,
   intersection: () => intersection,
@@ -18289,7 +18822,7 @@ __export(schemas_exports2, {
   nan: () => nan,
   nanoid: () => nanoid2,
   nativeEnum: () => nativeEnum,
-  never: () => never,
+  never: () => never2,
   nonoptional: () => nonoptional,
   null: () => _null3,
   nullable: () => nullable,
@@ -18447,7 +18980,7 @@ function hash(alg, params) {
 function number2(params) {
   return _number(ZodNumber, params);
 }
-function int(params) {
+function int2(params) {
   return _int(ZodNumberFormat, params);
 }
 function float32(params) {
@@ -18489,7 +19022,7 @@ function any() {
 function unknown() {
   return _unknown(ZodUnknown);
 }
-function never(params) {
+function never2(params) {
   return _never(ZodNever, params);
 }
 function _void2(params) {
@@ -18517,7 +19050,7 @@ function strictObject(shape, params) {
   return new ZodObject({
     type: "object",
     shape,
-    catchall: never(),
+    catchall: never2(),
     ...util_exports.normalizeParams(params)
   });
 }
@@ -19305,10 +19838,10 @@ var init_schemas2 = __esm({
           return this.check(_lte(value, params));
         },
         int(params) {
-          return this.check(int(params));
+          return this.check(int2(params));
         },
         safe(params) {
-          return this.check(int(params));
+          return this.check(int2(params));
         },
         positive(params) {
           return this.check(_gt(0, params));
@@ -19491,7 +20024,7 @@ var init_schemas2 = __esm({
         return this.clone(util_exports.mergeDefs(this._zod.def, { catchall: unknown() }));
       },
       strict() {
-        return this.clone(util_exports.mergeDefs(this._zod.def, { catchall: never() }));
+        return this.clone(util_exports.mergeDefs(this._zod.def, { catchall: never2() }));
       },
       strip() {
         return this.clone(util_exports.mergeDefs(this._zod.def, { catchall: void 0 }));
@@ -21012,7 +21545,7 @@ __export(external_exports, {
   includes: () => _includes,
   input: () => input,
   instanceof: () => _instanceof,
-  int: () => int,
+  int: () => int2,
   int32: () => int32,
   int64: () => int64,
   intersection: () => intersection,
@@ -21047,7 +21580,7 @@ __export(external_exports, {
   nanoid: () => nanoid2,
   nativeEnum: () => nativeEnum,
   negative: () => _negative,
-  never: () => never,
+  never: () => never2,
   nonnegative: () => _nonnegative,
   nonoptional: () => nonoptional,
   nonpositive: () => _nonpositive,
@@ -21149,332 +21682,6 @@ var init_zod = __esm({
   "node_modules/zod/index.js"() {
     init_external();
     init_external();
-  }
-});
-
-// src/core/deploy.ts
-function buildOf(c) {
-  const r = c?.args.resources;
-  if (!obj2(r) || Object.keys(r).length !== 1) return void 0;
-  const [kind, aliases] = Object.entries(r)[0];
-  if (!obj2(aliases) || Object.keys(aliases).length !== 1) return void 0;
-  const ref = Object.values(aliases)[0];
-  if (!obj2(ref) || Object.keys(ref).length !== 1) return void 0;
-  const [k, v] = Object.entries(ref)[0];
-  return kind === "pipelines" && k === "runId" || kind === "builds" && (k === "id" || k === "version") ? int2(v) : void 0;
-}
-function deployRefusal(cfg, e, pr) {
-  const c = e.call, id = pipelineOf(c), t2 = targetOf(cfg, id);
-  if (!id) return "a deploy must name its pipeline by number in pipelineId";
-  if (neverId(cfg, id) || t2 && (NEVER_RING.test(t2.ring) || NEVER_RING.test(t2.name ?? ""))) return `pipeline ${id} is ${t2 ? `${t2.ring}, ` : ""}a shared or production ring; ${NAME} never deploys there`;
-  if (!t2) return `pipeline ${id} is not on "Where ${NAME} may deploy" in Settings`;
-  if (!t2.project) return `pipeline ${id} has no project on "Where ${NAME} may deploy"; save it again in Settings`;
-  if (typeof c.args.project !== "string" || !c.args.project) return "a deploy must name its project";
-  if (c.args.project.toLowerCase() !== t2.project.toLowerCase()) return `pipeline ${id} is in ${t2.project}, not ${c.args.project}`;
-  const extra = Object.keys(c.args).filter((k) => !KEYS.has(k) && !(k === "templateParameters" && t2.params));
-  if (extra.length) return `a deploy runs the pipeline as it is; ${extra.join(", ")} is not allowed`;
-  const tp = c.args.templateParameters;
-  if (tp !== void 0) {
-    if (!obj2(tp)) return "templateParameters must be names and values";
-    const off = Object.entries(tp).find(([k, v]) => t2.params?.[k] === void 0 || typeof v !== "string" || v !== t2.params[k]);
-    if (off) return `templateParameters ${off[0]} is not one you confirmed for ${t2.ring}`;
-  }
-  if (!buildOf(c)) return "a deploy's resources must be exactly one PR build";
-  if (!e.head) return "a deploy must name the PR head commit its build is from";
-  if (!pr) return "a deploy must be for this item's PR";
-  return void 0;
-}
-function buildCheck(id, b, pr) {
-  if (!b) return { why: `build ${id} could not be read` };
-  if (!/^completed$/i.test(b.status) || !/^succeeded$/i.test(b.result ?? "")) return { why: `build ${id} has not succeeded (${[b.status, b.result].filter(Boolean).join(", ").toLowerCase()})` };
-  if (!pr.head) return { why: `the head of PR ${pr.id} could not be read` };
-  const branches = [`refs/pull/${pr.id}/merge`, pr.branch].filter(Boolean);
-  if (!branches.includes(b.branch ?? "")) return { why: `build ${id} is from ${b.branch || "an unknown branch"}, not PR ${pr.id}` };
-  if (!same(b.version, pr.head) && !same(b.version, pr.merge)) return { why: `build ${id} is from commit ${(b.version ?? "unknown").slice(0, 7)}, not PR ${pr.id} at its head ${pr.head.slice(0, 7)}` };
-  if (b.repo && ![pr.repo, pr.repoId].some((r) => r && r.toLowerCase() === b.repo.toLowerCase())) return { why: `build ${id} is from repo ${b.repo}, not ${pr.repo ?? "the PR's"}` };
-  return { facts: { id, pr: pr.id, head: pr.head, version: b.version, branch: b.branch, readAt: (/* @__PURE__ */ new Date()).toISOString() } };
-}
-function ringMoved(was, now) {
-  const newer2 = now.last && (!was.last || now.last.id !== was.last.id) ? now.last : void 0;
-  if (newer2) return `a new ${runLine(newer2)}`;
-  const ids = (f) => f.running.map((r) => r.id).sort().join(",");
-  if (ids(was) !== ids(now)) return now.running.length ? `running now: ${now.running.map(runLine).join("; ")}` : "the run that was going has stopped";
-  return void 0;
-}
-function deployLine(e) {
-  const c = e.call, b = buildOf(c), id = pipelineOf(c), ring = e.deploy?.ring ?? (id ? `pipeline ${id}` : "an unnamed pipeline");
-  if (e.build && e.build.id === b) return `Deploy build ${b} (PR ${e.build.pr} @ ${e.build.head.slice(0, 7)}) to ${ring}`;
-  return `Deploy ${b ? `build ${b}` : "a build"} to ${ring} (build not checked yet)`;
-}
-function parseTargets(raw, cfg) {
-  const out = [];
-  for (const part of raw.split(/[,\n]/).map((s3) => s3.trim()).filter(Boolean)) {
-    const words3 = part.split(/\s+/), params = Object.fromEntries(words3.filter((w) => w.includes("=")).map((w) => [w.slice(0, w.indexOf("=")), w.slice(w.indexOf("=") + 1)]));
-    const rest2 = words3.filter((w) => !w.includes("=")), at3 = rest2.findIndex((w) => /^(?:[^/\s]+\/)?\d+$/.test(w));
-    if (at3 < 0 || rest2.length !== 2) return { ok: false, why: `Give each as a ring and its pipeline, such as TEST3 Globex/3003. Not: ${part}` };
-    const [project, idText] = rest2[at3].includes("/") ? rest2[at3].split("/") : [void 0, rest2[at3]], id = Number(idText), ring = rest2[1 - at3];
-    if (NEVER_RING.test(ring) || neverId(cfg, id) || Object.entries(params).some(([k, v]) => NEVER_RING.test(k) || NEVER_RING.test(v))) return { ok: false, why: `${ring} (${id}) is a shared or production ring. ${NAME} never deploys there.` };
-    const known2 = [...cfg.deploy?.allowed ?? [], ...cfg.deploy?.proposed ?? []].find((t2) => t2.pipelineId === id);
-    out.push({ pipelineId: id, ring, ...project ?? known2?.project ? { project: project ?? known2.project } : {}, ...Object.keys(params).length ? { params } : {} });
-  }
-  return { ok: true, targets: out };
-}
-var DEPLOY, isPipelineTool, isDeploy, int2, pipelineOf, obj2, NEVER_RING, KEYS, targetOf, neverId, same, hhmm, runLine, ringParts, ringMeaning, paramText, targetsText;
-var init_deploy = __esm({
-  "src/core/deploy.ts"() {
-    "use strict";
-    init_brand();
-    DEPLOY = "ado-pipelines_write:run_pipeline";
-    isPipelineTool = (c) => !!c && /pipelines?_write$/i.test(c.tool);
-    isDeploy = (c) => isPipelineTool(c) && /^run_?pipeline$/i.test(String(c.args.action ?? ""));
-    int2 = (v) => typeof v === "number" && Number.isInteger(v) && v > 0 ? v : typeof v === "string" && /^\d+$/.test(v) ? Number(v) : void 0;
-    pipelineOf = (c) => int2(c?.args.pipelineId);
-    obj2 = (v) => !!v && typeof v === "object" && !Array.isArray(v);
-    NEVER_RING = /(^|[^a-z0-9])(int|integration|prod|production|ppe|pre-?prod|live|canary|msit|dogfood)\d*([^a-z0-9]|$)/i;
-    KEYS = /* @__PURE__ */ new Set(["action", "project", "pipelineId", "resources"]);
-    targetOf = (cfg, id) => id ? cfg.deploy?.allowed.find((t2) => t2.pipelineId === id) : void 0;
-    neverId = (cfg, id) => !!id && (cfg.deploy?.never ?? []).includes(id);
-    same = (a, b) => !!a && !!b && (a.toLowerCase() === b.toLowerCase() || Math.min(a.length, b.length) >= 7 && (a.toLowerCase().startsWith(b.toLowerCase()) || b.toLowerCase().startsWith(a.toLowerCase())));
-    hhmm = (iso) => new Date(iso).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
-    runLine = (r) => `run ${r.id} by ${r.by || "someone"} at ${hhmm(r.at)}${r.result ? `, ${r.result.toLowerCase()}` : r.status ? `, ${r.status.toLowerCase()}` : ""}`;
-    ringParts = (f) => [{ text: f.running.length ? `running now: ${f.running.map(runLine).join("; ")}` : "nothing running" }, { text: f.last ? `last ${runLine(f.last)}` : "no runs yet" }];
-    ringMeaning = (f) => ringParts(f).map((p) => p.text).join("; ");
-    paramText = (p) => Object.entries(p ?? {}).map(([k, v]) => ` ${k}=${v}`).join("");
-    targetsText = (ts = []) => ts.map((t2) => `${t2.ring} ${t2.project ? `${t2.project}/` : ""}${t2.pipelineId}${paramText(t2.params)}`).join(", ");
-  }
-});
-
-// src/core/effects.ts
-function proposalEffects(effects, items2) {
-  const turns = items2.map((w) => `${w.id}:${w.lastMsgId}`);
-  return effects.map((e) => ({ ...e, turns }));
-}
-function unsafeRead(tools, servers) {
-  const whole = (t3) => t3 === "*" || servers.includes(t3.replace(/(?:-\*|\(\*\))$/, ""));
-  const t2 = tools.find((t3) => /_write(?:[:(]|$)/i.test(t3) || /pipelines?_write|run_?pipeline/i.test(t3) || whole(t3) || verbWrite(t3));
-  return t2 && `${t2} is never a read tool: it can change things, and workers would hold it before your ok. Remove it from the read tools in setup`;
-}
-function voteValue(c) {
-  const v = c?.args.vote;
-  if (typeof v === "number" || typeof v === "string" && /^-?\d+$/.test(v)) return VOTE_NAME[Number(v)] ? Number(v) : void 0;
-  return VOTE_WORDS[String(v ?? "").toLowerCase().replace(/[\s_-]/g, "")];
-}
-function askedVote(text3) {
-  const found = /* @__PURE__ */ new Set();
-  for (const sentence of text3.split(/(?<=[.!?;])\s+|\n+/)) for (const m of sentence.matchAll(ASK_VOTE)) {
-    if (/\b(?:if|when|once|unless|after)\b/i.test(sentence.slice(0, m.index))) continue;
-    const v = VOTE_WORDS[m[1].toLowerCase().replace(/[\s_-]/g, "")];
-    if (v !== void 0) found.add(v);
-  }
-  return found.size === 1 ? [...found][0] : void 0;
-}
-function refusal(cfg, e, pr) {
-  const c = e.call;
-  if (!c) return "it names no exact call";
-  if (isPipelineTool(c) && !isDeploy(c)) return `${NAME} never creates, renames, or changes a pipeline, or cancels or retries its stages`;
-  if (forbidden(c)) return `${NAME} never completes, merges, abandons, bypasses, or deletes`;
-  if (isDeploy(c)) return deployRefusal(cfg, e, pr);
-  if (!allows(cfg.agent.effectTools, c)) return `${c.tool}${c.args.action ? `:${String(c.args.action)}` : ""} is not one of the changes you allow`;
-  const id = prIdOf(c);
-  if (id === void 0 && (prTool(c) || isVote(c))) return "a pull request change must name its PR by number in pullRequestId";
-  if (id !== void 0 && id !== pr) return `PR ${id} is not this item's PR${pr ? ` (${pr})` : ""}`;
-  if (isVote(c) && voteValue(c) === void 0) return "a vote must be Approved, ApprovedWithSuggestions, WaitingForAuthor, Rejected, or NoVote";
-  if (isVote(c) && !e.head) return "a vote must name the commit the review read";
-  if (prTool(c) && String(c.args.action ?? "").toLowerCase() === "update_reviewers") {
-    const ids = Array.isArray(c.args.reviewerIds) ? c.args.reviewerIds.map(String) : [];
-    const upn = (cfg.owner.upn ?? "").trim().toLowerCase();
-    if (!(String(c.args.reviewerAction ?? "").toLowerCase() === "add" && ids.length === 1 && upn && ids[0].trim().toLowerCase() === upn)) return `${NAME} may only add you as a reviewer, never remove anyone or add someone else`;
-  }
-  const invite = inviteShapeProblem(c);
-  if (invite) return invite;
-  return void 0;
-}
-function inviteShapeProblem(c) {
-  if (!c || !/(?:^|[-_])CreateEvent$/i.test(c.tool)) return void 0;
-  const a = toolShape(c).args;
-  const missing = [!String(a.subject ?? "").trim() && "subject", !a.startDateTime && "start time", !a.endDateTime && "end time"].filter(Boolean);
-  const old = ["start", "minutes", "durationMinutes", "attendees"].filter((k) => k in a);
-  if (!missing.length && !old.length) return void 0;
-  return `${OLD_INVITE} that ${NAME} cannot turn into a calendar call (${missing.length ? `no ${missing.join(", ")}` : `old fields: ${old.join(", ")}`})`;
-}
-function toolShape(c) {
-  if (!c || !/(?:^|[-_])CreateEvent$/i.test(c.tool)) return c;
-  const a = c.args, start = Date.parse(String(a.start ?? "")), utc = (ms) => new Date(ms).toISOString().slice(0, 19);
-  const offset = (v) => typeof v === "string" && /(?:[zZ]|[+-]\d\d:?\d\d)$/.test(v) && !Number.isNaN(Date.parse(v));
-  if (a.startDateTime !== void 0) return offset(a.startDateTime) && offset(a.endDateTime) ? { ...c, args: { ...a, startDateTime: utc(Date.parse(String(a.startDateTime))), endDateTime: utc(Date.parse(String(a.endDateTime))), timeZone: "UTC" } } : c;
-  if (Number.isNaN(start)) return c;
-  const minutes = Number(a.minutes ?? a.durationMinutes ?? 30) || 30;
-  const { start: _s, minutes: _m, durationMinutes: _d, attendees, ...rest2 } = a;
-  const emails = [].concat(attendees ?? a.attendeeEmails ?? []).map(String).filter(Boolean);
-  return { ...c, args: { ...rest2, subject: a.subject, attendeeEmails: emails, startDateTime: utc(start), endDateTime: utc(start + minutes * 6e4), timeZone: "UTC" } };
-}
-function vet(cfg, effects = [], pr) {
-  const ok = [], todos = [];
-  const todo = (e, why2) => todos.push(`${e.summary.replace(/[.\s]+$/, "")}. Not made for you: ${why2}`);
-  for (const raw of effects) {
-    const [tool, action2] = parts(raw.call?.tool ?? "");
-    const split2 = raw.call && action2 && action2.toLowerCase() === String(raw.call.args.action ?? "").toLowerCase() ? { ...raw, call: { ...raw.call, tool } } : raw;
-    const e = split2.call ? { ...split2, call: toolShape(split2.call) } : split2;
-    const why2 = refusal(cfg, e, pr);
-    if (why2) todo(e, why2);
-    else ok.push(isDeploy(e.call) ? { ...e, deploy: { ring: targetOf(cfg, pipelineOf(e.call)).ring, pr } } : e);
-  }
-  const first3 = ok.find((e) => isDeploy(e.call));
-  if (!first3) return { effects: ok, todos };
-  for (const e of ok.filter((x) => x !== first3)) todo(e, `one change at a time with a deploy; propose it again after the deploy to ${first3.deploy.ring} is made`);
-  return { effects: [first3], todos };
-}
-function known(c, pr, e) {
-  const a = c.args, action2 = a.action === void 0 ? "" : String(a.action), prKey = pr ? ["pullRequestId"] : [];
-  if (isDeploy(c) && e) {
-    const r = a.resources, only2 = !!r && Object.keys(r).length === 1 && Object.keys(Object.values(r)[0] ?? {}).length === 1;
-    return { line: deployLine(e), loc: e.deploy?.ring ?? "", keys: ["action", "pipelineId", ...only2 ? ["resources"] : []] };
-  }
-  if (isVote(c)) {
-    const v = voteValue(c);
-    return { line: v === void 0 ? `Vote ${str(a.vote)} on ${pr}` : VOTE_SAYS[v](pr), loc: pr, keys: ["action", ...prKey, "vote"] };
-  }
-  if (/pull_?request_write$/i.test(c.tool) && /^update_reviewers$/i.test(action2) && /^add$/i.test(String(a.reviewerAction ?? "")) && Array.isArray(a.reviewerIds) && a.reviewerIds.length === 1)
-    return { line: `add ${str(a.reviewerIds[0])} as an optional reviewer on ${pr}`, loc: pr, keys: ["action", ...prKey, "reviewerIds", "reviewerAction"] };
-  if (/pull_?request_thread/i.test(c.tool)) {
-    if (!/^(create|reply)$|^update|status/i.test(action2)) return void 0;
-    const keys = ["action", ...prKey];
-    if (/status/i.test(action2)) return { line: `set thread ${str(a.threadId)} to ${str(a.status)} on ${pr}`, loc: pr, keys: [...keys, "threadId", "status"] };
-    if (a.content === void 0) return void 0;
-    const reply2 = /reply/i.test(action2), edit = /update/i.test(action2), lineKey = a.rightFileStartLine !== void 0 ? "rightFileStartLine" : "line";
-    const what = reply2 ? `reply in thread ${str(a.threadId)}` : edit ? `edit comment ${str(a.commentId)} in thread ${str(a.threadId)}` : "comment";
-    const file2 = a.filePath === void 0 ? "" : `${str(a.filePath)}${a[lineKey] === void 0 ? "" : `:${str(a[lineKey])}`}`;
-    const where = [...edit ? [`comment ${str(a.commentId)} in thread ${str(a.threadId)}`] : reply2 ? [`thread ${str(a.threadId)}`] : [], pr].join(", ");
-    return { line: `${what} on ${pr}`, loc: file2 ? `${file2}, ${where}` : where, text: str(a.content), keys: [...keys, "content", ...file2 ? ["filePath", lineKey] : [], ...reply2 || edit ? ["threadId"] : [], ...edit ? ["commentId"] : []] };
-  }
-  if (/work_?item/i.test(c.tool) && /update/i.test(action2) && Array.isArray(a.updates)) {
-    const lines = a.updates.map((u) => {
-      const { op, path, value, ...rest2 } = u;
-      const more = Object.entries(rest2).map(([k, x]) => `${k}: ${str(x)}`).join(", ");
-      return `${op === void 0 ? "" : `${str(op)} `}${str(path)}${value === void 0 ? "" : `: ${str(value)}`}${more ? ` (${more})` : ""}`;
-    });
-    return { line: `update work item ${str(a.id)}`, loc: `Work item ${str(a.id)}`, keys: ["action", "id", "updates"], lines };
-  }
-  if (/createevent/i.test(c.tool)) {
-    const who2 = [...[].concat(a.attendeeEmails ?? []), ...[].concat(a.attendees ?? [])].map(str).join(", ");
-    const startKey = a.startDateTime !== void 0 ? "startDateTime" : "start", endKey = a.endDateTime !== void 0 ? "endDateTime" : "end";
-    const start = a[startKey], end = a[endKey], offset = /(Z|[+-]\d\d:?\d\d)$/.test(String(start ?? ""));
-    const when3 = `${at(start)}${end === void 0 ? "" : ` to ${at(end)}`}${a.timeZone !== void 0 ? ` (${str(a.timeZone)})` : offset ? "" : " (your calendar's time zone)"}`;
-    const what = who2 ? `invite ${who2} to "${str(a.subject)}"` : `create "${str(a.subject)}"`;
-    return { line: `${what}, ${when3}`, loc: when3, text: what[0].toUpperCase() + what.slice(1), keys: ["subject", startKey, endKey, "timeZone", "attendeeEmails", "attendees"] };
-  }
-  return void 0;
-}
-function shown(e) {
-  const c = e.call;
-  if (!c) return { line: e.summary, loc: e.target, text: e.summary, detail: "", system: e.system };
-  const a = c.args, action2 = a.action === void 0 ? "" : String(a.action), id = prIdOf(c), pr = id === void 0 ? "" : `PR ${id}`;
-  const name = LINES[`${c.tool}:${action2}`]?.[0] ?? (LINES[c.tool] ? `${LINES[c.tool][0]}${action2 ? ` (${action2})` : ""}` : `${c.tool.replace(/^[^-]*-/, "")}${action2 ? ` ${action2}` : ""}`);
-  const f = known(c, pr, e) ?? { line: `${name}${pr ? ` on ${pr}` : ""}`, loc: pr, keys: ["action", ...pr ? ["pullRequestId"] : []] };
-  const rest2 = Object.entries(a).filter(([k]) => !f.keys.includes(k)).map(([k, x]) => `${k}: ${str(x)}`);
-  return { line: f.line, loc: f.loc, text: f.text ?? f.line, detail: [...f.lines ?? [], ...rest2].join("\n"), system: c.tool.replace(/-.*$/, "") };
-}
-function changeSays(e) {
-  const x = shown(e), where = x.loc.split(", ").filter((p) => p && !x.line.toLowerCase().includes(p.toLowerCase())).join(", ");
-  const says2 = !x.line.toLowerCase().includes(x.text.toLowerCase()) ? `: ${x.text}` : "";
-  const rest2 = x.detail.replace(/\n/g, "; ");
-  return `${x.line}${where ? ` at ${where}` : ""}${says2}${rest2 ? says2 ? ` (${rest2})` : `: ${rest2}` : ""}`;
-}
-var pendingEffects, sameChange, sameProposal, carryMarks, parts, allows, toolOf, NEVER_KEY, never2, prTool, forbidden, WRITE_VERBS, verbWrite, SETUP_REFUSAL, prIdOf, isVote, VOTES, VOTE_NAME, VOTE_WORDS, sameHead, ASK_VOTE, voteName, isInvite, BOOK, asksInvite, claimsInvite, OLD_INVITE, OLD_INVITE_ASK, reviewAgainCmd, reviewAgain, asksReviewAgain, refusedAsk, LINES, WRITE_DEFAULTS, offerable, line, changeName, changeLine, prParts, meaningParts, meaningOf, str, VOTE_SAYS, at, doLine, saidLine;
-var init_effects = __esm({
-  "src/core/effects.ts"() {
-    "use strict";
-    init_site();
-    init_brand();
-    init_deploy();
-    pendingEffects = (es = []) => es.filter((e) => !e.done && !e.off);
-    sameChange = (a, b) => JSON.stringify([a.system, a.action, a.target, a.call ?? a.payload ?? null]) === JSON.stringify([b.system, b.action, b.target, b.call ?? b.payload ?? null]) && (!isVote(a.call) || (a.head ?? null) === (b.head ?? null));
-    sameProposal = (a, b) => sameChange(a, b) && (a.turns && b.turns ? a.turns.some((turn) => b.turns?.includes(turn)) : !a.turns && !b.turns);
-    carryMarks = (list2, from = []) => list2.map((e) => {
-      if (e.done) return e;
-      const m = from.find((x) => (x.maybe || x.done && !isVote(e.call)) && sameProposal(x, e));
-      return m ? { ...e, done: m.done, maybe: m.maybe, error: m.error } : e;
-    });
-    parts = (entry) => {
-      const i = entry.indexOf(":");
-      return i < 0 ? [entry] : [entry.slice(0, i), entry.slice(i + 1)];
-    };
-    allows = (entries = [], c) => entries.some((x) => {
-      const [tool, action2] = parts(x);
-      return tool === c.tool && (!action2 || action2.toLowerCase() === String(c.args.action ?? "").toLowerCase());
-    });
-    toolOf = (entry) => parts(entry)[0];
-    NEVER_KEY = /bypass|autocomplete|completionoptions|deletesourcebranch|mergestrategy/i;
-    never2 = (v, pr) => Array.isArray(v) ? v.some((x) => never2(x, pr)) : !!v && typeof v === "object" && Object.entries(v).some(([k, x]) => NEVER_KEY.test(k) || /^action$/i.test(k) && /complet|merge|abandon|bypass|delete/i.test(String(x)) || /^status$/i.test(k) && (/^(completed|abandoned)$/i.test(String(x)) || pr && /^[23]$/.test(String(x))) || never2(x, pr));
-    prTool = (c) => /pull_?request|_pr_/i.test(c.tool);
-    forbidden = (c) => /delete/i.test(c.tool) || never2(c.args, prTool(c) && !/thread/i.test(c.tool));
-    WRITE_VERBS = /* @__PURE__ */ new Set(["send", "create", "update", "delete", "cancel", "accept", "tentatively", "decline", "forward", "reply", "move", "rename", "share", "upload", "set", "add", "remove", "flag", "post", "reactivate", "request", "do", "ingest", "copy", "resolve"]);
-    verbWrite = (tool) => {
-      const name = tool.replace(/^[^-]*-/, "").replace(/[:(].*$/, "");
-      const words3 = name.replace(/([a-z])([A-Z])/g, "$1_$2").toLowerCase().split("_").filter(Boolean);
-      return WRITE_VERBS.has(words3[0] ?? "") || words3[0] === "kusto" && ["command", "ingest"].includes(words3[1] ?? "");
-    };
-    SETUP_REFUSAL = /is never a read tool|never runs in your clone with a shell|no known Claude Code name/;
-    prIdOf = (c) => {
-      const v = c?.args.pullRequestId;
-      return typeof v === "number" && Number.isInteger(v) || typeof v === "string" && /^\d+$/.test(v) ? Number(v) : void 0;
-    };
-    isVote = (c) => !!c && (/vote/i.test(String(c.args.action ?? "")) || /vote/i.test(c.tool));
-    VOTES = { Approved: 10, ApprovedWithSuggestions: 5, NoVote: 0, WaitingForAuthor: -5, Rejected: -10 };
-    VOTE_NAME = Object.fromEntries(Object.entries(VOTES).map(([k, n]) => [n, k]));
-    VOTE_WORDS = { approved: 10, approve: 10, approvedwithsuggestions: 5, approvewithsuggestions: 5, waitingforauthor: -5, waitforauthor: -5, rejected: -10, reject: -10, novote: 0, reset: 0 };
-    sameHead = (a, b) => {
-      const [x, y] = [a?.toLowerCase() ?? "", b?.toLowerCase() ?? ""];
-      return !!x && !!y && (x === y || Math.min(x.length, y.length) >= 7 && (x.startsWith(y) || y.startsWith(x)));
-    };
-    ASK_VOTE = /\b(?:set|change|make|cast|switch|update|reset)\s+(?:my|the owner's|\w+'s)?\s*(?:review\s+)?vote\s+(?:on\s+(?:PR\s+)?\S+\s+)?(?:to|as)\s+["'“]?(approved with suggestions|approvedwithsuggestions|approved|approve|waiting for author|waitingforauthor|wait for author|rejected|reject|no vote|novote)\b/gi;
-    voteName = (n) => ({ 10: "Approved", 5: "Approved with suggestions", 0: "No vote", [-5]: "Waiting for author", [-10]: "Rejected" })[n] ?? String(n);
-    isInvite = (e) => !!e && (/(?:^|[-_])CreateEvent$/i.test(e.call?.tool ?? "") || /calendar/i.test(e.system ?? "") && /create_event|invite/i.test(e.action ?? ""));
-    BOOK = /\b(?:send|set up|setup|book|schedule|arrange)\b[^.?!]{0,60}\b(?:invite|invitation|meeting|call|sync|catch[- ]?up)\b|\bcan (?:we|you) (?:do|have|set up|book|schedule)\b[^.?!]{0,60}\b(?:meeting|call|sync|catch[- ]?up)\b/i;
-    asksInvite = (text3) => text3.split(/(?<=[.!?;])\s+|\n+/).some((s3) => {
-      const m = BOOK.exec(s3);
-      return !!m && !/\b(?:do not|don't|dont|no need to|not|never|without)\b/i.test(s3.slice(0, m.index));
-    });
-    claimsInvite = (text3) => /\b(?:I(?:'|’)ve|I have|I(?:'|’)ve just|we(?:'|’)ve|we have)\s+(?:just\s+)?(?:sent|booked|scheduled|set up)\b[^.!?]{0,80}\b(?:invite|invitation|meeting|call|sync)\b|\b(?:invite|invitation)\b[^.!?]{0,40}\b(?:is|was|has been)\s+(?:sent|booked)\b|\bsent (?:you |them |everyone )?(?:an? |the )?(?:invite|invitation)\b/i.test(text3);
-    OLD_INVITE = "this invite was proposed in an older form";
-    OLD_INVITE_ASK = `The invite was proposed in an older form ${NAME} cannot make. Answer to have ${NAME} draft the invite again; nothing is sent until you OK the new draft.`;
-    reviewAgainCmd = (code) => `${code}: review again`;
-    reviewAgain = (code, why2) => `${why2} Review again? Reply "${reviewAgainCmd(code)}", or "skip ${code}".`;
-    asksReviewAgain = (code, question) => !!question?.includes(`Reply "${reviewAgainCmd(code)}"`);
-    refusedAsk = (code, n) => `The reply counts on ${n === 1 ? "a change" : `${n} changes`} ${NAME} cannot make, listed as yours to do. Change the reply with "edit ${code}: <text>", or skip ${code}.`;
-    LINES = {
-      [DEPLOY]: ["Deploy", `run a pipeline on "Where ${NAME} may deploy" with a PR's build as its resource`],
-      "ado-repo_pull_request_thread_write": ["PR comment", "comment on a pull request, or reply in one of its threads"],
-      "ado-repo_pull_request_write:vote": ["PR vote", "cast the owner's vote on a pull request: Approved, ApprovedWithSuggestions, WaitingForAuthor, Rejected, or NoVote"],
-      "ado-repo_pull_request_write:update_reviewers": ["Add you as a PR reviewer", "add the owner, and only the owner, as an optional reviewer on the item's pull request, so a review he was asked for can start"],
-      "ado-wit_work_item_write:update": ["Work item update", "change fields on one work item; the update must fail if the item changed since it was read"],
-      "calendar-CreateEvent": ["Calendar invite", "create a meeting on the owner's calendar and invite people"]
-    };
-    WRITE_DEFAULTS = { ado: ["repo_pull_request_thread_write", "repo_pull_request_write:vote", "wit_work_item_write:update"], calendar: ["CreateEvent"] };
-    offerable = (entry) => {
-      const [tool, action2] = parts(entry);
-      return !/complet|merge|abandon|bypass|delete/i.test(entry) && !/pipelines?_write|run_?pipeline/i.test(tool) && !(/pull_?request_write$/i.test(tool) && !action2);
-    };
-    line = (entry) => LINES[entry] ?? site().actions?.[entry];
-    changeName = (entry) => line(entry)?.[0] ?? entry;
-    changeLine = (entry) => {
-      const l = line(entry);
-      return l ? `${entry}: ${l[1]}` : entry;
-    };
-    prParts = (p) => [{ text: `"${p.title}" by ${p.author}` }, ...p.required.length ? [{ text: `required reviewers: ${p.required.join(", ")}` }] : [], ...p.autoComplete ? [{ text: "autocomplete is on: your approval may complete it", warn: true }] : []];
-    meaningParts = (e) => e.pr ? prParts(e.pr) : e.ring ? ringParts(e.ring) : void 0;
-    meaningOf = (e) => meaningParts(e)?.map((p) => p.text).join("; ");
-    str = (v) => typeof v === "string" ? v : JSON.stringify(v);
-    VOTE_SAYS = { 10: (pr) => `Approve ${pr}`, 5: (pr) => `Approve ${pr} with suggestions`, 0: (pr) => `Reset your vote on ${pr}`, [-5]: (pr) => `Wait for author on ${pr}`, [-10]: (pr) => `Reject ${pr}` };
-    at = (v) => {
-      const t2 = String(v ?? ""), z2 = /(Z|[+-]\d\d:?\d\d)$/.exec(t2)?.[1];
-      return `${t2.replace("T", " ").slice(0, 16)}${z2 ? ` ${z2}` : ""}`;
-    };
-    doLine = (effects) => effects.map((e) => {
-      const l = shown(e).line;
-      return l[0].toLowerCase() + l.slice(1);
-    }).join(" and ");
-    saidLine = (effects) => `You said you'd ${doLine(effects)}`;
   }
 });
 
@@ -21758,8 +21965,8 @@ var init_feedback = __esm({
 // src/store/state.ts
 import { closeSync as closeSync3, existsSync as existsSync6, mkdirSync as mkdirSync3, openSync as openSync3, readdirSync as readdirSync4, readFileSync as readFileSync6, rmSync as rmSync3, writeSync } from "node:fs";
 import { homedir as homedir3, hostname as hostname3, uptime } from "node:os";
-import { createHash } from "node:crypto";
-import { basename as basename3, dirname as dirname5, isAbsolute as isAbsolute2, join as join6, relative, resolve as resolve3 } from "node:path";
+import { createHash as createHash2 } from "node:crypto";
+import { basename as basename4, dirname as dirname5, isAbsolute as isAbsolute2, join as join6, relative, resolve as resolve3 } from "node:path";
 function loadLocal() {
   const p = join6(LOCAL_DIR, "local.json");
   const l = readJson(p, {});
@@ -21817,7 +22024,7 @@ function releaseReceiptLock(path, token) {
     } catch (error62) {
       if (!busyReceiptLock(error62)) throw error62;
     }
-    if (Date.now() >= deadline) throw new Error(`Could not release page receipt lock ${basename3(path)}.`);
+    if (Date.now() >= deadline) throw new Error(`Could not release page receipt lock ${basename4(path)}.`);
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
   }
 }
@@ -21827,7 +22034,7 @@ function withReceiptLock(path, action2) {
   mkdirSync3(dirname5(path), { recursive: true });
   const lock = `${path}.lock`, token = `${process.pid} ${Date.now()} ${Math.random()}`, deadline = Date.now() + 1e4;
   while (!tryReceiptLock(lock, token)) {
-    if (Date.now() >= deadline) throw new Error(`Timed out waiting for page receipt ${basename3(path)}. Check its saved result before acting again.`);
+    if (Date.now() >= deadline) throw new Error(`Timed out waiting for page receipt ${basename4(path)}. Check its saved result before acting again.`);
     const holder = readReceiptLock(lock);
     if (holder === void 0 || holder === null) {
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
@@ -21954,7 +22161,7 @@ var init_state = __esm({
       }
       pruneOutcomes(before) {
         this.w(this.p("state", "outcomes.json"), readJson(this.p("state", "outcomes.json"), []).filter((o) => (o.at ?? "") >= before));
-        for (const f of listJson(this.p("state")).filter((f2) => basename3(f2).startsWith("receipts-"))) this.w(f, readJson(f, []).filter((r) => r.at >= before));
+        for (const f of listJson(this.p("state")).filter((f2) => basename4(f2).startsWith("receipts-"))) this.w(f, readJson(f, []).filter((r) => r.at >= before));
       }
       outcome(id) {
         const mine = readJson(this.p("state", "outcomes.json"), []).filter((o) => o.id === id);
@@ -22022,7 +22229,7 @@ var init_state = __esm({
         this.w(this.p("state", `receipts-${this.machine}.json`), [...readJson(this.p("state", `receipts-${this.machine}.json`), []), { at: (/* @__PURE__ */ new Date()).toISOString(), text: text3 }].slice(-20));
       }
       takeReceipts() {
-        const files2 = listJson(this.p("state")).filter((f) => basename3(f).startsWith("receipts-"));
+        const files2 = listJson(this.p("state")).filter((f) => basename4(f).startsWith("receipts-"));
         const all = files2.flatMap((f) => readJson(f, []));
         for (const f of files2) rmSync3(f, { force: true });
         return all.sort((a, b) => a.at.localeCompare(b.at));
@@ -22099,6 +22306,12 @@ var init_state = __esm({
       }
       health() {
         return readJson(this.p("state", "health.json"), {});
+      }
+      agentHold() {
+        return readJson(this.p("state", "agent-hold.json"), null) ?? void 0;
+      }
+      saveAgentHold(hold) {
+        this.w(this.p("state", "agent-hold.json"), hold ?? null);
       }
       setHealth(id, text3) {
         const h = this.health();
@@ -22242,13 +22455,13 @@ var init_state = __esm({
       answerById(id) {
         if (!/^[a-zA-Z0-9-]+$/.test(id)) throw new Error("Invalid answer identity.");
         for (const directory2 of [this.p("state", "answers"), this.p("state", "done", "answers")]) {
-          for (const file2 of listJson(directory2)) if (basename3(file2).startsWith(`${id}-`)) return readJson(file2, void 0);
+          for (const file2 of listJson(directory2)) if (basename4(file2).startsWith(`${id}-`)) return readJson(file2, void 0);
         }
         return void 0;
       }
       answered(id) {
         if (!/^[0-9A-HJKMNP-TV-Z]{26}$/.test(id)) throw new Error("Invalid answer identity.");
-        return listJson(this.p("state", "done", "answers")).some((file2) => basename3(file2).startsWith(`${id}-`) && readJson(file2, void 0)?.id === id);
+        return listJson(this.p("state", "done", "answers")).some((file2) => basename4(file2).startsWith(`${id}-`) && readJson(file2, void 0)?.id === id);
       }
       pageSubmission(id) {
         if (!/^[a-f0-9-]{36}$/i.test(id)) throw new Error("Invalid page submission identity.");
@@ -22319,7 +22532,7 @@ var init_state = __esm({
       }
       // A Continue window owns a session while this file exists. Only the window's wrapper writes it (R-HIL-08).
       openWindows() {
-        return listJson(this.p("state", "open")).map((f) => ({ id: basename3(f, ".json"), o: readJson(f, null) }));
+        return listJson(this.p("state", "open")).map((f) => ({ id: basename4(f, ".json"), o: readJson(f, null) }));
       }
       openWindow(id) {
         return readJson(this.p("state", "open", `${id}.json`), void 0);
@@ -22334,10 +22547,10 @@ var init_state = __esm({
         return readJson(this.p("state", "changes", `${jobId}-${runId}.json`), {});
       }
       callRec(call) {
-        return readJson(this.p("state", "calls", `${createHash("sha256").update(call).digest("hex")}.json`), void 0);
+        return readJson(this.p("state", "calls", `${createHash2("sha256").update(call).digest("hex")}.json`), void 0);
       }
       saveCallRec(r) {
-        this.w(this.p("state", "calls", `${createHash("sha256").update(r.call).digest("hex")}.json`), r);
+        this.w(this.p("state", "calls", `${createHash2("sha256").update(r.call).digest("hex")}.json`), r);
       }
       saveChange(jobId, runId, index, c) {
         this.w(this.p("state", "changes", `${jobId}-${runId}.json`), { ...this.changes(jobId, runId), [index]: c });
@@ -22404,7 +22617,7 @@ var init_state = __esm({
       }
       // A finished week's counted lines, one file per machine and week (R-NEX-11).
       numberWeeks() {
-        return listJson(this.p("state", "numbers")).map((file2) => basename3(file2, ".json")).filter((f) => /-\d{4}-\d{2}-\d{2}$/.test(f)).map((f) => ({ machine: f.slice(0, -11), week: f.slice(-10), file: this.p("state", "numbers", `${f}.json`) }));
+        return listJson(this.p("state", "numbers")).map((file2) => basename4(file2, ".json")).filter((f) => /-\d{4}-\d{2}-\d{2}$/.test(f)).map((f) => ({ machine: f.slice(0, -11), week: f.slice(-10), file: this.p("state", "numbers", `${f}.json`) }));
       }
       // Written once and never again: false when the file is already there.
       saveNumberWeek(machine2, week, v) {
@@ -39839,155 +40052,6 @@ var init_retry = __esm({
   }
 });
 
-// src/core/policy.ts
-function currentDraft(workflow, job) {
-  const endedWithoutReply = job && job.id === workflow.job && job.state === "done" && job.purpose === "work" && job.result && !job.result.reply && (workflow.status === job.result.summary || workflow.status === `Nothing needed: ${job.result.summary}`) && Date.parse(workflow.revAt ?? workflow.updatedAt) <= Date.parse(job.result.at ?? job.updatedAt);
-  return endedWithoutReply ? void 0 : workflow.draft;
-}
-function confidence(sources) {
-  sources = sources.filter((s3) => !s3.stale);
-  const extracted = sources.filter((s3) => s3.origin === "extracted");
-  const level = (s3) => !s3.some((x) => x.tier === "card") ? 0 : s3.some((x) => x.tier === "live") ? 2 : 1;
-  const n = extracted.length ? level(extracted) : Math.max(0, level(sources) - 1);
-  return ["low", "medium", "high"][n];
-}
-function matches(r, wf, conf) {
-  const who2 = !!wf.asker && !!r.who.accounts?.some((a) => a.id === wf.asker.id);
-  if (!who2) return false;
-  if (r.when.intent && r.when.intent !== wf.intent) return false;
-  if (r.when.chat === "direct") {
-    if (wf.chat.group || wf.chat.test || wf.chat.id.startsWith("ch|")) return false;
-  } else if (r.when.chat && r.when.chat !== wf.chat.id) return false;
-  return !r.when.minConfidence || RANK[conf] >= RANK[r.when.minConfidence];
-}
-function decide(wf, rules, ctx) {
-  const conf = confidence(wf.draft?.sources ?? []);
-  const rule = rules.find((r) => !r.style && matches(r, wf, conf));
-  const d = (action2, reason) => ({ action: action2, ruleId: rule?.id, reason, confidence: conf });
-  if (wf.before) return d("draft", "It came before setup; replies to older messages wait for you");
-  if (wf.draft?.holding) return d("draft", "A holding reply: the work is not finished, so it waits for you");
-  if (ctx.never?.some((p) => p.id === wf.asker?.id)) return d("draft", "This person never gets automatic replies");
-  if (wf.chat.id.startsWith("ch|")) return d("draft", "Channel replies always wait for you");
-  if (wf.correction) return d("draft", "A correction always waits for you");
-  if (wf.needsMe) return d("draft", "You said this one needs you");
-  if (wf.startedBy === "room") return d("draft", "It was sent to the whole chat; a reply there waits for you");
-  if (wf.work || wf.partOf) return d("draft", "Replies on open work always wait for you");
-  if (wf.shareHold) return d("draft", wf.shareHold);
-  if (pendingEffects(wf.effects).length || wf.todos?.length || wf.follow) return d("draft", "It promises changes, a follow-up, or something you must do");
-  if (!rule) return d("draft", "No rule covers this sender and ask");
-  if (ctx.held?.includes(rule.id)) return d("draft", `Rule ${rule.id} is on hold: you said one of its replies was not needed`);
-  if (rule.then === "ignore") return d("ignore", `Rule ${rule.id}: ignore`);
-  if (rule.then === "draft") return d("draft", `Rule ${rule.id}: always draft`);
-  if (rule.then === "shortcut") return d("draft", `Rule ${rule.id}: shortcut actions arrive later`);
-  if (!ctx.autoSend) return d("draft", "Auto-send is off");
-  if (ctx.autoSendsThisHour >= ctx.maxPerHour) return d("draft", `Already ${ctx.maxPerHour} automatic replies in this chat this hour`);
-  if (rule.then === "ack") return d("ack", `Rule ${rule.id}: acknowledge`);
-  if (commits(wf)) return d("draft", "It commits you to something");
-  if (labeledToGuests(wf)) return d("draft", "It quotes labeled content, and this chat has guests");
-  if (wf.gaps?.length) return d("draft", `It could not read ${wf.gaps.join(", ")}`);
-  if (wf.draft?.sources.some((s3) => s3.tier === "private")) return d("draft", "It uses a private source");
-  if (conf === "low") return d("draft", "Not enough evidence to send on its own");
-  return d("send", `Rule ${rule.id}, confidence ${conf}`);
-}
-function withMarker(text3, marker, ownerName) {
-  const line2 = marker.replace("{first}", ownerName.split(/\s+/)[0]);
-  const body = text3.trimEnd().toLowerCase().endsWith(line2.toLowerCase()) ? text3.trimEnd().slice(0, -line2.length).trimEnd() : text3;
-  return `${body}
-
-${line2}`;
-}
-function inQuietHours(now, quiet = { from: "20:00", to: "08:00" }) {
-  const m = now.getHours() * 60 + now.getMinutes();
-  const [f, t2] = [quiet.from, quiet.to].map((s3) => {
-    const [h, mm] = s3.split(":").map(Number);
-    return h * 60 + mm;
-  });
-  return f <= t2 ? m >= f && m < t2 : m >= f || m < t2;
-}
-var DEFAULT_POLICY, RANK, reopenable, labeledToGuests, commits, signsApproved, signatureOf, approvedReplyText;
-var init_policy = __esm({
-  "src/core/policy.ts"() {
-    "use strict";
-    init_effects();
-    DEFAULT_POLICY = {
-      delayMin: 15,
-      undoMin: 10,
-      maxAutoPerChatHour: 3,
-      marker: "(sent by {first}'s assistant)",
-      ackText: "Got it, {first} will get back to you."
-    };
-    RANK = { low: 0, medium: 1, high: 2 };
-    reopenable = (wf, verb) => wf.state === "done" && verb === "answer" && wf.kind !== "tracker" && !wf.sent && !wf.work && !wf.redacted;
-    labeledToGuests = (wf) => wf.chat.guests !== false && !!wf.draft?.sources.some((s3) => !!s3.label && !/^(public|general|non-?business)$/i.test(s3.label));
-    commits = (wf) => !!wf.draft?.commitment || wf.intent === "commitment_decision";
-    signsApproved = (cfg) => cfg.signApproved ?? !!cfg.signature?.trim();
-    signatureOf = (cfg) => cfg.signature?.trim() || cfg.policy?.marker || DEFAULT_POLICY.marker;
-    approvedReplyText = (text3, workflow, cfg) => text3 && signsApproved(cfg) && !workflow.learnAfter && !workflow.draft?.byOwner ? withMarker(text3, signatureOf(cfg), cfg.owner.name) : text3;
-  }
-});
-
-// src/core/page-approval.ts
-import { createHash as createHash2 } from "node:crypto";
-function pageAnswerRefusal(answer, workflow, automation2, proposal, cfg, managementRev, job) {
-  const guard = answer.page;
-  if (!guard) return void 0;
-  if (guard.kind === "manage") return managementRev === guard.expect ? void 0 : "Changed since you looked. Nothing was sent or changed. Open the new version first.";
-  if (guard.kind === "send-reply" && workflow?.state === "done") return "Already sent. Nothing else was sent. Open the current item before posting a correction.";
-  if (guard.kind === "send-reply" && (!workflow || !currentDraft(workflow, job)?.text)) return "The latest turn proposes no reply. Nothing was sent. Open the current item.";
-  if (guard.kind === "mark-todos") {
-    if (!workflow || !guard.todoIds?.length || guard.todoIds.some((id) => !workflow.kept?.some((todo) => todo.id === id && !todo.done))) return "These to-dos changed. Nothing was marked. Open the current list.";
-    return void 0;
-  }
-  if (answer.verb === "close" && workflow?.kept?.some((todo) => !todo.done)) return "These to-dos changed. Nothing was marked. Open the current list.";
-  if (guard.kind === "undo-send" && (!workflow?.sent || workflow.sent.msgId !== guard.sentMessageId)) return "That reply is no longer the current sent reply. Nothing was deleted.";
-  if (guard.kind === "feedback-send" && (!workflow?.sent || workflow.sent.msgId !== guard.sentMessageId)) return "That reply changed. Nothing was sent, deleted or redrafted. Open its current activity first.";
-  const current = workflow ? workflowApprovalRev(workflow) : automation2 ? automationApprovalRev(automation2) : proposal ? proposalApprovalRev(proposal) : void 0;
-  if (current !== guard.expect) return "Changed since you looked. Nothing was sent or changed. Open the new version first.";
-  if (guard.replyDigest && (!cfg || !workflow?.draft || pageDigest(approvedReplyText(workflow.draft.text, workflow, cfg)) !== guard.replyDigest)) return "The reply signature changed since you looked. Nothing was sent or changed. Open the new version first.";
-  return void 0;
-}
-var canonical, pageDigest, PAGE_REPLY_CHANGED, pageChangeId, pageOptionId, workflowApprovalRev, automationApprovalRev, proposalApprovalRev;
-var init_page_approval = __esm({
-  "src/core/page-approval.ts"() {
-    "use strict";
-    init_effects();
-    init_policy();
-    canonical = (value) => Array.isArray(value) ? value.map(canonical) : value && typeof value === "object" ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])])) : value;
-    pageDigest = (value) => createHash2("sha256").update(JSON.stringify(canonical(value))).digest("hex");
-    PAGE_REPLY_CHANGED = "The reply changed since you approved it. It was not sent. Review the current reply.";
-    pageChangeId = (effect) => pageDigest([effect.call ?? effect.payload, effect.system, effect.action, effect.target, effect.head]);
-    pageOptionId = (option) => pageDigest(option);
-    workflowApprovalRev = (workflow) => pageDigest({
-      state: workflow.state,
-      draft: workflow.draft,
-      turn: workflow.revAt,
-      conversation: [workflow.chat.id, workflow.chat.guests, workflow.lastMsgId, workflow.lastAsk, workflow.pending, workflow.msgIds, workflow.newCount],
-      changes: pendingEffects(workflow.effects).map((effect) => ({ id: pageChangeId(effect), meaning: [effect.pr, effect.ring, effect.build, effect.deploy], summary: effect.summary, maybe: effect.maybe })),
-      choices: workflow.choices && { ...workflow.choices, options: workflow.choices.options.map(pageOptionId) },
-      question: workflow.question,
-      meeting: workflow.meeting,
-      sent: workflow.sent?.msgId,
-      fyi: workflow.fyi,
-      watchedAs: workflow.watchedAs,
-      promises: workflow.todos,
-      todos: workflow.kept?.filter((todo) => !todo.done).map((todo) => [todo.id, todo.text, todo.at]),
-      work: workflow.work && { goal: workflow.work.goal, next: workflow.work.next, proposed: workflow.work.proposed }
-    });
-    automationApprovalRev = (automation2) => pageDigest({
-      state: automation2.state,
-      to: automation2.to,
-      text: automation2.text,
-      texts: automation2.texts,
-      rotation: automation2.rotation,
-      schedule: automation2.schedule,
-      until: automation2.until,
-      maxSends: automation2.maxSends,
-      stopOnReply: automation2.stopOnReply
-    });
-    proposalApprovalRev = (proposal) => pageDigest({ state: proposal.state, title: proposal.title, ops: proposal.ops });
-  }
-});
-
 // src/core/render.ts
 function age(fromIso, now) {
   const m = Math.max(0, Math.round((now.getTime() - Date.parse(fromIso)) / 6e4));
@@ -40527,6 +40591,7 @@ function gateBlock(kind) {
 }
 function sendGate(wf, text3, ctx) {
   if (!text3?.trim()) return { send: false, reason: "Nothing to send" };
+  if (replyGap(text3)) return { send: false, reason: REPLY_BLANK };
   if (ctx.paused) return { send: false, reason: "Paused" };
   if (ctx.alreadyReplied) return { send: false, reason: "A reply to this message already exists" };
   if (ctx.newestThreadMsgId !== wf.lastMsgId) return { send: false, reason: "New messages since the draft", rerun: true };
@@ -40549,7 +40614,8 @@ var init_gate = __esm({
       { id: "report-only", line: "You never send messages or change anything. You finish by calling submit_report once.", not: ["execute"] },
       { id: "approved-only", line: "You make only the listed changes. You never send chat messages. You finish by calling submit_report once.", only: ["execute"] },
       { id: "no-commitment-send", line: "A reply that commits the owner to a date, an approval, or ownership is always a draft.", not: ["execute", "bootstrap", "learn", "promise"] },
-      { id: "private-stays-draft", line: "A reply that uses a private source is always a draft.", not: ["execute", "bootstrap", "learn", "promise"] }
+      { id: "private-stays-draft", line: "A reply that uses a private source is always a draft.", not: ["execute", "bootstrap", "learn", "promise"] },
+      { id: "no-unfilled-reply", line: "A reply contains no unfilled blanks, placeholders or gap markers. If a fact is missing, ask a question or set goalMet false with the blocker; never invent the fact or leave a blank for sending.", not: ["execute"] }
     ];
   }
 });
@@ -41772,6 +41838,14 @@ async function dueAutomations(store2, src, cfg, now = /* @__PURE__ */ new Date()
   const p = { ...DEFAULT_POLICY, ...cfg.policy };
   let n = 0;
   for (const a of store2.automations().filter((a2) => a2.state === "active" && !a2.heard && a2.next && Date.parse(a2.next) <= now.getTime())) {
+    const text3 = textFor(a), out = withMarker(text3, signatureOf(cfg), cfg.owner.name);
+    if (replyGap(out)) {
+      Object.assign(a, { state: "paused", next: void 0, why: REPLY_BLANK });
+      store2.saveAutomation(a);
+      store2.setHealth(`auto:${a.code}`, `${a.code}: ${REPLY_BLANK}. The automation is paused; nothing was sent.`);
+      store2.log({ event: "rule-held-gap", code: a.code, reason: REPLY_BLANK });
+      continue;
+    }
     const due2 = new Date(a.next), next2 = nextAt(a.schedule, now);
     const after = (t2) => !t2 || !!a.until && localDay3(t2) > a.until;
     const end = (why2) => {
@@ -41796,12 +41870,11 @@ async function dueAutomations(store2, src, cfg, now = /* @__PURE__ */ new Date()
       store2.log({ event: "automation-skipped", code: a.code, why: skip });
       continue;
     }
-    const text3 = textFor(a), count = a.count + 1;
+    const count = a.count + 1;
     const spent = count >= (a.maxSends ?? Infinity) || a.rotation === "once-each" && count >= textsOf(a).length;
     Object.assign(a, { count, next: spent || after(next2) ? void 0 : next2.toISOString(), state: spent || after(next2) ? "ended" : "active", lastAt: now.toISOString() });
     store2.saveAutomation(a);
     store2.addAuto(a.to.chatId, "send");
-    const out = withMarker(text3, signatureOf(cfg), cfg.owner.name);
     try {
       const { msgId } = await src.send(a.to.chatId, out);
       store2.addSent(msgId, out);
@@ -41835,9 +41908,25 @@ var init_automations = __esm({
   }
 });
 
+// src/runner/reply-gap.ts
+function holdReplyGap(store2, item2, text3, automatic = false) {
+  if (!replyGap(text3)) return false;
+  Object.assign(item2, { state: "needs_human", approved: void 0, sendAt: void 0, status: `Not sent: ${REPLY_BLANK}`, question: item2.question || "What goes in the blank?" });
+  store2.save(item2);
+  store2.log({ event: automatic ? "rule-held-gap" : "reply-held-gap", code: item2.code, workflowId: item2.id, reason: REPLY_BLANK });
+  return true;
+}
+var init_reply_gap = __esm({
+  "src/runner/reply-gap.ts"() {
+    "use strict";
+    init_policy();
+  }
+});
+
 // src/runner/autosend.ts
 async function afterDraft(store2, src, cfg, wf) {
   if (wf.state !== "needs_human" || !wf.draft || wf.draft.preview) return;
+  if (holdReplyGap(store2, wf, wf.draft.text, true)) return;
   const p = policy(cfg);
   const d = decide(wf, store2.rules(), { autoSend: !!store2.control().autoSend, autoSendsThisHour: autoCount(store2, wf), maxPerHour: p.maxAutoPerChatHour, never: p.never, held: Object.keys(store2.heldRules()) });
   wf.decision = d;
@@ -41862,11 +41951,16 @@ async function ackJob(store2, src, cfg, wf) {
 async function ack(store2, src, cfg, wf, ruleId) {
   const p = policy(cfg);
   if (!wf.sent && !wf.acked && !store2.control().paused && !await ownerActive(store2, src)) {
-    wf.acked = true;
-    store2.save(wf);
     const first3 = cfg.owner.name.split(/\s+/)[0];
     const oof = await src.presence().then((r) => r.oof, () => void 0);
     const text3 = withMarker([p.ackText.replace("{first}", first3), oof && awayLine(first3, oof)].filter(Boolean).join(" "), signatureOf(cfg), cfg.owner.name);
+    if (replyGap(text3)) {
+      holdReplyGap(store2, wf, text3, true);
+      store2.setHealth(`ack:${wf.code}`, REPLY_BLANK);
+      return;
+    }
+    wf.acked = true;
+    store2.save(wf);
     const { msgId } = await src.send(wf.chat.id, text3);
     store2.addSent(msgId, text3);
     store2.addAuto(wf.chat.id, "ack");
@@ -41888,7 +41982,7 @@ async function ownerActive(store2, src) {
   return (await src.presence()).availability === "Available";
 }
 async function dueSends(store2, src, cfg, probe) {
-  const due2 = store2.workflows().filter((w) => w.state === "scheduled" && w.sendAt && Date.parse(w.sendAt) <= Date.now());
+  const due2 = store2.workflows().filter((w) => w.state === "scheduled" && w.sendAt && Date.parse(w.sendAt) <= Date.now()).filter((w) => !holdReplyGap(store2, w, w.draft?.text, true));
   for (const w of due2.filter((w2) => w2.draft?.preview)) {
     Object.assign(w, { state: "needs_human", sendAt: void 0, status: "Edited by you; waits for your ok" });
     store2.save(w);
@@ -41931,6 +42025,7 @@ var init_autosend = __esm({
     init_policy();
     init_apply();
     init_intake2();
+    init_reply_gap();
     policy = (cfg) => ({ ...DEFAULT_POLICY, ...cfg.policy });
   }
 });
@@ -42068,7 +42163,7 @@ var init_whose = __esm({
     "use strict";
     running = (f) => f.job?.state === "running" && !f.job.watch;
     startsNext = (f) => {
-      const draft2 = f.state === "running" && f.queue === "next", run2 = f.job?.state === "queued" && !f.job.watch && !f.job.retryLater && !!f.job.slot;
+      const draft2 = !f.aiBlocked && f.state === "running" && f.queue === "next", run2 = !f.aiBlocked && f.job?.state === "queued" && !f.job.watch && !f.job.retryLater && !!f.job.slot;
       return f.runner === "ok" ? draft2 || f.state === "scheduled" || run2 : f.runner === "paused" && (draft2 || run2 && !f.job.retry);
     };
     RULES2 = [
@@ -42507,6 +42602,7 @@ function snapshot(store2, now = Date.now()) {
     runner,
     queue,
     slots,
+    agentWait: activeAgentHold(store2.agentHold(), cfg.agent, now),
     catchupSeen: store2.seen().catchup ?? new Date(now - 864e5).toISOString(),
     me: [cfg.owner.name, first3, ...cfg.aliases ?? []].filter(Boolean).map((s3) => s3.toLowerCase()),
     tz: cfg.tz,
@@ -42522,6 +42618,7 @@ function factsOf(s3, sub) {
     state: w.state,
     runner: s3.runner,
     queue: s3.queue.get(w.id),
+    aiBlocked: !!s3.agentWait,
     job: j2 && { state: j2.state, watch: !!j2.every, retryLater: !!j2.retry && Date.parse(j2.retry.at) > s3.now, slot: s3.slots.has(j2.id), retry: !!j2.retry },
     // A step for "them" that waits on the owner by name is the owner's step.
     work: w.work && { open: !w.work.closed, next: nextWho(s3, w.work), waiting: !!w.work.waitingOn },
@@ -42543,7 +42640,7 @@ function nextOf(s3, sub, f, section) {
   if (section === "working") return { next: { owner: { kind: "delegate" } } };
   const busy2 = f.state === "running" || f.state === "scheduled" || f.job?.state === "queued" && !f.job.watch;
   const onPause = s3.runner === "paused" && (f.state === "scheduled" || !!f.job?.retry);
-  const why2 = busy2 && s3.runner !== "ok" && (s3.runner !== "paused" || onPause) ? runnerWhy[s3.runner] : f.job?.retryLater && j2?.retry ? `tries again ${clock2(new Date(j2.retry.at), s3.tz)}` : f.queue === "line" ? "in line behind live asks" : f.queue === "limit" ? runnerWhy.capped : f.job?.state === "queued" && !f.job.slot && !f.job.watch ? "waits for a free run slot" : f.queue === "held" ? "open in your AI chat" : void 0;
+  const why2 = s3.agentWait && s3.runner !== "stopped" && (f.state === "running" || f.job?.state === "queued") ? s3.agentWait.text : busy2 && s3.runner !== "ok" && (s3.runner !== "paused" || onPause) ? runnerWhy[s3.runner] : f.job?.retryLater && j2?.retry ? `tries again ${clock2(new Date(j2.retry.at), s3.tz)}` : f.queue === "line" ? "in line behind live asks" : f.queue === "limit" ? runnerWhy.capped : f.job?.state === "queued" && !f.job.slot && !f.job.watch ? "waits for a free run slot" : f.queue === "held" ? "open in your AI chat" : void 0;
   if (f.job?.watch) return { next: { owner: { kind: "delegate" }, what: `checks every ${j2.every} min` }, why: why2 };
   const n = w.work && !w.work.closed ? w.work.next : void 0;
   if (n?.who === "them") {
@@ -42624,6 +42721,7 @@ function moveKind(w) {
 }
 function delegateNext(s3, p, j2) {
   const why2 = p.why ?? "";
+  if (s3.agentWait && why2 === s3.agentWait.text) return s3.agentWait.kind === "model" ? { what: "waits for an available AI model" } : s3.agentWait.retryAt ? { what: "waits for AI quota; tries again {at}", at: s3.agentWait.retryAt } : { what: "waits for the AI budget or model to change" };
   if (/^tries again/.test(why2) && j2?.retry) return {
     what: j2.retry.last.kind === "not_ready" ? `waits for ${j2.retry.last.waitFor || j2.retry.last.why}; checks again {at}` : `tries again {at} (${triesOf(j2.retry)})`,
     at: j2.retry.at
@@ -42811,6 +42909,7 @@ var init_next = __esm({
     init_numbers2();
     init_work();
     init_intake();
+    init_agent_failure();
     isMe = (s3, who2) => !!who2 && s3.me.includes(who2.toLowerCase());
     nextWho = (s3, k) => k.next?.who === "them" && isMe(s3, k.waitingOn?.who) ? "you" : k.next?.who;
     runnerWhy = { off: `${NAME} is not reading now`, paused: `${NAME} is paused`, stopped: `${NAME} is stopped`, capped: "daily limit reached; tomorrow" };
@@ -43799,7 +43898,7 @@ var init_report = __esm({
       workflowId: external_exports.string(),
       intent: external_exports.string().describe("One intent id from the list in your prompt"),
       state: external_exports.enum(["needs_human", "done", "waiting_on_sender"]),
-      reply: external_exports.object({ text: external_exports.string(), commitment: external_exports.boolean(), sources: external_exports.array(SourceSchema) }).optional(),
+      reply: external_exports.object({ text: external_exports.string().describe("Complete sendable words only, with no blanks or placeholders. When a fact is missing, use question or goalMet false instead."), commitment: external_exports.boolean(), sources: external_exports.array(SourceSchema) }).optional(),
       question: external_exports.string().optional(),
       choices: external_exports.object({
         prompt: external_exports.string(),
@@ -43953,12 +44052,60 @@ var init_validate = __esm({
   }
 });
 
+// src/runner/agent-health.ts
+function waitingForAgent(store2, hold) {
+  const queued = store2.jobs().filter((job) => job.state === "queued");
+  for (const job of queued) if (job.error !== hold.text) {
+    job.error = hold.text;
+    store2.saveJob(job);
+  }
+  for (const item2 of store2.workflows()) {
+    if (item2.state !== "running" && !(item2.state === "waiting_on_task" && queued.some((job) => job.id === item2.job))) continue;
+    if (item2.status !== hold.text) {
+      item2.status = hold.text;
+      store2.save(item2);
+    }
+  }
+}
+function blockedAgent(store2, cfg, now = Date.now()) {
+  const hold = store2.agentHold();
+  if (!hold) return void 0;
+  if (!activeAgentHold(hold, cfg.agent, now)) {
+    store2.saveAgentHold();
+    store2.setHealth("agent-setup");
+    store2.log({ event: "agent-setup-resumed", reason: hold.config !== pageDigest(cfg.agent) ? "AI configuration changed" : "retry time reached" });
+    return void 0;
+  }
+  if (store2.health()["agent-setup"]?.text !== hold.text) store2.setHealth("agent-setup", hold.text);
+  return hold;
+}
+function holdAgent(store2, cfg, failure2) {
+  const hold = { ...failure2, config: pageDigest(cfg.agent) };
+  store2.saveAgentHold(hold);
+  store2.setHealth("agent-setup", hold.text);
+  waitingForAgent(store2, hold);
+  store2.log({ event: "agent-setup-held", kind: hold.kind, retryAt: hold.retryAt, reason: hold.text });
+  return hold;
+}
+var init_agent_health = __esm({
+  "src/runner/agent-health.ts"() {
+    "use strict";
+    init_agent_failure();
+    init_page_approval();
+  }
+});
+
 // src/runner/dispatch.ts
 import { existsSync as existsSync17 } from "node:fs";
 import { mkdirSync as mkdirSync8, writeFileSync as writeFileSync9 } from "node:fs";
 import { join as join18 } from "node:path";
 import { randomUUID as randomUUID5 } from "node:crypto";
 async function dispatch(store2, src, cfg, run2 = runAgent, probe) {
+  const held = blockedAgent(store2, cfg);
+  if (held) {
+    waitingForAgent(store2, held);
+    return 0;
+  }
   const cap2 = cfg.dailyRuns ?? 200;
   const room = cap2 - store2.runsToday();
   const running2 = store2.workflows().filter((w) => w.state === "running" && heldBy(store2, w) !== "window").sort((a, b) => a.updatedAt.localeCompare(b.updatedAt));
@@ -43978,6 +44125,7 @@ async function dispatch(store2, src, cfg, run2 = runAgent, probe) {
   const asks = store2.workflows().filter((w) => w.notes?.some((n) => n.a === void 0) && w.state !== "running" && heldBy(store2, w) !== "window" && !(w.job && store2.job(w.job)?.state === "running"));
   queue.push(...asks.slice(0, Math.max(0, room - queue.length)));
   for (let i = 0; i < queue.length; i += cfg.maxParallel) {
+    if (blockedAgent(store2, cfg)) break;
     await Promise.all(queue.slice(i, i + cfg.maxParallel).map(async (wf) => {
       try {
         await runOne(store2, src, cfg, wf, run2, probe);
@@ -43994,6 +44142,7 @@ async function dispatch(store2, src, cfg, run2 = runAgent, probe) {
     }));
   }
   for (const w of promisesDue(store2, cfg).slice(0, Math.max(0, room - done2))) {
+    if (blockedAgent(store2, cfg)) break;
     try {
       await checkPromise(store2, src, cfg, w, run2, probe);
     } catch (e) {
@@ -44003,6 +44152,7 @@ async function dispatch(store2, src, cfg, run2 = runAgent, probe) {
     done2++;
   }
   for (const a of store2.automations().filter((a2) => a2.heard && a2.state === "active").slice(0, Math.max(0, room - done2))) {
+    if (blockedAgent(store2, cfg)) break;
     await judgeReply(store2, cfg, a, run2);
     done2++;
   }
@@ -44010,6 +44160,11 @@ async function dispatch(store2, src, cfg, run2 = runAgent, probe) {
 }
 function startFailed(store2, wf, e) {
   const raw = String(e).replace(/^Error: /, "");
+  const account = agentSetupFailure(raw);
+  if (account) {
+    holdAgent(store2, store2.config(), account);
+    return;
+  }
   const setup = SETUP_REFUSAL.test(raw), why2 = setup ? raw : String(e).slice(0, 160);
   store2.log({ event: "run-failed", workflowId: wf.id, code: wf.code, error: why2 });
   const fresh = store2.workflow(wf.id);
@@ -44027,6 +44182,7 @@ function startFailed(store2, wf, e) {
   store2.log({ event: "run-start-failed", workflowId: wf.id, code: wf.code, n, error: why2 });
 }
 async function judgeReply(store2, cfg, a, run2 = runAgent, now = /* @__PURE__ */ new Date()) {
+  if (blockedAgent(store2, cfg)) return;
   const runId = ulid3(), heard = a.heard;
   const { cwd, mcpConfigPath } = workerMcp(store2, a.id, runId);
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -44044,6 +44200,13 @@ async function judgeReply(store2, cfg, a, run2 = runAgent, now = /* @__PURE__ */
   const res = await run2(cfg.agent, { workflowId: a.id, runId, sessionId: randomUUID5(), prompt, cwd, mcpConfigPath, extraTools: [`${WORKER_SERVER}-submit_report`], dirs: [] });
   const said2 = store2.peekReport(a.id, runId)?.summary?.trim() ?? "";
   store2.archiveReport(a.id, runId);
+  const account = !said2 && (res.setup ?? agentSetupFailure(`${res.error ?? ""}
+${res.summary ?? ""}`));
+  if (account) {
+    holdAgent(store2, cfg, account);
+    store2.saveAutomation({ ...store2.automations().find((item2) => item2.id === a.id) ?? a, why: account.text, updatedAt: now.toISOString() });
+    return;
+  }
   const fresh = store2.automations().find((x) => x.id === a.id) ?? a, first3 = heard.from.split(/\s+/)[0];
   const later = /^later\s+(\S+)/i.exec(said2), at3 = later ? new Date(later[1]) : void 0;
   const change2 = /^done\b/i.test(said2) ? { state: "ended", next: void 0, why: `${first3} said it is done` } : at3 && !isNaN(at3.getTime()) && at3 > now && at3.getTime() - now.getTime() < 7 * 864e5 ? { next: at3.toISOString(), why: `${first3} said ${at3.toLocaleString(void 0, { weekday: "short", hour: "numeric", minute: "2-digit" })}; the next reminder moved` } : /^keep\b/i.test(said2) ? { why: `${first3} replied; reminders continue` } : { state: "paused", next: void 0, why: `${first3} replied` };
@@ -44077,10 +44240,11 @@ function refuseStart(cfg, folder) {
   if (shell) throw new Error(shellInClone(shell));
 }
 async function runOne(store2, src, cfg, wf, run2, probe, catalogRetried = false) {
+  if (blockedAgent(store2, cfg)) return;
   refuseStart(cfg);
   if (wf.state !== "running") return runAsk(store2, src, cfg, wf, run2);
   await probePRs(store2, cfg, probe, Date.now(), true, [wf]);
-  if (wf.state !== "running") return;
+  if (wf.state !== "running" || blockedAgent(store2, cfg)) return;
   const runId = ulid3();
   const { cwd, mcpConfigPath } = workerMcp(store2, wf.id, runId);
   const others = wf.code ? store2.openInChat(wf.chat.id).filter((o) => o.id !== wf.id && o.code && !o.followUp) : [];
@@ -44102,6 +44266,17 @@ async function runOne(store2, src, cfg, wf, run2, probe, catalogRetried = false)
   const report2 = store2.peekReport(wf.id, runId) ?? salvaged;
   store2.log({ event: "worker", ...salvaged ? { salvaged: true } : {}, workflowId: wf.id, code: wf.code, runId, exitCode: res.exitCode, ms: res.ms, intent: report2?.intent, summary: report2?.summary, sources: report2?.reply?.sources, commitment: report2?.reply?.commitment, error: res.error, ...ran("draft", res.used) });
   const fresh = store2.workflow(wf.id) ?? wf;
+  const account = !report2 && (res.setup ?? agentSetupFailure(`${res.error ?? ""}
+${res.summary ?? ""}`));
+  if (account) {
+    holdAgent(store2, cfg, account);
+    if (fresh.state === "running") {
+      Object.assign(fresh, { status: account.text, startFails: void 0 });
+      store2.save(fresh);
+    }
+    store2.archiveReport(wf.id, runId);
+    return;
+  }
   if (!report2 && !catalogRetried && cfg.agent.flavor === "copilot" && CATALOG_CHANGED.test(sessionLog(cfg.agent.flavor, wf.session.id).slice(logStart))) {
     if (fresh.state !== "running" || heldBy(store2, fresh) === "window") return;
     if (store2.runsToday() < (cfg.dailyRuns ?? 200)) {
@@ -44221,6 +44396,7 @@ async function runOne(store2, src, cfg, wf, run2, probe, catalogRetried = false)
   }
 }
 async function runAsk(store2, src, cfg, wf, run2, retrySession) {
+  if (blockedAgent(store2, cfg)) return;
   const runId = ulid3();
   const job = wf.job ? store2.job(wf.job) : void 0;
   const session = retrySession ?? job?.session.id ?? wf.session.id;
@@ -44233,7 +44409,10 @@ async function runAsk(store2, src, cfg, wf, run2, retrySession) {
   backupSession(store2, session);
   const report2 = store2.peekReport(wf.id, runId);
   const fresh = store2.workflow(wf.id);
-  if (!report2 && !retrySession && cfg.agent.flavor === "copilot" && CATALOG_CHANGED.test(sessionLog(cfg.agent.flavor, session).slice(logStart))) {
+  const account = !report2 && (res.setup ?? agentSetupFailure(`${res.error ?? ""}
+${res.summary ?? ""}`));
+  if (account) holdAgent(store2, cfg, account);
+  if (!report2 && !account && !retrySession && cfg.agent.flavor === "copilot" && CATALOG_CHANGED.test(sessionLog(cfg.agent.flavor, session).slice(logStart))) {
     if (fresh.state === "running" || heldBy(store2, fresh) === "window" || !fresh.notes?.some((note2) => note2.a === void 0) || fresh.job && store2.job(fresh.job)?.state === "running") return;
     if (store2.runsToday() < (cfg.dailyRuns ?? 200)) {
       const sessionId = randomUUID5();
@@ -44244,7 +44423,7 @@ async function runAsk(store2, src, cfg, wf, run2, retrySession) {
     store2.log({ event: "worker-catalog-retry-blocked", kind: "ask", workflowId: wf.id, code: wf.code, runId, reason: "daily-run-limit" });
   }
   const note = fresh.notes?.find((n) => n.a === void 0);
-  if (note) Object.assign(note, report2?.answer ? { a: report2.answer, sources: report2.reply ? checked(store2, cfg, report2).reply.sources : void 0 } : { a: `I could not answer that${res.error ? ` (${res.error.slice(0, 80)})` : ""}. Ask again, or open ${fresh.code} on your computer.` });
+  if (note) Object.assign(note, report2?.answer ? { a: report2.answer, sources: report2.reply ? checked(store2, cfg, report2).reply.sources : void 0 } : { a: account ? account.text : `I could not answer that${res.error ? ` (${res.error.slice(0, 80)})` : ""}. Ask again, or open ${fresh.code} on your computer.` });
   store2.save(fresh);
   store2.archiveReport(wf.id, runId);
   store2.log({ event: "ask", workflowId: wf.id, code: wf.code, runId, ms: res.ms, ...ran("ask", res.used) });
@@ -44378,6 +44557,8 @@ var init_dispatch = __esm({
     init_validate();
     init_mcp_client();
     init_runinfo();
+    init_agent_failure();
+    init_agent_health();
     AUTH = /bad credentials|not logged in|please run \/login|authenticat|unauthori[sz]ed|sign[ -]?in/i;
     CATALOG_CHANGED = /MCP tool catalog changed/i;
     readDirs = (store2, cfg) => [.../* @__PURE__ */ new Set([...(cfg.knowledge ?? []).map((f) => here2(store2.root, f)), cfg.cards?.root ?? join18(store2.root, "knowledge"), ...cfg.cards?.team ? [cfg.cards.team] : []])].filter((d) => existsSync17(d));
@@ -44446,6 +44627,7 @@ async function tell(store2, src, wf, text3) {
   if (wf.answerSurface === "chat" || wf.answerSurface === "panel") store2.addReceipt(text3);
 }
 async function checkPromise(store2, src, cfg, wf, run2, probe) {
+  if (blockedAgent(store2, cfg)) return;
   const job = wf.job ? store2.job(wf.job) : void 0;
   const session = job?.session.id ?? wf.session.id, runId = ulid3(), said2 = wf.promise.text;
   wf.promise = { ...wf.promise, state: "checking" };
@@ -44464,6 +44646,15 @@ async function checkPromise(store2, src, cfg, wf, run2, probe) {
     backupSession(store2, session);
     report2 = store2.peekReport(wf.id, runId);
     store2.archiveReport(wf.id, runId);
+    const account = !report2 && (res.setup ?? agentSetupFailure(`${res.error ?? ""}
+${res.summary ?? ""}`));
+    if (account) {
+      holdAgent(store2, cfg, account);
+      const fresh2 = store2.workflow(wf.id) ?? wf;
+      fresh2.promise = { ...fresh2.promise, text: said2, state: "pending", why: account.text };
+      store2.save(fresh2, false);
+      return;
+    }
     error62 = res.error;
   } catch (e) {
     error62 = String(e).replace(/^Error: /, "");
@@ -44522,6 +44713,8 @@ var init_promise2 = __esm({
     init_effects();
     init_prompt();
     init_dispatch();
+    init_agent_failure();
+    init_agent_health();
     init_probe();
     init_jobs();
     init_work();
@@ -44616,7 +44809,7 @@ async function ownerReplies(store2, cfg, raw, text3, items2, options = {}) {
   });
   if (!pending.length) return result;
   const health = `owner-reply:${items2[0].chat.id}`;
-  if (options.ai === false) {
+  if (options.ai === false || blockedAgent(store2, cfg)) {
     store2.setHealth(health, OWNER_REPLY_UNCHECKED);
     return result;
   }
@@ -44648,7 +44841,12 @@ async function ownerReplies(store2, cfg, raw, text3, items2, options = {}) {
     backupSession(store2, sessionId);
     const report2 = store2.peekReport(id, runId) ?? reportFromText(run2.summary, id, ["other"]);
     const selected = report2?.answeredItems;
-    if (!report2 || !selected || selected.some((item2) => !pending.some((candidate) => candidate.id === item2))) throw new Error(run2.error ?? "The AI did not return a valid owner-reply judgment.");
+    if (!report2 || !selected || selected.some((item2) => !pending.some((candidate) => candidate.id === item2))) {
+      const account = run2.setup ?? agentSetupFailure(`${run2.error ?? ""}
+${run2.summary ?? ""}`);
+      if (account) holdAgent(store2, cfg, account);
+      throw new Error(run2.error ?? "The AI did not return a valid owner-reply judgment.");
+    }
     for (const item2 of pending) result.set(item2.id, selected.includes(item2.id));
     store2.log({ event: "owner-reply-judged", chat: items2[0].chat.id, msgId: raw.id, answered: selected, summary: report2.summary, sessionId });
     store2.setHealth(health);
@@ -44711,6 +44909,8 @@ var init_owner_reply = __esm({
     init_dispatch();
     init_own();
     init_intake2();
+    init_agent_failure();
+    init_agent_health();
     OWNER_REPLY_UNCHECKED = `${NAME} couldn't check with the AI whether you already replied; it found no reply of yours in the chat.`;
     normalized = (text3) => htmlToText(mdToHtml(text3)).normalize("NFKC").replace(/\s+/g, " ").trim().toLowerCase();
   }
@@ -45789,7 +45989,8 @@ async function applyOne(store2, src, cfg, wf, a, procs, probe) {
       return reply(store2, src, a, `${MARK} Updated ${wf.code}: "${a.text}". Nothing sent. ${left.length ? `ok will also: ${effectLine(left)}. Say "ok ${wf.code}" to do both, or "ok ${wf.code} except ${left.map((_, i) => i + 1).join(" ")}" to send only the reply.` : `Say "ok ${wf.code}" to send it.`}`);
     }
     case "ok":
-      if (wf.state === "needs_human" && (wf.question || /_{3,}/.test(wf.draft?.text ?? ""))) return reply(store2, src, a, `${MARK} ${wf.code} is not ready: ${wf.question ?? "the draft has a blank to fill"}. Reply "${wf.code}: your answer", and I'll show the new draft.`);
+      if (holdReplyGap(store2, wf, wf.draft?.text)) return reply(store2, src, a, `${MARK} ${REPLY_BLANK}`, true);
+      if (wf.state === "needs_human" && wf.question) return reply(store2, src, a, `${MARK} ${wf.code} is not ready: ${wf.question}. Reply "${wf.code}: your answer", and I'll show the new draft.`);
       if (wf.state === "running") return reply(store2, src, a, `${MARK} ${wf.code} is being rewritten with your answer. I'll show the new draft first.`);
     // falls through
     case "send": {
@@ -45799,6 +46000,7 @@ async function applyOne(store2, src, cfg, wf, a, procs, probe) {
         if (original && original.trim() !== a.text.trim()) wf.learnAfter = { draft: original, sent: a.text };
         wf.draft = { ...wf.draft ?? { commitment: false, sources: [] }, text: a.text, byOwner: true, ownWords: ownWords(wf, a.text) };
       }
+      if (holdReplyGap(store2, wf, wf.draft?.text)) return reply(store2, src, a, `${MARK} ${REPLY_BLANK}`, true);
       if (wf.job && pendingEffects(wf.effects).length > 0) {
         if (await askGone(store2, src, cfg, wf, a)) {
           store2.save(wf);
@@ -46019,6 +46221,10 @@ async function threadSince(store2, src, cfg, wf, want, signed = false) {
   return { asker, ours: ours4, ownerReplied, ownerAt, ownerUnknown, ownerExact };
 }
 async function send(store2, src, cfg, wf, text3, by, probe) {
+  if (holdReplyGap(store2, wf, text3, !!by.ruleId)) {
+    if (by.answer) await reply(store2, src, by.answer, `${MARK} ${REPLY_BLANK}`, true);
+    return false;
+  }
   if (wf.draft && !currentDraft(wf, wf.job ? store2.job(wf.job) : void 0)) {
     wf.draft = void 0;
     wf.learnAfter = void 0;
@@ -46100,6 +46306,10 @@ async function send(store2, src, cfg, wf, text3, by, probe) {
   const a = by.answer ?? { id: "", code: wf.code, verb: "ok", surface: wf.answerSurface ?? "chat", at: "" };
   const p = { ...DEFAULT_POLICY, ...cfg.policy };
   const out = text3 ? by.ruleId ? withMarker(text3, signatureOf(cfg), cfg.owner.name) : approvedReplyText(text3, wf, cfg) : text3;
+  if (out !== text3 && holdReplyGap(store2, wf, out, !!by.ruleId)) {
+    if (by.answer) await reply(store2, src, by.answer, `${MARK} ${REPLY_BLANK}`, true);
+    return false;
+  }
   const replyDigest = by.replyDigest ?? wf.approved?.replyDigest;
   if (replyDigest && pageDigest(out ?? "") !== replyDigest) {
     Object.assign(wf, { state: "needs_human", sendAt: void 0, approved: void 0, status: PAGE_REPLY_CHANGED });
@@ -46416,6 +46626,7 @@ var init_apply = __esm({
     init_deploy();
     init_page_approval();
     init_page_revision();
+    init_reply_gap();
     norm3 = (t2) => htmlToText(t2).replace(/\s+/g, " ").trim();
     flat = (t2) => t2.replace(/\s+/g, " ").trim();
     squash = (t2) => norm3(t2).replace(/[^\p{L}\p{N}]+/gu, "").toLowerCase();
@@ -47017,10 +47228,16 @@ function okRelay(store2, wf) {
 }
 function startJobs(store2, cfg, procs, hold = []) {
   dueTrackers(store2);
+  const held = blockedAgent(store2, cfg);
+  if (held) {
+    waitingForAgent(store2, held);
+    return 0;
+  }
   let n = 0;
   let room = Math.min((cfg.jobs?.parallel ?? 3) - store2.jobs().filter((j2) => j2.state === "running" && !j2.run?.relay).length, (cfg.dailyRuns ?? 200) - store2.runsToday());
   const control2 = store2.control(), now = Date.now();
   for (const job of store2.jobs().filter((j2) => j2.state === "queued" && !store2.openWindow(j2.id) && !hold.includes(j2.key) && (!j2.retry || Date.parse(j2.retry.at) <= now))) {
+    if (blockedAgent(store2, cfg)) break;
     if (job.retry) {
       if (control2.paused || control2.stopped) continue;
       if (!parentsOf(store2, job).length) {
@@ -47092,8 +47309,13 @@ function startJobs(store2, cfg, procs, hold = []) {
     try {
       restoreSession(store2, job.session.id);
       pid = procs.start(agent, { workflowId: job.id, runId, sessionId: job.session.id, prompt: job.wrapUp ? WRAP_UP(job.id) : buildJobPrompt(job, cfg, store2.root, { clone: clone2, telemetry }), cwd: job.repo ?? clone2 ?? cwd, mcpConfigPath, extraTools: job.purpose === "execute" ? [`${WORKER_SERVER}-submit_report`, `${WORKER_SERVER}-make_change`] : WORKER_TOOLS, dirs: readDirs(store2, cfg) }).pid;
-      Object.assign(job, { state: "running", run: { id: runId, pid, startedAt: (/* @__PURE__ */ new Date()).toISOString(), machine: store2.machine, purpose: job.purpose, asks: job.asks.length, ...job.wrapUp ? { wrapUp: true } : {} }, wrapUp: void 0 });
+      const waiting = job.error;
+      Object.assign(job, { state: "running", error: void 0, run: { id: runId, pid, startedAt: (/* @__PURE__ */ new Date()).toISOString(), machine: store2.machine, purpose: job.purpose, asks: job.asks.length, ...job.wrapUp ? { wrapUp: true } : {} }, wrapUp: void 0 });
       store2.saveJob(job);
+      for (const item2 of parentsOf(store2, job)) if (waiting && item2.status === waiting) {
+        item2.status = `Working on ${job.goal}`;
+        store2.save(item2);
+      }
       store2.addRun();
       store2.log({ event: "job-start", job: job.id, key: job.key, purpose: job.purpose, runId, pid });
       n++;
@@ -47107,7 +47329,9 @@ function startJobs(store2, cfg, procs, hold = []) {
           store2.setHealth(`worker-files:${runId}`, `Could not remove files for failed worker ${runId}: ${String(error62).slice(0, 160)}`);
         }
       }
-      failOrRetry(store2, job, `Could not start: ${String(e).slice(0, 120)}`);
+      const account = agentSetupFailure(String(e));
+      if (account) holdJob(store2, cfg, job, account);
+      else failOrRetry(store2, job, `Could not start: ${String(e).slice(0, 120)}`);
     }
   }
   return n;
@@ -47155,7 +47379,11 @@ async function checkJobs(store2, src, cfg, procs, probe) {
     }
     ended.set(job.id, readUse(store2, job));
     try {
-      if (r) {
+      const f = join22(LOCAL_DIR, "sessions", `${run2.id}.log`);
+      const account = !r && !live2 ? agentSetupFailure(`${existsSync20(f) ? readFileSync16(f, "utf8") : ""}
+${agentProcessLog(job.session.agent, join22(LOCAL_DIR, "sessions", `mcp-${run2.id}.json`))}`) : void 0;
+      if (account) holdJob(store2, cfg, job, account);
+      else if (r) {
         if (run2.purpose === "execute") await finishExecute(store2, src, cfg, job, procs, probe);
         else finishWork(store2, job, r, run2.asks);
         store2.archiveReport(job.id, run2.id);
@@ -47173,6 +47401,20 @@ async function checkJobs(store2, src, cfg, procs, probe) {
     }
   }
   return n;
+}
+function holdJob(store2, cfg, job, failure2) {
+  holdAgent(store2, cfg, failure2);
+  if (job.purpose === "execute") {
+    fail(store2, job, failure2.text);
+    return;
+  }
+  Object.assign(job, { state: "queued", error: failure2.text, run: void 0, retry: void 0, wrapUp: void 0 });
+  store2.saveJob(job);
+  for (const item2 of parentsOf(store2, job)) {
+    item2.status = failure2.text;
+    store2.save(item2);
+  }
+  store2.log({ event: "job-agent-held", job: job.id, key: job.key, kind: failure2.kind, retryAt: failure2.retryAt, reason: failure2.text, ...usedBy(job) });
 }
 function cleanJobFiles(store2, run2) {
   if (run2.relay || run2.machine !== store2.machine) return;
@@ -47744,6 +47986,8 @@ var init_jobs = __esm({
     init_inbox();
     init_ledger();
     init_run_files();
+    init_agent_failure();
+    init_agent_health();
     realProcs = {
       start: (cfg, i) => startAgent(cfg, i, join22(LOCAL_DIR, "sessions", `${i.runId}.log`)),
       alive: (pid) => aliveAs(pid),
@@ -52017,7 +52261,7 @@ init_next();
 // src/web/react-build.ts
 init_paths();
 import { readFileSync as readFileSync23 } from "node:fs";
-import { join as join30, basename as basename4 } from "node:path";
+import { join as join30, basename as basename5 } from "node:path";
 var directory = (root) => join30(root, "dist", "web-react");
 function reactAssets(root = ROOT) {
   const manifest = JSON.parse(readFileSync23(join30(directory(root), ".vite", "manifest.json"), "utf8"));
@@ -52036,7 +52280,7 @@ function reactAsset(path, token, root = ROOT) {
   const js = path.endsWith(".js"), css = path.endsWith(".css");
   if (!js && !css) return void 0;
   let content = readFileSync23(join30(directory(root), path), "utf8");
-  if (js) for (const file2 of assets) for (const value of [file2, `./${basename4(file2)}`, `../${file2}`]) {
+  if (js) for (const file2 of assets) for (const value of [file2, `./${basename5(file2)}`, `../${file2}`]) {
     for (const quote of ['"', "'", "`"]) content = content.replaceAll(`${quote}${value}${quote}`, `${quote}${value}?t=${encodeURIComponent(token)}${quote}`);
   }
   return { content, type: js ? "text/javascript; charset=utf-8" : "text/css; charset=utf-8" };
@@ -52114,7 +52358,7 @@ var item = external_exports.object({
   why,
   status: text2,
   attention: optional2,
-  attentionKind: external_exports.enum(["reply-changed", "run-failed"]).optional(),
+  attentionKind: external_exports.enum(["reply-changed", "run-failed", "agent-setup"]).optional(),
   openOn: optional2,
   teams: optional2,
   debug: strings.optional(),
@@ -52785,6 +53029,7 @@ ${code} stays ${byCode.get(code)?.state === "done" ? "done" : "open"}. Nothing i
       actionIds.push(markTodos(id, wf.kept.filter((todo) => !todo.done)));
     }
     const job = wf.job ? facts.jobs.get(wf.job) : void 0;
+    const agentWait = facts.agentWait && (wf.state === "running" || wf.state === "waiting_on_task" && job?.state === "queued" || job?.state === "failed" && job.error === facts.agentWait.text) ? facts.agentWait.text : void 0;
     const stopped = wf.state === "waiting_on_task" && (!job || job.state === "failed" || job.state === "done");
     const replyChanged = wf.state === "needs_human" && wf.status === PAGE_REPLY_CHANGED;
     const notSent = !replyChanged && wf.state === "needs_human" && (!!draft2 && /^(?:Not sent: |Not sure it was sent)/.test(wf.status) || /^Could not start: /.test(wf.status));
@@ -52802,8 +53047,8 @@ ${code} stays ${byCode.get(code)?.state === "done" ? "done" : "open"}. Nothing i
       actionIds,
       askAt: asksAt.get(id),
       status: pageText(c.status),
-      attention: replyChanged ? PAGE_REPLY_CHANGED : notSent ? pageText(wf.status) : recovery || stopped || c.draft?.holding ? pageText(job?.error ?? wf.status) || "The previous run could not finish. Use the available action, ask a question or review the visible holding reply." : !draft2 && job?.state === "done" && job.result && !job.result.reply && wf.status.endsWith(job.result.summary) ? pageText(job.result.summary) : void 0,
-      attentionKind: replyChanged ? "reply-changed" : recovery || stopped || c.draft?.holding ? "run-failed" : void 0,
+      attention: replyChanged ? PAGE_REPLY_CHANGED : agentWait ?? (notSent ? pageText(wf.status) : recovery || stopped || c.draft?.holding ? pageText(job?.error ?? wf.status) || "The previous run could not finish. Use the available action, ask a question or review the visible holding reply." : !draft2 && job?.state === "done" && job.result && !job.result.reply && wf.status.endsWith(job.result.summary) ? pageText(job.result.summary) : void 0),
+      attentionKind: replyChanged ? "reply-changed" : agentWait ? "agent-setup" : recovery || stopped || c.draft?.holding ? "run-failed" : void 0,
       question: c.question === void 0 ? void 0 : (failedJobDirections(wf) ? forPage(c.question) : pageText(c.question)) || void 0,
       choices: c.choices && { ...c.choices, prompt: forPage(c.choices.prompt), options: c.choices.options.map((option) => ({ ...option, id: pageOptionId(option) })) },
       sourceIds: sources(id, id, why2.sources),
@@ -53117,7 +53362,7 @@ ${code} stays ${byCode.get(code)?.state === "done" ? "done" : "open"}. Nothing i
       ...row,
       what: pageText(Object.values(entities.placements).find((placement2) => placement2.act === row.code && placement2.kind === "scheduled")?.headline ?? row.what),
       sendAt: byCode.get(row.code)?.state === "scheduled" ? byCode.get(row.code)?.sendAt : void 0,
-      detail: row.code && (byCode.get(row.code)?.state !== "scheduled" || /^Held: /.test(byCode.get(row.code)?.status ?? "")) ? pageText(byCode.get(row.code)?.status) : void 0,
+      detail: entities.items[row.code]?.attentionKind === "agent-setup" ? `Held: ${entities.items[row.code].attention}` : row.code && (byCode.get(row.code)?.state !== "scheduled" || /^Held: /.test(byCode.get(row.code)?.status ?? "")) ? pageText(byCode.get(row.code)?.status) : void 0,
       retry: (() => {
         const workflow = byCode.get(row.code), retry2 = workflow?.job ? facts.jobs.get(workflow.job)?.retry : void 0;
         return retry2 ? { at: retry2.at, attempt: retry2.n, reason: pageText(retry2.last.why), tried: retry2.tried.map(pageText) } : void 0;
@@ -54236,7 +54481,7 @@ import { execFileSync as execFileSync4, spawn as spawn6, spawnSync as spawnSync5
 import { createHash as createHash7 } from "node:crypto";
 import { cpSync as cpSync2, existsSync as existsSync29, lstatSync as lstatSync3, mkdirSync as mkdirSync12, readFileSync as readFileSync24, readlinkSync, rmSync as rmSync9, symlinkSync, writeFileSync as writeFileSync16 } from "node:fs";
 import { homedir as homedir9 } from "node:os";
-import { basename as basename5, join as join33 } from "node:path";
+import { basename as basename6, join as join33 } from "node:path";
 init_brand();
 init_route();
 var COPILOT = process.env.COPILOT_HOME ?? join33(homedir9(), ".copilot");
@@ -54343,7 +54588,7 @@ function doctor() {
       out.push({ ok: has(cfg.agent.command[0]) && signedIn(cfg.agent.flavor, cfg.agent.command), what: `AI CLI "${cfg.agent.command.join(" ")}" answers`, fix: `Run "${cfg.agent.command.join(" ")}" once and sign in.` });
       for (const h of Object.values(store2.health())) out.push({ ok: false, what: h.text });
       const copies = store2.conflictCopies();
-      if (copies.length) out.push({ ok: false, what: `${copies.length} file(s) OneDrive copied after a sync conflict: ${copies.slice(0, 3).map((f) => basename5(f)).join(", ")}. They are ignored.`, fix: `Delete them from ${join33(store2.root, "state")} once you have looked at them.` });
+      if (copies.length) out.push({ ok: false, what: `${copies.length} file(s) OneDrive copied after a sync conflict: ${copies.slice(0, 3).map((f) => basename6(f)).join(", ")}. They are ignored.`, fix: `Delete them from ${join33(store2.root, "state")} once you have looked at them.` });
       const quiet = runnerSilent({ installed: status(), lease: store2.lease(), machine: store2.machine, runner: cfg.runner, idleMin: cfg.poll?.idleMin });
       if (quiet)
         out.push({ ok: false, what: `The background runner is installed but has not run for ${quiet} minutes`, fix: process.platform === "darwin" ? `Turn it on in System Settings > General > Login Items > Allow in the Background, then run "${CMD} service install".` : process.platform === "win32" ? `In Task Scheduler, check that the "${TASK2}" task is enabled, then run "${CMD} service install".` : `Run "${CMD} service install".` });

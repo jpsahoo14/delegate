@@ -277,6 +277,7 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 			actionIds.push(markTodos(id, wf.kept!.filter(todo => !todo.done)))
 		}
 		const job = wf.job ? facts.jobs.get(wf.job) : undefined
+		const agentWait = facts.agentWait && (wf.state === 'running' || wf.state === 'waiting_on_task' && job?.state === 'queued' || job?.state === 'failed' && job.error === facts.agentWait.text) ? facts.agentWait.text : undefined
 		const stopped = wf.state === 'waiting_on_task' && (!job || job.state === 'failed' || job.state === 'done')
 		const replyChanged = wf.state === 'needs_human' && wf.status === PAGE_REPLY_CHANGED
 		// A send the engine refused (owner words claiming an approval the PR does not show, an unverifiable PR) says why on the card (bug 10-23 E35).
@@ -285,8 +286,8 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 			...rest, rev, id, personId, chatId, draftId, changeIds, effectIds, todoIds, workId, actionIds,
 			askAt: asksAt.get(id),
 			status: pageText(c.status),
-			attention: replyChanged ? PAGE_REPLY_CHANGED : notSent ? pageText(wf.status) : recovery || stopped || c.draft?.holding ? pageText(job?.error ?? wf.status) || 'The previous run could not finish. Use the available action, ask a question or review the visible holding reply.' : !draft && job?.state === 'done' && job.result && !job.result.reply && wf.status.endsWith(job.result.summary) ? pageText(job.result.summary) : undefined,
-			attentionKind: replyChanged ? 'reply-changed' : recovery || stopped || c.draft?.holding ? 'run-failed' : undefined,
+			attention: replyChanged ? PAGE_REPLY_CHANGED : agentWait ?? (notSent ? pageText(wf.status) : recovery || stopped || c.draft?.holding ? pageText(job?.error ?? wf.status) || 'The previous run could not finish. Use the available action, ask a question or review the visible holding reply.' : !draft && job?.state === 'done' && job.result && !job.result.reply && wf.status.endsWith(job.result.summary) ? pageText(job.result.summary) : undefined),
+			attentionKind: replyChanged ? 'reply-changed' : agentWait ? 'agent-setup' : recovery || stopped || c.draft?.holding ? 'run-failed' : undefined,
 			question: c.question === undefined ? undefined : (failedJobDirections(wf) ? forPage(c.question) : pageText(c.question)) || undefined,
 			choices: c.choices && { ...c.choices, prompt: forPage(c.choices.prompt), options: c.choices.options.map(option => ({ ...option, id: pageOptionId(option) })) },
 			sourceIds: sources(id, id, why.sources), noteIds,
@@ -557,7 +558,7 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 		running: classicRunning.map(row => ({
 			...row, what: pageText(Object.values(entities.placements).find(placement => placement.act === row.code && placement.kind === 'scheduled')?.headline ?? row.what),
 			sendAt: byCode.get(row.code)?.state === 'scheduled' ? byCode.get(row.code)?.sendAt : undefined,
-			detail: row.code && (byCode.get(row.code)?.state !== 'scheduled' || /^Held: /.test(byCode.get(row.code)?.status ?? '')) ? pageText(byCode.get(row.code)?.status) : undefined,
+			detail: entities.items[row.code]?.attentionKind === 'agent-setup' ? `Held: ${entities.items[row.code].attention}` : row.code && (byCode.get(row.code)?.state !== 'scheduled' || /^Held: /.test(byCode.get(row.code)?.status ?? '')) ? pageText(byCode.get(row.code)?.status) : undefined,
 			retry: (() => {
 				const workflow = byCode.get(row.code), retry = workflow?.job ? facts.jobs.get(workflow.job)?.retry : undefined
 				return retry ? { at: retry.at, attempt: retry.n, reason: pageText(retry.last.why), tried: retry.tried.map(pageText) } : undefined

@@ -21,7 +21,7 @@ import { isAbsolute, join } from 'node:path'
 import type { Call, Config, Effect, Job, Report, Retry, Workflow } from '../core/types.ts'
 import { ulid } from '../core/ids.ts'
 import { ran, readRun } from '../core/runinfo.ts'
-import { sessionLog, startAgent, type RunInput } from '../adapters/agent.ts'
+import { agentProcessLog, sessionLog, startAgent, type RunInput } from '../adapters/agent.ts'
 import type { Source } from '../adapters/source.ts'
 import { alive, aliveAs, killTree } from '../os/process.ts'
 import { openWindow } from '../os/window.ts'
@@ -41,6 +41,8 @@ import { findSession, sendToSession } from '../mesh/route.ts'
 import { addr, MAX_TEXT, readReceipt, settle, TTL_MS } from '../mesh/inbox.mjs'
 import { clearCalling, maybeOf } from './ledger.ts'
 import { removeRunFiles } from '../adapters/run-files.ts'
+import { agentSetupFailure, type AgentSetupFailure } from '../core/agent-failure.ts'
+import { blockedAgent, holdAgent, waitingForAgent } from './agent-health.ts'
 
 export type Procs = {
 	start: (cfg: Config['agent'], i: RunInput & { workflowId: string; runId: string }) => { pid: number }
@@ -157,11 +159,14 @@ export const executing = (job: Job) => job.purpose === 'execute' && (job.state =
 // Start every queued job as a detached run. A change run starts only while some item still holds a valid ok (R-HIL-21, R-SET-07).
 export function startJobs(store: Store, cfg: Config, procs: Procs, hold: string[] = []): number {
 	dueTrackers(store)
+	const held = blockedAgent(store, cfg)
+	if (held) { waitingForAgent(store, held); return 0 }
 	let n = 0
 	// A cap on runs at once, so many due trackers or bootstrap sources cannot start together (tester 06-07 P2-4).
 	let room = Math.min((cfg.jobs?.parallel ?? 3) - store.jobs().filter(j => j.state === 'running' && !j.run?.relay).length, (cfg.dailyRuns ?? 200) - store.runsToday())
 	const control = store.control(), now = Date.now()
 	for (const job of store.jobs().filter(j => j.state === 'queued' && !store.openWindow(j.id) && !hold.includes(j.key) && (!j.retry || Date.parse(j.retry.at) <= now))) {
+		if (blockedAgent(store, cfg)) break
 		if (job.retry) {
 			// Retries wait while paused or stopped, and end when every item they were for has closed.
 			if (control.paused || control.stopped) continue
@@ -207,8 +212,10 @@ export function startJobs(store: Store, cfg: Config, procs: Procs, hold: string[
 		try {
 			restoreSession(store, job.session.id)
 			pid = procs.start(agent, { workflowId: job.id, runId, sessionId: job.session.id, prompt: job.wrapUp ? WRAP_UP(job.id) : buildJobPrompt(job, cfg, store.root, { clone, telemetry }), cwd: job.repo ?? clone ?? cwd, mcpConfigPath, extraTools: job.purpose === 'execute' ? [`${WORKER_SERVER}-submit_report`, `${WORKER_SERVER}-make_change`] : WORKER_TOOLS, dirs: readDirs(store, cfg) }).pid
-			Object.assign(job, { state: 'running', run: { id: runId, pid, startedAt: new Date().toISOString(), machine: store.machine, purpose: job.purpose, asks: job.asks.length, ...(job.wrapUp ? { wrapUp: true } : {}) }, wrapUp: undefined })
+			const waiting = job.error
+			Object.assign(job, { state: 'running', error: undefined, run: { id: runId, pid, startedAt: new Date().toISOString(), machine: store.machine, purpose: job.purpose, asks: job.asks.length, ...(job.wrapUp ? { wrapUp: true } : {}) }, wrapUp: undefined })
 			store.saveJob(job)
+			for (const item of parentsOf(store, job)) if (waiting && item.status === waiting) { item.status = `Working on ${job.goal}`; store.save(item) }
 			store.addRun()
 			store.log({ event: 'job-start', job: job.id, key: job.key, purpose: job.purpose, runId, pid })
 			n++
@@ -218,7 +225,9 @@ export function startJobs(store: Store, cfg: Config, procs: Procs, hold: string[
 			if (!pid || procs.kill(pid)) {
 				try { removeRunFiles(mcpConfigPath) } catch (error) { store.log({ event: 'worker-files-cleanup-failed', runId, error: String(error).slice(0, 300) }); store.setHealth(`worker-files:${runId}`, `Could not remove files for failed worker ${runId}: ${String(error).slice(0, 160)}`) }
 			}
-			failOrRetry(store, job, `Could not start: ${String(e).slice(0, 120)}`)
+			const account = agentSetupFailure(String(e))
+			if (account) holdJob(store, cfg, job, account)
+			else failOrRetry(store, job, `Could not start: ${String(e).slice(0, 120)}`)
 		}
 	}
 	return n
@@ -264,7 +273,10 @@ export async function checkJobs(store: Store, src: Source, cfg: Config, procs: P
 		// The run has ended: what it used goes on the event that ends it.
 		ended.set(job.id, readUse(store, job))
 		try {
-			if (r) {
+			const f = join(LOCAL_DIR, 'sessions', `${run.id}.log`)
+			const account = !r && !live ? agentSetupFailure(`${existsSync(f) ? readFileSync(f, 'utf8') : ''}\n${agentProcessLog(job.session.agent, join(LOCAL_DIR, 'sessions', `mcp-${run.id}.json`))}`) : undefined
+			if (account) holdJob(store, cfg, job, account)
+			else if (r) {
 				if (run.purpose === 'execute') await finishExecute(store, src, cfg, job, procs, probe)
 				else finishWork(store, job, r, run.asks)
 				store.archiveReport(job.id, run.id)
@@ -284,6 +296,16 @@ export async function checkJobs(store: Store, src: Source, cfg: Config, procs: P
 		}
 	}
 	return n
+}
+
+function holdJob(store: Store, cfg: Config, job: Job, failure: AgentSetupFailure) {
+	holdAgent(store, cfg, failure)
+	// A change run without a report still needs the owner's review, not an automatic replay.
+	if (job.purpose === 'execute') { fail(store, job, failure.text); return }
+	Object.assign(job, { state: 'queued', error: failure.text, run: undefined, retry: undefined, wrapUp: undefined })
+	store.saveJob(job)
+	for (const item of parentsOf(store, job)) { item.status = failure.text; store.save(item) }
+	store.log({ event: 'job-agent-held', job: job.id, key: job.key, kind: failure.kind, retryAt: failure.retryAt, reason: failure.text, ...usedBy(job) })
 }
 
 function cleanJobFiles(store: Store, run: NonNullable<Job['run']>) {

@@ -2,16 +2,18 @@ import { site } from '../core/site.ts'
 import { spawn, spawnSync } from 'node:child_process'
 import { closeSync, existsSync, openSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { NAME } from '../brand.ts'
 import type { Config } from '../core/types.ts'
 import { readRun, type RunUse } from '../core/runinfo.ts'
 import { assertTestSafe } from '../store/fs.ts'
 import { ownRunFiles, promptFolder, pruneRunFiles, removeRunFiles } from './run-files.ts'
+import { agentSetupFailure, type AgentSetupFailure } from '../core/agent-failure.ts'
+import { scrub } from '../core/secrets.ts'
 
 export type RunInput = { sessionId: string; prompt: string; cwd: string; mcpConfigPath: string; extraTools: string[]; dirs?: string[] }
 // used: what the run used and where its time went, when the AI CLI said so (R-SET-14).
-export type RunResult = { exitCode: number; ms: number; summary?: string; error?: string; used?: RunUse }
+export type RunResult = { exitCode: number; ms: number; summary?: string; error?: string; used?: RunUse; setup?: AgentSetupFailure }
 
 const ALWAYS = ['task_complete']
 
@@ -51,7 +53,7 @@ export function buildArgs(cfg: Config['agent'], i: RunInput, hasSession: (id: st
 	}
 	return ['-p', i.prompt, '--session-id', i.sessionId, '--allow-all-tools', '--no-ask-user', '--disable-builtin-mcps',
 		'--additional-mcp-config', `@${i.mcpConfigPath}`, ...dirs, '--available-tools', ...tools,
-		'--output-format', 'json',
+		'--output-format', 'json', '--log-dir', agentLogDir(i.mcpConfigPath),
 		...(cfg.model ? ['--model', cfg.model] : []),
 		...(cfg.maxCredits ? ['--max-ai-credits', String(cfg.maxCredits)] : [])]
 }
@@ -60,6 +62,17 @@ export function buildArgs(cfg: Config['agent'], i: RunInput, hasSession: (id: st
 export function sessionLog(flavor: string, id: string): string {
 	if (flavor === 'claude') return ''
 	try { return readFileSync(join(process.env.COPILOT_HOME ?? join(homedir(), '.copilot'), 'session-state', id, 'events.jsonl'), 'utf8') } catch { return '' }
+}
+
+export const agentLogDir = (mcpConfigPath: string) => join(dirname(mcpConfigPath), 'logs', basename(mcpConfigPath, '.json'))
+export function agentProcessLog(flavor: string, mcpConfigPath: string): string {
+	const folder = agentLogDir(mcpConfigPath)
+	if (flavor !== 'copilot' || !existsSync(folder)) return ''
+	return readdirSync(folder).filter(name => name.endsWith('.log')).map(name => {
+		const file = join(folder, name), raw = readFileSync(file, 'utf8'), clean = scrub(raw)
+		if (raw !== clean) writeFileSync(file, clean, { encoding: 'utf8', mode: 0o600 })
+		return clean.slice(-65_536)
+	}).join('\n')
 }
 
 // Continue: the same session, interactive, with every owner tool, opening with an orientation prompt (R-HIL-08, R-HIL-17).
@@ -175,7 +188,13 @@ export function runAgent(cfg: Config['agent'], i: RunInput, timeoutMs = 10 * 60_
 		p.on('close', code => {
 			// Read whatever the run printed, also when its time ran out.
 			const used = readRun(out, t0, process.env, sessionLog(cfg.flavor, i.sessionId), Date.now()).use
-			finish({ exitCode: code ?? -1, ms: Date.now() - t0, summary: summaryOf(out), error: code !== 0 ? err.slice(-500) || `${cmd} stopped` : undefined, ...(Object.keys(used).length ? { used } : {}) })
+			let log: string
+			try { log = agentProcessLog(cfg.flavor, i.mcpConfigPath) } catch (error) {
+				finish({ exitCode: -1, ms: Date.now() - t0, error: `Could not read the AI run log: ${String(error)}` })
+				return
+			}
+			const setup = agentSetupFailure(`${out}\n${err}\n${log}`)
+			finish({ exitCode: code ?? -1, ms: Date.now() - t0, summary: summaryOf(out), error: code !== 0 ? err.slice(-500) || setup?.text || `${cmd} stopped` : undefined, ...(Object.keys(used).length ? { used } : {}), ...(setup ? { setup } : {}) })
 		})
 		if (p.pid) {
 			try { ownRunFiles(i.mcpConfigPath, p.pid) } catch (error) {

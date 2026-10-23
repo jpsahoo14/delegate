@@ -15,6 +15,11 @@ export const DEFAULT_POLICY = {
 
 const RANK: Record<Confidence, number> = { low: 0, medium: 1, high: 2 }
 
+export const REPLY_BLANK = 'This reply still has a blank: fill it or edit'
+export function replyGap(text: string | undefined): boolean {
+	return !!text && /_{3,}|\b(?:XX|TODO|TBD)\b|\[(?:TBD|TODO|missing\b[^\]\n]*|unknown|insert\b[^\]\n]*|fill\b[^\]\n]*|your\b[^\]\n]*here)\]|(?:<|\{)\s*(?:\.{3}|\u2026|(?:insert|fill|missing|your)\b[^<>{}\n]*|name|location|date|time|answer|value|address|email|link|amount)\s*(?:>|\})|\{\{[^{}\n]+\}\}/.test(text)
+}
+
 // R-ANS-02: high = a card plus a live source, medium = a card only, low = no card. Inferred-only evidence counts one level lower.
 export function confidence(sources: Source[]): Confidence {
 	sources = sources.filter(s => !s.stale)
@@ -44,6 +49,7 @@ export function decide(wf: Workflow, rules: Rule[], ctx: PolicyContext): Decisio
 	const conf = confidence(wf.draft?.sources ?? [])
 	const rule = rules.find(r => !r.style && matches(r, wf, conf))
 	const d = (action: Decision['action'], reason: string): Decision => ({ action, ruleId: rule?.id, reason, confidence: conf })
+	if (replyGap(wf.draft?.text)) return d('draft', REPLY_BLANK)
 	if (wf.before) return d('draft', 'It came before setup; replies to older messages wait for you')
 	if (wf.draft?.holding) return d('draft', 'A holding reply: the work is not finished, so it waits for you')
 	if (ctx.never?.some(p => p.id === wf.asker?.id)) return d('draft', 'This person never gets automatic replies')

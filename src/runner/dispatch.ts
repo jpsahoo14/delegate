@@ -39,6 +39,8 @@ import { unsafeRead, SETUP_REFUSAL } from '../core/effects.ts'
 import { shellInClone, shellTool } from './validate.ts'
 import { toolServers } from '../adapters/mcp-client.ts'
 import { ran } from '../core/runinfo.ts'
+import { agentSetupFailure } from '../core/agent-failure.ts'
+import { blockedAgent, holdAgent, waitingForAgent } from './agent-health.ts'
 
 export type RunWorker = (cfg: Config['agent'], input: RunInput & { workflowId: string; runId: string }) => Promise<RunResult>
 
@@ -47,6 +49,8 @@ const CATALOG_CHANGED = /MCP tool catalog changed/i
 
 // Each queued workflow runs once, with all of its new messages together (R-WF-02, R-WF-06).
 export async function dispatch(store: Store, src: Source, cfg: Config, run: RunWorker = runAgent, probe?: BuildProbe): Promise<number> {
+	const held = blockedAgent(store, cfg)
+	if (held) { waitingForAgent(store, held); return 0 }
 	// An item open in a Continue window belongs to the owner until it closes (R-WF-07).
 	const cap = cfg.dailyRuns ?? 200
 	const room = cap - store.runsToday()
@@ -64,6 +68,7 @@ export async function dispatch(store: Store, src: Source, cfg: Config, run: RunW
 	const asks = store.workflows().filter(w => w.notes?.some(n => n.a === undefined) && w.state !== 'running' && heldBy(store, w) !== 'window' && !(w.job && store.job(w.job)?.state === 'running'))
 	queue.push(...asks.slice(0, Math.max(0, room - queue.length)))
 	for (let i = 0; i < queue.length; i += cfg.maxParallel) {
+		if (blockedAgent(store, cfg)) break
 		await Promise.all(queue.slice(i, i + cfg.maxParallel).map(async wf => {
 			// One run that cannot start fails only its own item; sends, reminders, and the other drafts go on (review 10-20 R3).
 			try { await runOne(store, src, cfg, wf, run, probe) } catch (e) { startFailed(store, wf, e); return }
@@ -74,16 +79,19 @@ export async function dispatch(store: Store, src: Source, cfg: Config, run: RunW
 	}
 	// The owner's own words that went out on a PR item: one short run each maps what they promise to changes held for ok (Slice 3).
 	for (const w of promisesDue(store, cfg).slice(0, Math.max(0, room - done))) {
+		if (blockedAgent(store, cfg)) break
 		// Anything that breaks after the run started leaves the item where the owner can check again, never stuck checking.
 		try { await checkPromise(store, src, cfg, w, run, probe) } catch (e) { const f = store.workflow(w.id); if (f?.promise?.state === 'checking') failPromise(store, f, String(e).replace(/^Error: /, '')) }
 		done++
 	}
-	for (const a of store.automations().filter(a => a.heard && a.state === 'active').slice(0, Math.max(0, room - done))) { await judgeReply(store, cfg, a, run); done++ }
+	for (const a of store.automations().filter(a => a.heard && a.state === 'active').slice(0, Math.max(0, room - done))) { if (blockedAgent(store, cfg)) break; await judgeReply(store, cfg, a, run); done++ }
 	return done
 }
 
 function startFailed(store: Store, wf: Workflow, e: unknown) {
 	const raw = String(e).replace(/^Error: /, '')
+	const account = agentSetupFailure(raw)
+	if (account) { holdAgent(store, store.config(), account); return }
 	// A setup refusal is kept whole: its tool name is the fix (bug 10-23 E33).
 	const setup = SETUP_REFUSAL.test(raw), why = setup ? raw : String(e).slice(0, 160)
 	store.log({ event: 'run-failed', workflowId: wf.id, code: wf.code, error: why })
@@ -106,6 +114,7 @@ function startFailed(store: Store, wf: Workflow, e: unknown) {
 // The reminded person replied: the AI reads it with the reminder in view and says done, a time, or keep (B4).
 // No phrase is special-cased. If it cannot decide, the reminder pauses, as it did before, so it never nags by mistake.
 export async function judgeReply(store: Store, cfg: Config, a: Automation, run: RunWorker = runAgent, now = new Date()) {
+	if (blockedAgent(store, cfg)) return
 	const runId = ulid(), heard = a.heard!
 	const { cwd, mcpConfigPath } = workerMcp(store, a.id, runId)
 	const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
@@ -123,6 +132,12 @@ export async function judgeReply(store: Store, cfg: Config, a: Automation, run: 
 	const res = await run(cfg.agent, { workflowId: a.id, runId, sessionId: randomUUID(), prompt, cwd, mcpConfigPath, extraTools: [`${WORKER_SERVER}-submit_report`], dirs: [] })
 	const said = store.peekReport(a.id, runId)?.summary?.trim() ?? ''
 	store.archiveReport(a.id, runId)
+	const account = !said && (res.setup ?? agentSetupFailure(`${res.error ?? ''}\n${res.summary ?? ''}`))
+	if (account) {
+		holdAgent(store, cfg, account)
+		store.saveAutomation({ ...(store.automations().find(item => item.id === a.id) ?? a), why: account.text, updatedAt: now.toISOString() })
+		return
+	}
 	const fresh = store.automations().find(x => x.id === a.id) ?? a, first = heard.from.split(/\s+/)[0]
 	const later = /^later\s+(\S+)/i.exec(said), at = later ? new Date(later[1]) : undefined
 	const change: Partial<Automation> =
@@ -176,10 +191,11 @@ function refuseStart(cfg: Config, folder?: string) {
 }
 
 async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run: RunWorker, probe?: BuildProbe, catalogRetried = false): Promise<void> {
+	if (blockedAgent(store, cfg)) return
 	refuseStart(cfg)
 	if (wf.state !== 'running') return runAsk(store, src, cfg, wf, run)
 	await probePRs(store, cfg, probe, Date.now(), true, [wf])
-	if (wf.state !== 'running') return
+	if (wf.state !== 'running' || blockedAgent(store, cfg)) return
 	const runId = ulid()
 	const { cwd, mcpConfigPath } = workerMcp(store, wf.id, runId)
 	const others = wf.code ? store.openInChat(wf.chat.id).filter(o => o.id !== wf.id && o.code && !o.followUp) : []
@@ -202,6 +218,13 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 	const report = store.peekReport(wf.id, runId) ?? salvaged
 	store.log({ event: 'worker', ...(salvaged ? { salvaged: true } : {}), workflowId: wf.id, code: wf.code, runId, exitCode: res.exitCode, ms: res.ms, intent: report?.intent, summary: report?.summary, sources: report?.reply?.sources, commitment: report?.reply?.commitment, error: res.error, ...ran('draft', res.used) })
 	const fresh = store.workflow(wf.id) ?? wf
+	const account = !report && (res.setup ?? agentSetupFailure(`${res.error ?? ''}\n${res.summary ?? ''}`))
+	if (account) {
+		holdAgent(store, cfg, account)
+		if (fresh.state === 'running') { Object.assign(fresh, { status: account.text, startFails: undefined }); store.save(fresh) }
+		store.archiveReport(wf.id, runId)
+		return
+	}
 	if (!report && !catalogRetried && cfg.agent.flavor === 'copilot' && CATALOG_CHANGED.test(sessionLog(cfg.agent.flavor, wf.session.id).slice(logStart))) {
 		if (fresh.state !== 'running' || heldBy(store, fresh) === 'window') return
 		if (store.runsToday() < (cfg.dailyRuns ?? 200)) {
@@ -327,6 +350,7 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 }
 
 async function runAsk(store: Store, src: Source, cfg: Config, wf: Workflow, run: RunWorker, retrySession?: string): Promise<void> {
+	if (blockedAgent(store, cfg)) return
 	const runId = ulid()
 	const job = wf.job ? store.job(wf.job) : undefined
 	const session = retrySession ?? job?.session.id ?? wf.session.id
@@ -339,7 +363,9 @@ async function runAsk(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 	backupSession(store, session)
 	const report = store.peekReport(wf.id, runId)
 	const fresh = store.workflow(wf.id)!
-	if (!report && !retrySession && cfg.agent.flavor === 'copilot' && CATALOG_CHANGED.test(sessionLog(cfg.agent.flavor, session).slice(logStart))) {
+	const account = !report && (res.setup ?? agentSetupFailure(`${res.error ?? ''}\n${res.summary ?? ''}`))
+	if (account) holdAgent(store, cfg, account)
+	if (!report && !account && !retrySession && cfg.agent.flavor === 'copilot' && CATALOG_CHANGED.test(sessionLog(cfg.agent.flavor, session).slice(logStart))) {
 		if (fresh.state === 'running' || heldBy(store, fresh) === 'window' || !fresh.notes?.some(note => note.a === undefined) || fresh.job && store.job(fresh.job)?.state === 'running') return
 		if (store.runsToday() < (cfg.dailyRuns ?? 200)) {
 			const sessionId = randomUUID()
@@ -350,7 +376,7 @@ async function runAsk(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 		store.log({ event: 'worker-catalog-retry-blocked', kind: 'ask', workflowId: wf.id, code: wf.code, runId, reason: 'daily-run-limit' })
 	}
 	const note = fresh.notes?.find(n => n.a === undefined)
-	if (note) Object.assign(note, report?.answer ? { a: report.answer, sources: report.reply ? checked(store, cfg, report).reply!.sources : undefined } : { a: `I could not answer that${res.error ? ` (${res.error.slice(0, 80)})` : ''}. Ask again, or open ${fresh.code} on your computer.` })
+	if (note) Object.assign(note, report?.answer ? { a: report.answer, sources: report.reply ? checked(store, cfg, report).reply!.sources : undefined } : { a: account ? account.text : `I could not answer that${res.error ? ` (${res.error.slice(0, 80)})` : ''}. Ask again, or open ${fresh.code} on your computer.` })
 	store.save(fresh)
 	store.archiveReport(wf.id, runId)
 	store.log({ event: 'ask', workflowId: wf.id, code: wf.code, runId, ms: res.ms, ...ran('ask', res.used) })

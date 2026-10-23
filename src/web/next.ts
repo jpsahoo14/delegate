@@ -12,6 +12,7 @@ import { NAME } from '../brand.ts'
 import { handledThisWeek } from '../store/numbers.ts'
 import { openTodos } from '../runner/work.ts'
 import { htmlToText } from '../core/intake.ts'
+import { activeAgentHold, type AgentSetupFailure } from '../core/agent-failure.ts'
 
 // The new experience's placement (dev-spec/new-experience.md §0, phase N0): one thread per home code, in one section, with its Next owner.
 export type Owner = { kind: 'you' } | { kind: 'delegate' } | { kind: 'others'; text: string } | { kind: 'nobody' }
@@ -29,7 +30,7 @@ type Subject = { kind: 'item'; wf: Workflow } | { kind: 'waiting'; w: Waiting } 
 // One read of the store per request, so placing 200 items does not scan directories 200 times.
 export type Snap = {
 	workflows: Workflow[]; jobs: Map<string, Job>; waiting: Waiting[]; automations: Automation[]
-	runner: Facts['runner']; queue: Map<string, NonNullable<Facts['queue']>>; slots: Set<string>; catchupSeen: string; me: string[]; tz?: string; now: number
+	runner: Facts['runner']; queue: Map<string, NonNullable<Facts['queue']>>; slots: Set<string>; catchupSeen: string; me: string[]; tz?: string; now: number; agentWait?: AgentSetupFailure
 }
 
 export function snapshot(store: Store, now = Date.now()): Snap {
@@ -59,6 +60,7 @@ export function snapshot(store: Store, now = Date.now()): Snap {
 	const first = cfg.owner.name.split(/\s+/)[0]
 	return {
 		workflows, jobs, waiting: store.waiting(), automations: store.automations(), runner, queue, slots,
+		agentWait: activeAgentHold(store.agentHold(), cfg.agent, now),
 		catchupSeen: store.seen().catchup ?? new Date(now - 86_400_000).toISOString(),
 		me: [cfg.owner.name, first, ...(cfg.aliases ?? [])].filter(Boolean).map(s => s.toLowerCase()), tz: cfg.tz, now,
 	}
@@ -69,7 +71,7 @@ export function factsOf(s: Snap, sub: Subject): Facts {
 	if (sub.kind === 'reminder') return { subject: 'reminder', state: sub.a.state === 'proposed' ? 'needs_human' : sub.a.state === 'ended' ? 'done' : 'open', runner: s.runner, fyiUnread: false }
 	const w = sub.wf, j = w.job ? s.jobs.get(w.job) : undefined
 	return {
-		subject: 'item', state: w.state, runner: s.runner, queue: s.queue.get(w.id),
+		subject: 'item', state: w.state, runner: s.runner, queue: s.queue.get(w.id), aiBlocked: !!s.agentWait,
 		job: j && { state: j.state, watch: !!j.every, retryLater: !!j.retry && Date.parse(j.retry.at) > s.now, slot: s.slots.has(j.id), retry: !!j.retry },
 		// A step for "them" that waits on the owner by name is the owner's step.
 		work: w.work && { open: !w.work.closed, next: nextWho(s, w.work), waiting: !!w.work.waitingOn },
@@ -100,7 +102,7 @@ function nextOf(s: Snap, sub: Subject, f: Facts, section: Section): { next?: Pla
 	const busy = f.state === 'running' || f.state === 'scheduled' || (f.job?.state === 'queued' && !f.job.watch)
 	// Paused, only sends and retries wait on the pause; drafts keep their own reasons (their place in line, the day's limit).
 	const onPause = s.runner === 'paused' && (f.state === 'scheduled' || !!f.job?.retry)
-	const why = busy && s.runner !== 'ok' && (s.runner !== 'paused' || onPause) ? runnerWhy[s.runner] : f.job?.retryLater && j?.retry ? `tries again ${clock(new Date(j.retry.at), s.tz)}` : f.queue === 'line' ? 'in line behind live asks' : f.queue === 'limit' ? runnerWhy.capped : f.job?.state === 'queued' && !f.job.slot && !f.job.watch ? 'waits for a free run slot' : f.queue === 'held' ? 'open in your AI chat' : undefined
+	const why = s.agentWait && s.runner !== 'stopped' && (f.state === 'running' || f.job?.state === 'queued') ? s.agentWait.text : busy && s.runner !== 'ok' && (s.runner !== 'paused' || onPause) ? runnerWhy[s.runner] : f.job?.retryLater && j?.retry ? `tries again ${clock(new Date(j.retry.at), s.tz)}` : f.queue === 'line' ? 'in line behind live asks' : f.queue === 'limit' ? runnerWhy.capped : f.job?.state === 'queued' && !f.job.slot && !f.job.watch ? 'waits for a free run slot' : f.queue === 'held' ? 'open in your AI chat' : undefined
 	if (f.job?.watch) return { next: { owner: { kind: 'delegate' }, what: `checks every ${j!.every} min` }, why }
 	const n = w.work && !w.work.closed ? w.work.next : undefined
 	// "them" names nobody, and waitingOn may name someone else (A34): the AI's own words for the step, never a name glued to it.
@@ -316,6 +318,7 @@ const watchLine = (t = '') => t.replace(/^Watch\s+/i, '').replace(/\s+until\s+(i
 // Why Delegate has not started a thread that waits for it, as what it will do next (PM review 9: never a bare "Delegate").
 function delegateNext(s: Snap, p: Placed, j: Job | undefined): { what: string; at?: string } {
 	const why = p.why ?? ''
+	if (s.agentWait && why === s.agentWait.text) return s.agentWait.kind === 'model' ? { what: 'waits for an available AI model' } : s.agentWait.retryAt ? { what: 'waits for AI quota; tries again {at}', at: s.agentWait.retryAt } : { what: 'waits for the AI budget or model to change' }
 	if (/^tries again/.test(why) && j?.retry) return {
 		what: j.retry.last.kind === 'not_ready'
 			? `waits for ${j.retry.last.waitFor || j.retry.last.why}; checks again {at}`

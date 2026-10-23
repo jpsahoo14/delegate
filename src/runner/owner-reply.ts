@@ -11,6 +11,8 @@ import { runAgent } from '../adapters/agent.ts'
 import { workerMcp, WORKER_SERVER } from './dispatch.ts'
 import { backupSession } from './own.ts'
 import { recordOwnerReply } from './intake.ts'
+import { agentSetupFailure } from '../core/agent-failure.ts'
+import { blockedAgent, holdAgent } from './agent-health.ts'
 
 export const OWNER_REPLY_UNCHECKED = `${NAME} couldn't check with the AI whether you already replied; it found no reply of yours in the chat.`
 
@@ -59,7 +61,7 @@ export async function ownerReplies(store: Store, cfg: Config, raw: RawMsg, text:
 	})
 	if (!pending.length) return result
 	const health = `owner-reply:${items[0].chat.id}`
-	if (options.ai === false) {
+	if (options.ai === false || blockedAgent(store, cfg)) {
 		store.setHealth(health, OWNER_REPLY_UNCHECKED)
 		return result
 	}
@@ -86,7 +88,11 @@ export async function ownerReplies(store: Store, cfg: Config, raw: RawMsg, text:
 		backupSession(store, sessionId)
 		const report = store.peekReport(id, runId) ?? reportFromText(run.summary, id, ['other'])
 		const selected = report?.answeredItems
-		if (!report || !selected || selected.some(item => !pending.some(candidate => candidate.id === item))) throw new Error(run.error ?? 'The AI did not return a valid owner-reply judgment.')
+		if (!report || !selected || selected.some(item => !pending.some(candidate => candidate.id === item))) {
+			const account = run.setup ?? agentSetupFailure(`${run.error ?? ''}\n${run.summary ?? ''}`)
+			if (account) holdAgent(store, cfg, account)
+			throw new Error(run.error ?? 'The AI did not return a valid owner-reply judgment.')
+		}
 		for (const item of pending) result.set(item.id, selected.includes(item.id))
 		store.log({ event: 'owner-reply-judged', chat: items[0].chat.id, msgId: raw.id, answered: selected, summary: report.summary, sessionId })
 		store.setHealth(health)

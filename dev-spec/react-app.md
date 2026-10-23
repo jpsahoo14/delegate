@@ -60,6 +60,68 @@ Guard (Engineer check): a style rule never decides. `decide()` skips it, so it c
 Proved with stub workers (quota) on fictional roots: the spec's checks 1-7 (including Robin's style not reaching Kim's
 draft, Edit, Undo, and the negative cases), a style rule listed before a send rule for the same person still sending
 exactly once, and Settings Turn on, Save style and Undo in New and Classic at 1280 light and 400 dark.
+## bug 10-22 R4 J8: an automatic reply sent an unfilled blank
+
+- The reply playbook previously required `____` for missing facts. It now asks
+  for the missing fact in `question`, or reports `goalMet: false` with a blocker;
+  a sendable reply has complete supported words. The report schema and shared
+  worker gates say the same thing.
+- A shared gap check covers underscore runs, standalone XX/TODO/TBD, bracketed
+  missing/insert/fill markers, angle/brace gap slots and double-brace templates.
+  It does not treat ordinary Markdown, URLs, type comparisons or JSON objects
+  as blanks. Missing attachments remain covered by the existing source gate.
+- Draft scheduling and due-rule sends hold in Needs you with the existing worker
+  question, clear approvals/send time, and log `rule-held-gap`. Direct Send and
+  OK refuse with "This reply still has a blank: fill it or edit" before changes
+  are approved; the last send gate checks again, including the signature.
+  A filled owner edit still waits for its own explicit Send.
+- The same check covers automatic acknowledgement text and each due reminder's
+  actual outgoing text. A reminder with a blank pauses without incrementing
+  its count, records the reason in Health and logs `rule-held-gap`.
+- Observed in Edge, New and Classic at 1280: stub blank held with the worker's
+  original question, zero posts; direct Send returned the stated refusal.
+  Answer to preview to owner edit to Send posted exactly the edited text once.
+  A legacy scheduled blank moved to Needs you, a reminder paused at count zero,
+  and OK on a blank with changes approved nothing and made no external reads.
+  All twelve gap-marker shapes were detected; seven ordinary text/code/link
+  shapes were unaffected. No real AI, browser errors or new owner sessions.
+
+## bug 10-22 E79: AI quota and unavailable-model failures looked like item failures
+
+- Classify the provider's monthly-quota/402 and unavailable-model failures as
+  account setup, not per-item retry failures. Keep a durable configuration-
+  scoped hold and shared Health reason. New drafts, questions, promise checks,
+  reminder judgments, owner-reply judgments and background jobs wait together;
+  ordinary approved/rule sends do not depend on AI availability.
+- Copilot workers use their own `--log-dir` beneath the existing local run
+  folder. Classification reads only that run's logs, including the provider's
+  actual `retry_after_ms` (milliseconds) or `retry_after` (seconds), never another
+  session's old logs. The banner says about how long remains, or omits a time
+  when the provider gave none; it never invents one.
+- A provider retry time or changed AI configuration releases the hold. Changing
+  a model does not reuse an old model's failure. Raising an external budget
+  alone is not observable while runs are paused; an AI configuration change
+  also permits a fresh try before the provider's retry time.
+- Work jobs wait queued with the actual reason and without spending per-job
+  retry attempts. An execute run without a report keeps its existing safety
+  behavior: disarm its approval and require review, never replay a change just
+  because the budget or model changed.
+- Placement distinguishes AI availability from the reader and send availability:
+  queued AI work is Waiting, while a scheduled reply can still go out. Both
+  card styles use the existing attention surface for the exact setup reason,
+  and row Next text names the quota retry time or unavailable-model wait rather
+  than promising "next cycle". Classic Ongoing marks these rows Held instead
+  of drawing a running progress bar.
+- Manual acceptance: real-process quota and model-error stubs, both experiences
+  at 1280 light/400 dark, no repeat starts while held, and resume after changed
+  configuration or the provider retry time. No real AI or owner data.
+- Observed: each error affected an already-started reply run and background job;
+  subsequent dispatch/job-start calls started zero processes. Work stayed
+  queued with no transient retry, ordinary approved send posted once, and
+  changing the model or reaching the exact retry boundary released three
+  waiting runs. All 16 card captures showed the actual reason, no generic
+  failure, no horizontal overflow and no browser errors; zero new owner sessions.
+
 ## bug 10-22 R2 J1: owner-reply AI failure blocked Send and left stale Health
 
 - Before: an unrelated owner FYI plus a real-process stub returning HTTP 402

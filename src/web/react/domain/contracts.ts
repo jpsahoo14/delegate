@@ -28,7 +28,7 @@ const item = z.object({
 	question: optional, draftId: optional, choices: choices.optional(), picked: z.array(z.number()).optional(), context: z.array(context).optional(),
 	meeting: z.object({ subject: text, start: text, minutes: z.number(), attendees: strings }).optional(),
 	changeIds: strings, effectIds: strings.optional(), sourceIds: strings, noteIds: strings, todoIds: strings, actionIds: strings, primaryActionId: optional, workId: optional,
-	job: optional, why, status: text, attention: optional, attentionKind: z.enum(['reply-changed', 'run-failed']).optional(), openOn: optional, teams: optional, debug: strings.optional(),
+	job: optional, why, status: text, attention: optional, attentionKind: z.enum(['reply-changed', 'run-failed', 'agent-setup']).optional(), openOn: optional, teams: optional, debug: strings.optional(),
 	promise: z.object({ said: text, failed: optional }).optional(), todos: strings.optional(),
 	follow: z.object({ target: text, until: text, everyHours: z.number() }).optional(),
 })

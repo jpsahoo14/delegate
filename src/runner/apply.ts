@@ -6,7 +6,7 @@ import type { Answer, Config, Effect, Person, Workflow } from '../core/types.ts'
 import { sendGate } from '../core/gate.ts'
 import { classify, htmlToText } from '../core/intake.ts'
 import { mdToHtml } from '../core/format.ts'
-import { approvedReplyText, currentDraft, DEFAULT_POLICY, signatureOf, withMarker, reopenable } from '../core/policy.ts'
+import { approvedReplyText, currentDraft, DEFAULT_POLICY, REPLY_BLANK, signatureOf, withMarker, reopenable } from '../core/policy.ts'
 import { effectLine, MARK, plain, renderMore, renderPreview } from '../core/render.ts'
 import { SendUncertain, type SendOpts, type Source } from '../adapters/source.ts'
 import type { Store } from '../store/state.ts'
@@ -31,6 +31,7 @@ import { checkAgain, dropPromise, notePromise, promiseDue, reopenPromise, rest }
 import { isDeploy } from '../core/deploy.ts'
 import { PAGE_REPLY_CHANGED, pageAnswerRefusal, pageDigest } from '../core/page-approval.ts'
 import { pageManagementRev } from '../store/page-revision.ts'
+import { holdReplyGap } from './reply-gap.ts'
 
 // Apply owner answers in time order. Effects run here and nowhere else.
 export async function applyAnswers(store: Store, src: Source, cfg: Config, procs: Procs = realProcs, controlsOnly = false, probe?: BuildProbe): Promise<number> {
@@ -232,9 +233,10 @@ async function applyOne(store: Store, src: Source, cfg: Config, wf: Workflow, a:
 			return reply(store, src, a, `${MARK} Updated ${wf.code}: "${a.text}". Nothing sent. ${left.length ? `ok will also: ${effectLine(left)}. Say "ok ${wf.code}" to do both, or "ok ${wf.code} except ${left.map((_, i) => i + 1).join(' ')}" to send only the reply.` : `Say "ok ${wf.code}" to send it.`}`)
 		}
 		case 'ok':
+			if (holdReplyGap(store, wf, wf.draft?.text)) return reply(store, src, a, `${MARK} ${REPLY_BLANK}`, true)
 			// ok approves the draft the owner saw; a rewrite in progress has no such draft yet (review P1-1).
 			// A draft with a blank or an open question is not ready to send (persona test P0).
-			if (wf.state === 'needs_human' && (wf.question || /_{3,}/.test(wf.draft?.text ?? ''))) return reply(store, src, a, `${MARK} ${wf.code} is not ready: ${wf.question ?? 'the draft has a blank to fill'}. Reply "${wf.code}: your answer", and I'll show the new draft.`)
+			if (wf.state === 'needs_human' && wf.question) return reply(store, src, a, `${MARK} ${wf.code} is not ready: ${wf.question}. Reply "${wf.code}: your answer", and I'll show the new draft.`)
 			if (wf.state === 'running') return reply(store, src, a, `${MARK} ${wf.code} is being rewritten with your answer. I'll show the new draft first.`)
 		// falls through
 		case 'send': {
@@ -245,6 +247,7 @@ async function applyOne(store: Store, src: Source, cfg: Config, wf: Workflow, a:
 				if (original && original.trim() !== a.text.trim()) wf.learnAfter = { draft: original, sent: a.text }
 				wf.draft = { ...(wf.draft ?? { commitment: false, sources: [] }), text: a.text, byOwner: true, ownWords: ownWords(wf, a.text) }
 			}
+			if (holdReplyGap(store, wf, wf.draft?.text)) return reply(store, src, a, `${MARK} ${REPLY_BLANK}`, true)
 			// An item with changes on other systems makes them first; the reply follows when all are done (R-HIL-21).
 			// New messages are read first, so a "never mind" stops the changes too (tester P1-4).
 			if (wf.job && (pendingEffects(wf.effects).length > 0)) {
@@ -448,6 +451,10 @@ async function threadSince(store: Store, src: Source, cfg: Config, wf: Workflow,
 }
 
 export async function send(store: Store, src: Source, cfg: Config, wf: Workflow, text: string | undefined, by: SendBy, probe?: BuildProbe): Promise<boolean> {
+	if (holdReplyGap(store, wf, text, !!by.ruleId)) {
+		if (by.answer) await reply(store, src, by.answer, `${MARK} ${REPLY_BLANK}`, true)
+		return false
+	}
 	if (wf.draft && !currentDraft(wf, wf.job ? store.job(wf.job) : undefined)) {
 		wf.draft = undefined; wf.learnAfter = undefined; wf.approved = undefined; wf.sendAt = undefined
 		store.save(wf)
@@ -525,6 +532,10 @@ export async function send(store: Store, src: Source, cfg: Config, wf: Workflow,
 	// Only text no human approved carries the disclosure marker (R-POL-10).
 	// Automatic sends always carry the signature (R-POL-10); approved ones too when the owner asks, unless they wrote the words.
 	const out = text ? by.ruleId ? withMarker(text, signatureOf(cfg), cfg.owner.name) : approvedReplyText(text, wf, cfg) : text
+	if (out !== text && holdReplyGap(store, wf, out, !!by.ruleId)) {
+		if (by.answer) await reply(store, src, by.answer, `${MARK} ${REPLY_BLANK}`, true)
+		return false
+	}
 	const replyDigest = by.replyDigest ?? wf.approved?.replyDigest
 	if (replyDigest && pageDigest(out ?? '') !== replyDigest) {
 		Object.assign(wf, { state: 'needs_human', sendAt: undefined, approved: undefined, status: PAGE_REPLY_CHANGED })

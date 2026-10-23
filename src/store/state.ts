@@ -15,6 +15,7 @@ import { VERSION } from '../paths.ts'
 import { lessonOf, type Lesson } from './feedback.ts'
 import { CMD } from '../brand.ts'
 import { scrubDeep } from '../core/secrets.ts'
+import type { AgentHold } from '../core/agent-failure.ts'
 
 export const localDay = (d = new Date()) => d.toLocaleDateString('sv')
 
@@ -206,6 +207,8 @@ export class Store {
 	saveControl(c: Control) { this.w(this.p('state', 'control.json'), { ...c, at: new Date().toISOString() }) }
 
 	health(): Health { return readJson(this.p('state', 'health.json'), {}) }
+	agentHold(): AgentHold | undefined { return readJson<AgentHold | null>(this.p('state', 'agent-hold.json'), null) ?? undefined }
+	saveAgentHold(hold?: AgentHold) { this.w(this.p('state', 'agent-hold.json'), hold ?? null) }
 	setHealth(id: string, text?: string) {
 		const h = this.health()
 		if (text && h[id]?.text !== text) this.log({ event: 'health', id, text })
