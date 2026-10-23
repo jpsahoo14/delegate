@@ -1,9 +1,9 @@
 {
-	"version": "0.2.14",
+	"version": "0.2.15",
 	"files": {
-		".claude-plugin/plugin.json": "ec67ddf69d8d5235d28c9347553390bcac3ab2ebe0fad405b447cb6fde4149e5",
+		".claude-plugin/plugin.json": "d62af11d7203517328805a15ac9c798c22d4ba155ba1adf0b18b931504808e43",
 		".mcp.json": "777d2fb1bbc1dee696b6829465777cff3fbb526fd018cda0b9fc4bf06e595266",
-		"dist/delegate.mjs": "3b2fba931c783b5128166d835a78a99700c8d4d3bf2e6e9e759c0b15939ba710",
+		"dist/delegate.mjs": "38207a7521ab18cde415b1e18f05b987ab972fbbce831f52c334af18edfacf5d",
 		"dist/ext-apps.js": "fb56376b7583ecafb4820bdebc150abee18feb6258ff84b83c2c944ebd9c3602",
 		"dist/mesh/extension.mjs": "72606e840b669f3316fa663ff0eedaddc44fb5be5fe5d51aa6d3e787f0565407",
 		"dist/mesh/inbox.mjs": "a0fe7454b2269fed108cbdff9fe5d77c88ce36b6f0c49d1b52dccd754424a432",

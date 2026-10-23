@@ -136,7 +136,10 @@ export function prOf(store: Store, w: Workflow): PrRef | undefined {
 	const job = w.job ? store.job(w.job) : undefined
 	const target = prTarget(store, w)
 	if (!target) return undefined
-	const texts = [w.lastAsk, job?.goal, ...(job?.asks ?? []), ...(w.work?.links ?? []), ...store.thread(w.id).map(m => m.text)]
+	// Where the ask's text lost the link (stored before titled links kept their URL), the draft's and the job's sources may carry
+	// the same PR's full link; only one with the same number counts, never another PR's (queue-new #6).
+	const sources = [...(w.draft?.sources ?? []), ...(job?.result?.reply?.sources ?? [])].map(s => s.ref)
+	const texts = [w.lastAsk, job?.goal, ...(job?.asks ?? []), ...(w.work?.links ?? []), ...store.thread(w.id).map(m => m.text), ...sources]
 	for (const t of texts) for (const m of (t ?? '').matchAll(new RegExp(PR_LINK.source, 'gi'))) if (Number(m[3]) === target) return { project: decodeURIComponent(m[1]), repo: decodeURIComponent(m[2]), id: target, remote: remoteOf(m[0]) }
 	return undefined
 }

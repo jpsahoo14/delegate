@@ -1,6 +1,6 @@
 import { answerHabit, outcome } from './habits.ts'
 import { membersOf } from './sharing.ts'
-import { active, afterSend, approvalAsk, approvalMention, approvalReplyMatches, canCloseApproval, claimedVote, claimsApproval, closeWork, doneTodos, homeOf, inWork, keepTodos, linksIn, newTurn, openTodos, pendingParts, statusOf, step, wait } from './work.ts'
+import { active, afterSend, approvalAsk, approvalMention, approvalReplyMatches, canCloseApproval, claimedVote, claimsApproval, closeWork, doneTodos, homeOf, inWork, keepTodos, linksIn, newTurn, openTodos, othersApproval, othersApprovalMismatch, pendingParts, statusOf, step, wait } from './work.ts'
 import { asksReviewAgain, claimsInvite, doLine, isInvite, isVote, OLD_INVITE, OLD_INVITE_ASK, pendingEffects, prIdOf, proposalEffects, refusal, refusedAsk, saidLine, sameChange, sameHead, shown, vet, voteName, voteValue } from '../core/effects.ts'
 import type { Answer, Config, Effect, Person, Workflow } from '../core/types.ts'
 import { sendGate } from '../core/gate.ts'
@@ -485,7 +485,19 @@ export async function send(store: Store, src: Source, cfg: Config, wf: Workflow,
 			const st = await live.pr(ref.project, ref.repo, ref.id)
 			if (!/^(active|completed|abandoned)$/i.test(st.status) || !st.votes.length && !/completed|abandoned/i.test(st.status)) throw new Error('the live PR response has no status or reviewers')
 			const mine = cfg.owner.name.trim().toLowerCase()
-			if (!/completed|abandoned/i.test(st.status) && (!mine || st.votes.filter(v => v.name.trim().toLowerCase() === mine).length !== 1)) throw new Error('the owner reviewer vote is missing or ambiguous')
+			// A reply that only reports other reviewers' approval needs no vote of the owner's; their own votes are checked (queue-new #6).
+			const others = owner ? undefined : othersApproval(text ?? '', cfg.owner.name)
+			if (others) {
+				const why = othersApprovalMismatch(others, st, ref.id)
+				store.log({ event: 'pr-others-checked', code: wf.code, pr: ref.id, status: st.status, reviewers: st.votes.length, ok: !why, ...(why ? { why } : {}) })
+				if (why) {
+					Object.assign(wf, { state: 'running', draft: undefined, prDraft: undefined, sendAt: undefined, approved: undefined, status: `The PR evidence does not support this reply (${why}). Redrafting.`, pending: wf.pending.length ? wf.pending : wf.msgIds.slice(-1) })
+					store.log({ event: 'pr-reply-redraft', workflowId: wf.id, why })
+					store.save(wf); await told(`${why}. Redrafting; I'll show the new draft first.`)
+					return false
+				}
+			}
+			if (!others && !/completed|abandoned/i.test(st.status) && (!mine || st.votes.filter(v => v.name.trim().toLowerCase() === mine).length !== 1)) throw new Error('the owner reviewer vote is missing or ambiguous')
 			const votes = mine ? st.votes.filter(v => v.name.trim().toLowerCase() === mine) : []
 			let vote = votes.length === 1 ? votes[0].vote : undefined
 			// Only an owed execution reply on a completed PR can use its fully scoped receipt.
@@ -507,7 +519,7 @@ export async function send(store: Store, src: Source, cfg: Config, wf: Workflow,
 				store.save(wf); await told(why)
 				return false
 			}
-			if (!owner && !approvalReplyMatches(text ?? '', vote, ref.id)) {
+			if (!owner && !others && !approvalReplyMatches(text ?? '', vote, ref.id)) {
 				Object.assign(wf, { state: 'running', draft: undefined, prDraft: undefined, sendAt: undefined, approved: undefined, status: 'The PR evidence does not support this approval reply. Redrafting.', pending: wf.pending.length ? wf.pending : wf.msgIds.slice(-1) })
 				store.log({ event: 'pr-reply-redraft', workflowId: wf.id })
 				store.save(wf); await told(`PR ${ref.id}'s live vote does not support this approval reply. Redrafting; I'll show the new draft first.`)

@@ -40630,7 +40630,15 @@ function inlineImages(html) {
   });
 }
 function htmlToText(html) {
-  return html.replace(/<br\s*\/?>/gi, "\n").replace(/<\/(p|div|li)>/gi, "\n").replace(/<img\b([^>]*)>/gi, (_, attrs) => {
+  return html.replace(/<a\b([^>]*)>([\s\S]*?)<\/a\s*>/gi, (_, attrs, inner) => {
+    const href = /\bhref\s*=\s*(?:"(https?:\/\/[^"]+)"|'(https?:\/\/[^']+)')/i.exec(attrs);
+    const url2 = href?.[1] ?? href?.[2];
+    if (!url2) return inner;
+    const plain4 = (s3) => s3.replace(/<[^>]*>/g, "").replace(/&amp;/gi, "&").replace(/&nbsp;/gi, " ").trim().replace(/\/+$/, "").toLowerCase();
+    const text3 = plain4(inner);
+    if (!text3) return url2;
+    return text3 === plain4(url2) || plain4(url2).endsWith(`//${text3}`) ? inner : `${inner} (${url2})`;
+  }).replace(/<br\s*\/?>/gi, "\n").replace(/<\/(p|div|li)>/gi, "\n").replace(/<img\b([^>]*)>/gi, (_, attrs) => {
     const alt = /\balt="([^"]*)"/i.exec(attrs)?.[1], src = /\bsrc="(https:\/\/graph\.microsoft\.com\/[^"]+\/hostedContents\/[^"]+)"/i.exec(attrs)?.[1], data = DATA_IMG.exec(attrs);
     const link2 = src ?? (data ? `inline:${keyOf(data[2].replace(/\s+/g, ""))}` : void 0);
     return `[image${alt ? `: ${alt}` : ""}${link2 ? ` ${link2}` : " (it cannot be opened here)"}]`;
@@ -46319,7 +46327,19 @@ async function send(store2, src, cfg, wf, text3, by, probe) {
       const st = await live2.pr(ref.project, ref.repo, ref.id);
       if (!/^(active|completed|abandoned)$/i.test(st.status) || !st.votes.length && !/completed|abandoned/i.test(st.status)) throw new Error("the live PR response has no status or reviewers");
       const mine = cfg.owner.name.trim().toLowerCase();
-      if (!/completed|abandoned/i.test(st.status) && (!mine || st.votes.filter((v) => v.name.trim().toLowerCase() === mine).length !== 1)) throw new Error("the owner reviewer vote is missing or ambiguous");
+      const others = owner2 ? void 0 : othersApproval(text3 ?? "", cfg.owner.name);
+      if (others) {
+        const why2 = othersApprovalMismatch(others, st, ref.id);
+        store2.log({ event: "pr-others-checked", code: wf.code, pr: ref.id, status: st.status, reviewers: st.votes.length, ok: !why2, ...why2 ? { why: why2 } : {} });
+        if (why2) {
+          Object.assign(wf, { state: "running", draft: void 0, prDraft: void 0, sendAt: void 0, approved: void 0, status: `The PR evidence does not support this reply (${why2}). Redrafting.`, pending: wf.pending.length ? wf.pending : wf.msgIds.slice(-1) });
+          store2.log({ event: "pr-reply-redraft", workflowId: wf.id, why: why2 });
+          store2.save(wf);
+          await told(`${why2}. Redrafting; I'll show the new draft first.`);
+          return false;
+        }
+      }
+      if (!others && !/completed|abandoned/i.test(st.status) && (!mine || st.votes.filter((v) => v.name.trim().toLowerCase() === mine).length !== 1)) throw new Error("the owner reviewer vote is missing or ambiguous");
       const votes = mine ? st.votes.filter((v) => v.name.trim().toLowerCase() === mine) : [];
       let vote = votes.length === 1 ? votes[0].vote : void 0;
       if (mine && !wf.sent && wf.draft && /^completed$/i.test(st.status) && !st.votes.length) {
@@ -46338,7 +46358,7 @@ async function send(store2, src, cfg, wf, text3, by, probe) {
         await told(why2);
         return false;
       }
-      if (!owner2 && !approvalReplyMatches(text3 ?? "", vote, ref.id)) {
+      if (!owner2 && !others && !approvalReplyMatches(text3 ?? "", vote, ref.id)) {
         Object.assign(wf, { state: "running", draft: void 0, prDraft: void 0, sendAt: void 0, approved: void 0, status: "The PR evidence does not support this approval reply. Redrafting.", pending: wf.pending.length ? wf.pending : wf.msgIds.slice(-1) });
         store2.log({ event: "pr-reply-redraft", workflowId: wf.id });
         store2.save(wf);
@@ -46808,7 +46828,8 @@ function prOf(store2, w) {
   const job = w.job ? store2.job(w.job) : void 0;
   const target2 = prTarget(store2, w);
   if (!target2) return void 0;
-  const texts2 = [w.lastAsk, job?.goal, ...job?.asks ?? [], ...w.work?.links ?? [], ...store2.thread(w.id).map((m) => m.text)];
+  const sources = [...w.draft?.sources ?? [], ...job?.result?.reply?.sources ?? []].map((s3) => s3.ref);
+  const texts2 = [w.lastAsk, job?.goal, ...job?.asks ?? [], ...w.work?.links ?? [], ...store2.thread(w.id).map((m) => m.text), ...sources];
   for (const t2 of texts2) for (const m of (t2 ?? "").matchAll(new RegExp(PR_LINK.source, "gi"))) if (Number(m[3]) === target2) return { project: decodeURIComponent(m[1]), repo: decodeURIComponent(m[2]), id: target2, remote: remoteOf(m[0]) };
   return void 0;
 }
@@ -48230,6 +48251,43 @@ function approvalSentenceMatches(sentence, vote, pr) {
   const positive = new RegExp(`^(?:(?:I|we)\\s+(?:have\\s+)?)?(?:approved|signed[ -]?off)${target2}(?:,\\s*(?:thanks|with suggestions))?$|^LGTM$`, "i");
   return vote !== void 0 && vote >= 5 && positive.test(line2);
 }
+function othersSentence(sentence, owner2) {
+  const line2 = sentence.replace(/[.!;]$/, "");
+  if (FIRST_PERSON.test(line2) || /^\W*(?:approved|LGTM)\b/i.test(line2)) return void 0;
+  const named = NAMED_APPROVED.exec(line2), by = APPROVED_BY.exec(line2);
+  const who2 = (named ? line2.slice(0, named.index) : by?.[1] ?? "").replace(/[@*_]/g, " ").trim();
+  if (who2) return owner2 && who2.toLowerCase().includes(owner2.toLowerCase()) ? void 0 : { kind: "named", who: who2 };
+  return PENDING.test(line2) && !/\bapproved\b/i.test(line2) ? { kind: "pending" } : void 0;
+}
+function othersApproval(text3, owner2) {
+  const said2 = sentencesOf(text3).filter(approvalMention);
+  if (!said2.length) return void 0;
+  const kinds = said2.map((s3) => othersSentence(s3, owner2.trim()));
+  return kinds.every((k) => !!k) ? kinds : void 0;
+}
+function othersApprovalMismatch(kinds, st, pr) {
+  for (const k of kinds) {
+    if (k.kind === "pending") {
+      if (!/^active$/i.test(st.status)) return `PR ${pr} is ${st.status.toLowerCase()}, so no approval is pending`;
+      if (st.votes.length && st.votes.every((v) => v.vote >= 5)) return `every reviewer on PR ${pr} has approved, so none is pending`;
+      continue;
+    }
+    const words3 = (s3) => s3.toLowerCase().split(/[^\p{L}\p{N}'-]+/u).filter((w) => w.length > 1);
+    const said2 = words3(k.who);
+    const hits = st.votes.map((v) => {
+      const full = words3(v.name), at3 = (() => {
+        for (let i = said2.length - 1; i >= 0; i--) if (full.includes(said2[i])) return i;
+        return -1;
+      })();
+      return { v, at: at3 };
+    }).filter((h) => h.at >= 0);
+    const last3 = Math.max(-1, ...hits.map((h) => h.at)), named = hits.filter((h) => h.at === last3);
+    if (!named.length) return `the reply says "${k.who}" approved, but no reviewer by that name is on PR ${pr}`;
+    if (named.length > 1) return `the reply says "${k.who}" approved, but more than one reviewer on PR ${pr} matches that name`;
+    if (named[0].v.vote < 5) return `the reply says ${named[0].v.name} approved, but their vote on PR ${pr} is ${voteName(named[0].v.vote)}`;
+  }
+  return void 0;
+}
 function claimedVote(text3) {
   let out;
   for (const s3 of sentencesOf(text3)) {
@@ -48315,7 +48373,7 @@ function ownerStep(wf, text3, msgId, home = wf) {
   newTurn(wf, !!wf.sent);
   Object.assign(wf, { state: "open", status: statusOf(home), pending: [] });
 }
-var DAY3, MAX_STEPS, active, inWork, label, sameLink, hasDecisions, openTodos, approvalMention, untagged, sentencesOf, prNumbersIn, reReviewAsk, VOTE_SAID, claimsApproval, approvalAsk, approvalOnly;
+var DAY3, MAX_STEPS, active, inWork, label, sameLink, hasDecisions, openTodos, approvalMention, untagged, sentencesOf, prNumbersIn, reReviewAsk, FIRST_PERSON, NAMED_APPROVED, APPROVED_BY, PENDING, VOTE_SAID, claimsApproval, approvalAsk, approvalOnly;
 var init_work = __esm({
   "src/runner/work.ts"() {
     "use strict";
@@ -48335,6 +48393,10 @@ var init_work = __esm({
     sentencesOf = (text3) => untagged(text3).split(/(?<=[.!?;])\s+|\n+/).map((s3) => s3.trim()).filter(Boolean);
     prNumbersIn = (text3) => [...text3.matchAll(/\b(?:PR|pull\s+request|pullrequest\/)\s*#?\s*(\d+)\b|(?:^|\s)#(\d{3,})\b/gi)].map((m) => Number(m[1] ?? m[2]));
     reReviewAsk = (text3) => /re[ -]?review|review again|recheck/i.test(text3);
+    FIRST_PERSON = /\b(?:I|we|my|our|me|us|mine)\b/i;
+    NAMED_APPROVED = /\b(?:has|have|had)\s+(?:already\s+|now\s+|just\s+)?(?:approved|signed[ -]?off)\b/i;
+    APPROVED_BY = /\b(?:approved|signed[ -]?off)\s+by\s+(.+)$/i;
+    PENDING = /\b(?:approvals?|sign[ -]?offs?)\b.*\b(?:is|are)\s+(?:still\s+)?(?:pending|outstanding|needed|required|missing)\b|\b(?:still\s+)?(?:needs?|waiting\s+(?:on|for)|awaiting)\b.*\b(?:approvals?|sign[ -]?offs?)\b/i;
     VOTE_SAID = { approved: 10, approvedwithsuggestions: 5, waitingforauthor: -5, rejected: -10, novote: 0 };
     claimsApproval = (text3) => claimedVote(text3) !== void 0;
     approvalAsk = (text3) => approvalMention(text3) && !reReviewAsk(text3);

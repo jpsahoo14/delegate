@@ -1,5 +1,18 @@
 # React preview
 
+## A57: a titled link keeps its URL, and a reply about others' approval is checked against their votes (queue-new #6)
+
+`htmlToText` now keeps an anchor's http(s) address after its text when they differ ("Pull request 1741355: … (https://…/
+pullrequest/1741355)"); a link whose text is its own address is unchanged, so every send-matching comparison (both sides go
+through `htmlToText`) stays the same. `prOf` also takes the project and repo from a full link to the same PR number in the
+draft's or the job reply's sources, for items stored before this. A reply whose every approval sentence reports someone
+else's state ("X has approved", "approved by X", "… approval is still pending") no longer needs the owner's vote: the reviewer
+named closest before "has approved" must have voted 5 or more, and "pending" needs an active PR not yet approved by all;
+otherwise it is redrafted with the reason. Any first-person claim keeps the strict path. Fictional root, stub worker (quota),
+stub PR probe: the A57 shape (ask stored without URL, draft sources with it, owner not a reviewer, Priya 10) sent once
+after one PR read; the same ask as HTML stored the URL and sent once; Priya 0 redrafted ("their vote … is No vote");
+"I approved it." held ("the owner reviewer vote is missing"); an ask naming two PRs held ("no unambiguous PR link").
+
 ## Latency (c): how often Teams is checked after activity is a setting, shown honestly
 
 Settings › Updates and system › More has "After activity, check every" (`poll.fastMin`, 0.5 to 5 minutes in half-minute

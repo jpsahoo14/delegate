@@ -28,6 +28,17 @@ export function inlineImages(html: string): { key: string; type: string; data: s
 
 export function htmlToText(html: string): string {
 	return html
+		// A titled link keeps where it goes, such as "Pull request 1741355: … (https://dev.azure.com/…/pullrequest/1741355)",
+		// so workers, drafts and the PR guard see the URL; a link whose text is its own address stays as it is (queue-new #6).
+		.replace(/<a\b([^>]*)>([\s\S]*?)<\/a\s*>/gi, (_, attrs: string, inner: string) => {
+			const href = /\bhref\s*=\s*(?:"(https?:\/\/[^"]+)"|'(https?:\/\/[^']+)')/i.exec(attrs)
+			const url = href?.[1] ?? href?.[2]
+			if (!url) return inner
+			const plain = (s: string) => s.replace(/<[^>]*>/g, '').replace(/&amp;/gi, '&').replace(/&nbsp;/gi, ' ').trim().replace(/\/+$/, '').toLowerCase()
+			const text = plain(inner)
+			if (!text) return url
+			return text === plain(url) || plain(url).endsWith(`//${text}`) ? inner : `${inner} (${url})`
+		})
 		.replace(/<br\s*\/?>/gi, '\n').replace(/<\/(p|div|li)>/gi, '\n')
 		// A pasted image keeps its link, so a worker can open it with image_read; one with no link it can open says so.
 		.replace(/<img\b([^>]*)>/gi, (_, attrs: string) => {

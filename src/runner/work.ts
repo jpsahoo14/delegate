@@ -2,7 +2,7 @@ import { site } from '../core/site.ts'
 import type { PlanStep, Report, Step, Workflow, WorkReport } from '../core/types.ts'
 import type { Store } from '../store/state.ts'
 import { canonicalKey } from './jobs.ts'
-import { isVote, pendingEffects, prIdOf, VOTES, voteValue } from '../core/effects.ts'
+import { isVote, pendingEffects, prIdOf, VOTES, voteName, voteValue } from '../core/effects.ts'
 
 // Open work: an item that keeps one code until its work is closed. Every state change for work items is here (dev-spec/work.md).
 
@@ -182,6 +182,50 @@ function approvalSentenceMatches(sentence: string, vote: number | undefined, pr:
 	return vote !== undefined && vote >= 5 && positive.test(line)
 }
 export const reReviewAsk = (text: string) => /re[ -]?review|review again|recheck/i.test(text)
+// A reply that only reports other people's approval state ("Priya has approved; the EM approval is still pending"): it does not
+// speak for the owner, so it is checked against those reviewers' live votes, not the owner's (queue-new #6, A57).
+const FIRST_PERSON = /\b(?:I|we|my|our|me|us|mine)\b/i
+const NAMED_APPROVED = /\b(?:has|have|had)\s+(?:already\s+|now\s+|just\s+)?(?:approved|signed[ -]?off)\b/i
+const APPROVED_BY = /\b(?:approved|signed[ -]?off)\s+by\s+(.+)$/i
+const PENDING = /\b(?:approvals?|sign[ -]?offs?)\b.*\b(?:is|are)\s+(?:still\s+)?(?:pending|outstanding|needed|required|missing)\b|\b(?:still\s+)?(?:needs?|waiting\s+(?:on|for)|awaiting)\b.*\b(?:approvals?|sign[ -]?offs?)\b/i
+type Kind = { kind: 'named'; who: string } | { kind: 'pending' }
+function othersSentence(sentence: string, owner: string): Kind | undefined {
+	const line = sentence.replace(/[.!;]$/, '')
+	if (FIRST_PERSON.test(line) || /^\W*(?:approved|LGTM)\b/i.test(line)) return undefined
+	const named = NAMED_APPROVED.exec(line), by = APPROVED_BY.exec(line)
+	const who = (named ? line.slice(0, named.index) : by?.[1] ?? '').replace(/[@*_]/g, ' ').trim()
+	if (who) return owner && who.toLowerCase().includes(owner.toLowerCase()) ? undefined : { kind: 'named', who }
+	return PENDING.test(line) && !/\bapproved\b/i.test(line) ? { kind: 'pending' } : undefined
+}
+// Every sentence about approval reports someone else's state; undefined when any of them speaks for the owner (today's strict path).
+export function othersApproval(text: string, owner: string): Kind[] | undefined {
+	const said = sentencesOf(text).filter(approvalMention)
+	if (!said.length) return undefined
+	const kinds = said.map(s => othersSentence(s, owner.trim()))
+	return kinds.every((k): k is Kind => !!k) ? kinds : undefined
+}
+// Why the live PR does not support such a reply, or undefined when it does. The reviewer named closest before "has approved"
+// (or right after "approved by") must have voted approve (5 or more); "still pending" needs an active PR still short of approval.
+export function othersApprovalMismatch(kinds: Kind[], st: { status: string; votes: { name: string; vote: number }[] }, pr: number): string | undefined {
+	for (const k of kinds) {
+		if (k.kind === 'pending') {
+			if (!/^active$/i.test(st.status)) return `PR ${pr} is ${st.status.toLowerCase()}, so no approval is pending`
+			if (st.votes.length && st.votes.every(v => v.vote >= 5)) return `every reviewer on PR ${pr} has approved, so none is pending`
+			continue
+		}
+		const words = (s: string) => s.toLowerCase().split(/[^\p{L}\p{N}'-]+/u).filter(w => w.length > 1)
+		const said = words(k.who)
+		const hits = st.votes.map(v => {
+			const full = words(v.name), at = (() => { for (let i = said.length - 1; i >= 0; i--) if (full.includes(said[i])) return i; return -1 })()
+			return { v, at }
+		}).filter(h => h.at >= 0)
+		const last = Math.max(-1, ...hits.map(h => h.at)), named = hits.filter(h => h.at === last)
+		if (!named.length) return `the reply says "${k.who}" approved, but no reviewer by that name is on PR ${pr}`
+		if (named.length > 1) return `the reply says "${k.who}" approved, but more than one reviewer on PR ${pr} matches that name`
+		if (named[0].v.vote < 5) return `the reply says ${named[0].v.name} approved, but their vote on PR ${pr} is ${voteName(named[0].v.vote)}`
+	}
+	return undefined
+}
 // The vote the owner's own words say is already in place: 'approval' for "I approved it" or "LGTM", a vote value for
 // "my vote is now Waiting for author"; undefined for a plan, a condition or a negation (bug 10-23 E35).
 const VOTE_SAID: Record<string, number> = { approved: 10, approvedwithsuggestions: 5, waitingforauthor: -5, rejected: -10, novote: 0 }
