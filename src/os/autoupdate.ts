@@ -1,4 +1,4 @@
-import { execFileSync, type ChildProcess } from 'node:child_process'
+import { execFile, execFileSync, type ChildProcess } from 'node:child_process'
 import { assertTestSafe } from '../store/fs.ts'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -99,12 +99,21 @@ export function exitWhenUpdated(close: () => void, root = ROOT, everyMs = 15_000
 
 type Mark = { checkedAt?: string; last?: Updated; failed?: string; bad?: string }
 
+export type VersionInfo = { code?: string; tag?: string; auto: boolean; channel: 'main' | 'release' | 'off'; everyMin: number; checkedAt?: string; failed?: string; last?: Updated }
 // What the page shows: the running commit, whether it updates by itself, and the last check.
-export function versionInfo(setting: Setting, root = ROOT, local = LOCAL_DIR, everyMin = UPDATE_EVERY_MIN): { code?: string; tag?: string; auto: boolean; channel: 'main' | 'release' | 'off'; everyMin: number; checkedAt?: string; failed?: string; last?: Updated } {
+export function versionInfo(setting: Setting, root = ROOT, local = LOCAL_DIR, everyMin = UPDATE_EVERY_MIN): VersionInfo {
 	const m = readMark(join(local, 'update.json'))
 	const git = (...a: string[]) => { try { return execFileSync('git', a, { cwd: root, stdio: 'pipe', encoding: 'utf8' }).trim() } catch { return '' } }
 	const channel = existsSync(join(root, '.git')) ? channelOf(setting, git('remote', 'get-url', 'origin')) : 'off'
 	return { code: installed(root)?.slice(0, 7), tag: git('describe', '--tags', '--exact-match') || undefined, auto: channel !== 'off', channel, everyMin, checkedAt: m.checkedAt, failed: m.failed, last: m.last }
+}
+// The same, without stopping the page server while git answers (three git calls took 200 ms of a page request; bug 10-23 perf).
+export async function versionInfoLater(setting: Setting, root = ROOT, local = LOCAL_DIR, everyMin = UPDATE_EVERY_MIN): Promise<VersionInfo> {
+	const git = (...a: string[]) => new Promise<string>(done => execFile('git', a, { cwd: root, encoding: 'utf8', windowsHide: true }, (error, out) => done(error ? '' : String(out).trim())))
+	const repo = existsSync(join(root, '.git'))
+	const [head, origin, tag] = await Promise.all([git('rev-parse', 'HEAD'), repo ? git('remote', 'get-url', 'origin') : Promise.resolve(''), git('describe', '--tags', '--exact-match')])
+	const m = readMark(join(local, 'update.json')), channel = repo ? channelOf(setting, origin) : 'off'
+	return { code: head ? head.slice(0, 7) : undefined, tag: tag || undefined, auto: channel !== 'off', channel, everyMin, checkedAt: m.checkedAt, failed: m.failed, last: m.last }
 }
 function readMark(f: string): Mark { try { return JSON.parse(readFileSync(f, 'utf8')) } catch { return {} } }
 function writeMark(f: string, m: Mark) { assertTestSafe(f); mkdirSync(join(f, '..'), { recursive: true }); writeFileSync(f, JSON.stringify(m, null, '\t') + '\n') }

@@ -198,6 +198,7 @@ a.classic-tile:hover{box-shadow:var(--shadow-2)}
 .classic-meeting>div>b{display:block;font-weight:600}
 .classic-meeting>div>span{font-size:13px;color:var(--text-2)}
 .classic-attendees{display:flex}
+.classic-attendee-names{display:block;overflow-wrap:anywhere}
 .classic-attendees .classic-avatar{margin-left:-5px;border:2px solid var(--surface)}
 .classic-work>p{display:flex;gap:6px;margin:0;font-size:13px;color:var(--text-2)}
 .classic-work>p svg{flex:none;margin-top:2px}

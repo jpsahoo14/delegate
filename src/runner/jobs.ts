@@ -1,5 +1,5 @@
 import { planRetry, retryStatus } from './retry.ts'
-import { active, afterSend, canCloseApproval, canCloseReport, hasDecisions, homeOf, mergeReportWork, newTurn, pendingParts, reReviewAsk, step, watchNews } from './work.ts'
+import { active, afterSend, canCloseApproval, canCloseReport, hasDecisions, homeOf, mergeReportWork, newTurn, pendingParts, reReviewAsk, step, watchEnded, watchNews } from './work.ts'
 import { confidence } from '../core/policy.ts'
 import { PAGE_REPLY_CHANGED } from '../core/page-approval.ts'
 import { uptime } from 'node:os'
@@ -31,7 +31,7 @@ import { learnedClaims } from './learn.ts'
 import { closeFamily, send } from './apply.ts'
 import { reopenPromise, rest } from './promise.ts'
 import { forkSession, ownerFor, sessionBytes, backupSession, restoreSession } from './own.ts'
-import { dueTrackers } from './track.ts'
+import { dueTrackers, watchSubject } from './track.ts'
 import { close } from './intake.ts'
 import { hashOf } from '../knowledge/format.ts'
 import { findSession, sendToSession } from '../mesh/route.ts'
@@ -271,7 +271,7 @@ export async function checkJobs(store: Store, src: Source, cfg: Config, procs: P
 				Object.assign(job, { state: 'queued', wrapUp: true, run: undefined })
 				store.saveJob(job)
 				store.log({ event: 'job-wrap-up', job: job.id, key: job.key, ...usedBy(job) })
-			} else if (over) fail(store, job, `Stopped after ${run.wrapUp ? minutes + WRAP_UP_MINUTES : minutes} minutes, its time budget`)
+			} else if (over) (job.every ? missedCheck : fail)(store, job, `Stopped after ${run.wrapUp ? minutes + WRAP_UP_MINUTES : minutes} minutes, its time budget`)
 			else if (!live) failOrRetry(store, job, 'It stopped without a result')
 		} finally {
 			if (!live || over) cleanJobFiles(store, run)
@@ -333,7 +333,7 @@ export function finishWork(store: Store, job: Job, r: Report, asksAtStart: numbe
 	// Short of the goal, and no new ask to run for: try again another way, or say honestly why it stopped (design-spec/goal-retry.md).
 	if (r.goalMet === false && !again && !finding) return shortOfGoal(store, job, r)
 	// A tracker keeps its next check; a work job's wait for a retry is over.
-	Object.assign(job, job.every ? { retry: undefined } : { retry: undefined, nextAt: undefined })
+	Object.assign(job, job.every ? { retry: undefined, missed: undefined } : { retry: undefined, nextAt: undefined })
 	// The job found nothing for the owner (a PR already merged, or approved by others): no card, a Done row, and a step on open work (dogfood 10-20).
 	const nothing = r.state === 'done' && !r.reply && !r.question && !effects.length
 	if (!again) for (const wf of parentsOf(store, job)) {
@@ -695,7 +695,7 @@ function stopRun(store: Store, procs: Procs, job: Job, why: string) {
 function finishCheck(store: Store, job: Job, r: Report, asksAtStart: number) {
 	// A check that could not see the target is not news: the last result stands, and the next check comes as usual.
 	if (r.goalMet === false && !r.done) {
-		Object.assign(job, { state: 'done', run: undefined, nextAt: new Date(Date.now() + job.every! * 60_000).toISOString() })
+		Object.assign(job, { state: 'done', run: undefined, missed: undefined, nextAt: new Date(Date.now() + job.every! * 60_000).toISOString() })
 		store.saveJob(job)
 		store.log({ event: 'track-check-short', job: job.id, why: r.blocker?.why, ...usedBy(job) })
 		return
@@ -714,7 +714,7 @@ function finishCheck(store: Store, job: Job, r: Report, asksAtStart: number) {
 	}
 	// An answer that arrived during the check gets one more run now, in the same session.
 	const again = !r.done && job.asks.length > asksAtStart
-	Object.assign(job, { result: { summary: r.summary, effects: [], at: now }, last: key, state: again ? 'queued' : 'done', run: undefined, nextAt: r.done ? undefined : new Date(Date.now() + job.every! * 60_000).toISOString(), every: r.done ? undefined : job.every })
+	Object.assign(job, { result: { summary: r.summary, effects: [], at: now }, last: key, missed: undefined, state: again ? 'queued' : 'done', run: undefined, nextAt: r.done ? undefined : new Date(Date.now() + job.every! * 60_000).toISOString(), every: r.done ? undefined : job.every })
 	store.saveJob(job)
 	store.log({ event: 'track-check', job: job.id, changed, done: !!r.done, summary: r.summary, ...usedBy(job) })
 }
@@ -767,11 +767,35 @@ function checkRelay(store: Store, job: Job): boolean {
 
 // A work run with no report (it crashed, or could not start) is a busy moment, not an answer: it tries again a few times first.
 function failOrRetry(store: Store, job: Job, why: string) {
+	if (job.every && job.purpose === 'work' && !job.relay && !SETUP_REFUSAL.test(why)) return missedCheck(store, job, why)
 	// A setup error (a tool the AI CLI cannot name) will not pass by trying again.
 	if (job.purpose !== 'work' || job.relay || job.every || isBootstrap(job) || job.key.startsWith('learn:') || SETUP_REFUSAL.test(why)) return fail(store, job, why)
 	const p = planRetry(job.retry, { kind: 'transient', why, tried: [] })
 	if ('stop' in p) return fail(store, job, p.stop)
 	queueRetry(store, job, p.retry, p.fresh)
+}
+
+// A tracker check that ends without a result is a missed check, not the end of the watch: it checks again soon, and open work
+// says so in a step. Only MISSES in a row stop it, and then the owner sees why (bug 10-23 E40: one worker that ended in the
+// middle of a tool call failed a check-back for good, and a later promise re-pointed the failed job with no next check).
+const MISSES = 3, MISS_RETRY_MINUTES = 15
+function missedCheck(store: Store, job: Job, why: string) {
+	const n = (job.missed ?? 0) + 1, ref = `watch-miss:${job.id}:${job.run?.id ?? n}`
+	const work = parentsOf(store, job).filter(w => w.work?.watch === job.id)
+	if (n >= MISSES) {
+		const reason = `${why} (${n} checks in a row)`
+		if (work.length < parentsOf(store, job).length) return fail(store, job, reason)
+		for (const wf of work) { watchEnded(wf, `The check-back on ${watchSubject(job)} stopped: ${reason}. Promise a check-back again to restart it`); store.save(wf) }
+		Object.assign(job, { state: 'failed', error: reason, run: undefined, every: undefined, nextAt: undefined, missed: undefined, retry: undefined })
+		store.saveJob(job)
+		store.log({ event: 'job-failed', job: job.id, key: job.key, error: reason, ...usedBy(job) })
+		return
+	}
+	const next = new Date(Date.now() + Math.min(job.every!, MISS_RETRY_MINUTES) * 60_000).toISOString()
+	Object.assign(job, { state: 'done', run: undefined, missed: n, nextAt: next, wrapUp: undefined })
+	store.saveJob(job)
+	for (const wf of work) if (step(wf, `The check-back on ${watchSubject(job)} did not finish: ${why}. It checks again at ${hhmm(next)}`, { ref })) store.save(wf)
+	store.log({ event: 'track-check-missed', job: job.id, key: job.key, n, why, at: next, ...usedBy(job) })
 }
 
 const hhmm = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })

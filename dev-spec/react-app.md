@@ -1,5 +1,43 @@
 # React preview
 
+## bug 10-23 perf: every tab took 7 s on the owner's store
+
+On a copy of the owner's store (99 MB), the page took 6.4 to 7.7 s and Settings 6.5 to 7 s.
+A CPU profile named one cause: each page re-read every proposal file once per proposal.
+`pageManagementRev` and the learned-row check call `store.proposal(code)`, which reads all 232 files each time.
+`byCode` reads all 114 items the same way. Settings built the whole page only to name its chat actions.
+
+Fixes:
+- A page request reads inside `readScope`: each file is read and parsed once per request, and lists come back as copies.
+- Between requests, a file is read again only when its time, size or file id changed (every write replaces the file).
+  Outside page requests (the runner) nothing is kept, and any write clears the request's reads.
+- Knowledge cards are parsed once per request.
+- Git is asked for the version in the background, never on a request.
+- Settings names its chat actions without building the page.
+- In the React app, the first page read starts with the script, together with the first view's code. The app renders as soon as its code arrives, instead of waiting out React's 300 ms fallback throttle. The other views of the same experience load after the first page.
+
+Measured in-process (warm): page 6.8 s → 0.17–0.2 s, Settings 6.9 s → 4–15 ms, Numbers 63–84 → 30–40 ms.
+A cold first page now takes 0.4–0.6 s.
+In Edge, New and Classic at 1280 and 400: first load 0.69–0.81 s, every tab switch 68–470 ms.
+Page, Settings and Numbers bodies are identical to the old code's on the same store.
+
+## bug 10-23 E40: a promised check-back re-pointed another subject's failed watch
+
+A reply promising to check back on an incident re-pointed the item's existing PR watch
+to the incident, while that job stayed failed with no next check, so nothing ever ran.
+Now a promise about another subject starts its own watch job; a failed or stopped watch
+is replaced, not reused; and every watch it leaves has a next check (an update keeps the
+earlier next check, or sets one). The item gets a step that names the replaced watch.
+
+The PR watch had failed because its CLI worker ended 44 s into the run, in the middle of
+a read-only tool call, with no output and no report (not ended by Delegate). One check
+like that failed the watch for good. Now a check that ends without a result is a missed
+check: the watch checks again in 15 minutes, the item gets a step that says so, and only
+three misses in a row stop it, with the reason on the item. Proved on a fictional root
+with a stub worker. The promise starts its own watch, which runs at once, then not at 239
+minutes and runs at 241. A missed check is retried, and three misses stop it with the
+reason. New (card) and Classic (Ongoing, In progress) show it at 1280 light and 400 dark.
+
 ## bug 10-23 E97: `u` undid the wrong reply in a live session
 
 New and Classic picked the first done entry with an undo in object order. A page
@@ -1376,6 +1414,20 @@ Measure a 500-row update in a production browser; report the timing and method,
 not just a threshold assertion. No real-owner data is needed or accessed.
 
 ## Decisions
+
+- bug 10-22 E16.classic.invite-attendees (R2): the meeting strip reduced
+  attendee identities to three decorative, aria-hidden initials. Show every
+  attendee label from the existing meeting projection (names and emails as
+  supplied), like New, beneath the meeting time with an Attendees label.
+  Keep the Classic avatar stack decorative; do not limit the identity list
+  to its first three people. Wrap long names/emails at narrow widths. Visible
+  text is preferable to initials or hover-only titles, which cannot identify
+  invitees reliably on touch or for assistive technology. No new lookup,
+  recipient inference, change payload or approval behavior.
+  Manual Edge acceptance: fictional invite proposal, 1280 light and 400 dark,
+  same-initial names and a fourth invitee all readable before approval;
+  names remain visible when the selectable change is toggled, zero effects.
+  Build only; no tests. Keep the separately held E57 patch out of this commit.
 
 - bug 10-22 E12.real-g1-unrelated-owner-post-not-a-reply (R2): an owner FYI
   closed an unrelated room ask merely because it named the asker. Neither a

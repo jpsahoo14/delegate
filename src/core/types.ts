@@ -147,6 +147,8 @@ export type Job = {
 	every?: number
 	until?: string
 	nextAt?: string
+	// Tracker checks in a row that ended without a result; the watch stops, and says why, after a few (bug 10-23 E40).
+	missed?: number
 	// A work run that fell short of its goal tries again at nextAt, another way (design-spec/goal-retry.md).
 	retry?: Retry
 	// A tracker started by a reply's promise stops checking at this time unless the owner extends it.

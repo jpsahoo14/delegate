@@ -43,6 +43,19 @@ export const fetchSnapshot = (find = '', signal?: AbortSignal) => {
 		if (pages.size > 10) pages.delete(pages.keys().next().value!)
 	}, readPageDelta)
 }
+// The first page read starts with the script, while the app's code still loads; the first query takes it once (bug 10-23 perf:
+// it started 300 ms after the page had loaded).
+let early: Promise<Snapshot> | undefined
+export function startEarlySnapshot(): Promise<Snapshot> {
+	early = fetchSnapshot('')
+	early.catch(() => undefined)
+	return early
+}
+export function takeEarlySnapshot(find: string): Promise<Snapshot> | undefined {
+	const taken = find ? undefined : early
+	early = undefined
+	return taken
+}
 export const submit = (intent: Intent) => request('/api/v1/actions', receiptSchema, { method: 'POST', body: JSON.stringify(intent) })
 export const receipt = (submissionId: string) => request(`/api/v1/result?submission=${encodeURIComponent(submissionId)}`, receiptSchema)
 export const fetchSettings = (signal?: AbortSignal, experience: 'new' | 'classic' = 'new') => request(`/api/v1/settings${experience === 'classic' ? '?experience=classic' : ''}`, settingsSchema, { signal })

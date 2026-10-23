@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
-import { fetchSnapshot, submit, receipt, dismissExperienceNote, ApiError } from '../services/api.ts'
+import { fetchSnapshot, submit, receipt, dismissExperienceNote, ApiError, takeEarlySnapshot } from '../services/api.ts'
 import { pendingSubmissions, rememberSubmission, forgetSubmission } from '../services/pending.ts'
 import { revisionKey, type Action, type Intent, type Receipt, type Snapshot } from '../domain/contracts.ts'
 import { IDLE, pinnedPlacements, useData, type CardUi } from './store.ts'
@@ -25,7 +25,7 @@ export function useAppData() {
 	const loaded = useRef<Snapshot | undefined>(undefined)
 	const query = useQuery({
 		queryKey: ['page', find], queryFn: async ({ signal }) => {
-			const snapshot = await fetchSnapshot(find, signal)
+			const snapshot = await (takeEarlySnapshot(find) ?? fetchSnapshot(find, signal))
 			if (loaded.current !== snapshot) { useData.getState().ingest(snapshot); loaded.current = snapshot }
 			return snapshot
 		}, retry: false, notifyOnChangeProps: ['error'],

@@ -4,7 +4,7 @@ import { ulid } from '../core/ids.ts'
 import type { Store } from '../store/state.ts'
 import { slug } from '../knowledge/format.ts'
 import { forkSession, sessionCwd } from './own.ts'
-import { watchEnded } from './work.ts'
+import { step, watchEnded } from './work.ts'
 import { messageLink } from '../adapters/channels.ts'
 import { parseWatch } from '../core/verbs.ts'
 
@@ -120,20 +120,35 @@ export function startFollow(store: Store, f: Follow, now = Date.now()): string {
 }
 
 // The check-back an open work item promised: a job whose only parent is that item, so its news comes back there (R-WRK-04).
-// One live watch per item: a later promise changes its interval and condition instead of starting another.
+// One live watch per item: a later promise about the same subject changes its interval and condition instead of starting another.
+// A promise about another subject gets its own job, and never re-points the other subject's watch; a failed or stopped watch is
+// replaced, never reused silently. Every watch it leaves has a next check (bug 10-23 E40).
 export function startWatch(store: Store, wf: Workflow, f: Follow, now = Date.now()): string {
 	const at = new Date(now).toISOString(), every = Math.min(1440, Math.max(5, Math.round((f.everyHours ?? 4) * 60)))
 	const endsAt = new Date(now + FOLLOW_DAYS * 86_400_000).toISOString(), goal = `Check ${f.target} and report its current state in one line`
+	const key = `watch:${slug(f.target)}:${wf.id}`
 	const live = wf.work?.watch ? store.job(wf.work.watch) : undefined
-	if (live?.every) { Object.assign(live, { every, until: f.until, goal, endsAt }); store.saveJob(live); return wf.code }
+	if (live?.every && live.state !== 'failed' && live.key === key) {
+		const due = now + every * 60_000, next = live.nextAt && Date.parse(live.nextAt) <= due ? live.nextAt : new Date(due).toISOString()
+		Object.assign(live, { every, until: f.until, goal, endsAt, nextAt: live.state === 'queued' ? live.nextAt ?? at : next })
+		store.saveJob(live)
+		return wf.code
+	}
+	if (live) {
+		const was = watchSubject(live)
+		if (live.state === 'failed') step(wf, `The check-back on ${was} had stopped: ${live.error ?? 'its last check failed'}. A new check-back starts now`, { ref: `watch-replaced:${live.id}` })
+		else if (live.every) step(wf, `Stopped checking back on ${was}; the newer promise checks back on ${f.target}`, { ref: `watch-replaced:${live.id}` })
+		if (live.every) { Object.assign(live, { every: undefined, nextAt: undefined, ...(live.state === 'queued' ? { state: 'done' as const } : {}) }); store.saveJob(live) }
+	}
 	const job: Job = {
-		schema: 1, id: ulid(), key: `watch:${slug(f.target)}:${wf.id}`, goal, session: { agent: store.config().agent.flavor, id: randomUUID() },
+		schema: 1, id: ulid(), key, goal, session: { agent: store.config().agent.flavor, id: randomUUID() },
 		state: 'queued', purpose: 'work', parents: [wf.id], asks: [goal], every, until: f.until, endsAt, nextAt: at, createdAt: at, updatedAt: at,
 	}
 	store.saveJob(job)
 	wf.work!.watch = job.id
 	return wf.code
 }
+export const watchSubject = (job: Job) => job.goal.replace(/^Check (.*) and report.*$/, '$1')
 export function stopWatch(store: Store, wf: Workflow) {
 	const job = wf.work?.watch ? store.job(wf.work.watch) : undefined
 	if (job?.every) { Object.assign(job, { every: undefined, nextAt: undefined }); store.saveJob(job) }
@@ -150,7 +165,7 @@ export function dueTrackers(store: Store, now = Date.now()) {
 		if (job.endsAt && Date.parse(job.endsAt) <= now) {
 			Object.assign(job, { every: undefined, nextAt: undefined }); store.saveJob(job)
 			// The end of a watch is not the end of the work: the owner decides what next (review P0.2).
-			if (work) { watchEnded(item, `The watch on ${job.goal.replace(/^Check (.*) and report.*$/, '$1')} ended after ${FOLLOW_DAYS} days`); store.save(item); continue }
+			if (work) { watchEnded(item, `The watch on ${watchSubject(job)} ended after ${FOLLOW_DAYS} days`); store.save(item); continue }
 			Object.assign(item, { state: 'done', status: item.watchBy ? `Stopped watching: it was due by ${item.watchBy}. Say "watch …" to start again.` : `Stopped watching after ${FOLLOW_DAYS} days. Say "watch …" to start again.` }); store.save(item)
 			continue
 		}

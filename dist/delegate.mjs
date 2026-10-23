@@ -326,7 +326,7 @@ var init_runinfo = __esm({
 });
 
 // src/store/fs.ts
-import { appendFileSync, closeSync, existsSync as existsSync2, mkdirSync, openSync, readdirSync, readFileSync as readFileSync2, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync as existsSync2, mkdirSync, openSync, readdirSync, readFileSync as readFileSync2, renameSync, rmSync, statSync as statSync2, writeFileSync } from "node:fs";
 import { basename, dirname, join as join2, resolve as resolve2 } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -334,11 +334,47 @@ function assertTestSafe(path) {
   if (!process.env.NODE_TEST_CONTEXT) return;
   if (!inTemp(path)) throw new Error(`A test tried to write outside the temp folder: ${resolve2(path)}`);
 }
-function readJson(path, fallback) {
+function readScope(fn) {
+  if (scope) return fn();
+  scope = /* @__PURE__ */ new Map();
   try {
-    return JSON.parse(readFileSync2(path, "utf8").replace(/^\uFEFF/, ""));
+    return fn();
+  } finally {
+    scope = void 0;
+  }
+}
+function scoped(key, make) {
+  if (!scope) return make();
+  if (scope.has(key)) return copy(scope.get(key));
+  const v = make();
+  scope.set(key, v);
+  return copy(v);
+}
+function readText(path) {
+  if (!scope) return readFileSync2(path, "utf8");
+  const st = statSync2(path);
+  const sig = `${st.mtimeMs}:${st.size}:${st.ino}`, hit = texts.get(path);
+  if (hit?.sig === sig) return hit.text;
+  const text3 = readFileSync2(path, "utf8");
+  texts.delete(path);
+  texts.set(path, { sig, text: text3 });
+  if (texts.size > 5e3) texts.delete(texts.keys().next().value);
+  return text3;
+}
+function readJson(path, fallback) {
+  if (scope?.has(path)) {
+    const v = scope.get(path);
+    return v === MISSING ? fallback : copy(v);
+  }
+  try {
+    const v = JSON.parse(readText(path).replace(/^\uFEFF/, ""));
+    scope?.set(path, v);
+    return copy(v);
   } catch (error62) {
-    if (error62.code === "ENOENT") return fallback;
+    if (error62.code === "ENOENT") {
+      scope?.set(path, MISSING);
+      return fallback;
+    }
     throw error62;
   }
 }
@@ -347,6 +383,7 @@ function writeJson(path, value, machine2) {
 }
 function writeText(path, text3, machine2) {
   assertTestSafe(path);
+  scope?.clear();
   mkdirSync(dirname(path), { recursive: true });
   const tmp = `${path}.tmp-${machine2}-${process.pid}-${randomUUID()}`;
   const fd = openSync(tmp, "wx");
@@ -374,18 +411,26 @@ function retry(fn, tries = 5) {
 }
 function appendLine(path, value) {
   assertTestSafe(path);
+  scope?.clear();
   mkdirSync(dirname(path), { recursive: true });
   appendFileSync(path, JSON.stringify(value) + "\n");
 }
 function listJson(dir) {
-  if (!existsSync2(dir)) return [];
-  return readdirSync(dir).filter((f) => f.endsWith(".json") && !f.includes(".tmp-")).sort().map((f) => join2(dir, f));
+  const key = `dir:${dir}`;
+  if (scope?.has(key)) return [...scope.get(key)];
+  const files2 = existsSync2(dir) ? readdirSync(dir).filter((f) => f.endsWith(".json") && !f.includes(".tmp-")).sort().map((f) => join2(dir, f)) : [];
+  scope?.set(key, files2);
+  return [...files2];
 }
 function records(dir) {
-  return listJson(dir).flatMap((f) => {
+  const key = `records:${dir}`;
+  if (scope?.has(key)) return [...scope.get(key)];
+  const out = listJson(dir).flatMap((f) => {
     const r = readJson(f, null);
     return r && `${r.id}.json` === basename(f) ? [r] : [];
   });
+  scope?.set(key, out);
+  return [...out];
 }
 function strays(dir) {
   return listJson(dir).filter((f) => {
@@ -394,10 +439,11 @@ function strays(dir) {
   });
 }
 function moveTo(path, dir) {
+  scope?.clear();
   mkdirSync(dir, { recursive: true });
   retry(() => renameSync(path, join2(dir, basename(path))));
 }
-var TMP, inTemp;
+var TMP, inTemp, scope, MISSING, copy, texts;
 var init_fs = __esm({
   "src/store/fs.ts"() {
     "use strict";
@@ -406,6 +452,9 @@ var init_fs = __esm({
       const p = resolve2(path);
       return TMP.some((t2) => p === t2 || p.startsWith(t2 + "/") || p.startsWith(t2 + "\\"));
     };
+    MISSING = /* @__PURE__ */ Symbol("missing");
+    copy = (v) => Array.isArray(v) ? [...v] : v;
+    texts = /* @__PURE__ */ new Map();
   }
 });
 
@@ -22386,7 +22435,7 @@ var init_state = __esm({
 });
 
 // src/runner/repos.ts
-import { existsSync as existsSync7, readdirSync as readdirSync5, readFileSync as readFileSync7, statSync as statSync2 } from "node:fs";
+import { existsSync as existsSync7, readdirSync as readdirSync5, readFileSync as readFileSync7, statSync as statSync3 } from "node:fs";
 import { homedir as homedir4 } from "node:os";
 import { isAbsolute as isAbsolute3, join as join7, resolve as resolve4 } from "node:path";
 function remoteOf(s3) {
@@ -22408,7 +22457,7 @@ function gitInfo(dir) {
   const dot = join7(dir, ".git");
   let gitDir;
   try {
-    gitDir = statSync2(dot).isDirectory() ? dot : resolve4(dir, /^gitdir:\s*(.+)$/m.exec(readFileSync7(dot, "utf8"))?.[1]?.trim() ?? "");
+    gitDir = statSync3(dot).isDirectory() ? dot : resolve4(dir, /^gitdir:\s*(.+)$/m.exec(readFileSync7(dot, "utf8"))?.[1]?.trim() ?? "");
   } catch {
     return void 0;
   }
@@ -39580,7 +39629,7 @@ var init_stdio2 = __esm({
 });
 
 // src/adapters/mcp-client.ts
-import { statSync as statSync3 } from "node:fs";
+import { statSync as statSync4 } from "node:fs";
 import { homedir as homedir5 } from "node:os";
 import { join as join8 } from "node:path";
 function parseLoose(text3, structured) {
@@ -39599,7 +39648,7 @@ function cliServers(flavor) {
   if (process.env.NODE_TEST_CONTEXT && !inTemp(path)) return { path, servers: {} };
   let stamp2;
   try {
-    const st = statSync3(path);
+    const st = statSync4(path);
     stamp2 = `${st.mtimeMs}:${st.size}`;
   } catch (e) {
     return e.code === "ENOENT" ? { path, servers: {} } : { path, servers: {}, error: String(e).slice(0, 160) };
@@ -40780,7 +40829,7 @@ var init_format2 = __esm({
 });
 
 // src/mesh/inbox.mjs
-import { closeSync as closeSync4, existsSync as existsSync12, mkdirSync as mkdirSync5, openSync as openSync4, readdirSync as readdirSync6, readFileSync as readFileSync12, renameSync as renameSync2, rmSync as rmSync5, statSync as statSync4, writeFileSync as writeFileSync6, writeSync as writeSync2 } from "node:fs";
+import { closeSync as closeSync4, existsSync as existsSync12, mkdirSync as mkdirSync5, openSync as openSync4, readdirSync as readdirSync6, readFileSync as readFileSync12, renameSync as renameSync2, rmSync as rmSync5, statSync as statSync5, writeFileSync as writeFileSync6, writeSync as writeSync2 } from "node:fs";
 import { randomBytes as randomBytes2 } from "node:crypto";
 import { dirname as dirname7, join as join13 } from "node:path";
 function readJson2(p) {
@@ -40848,7 +40897,7 @@ var init_inbox = __esm({
     dirs = (root) => ({ sessions: join13(root, "mesh", "sessions"), inbox: join13(root, "mesh", "inbox"), receipts: join13(root, "mesh", "receipts") });
     isDir = (d) => {
       try {
-        return statSync4(d).isDirectory();
+        return statSync5(d).isDirectory();
       } catch {
         return false;
       }
@@ -40993,7 +41042,7 @@ var init_route = __esm({
 });
 
 // src/runner/own.ts
-import { cpSync, existsSync as existsSync14, lstatSync as lstatSync2, mkdirSync as mkdirSync7, readFileSync as readFileSync14, renameSync as renameSync3, statSync as statSync5, writeFileSync as writeFileSync8 } from "node:fs";
+import { cpSync, existsSync as existsSync14, lstatSync as lstatSync2, mkdirSync as mkdirSync7, readFileSync as readFileSync14, renameSync as renameSync3, statSync as statSync6, writeFileSync as writeFileSync8 } from "node:fs";
 import { homedir as homedir6 } from "node:os";
 import { dirname as dirname8, join as join15 } from "node:path";
 import { randomUUID as randomUUID2 } from "node:crypto";
@@ -41003,12 +41052,12 @@ function sessionCwd(id) {
 }
 function forkSession(id) {
   if (!sessionExists(id)) return void 0;
-  const copy = randomUUID2();
+  const copy2 = randomUUID2();
   assertTestSafe(sessions());
-  cpSync(join15(sessions(), id), join15(sessions(), copy), { recursive: true, filter: (s3) => !s3.endsWith(".lock") && !lstatSync2(s3).isSymbolicLink() });
-  const f = join15(sessions(), copy, "workspace.yaml");
-  if (existsSync14(f)) writeFileSync8(f, readFileSync14(f, "utf8").replace(/^id:.*$/m, `id: ${copy}`).replace(/^mc_[a-z_]+:.*\n/gm, ""));
-  return copy;
+  cpSync(join15(sessions(), id), join15(sessions(), copy2), { recursive: true, filter: (s3) => !s3.endsWith(".lock") && !lstatSync2(s3).isSymbolicLink() });
+  const f = join15(sessions(), copy2, "workspace.yaml");
+  if (existsSync14(f)) writeFileSync8(f, readFileSync14(f, "utf8").replace(/^id:.*$/m, `id: ${copy2}`).replace(/^mc_[a-z_]+:.*\n/gm, ""));
+  return copy2;
 }
 function put(p, data) {
   assertTestSafe(p);
@@ -41089,7 +41138,7 @@ var init_own = __esm({
     sessionExists = (id) => existsSync14(join15(sessions(), id, "events.jsonl"));
     sessionBytes = (id) => {
       try {
-        return statSync5(join15(sessions(), id, "events.jsonl")).size;
+        return statSync6(join15(sessions(), id, "events.jsonl")).size;
       } catch {
         return 0;
       }
@@ -41311,16 +41360,27 @@ function startFollow(store2, f, now = Date.now()) {
 function startWatch(store2, wf, f, now = Date.now()) {
   const at3 = new Date(now).toISOString(), every2 = Math.min(1440, Math.max(5, Math.round((f.everyHours ?? 4) * 60)));
   const endsAt = new Date(now + FOLLOW_DAYS * 864e5).toISOString(), goal = `Check ${f.target} and report its current state in one line`;
+  const key = `watch:${slug(f.target)}:${wf.id}`;
   const live2 = wf.work?.watch ? store2.job(wf.work.watch) : void 0;
-  if (live2?.every) {
-    Object.assign(live2, { every: every2, until: f.until, goal, endsAt });
+  if (live2?.every && live2.state !== "failed" && live2.key === key) {
+    const due2 = now + every2 * 6e4, next2 = live2.nextAt && Date.parse(live2.nextAt) <= due2 ? live2.nextAt : new Date(due2).toISOString();
+    Object.assign(live2, { every: every2, until: f.until, goal, endsAt, nextAt: live2.state === "queued" ? live2.nextAt ?? at3 : next2 });
     store2.saveJob(live2);
     return wf.code;
+  }
+  if (live2) {
+    const was = watchSubject(live2);
+    if (live2.state === "failed") step(wf, `The check-back on ${was} had stopped: ${live2.error ?? "its last check failed"}. A new check-back starts now`, { ref: `watch-replaced:${live2.id}` });
+    else if (live2.every) step(wf, `Stopped checking back on ${was}; the newer promise checks back on ${f.target}`, { ref: `watch-replaced:${live2.id}` });
+    if (live2.every) {
+      Object.assign(live2, { every: void 0, nextAt: void 0, ...live2.state === "queued" ? { state: "done" } : {} });
+      store2.saveJob(live2);
+    }
   }
   const job = {
     schema: 1,
     id: ulid3(),
-    key: `watch:${slug(f.target)}:${wf.id}`,
+    key,
     goal,
     session: { agent: store2.config().agent.flavor, id: randomUUID3() },
     state: "queued",
@@ -41358,7 +41418,7 @@ function dueTrackers(store2, now = Date.now()) {
       Object.assign(job, { every: void 0, nextAt: void 0 });
       store2.saveJob(job);
       if (work2) {
-        watchEnded(item2, `The watch on ${job.goal.replace(/^Check (.*) and report.*$/, "$1")} ended after ${FOLLOW_DAYS} days`);
+        watchEnded(item2, `The watch on ${watchSubject(job)} ended after ${FOLLOW_DAYS} days`);
         store2.save(item2);
         continue;
       }
@@ -41371,7 +41431,7 @@ function dueTrackers(store2, now = Date.now()) {
     store2.saveJob(job);
   }
 }
-var DEFAULT_UNTIL, localDay2, teamsLink, watchCommand, FOLLOW_DAYS, weekOut;
+var DEFAULT_UNTIL, localDay2, teamsLink, watchCommand, FOLLOW_DAYS, weekOut, watchSubject;
 var init_track = __esm({
   "src/runner/track.ts"() {
     "use strict";
@@ -41391,6 +41451,7 @@ var init_track = __esm({
     };
     FOLLOW_DAYS = 7;
     weekOut = () => new Date(Date.now() + FOLLOW_DAYS * 864e5).toISOString();
+    watchSubject = (job) => job.goal.replace(/^Check (.*) and report.*$/, "$1");
   }
 });
 
@@ -41461,8 +41522,8 @@ function scheduleOf(i, now = /* @__PURE__ */ new Date()) {
   return { every: i.every, at: first3, ...rest2.length ? { times: rest2 } : {}, ...i.every === "week" ? { day: i.day ?? 1 } : {} };
 }
 function propose(store2, i) {
-  const texts = (i.texts?.length ? i.texts : [i.text ?? ""]).map((t2) => t2.trim()).filter(Boolean);
-  if (!texts.length) return "What should the reminder say?";
+  const texts2 = (i.texts?.length ? i.texts : [i.text ?? ""]).map((t2) => t2.trim()).filter(Boolean);
+  if (!texts2.length) return "What should the reminder say?";
   if (i.every === "hours" && !i.until && !i.maxSends) return "When should it stop? Say a date, or how many times.";
   if (i.until !== void 0 && (!/^\d{4}-\d{2}-\d{2}$/.test(i.until) || localDay3(/* @__PURE__ */ new Date(`${i.until}T12:00`)) !== i.until)) return `"${i.until}" is not a date. Use YYYY-MM-DD, such as 2026-11-30.`;
   const schedule = scheduleOf(i);
@@ -41473,7 +41534,7 @@ function propose(store2, i) {
   const to = i.chatId ? { chatId: i.chatId, name: i.to } : findChat(store2, i.to);
   if (typeof to === "string") return to;
   const now = (/* @__PURE__ */ new Date()).toISOString();
-  const a = { schema: 1, id: ulid3(), code: store2.nextCode("R"), kind: "remind", to, text: texts[0], ...texts.length > 1 ? { texts, rotation: i.rotation ?? "cycle" } : {}, schedule, until: i.until, maxSends: i.maxSends, stopOnReply: i.stopOnReply ?? true, state: "proposed", count: 0, createdAt: now, updatedAt: now };
+  const a = { schema: 1, id: ulid3(), code: store2.nextCode("R"), kind: "remind", to, text: texts2[0], ...texts2.length > 1 ? { texts: texts2, rotation: i.rotation ?? "cycle" } : {}, schedule, until: i.until, maxSends: i.maxSends, stopOnReply: i.stopOnReply ?? true, state: "proposed", count: 0, createdAt: now, updatedAt: now };
   store2.saveAutomation(a);
   return `${describe3(a)}. It goes out with your assistant's marker. Say "ok ${a.code}" to start it.`;
 }
@@ -42031,7 +42092,7 @@ __export(numbers_exports, {
   numbersOf: () => numbersOf,
   saveWeeks: () => saveWeeks
 });
-import { statSync as statSync6 } from "node:fs";
+import { statSync as statSync7 } from "node:fs";
 function fromLog(store2, machine2, week) {
   const files2 = store2.logFiles().filter((f) => f.machine === machine2 && f.day >= week && f.day <= addDays(week, 6));
   return slim(files2.flatMap((f) => store2.logOf(f.file)));
@@ -42048,7 +42109,7 @@ function saveWeeks(store2, now = /* @__PURE__ */ new Date()) {
   const week = weekOf(now.toISOString().slice(0, 10)), have = new Map(store2.numberWeeks().map((w) => [`${w.machine}|${w.week}`, w.file]));
   const files2 = store2.logFiles(), last3 = /* @__PURE__ */ new Map();
   for (const f of files2) if (f.day > (last3.get(f.machine) ?? "")) last3.set(f.machine, f.day);
-  const quiet = (m, w) => files2.filter((f) => f.machine === m && weekOf(f.day) === w).every((f) => now.getTime() - statSync6(f.file).mtimeMs > 6 * 36e5);
+  const quiet = (m, w) => files2.filter((f) => f.machine === m && weekOf(f.day) === w).every((f) => now.getTime() - statSync7(f.file).mtimeMs > 6 * 36e5);
   const synced = (m, w) => (last3.get(m) ?? "") > addDays(w, 6) && quiet(m, w);
   const done2 = [...new Set(files2.map((f) => `${f.machine}|${weekOf(f.day)}`))].filter((k) => {
     const [m, w] = split(k);
@@ -42076,7 +42137,7 @@ function handledThisWeek(store2, items2, now = /* @__PURE__ */ new Date()) {
     ...store2.numberWeeks().filter((w) => w.week >= from).map((w) => w.file),
     ...store2.logFiles().filter((f) => weekOf(f.day) >= from).map((f) => {
       try {
-        const st = statSync6(f.file);
+        const st = statSync7(f.file);
         return `${f.file}:${st.size}:${st.mtimeMs}`;
       } catch {
         return f.file;
@@ -42899,8 +42960,10 @@ var init_knowledge = __esm({
       }
       cards() {
         const dir = join16(this.root, "topics");
-        if (!existsSync15(dir)) return [];
-        return readdirSync7(dir, { withFileTypes: true }).filter((d) => d.isDirectory()).flatMap((d) => CARDS.map((c) => join16(dir, d.name, `${c}.md`)).filter(existsSync15).map((p) => parseCard(p, readFileSync15(p, "utf8"))));
+        return scoped(`cards:${dir}`, () => {
+          if (!existsSync15(dir)) return [];
+          return readdirSync7(dir, { withFileTypes: true }).filter((d) => d.isDirectory()).flatMap((d) => CARDS.map((c) => join16(dir, d.name, `${c}.md`)).filter(existsSync15).map((p) => parseCard(p, readText(p))));
+        });
       }
       search(q2, f = {}) {
         const want = words2(q2);
@@ -42970,7 +43033,7 @@ var init_knowledge = __esm({
         const touched = [...new Set(p.ops.map((o) => o.card))];
         for (const card2 of touched) if (this.cardHash(p.topic, card2) !== (p.base[card2] ?? "")) throw new StaleCard(`${p.topic}/${card2} changed since ${p.code} was proposed`);
         const out = { ids: [], lines: [], prev: [] };
-        const texts = /* @__PURE__ */ new Map();
+        const texts2 = /* @__PURE__ */ new Map();
         for (const card2 of touched) {
           const path = this.path(p.topic, card2);
           let text3 = existsSync15(path) ? readFileSync15(path, "utf8") : newCard(p.topic, p.title, card2, "team");
@@ -42989,9 +43052,9 @@ var init_knowledge = __esm({
             out.lines[i] = o.op === "retire" ? "" : line2;
             out.prev[i] = old && formatLine(old);
           }
-          texts.set(card2, text3);
+          texts2.set(card2, text3);
         }
-        for (const [card2, text3] of texts) writeText(this.path(p.topic, card2), text3, this.machine);
+        for (const [card2, text3] of texts2) writeText(this.path(p.topic, card2), text3, this.machine);
         this.writeIndex();
         return out;
       }
@@ -46040,8 +46103,8 @@ function prOf(store2, w) {
   const job = w.job ? store2.job(w.job) : void 0;
   const target2 = prTarget(store2, w);
   if (!target2) return void 0;
-  const texts = [w.lastAsk, job?.goal, ...job?.asks ?? [], ...w.work?.links ?? [], ...store2.thread(w.id).map((m) => m.text)];
-  for (const t2 of texts) for (const m of (t2 ?? "").matchAll(new RegExp(PR_LINK.source, "gi"))) if (Number(m[3]) === target2) return { project: decodeURIComponent(m[1]), repo: decodeURIComponent(m[2]), id: target2, remote: remoteOf(m[0]) };
+  const texts2 = [w.lastAsk, job?.goal, ...job?.asks ?? [], ...w.work?.links ?? [], ...store2.thread(w.id).map((m) => m.text)];
+  for (const t2 of texts2) for (const m of (t2 ?? "").matchAll(new RegExp(PR_LINK.source, "gi"))) if (Number(m[3]) === target2) return { project: decodeURIComponent(m[1]), repo: decodeURIComponent(m[2]), id: target2, remote: remoteOf(m[0]) };
   return void 0;
 }
 async function probePRs(store2, cfg, probe, now = Date.now(), force = false, subjects) {
@@ -46649,7 +46712,7 @@ async function checkJobs(store2, src, cfg, procs, probe) {
         Object.assign(job, { state: "queued", wrapUp: true, run: void 0 });
         store2.saveJob(job);
         store2.log({ event: "job-wrap-up", job: job.id, key: job.key, ...usedBy(job) });
-      } else if (over) fail(store2, job, `Stopped after ${run2.wrapUp ? minutes + WRAP_UP_MINUTES : minutes} minutes, its time budget`);
+      } else if (over) (job.every ? missedCheck : fail)(store2, job, `Stopped after ${run2.wrapUp ? minutes + WRAP_UP_MINUTES : minutes} minutes, its time budget`);
       else if (!live2) failOrRetry(store2, job, "It stopped without a result");
     } finally {
       if (!live2 || over) cleanJobFiles(store2, run2);
@@ -46702,7 +46765,7 @@ function finishWork(store2, job, r, asksAtStart) {
   const finding = findingNotBlocker(job, r);
   if (finding) r = { ...r, context: [...r.context ?? [], { label: "Not reached", text: r.blocker.why, tone: "warn" }] };
   if (r.goalMet === false && !again && !finding) return shortOfGoal(store2, job, r);
-  Object.assign(job, job.every ? { retry: void 0 } : { retry: void 0, nextAt: void 0 });
+  Object.assign(job, job.every ? { retry: void 0, missed: void 0 } : { retry: void 0, nextAt: void 0 });
   const nothing = r.state === "done" && !r.reply && !r.question && !effects.length;
   if (!again) for (const wf of parentsOf(store2, job)) {
     if (wf.pending.length) {
@@ -47025,7 +47088,7 @@ function stopRun(store2, procs, job, why2) {
 }
 function finishCheck(store2, job, r, asksAtStart) {
   if (r.goalMet === false && !r.done) {
-    Object.assign(job, { state: "done", run: void 0, nextAt: new Date(Date.now() + job.every * 6e4).toISOString() });
+    Object.assign(job, { state: "done", run: void 0, missed: void 0, nextAt: new Date(Date.now() + job.every * 6e4).toISOString() });
     store2.saveJob(job);
     store2.log({ event: "track-check-short", job: job.id, why: r.blocker?.why, ...usedBy(job) });
     return;
@@ -47050,7 +47113,7 @@ function finishCheck(store2, job, r, asksAtStart) {
     }
   }
   const again = !r.done && job.asks.length > asksAtStart;
-  Object.assign(job, { result: { summary: r.summary, effects: [], at: now }, last: key, state: again ? "queued" : "done", run: void 0, nextAt: r.done ? void 0 : new Date(Date.now() + job.every * 6e4).toISOString(), every: r.done ? void 0 : job.every });
+  Object.assign(job, { result: { summary: r.summary, effects: [], at: now }, last: key, missed: void 0, state: again ? "queued" : "done", run: void 0, nextAt: r.done ? void 0 : new Date(Date.now() + job.every * 6e4).toISOString(), every: r.done ? void 0 : job.every });
   store2.saveJob(job);
   store2.log({ event: "track-check", job: job.id, changed, done: !!r.done, summary: r.summary, ...usedBy(job) });
 }
@@ -47094,10 +47157,32 @@ function checkRelay(store2, job) {
   return true;
 }
 function failOrRetry(store2, job, why2) {
+  if (job.every && job.purpose === "work" && !job.relay && !SETUP_REFUSAL.test(why2)) return missedCheck(store2, job, why2);
   if (job.purpose !== "work" || job.relay || job.every || isBootstrap(job) || job.key.startsWith("learn:") || SETUP_REFUSAL.test(why2)) return fail(store2, job, why2);
   const p = planRetry(job.retry, { kind: "transient", why: why2, tried: [] });
   if ("stop" in p) return fail(store2, job, p.stop);
   queueRetry(store2, job, p.retry, p.fresh);
+}
+function missedCheck(store2, job, why2) {
+  const n = (job.missed ?? 0) + 1, ref = `watch-miss:${job.id}:${job.run?.id ?? n}`;
+  const work2 = parentsOf(store2, job).filter((w) => w.work?.watch === job.id);
+  if (n >= MISSES) {
+    const reason = `${why2} (${n} checks in a row)`;
+    if (work2.length < parentsOf(store2, job).length) return fail(store2, job, reason);
+    for (const wf of work2) {
+      watchEnded(wf, `The check-back on ${watchSubject(job)} stopped: ${reason}. Promise a check-back again to restart it`);
+      store2.save(wf);
+    }
+    Object.assign(job, { state: "failed", error: reason, run: void 0, every: void 0, nextAt: void 0, missed: void 0, retry: void 0 });
+    store2.saveJob(job);
+    store2.log({ event: "job-failed", job: job.id, key: job.key, error: reason, ...usedBy(job) });
+    return;
+  }
+  const next2 = new Date(Date.now() + Math.min(job.every, MISS_RETRY_MINUTES) * 6e4).toISOString();
+  Object.assign(job, { state: "done", run: void 0, missed: n, nextAt: next2, wrapUp: void 0 });
+  store2.saveJob(job);
+  for (const wf of work2) if (step(wf, `The check-back on ${watchSubject(job)} did not finish: ${why2}. It checks again at ${hhmm3(next2)}`, { ref })) store2.save(wf);
+  store2.log({ event: "track-check-missed", job: job.id, key: job.key, n, why: why2, at: next2, ...usedBy(job) });
 }
 function queueRetry(store2, job, retry2, fresh) {
   for (const wf of parentsOf(store2, job)) {
@@ -47141,7 +47226,7 @@ function scrubLog(store2, runId) {
 function parentsOf(store2, job) {
   return job.parents.map((id) => store2.workflow(id)).filter((w) => !!w && w.state !== "done" && (w.job === job.id || w.work?.watch === job.id));
 }
-var realProcs, RECHECK, asksRecheck, NEVER_RELAY, keyOf2, effectsKey, stillApproved, executing, WRAP_UP_MINUTES, WRAP_UP, ended, usedBy, switchOf, hhmm3, changeText, TRACKER_SESSION_LIMIT;
+var realProcs, RECHECK, asksRecheck, NEVER_RELAY, keyOf2, effectsKey, stillApproved, executing, WRAP_UP_MINUTES, WRAP_UP, ended, usedBy, switchOf, MISSES, MISS_RETRY_MINUTES, hhmm3, changeText, TRACKER_SESSION_LIMIT;
 var init_jobs = __esm({
   "src/runner/jobs.ts"() {
     "use strict";
@@ -47209,6 +47294,8 @@ var init_jobs = __esm({
       const one = `${c.tool}:${String(c.args.action ?? "")}`;
       return changeName(one) !== one ? changeName(one) : changeName(c.tool);
     };
+    MISSES = 3;
+    MISS_RETRY_MINUTES = 15;
     hhmm3 = (iso) => new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
     changeText = (e) => changeSays(e).slice(0, 120);
     TRACKER_SESSION_LIMIT = 2 * 1024 * 1024;
@@ -47494,7 +47581,7 @@ init_fs();
 init_state();
 import { spawnSync as spawnSync4 } from "node:child_process";
 import { randomUUID as randomUUID11 } from "node:crypto";
-import { existsSync as existsSync28, mkdirSync as mkdirSync11, readdirSync as readdirSync9, statSync as statSync10, writeFileSync as writeFileSync15 } from "node:fs";
+import { existsSync as existsSync28, mkdirSync as mkdirSync11, readdirSync as readdirSync9, statSync as statSync11, writeFileSync as writeFileSync15 } from "node:fs";
 import { homedir as homedir8, hostname as hostname4 } from "node:os";
 import { join as join32 } from "node:path";
 
@@ -48101,7 +48188,7 @@ function waitOn(store2, cfg, chat2, m) {
 init_fs();
 init_paths();
 init_state();
-import { execFileSync as execFileSync2 } from "node:child_process";
+import { execFile, execFileSync as execFileSync2 } from "node:child_process";
 import { existsSync as existsSync22, mkdirSync as mkdirSync10, readFileSync as readFileSync18, writeFileSync as writeFileSync12 } from "node:fs";
 import { join as join24 } from "node:path";
 var UPDATE_EVERY_MIN = 1440;
@@ -48214,6 +48301,13 @@ function versionInfo(setting, root = ROOT, local2 = LOCAL_DIR, everyMin = UPDATE
   const channel = existsSync22(join24(root, ".git")) ? channelOf(setting, git("remote", "get-url", "origin")) : "off";
   return { code: installed(root)?.slice(0, 7), tag: git("describe", "--tags", "--exact-match") || void 0, auto: channel !== "off", channel, everyMin, checkedAt: m.checkedAt, failed: m.failed, last: m.last };
 }
+async function versionInfoLater(setting, root = ROOT, local2 = LOCAL_DIR, everyMin = UPDATE_EVERY_MIN) {
+  const git = (...a) => new Promise((done2) => execFile("git", a, { cwd: root, encoding: "utf8", windowsHide: true }, (error62, out) => done2(error62 ? "" : String(out).trim())));
+  const repo = existsSync22(join24(root, ".git"));
+  const [head, origin, tag] = await Promise.all([git("rev-parse", "HEAD"), repo ? git("remote", "get-url", "origin") : Promise.resolve(""), git("describe", "--tags", "--exact-match")]);
+  const m = readMark(join24(local2, "update.json")), channel = repo ? channelOf(setting, origin) : "off";
+  return { code: head ? head.slice(0, 7) : void 0, tag: tag || void 0, auto: channel !== "off", channel, everyMin, checkedAt: m.checkedAt, failed: m.failed, last: m.last };
+}
 function readMark(f) {
   try {
     return JSON.parse(readFileSync18(f, "utf8"));
@@ -48239,7 +48333,7 @@ init_state();
 
 // src/store/retention.ts
 init_state();
-import { existsSync as existsSync23, readdirSync as readdirSync8, readFileSync as readFileSync19, rmSync as rmSync8, statSync as statSync7, writeFileSync as writeFileSync13 } from "node:fs";
+import { existsSync as existsSync23, readdirSync as readdirSync8, readFileSync as readFileSync19, rmSync as rmSync8, statSync as statSync8, writeFileSync as writeFileSync13 } from "node:fs";
 import { join as join25 } from "node:path";
 var CONTENT = ["text", "summary", "lastAsk", "sent", "answer", "ask", "draft", "note"];
 function sweep2(store2, days2 = 30, now = Date.now()) {
@@ -48275,7 +48369,7 @@ function sweep2(store2, days2 = 30, now = Date.now()) {
   const sessions2 = join25(store2.root, "sessions");
   if (existsSync23(sessions2)) for (const id of readdirSync8(sessions2)) {
     const p = join25(sessions2, id);
-    if (!live2.has(id) && statSync7(p).mtimeMs < now - days2 * 864e5) {
+    if (!live2.has(id) && statSync8(p).mtimeMs < now - days2 * 864e5) {
       rmSync8(p, { recursive: true, force: true });
       n++;
     }
@@ -48319,7 +48413,7 @@ function removeOlder(dir, beforeMs) {
   let n = 0;
   for (const f of readdirSync8(dir)) {
     const p = join25(dir, f);
-    if (statSync7(p).mtimeMs < beforeMs) {
+    if (statSync8(p).mtimeMs < beforeMs) {
       rmSync8(p, { recursive: true, force: true });
       n++;
     }
@@ -50049,7 +50143,7 @@ init_deploy();
 init_repos();
 init_state();
 init_brand();
-import { existsSync as existsSync24, readFileSync as readFileSync20, statSync as statSync8, writeFileSync as writeFileSync14 } from "node:fs";
+import { existsSync as existsSync24, readFileSync as readFileSync20, statSync as statSync9, writeFileSync as writeFileSync14 } from "node:fs";
 import { join as join26 } from "node:path";
 init_runinfo();
 var set2 = (patch) => ({ ok: true, save: (cfg) => ({ ...cfg, ...patch }) });
@@ -50398,7 +50492,7 @@ function modelsView(store2, now = Date.now()) {
   for (const f of runCache.keys()) if (!files2.includes(f)) runCache.delete(f);
   const events = files2.flatMap((file2) => {
     try {
-      const st = statSync8(file2), stamp2 = `${st.size}:${st.mtimeMs}`, hit = runCache.get(file2);
+      const st = statSync9(file2), stamp2 = `${st.size}:${st.mtimeMs}`, hit = runCache.get(file2);
       if (hit?.stamp === stamp2) return hit.runs;
       const runs = store2.logOf(file2).filter((e) => runsOf([e]).length);
       runCache.set(file2, { stamp: stamp2, runs });
@@ -50562,7 +50656,7 @@ import { existsSync as existsSync26, readFileSync as readFileSync21 } from "node
 import { join as join28 } from "node:path";
 
 // src/web/page-bundle.ts
-import { existsSync as existsSync25, statSync as statSync9 } from "node:fs";
+import { existsSync as existsSync25, statSync as statSync10 } from "node:fs";
 import { createRequire } from "node:module";
 import { join as join27, relative as relative3 } from "node:path";
 var PAGE = {
@@ -50585,7 +50679,7 @@ function checkInputs(meta3) {
 var last2 = { root: "", inputs: [], key: "", text: "" };
 var keyOf3 = (root, inputs2) => inputs2.map((f) => {
   const p = join27(root, f);
-  return `${f}:${existsSync25(p) ? statSync9(p).mtimeMs : "gone"}`;
+  return `${f}:${existsSync25(p) ? statSync10(p).mtimeMs : "gone"}`;
 }).join("|");
 function bundlePage(root) {
   if (last2.root === root && last2.inputs.length && keyOf3(root, last2.inputs) === last2.key) return last2.text;
@@ -51927,6 +52021,8 @@ var presentationRev = (workflow, cfg) => {
   const text3 = approvedReplyText(draft2.text, workflow, cfg);
   return text3 === draft2.text ? rev : pageDigest([rev, text3]);
 };
+var chatLevelKey = (chatId) => `chat:${hashOf(chatId)}`;
+var chatNormalActionId = (chatId) => `${chatLevelKey(chatId)}/chat-normal`;
 function reactProjection(store2, query = "", visit2) {
   const stored = snapshot(store2);
   const facts = { ...stored, workflows: stored.workflows.map((workflow) => currentDraft(workflow, workflow.job ? stored.jobs.get(workflow.job) : void 0) === workflow.draft ? workflow : { ...workflow, draft: void 0 }) };
@@ -52451,7 +52547,7 @@ ${code} stays ${byCode.get(code)?.state === "done" ? "done" : "open"}. Nothing i
     else settingsActions[habit.code] = [offer(habit.code, "", "remove-rule", "Remove", () => ({ code: habit.code, verb: "never" }))];
   }
   for (const [chatId, level] of Object.entries(store2.config().chatLevels ?? {})) {
-    const key = `chat:${hashOf(chatId)}`;
+    const key = chatLevelKey(chatId);
     const actionId = tool(key, "chat-normal", "Mark normal again", () => {
       const config2 = store2.config(), levels = { ...config2.chatLevels };
       delete levels[chatId];
@@ -52782,11 +52878,23 @@ function automateFromPage(store2, i) {
   return { ok: true, text: answerAutomation(store2, a, { id: "", code: a.code, verb: "ok", surface: "chat", at: "" }), code: a.code };
 }
 var ver;
+var asking = false;
 var withVersion = (s3, v) => {
   return { ...v, version: versionFor(s3), settings: settingsView(s3) };
 };
+var askVersion = (s3) => {
+  if (asking) return;
+  asking = true;
+  const cfg = s3.config();
+  versionInfoLater(cfg?.autoUpdate, void 0, void 0, cfg?.updateEveryMin).then((v) => {
+    ver = { at: Date.now(), v };
+  }, () => void 0).finally(() => {
+    asking = false;
+  });
+};
 var versionFor = (s3) => {
-  if (!ver || Date.now() - ver.at > 3e4) ver = { at: Date.now(), v: versionInfo(s3.config()?.autoUpdate, void 0, void 0, s3.config()?.updateEveryMin) };
+  if (!ver) ver = { at: Date.now(), v: versionInfo(s3.config()?.autoUpdate, void 0, void 0, s3.config()?.updateEveryMin) };
+  else if (Date.now() - ver.at > 3e4) askVersion(s3);
   return ver.v;
 };
 function withUi(s3, v, wantNext) {
@@ -52813,6 +52921,10 @@ function saveUiFrom(s3, body) {
 }
 function serveInbox(get, port = 0, token = randomBytes3(16).toString("hex"), probeFor = adoProbe, previewRoot = ROOT) {
   const initialSince = new Date(Date.now() - 864e5).toISOString();
+  if (!ver) try {
+    askVersion(get());
+  } catch {
+  }
   let reactVisit;
   const reactPages = /* @__PURE__ */ new Map();
   const server = createServer((req, res) => {
@@ -52839,7 +52951,7 @@ function serveInbox(get, port = 0, token = randomBytes3(16).toString("hex"), pro
           return;
         }
         try {
-          const store2 = get(), start = performance.now(), snapshot2 = reactProjection(store2, query, reactVisit ?? { since: store2.lastViewed(), fallbackSince: initialSince }).snapshot;
+          const store2 = get(), start = performance.now(), snapshot2 = readScope(() => reactProjection(store2, query, reactVisit ?? { since: store2.lastViewed(), fallbackSince: initialSince }).snapshot);
           const body = { ...snapshot2, version: versionFor(store2) };
           const { now: _now, fetchedAt: _fetchedAt, ...content } = body;
           const etag = `"${createHash5("sha256").update(JSON.stringify(content)).digest("hex")}"`;
@@ -52858,16 +52970,17 @@ function serveInbox(get, port = 0, token = randomBytes3(16).toString("hex"), pro
       }
       if (req.method === "GET" && u.pathname === "/api/v1/settings") {
         try {
-          const store2 = get(), settings = settingsView(store2, u.searchParams.get("experience") === "classic" ? "classic" : "new");
-          const actions = reactProjection(store2).snapshot.settingsActions;
-          const marked = Object.entries(store2.config().chatLevels ?? {}).map(([id, level]) => ({ name: level.name, actionIds: actions?.[`chat:${hashOf(id)}`] }));
-          json2(200, {
-            ...settings,
-            rows: settings.rows.map((row) => ({
-              ...row,
-              help: u.searchParams.get("experience") === "classic" ? row.help : row.help.replace(/\bOngoing\b/g, "Waiting on Now").replace(/\bWatching\b/g, "Watch details at the foot of Now")
-            })),
-            about: { ...settings.about, chats: settings.about.chats.map((chat2, index) => ({ ...chat2, actionIds: marked[index]?.actionIds })) }
+          readScope(() => {
+            const store2 = get(), settings = settingsView(store2, u.searchParams.get("experience") === "classic" ? "classic" : "new");
+            const marked = Object.entries(store2.config().chatLevels ?? {}).map(([id, level]) => ({ name: level.name, actionIds: [chatNormalActionId(id)] }));
+            json2(200, {
+              ...settings,
+              rows: settings.rows.map((row) => ({
+                ...row,
+                help: u.searchParams.get("experience") === "classic" ? row.help : row.help.replace(/\bOngoing\b/g, "Waiting on Now").replace(/\bWatching\b/g, "Watch details at the foot of Now")
+              })),
+              about: { ...settings.about, chats: settings.about.chats.map((chat2, index) => ({ ...chat2, actionIds: marked[index]?.actionIds })) }
+            });
           });
         } catch (error62) {
           failure2(error62);
@@ -52881,7 +52994,7 @@ function serveInbox(get, port = 0, token = randomBytes3(16).toString("hex"), pro
           return;
         }
         try {
-          const page2 = numbersPage(get(), key);
+          const page2 = readScope(() => numbersPage(get(), key));
           json2(200, { model: numbersModel(page2, NAME), lists: listsOf(page2), rows: page2.rows, missed: page2.missed, rules: RULES3(NAME) });
         } catch (error62) {
           failure2(error62);
@@ -53465,7 +53578,7 @@ Fix the first one you use (for most people: run it once and type /login), then r
         return `${cfg.knowledge.length} knowledge folder(s), kept`;
       }
       const folders = k.folders ?? [];
-      const missing = folders.filter((f) => !existsSync28(here2(store2.root, f)) || !statSync10(here2(store2.root, f)).isDirectory());
+      const missing = folders.filter((f) => !existsSync28(here2(store2.root, f)) || !statSync11(here2(store2.root, f)).isDirectory());
       if (missing.length) throw new Error(`Not a folder: ${missing.join(", ")}`);
       cfg.knowledge = folders.map((f) => portable(store2.root, here2(store2.root, f)));
       store2.saveConfig(cfg);

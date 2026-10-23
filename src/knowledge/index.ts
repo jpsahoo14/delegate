@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Audience, Card, CardName, Entry, EntryType, Hit, Proposal, TopicLine } from '../core/types.ts'
-import { writeText } from '../store/fs.ts'
+import { readText, scoped, writeText } from '../store/fs.ts'
 import { CARDS, editCard, expired, formatLine, hashOf, newCard, parseCard } from './format.ts'
 import { openLink } from '../adapters/channels.ts'
 
@@ -35,9 +35,11 @@ export class FilesKnowledge implements Knowledge {
 
 	private cards(): Card[] {
 		const dir = join(this.root, 'topics')
-		if (!existsSync(dir)) return []
-		return readdirSync(dir, { withFileTypes: true }).filter(d => d.isDirectory()).flatMap(d =>
-			CARDS.map(c => join(dir, d.name, `${c}.md`)).filter(existsSync).map(p => parseCard(p, readFileSync(p, 'utf8'))))
+		return scoped(`cards:${dir}`, () => {
+			if (!existsSync(dir)) return []
+			return readdirSync(dir, { withFileTypes: true }).filter(d => d.isDirectory()).flatMap(d =>
+				CARDS.map(c => join(dir, d.name, `${c}.md`)).filter(existsSync).map(p => parseCard(p, readText(p))))
+		})
 	}
 
 	search(q: string, f: { types?: EntryType[]; audience?: Audience; limit?: number } = {}): Hit[] {

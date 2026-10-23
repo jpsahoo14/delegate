@@ -3,13 +3,13 @@ import { createServer, type Server } from 'node:http'
 import { join } from 'node:path'
 import type { Store } from '../store/state.ts'
 import { hashOf } from '../knowledge/format.ts'
-import { writeText } from '../store/fs.ts'
+import { readScope, writeText } from '../store/fs.ts'
 import { actResult } from '../mcp/server.ts'
 import { SEEN_KEYS, view } from './view.ts'
 import { renderApp } from './shell.ts'
 import { answerAutomation, propose as proposeAutomation, type AutomateInput } from '../runner/automations.ts'
 import { NAME } from '../brand.ts'
-import { versionInfo } from '../os/autoupdate.ts'
+import { versionInfo, versionInfoLater, type VersionInfo } from '../os/autoupdate.ts'
 import { saveSetting, settingsView } from './settings.ts'
 import { adoProbe, type BuildProbe } from '../runner/probe.ts'
 import type { Config } from '../core/types.ts'
@@ -17,7 +17,7 @@ import { numbersPage } from './numbers.ts'
 import { WINDOWS, type WindowKey } from '../core/numbers.ts'
 import { nextView } from './next.ts'
 import { reactAsset, reactPage } from './react-build.ts'
-import { reactProjection, IntentError } from './react-projection.ts'
+import { chatNormalActionId, reactProjection, IntentError } from './react-projection.ts'
 import { submissionReceipt, submitIntent } from './react-submissions.ts'
 import { intentSchema } from './react/domain/contracts.ts'
 import { listsOf, numbersModel, RULES as NUMBER_RULES } from './app/model/numbers.ts'
@@ -41,13 +41,21 @@ export function automateFromPage(store: Store, i: AutomateInput): { ok: boolean;
 	return { ok: true, text: answerAutomation(store, a, { id: '', code: a.code, verb: 'ok', surface: 'chat', at: '' }), code: a.code }
 }
 
-// The running version, read at most every 30 s: the page polls often, and each read asks git.
-let ver: { at: number; v: ReturnType<typeof versionInfo> } | undefined
+// The running version: asked of git at most every 30 s, in the background, so no page request waits for git (bug 10-23 perf).
+// Only a request before the first answer reads it directly.
+let ver: { at: number; v: VersionInfo } | undefined, asking = false
 const withVersion = (s: Store, v: ReturnType<typeof view>) => {
 	return { ...v, version: versionFor(s), settings: settingsView(s) }
 }
+const askVersion = (s: Store) => {
+	if (asking) return
+	asking = true
+	const cfg = s.config()
+	versionInfoLater(cfg?.autoUpdate, undefined, undefined, cfg?.updateEveryMin).then(v => { ver = { at: Date.now(), v } }, () => undefined).finally(() => { asking = false })
+}
 const versionFor = (s: Store) => {
-	if (!ver || Date.now() - ver.at > 30_000) ver = { at: Date.now(), v: versionInfo(s.config()?.autoUpdate, undefined, undefined, s.config()?.updateEveryMin) }
+	if (!ver) ver = { at: Date.now(), v: versionInfo(s.config()?.autoUpdate, undefined, undefined, s.config()?.updateEveryMin) }
+	else if (Date.now() - ver.at > 30_000) askVersion(s)
 	return ver.v
 }
 
@@ -84,6 +92,7 @@ export function saveUiFrom(s: Store, body: unknown): { ok: boolean; ui?: ReturnT
 // probeFor: the owner's Azure DevOps read, for a setting checked there before it is saved.
 export function serveInbox(get: () => Store, port = 0, token = randomBytes(16).toString('hex'), probeFor: (cfg: Config) => BuildProbe | undefined = adoProbe, previewRoot = ROOT): Promise<{ url: string; server: Server }> {
 	const initialSince = new Date(Date.now() - 86_400_000).toISOString()
+	if (!ver) try { askVersion(get()) } catch { /* the first request reads it */ }
 	let reactVisit: { since?: string; fallbackSince: string } | undefined
 	const reactPages = new Map<string, ReturnType<typeof reactProjection>['snapshot']>()
 	const server = createServer((req, res) => {
@@ -101,7 +110,7 @@ export function serveInbox(get: () => Store, port = 0, token = randomBytes(16).t
 				const query = u.searchParams.get('find') ?? ''
 				if (query.length > 2000) { json(422, { text: 'Find text is too long.' }); return }
 				try {
-					const store = get(), start = performance.now(), snapshot = reactProjection(store, query, reactVisit ?? { since: store.lastViewed(), fallbackSince: initialSince }).snapshot
+					const store = get(), start = performance.now(), snapshot = readScope(() => reactProjection(store, query, reactVisit ?? { since: store.lastViewed(), fallbackSince: initialSince }).snapshot)
 					const body = { ...snapshot, version: versionFor(store) }
 					const { now: _now, fetchedAt: _fetchedAt, ...content } = body
 					const etag = `"${createHash('sha256').update(JSON.stringify(content)).digest('hex')}"`
@@ -116,10 +125,9 @@ export function serveInbox(get: () => Store, port = 0, token = randomBytes(16).t
 				return
 			}
 			if (req.method === 'GET' && u.pathname === '/api/v1/settings') {
-				try {
+				try { readScope(() => {
 					const store = get(), settings = settingsView(store, u.searchParams.get('experience') === 'classic' ? 'classic' : 'new')
-					const actions = reactProjection(store).snapshot.settingsActions
-					const marked = Object.entries(store.config().chatLevels ?? {}).map(([id, level]) => ({ name: level.name, actionIds: actions?.[`chat:${hashOf(id)}`] }))
+					const marked = Object.entries(store.config().chatLevels ?? {}).map(([id, level]) => ({ name: level.name, actionIds: [chatNormalActionId(id)] }))
 					json(200, {
 						...settings,
 						rows: settings.rows.map(row => ({
@@ -128,14 +136,14 @@ export function serveInbox(get: () => Store, port = 0, token = randomBytes(16).t
 						})),
 						about: { ...settings.about, chats: settings.about.chats.map((chat, index) => ({ ...chat, actionIds: marked[index]?.actionIds })) },
 					})
-				} catch (error) { failure(error) }
+				}) } catch (error) { failure(error) }
 				return
 			}
 			if (req.method === 'GET' && u.pathname === '/api/v1/numbers') {
 				const key = u.searchParams.get('window') ?? 'this'
 				if (!(WINDOWS as string[]).includes(key)) { json(422, { text: 'Choose a supported Numbers window.' }); return }
 				try {
-					const page = numbersPage(get(), key as WindowKey)
+					const page = readScope(() => numbersPage(get(), key as WindowKey))
 					json(200, { model: numbersModel(page, NAME), lists: listsOf(page), rows: page.rows, missed: page.missed, rules: NUMBER_RULES(NAME) })
 				} catch (error) { failure(error) }
 				return

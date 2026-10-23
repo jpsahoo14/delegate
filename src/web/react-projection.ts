@@ -49,6 +49,10 @@ const presentationRev = (workflow: Workflow, cfg: Config): string => {
 	return text === draft.text ? rev : pageDigest([rev, text])
 }
 
+// The Settings tab names a marked chat's "Mark normal again" action by this key, without building the page (bug 10-23 perf).
+export const chatLevelKey = (chatId: string) => `chat:${hashOf(chatId)}`
+export const chatNormalActionId = (chatId: string) => `${chatLevelKey(chatId)}/chat-normal`
+
 export function reactProjection(store: Store, query = '', visit?: { since?: string; fallbackSince: string }): { snapshot: Snapshot; bindings: Map<string, Binding> } {
 	const stored = placementSnapshot(store)
 	const facts = { ...stored, workflows: stored.workflows.map(workflow => currentDraft(workflow, workflow.job ? stored.jobs.get(workflow.job) : undefined) === workflow.draft ? workflow : { ...workflow, draft: undefined }) }
@@ -481,7 +485,7 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 		else settingsActions[habit.code] = [offer(habit.code, '', 'remove-rule', 'Remove', () => ({ code: habit.code, verb: 'never' }))]
 	}
 	for (const [chatId, level] of Object.entries(store.config().chatLevels ?? {})) {
-		const key = `chat:${hashOf(chatId)}`
+		const key = chatLevelKey(chatId)
 		const actionId = tool(key, 'chat-normal', 'Mark normal again', () => {
 			const config = store.config(), levels = { ...config.chatLevels }
 			delete levels[chatId]
