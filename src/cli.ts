@@ -9,7 +9,7 @@ import { join } from 'node:path'
 import type { Config } from './core/types.ts'
 import { inbox } from './runner/proposals.ts'
 import { LOCAL_DIR, Store, loadLocal, withTickLock } from './store/state.ts'
-import { tick } from './runner/tick.ts'
+import { residentMs, stayAwake, tick } from './runner/tick.ts'
 import { runWindow } from './runner/continue.ts'
 import { doctor, install, migrate, uninstall, update, version } from './admin.ts'
 import { demo, lastSelf, demoRemember, say, seed } from './demo.ts'
@@ -38,7 +38,15 @@ async function main() {
 	switch (cmd) {
 		case 'init': return init()
 		// Updating runs even when the tick throws, so a fix can reach a broken version (review 10-19 #2).
-		case 'tick': return print(await withTickLock(async () => { const s = store(); try { return await tick(s, { force: args.includes('--force') }) } finally { autoUpdate({ setting: s.config()?.autoUpdate, everyMin: s.config()?.updateEveryMin }) } }))
+		case 'tick': return print(await withTickLock(async () => {
+			const s = store(), until = Date.now() + residentMs()
+			try {
+				const first = await tick(s, { force: args.includes('--force') })
+				// Stays until shortly before the next scheduled runner, waking on approvals, finished jobs and due checks (latency a, c).
+				if (until > Date.now()) await stayAwake(s, until)
+				return first
+			} finally { autoUpdate({ setting: s.config()?.autoUpdate, everyMin: s.config()?.updateEveryMin }) }
+		}))
 		case 'loop': return loop(Number(flag('every') ?? 60))
 		case 'mcp': return serve(store)
 		case 'service': return console.log(service(args[0]))

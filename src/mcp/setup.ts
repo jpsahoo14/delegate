@@ -264,7 +264,7 @@ function defaults(): Config {
 	return {
 		schema: 1, owner: { id: '', name: '' }, source: { command: teamsCommand(), selfChatId: '48:notes' },
 		watch: [], discover: true, agent: { flavor: 'copilot', command: site().agents?.[0] ?? ['copilot'], tools: ['view', 'glob', 'grep'] },
-		maxParallel: 3, nudgeEveryMin: 30, poll: { idleMin: 15, fastMin: 1, fastForMin: 5 },
+		maxParallel: 3, nudgeEveryMin: 30, poll: { idleMin: 15, fastMin: 1, fastForMin: 10 },
 	}
 }
 

@@ -92,7 +92,7 @@ export const snapshotSchema = z.object({
 	entities: entitiesSchema, sections: z.array(z.object({ id: text, label: text, ids: strings, total: z.number().optional() })),
 	seen: table(text), status: z.object({
 		state: z.enum(['on', 'paused', 'stopped']), autoSend: z.boolean(), runs: z.number(), cap: z.number(),
-		reading: z.object({ state: text, machine: optional, at: optional, here: optional }),
+		reading: z.object({ state: text, machine: optional, at: optional, here: optional, next: optional }),
 	}),
 	summary: z.object({
 		off: z.object({ text, since: optional }).optional(), paused: z.boolean().optional(), handled: z.number(),

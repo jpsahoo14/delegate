@@ -1,7 +1,7 @@
 export type Poll = { idleMin: number; fastMin: number; fastForMin: number }
 export type Schedule = { nextAt?: string; fastUntil?: string; backoff?: number }
 
-export const DEFAULT_POLL: Poll = { idleMin: 15, fastMin: 1, fastForMin: 5 }
+export const DEFAULT_POLL: Poll = { idleMin: 15, fastMin: 1, fastForMin: 10 }
 // During work hours a quiet spell is checked at least this often, so an answer never waits a quarter hour to be noticed (Bet 1).
 export const WORK_IDLE_MIN = 5
 
@@ -55,9 +55,11 @@ export function plan(s: Schedule, now: Date, poll: Poll, activity: boolean, tz?:
 	const t = now.getTime()
 	const fastUntil = activity ? new Date(t + poll.fastForMin * 60_000).toISOString() : s.fastUntil
 	const fast = !!fastUntil && Date.parse(fastUntil) > t
-	// Leave 10 s of slack so a scheduler that fires every minute never skips a fast tick.
+	// Leave 10 s of slack so a scheduler that fires every minute never skips a fast tick; a gap under a minute
+	// (only reached with a resident runner) keeps a tenth, so half a minute still waits about 30 s.
 	// A longer quiet interval the owner chose on purpose is kept.
 	const work = poll.idleMin <= DEFAULT_POLL.idleMin && isWorkHours(now, tz)
-	const gapMs = (fast ? poll.fastMin : work ? Math.min(poll.idleMin, WORK_IDLE_MIN) : poll.idleMin) * 60_000 - 10_000
+	const baseMs = (fast ? poll.fastMin : work ? Math.min(poll.idleMin, WORK_IDLE_MIN) : poll.idleMin) * 60_000
+	const gapMs = baseMs - (baseMs < 60_000 ? baseMs / 10 : 10_000)
 	return { fastUntil, nextAt: new Date(t + gapMs).toISOString() }
 }

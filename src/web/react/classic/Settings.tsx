@@ -17,7 +17,7 @@ function Setting({ row }: { row: SettingsData['rows'][number] }) {
 	return <div className="ct-setting-row" id={`setting-${row.key}`}><label htmlFor={id}><strong>{row.label}</strong><span className="ct-muted">{row.help}</span></label>
 		{options ? <select id={id} value={state.value} onChange={event => state.setValue(event.target.value)}>{options.map(option => <option value={option.value} key={option.value}>{option.label}</option>)}</select> :
 			row.kind === 'text' || row.kind === 'list' ? <textarea id={id} value={state.value} onChange={event => state.setValue(event.target.value)} rows={row.kind === 'text' ? 4 : 2} /> :
-				<input id={id} value={state.value} inputMode={row.kind === 'number' ? 'numeric' : undefined} onChange={event => state.setValue(event.target.value)} />}
+				<input id={id} value={state.value} inputMode={row.kind === 'number' ? 'decimal' : undefined} onChange={event => state.setValue(event.target.value)} />}
 		<div className="ct-tool-actions"><Button variant={state.changed ? 'default' : 'outline'} disabled={!state.changed || state.busy} onClick={state.save}>{state.busy ? 'Saving...' : 'Save'}</Button>{row.key === 'pollIdle' && <CheckNow />}{state.changed && <small className="ct-muted">Not saved yet</small>}</div>{state.text && <p role={state.error ? 'alert' : 'status'}>{state.text}</p>}
 	</div>
 }

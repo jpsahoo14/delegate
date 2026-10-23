@@ -2,7 +2,7 @@ import { Button } from '../components/ui/button.tsx'
 import { Icon } from '../components/ui/icon.tsx'
 import { THEME_LABEL, useInterface } from '../data/interface.ts'
 import { useNavigation } from '../data/navigation.ts'
-import { when } from '../domain/time.ts'
+import { when, nextCheck } from '../domain/time.ts'
 import type { Snapshot } from '../domain/contracts.ts'
 import { NAME } from '../brand.ts'
 import { ExperienceToggle } from '../classic/navigation.tsx'
@@ -12,9 +12,11 @@ export function Header({ current, move, snapshot, offline }: { current: string; 
 	const { themeChoice, switching, chooseVersion, setThemeChoice } = useInterface()
 	const { menu, setMenu } = useNavigation()
 	const reading = snapshot?.status.reading
+	// The next Teams check, honestly, while a runner is reading (latency c).
+	const next = snapshot?.status.state === 'on' && (reading?.state === 'ok' || reading?.state === 'late') ? nextCheck(reading.next) : undefined
 	const status = offline ? 'Offline' : !snapshot ? 'Connecting' : snapshot.status.state === 'paused' ? 'Paused' :
 		snapshot.status.state === 'stopped' ? 'Stopped' : reading?.state === 'never' ? 'Not checked yet' :
-			`${reading?.state === 'off' ? 'Not checked since' : 'Checked'} ${when(reading?.at)}`
+			`${reading?.state === 'off' ? 'Not checked since' : 'Checked'} ${when(reading?.at)}${next ? ` · ${next}` : ''}`
 	const bad = offline || snapshot?.status.state !== 'on' || !!Object.keys(snapshot?.entities.health ?? {}).length || reading?.state === 'off' || reading?.state === 'never'
 	const shortStatus = offline ? 'Offline' : !snapshot ? 'Connecting' : snapshot.status.state === 'paused' ? 'Paused' :
 		snapshot.status.state === 'stopped' ? 'Stopped' : reading?.state === 'never' || reading?.state === 'off' ? 'Not checked' :

@@ -238,10 +238,11 @@ const WRAP_UP = (id: string) => `Your time for this job is up. Stop looking furt
 
 // Apply finished runs; stop runs that died or ran past their budget (R-LNG-03, R-LNG-04).
 // Items are updated before the job, and the report is archived last, so a crash in between repeats the hand-off safely.
-export async function checkJobs(store: Store, src: Source, cfg: Config, procs: Procs, probe?: BuildProbe): Promise<number> {
+export async function checkJobs(store: Store, src: Source, cfg: Config, procs: Procs, probe?: BuildProbe, startedBefore?: number): Promise<number> {
 	let n = 0
 	const minutes = cfg.jobs?.minutes ?? 30
-	for (const job of store.jobs().filter(j => j.state === 'running' && j.run)) {
+	// startedBefore: a pass leaves the runs it started itself to the next pass (the resident runner checks within a second).
+	for (const job of store.jobs().filter(j => j.state === 'running' && j.run && !(startedBefore !== undefined && Date.parse(j.run.startedAt) >= startedBefore))) {
 		const run = job.run!
 		if (run.relay) { n += checkRelay(store, job) ? 1 : 0; continue }
 		const r = store.peekReport(job.id, run.id)

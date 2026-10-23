@@ -42223,14 +42223,15 @@ function plan(s3, now, poll, activity, tz) {
   const fastUntil = activity ? new Date(t2 + poll.fastForMin * 6e4).toISOString() : s3.fastUntil;
   const fast = !!fastUntil && Date.parse(fastUntil) > t2;
   const work2 = poll.idleMin <= DEFAULT_POLL.idleMin && isWorkHours(now, tz);
-  const gapMs = (fast ? poll.fastMin : work2 ? Math.min(poll.idleMin, WORK_IDLE_MIN) : poll.idleMin) * 6e4 - 1e4;
+  const baseMs = (fast ? poll.fastMin : work2 ? Math.min(poll.idleMin, WORK_IDLE_MIN) : poll.idleMin) * 6e4;
+  const gapMs = baseMs - (baseMs < 6e4 ? baseMs / 10 : 1e4);
   return { fastUntil, nextAt: new Date(t2 + gapMs).toISOString() };
 }
 var DEFAULT_POLL, WORK_IDLE_MIN, fmt, DAYS2, validTz, isWorkHours, clock2, days;
 var init_schedule = __esm({
   "src/core/schedule.ts"() {
     "use strict";
-    DEFAULT_POLL = { idleMin: 15, fastMin: 1, fastForMin: 5 };
+    DEFAULT_POLL = { idleMin: 15, fastMin: 1, fastForMin: 10 };
     WORK_IDLE_MIN = 5;
     fmt = /* @__PURE__ */ new Map();
     DAYS2 = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -42999,10 +43000,10 @@ function debugLines(w) {
   ];
 }
 function readingOf(store2, now = Date.now()) {
-  const c = store2.chats(), at3 = c.goodAt ?? c.readAt, machine2 = store2.lease()?.machine, here3 = store2.machine;
+  const c = store2.chats(), at3 = c.goodAt ?? c.readAt, machine2 = store2.lease()?.machine, here3 = store2.machine, next2 = store2.schedule().nextAt;
   if (!at3) return { state: "never", machine: machine2, here: here3 };
   const min = (now - Date.parse(at3)) / 6e4;
-  return { state: min < 20 ? "ok" : min < 60 ? "late" : "off", machine: machine2, at: at3, here: here3 };
+  return { state: min < 20 ? "ok" : min < 60 ? "late" : "off", machine: machine2, at: at3, here: here3, ...next2 ? { next: next2 } : {} };
 }
 function detailsOf(store2) {
   const l = store2.lease(), ago2 = l ? Math.round((Date.now() - Date.parse(l.at)) / 6e4) : void 0;
@@ -44164,14 +44165,17 @@ async function dispatch(store2, src, cfg, run2 = runAgent, probe) {
   let done2 = 0;
   const asks = store2.workflows().filter((w) => w.notes?.some((n) => n.a === void 0) && w.state !== "running" && heldBy(store2, w) !== "window" && !(w.job && store2.job(w.job)?.state === "running"));
   queue.push(...asks.slice(0, Math.max(0, room - queue.length)));
-  for (let i = 0; i < queue.length; i += cfg.maxParallel) {
-    if (blockedAgent(store2, cfg)) break;
-    await Promise.all(queue.slice(i, i + cfg.maxParallel).map(async (wf) => {
+  const slots = Math.max(1, cfg.maxParallel ?? 3);
+  let next2 = 0;
+  await Promise.all(Array.from({ length: Math.min(slots, queue.length) }, async () => {
+    while (next2 < queue.length) {
+      if (blockedAgent(store2, cfg)) break;
+      const wf = queue[next2++];
       try {
         await runOne(store2, src, cfg, wf, run2, probe);
       } catch (e) {
         startFailed(store2, wf, e);
-        return;
+        continue;
       }
       const ran2 = store2.workflow(wf.id);
       if (ran2?.startFails) {
@@ -44179,8 +44183,8 @@ async function dispatch(store2, src, cfg, run2 = runAgent, probe) {
         store2.save(ran2, false);
       }
       done2++;
-    }));
-  }
+    }
+  }));
   for (const w of promisesDue(store2, cfg).slice(0, Math.max(0, room - done2))) {
     if (blockedAgent(store2, cfg)) break;
     try {
@@ -47393,10 +47397,10 @@ function startJobs(store2, cfg, procs, hold = []) {
   }
   return n;
 }
-async function checkJobs(store2, src, cfg, procs, probe) {
+async function checkJobs(store2, src, cfg, procs, probe, startedBefore) {
   let n = 0;
   const minutes = cfg.jobs?.minutes ?? 30;
-  for (const job of store2.jobs().filter((j2) => j2.state === "running" && j2.run)) {
+  for (const job of store2.jobs().filter((j2) => j2.state === "running" && j2.run && !(startedBefore !== void 0 && Date.parse(j2.run.startedAt) >= startedBefore))) {
     const run2 = job.run;
     if (run2.relay) {
       n += checkRelay(store2, job) ? 1 : 0;
@@ -50936,6 +50940,10 @@ var numTo = (raw, min, max, save2) => {
   return Number.isInteger(n) && n >= min && n <= max ? { ok: true, save: (cfg) => save2(cfg, n) } : { ok: false, why: `Give a whole number from ${min} to ${max}.` };
 };
 var pol = (cfg) => ({ ...DEFAULT_POLICY, ...cfg.policy });
+var halfTo = (raw, min, max, save2) => {
+  const n = Number(raw.trim().replace(",", "."));
+  return Number.isFinite(n) && Number.isInteger(n * 2) && n >= min && n <= max ? { ok: true, save: (cfg) => save2(cfg, n) } : { ok: false, why: `Give a number of minutes from ${min} to ${max}, in steps of 0.5.` };
+};
 var HHMM2 = /^([01]\d|2[0-3]):[0-5]\d$/;
 var EVERY = [[10, "Every 10 minutes"], [60, "Every hour"], [UPDATE_EVERY_MIN, "Once a day"]];
 var SETTINGS = [
@@ -51055,12 +51063,12 @@ var SETTINGS = [
     kind: "text",
     section: "you",
     read: (c) => signatureOf(c),
-    parse: (raw) => raw.trim().length < 3 || raw.trim().length > 80 ? { ok: false, why: 'Write 3 to 80 characters, such as "Responded via AI".' } : set2({ signature: raw.trim() })
+    parse: (raw) => raw.trim().length < 3 || raw.trim().length > 80 ? { ok: false, why: 'Write 3 to 80 characters, such as "Responded via AI".' } : { ok: true, save: (c) => raw.trim() === signatureOf(c) ? c : { ...c, signature: raw.trim(), signApproved: signsApproved(c) } }
   },
   {
     key: "signApproved",
     label: "Sign replies you approve",
-    help: "On: replies the AI wrote carry the signature even when you approved them. On by default once you write your own signature. Words you typed or edited never do.",
+    help: "On: replies the AI wrote carry the signature even when you approved them. Only this switch changes that choice; saving signature text does not. Words you typed or edited never do.",
     kind: "bool",
     section: "you",
     read: (c) => String(signsApproved(c)),
@@ -51136,12 +51144,33 @@ var SETTINGS = [
   {
     key: "pollIdle",
     label: "Check Teams every",
-    help: "Minutes, when nothing is happening; during work hours at least every 5. After activity it checks every minute for a while.",
+    help: "Minutes, when nothing is happening; during work hours at least every 5. Each check is a quick Teams read, no AI.",
     kind: "number",
     section: "system",
     advanced: true,
     read: (c) => String((c.poll ?? DEFAULT_POLL).idleMin),
     parse: (raw) => numTo(raw, 1, 60, (c, n) => ({ ...c, poll: { ...c.poll ?? DEFAULT_POLL, idleMin: n } }))
+  },
+  // The after-activity pair (owner, 10-23): checking is the owner's to set, never hard-coded.
+  {
+    key: "pollFast",
+    label: "After activity, check every",
+    help: "Minutes (0.5 to 5), after you or someone in your chats did something. Each check is a quick Teams read, no AI. Shorter means new messages appear sooner but more Teams reads.",
+    kind: "number",
+    section: "system",
+    advanced: true,
+    read: (c) => String((c.poll ?? DEFAULT_POLL).fastMin),
+    parse: (raw) => halfTo(raw, 0.5, 5, (c, n) => ({ ...c, poll: { ...c.poll ?? DEFAULT_POLL, fastMin: n } }))
+  },
+  {
+    key: "pollFastFor",
+    label: "Keep checking that often for",
+    help: 'Minutes (1 to 30) after the last activity, then back to "Check Teams every".',
+    kind: "number",
+    section: "system",
+    advanced: true,
+    read: (c) => String((c.poll ?? DEFAULT_POLL).fastForMin),
+    parse: (raw) => numTo(raw, 1, 30, (c, n) => ({ ...c, poll: { ...c.poll ?? DEFAULT_POLL, fastForMin: n } }))
   },
   {
     key: "maxParallel",
@@ -52558,7 +52587,7 @@ var snapshotSchema = external_exports.object({
     autoSend: external_exports.boolean(),
     runs: external_exports.number(),
     cap: external_exports.number(),
-    reading: external_exports.object({ state: text2, machine: optional2, at: optional2, here: optional2 })
+    reading: external_exports.object({ state: text2, machine: optional2, at: optional2, here: optional2, next: optional2 })
   }),
   summary: external_exports.object({
     off: external_exports.object({ text: text2, since: optional2 }).optional(),
@@ -52822,6 +52851,10 @@ var presentationRev = (workflow, cfg) => {
   const text3 = approvedReplyText(draft2.text, workflow, cfg);
   return text3 === draft2.text ? rev : pageDigest([rev, text3]);
 };
+function knownMessageCode(store2, link2) {
+  const message = teamsMessage(link2);
+  return message ? store2.workflows().find((item2) => item2.chat.id === message.chat && (item2.msgIds.includes(message.msg) || item2.lastMsgId === message.msg))?.code : void 0;
+}
 var chatLevelKey = (chatId) => `chat:${hashOf(chatId)}`;
 var chatNormalActionId = (chatId) => `${chatLevelKey(chatId)}/chat-normal`;
 function reactProjection(store2, query = "", visit2) {
@@ -53336,6 +53369,8 @@ ${code} stays ${byCode.get(code)?.state === "done" ? "done" : "open"}. Nothing i
     tool("", "paste-missed", "Make it an item", (input2) => {
       const link2 = requiredText(input2).trim();
       if (!/^https:\/\/teams\.microsoft\.com\/l\/message\/[^/?#]+\/[^/?#]+/i.test(link2)) throw new IntentError(422, "Paste a Teams message link.");
+      const existing = knownMessageCode(store2, link2);
+      if (existing) return { accepted: true, text: `This message is already ${existing}. Open the existing item.` };
       store2.addMissed({ link: link2, at: (/* @__PURE__ */ new Date()).toISOString() });
       store2.saveKick();
       return { accepted: true, text: "Saved. It becomes an item on the next read. Nothing is sent." };
@@ -53405,6 +53440,7 @@ ${code} stays ${byCode.get(code)?.state === "done" ? "done" : "open"}. Nothing i
     }
   }
   const found = query.trim() ? find({ ...base, next: next2 }, query) : void 0;
+  if (found?.link && !found.link.item) found.link.item = knownMessageCode(store2, query);
   const classicRunning = base.running.filter((row) => !stoppedCodes.has(row.code));
   const classic = {
     needsIds: [.../* @__PURE__ */ new Set([...base.needs.map((item2) => item2.code), ...stoppedCodes, ...workflows.filter((workflow) => workflow.partOf && workflow.state === "needs_human").map((workflow) => workflow.code)])].sort((a, b) => byCode.get(a).createdAt.localeCompare(byCode.get(b).createdAt)),
@@ -54132,6 +54168,7 @@ async function tick(store2, deps = {}) {
       store2.log({ event: "probe-failed", error: String(e).slice(0, 300) });
     }
     const answers2 = await applyAnswers(store2, src, cfg, procs, false, probe);
+    const jobsMark = Date.now(), jobsNow = answers2 ? startJobs(store2, cfg, procs, ["bootstrap:chats"]) : 0;
     const closeProbe = () => {
       if (!deps.probe) void probe?.close?.().catch(() => void 0);
     };
@@ -54185,7 +54222,7 @@ async function tick(store2, deps = {}) {
     }
     const runs = await dispatch(store2, src, cfg, deps.run, probe).finally(closeProbe);
     const handedBack = checkOpen(store2, procs, procs.bootMs?.());
-    const jobsDone = await checkJobs(store2, src, cfg, procs, deps.probe);
+    const jobsDone = await checkJobs(store2, src, cfg, procs, deps.probe, jobsNow ? jobsMark : void 0);
     saveLearned(store2);
     try {
       closeDead(store2.root, store2.machine);
@@ -54211,7 +54248,8 @@ async function tick(store2, deps = {}) {
         store2.log({ event: "controls-reread-failed", error: String(e).slice(0, 200) });
       }
     }
-    await applyAnswers(store2, src, cfg, procs, true);
+    const lateAnswers = await applyAnswers(store2, src, cfg, procs, true);
+    const jobsLate = lateAnswers ? startJobs(store2, cfg, procs, ["bootstrap:chats"]) : 0;
     const autoSent = await dueSends(store2, src, cfg, deps.probe) + await dueAutomations(store2, src, cfg);
     const nudged = await nudge(store2, src, cfg);
     try {
@@ -54240,7 +54278,7 @@ async function tick(store2, deps = {}) {
     }
     const r = { commands, answers: answers2, asks, runs, nudged, ms: Date.now() - t0 };
     const busy2 = store2.workflows().some((w) => w.state === "scheduled") || store2.jobs().some((j2) => j2.state === "running" || j2.state === "queued" && !(j2.retry && (Date.parse(j2.retry.at) > Date.now() || store2.control().paused || store2.control().stopped))) || store2.openWindows().length > 0;
-    reschedule(store2, cfg, commands + answers2 + asks + missed + probed + due2.length + runs + autoSent + handedBack + jobsEarly + jobsDone + jobsStarted > 0 || nudged || busy2, t0);
+    reschedule(store2, cfg, commands + answers2 + asks + missed + probed + due2.length + runs + autoSent + handedBack + jobsEarly + jobsDone + jobsStarted + jobsNow + jobsLate > 0 || nudged || busy2, t0);
     writeSnapshot(store2);
     store2.log({ event: "tick", ...r });
     return r;
@@ -54255,6 +54293,29 @@ async function tick(store2, deps = {}) {
     store2.saveChats({ ...c, endAt: now.toISOString(), ...slept ? { notice: slept } : {} });
     await src.close();
   }
+}
+function wakeFor(store2, procs = realProcs, now = /* @__PURE__ */ new Date()) {
+  if (store2.kickedAt() > (store2.lease()?.at ?? "")) return "kick";
+  if ((store2.answers().length > 0 || store2.missed().length > 0) && !store2.schedule().backoff && !store2.health().source) return "answer";
+  if (store2.jobs().some((j2) => j2.state === "running" && !!j2.run && j2.run.pid > 0 && !j2.run.relay && j2.run.machine === store2.machine && !procs.alive(j2.run.pid))) return "job";
+  if (isDue(store2.schedule(), now)) return "due";
+  return void 0;
+}
+var residentMs = () => {
+  const s3 = Number(process.env.DELEGATE_RESIDENT_SEC ?? 50);
+  return Number.isFinite(s3) && s3 > 0 ? s3 * 1e3 : 0;
+};
+async function stayAwake(store2, until, deps = {}, everyMs = 1e3) {
+  let ticks = 0;
+  while (Date.now() + everyMs < until) {
+    await new Promise((r) => setTimeout(r, everyMs));
+    const why2 = wakeFor(store2, deps.procs ?? realProcs);
+    if (!why2) continue;
+    store2.log({ event: "resident-wake", why: why2 });
+    await tick(store2, { ...deps, force: why2 === "job" });
+    ticks++;
+  }
+  return ticks;
 }
 function reschedule(store2, cfg, activity, startedMs) {
   const s3 = plan(store2.schedule(), new Date(startedMs), cfg.poll ?? DEFAULT_POLL, activity, cfg.tz);
@@ -54509,7 +54570,7 @@ function defaults() {
     agent: { flavor: "copilot", command: site().agents?.[0] ?? ["copilot"], tools: ["view", "glob", "grep"] },
     maxParallel: 3,
     nudgeEveryMin: 30,
-    poll: { idleMin: 15, fastMin: 1, fastForMin: 5 }
+    poll: { idleMin: 15, fastMin: 1, fastForMin: 10 }
   };
 }
 var sleepsAdvice = (_machine, alwaysOn) => alwaysOn ? void 0 : "Asks are read only while this machine is awake. For replies while it sleeps, also run setup on a machine that never sleeps (a server or a desktop in the cloud); it stays ready and takes over by itself.";
@@ -54925,9 +54986,11 @@ async function main() {
     // Updating runs even when the tick throws, so a fix can reach a broken version (review 10-19 #2).
     case "tick":
       return print(await withTickLock(async () => {
-        const s3 = store();
+        const s3 = store(), until = Date.now() + residentMs();
         try {
-          return await tick(s3, { force: args.includes("--force") });
+          const first3 = await tick(s3, { force: args.includes("--force") });
+          if (until > Date.now()) await stayAwake(s3, until);
+          return first3;
         } finally {
           autoUpdate({ setting: s3.config()?.autoUpdate, everyMin: s3.config()?.updateEveryMin });
         }

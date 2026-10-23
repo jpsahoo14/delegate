@@ -6,7 +6,7 @@ import { card, knowledge as knowledgeCard, readingOf, view, who as displayWho, t
 import { nextView, snapshot as placementSnapshot, place, todoHeadline, type NextRow } from './next.ts'
 import { emptyEntities, snapshotSchema, type Action, type Intent, type Snapshot } from './react/domain/contracts.ts'
 import { knowledgeOf } from '../runner/proposals.ts'
-import { find } from './app/model/find.ts'
+import { find, teamsMessage } from './app/model/find.ts'
 import { freshOf, rowMark } from './app/model/derive.ts'
 import { NAME } from '../brand.ts'
 import { isPersona } from '../core/intake.ts'
@@ -52,6 +52,11 @@ const presentationRev = (workflow: Workflow, cfg: Config): string => {
 }
 
 // The Settings tab names a marked chat's "Mark normal again" action by this key, without building the page (bug 10-23 perf).
+function knownMessageCode(store: Store, link: string): string | undefined {
+	const message = teamsMessage(link)
+	return message ? store.workflows().find(item => item.chat.id === message.chat && (item.msgIds.includes(message.msg) || item.lastMsgId === message.msg))?.code : undefined
+}
+
 export const chatLevelKey = (chatId: string) => `chat:${hashOf(chatId)}`
 export const chatNormalActionId = (chatId: string) => `${chatLevelKey(chatId)}/chat-normal`
 
@@ -488,6 +493,8 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 		tool('', 'paste-missed', 'Make it an item', input => {
 			const link = requiredText(input).trim()
 			if (!/^https:\/\/teams\.microsoft\.com\/l\/message\/[^/?#]+\/[^/?#]+/i.test(link)) throw new IntentError(422, 'Paste a Teams message link.')
+			const existing = knownMessageCode(store, link)
+			if (existing) return { accepted: true, text: `This message is already ${existing}. Open the existing item.` }
 			store.addMissed({ link, at: new Date().toISOString() }); store.saveKick()
 			return { accepted: true, text: 'Saved. It becomes an item on the next read. Nothing is sent.' }
 		}, 'text'),
@@ -550,6 +557,7 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 		}
 	}
 	const found = query.trim() ? find({ ...base, next }, query) : undefined
+	if (found?.link && !found.link.item) found.link.item = knownMessageCode(store, query)
 	const classicRunning = base.running.filter(row => !stoppedCodes.has(row.code))
 	const classic: Snapshot['classic'] = {
 		needsIds: [...new Set([...base.needs.map(item => item.code), ...stoppedCodes, ...workflows.filter(workflow => workflow.partOf && workflow.state === 'needs_human').map(workflow => workflow.code)])].sort((a, b) => byCode.get(a)!.createdAt.localeCompare(byCode.get(b)!.createdAt)), tiles: base.tiles,

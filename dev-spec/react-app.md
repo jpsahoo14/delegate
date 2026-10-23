@@ -1,5 +1,35 @@
 # React preview
 
+## Latency (c): how often Teams is checked after activity is a setting, shown honestly
+
+Settings › Updates and system › More has "After activity, check every" (`poll.fastMin`, 0.5 to 5 minutes in half-minute
+steps, a comma accepted) and "Keep checking that often for" (`poll.fastForMin`, 1 to 30), next to "Check Teams every"; the
+defaults are 15 idle (at least every 5 in work hours) and, after activity, every 1 minute for 10 minutes (owner, 22:30; was
+5 minutes). Number fields use `inputMode="decimal"`. A gap under a minute keeps a tenth as slack
+instead of 10 s, so 0.5 means about 27 s; a minute or more keeps 10 s. `status.reading.next` carries the schedule's next
+check; New's status reads "Checked 10:35 PM · next check in 15 min" and Classic's "On · 0 runs today · next check in 15 min"
+("within a minute" or "now" when close, never a seconds countdown, since the page refreshes about every 20 s). Measured on a
+fictional root, stub worker (quota): with 0.5 and the resident runner, Teams reads came at 0, 27 and 55 s after activity
+(with the default 1: 0 and 51 s); Check now while the runner was waiting read Teams 0.1 s later; in New and Classic at 1280
+light and 400 dark, 0.3 was refused ("in steps of 0.5") and 0,5 and 10 saved.
+
+## Latency (a): an approval is acted on in seconds, not on the next scheduler minute
+
+The `tick` command now stays resident for up to `DELEGATE_RESIDENT_SEC` seconds (default 50; 0 turns it off), holding the
+tick lock. Each second it asks `wakeFor`: a Check now (kick), a waiting answer (respecting back-off and source health), a
+job on this machine whose process has ended, or a due check. On one, it runs a tick at once (forced for a finished job).
+Inside a tick, jobs an answer approved start in the same pass (`startJobs` right after the early and the late
+`applyAnswers`), not one tick later. Measured on a fictional root with a stub worker (quota), approving a drafted change
+with a reply: before, the change was made after 63 s and the reply posted after 120 s (two scheduler passes); after, the
+change was made after 4.1 s and the reply posted after 4.3 s (3 s of that is the stub change run).
+
+## Latency (b): drafts run in a pool, not in batches
+
+`dispatch` keeps `maxParallel` runs going (default 3) and starts the next queued item the moment any run ends, instead of
+waiting for the slowest run in a batch of three. Measured on a fictional root with a stub worker (quota), six asks seen in
+one pass, one run of 6 s and five of 1 s: before, the three asks behind the slow run were drafted after 7.2 s (p90 7.3 s);
+after, they were drafted at 2.2 to 3.3 s, and nothing waited on another item's run.
+
 ## Card redesign, part 4: real-data shapes (designer-card-redesign.md S9)
 
 A long message shows 6 lines and "Show the whole message (N characters)", opened in a box that scrolls past 360 px; above
@@ -60,6 +90,35 @@ Guard (Engineer check): a style rule never decides. `decide()` skips it, so it c
 Proved with stub workers (quota) on fictional roots: the spec's checks 1-7 (including Robin's style not reaching Kim's
 draft, Edit, Undo, and the negative cases), a style rule listed before a send rule for the same person still sending
 exactly once, and Settings Turn on, Save style and Undo in New and Classic at 1280 light and 400 dark.
+## bug 10-22 E73: saving signature text changed approved-reply signing
+
+An unchanged signature save is a no-op, including the default text while
+config.signature is absent. A changed signature captures the current effective
+signApproved value rather than changing it implicitly. Legacy custom-signature
+configs keep their existing effective value; only the explicit signing setting
+changes that choice. The help no longer promises an implicit switch-on.
+
+## bug 10-22 Classic Daily summary help had no Settings path
+
+Keep today's help-only summary template and chat wording, but link directly to
+Settings / Daily summary (summaryAt). It closes the chooser and focuses the
+working setting; it does not create an automation or change its schedule.
+
+## bug 10-22 E82: an existing pasted message still offered Make an item
+
+Classic's missed-message field reuses the server's link lookup before offering
+creation. An existing message names its item and offers Open; lookup failures
+are explicit, not assumed absent. The action also rechecks exact chat/message
+identity before saving, protecting a race or an older page. A successful save
+has one result, not both an inline duplicate and the page-wide receipt.
+
+## bug 10-22 Classic question with an existing draft
+
+The shared card always exposes Your answer for a real pending question, even
+when an old draft remains after a refused invite. Draft reply is the primary
+until the question is answered; a reply is not sent while collecting that answer.
+Explicit owner editing and work-decision/holding-reply paths remain distinct.
+
 ## Classic S1-S5/S8/S9: one card, shared messages and sent times
 
 - ClassicCard is now only a routing adapter to ItemCard, including multi-ask

@@ -102,6 +102,8 @@ export async function tick(store: Store, deps: { source?: Source; run?: RunWorke
 		let probe: BuildProbe | undefined
 		try { probe = deps.probe ?? adoProbe(cfg) } catch (e) { store.log({ event: 'probe-failed', error: String(e).slice(0, 300) }) }
 		const answers = await applyAnswers(store, src, cfg, procs, false, probe)
+		// An approval's change job starts in this pass, before any draft runs, never one pass later (latency a). Jobs run detached.
+		const jobsMark = Date.now(), jobsNow = answers ? startJobs(store, cfg, procs, ['bootstrap:chats']) : 0
 		const closeProbe = () => { if (!deps.probe) void probe?.close?.().catch(() => undefined) }
 		// Stopped means no reading or drafting, but runs already started are still watched and their budgets enforced (tester P1-10).
 		if (store.control().stopped) { closeProbe(); store.setHealth('source'); checkOpen(store, procs, procs.bootMs?.()); await checkJobs(store, src, cfg, procs, deps.probe); reschedule(store, cfg, false, t0); return { skipped: 'stopped', commands, answers, asks: 0, runs: 0, nudged: false, ms: Date.now() - t0 } }
@@ -134,7 +136,7 @@ export async function tick(store: Store, deps: { source?: Source; run?: RunWorke
 		const runs = await dispatch(store, src, cfg, deps.run, probe).finally(closeProbe)
 		// Jobs run detached: the tick starts and checks them, and never waits (R-LNG-02).
 		const handedBack = checkOpen(store, procs, procs.bootMs?.())
-		const jobsDone = await checkJobs(store, src, cfg, procs, deps.probe)
+		const jobsDone = await checkJobs(store, src, cfg, procs, deps.probe, jobsNow ? jobsMark : undefined)
 		saveLearned(store)
 		try { closeDead(store.root, store.machine) } catch (e) { store.log({ event: 'sessions-sweep-failed', error: String(e).slice(0, 200) }) }
 		const h = deps.history ?? historyFor(cfg)
@@ -147,7 +149,8 @@ export async function tick(store: Store, deps: { source?: Source; run?: RunWorke
 		if (store.workflows().some(w => w.state === 'scheduled' && w.sendAt && Date.parse(w.sendAt) <= now) || store.automations().some(a => a.state === 'active' && a.next && Date.parse(a.next) <= now)) {
 			try { await readOwnerCommands(store, src, cursors); store.saveCursors(cursors) } catch (e) { store.log({ event: 'controls-reread-failed', error: String(e).slice(0, 200) }) }
 		}
-		await applyAnswers(store, src, cfg, procs, true)
+		const lateAnswers = await applyAnswers(store, src, cfg, procs, true)
+		const jobsLate = lateAnswers ? startJobs(store, cfg, procs, ['bootstrap:chats']) : 0
 		const autoSent = await dueSends(store, src, cfg, deps.probe) + await dueAutomations(store, src, cfg)
 		const nudged = await nudge(store, src, cfg)
 		// Habit suggestions wait until nothing needs a reply, and are told once (R-HAB-01, review: not a second inbox).
@@ -168,7 +171,7 @@ export async function tick(store: Store, deps: { source?: Source; run?: RunWorke
 		}
 		const r = { commands, answers, asks, runs, nudged, ms: Date.now() - t0 }
 		const busy = store.workflows().some(w => w.state === 'scheduled') || store.jobs().some(j => j.state === 'running' || j.state === 'queued' && !(j.retry && (Date.parse(j.retry.at) > Date.now() || store.control().paused || store.control().stopped))) || store.openWindows().length > 0
-		reschedule(store, cfg, commands + answers + asks + missed + probed + due.length + runs + autoSent + handedBack + jobsEarly + jobsDone + jobsStarted > 0 || nudged || busy, t0)
+		reschedule(store, cfg, commands + answers + asks + missed + probed + due.length + runs + autoSent + handedBack + jobsEarly + jobsDone + jobsStarted + jobsNow + jobsLate > 0 || nudged || busy, t0)
 		writeSnapshot(store)
 		store.log({ event: 'tick', ...r })
 		return r
@@ -181,6 +184,31 @@ export async function tick(store: Store, deps: { source?: Source; run?: RunWorke
 		store.saveChats({ ...c, endAt: now.toISOString(), ...(slept ? { notice: slept } : {}) })
 		await src.close()
 	}
+}
+
+// Latency (a, c): the scheduled runner stays up after its first pass, until shortly before the next one starts, and ticks again
+// within a second or two when an answer or a check is asked for, a job's process ends, or the next check falls due. The OS starts a
+// runner every minute and the tick lock keeps one at a time, so an approval no longer waits for the next minute, and a 30 s poll can happen.
+export type Wake = 'kick' | 'answer' | 'job' | 'due'
+export function wakeFor(store: Store, procs: Procs = realProcs, now = new Date()): Wake | undefined {
+	if (store.kickedAt() > (store.lease()?.at ?? '')) return 'kick'
+	if ((store.answers().length > 0 || store.missed().length > 0) && !store.schedule().backoff && !store.health().source) return 'answer'
+	if (store.jobs().some(j => j.state === 'running' && !!j.run && j.run.pid > 0 && !j.run.relay && j.run.machine === store.machine && !procs.alive(j.run.pid))) return 'job'
+	if (isDue(store.schedule(), now)) return 'due'
+	return undefined
+}
+export const residentMs = () => { const s = Number(process.env.DELEGATE_RESIDENT_SEC ?? 50); return Number.isFinite(s) && s > 0 ? s * 1000 : 0 }
+export async function stayAwake(store: Store, until: number, deps: Parameters<typeof tick>[1] = {}, everyMs = 1000): Promise<number> {
+	let ticks = 0
+	while (Date.now() + everyMs < until) {
+		await new Promise(r => setTimeout(r, everyMs))
+		const why = wakeFor(store, deps.procs ?? realProcs)
+		if (!why) continue
+		store.log({ event: 'resident-wake', why })
+		await tick(store, { ...deps, force: why === 'job' })
+		ticks++
+	}
+	return ticks
 }
 
 // Activity opens a fast window, so replies to replies are seen within a minute (dev-spec/runner.md#schedule).

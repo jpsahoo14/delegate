@@ -1,5 +1,7 @@
 import type { ComponentProps, CSSProperties } from 'react'
-import { useAction, useCardUi, useEntities, useItemBusy, useSnapshot } from '../data/hooks.ts'
+import { useAction, useCardUi, useEntities, useItemBusy, useLatestResult, useSnapshot } from '../data/hooks.ts'
+import { useQuery } from '@tanstack/react-query'
+import { fetchSnapshot } from '../services/api.ts'
 import { Icon } from '../components/ui/icon.tsx'
 import { ActionButton, ActionState } from '../features/ActionButton.tsx'
 import { Button } from '../components/ui/button.tsx'
@@ -35,16 +37,20 @@ function TileSentence({ label, count }: { label: string; count: number }) {
 
 function MissedMessage({ action }: { action: Action }) {
 	const act = useAction(), busy = useItemBusy(action.item), ui = useCardUi(action.item, action.rev), unavailable = useActionAvailability(action)
+	const latest = useLatestResult()
 	const value = usePageForms(state => state.fields['paste-missed/text'] ?? ''), setField = usePageForms(state => state.setField)
+	const link = value.trim(), valid = /^https:\/\/teams\.microsoft\.com\/l\/message\/[^/?#]+\/\d+/i.test(link)
+	const lookup = useQuery({ queryKey: ['missed-link', link], queryFn: ({ signal }) => fetchSnapshot(link, signal), enabled: valid, retry: false })
+	const existing = valid ? lookup.data?.search?.link?.item : undefined
 	const changeValue = (text: string) => {
 		if (ui.result?.applied && !ui.result.uncertain && !ui.pending) useData.getState().edit(action.item, action.rev, { result: undefined, formConsumed: undefined })
 		setField('paste-missed/text', text)
 	}
-	return <form className="classic-missed" aria-label="Missed a message" onSubmit={event => { event.preventDefault(); void act(action, { text: value }) }}>
+	return <form className="classic-missed" aria-label="Missed a message" onSubmit={event => { event.preventDefault(); if (!existing && !lookup.isFetching && !lookup.error) void act(action, { text: value }) }}>
 		<div className="classic-missed-entry"><label className="sr-only" htmlFor="classic-missed-link">Paste the Teams link of a message {NAME} missed</label>
 			<input id="classic-missed-link" data-page-field="paste-missed/text" type="url" required autoComplete="off" placeholder="Missed a message? Paste its Teams link here" value={value} onChange={event => changeValue(event.target.value)} onCompositionStart={() => usePageForms.getState().setComposing(true)} onCompositionEnd={event => { changeValue(event.currentTarget.value); usePageForms.getState().setComposing(false) }} />
-			<Button variant="ghost" type="submit" disabled={busy || !value.trim() || !!unavailable} title={unavailable?.reason}>{ui.pending ? 'Making an item...' : 'Make an item'}</Button>
-		</div><ActionState item={action.item} rev={action.rev} />
+			{existing ? <span>This message is already {existing}. <a href={`#classic/focus/${existing}`}>Open</a></span> : <Button variant="ghost" type="submit" disabled={busy || !value.trim() || lookup.isFetching || !!lookup.error || !!unavailable} title={unavailable?.reason}>{lookup.isFetching ? 'Checking...' : ui.pending ? 'Making an item...' : 'Make an item'}</Button>}
+		</div>{lookup.error && <p role="alert">Could not check this message: {lookup.error.message} <Button type="button" onClick={() => void lookup.refetch()}>Try again</Button></p>}{(!ui.result || ui.result.submissionId !== latest?.submissionId) && <ActionState item={action.item} rev={action.rev} />}
 	</form>
 }
 

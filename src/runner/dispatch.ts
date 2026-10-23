@@ -68,16 +68,21 @@ export async function dispatch(store: Store, src: Source, cfg: Config, run: RunW
 	// The owner's questions about an item run after drafting, in the item's session, and never change it (design-spec S12).
 	const asks = store.workflows().filter(w => w.notes?.some(n => n.a === undefined) && w.state !== 'running' && heldBy(store, w) !== 'window' && !(w.job && store.job(w.job)?.state === 'running'))
 	queue.push(...asks.slice(0, Math.max(0, room - queue.length)))
-	for (let i = 0; i < queue.length; i += cfg.maxParallel) {
-		if (blockedAgent(store, cfg)) break
-		await Promise.all(queue.slice(i, i + cfg.maxParallel).map(async wf => {
+	// A pool, not batches: a queued run starts as soon as any slot frees, so one slow draft never holds the others back (latency b).
+	// Once the AI CLI is blocked (such as a 402), no further run starts; the waiting items stay queued.
+	const slots = Math.max(1, cfg.maxParallel ?? 3)
+	let next = 0
+	await Promise.all(Array.from({ length: Math.min(slots, queue.length) }, async () => {
+		while (next < queue.length) {
+			if (blockedAgent(store, cfg)) break
+			const wf = queue[next++]
 			// One run that cannot start fails only its own item; sends, reminders, and the other drafts go on (review 10-20 R3).
-			try { await runOne(store, src, cfg, wf, run, probe) } catch (e) { startFailed(store, wf, e); return }
+			try { await runOne(store, src, cfg, wf, run, probe) } catch (e) { startFailed(store, wf, e); continue }
 			const ran = store.workflow(wf.id)
 			if (ran?.startFails) { ran.startFails = undefined; store.save(ran, false) }
 			done++
-		}))
-	}
+		}
+	}))
 	// The owner's own words that went out on a PR item: one short run each maps what they promise to changes held for ok (Slice 3).
 	for (const w of promisesDue(store, cfg).slice(0, Math.max(0, room - done))) {
 		if (blockedAgent(store, cfg)) break

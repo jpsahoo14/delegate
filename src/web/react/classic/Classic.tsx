@@ -10,7 +10,7 @@ import { Button } from '../components/ui/button.tsx'
 import { Icon } from '../components/ui/icon.tsx'
 import { ActionButton } from '../features/ActionButton.tsx'
 import { NAME } from '../brand.ts'
-import { when } from '../domain/time.ts'
+import { nextCheck, when } from '../domain/time.ts'
 import { ExperienceToggle, useScreenNavigation } from './navigation.tsx'
 import { useClassicKeyboard, useClassicOffline, useClassicSeen } from './data.ts'
 import Home from './Home.tsx'
@@ -73,7 +73,7 @@ export default function Classic() {
 	const disconnected = offline || !!query.error
 	const reading = snapshot?.status.reading
 	const status = disconnected ? 'Offline' : !snapshot ? 'Connecting' : snapshot.status.state === 'paused' ? 'Paused' : snapshot.status.state === 'stopped' ? 'Stopped' :
-		reading?.state === 'never' ? 'Not checked yet' : reading?.state === 'off' ? `Not checked since ${when(reading.at)}` : `On · ${snapshot.status.runs} run${snapshot.status.runs === 1 ? '' : 's'} today`
+		reading?.state === 'never' ? 'Not checked yet' : reading?.state === 'off' ? `Not checked since ${when(reading.at)}` : `On · ${snapshot.status.runs} run${snapshot.status.runs === 1 ? '' : 's'} today${(n => n ? ` · ${n}` : '')(nextCheck(reading?.next))}`
 	const bad = disconnected || snapshot?.status.state !== 'on' || health.length > 0 || reading?.state === 'off' || reading?.state === 'never'
 	const fullStatus = [status, reading?.at ? `Last checked ${when(reading.at)}` : undefined, reading?.machine].filter(Boolean).join(' · ')
 	const themeLabel = THEME_LABEL[themeChoice]

@@ -44,3 +44,14 @@ export function overdue(iso: string, now = new Date()): number | undefined {
 	for (let i = 1; i <= days; i++) { d = new Date(dayOf(new Date(iso)) + i * 86_400_000); if (d.getDay() !== 0 && d.getDay() !== 6) work++ }
 	return work > 2 ? days : undefined
 }
+
+// The runner's next Teams check, from its schedule (latency c): honest, so a past time reads "now", not a countdown below zero.
+export function nextCheck(next: string | undefined, now = Date.now()): string | undefined {
+	if (!next) return undefined
+	const ms = Date.parse(next) - now
+	if (!Number.isFinite(ms)) return undefined
+	// The page refreshes about every 20 s, so no seconds countdown that would go stale between refreshes.
+	if (ms <= 5_000) return 'next check now'
+	if (ms < 60_000) return 'next check within a minute'
+	return `next check in ${Math.round(ms / 60_000)} min`
+}

@@ -47,6 +47,11 @@ const numTo = (raw: string, min: number, max: number, save: (cfg: Config, n: num
 	return Number.isInteger(n) && n >= min && n <= max ? { ok: true as const, save: (cfg: Config) => save(cfg, n) } : { ok: false as const, why: `Give a whole number from ${min} to ${max}.` }
 }
 const pol = (cfg: Config) => ({ ...DEFAULT_POLICY, ...cfg.policy })
+// A number of minutes in half-minute steps, such as 0.5 or 2.
+const halfTo = (raw: string, min: number, max: number, save: (cfg: Config, n: number) => Config) => {
+	const n = Number(raw.trim().replace(',', '.'))
+	return Number.isFinite(n) && Number.isInteger(n * 2) && n >= min && n <= max ? { ok: true as const, save: (cfg: Config) => save(cfg, n) } : { ok: false as const, why: `Give a number of minutes from ${min} to ${max}, in steps of 0.5.` }
+}
 const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/
 const EVERY: [number, string][] = [[10, 'Every 10 minutes'], [60, 'Every hour'], [UPDATE_EVERY_MIN, 'Once a day']]
 
@@ -84,8 +89,8 @@ export const SETTINGS: Spec[] = [
 		read: c => String(EVERY.find(([v]) => v === c.updateEveryMin)?.[0] ?? UPDATE_EVERY_MIN),
 		parse: raw => (EVERY.some(([v]) => String(v) === raw) ? set({ updateEveryMin: Number(raw) === UPDATE_EVERY_MIN ? undefined : Number(raw) }) : { ok: false, why: 'Pick one of the choices.' }) },
 	{ key: 'signature', label: 'Signature', help: `The line under replies ${NAME} wrote. {first} becomes your first name. Automatic replies always carry it.`, kind: 'text', section: 'you',
-		read: c => signatureOf(c), parse: raw => (raw.trim().length < 3 || raw.trim().length > 80 ? { ok: false, why: 'Write 3 to 80 characters, such as "Responded via AI".' } : set({ signature: raw.trim() })) },
-	{ key: 'signApproved', label: 'Sign replies you approve', help: 'On: replies the AI wrote carry the signature even when you approved them. On by default once you write your own signature. Words you typed or edited never do.', kind: 'bool', section: 'you',
+		read: c => signatureOf(c), parse: raw => (raw.trim().length < 3 || raw.trim().length > 80 ? { ok: false, why: 'Write 3 to 80 characters, such as "Responded via AI".' } : { ok: true, save: c => raw.trim() === signatureOf(c) ? c : { ...c, signature: raw.trim(), signApproved: signsApproved(c) } }) },
+	{ key: 'signApproved', label: 'Sign replies you approve', help: 'On: replies the AI wrote carry the signature even when you approved them. Only this switch changes that choice; saving signature text does not. Words you typed or edited never do.', kind: 'bool', section: 'you',
 		read: c => String(signsApproved(c)), parse: raw => set({ signApproved: raw === 'true' ? true : raw === 'false' ? false : undefined }) },
 	{ key: 'noticeHabits', label: 'Notice my habits', help: 'On: when you handle the same kind of message the same way again and again, it suggests a standing instruction. Nothing changes until you turn one on.', kind: 'bool', section: 'learned',
 		read: c => String(c.noticeHabits !== false), parse: raw => set({ noticeHabits: raw === 'false' ? false : undefined }) },
@@ -103,8 +108,13 @@ export const SETTINGS: Spec[] = [
 		parse: raw => { const [from, to] = raw.trim().split(/\s*-\s*/); return HHMM.test(from ?? '') && HHMM.test(to ?? '') ? set({ quiet: { from, to } }) : { ok: false, why: 'Give two times, such as 20:00-08:00.' } } },
 	{ key: 'tz', label: 'Your time zone', help: 'For work hours (Monday to Friday, 9:00 to 18:00) and the times in notices. Such as Asia/Kolkata.', kind: 'line', section: 'timing',
 		read: c => c.tz ?? Intl.DateTimeFormat().resolvedOptions().timeZone, parse: raw => (validTz(raw.trim()) ? set({ tz: raw.trim() }) : { ok: false, why: 'Give a time zone name, such as Asia/Kolkata or Europe/London.' }) },
-	{ key: 'pollIdle', label: 'Check Teams every', help: 'Minutes, when nothing is happening; during work hours at least every 5. After activity it checks every minute for a while.', kind: 'number', section: 'system', advanced: true,
+	{ key: 'pollIdle', label: 'Check Teams every', help: 'Minutes, when nothing is happening; during work hours at least every 5. Each check is a quick Teams read, no AI.', kind: 'number', section: 'system', advanced: true,
 		read: c => String((c.poll ?? DEFAULT_POLL).idleMin), parse: raw => numTo(raw, 1, 60, (c, n) => ({ ...c, poll: { ...(c.poll ?? DEFAULT_POLL), idleMin: n } })) },
+	// The after-activity pair (owner, 10-23): checking is the owner's to set, never hard-coded.
+	{ key: 'pollFast', label: 'After activity, check every', help: 'Minutes (0.5 to 5), after you or someone in your chats did something. Each check is a quick Teams read, no AI. Shorter means new messages appear sooner but more Teams reads.', kind: 'number', section: 'system', advanced: true,
+		read: c => String((c.poll ?? DEFAULT_POLL).fastMin), parse: raw => halfTo(raw, 0.5, 5, (c, n) => ({ ...c, poll: { ...(c.poll ?? DEFAULT_POLL), fastMin: n } })) },
+	{ key: 'pollFastFor', label: 'Keep checking that often for', help: 'Minutes (1 to 30) after the last activity, then back to "Check Teams every".', kind: 'number', section: 'system', advanced: true,
+		read: c => String((c.poll ?? DEFAULT_POLL).fastForMin), parse: raw => numTo(raw, 1, 30, (c, n) => ({ ...c, poll: { ...(c.poll ?? DEFAULT_POLL), fastForMin: n } })) },
 	{ key: 'maxParallel', label: 'AI runs at once', help: 'Drafts and jobs running side by side on the runner machine.', kind: 'number', section: 'system', advanced: true,
 		read: c => String(c.maxParallel ?? 3), parse: raw => num(raw, 1, 6, 'maxParallel') },
 	{ key: 'retentionDays', label: 'Keep message text for', help: 'Days. After that, items keep codes, people, and times only.', kind: 'number', section: 'system', advanced: true,
