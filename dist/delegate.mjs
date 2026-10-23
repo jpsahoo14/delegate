@@ -739,14 +739,14 @@ function known(c, pr, e) {
     return { line: `add ${str(a.reviewerIds[0])} as an optional reviewer on ${pr}`, loc: pr, keys: ["action", ...prKey, "reviewerIds", "reviewerAction"] };
   if (/pull_?request_thread/i.test(c.tool)) {
     if (!/^(create|reply)$|^update|status/i.test(action2)) return void 0;
-    const keys = ["action", ...prKey];
-    if (/status/i.test(action2)) return { line: `set thread ${str(a.threadId)} to ${str(a.status)} on ${pr}`, loc: pr, keys: [...keys, "threadId", "status"] };
+    const keys2 = ["action", ...prKey];
+    if (/status/i.test(action2)) return { line: `set thread ${str(a.threadId)} to ${str(a.status)} on ${pr}`, loc: pr, keys: [...keys2, "threadId", "status"] };
     if (a.content === void 0) return void 0;
     const reply2 = /reply/i.test(action2), edit = /update/i.test(action2), lineKey = a.rightFileStartLine !== void 0 ? "rightFileStartLine" : "line";
     const what = reply2 ? `reply in thread ${str(a.threadId)}` : edit ? `edit comment ${str(a.commentId)} in thread ${str(a.threadId)}` : "comment";
     const file2 = a.filePath === void 0 ? "" : `${str(a.filePath)}${a[lineKey] === void 0 ? "" : `:${str(a[lineKey])}`}`;
     const where = [...edit ? [`comment ${str(a.commentId)} in thread ${str(a.threadId)}`] : reply2 ? [`thread ${str(a.threadId)}`] : [], pr].join(", ");
-    return { line: `${what} on ${pr}`, loc: file2 ? `${file2}, ${where}` : where, text: str(a.content), keys: [...keys, "content", ...file2 ? ["filePath", lineKey] : [], ...reply2 || edit ? ["threadId"] : [], ...edit ? ["commentId"] : []] };
+    return { line: `${what} on ${pr}`, loc: file2 ? `${file2}, ${where}` : where, text: str(a.content), keys: [...keys2, "content", ...file2 ? ["filePath", lineKey] : [], ...reply2 || edit ? ["threadId"] : [], ...edit ? ["commentId"] : []] };
   }
   if (/work_?item/i.test(c.tool) && /update/i.test(action2) && Array.isArray(a.updates)) {
     const lines = a.updates.map((u) => {
@@ -1086,7 +1086,7 @@ function buildArgs(cfg, i, hasSession = claudeSessionExists) {
   const tools = [.../* @__PURE__ */ new Set([...cfg.tools, ...i.extraTools, ...ALWAYS])];
   const dirs2 = (i.dirs ?? []).flatMap((d) => ["--add-dir", d]);
   if (cfg.flavor === "claude") {
-    const named2 = [...new Set(tools.map(claudeTool).filter((t2) => !!t2))];
+    const named = [...new Set(tools.map(claudeTool).filter((t2) => !!t2))];
     const session = hasSession(i.sessionId) ? ["--resume", i.sessionId] : ["--session-id", i.sessionId];
     return [
       "-p",
@@ -1096,9 +1096,9 @@ function buildArgs(cfg, i, hasSession = claudeSessionExists) {
       "--mcp-config",
       i.mcpConfigPath,
       "--tools",
-      named2.filter((t2) => !t2.startsWith("mcp__")).join(","),
+      named.filter((t2) => !t2.startsWith("mcp__")).join(","),
       "--allowedTools",
-      named2.join(","),
+      named.join(","),
       "--permission-mode",
       "dontAsk",
       ...dirs2,
@@ -1510,9 +1510,9 @@ function putProp(target2, key, value) {
   else
     target2[key] = value;
 }
-function mirrorShape(target2, source3, keys, wrap) {
+function mirrorShape(target2, source3, keys2, wrap) {
   const raw = sourceShape(source3);
-  for (const key of keys) {
+  for (const key of keys2) {
     const desc = Object.getOwnPropertyDescriptor(raw, key);
     if (!desc.enumerable)
       continue;
@@ -1553,12 +1553,12 @@ function getElementAtPath(obj3, path) {
   return path.reduce((acc, key) => acc?.[key], obj3);
 }
 function promiseAllObject(promisesObj) {
-  const keys = Object.keys(promisesObj);
-  const promises = keys.map((key) => promisesObj[key]);
+  const keys2 = Object.keys(promisesObj);
+  const promises = keys2.map((key) => promisesObj[key]);
   return Promise.all(promises).then((results) => {
     const resolvedObj = {};
-    for (let i = 0; i < keys.length; i++) {
-      resolvedObj[keys[i]] = results[i];
+    for (let i = 0; i < keys2.length; i++) {
+      resolvedObj[keys2[i]] = results[i];
     }
     return resolvedObj;
   });
@@ -1699,15 +1699,15 @@ function pick(schema, mask) {
 }
 function maskedKeys(schema, mask) {
   const raw = sourceShape(schema);
-  const keys = [];
+  const keys2 = [];
   for (const key of Reflect.ownKeys(mask)) {
     if (!Object.getOwnPropertyDescriptor(raw, key)?.enumerable) {
       throw new Error(`Unrecognized key: "${String(key)}"`);
     }
     if (mask[key])
-      keys.push(key);
+      keys2.push(key);
   }
-  return keys;
+  return keys2;
 }
 function omit(schema, mask) {
   const currDef = schema._zod.def;
@@ -3583,10 +3583,10 @@ function handlePropertyResult(result, final, key, input2, optin, optout) {
   }
 }
 function normalizeDef(def) {
-  const keys = Object.keys(def.shape);
+  const keys2 = Object.keys(def.shape);
   const ownSymbols = Object.getOwnPropertySymbols(def.shape);
   const symbolKeys = ownSymbols.length ? ownSymbols : NO_SYMBOL_KEYS;
-  const allKeys = symbolKeys.length ? [...keys, ...symbolKeys] : keys;
+  const allKeys = symbolKeys.length ? [...keys2, ...symbolKeys] : keys2;
   for (const k of allKeys) {
     if (!def.shape?.[k]?._zod?.traits?.has("$ZodType")) {
       throw new Error(`Invalid element at key "${String(k)}": expected a Zod schema`);
@@ -3598,8 +3598,8 @@ function normalizeDef(def) {
     allKeys,
     symbolKeys,
     // string-only: handleCatchall matches it against `for...in`, which never yields a symbol
-    keySet: new Set(keys),
-    numKeys: keys.length,
+    keySet: new Set(keys2),
+    numKeys: keys2.length,
     optionalKeys: new Set(okeys)
   };
 }
@@ -3783,19 +3783,19 @@ function handleIntersectionResults(result, left, right) {
   let unrecIssue;
   const keyIssues = /* @__PURE__ */ new Map();
   const collect = (iss, side) => {
-    let keys;
+    let keys2;
     if (iss.code === "unrecognized_keys" && !iss.path?.length) {
       unrecIssue ?? (unrecIssue = iss);
-      keys = iss.keys;
+      keys2 = iss.keys;
     } else if (iss.code === "invalid_key" && iss.origin === "record" && iss.path?.length === 1) {
       const k = String(iss.path[0]);
       if (!keyIssues.has(k))
         keyIssues.set(k, iss);
-      keys = [k];
+      keys2 = [k];
     } else {
       return false;
     }
-    for (const k of keys) {
+    for (const k of keys2) {
       if (!unrecKeys.has(k))
         unrecKeys.set(k, {});
       unrecKeys.get(k)[side] = true;
@@ -14872,13 +14872,13 @@ function generateObjectCheck(doc, ctx, schema, accessor, buildsValue = true) {
   const def = schema._zod.def;
   doc.write(`if (typeof ${accessor} !== "object" || ${accessor} === null || Array.isArray(${accessor})) return INVALID;`);
   const shape = def.shape;
-  const keys = Object.keys(shape);
+  const keys2 = Object.keys(shape);
   const symbolKeys = Object.getOwnPropertySymbols(shape);
-  const allKeys = symbolKeys.length ? [...keys, ...symbolKeys] : keys;
+  const allKeys = symbolKeys.length ? [...keys2, ...symbolKeys] : keys2;
   const keyExpr = (k) => typeof k === "symbol" ? addConstant(ctx, k) : esc(k);
   const propKey = (k) => typeof k === "symbol" ? `[${keyExpr(k)}]` : esc(k);
   const propShape = shape;
-  if (keys.includes("__proto__")) {
+  if (keys2.includes("__proto__")) {
     throw new ZodCompileUnsupportedError('object shape key "__proto__"');
   }
   const propOutputs = /* @__PURE__ */ new Map();
@@ -14920,7 +14920,7 @@ function generateObjectCheck(doc, ctx, schema, accessor, buildsValue = true) {
   if (catchall) {
     const catchallType = catchall._zod.def.type;
     if (catchallType === "never") {
-      const condition = keys.map((k) => `k !== ${esc(k)}`).join(" && ") || "true";
+      const condition = keys2.map((k) => `k !== ${esc(k)}`).join(" && ") || "true";
       doc.write(`for (const k in ${accessor}) {`);
       doc.indented((d) => {
         d.write(`if (${condition}) return INVALID;`);
@@ -14936,7 +14936,7 @@ function generateObjectCheck(doc, ctx, schema, accessor, buildsValue = true) {
   const hasConditionalKeys = allKeys.some((k) => mayOmitUndefined(propShape[k]) || dropsWhenAbsent(propShape[k]));
   if (!buildsValue) {
     if (unknownKeysMode === "schema") {
-      const knownSet = keys.length > 0 ? addConstant(ctx, new Set(keys)) : null;
+      const knownSet = keys2.length > 0 ? addConstant(ctx, new Set(keys2)) : null;
       doc.write(`for (const k in ${accessor}) {`);
       doc.indented((d) => {
         d.write(`if (k === "__proto__") continue;`);
@@ -14968,7 +14968,7 @@ function generateObjectCheck(doc, ctx, schema, accessor, buildsValue = true) {
     }
   }
   if (unknownKeysMode !== "none") {
-    const knownSet = keys.length > 0 ? addConstant(ctx, new Set(keys)) : null;
+    const knownSet = keys2.length > 0 ? addConstant(ctx, new Set(keys2)) : null;
     doc.write(`for (const k in ${accessor}) {`);
     doc.indented((d) => {
       d.write(`if (k === "__proto__") continue;`);
@@ -17048,8 +17048,8 @@ function compactTypeUnion(schema) {
     if (!option || typeof option !== "object")
       return;
     compactTypeUnion(option);
-    const keys = Object.keys(option);
-    if (keys.length !== 1 || keys[0] !== "type")
+    const keys2 = Object.keys(option);
+    if (keys2.length !== 1 || keys2[0] !== "type")
       return;
     const type = option.type;
     for (const member of Array.isArray(type) ? type : [type]) {
@@ -20133,11 +20133,11 @@ var init_schemas2 = __esm({
       inst._zod.processJSONSchema = (ctx, json2, params) => enumProcessor(inst, ctx, json2, params);
       inst.enum = def.entries;
       inst.options = [...inst._zod.values];
-      const keys = new Set(Object.keys(def.entries));
+      const keys2 = new Set(Object.keys(def.entries));
       inst.extract = (values, params) => {
         const newEntries = {};
         for (const value of values) {
-          if (keys.has(value)) {
+          if (keys2.has(value)) {
             newEntries[value] = def.entries[value];
           } else
             throw new Error(`Key ${value} not found in enum`);
@@ -20152,7 +20152,7 @@ var init_schemas2 = __esm({
       inst.exclude = (values, params) => {
         const newEntries = { ...def.entries };
         for (const value of values) {
-          if (keys.has(value)) {
+          if (keys2.has(value)) {
             delete newEntries[value];
           } else
             throw new Error(`Key ${value} not found in enum`);
@@ -20447,8 +20447,8 @@ function checkObjectGuards(objectSchema, guards) {
     const value = payload.value;
     if (typeof value !== "object" || value === null || Array.isArray(value))
       return;
-    const keys = Object.getOwnPropertyNames(value);
-    if (guards.minProperties !== void 0 && keys.length < guards.minProperties) {
+    const keys2 = Object.getOwnPropertyNames(value);
+    if (guards.minProperties !== void 0 && keys2.length < guards.minProperties) {
       payload.issues.push({
         origin: "object",
         code: "too_small",
@@ -20460,7 +20460,7 @@ function checkObjectGuards(objectSchema, guards) {
         continue: true
       });
     }
-    if (guards.maxProperties !== void 0 && keys.length > guards.maxProperties) {
+    if (guards.maxProperties !== void 0 && keys2.length > guards.maxProperties) {
       payload.issues.push({
         origin: "object",
         code: "too_big",
@@ -20473,7 +20473,7 @@ function checkObjectGuards(objectSchema, guards) {
       });
     }
     if (guards.keySchema) {
-      for (const key of keys) {
+      for (const key of keys2) {
         const result = guards.keySchema.safeParse(key);
         if (result.success)
           continue;
@@ -20514,9 +20514,9 @@ function canonicalKey(value, seen) {
       }
       return `a${parts3.length}:[${parts3.join(",")}]`;
     }
-    const keys = Object.keys(value).sort();
+    const keys2 = Object.keys(value).sort();
     const parts2 = [];
-    for (const k of keys) {
+    for (const k of keys2) {
       const key = canonicalKey(value[k], seen);
       if (key === null)
         return null;
@@ -21176,10 +21176,10 @@ function visit(schema, fnOrHandlers) {
     switch (kind) {
       case "object": {
         const oldShape = def.shape;
-        const keys = Object.keys(oldShape);
+        const keys2 = Object.keys(oldShape);
         let changed = false;
         const newShape = {};
-        for (const k of keys) {
+        for (const k of keys2) {
           const mapped = run2(oldShape[k]);
           if (mapped !== oldShape[k])
             changed = true;
@@ -22380,9 +22380,9 @@ var init_state = __esm({
       }
       // A mark only moves forward, so a late or repeated post never brings back rows already seen.
       // keep: which marks this machine's file keeps (per-item marks go 7 days after the item is done; N1b).
-      saveSeen(keys, at3 = (/* @__PURE__ */ new Date()).toISOString(), keep = () => true) {
+      saveSeen(keys2, at3 = (/* @__PURE__ */ new Date()).toISOString(), keep = () => true) {
         const f = this.p("state", "seen", `${this.machine}.json`), was = Object.fromEntries(Object.entries(readJson(f, {})).filter(([k]) => keep(k)));
-        this.w(f, { ...was, ...Object.fromEntries(keys.map((k) => [k, was[k] && was[k] > at3 ? was[k] : at3])) });
+        this.w(f, { ...was, ...Object.fromEntries(keys2.map((k) => [k, was[k] && was[k] > at3 ? was[k] : at3])) });
       }
       // The "New experience" switch, one file per machine and never in seen/, whose marks merge across machines (R-NEX-01).
       // A missing or bad file is classic. at: when it was last set; tried: when it was first turned on; noted: the first-time note was closed.
@@ -22802,13 +22802,13 @@ var init_util2 = __esm({
         });
       };
       util2.objectKeys = typeof Object.keys === "function" ? (obj3) => Object.keys(obj3) : (object3) => {
-        const keys = [];
+        const keys2 = [];
         for (const key in object3) {
           if (Object.prototype.hasOwnProperty.call(object3, key)) {
-            keys.push(key);
+            keys2.push(key);
           }
         }
-        return keys;
+        return keys2;
       };
       util2.find = (arr, checker) => {
         for (const item2 of arr) {
@@ -25136,8 +25136,8 @@ var init_types = __esm({
         if (this._cached !== null)
           return this._cached;
         const shape = this._def.shape();
-        const keys = util.objectKeys(shape);
-        this._cached = { shape, keys };
+        const keys2 = util.objectKeys(shape);
+        this._cached = { shape, keys: keys2 };
         return this._cached;
       }
       _parse(input2) {
@@ -29379,7 +29379,7 @@ function parseMapDef(def, refs) {
   if (refs.mapStrategy === "record") {
     return parseRecordDef(def, refs);
   }
-  const keys = parseDef(def.keyType._def, {
+  const keys2 = parseDef(def.keyType._def, {
     ...refs,
     currentPath: [...refs.currentPath, "items", "items", "0"]
   }) || parseAnyDef(refs);
@@ -29392,7 +29392,7 @@ function parseMapDef(def, refs) {
     maxItems: 125,
     items: {
       type: "array",
-      items: [keys, values],
+      items: [keys2, values],
       minItems: 2,
       maxItems: 2
     }
@@ -33196,7 +33196,7 @@ var require_fast_deep_equal = __commonJS({
       if (a === b) return true;
       if (a && b && typeof a == "object" && typeof b == "object") {
         if (a.constructor !== b.constructor) return false;
-        var length, i, keys;
+        var length, i, keys2;
         if (Array.isArray(a)) {
           length = a.length;
           if (length != b.length) return false;
@@ -33207,13 +33207,13 @@ var require_fast_deep_equal = __commonJS({
         if (a.constructor === RegExp) return a.source === b.source && a.flags === b.flags;
         if (a.valueOf !== Object.prototype.valueOf) return a.valueOf() === b.valueOf();
         if (a.toString !== Object.prototype.toString) return a.toString() === b.toString();
-        keys = Object.keys(a);
-        length = keys.length;
+        keys2 = Object.keys(a);
+        length = keys2.length;
         if (length !== Object.keys(b).length) return false;
         for (i = length; i-- !== 0; )
-          if (!Object.prototype.hasOwnProperty.call(b, keys[i])) return false;
+          if (!Object.prototype.hasOwnProperty.call(b, keys2[i])) return false;
         for (i = length; i-- !== 0; ) {
-          var key = keys[i];
+          var key = keys2[i];
           if (!equal(a[key], b[key])) return false;
         }
         return true;
@@ -40553,8 +40553,8 @@ function setChatLevel(store2, chat2, level, said2) {
   for (const w of store2.workflows()) if (w.chat.id && w.chat.id !== cfg.source?.selfChatId) known2.set(w.chat.id, w.chat.name);
   for (const [id2, v] of Object.entries(levels)) known2.set(id2, v.name);
   const q2 = chat2.trim(), lc = q2.toLowerCase(), direct = parseMessageLink(q2)?.chatId ?? (/^\d+:\S+$/.test(q2) ? q2 : void 0);
-  const named2 = (exact) => [...known2].filter(([, n]) => exact ? n.toLowerCase() === lc : n.toLowerCase().includes(lc)).map(([i]) => i);
-  const ids = direct ? [direct] : named2(true).length ? named2(true) : named2(false);
+  const named = (exact) => [...known2].filter(([, n]) => exact ? n.toLowerCase() === lc : n.toLowerCase().includes(lc)).map(([i]) => i);
+  const ids = direct ? [direct] : named(true).length ? named(true) : named(false);
   if (!ids.length) return `I don't know a chat called "${q2}". Paste a link to any message in it.`;
   if (ids.length > 1) return `More than one chat matches "${q2}": ${ids.map((i) => known2.get(i)).join("; ")}. Say which one, or paste a link to a message in it.`;
   const id = ids[0], name = said2?.trim() || known2.get(id) || "That chat";
@@ -40820,7 +40820,7 @@ function buildPrompt(wf, thread2, cfg, root, owners = [], others = [], corrected
   if (wf.prRole && notReviewer[wf.prRole]) parts2.push("", `The owner may not review or vote on this PR: ${notReviewer[wf.prRole]}. Do not report a \`pr:\` job or a vote for it, and never say it was reviewed; answer the rest, and reply without reviewing when the owner says so.`);
   const styles = stylesFor(compiledRules(root), wf);
   if (styles.length && wf.kind === "reply") parts2.push("", "How the owner wants replies written here (learned from his edits; it shapes the wording only, and anything the owner says in this item or his own rules wins):", ...styles.map((r) => `- ${r.style}`));
-  if (others.length) parts2.push("", "Other open items in this chat. If the new message asks for the same thing as one of them, even from someone else, set `same` to its code and leave out reply:", ...others.map((o) => `- ${o.code} \xB7 ${o.asker?.name ?? "someone"}: "${(o.lastAsk ?? "").slice(0, 200)}"`));
+  if (others.length) parts2.push("", "Other recent, unanswered items in this chat. Only an actual follow-up to the same ask or entity may set `same` to its code and leave out reply. The same asker, shared project or similar words alone are not the same ask. A new independent question gets its own answer; never replace another item's goal or plan. FYIs and acknowledgements never join an ask:", ...others.map((o) => `- ${o.code} \xB7 ${o.asker?.name ?? "someone"}: "${(o.lastAsk ?? "").slice(0, 200)}"`));
   if (wf.kind === "reply") parts2.push("", ...allowed(cfg, "every action the reply promises goes in `todos`"));
   if (corrected.length) parts2.push("", "How the owner corrected your recent drafts. Learn the pattern (tone, length, what they leave out or add). Never copy facts from these into this reply:", ...corrected.map((c) => `- ${c}`));
   if (wf.earlier) parts2.push("", `Earlier, closed: ${wf.earlier}`);
@@ -41234,8 +41234,8 @@ function findSession(store2, target2, now = Date.now()) {
   const byOpen = (xs) => xs.find((s3) => s3.open) ?? xs[0];
   const id = all.filter((s3) => s3.session.toLowerCase() === t2 || t2.length >= 8 && s3.session.toLowerCase().startsWith(t2));
   if (id.length) return byOpen(id);
-  const named2 = all.filter((s3) => s3.name?.toLowerCase() === t2);
-  if (named2.length) return byOpen(named2);
+  const named = all.filter((s3) => s3.name?.toLowerCase() === t2);
+  if (named.length) return byOpen(named);
   const pr = prId(t2) ?? (/^\d{3,}$/.test(t2) ? t2 : void 0);
   return pr ? byOpen(all.filter((s3) => s3.keys.some((k) => prId(k) === pr))) : void 0;
 }
@@ -42819,8 +42819,8 @@ function workOf(s3, p, w, home) {
   if (!k || k.closed || k.proposed) return void 0;
   const who2 = nextWho(s3, k), plan2 = k.plan ?? [], items2 = new Map(s3.workflows.map((x) => [x.code, x]));
   const on = k.waitingOn?.who && !isMe(s3, k.waitingOn.who) ? k.waitingOn.who : void 0;
-  const named2 = plan2.find((x) => !x.done && !!k.next && x.what === k.next.what);
-  const cur = named2 ?? plan2.find((x) => !x.done && x.who === who2) ?? (who2 ? void 0 : plan2.find((x) => !x.done));
+  const named = plan2.find((x) => !x.done && !!k.next && x.what === k.next.what);
+  const cur = named ?? plan2.find((x) => !x.done && x.who === who2) ?? (who2 ? void 0 : plan2.find((x) => !x.done));
   const part = (x) => {
     const it = x.in ? items2.get(x.in) : void 0;
     return it && (it.id === home.id || it.partOf === home.id) ? it : void 0;
@@ -42829,7 +42829,7 @@ function workOf(s3, p, w, home) {
     const n = part(x)?.asker?.name;
     return n && !isMe(s3, n) && !isMe(s3, n.split(/\s+/)[0]) ? n : void 0;
   };
-  const owner2 = (x) => x.who === "you" ? { kind: "you" } : x.who === "me" ? { kind: "delegate" } : { kind: "others", text: htmlToText(person2(x) || x === named2 && on || "Someone else") };
+  const owner2 = (x) => x.who === "you" ? { kind: "you" } : x.who === "me" ? { kind: "delegate" } : { kind: "others", text: htmlToText(person2(x) || x === named && on || "Someone else") };
   const steps = plan2.map((x) => ({ what: htmlToText(x.what), owner: owner2(x), done: !!x.done, now: x === cur, ...part(x) ? { where: x.in } : {}, ...x.probe ? { build: x.probe.build } : {} }));
   const seen = plan2.filter((x) => x.done && x.probe).sort((a, b) => b.done.localeCompare(a.done))[0];
   const check2 = seen && { what: seen.ring ? "Deploy" : "Build", at: seen.done, build: seen.probe.build };
@@ -44095,6 +44095,46 @@ var init_agent_health = __esm({
   }
 });
 
+// src/runner/same-ask.ts
+function freshAsk(store2, item2, at3 = Date.now(), closed = false) {
+  if (item2.redacted || item2.state === "done" && !closed || item2.startFails || item2.work?.closed) return false;
+  const job = item2.job ? store2.job(item2.job) : void 0;
+  if (job?.error || job?.state === "failed" || item2.status === "The worker did not finish" || /^The job did not finish:|^Could not start/.test(item2.status) || item2.status === store2.agentHold()?.text) return false;
+  const owned = new Set(item2.msgIds);
+  const ask = store2.thread(item2.id).filter((message) => !message.byOwner && owned.has(message.id)).sort((a, b) => b.at.localeCompare(a.at))[0];
+  const age2 = at3 - Date.parse(ask?.at ?? item2.createdAt);
+  return Number.isFinite(age2) && age2 >= 0 && age2 <= FOLLOWUP_MS;
+}
+function askRelation(store2, item2, text3) {
+  const before = `${item2.lastAsk ?? ""} ${item2.work?.goal ?? ""}`;
+  const incoming = keys(text3), existing = keys(before, item2.work?.links);
+  if (incoming.size) {
+    if ([...incoming].some((key) => existing.has(key)) && [...incoming].every((key) => existing.has(key))) return "same";
+    if (existing.size) return "different";
+  }
+  const names = new Set([store2.config().owner.name, item2.asker?.name ?? ""].flatMap((name) => plain3(name).split(" ")));
+  const terms = (value) => new Set(plain3(value).split(" ").filter((term) => term.length > 1 && !STOP2.has(term) && !names.has(term)));
+  const a = terms(before), b = terms(text3), overlap = [...b].filter((term) => a.has(term)).length;
+  if (a.size >= 2 && b.size >= 2 && overlap >= 2 && overlap / Math.min(a.size, b.size) >= 0.6 && !incoming.size) return "same";
+  if (a.size >= 2 && b.size >= 2 && !overlap) return "different";
+  return "unknown";
+}
+var FOLLOWUP_MS, keys, STOP2, plain3;
+var init_same_ask = __esm({
+  "src/runner/same-ask.ts"() {
+    "use strict";
+    init_work();
+    FOLLOWUP_MS = 30 * 6e4;
+    keys = (text3, links = []) => new Set([
+      ...linksIn(text3),
+      ...links,
+      ...[...text3.matchAll(/\b(PR|pull request|incident|work ?item|bug|task|build|run)\s*#?\s*(\d+)\b/gi)].map((match) => `${/^(?:pr|pull request)$/i.test(match[1]) ? "pr" : /^(?:bug|task|work ?item)$/i.test(match[1]) ? "workItem" : /^(?:build|run)$/i.test(match[1]) ? "build" : "incident"}:${match[2]}`)
+    ].map((key) => `${key.split(":")[0].toLowerCase()}:${key.split(/[:/]/).at(-1)}`));
+    STOP2 = new Set("a an the this that these those it its is are was were be been to for of on in at with from by as and or but also can could would will should you your we our i me my please hi hello hey thanks thank now still again do does did have has had what which where when who how any about there here same one too fictional".split(" "));
+    plain3 = (text3) => text3.normalize("NFKC").toLowerCase().replace(/^(?:\[[^\]\n]+\]\s*)+/, "").replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  }
+});
+
 // src/runner/dispatch.ts
 import { existsSync as existsSync17 } from "node:fs";
 import { mkdirSync as mkdirSync8, writeFileSync as writeFileSync9 } from "node:fs";
@@ -44239,7 +44279,7 @@ function refuseStart(cfg, folder) {
   const shell = folder && shellTool(cfg.agent.tools);
   if (shell) throw new Error(shellInClone(shell));
 }
-async function runOne(store2, src, cfg, wf, run2, probe, catalogRetried = false) {
+async function runOne(store2, src, cfg, wf, run2, probe, catalogRetried = false, separate = false) {
   if (blockedAgent(store2, cfg)) return;
   refuseStart(cfg);
   if (wf.state !== "running") return runAsk(store2, src, cfg, wf, run2);
@@ -44247,7 +44287,7 @@ async function runOne(store2, src, cfg, wf, run2, probe, catalogRetried = false)
   if (wf.state !== "running" || blockedAgent(store2, cfg)) return;
   const runId = ulid3();
   const { cwd, mcpConfigPath } = workerMcp(store2, wf.id, runId);
-  const others = wf.code ? store2.openInChat(wf.chat.id).filter((o) => o.id !== wf.id && o.code && !o.followUp) : [];
+  const others = wf.code && !separate ? store2.openInChat(wf.chat.id).filter((o) => o.id !== wf.id && o.code && !o.followUp && !o.sent && freshAsk(store2, o) && askRelation(store2, o, wf.lastAsk ?? "") !== "different") : [];
   const home = homeOf(store2, wf);
   const works = !wf.work && !wf.partOf ? store2.workflows().filter((w) => active(w) && !w.partOf && w.chat.id !== wf.chat.id && !levelOf(cfg, w.chat.id)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 8) : [];
   const prompt = buildPrompt(wf, store2.thread(wf.id), cfg, store2.root, store2.owners(), others, corrections(store2.lessons().filter((l) => lessonFits(cfg, l.detail?.chat, wf.chat.id)), wf), { home: home === wf ? void 0 : home, works, parts: home.work?.parts?.map((id) => store2.workflow(id)).filter((p) => !!p) ?? [] });
@@ -44284,7 +44324,7 @@ ${res.summary ?? ""}`));
       store2.log({ event: "worker-catalog-retry", kind: "draft", workflowId: wf.id, code: wf.code, runId, sessionId: wf.session.id, nextSessionId: sessionId });
       fresh.session = { ...fresh.session, id: sessionId };
       store2.save(fresh, false);
-      return runOne(store2, src, cfg, fresh, run2, probe, true);
+      return runOne(store2, src, cfg, fresh, run2, probe, true, separate);
     }
     store2.log({ event: "worker-catalog-retry-blocked", kind: "draft", workflowId: wf.id, code: wf.code, runId, reason: "daily-run-limit" });
   }
@@ -44297,8 +44337,16 @@ ${res.summary ?? ""}`));
     return;
   }
   const into = report2?.same ? others.find((o) => o.code === report2.same.toUpperCase()) : void 0;
-  if (into && joinInto(store2, fresh, store2.workflow(into.id) ?? into)) {
+  if (into && report2?.intent !== "none" && !report2?.fyi && joinInto(store2, fresh, store2.workflow(into.id) ?? into, true)) {
     store2.archiveReport(wf.id, runId);
+    return;
+  }
+  if (report2?.same && !report2.reply && !report2.job && report2.intent !== "none") {
+    store2.archiveReport(wf.id, runId);
+    store2.log({ event: "report-join-refused", code: fresh.code, target: report2.same, reason: "no eligible same-ask target" });
+    if (!separate && store2.runsToday() < (cfg.dailyRuns ?? 200)) return runOne(store2, src, cfg, fresh, run2, probe, catalogRetried, true);
+    Object.assign(fresh, { state: "needs_human", status: "This is a separate ask. The AI did not draft its own answer.", question: "What would you like to reply to this ask?" });
+    store2.save(fresh);
     return;
   }
   const auth = !report2 && AUTH.test(res.error ?? "");
@@ -44559,6 +44607,7 @@ var init_dispatch = __esm({
     init_runinfo();
     init_agent_failure();
     init_agent_health();
+    init_same_ask();
     AUTH = /bad credentials|not logged in|please run \/login|authenticat|unauthori[sz]ed|sign[ -]?in/i;
     CATALOG_CHANGED = /MCP tool catalog changed/i;
     readDirs = (store2, cfg) => [.../* @__PURE__ */ new Set([...(cfg.knowledge ?? []).map((f) => here2(store2.root, f)), cfg.cards?.root ?? join18(store2.root, "knowledge"), ...cfg.cards?.team ? [cfg.cards.team] : []])].filter((d) => existsSync17(d));
@@ -45234,12 +45283,12 @@ async function intake(store2, src, cfg, cursors, chats = cfg.watch, o = {}) {
       hearReply(store2, chat2, c.from.name, c.text, raw.at);
       const hours = cfg.quietHours ?? 48;
       const live2 = open2.filter((w) => (w.job || inWork(store2, w) || !quietFor(store2, w, hours, now)) && (!backlog || w.before));
-      const follows = groupJudgment ? route(live2.filter((o2) => o2.asker?.id === c.from.id), c.from.id, void 0, c.text) : void 0;
+      const follows = groupJudgment ? route(store2, live2.filter((o2) => o2.asker?.id === c.from.id), raw, c.from.id, void 0, c.text) : void 0;
       if (groupJudgment && !follows) for (const o2 of open2) appendThread(store2, o2, toMsg(raw, c.from, c.text, false));
-      let wf = follows ?? (groupJudgment ? void 0 : route(live2, c.kind === "ask" || c.kind === "context" ? c.from.id : "", c.kind === "ask" && !backlog ? recentItem(store2, chat2.id, c.from.id, hours, now) : void 0, c.text));
-      const named2 = c.kind === "ask" && !groupJudgment && !(wf && inWork(store2, wf)) ? homeNamed(store2.workflows(), c.text) : void 0;
-      const elsewhere = named2 && named2.chat.id !== chat2.id ? named2 : void 0;
-      if (elsewhere) wf = live2.find((o2) => o2.partOf === elsewhere.id);
+      let wf = follows ?? (groupJudgment ? void 0 : route(store2, live2, raw, c.kind === "ask" || c.kind === "context" ? c.from.id : "", c.kind === "ask" && !backlog ? recentItem(store2, chat2.id, c.from.id, hours, now) : void 0, c.text));
+      const named = c.kind === "ask" && !groupJudgment && !(wf && inWork(store2, wf)) ? homeNamed(store2.workflows(), c.text) : void 0;
+      const elsewhere = named && named.chat.id !== chat2.id ? named : void 0;
+      if (elsewhere) wf = live2.find((o2) => o2.partOf === elsewhere.id && freshAsk(store2, o2, Date.parse(raw.at)) && askRelation(store2, o2, c.text) === "same");
       if (wf?.state === "done") {
         newTurn(wf);
         Object.assign(wf, { job: void 0, closedBy: void 0, fyi: void 0, prVote: void 0, prStatus: void 0, before: void 0, paced: void 0 });
@@ -45285,13 +45334,13 @@ function answeredBy(store2, msgId) {
   const w = store2.workflows().find((w2) => w2.sent?.msgId === msgId);
   return w?.asker ? [w.asker.id, ...(w.askers ?? []).map((p) => p.id)] : [];
 }
-function route(open2, senderId, recent, text3 = "") {
-  const compatible = (w) => {
-    const asks = linksIn(text3).filter((l) => l.startsWith("pr:")), own3 = [...linksIn(w.lastAsk ?? ""), ...w.work?.links ?? []].filter((l) => l.startsWith("pr:"));
-    return !asks.length || !own3.length || asks.some((a) => own3.some((o) => a.split(/[:/]/).at(-1) === o.split(/[:/]/).at(-1)));
-  };
-  const theirs = open2.filter((w) => (w.asker?.id === senderId || !w.asker && !!w.partOf && !w.chat.group && !!senderId) && compatible(w));
-  return named(theirs, text3) ?? theirs.sort((a, b) => a.updatedAt.localeCompare(b.updatedAt)).at(-1) ?? (recent && compatible(recent) ? recent : void 0);
+function route(store2, open2, raw, senderId, recent, text3 = "") {
+  const candidates2 = [...open2, ...recent ? [recent] : []].filter((item2) => (item2.asker?.id === senderId || !item2.asker && !!item2.partOf && !item2.chat.group && !!senderId) && freshAsk(store2, item2, Date.parse(raw.at), item2 === recent));
+  const target2 = replyTarget(raw);
+  const quoted = target2 && candidates2.find((item2) => item2.msgIds.includes(target2) && askRelation(store2, item2, text3) !== "different");
+  if (quoted) return quoted;
+  const same2 = candidates2.filter((item2) => askRelation(store2, item2, text3) === "same");
+  return same2.length === 1 ? same2[0] : void 0;
 }
 function recentItem(store2, chatId, senderId, quietHours, now = Date.now()) {
   const undoable = (w) => !!w.sent?.byRule && !!w.sent.undoUntil && Date.parse(w.sent.undoUntil) > now;
@@ -45446,12 +45495,12 @@ function workOfAsk(store2, open2, raw, text3, to) {
   const asked = { to };
   const waited = homes.filter((h) => !!h.work.waitingOn?.who && answers(asked, h.work.waitingOn.who));
   const theirs = homes.filter((h) => waited.includes(h) || !!h.asker?.name && answers(asked, h.asker.name));
-  const named2 = homeNamed(homes, text3);
-  const hit = [.../* @__PURE__ */ new Set([...theirs, ...named2 ? [named2] : []])];
+  const named = homeNamed(homes, text3);
+  const hit = [.../* @__PURE__ */ new Set([...theirs, ...named ? [named] : []])];
   if (hit.length !== 1) return void 0;
   const chat2 = open2[0].chat.id;
   const topics = new Set(open2.map((o) => homeOf(store2, o).id)).size + store2.waiting().filter((w) => w.state === "waiting" && w.chat.id === chat2 && !w.item).length;
-  return topics > 1 && hit[0] !== named2 && !waited.includes(hit[0]) ? void 0 : hit[0].code;
+  return topics > 1 && hit[0] !== named && !waited.includes(hit[0]) ? void 0 : hit[0].code;
 }
 function close(wf, status3) {
   Object.assign(wf, { state: "done", status: status3, pending: [], closedBy: void 0 });
@@ -45493,18 +45542,25 @@ function splitOff(store2, cfg, from, ids) {
   store2.log({ event: "split", from: from.code, to: wf.code, ids: [...moving] });
   return wf;
 }
-function joinInto(store2, from, to) {
+function joinInto(store2, from, to, judged = false) {
   if (to.id === from.id || to.chat.id !== from.chat.id || to.state === "done") return false;
+  const relation = askRelation(store2, to, from.lastAsk ?? "");
+  if (!freshAsk(store2, to) || relation === "different" || relation === "unknown" && !judged || to.sent) {
+    store2.log({ event: "join-refused", from: from.code, to: to.code, reason: "not the same recent unanswered ask" });
+    return false;
+  }
   if (from.work || active(to)) return false;
   const all = [to.asker, ...to.askers ?? [], from.asker, ...from.askers ?? []].filter((p, i, a) => !!p && a.findIndex((q2) => q2?.id === p.id) === i);
-  to.askers = all.filter((p) => p.id !== to.asker?.id);
   const own3 = new Set(from.msgIds), fromThread = store2.thread(from.id), byId = /* @__PURE__ */ new Map();
   for (const m of store2.thread(to.id)) byId.set(m.id, m);
   for (const m of fromThread) if (!byId.has(m.id) || own3.has(m.id)) byId.set(m.id, m);
   store2.saveThread(to.id, [...byId.values()].sort((a, b) => a.at.localeCompare(b.at)));
   to.msgIds = [.../* @__PURE__ */ new Set([...to.msgIds, ...from.msgIds])];
   to.pending = [.../* @__PURE__ */ new Set([...to.pending, ...from.msgIds])];
-  if (to.state !== "waiting_on_task") Object.assign(to, { state: "running", status: `Redrafting to answer ${from.asker?.name ?? "them"} too`, approved: void 0 });
+  const latest2 = [...byId.values()].filter((message) => !message.byOwner && to.msgIds.includes(message.id)).sort((a, b) => b.at.localeCompare(a.at))[0];
+  if (latest2) Object.assign(to, { asker: latest2.from, lastAsk: latest2.text, lastMsgId: latest2.id });
+  to.askers = all.filter((p) => p.id !== to.asker?.id);
+  if (to.state !== "waiting_on_task") Object.assign(to, { state: "running", status: `Redrafting to answer ${from.asker?.name ?? "them"} too`, approved: void 0, sendAt: void 0 });
   close(from, `Joined ${to.code}: the same ask`);
   store2.save(to);
   store2.save(from);
@@ -45544,6 +45600,7 @@ var init_intake2 = __esm({
     init_feedback();
     init_brand();
     init_probe();
+    init_same_ask();
     isControl = (v) => CONTROL_VERBS.includes(v);
     toMsg = (r, from, text3, byOwner) => ({ id: r.id, at: r.at, from, text: text3, byOwner });
     COMMIT = /\b(I(?:'|’)ll|I will|I(?:'|’)d be|I would be|I can take|I(?:'|’)m on it|let me (?:check|take|look|handle|test|try|do))\b/i;
@@ -46367,12 +46424,12 @@ async function send(store2, src, cfg, wf, text3, by, probe) {
     await reply(store2, src, a, `${MARK} Not sent ${wf.code}: ${gate.reason}.`);
     return false;
   }
-  const named2 = new RegExp("@\\p{L}", "u").test(out) && (wf.chat.group || kindOf(wf.chat.id) !== "oneOnOne") ? (await membersOf(store2, src, wf.chat.id), store2.members()[wf.chat.id]?.names) : void 0;
+  const named = new RegExp("@\\p{L}", "u").test(out) && (wf.chat.group || kindOf(wf.chat.id) !== "oneOnOne") ? (await membersOf(store2, src, wf.chat.id), store2.members()[wf.chat.id]?.names) : void 0;
   const beforeSend = (/* @__PURE__ */ new Date()).toISOString();
   const ask = store2.thread(wf.id).filter((message) => !message.byOwner && message.at <= beforeSend && wf.msgIds.includes(message.id) && (!wf.asker || message.from.id === wf.asker.id)).sort((a2, b) => a2.at.localeCompare(b.at)).at(-1);
   let msgId;
   try {
-    ({ msgId } = await src.send(wf.chat.id, out, replyContext(wf, out, named2, cfg.owner.id)));
+    ({ msgId } = await src.send(wf.chat.id, out, replyContext(wf, out, named, cfg.owner.id)));
   } catch (e) {
     if (!(e instanceof SendUncertain)) throw e;
     Object.assign(wf, { state: "needs_human", sendAt: void 0, approved: void 0, status: `Not sure it was sent; check Teams. Its answer was lost, and the chat did not show it yet. If it is there, skip ${wf.code}; if not, send it again.` });
@@ -46767,8 +46824,8 @@ async function probePRs(store2, cfg, probe, now = Date.now(), force = false, sub
   store2.saveProbeMark({ ...store2.probeMark(), prAt: new Date(now).toISOString() });
   const byPr = new Map(items2.map((x) => [`${x.ref.project}/${x.ref.repo}/${x.ref.id}`, x.ref]));
   const states = /* @__PURE__ */ new Map();
-  const keys = [...byPr.keys()];
-  for (let i = 0; i < keys.length; i += 4) await Promise.all(keys.slice(i, i + 4).map(async (k) => {
+  const keys2 = [...byPr.keys()];
+  for (let i = 0; i < keys2.length; i += 4) await Promise.all(keys2.slice(i, i + 4).map(async (k) => {
     const ref = byPr.get(k);
     try {
       states.set(k, await probe.pr(ref.project, ref.repo, ref.id));
@@ -46808,8 +46865,8 @@ async function probePRs(store2, cfg, probe, now = Date.now(), force = false, sub
       n++;
       continue;
     }
-    const named2 = me ? st.votes.filter((v) => v.name.trim().toLowerCase() === me) : [];
-    const mine = named2.length === 1 && Object.values(VOTES).includes(named2[0].vote) ? named2[0].vote : void 0;
+    const named = me ? st.votes.filter((v) => v.name.trim().toLowerCase() === me) : [];
+    const mine = named.length === 1 && Object.values(VOTES).includes(named[0].vote) ? named[0].vote : void 0;
     w.prRead = JSON.stringify([ref.id, st.status, st.head, mine]);
     w.prUnknown = mine === void 0 ? true : void 0;
     clearResetVotes(store2, w, ref.id, st, mine);
@@ -46888,8 +46945,8 @@ async function recheckPr(store2, w, probe) {
     return `Not done ${code}: could not read PR ${id} first (${String(e).slice(0, 120)}). Nothing was changed. Say "ok ${code}" to try again.`;
   }
   if (!/^(active|completed|abandoned)$/i.test(st.status)) return `Not done ${code}: Azure DevOps did not say what state PR ${id} is in. Nothing was changed. Say "ok ${code}" to try again.`;
-  const me = store2.config().owner.name.trim().toLowerCase(), named2 = st.votes.filter((v) => v.name.trim().toLowerCase() === me);
-  const mine = named2.length === 1 && Object.values(VOTES).includes(named2[0].vote) ? named2[0].vote : void 0;
+  const me = store2.config().owner.name.trim().toLowerCase(), named = st.votes.filter((v) => v.name.trim().toLowerCase() === me);
+  const mine = named.length === 1 && Object.values(VOTES).includes(named[0].vote) ? named[0].vote : void 0;
   w.prRead = JSON.stringify([id, st.status, st.head, mine]);
   w.prUnknown = mine === void 0 ? true : void 0;
   clearResetVotes(store2, w, id, st, mine);
@@ -46928,11 +46985,11 @@ async function voteNow(store2, cfg, w, effects, probe) {
   if (!/^(active|completed|abandoned)$/i.test(st.status)) return { effects };
   const rest2 = effects.filter((e) => !isVote(e.call));
   if (/completed|abandoned/i.test(st.status)) return { effects: rest2, why: `PR ${ref.id} is ${st.status.toLowerCase()}` };
-  const me = cfg.owner.name.trim().toLowerCase(), named2 = st.votes.filter((v) => v.name.trim().toLowerCase() === me);
-  const vote = named2.length === 1 && Object.values(VOTES).includes(named2[0].vote) ? named2[0].vote : void 0;
+  const me = cfg.owner.name.trim().toLowerCase(), named = st.votes.filter((v) => v.name.trim().toLowerCase() === me);
+  const vote = named.length === 1 && Object.values(VOTES).includes(named[0].vote) ? named[0].vote : void 0;
   clearResetVotes(store2, w, ref.id, st, vote);
   const current = { vote, head: st.head };
-  if (named2.length === 1 && votes.every((e) => sameVote(named2[0].vote, voteValue(e.call)))) return { effects: rest2, why: `you already voted on PR ${ref.id}`, ...current };
+  if (named.length === 1 && votes.every((e) => sameVote(named[0].vote, voteValue(e.call)))) return { effects: rest2, why: `you already voted on PR ${ref.id}`, ...current };
   if (votes.some((e) => !sameHead(st.head, e.head))) return { effects: rest2, again: reviewAgain(w.code, `PR ${ref.id} changed since your review (new commits).`), ...current };
   const facts = factsOf2(st);
   return { effects: effects.map((e) => isVote(e.call) ? { ...e, pr: facts } : e), ...current };
@@ -48228,10 +48285,6 @@ function wait(wf, days2) {
   step(wf, `You chose to wait ${days2} day${days2 === 1 ? "" : "s"}`);
   newTurn(wf, !!wf.sent);
   Object.assign(wf, { state: "open", status: statusOf(wf), pending: [] });
-}
-function named(items2, text3) {
-  const ids = new Set(text3.match(/\b\d{4,}\b/g) ?? []);
-  return ids.size ? items2.find((w) => w.work?.links.some((l) => ids.has(l.split(/[:/]/).at(-1)))) : void 0;
 }
 function watchNews(wf, r, ref, first3) {
   if (!wf.work) return false;
@@ -51719,7 +51772,7 @@ function numbersPage(store2, key = "this", now = /* @__PURE__ */ new Date()) {
     return day3 >= (four ? fourFrom : n.window.from) && day3 <= (four ? today : n.window.to);
   };
   const sendKeys = {};
-  const keys = (wanted, candidates2) => {
+  const keys2 = (wanted, candidates2) => {
     const used = /* @__PURE__ */ new Map();
     return wanted.map((code) => {
       const index = used.get(code) ?? 0;
@@ -51732,18 +51785,18 @@ function numbersPage(store2, key = "this", now = /* @__PURE__ */ new Date()) {
     const r = four ? n.four.replies : n.now.replies;
     const eligible = sends.filter((e) => !e.holding && within(e, four));
     const groups2 = [
-      keys(r.drafted, eligible.filter((e) => e.asDrafted === true)),
-      keys(r.edited, eligible.filter((e) => e.asDrafted === false)),
+      keys2(r.drafted, eligible.filter((e) => e.asDrafted === true)),
+      keys2(r.edited, eligible.filter((e) => e.asDrafted === false)),
       r.teams
     ];
     sendKeys[four ? "four-replies" : "replies"] = groups2;
     if (!four) {
       sendKeys.drafted = [groups2[0]];
       sendKeys.edited = [groups2[1]];
-      sendKeys.unknown = [keys(r.unknown, eligible.filter((e) => e.asDrafted === void 0))];
+      sendKeys.unknown = [keys2(r.unknown, eligible.filter((e) => e.asDrafted === void 0))];
     }
   }
-  sendKeys.sends = [keys(n.corrections.sent, sends.filter((e) => !e.holding && within(e, true)))];
+  sendKeys.sends = [keys2(n.corrections.sent, sends.filter((e) => !e.holding && within(e, true)))];
   for (const four of [false, true]) {
     const teams = events.filter((e) => e.event === "closed" && e.closedBy === "replied" && within(e, four)).filter((e, i, all) => all.findIndex((other) => other.code === e.code) === i);
     const timed = [

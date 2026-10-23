@@ -63,7 +63,7 @@ export function buildPrompt(wf: Workflow, thread: Msg[], cfg: Config, root: stri
 	// Edit habits: the drafting styles the owner turned on that fit this reply. They shape the wording only.
 	const styles = stylesFor(compiledRules(root), wf)
 	if (styles.length && wf.kind === 'reply') parts.push('', 'How the owner wants replies written here (learned from his edits; it shapes the wording only, and anything the owner says in this item or his own rules wins):', ...styles.map(r => `- ${r.style}`))
-	if (others.length) parts.push('', 'Other open items in this chat. If the new message asks for the same thing as one of them, even from someone else, set `same` to its code and leave out reply:', ...others.map(o => `- ${o.code} · ${o.asker?.name ?? 'someone'}: "${(o.lastAsk ?? '').slice(0, 200)}"`))
+	if (others.length) parts.push('', 'Other recent, unanswered items in this chat. Only an actual follow-up to the same ask or entity may set `same` to its code and leave out reply. The same asker, shared project or similar words alone are not the same ask. A new independent question gets its own answer; never replace another item\'s goal or plan. FYIs and acknowledgements never join an ask:', ...others.map(o => `- ${o.code} · ${o.asker?.name ?? 'someone'}: "${(o.lastAsk ?? '').slice(0, 200)}"`))
 	if (wf.kind === 'reply') parts.push('', ...allowed(cfg, 'every action the reply promises goes in `todos`'))
 	if (corrected.length) parts.push('', 'How the owner corrected your recent drafts. Learn the pattern (tone, length, what they leave out or add). Never copy facts from these into this reply:', ...corrected.map(c => `- ${c}`))
 	if (wf.earlier) parts.push('', `Earlier, closed: ${wf.earlier}`)

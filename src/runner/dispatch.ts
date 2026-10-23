@@ -41,6 +41,7 @@ import { toolServers } from '../adapters/mcp-client.ts'
 import { ran } from '../core/runinfo.ts'
 import { agentSetupFailure } from '../core/agent-failure.ts'
 import { blockedAgent, holdAgent, waitingForAgent } from './agent-health.ts'
+import { askRelation, freshAsk } from './same-ask.ts'
 
 export type RunWorker = (cfg: Config['agent'], input: RunInput & { workflowId: string; runId: string }) => Promise<RunResult>
 
@@ -190,7 +191,7 @@ function refuseStart(cfg: Config, folder?: string) {
 	if (shell) throw new Error(shellInClone(shell))
 }
 
-async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run: RunWorker, probe?: BuildProbe, catalogRetried = false): Promise<void> {
+async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run: RunWorker, probe?: BuildProbe, catalogRetried = false, separate = false): Promise<void> {
 	if (blockedAgent(store, cfg)) return
 	refuseStart(cfg)
 	if (wf.state !== 'running') return runAsk(store, src, cfg, wf, run)
@@ -198,7 +199,7 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 	if (wf.state !== 'running' || blockedAgent(store, cfg)) return
 	const runId = ulid()
 	const { cwd, mcpConfigPath } = workerMcp(store, wf.id, runId)
-	const others = wf.code ? store.openInChat(wf.chat.id).filter(o => o.id !== wf.id && o.code && !o.followUp) : []
+	const others = wf.code && !separate ? store.openInChat(wf.chat.id).filter(o => o.id !== wf.id && o.code && !o.followUp && !o.sent && freshAsk(store, o) && askRelation(store, o, wf.lastAsk ?? '') !== 'different') : []
 	const home = homeOf(store, wf)
 	// A new item may belong to work that started in another chat; the worker sees the open work to say so (R-WRK-10).
 	const works = !wf.work && !wf.partOf ? store.workflows().filter(w => active(w) && !w.partOf && w.chat.id !== wf.chat.id && !levelOf(cfg, w.chat.id)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 8) : []
@@ -232,7 +233,7 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 			store.log({ event: 'worker-catalog-retry', kind: 'draft', workflowId: wf.id, code: wf.code, runId, sessionId: wf.session.id, nextSessionId: sessionId })
 			fresh.session = { ...fresh.session, id: sessionId }
 			store.save(fresh, false)
-			return runOne(store, src, cfg, fresh, run, probe, true)
+			return runOne(store, src, cfg, fresh, run, probe, true, separate)
 		}
 		store.log({ event: 'worker-catalog-retry-blocked', kind: 'draft', workflowId: wf.id, code: wf.code, runId, reason: 'daily-run-limit' })
 	}
@@ -245,7 +246,15 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 		return
 	}
 	const into = report?.same ? others.find(o => o.code === report.same!.toUpperCase()) : undefined
-	if (into && joinInto(store, fresh, store.workflow(into.id) ?? into)) { store.archiveReport(wf.id, runId); return }
+	if (into && report?.intent !== 'none' && !report?.fyi && joinInto(store, fresh, store.workflow(into.id) ?? into, true)) { store.archiveReport(wf.id, runId); return }
+	if (report?.same && !report.reply && !report.job && report.intent !== 'none') {
+		store.archiveReport(wf.id, runId)
+		store.log({ event: 'report-join-refused', code: fresh.code, target: report.same, reason: 'no eligible same-ask target' })
+		if (!separate && store.runsToday() < (cfg.dailyRuns ?? 200)) return runOne(store, src, cfg, fresh, run, probe, catalogRetried, true)
+		Object.assign(fresh, { state: 'needs_human', status: 'This is a separate ask. The AI did not draft its own answer.', question: 'What would you like to reply to this ask?' })
+		store.save(fresh)
+		return
+	}
 	const auth = !report && AUTH.test(res.error ?? '')
 	store.setHealth('agent-auth', auth ? `The AI CLI is not signed in on ${store.machine}. Run "${cfg.agent.command.join(' ')}" once and sign in.` : undefined)
 	const normal = report && !report.reply && !hasDecisions(report) && (report.job ?? jobForRecheck(store, fresh, report))

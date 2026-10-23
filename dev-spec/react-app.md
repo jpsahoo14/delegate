@@ -60,6 +60,35 @@ Guard (Engineer check): a style rule never decides. `decide()` skips it, so it c
 Proved with stub workers (quota) on fictional roots: the spec's checks 1-7 (including Robin's style not reaching Kim's
 draft, Edit, Undo, and the negative cases), a style rule listed before a send rule for the same person still sending
 exactly once, and Settings Turn on, Save style and Undo in New and Classic at 1280 light and 400 dark.
+## bug 10-22 E08/E40/Core10 J2/J8: unrelated asks reused another home
+
+- Before: Robin's incident 5091 message entered his PR 2203 home while its
+  goal and plan still described the review. A worker `same` also let Rex's
+  fresh ask enter Ria's hour-old failed item.
+- Same-sender identity and most-recently-updated are no longer join evidence.
+  A deterministic join needs a unique recent candidate and matching typed
+  entity, substantial topic evidence, or a real reply link without a conflicting
+  entity. Ambiguous messages become their own visible item immediately; their
+  ordinary worker may resolve same-ask ambiguity after intake, not before.
+- Eligibility uses the latest owned inbound message, never a background save.
+  Thirty minutes, a failed job/run, a previous send, or an incompatible entity
+  blocks a worker join. An AI `same` cannot override these boundaries; FYIs and
+  intent-none reports cannot join asks. Work homes keep their own plan/steps.
+- If a worker supplies only an invalid `same`, one bounded redraft omits the
+  other candidates; a repeated invalid join becomes an explicit owner question,
+  not an infinite retry or an empty successful result.
+- A valid cross-sender join updates the quoted ask and primary asker to the
+  newest owned inbound message, retaining the earlier askers for mentions.
+  Every successful join invalidates the old approval/send time.
+- Observed with a stub worker, both experiences at 1280 in Edge: Ines kept one
+  item for floor and room; Robin's incident got its own code and the old review's
+  goal, done-when and three plan steps were unchanged; Rex and a fresh ask beside
+  a failed item stayed separate even when the stub proposed `same`. Intake
+  persisted all four messages in 86 ms before worker dispatch. One explicit
+  send per experience quoted Ines's newest room ask exactly, with no duplicate.
+  A valid Kim join made Kim's new ask the quote and retained Ines as an asker.
+  No browser errors, overflow, real AI or new owner sessions.
+
 ## bug 10-22 R4 J8: an automatic reply sent an unfilled blank
 
 - The reply playbook previously required `____` for missing facts. It now asks

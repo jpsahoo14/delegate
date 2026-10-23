@@ -1,4 +1,4 @@
-import { active, addPart, homeNamed, homeOf, inWork, linksIn, named, newTurn, ownerStep, statusOf, step } from './work.ts'
+import { active, addPart, homeNamed, homeOf, inWork, linksIn, newTurn, ownerStep, statusOf, step } from './work.ts'
 import { reopenPromise } from './promise.ts'
 import { watchCommand } from './track.ts'
 import { askAtOf } from '../core/numbers.ts'
@@ -23,6 +23,7 @@ import { kindOf } from './discover.ts'
 import { REPORT, report } from '../store/feedback.ts'
 import { NAME } from '../brand.ts'
 import { prTarget } from './probe.ts'
+import { askRelation, freshAsk } from './same-ask.ts'
 
 const toMsg = (r: RawMsg, from: { id: string; name: string }, text: string, byOwner: boolean): Msg =>
 	({ id: r.id, at: r.at, from, text, byOwner })
@@ -164,15 +165,14 @@ export async function intake(store: Store, src: Source, cfg: Config, cursors: Re
 			// An open reply item that went quiet does not absorb a new conversation; it stays for the owner, and a new item starts (review 085 P1-1).
 			const hours = cfg.quietHours ?? 48
 			const live = open.filter(w => (w.job || inWork(store, w) || !quietFor(store, w, hours, now)) && (!backlog || w.before))
-			// A follow-up from someone who already has a live item in this chat joins it, decided by code before any judgment: it
-			// never starts a second item beside the first one's draft, which then answers only half (bug 10-23 E08).
-			const follows = groupJudgment ? route(live.filter(o => o.asker?.id === c.from.id), c.from.id, undefined, c.text) : undefined
+			// Sender identity alone is not a follow-up: unresolved cases become visible before the worker's tie-breaker.
+			const follows = groupJudgment ? route(store, live.filter(o => o.asker?.id === c.from.id), raw, c.from.id, undefined, c.text) : undefined
 			if (groupJudgment && !follows) for (const o of open) appendThread(store, o, toMsg(raw, c.from, c.text, false))
-			let wf = follows ?? (groupJudgment ? undefined : route(live, c.kind === 'ask' || c.kind === 'context' ? c.from.id : '', c.kind === 'ask' && !backlog ? recentItem(store, chat.id, c.from.id, hours, now) : undefined, c.text))
+			let wf = follows ?? (groupJudgment ? undefined : route(store, live, raw, c.kind === 'ask' || c.kind === 'context' ? c.from.id : '', c.kind === 'ask' && !backlog ? recentItem(store, chat.id, c.from.id, hours, now) : undefined, c.text))
 			// An ask that names a link of work from another chat goes to that work's part here, or starts one.
 			const named = c.kind === 'ask' && !groupJudgment && !(wf && inWork(store, wf)) ? homeNamed(store.workflows(), c.text) : undefined
 			const elsewhere = named && named.chat.id !== chat.id ? named : undefined
-			if (elsewhere) wf = live.find(o => o.partOf === elsewhere.id)
+			if (elsewhere) wf = live.find(o => o.partOf === elsewhere.id && freshAsk(store, o, Date.parse(raw.at)) && askRelation(store, o, c.text) === 'same')
 			// "Fixed, please recheck" reopens the same item, which keeps its code (scenario 04 step 5, tester P2-14).
 			// It reattaches to its job only if the worker says the new ask is about the same entity (review 01-04 P0-2).
 			// How and why it closed last time no longer describes it: a later close says its own.
@@ -221,17 +221,15 @@ function answeredBy(store: Store, msgId: string): string[] {
 	return w?.asker ? [w.asker.id, ...(w.askers ?? []).map(p => p.id)] : []
 }
 
-// A new ask joins the open item from the same sender, else that sender's recent job item, else it starts its own item (D2).
-// Joining another person's item let an unrelated question replace their pending draft (measured in the slice 07 live run).
-// Among one sender's open items: the work the message names, else the most recently changed (R-WRK-09, review P0.3).
-function route(open: Workflow[], senderId: string, recent?: Workflow, text = ''): Workflow | undefined {
-	// A part the owner started in a 1:1 has no asker yet: the other person's reply is its.
-	const compatible = (w: Workflow) => {
-		const asks = linksIn(text).filter(l => l.startsWith('pr:')), own = [...linksIn(w.lastAsk ?? ''), ...(w.work?.links ?? [])].filter(l => l.startsWith('pr:'))
-		return !asks.length || !own.length || asks.some(a => own.some(o => a.split(/[:/]/).at(-1) === o.split(/[:/]/).at(-1)))
-	}
-	const theirs = open.filter(w => (w.asker?.id === senderId || (!w.asker && !!w.partOf && !w.chat.group && !!senderId)) && compatible(w))
-	return named(theirs, text) ?? theirs.sort((a, b) => a.updatedAt.localeCompare(b.updatedAt)).at(-1) ?? (recent && compatible(recent) ? recent : undefined)
+function route(store: Store, open: Workflow[], raw: RawMsg, senderId: string, recent?: Workflow, text = ''): Workflow | undefined {
+	const candidates = [...open, ...(recent ? [recent] : [])].filter(item =>
+		(item.asker?.id === senderId || !item.asker && !!item.partOf && !item.chat.group && !!senderId) &&
+		freshAsk(store, item, Date.parse(raw.at), item === recent))
+	const target = replyTarget(raw)
+	const quoted = target && candidates.find(item => item.msgIds.includes(target) && askRelation(store, item, text) !== 'different')
+	if (quoted) return quoted
+	const same = candidates.filter(item => askRelation(store, item, text) === 'same')
+	return same.length === 1 ? same[0] : undefined
 }
 
 // A follow-up continues the sender's closed item while the talk is fresh: a job item for 7 days (its PR is the key, R-WF-11),
@@ -433,12 +431,16 @@ export function splitOff(store: Store, cfg: Config, from: Workflow, ids: string[
 }
 
 // Someone else in the chat asked for the same thing: this item joins the open one, which redrafts once to answer and tag them all.
-export function joinInto(store: Store, from: Workflow, to: Workflow): boolean {
+export function joinInto(store: Store, from: Workflow, to: Workflow, judged = false): boolean {
 	if (to.id === from.id || to.chat.id !== from.chat.id || to.state === 'done') return false
+	const relation = askRelation(store, to, from.lastAsk ?? '')
+	if (!freshAsk(store, to) || relation === 'different' || relation === 'unknown' && !judged || to.sent) {
+		store.log({ event: 'join-refused', from: from.code, to: to.code, reason: 'not the same recent unanswered ask' })
+		return false
+	}
 	// Work does not merge yet: both items keep their own steps and watches (review P1.1).
 	if (from.work || active(to)) return false
 	const all = [to.asker, ...(to.askers ?? []), from.asker, ...(from.askers ?? [])].filter((p, i, a): p is Person => !!p && a.findIndex(q => q?.id === p.id) === i)
-	to.askers = all.filter(p => p.id !== to.asker?.id)
 	// Each message keeps the line of the item that owns it: that one was read as an ask, the other may be only history (bug 10-23 E11).
 	const own = new Set(from.msgIds), fromThread = store.thread(from.id), byId = new Map<string, Msg>()
 	for (const m of store.thread(to.id)) byId.set(m.id, m)
@@ -446,7 +448,10 @@ export function joinInto(store: Store, from: Workflow, to: Workflow): boolean {
 	store.saveThread(to.id, [...byId.values()].sort((a, b) => a.at.localeCompare(b.at)))
 	to.msgIds = [...new Set([...to.msgIds, ...from.msgIds])]
 	to.pending = [...new Set([...to.pending, ...from.msgIds])]
-	if (to.state !== 'waiting_on_task') Object.assign(to, { state: 'running', status: `Redrafting to answer ${from.asker?.name ?? 'them'} too`, approved: undefined })
+	const latest = [...byId.values()].filter(message => !message.byOwner && to.msgIds.includes(message.id)).sort((a, b) => b.at.localeCompare(a.at))[0]
+	if (latest) Object.assign(to, { asker: latest.from, lastAsk: latest.text, lastMsgId: latest.id })
+	to.askers = all.filter(p => p.id !== to.asker?.id)
+	if (to.state !== 'waiting_on_task') Object.assign(to, { state: 'running', status: `Redrafting to answer ${from.asker?.name ?? 'them'} too`, approved: undefined, sendAt: undefined })
 	close(from, `Joined ${to.code}: the same ask`)
 	store.save(to)
 	store.save(from)

@@ -1,6 +1,6 @@
 {
   "name": "delegate",
-  "version": "0.2.8",
+  "version": "0.2.9",
   "description": "An AI stand-in that drafts and answers your chat messages while you are away.",
   "type": "module",
   "license": "MIT",
