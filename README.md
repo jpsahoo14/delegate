@@ -99,23 +99,25 @@ Delegate can carry work you own, such as testing your PR on a test ring and repo
 
 Not needed: pipeline IDs, ring names, deploy steps, or queries. Delegate reads them from the repo.
 
-## React preview
+## The page
 
-The browser's App version menu offers Classic, New and React (preview). The
-preview provides Now, the open card, Done, Numbers and Settings, including
-watches, reminders, knowledge and private questions. Rows only open items;
-sending and making changes require their explicit buttons. Edited text stays
-on its displayed revision when newer data arrives. Unknown action results are
-checked from saved receipts, never automatically sent again.
-Inside React, Experience switches between New and Classic on the same data
-and action service. Both keep the original page's visit start and new counts.
-The choice is remembered on this machine only and switching sends
-nothing. New and Classic remain available. The chat panel continues using New when React is selected; saved
-read-only snapshots remain Classic.
+`delegate` opens one page with two experiences. New sorts everything by whose
+move it is: Now, the open card, Done, Numbers and Settings. Classic has Home,
+Needs you, Done, Ongoing, Numbers, Settings and To learn. **Experience** (top
+right, or in the menu on a narrow window) switches between them on the same
+data and actions. Switching sends nothing, and this machine opens the one you
+chose next time. Rows only open items; sending and making changes require their
+explicit buttons. Edited text stays on its displayed revision when newer data
+arrives. Unknown action results are checked from saved receipts, never
+automatically sent again. Old links keep working: Classic addresses such as
+`#home`, `#focus/A12` or `#ongoing` open Classic, and `?ui=new` or `?ui=classic`
+chooses the experience. The chat panel and the saved read-only snapshot still
+use the previous page.
 
-Development: `npm run build` builds both pages and updates integrity hashes.
+Development: `npm run build` builds the page into `dist/web-react` and updates
+integrity hashes; run it once before `delegate open` from source.
 `npm run typecheck` covers both front ends; `npm run test:react` runs the React
-component tests. Built preview assets are shipped under `dist/web-react`, so
+component tests. The built page is shipped under `dist/web-react`, so
 installed machines do not need the front-end development dependencies.
 
 ## Use

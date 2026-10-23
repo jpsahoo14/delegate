@@ -23,7 +23,7 @@
     return date.toLocaleDateString([], { month: "short", day: "numeric" });
   }
 
-  // src/web/app/model/format.ts
+  // src/web/model/format.ts
   var first = (n) => String(n || "Someone").split(" ")[0];
   var plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
   var hueOf = (name) => {
@@ -96,7 +96,7 @@
     })();
   }
 
-  // src/web/app/model/derive.ts
+  // src/web/model/derive.ts
   var DONE_KINDS = { replies: ["reply", "review"], reviews: ["review"], changes: ["change"], reminders: ["reminder"], learned: ["learned"], catchup: ["catchup"] };
   var CHIP_LABEL = { catchup: "Catch up" };
   var KIND_KEY = { reply: "replies", review: "replies", change: "changes", reminder: "reminders", learned: "learned", catchup: "catchup" };
@@ -178,7 +178,7 @@
   }
   var RESULTS = ["Both work", "Issues found", "Blocked"];
 
-  // src/web/app/model/find.ts
+  // src/web/model/find.ts
   function teamsMessage(q) {
     const m = /^https:\/\/teams\.microsoft\.com\/l\/message\/([^/?#]+)\/(\d+)/i.exec(q.trim());
     if (!m) return void 0;
@@ -222,7 +222,7 @@
     return { now, done };
   }
 
-  // src/web/app/model/forms.ts
+  // src/web/model/forms.ts
   var MARKS = [["wrong", "Wrong", "What should it have said?", "Draft a correction"], ["incomplete", "Incomplete", "What was missing?", "Draft what was missing"], ["unneeded", "Should not have replied", "Anything else? (optional)", "Note it"]];
   var markCommand = (code, mark, note) => `${mark || "wrong"} ${code}${note ? `: ${note}` : ""}`;
   var BY = [["", "No date"], ["today", "Today"], ["fri", "Friday"], ["week", "Next week"]];
@@ -850,7 +850,7 @@
     render2();
   }
 
-  // src/web/app/model/numbers.ts
+  // src/web/model/numbers.ts
   var SMALL = 10;
   var WINDOWS = ["this", "last", "4w", "all"];
   var WINDOW_LABEL = { this: "This week", last: "Last week", "4w": "Last 4 weeks", all: "Since you started" };

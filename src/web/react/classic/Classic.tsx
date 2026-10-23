@@ -7,7 +7,7 @@ import { THEME_LABEL, useInterface } from '../data/interface.ts'
 import { useData } from '../data/store.ts'
 import { useVersionUpdate } from '../data/update.ts'
 import { Button, Hint } from '../components/ui/button.tsx'
-import { chipHover, hoverOf } from '../domain/hover.ts'
+import { chipHover } from '../domain/hover.ts'
 import { Icon } from '../components/ui/icon.tsx'
 import { ActionButton } from '../features/ActionButton.tsx'
 import { NAME } from '../brand.ts'
@@ -37,7 +37,7 @@ export default function Classic() {
 	const query = useAppData(), snapshot = useSnapshot(), entities = useEntities()
 	const pendingError = usePendingReceipts(), pending = usePendingCount(), result = useLatestResult(), actionError = useLatestError()
 	const { route, navigate } = useScreenNavigation(), { menu, setMenu, help, setHelp } = useNavigation()
-	const { themeChoice, switching, error, chooseVersion, setThemeChoice } = useInterface()
+	const { themeChoice, error, setThemeChoice } = useInterface()
 	const seenError = useClassicSeen(), update = useVersionUpdate(), offline = useClassicOffline()
 	const main = useRef<HTMLElement>(null), dialog = useRef<HTMLDialogElement>(null)
 	const previousScreen = useRef<string | undefined>(undefined)
@@ -82,18 +82,17 @@ export default function Classic() {
 	const bad = disconnected || snapshot?.status.state !== 'on' || health.length > 0 || reading?.state === 'off' || reading?.state === 'never'
 	const fullStatus = [status, reading?.at ? `Last checked ${when(reading.at)}` : undefined, reading?.machine].filter(Boolean).join(' · ')
 	const themeLabel = THEME_LABEL[themeChoice]
-	const versionPicker = (id: string, className: string) => <label className={className} htmlFor={id}><span>App version</span><Hint text={hoverOf('', 'App version')}><select id={id} value="react" disabled={switching || disconnected || readOnly} onChange={event => { const value = event.target.value; if (value === 'classic' || value === 'new' || value === 'react') void chooseVersion(value) }}><option value="classic">Classic</option><option value="new">New</option><option value="react">React (preview)</option></select></Hint></label>
 	return <div className="classic-experience">
 		<a className="skip-link" href="#main" onClick={event => { event.preventDefault(); main.current?.focus() }}>Skip to content</a>
 		<header className="preview-header" data-menu-open={menu || undefined}><div className="header-inner">
 			<a className="brand" href="#classic/home" aria-label={`${NAME} home`}><span className="brand-mark"><Icon name="logo" /></span><span className="brand-name">{NAME}</span></a>
 			<div className="header-controls" id="classic-view-menu">
 				<nav aria-label="Views">{tabs.map(([id, label, count]) => <a key={id} href={`#classic/${id}`} aria-current={screen === id ? 'page' : undefined} onClick={() => setMenu(false)}>{label}{count > 0 && <Hint text={chipHover(id === 'focus' ? 'count-needs' : id === 'ongoing' ? 'count-ongoing' : id === 'knowledge' ? 'count-knowledge' : 'count-done', { n: count })}><span className={`count${id === 'focus' ? '' : ' count-muted'}`} aria-label={`${count}${id === 'done' || id === 'ongoing' ? ' new' : ''}`}>{count}</span></Hint>}</a>)}</nav>
-				{!readOnly && <div className="version-controls"><ExperienceToggle disabled={disconnected} />{versionPicker('classic-menu-version', 'classic-menu-version')}</div>}
+				{!readOnly && <div className="version-controls"><ExperienceToggle disabled={disconnected} /></div>}
 			</div>
 			<span className="classic-view-title">{tabs.find(([id]) => id === screen)?.[1] ?? 'Home'}</span>
 			<span className={`classic-status status-pill${bad ? ' status-warn' : ''}`} role="img" tabIndex={0} aria-label={fullStatus} title={fullStatus}><i aria-hidden="true" /><span>{status}</span></span>
-			{!readOnly && <><div className="classic-desktop-experience"><ExperienceToggle disabled={disconnected} /></div>{versionPicker('classic-version', 'classic-desktop-version')}</>}
+			{!readOnly && <div className="classic-desktop-experience"><ExperienceToggle disabled={disconnected} /></div>}
 			<Button variant="ghost" className="theme-button" aria-label={`Theme: ${themeLabel}`} title={`Theme: ${themeLabel}`} onClick={() => setThemeChoice(themeChoice === 'auto' ? 'light' : themeChoice === 'light' ? 'dark' : 'auto')}><Icon name={themeChoice === 'auto' ? 'auto' : themeChoice === 'light' ? 'sun' : 'moon'} /></Button>
 			<Button variant="ghost" className="mobile-view-button" aria-label="Views" aria-expanded={menu} aria-controls="classic-view-menu" onClick={() => setMenu(!menu)}><Icon name="menu" /></Button>
 		</div></header>

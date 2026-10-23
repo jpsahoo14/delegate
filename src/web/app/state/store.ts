@@ -1,8 +1,8 @@
 // The page's state: the view from the server (V) and what the owner is doing on this page (S). Views read them; changes go
 // through setView and the actions in state/actions.ts. Lives for one page load.
-import { orderOf } from '../model/derive.ts'
+import { orderOf } from '../../model/derive.ts'
 import type { IO } from '../io/transport.ts'
-import type { AutoForm, Boot, CardUi, ItemCard, KnowledgeCard, NumbersPage, RowWatch, SheetWatch, View, WindowKey } from '../model/types.ts'
+import type { AutoForm, Boot, CardUi, ItemCard, KnowledgeCard, NumbersPage, RowWatch, SheetWatch, View, WindowKey } from '../../model/types.ts'
 
 export type PageState = {
 	// The address after '#', and the card the queue is on.

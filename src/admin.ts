@@ -10,6 +10,7 @@ import * as scheduler from './os/scheduler.ts'
 import { signedIn } from './mcp/setup.ts'
 import { NAME, CMD } from './brand.ts'
 import { extensionCheck, installExtension, uninstallExtension } from './mesh/route.ts'
+import { migrateTools, toolsSaid } from './runner/tools-migrate.ts'
 
 const COPILOT = process.env.COPILOT_HOME ?? join(homedir(), '.copilot')
 const has = (cmd: string) => spawnSync(process.platform === 'win32' ? 'where' : 'which', [cmd], { stdio: 'ignore' }).status === 0
@@ -155,7 +156,8 @@ export function update(o: { root: string; cli: string; from?: string } = { root:
 }
 
 // Owner data only moves forward, after a backup; only the runner machine migrates (R-DST-04, distribution.md).
-export const SCHEMA = 1
+// Schema 2: the read tools list becomes a deny list over every read tool the servers list (#17).
+export const SCHEMA = 2
 export function migrate(): string[] {
 	let store: Store
 	try { store = new Store(loadLocal()) } catch { return [] }
@@ -166,8 +168,9 @@ export function migrate(): string[] {
 	const pinned = store.config()?.runner
 	if (pinned && pinned !== store.machine) return [`Data migration waits for the runner machine (${pinned}).`]
 	cpSync(join(store.root, 'state'), join(store.root, 'backups', `schema-${at}`), { recursive: true })
+	const tools = at < 2 ? migrateTools(store, 'schema 2') : undefined
 	writeJson(file, { schema: SCHEMA, version: VERSION }, store.machine)
-	return [`Migrated your data from schema ${at} to ${SCHEMA}; a backup is in backups/schema-${at}.`]
+	return [`Migrated your data from schema ${at} to ${SCHEMA}; a backup is in backups/schema-${at}.`, ...(tools ? [toolsSaid(tools)] : [])]
 }
 
 // Removes what Delegate added to this machine. Owner data stays, unless --purge also removes this machine's local folder.

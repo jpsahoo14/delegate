@@ -9,15 +9,15 @@ import { warm } from './components/preloadable.ts'
 
 const client = new QueryClient()
 const root = document.getElementById('react-root')
-if (!root) throw new Error('The React preview root is missing.')
+if (!root) throw new Error('The page root is missing.')
 // The page data, the app's code, and the first view's code load together, and the app renders once its code is here: a lazy
 // app behind a fallback was revealed 300 ms late, and only then asked for the data (bug 10-23 perf).
-const classic = location.hash.startsWith('#classic/')
+const classic = location.hash.startsWith('#classic/') || (!location.hash.slice(1) && document.documentElement.dataset.experience === 'classic')
 const route = location.hash.slice(1).split('/')[0] as keyof typeof NEW_VIEWS
 void warm(classic ? CLASSIC_VIEWS.app : NEW_VIEWS[route] ?? NEW_VIEWS.now).catch(() => undefined)
 const page = startEarlySnapshot()
 const render = (node: ReactNode) => createRoot(root).render(<StrictMode><PreviewBoundary><QueryClientProvider client={client}><Suspense fallback={<Recovery />}>{node}</Suspense></QueryClientProvider></PreviewBoundary></StrictMode>)
-import('./App.tsx').then(({ App }) => render(<App />), (error: unknown) => { console.error('React preview could not load:', error); render(<Recovery failed />) })
+import('./App.tsx').then(({ App }) => render(<App />), (error: unknown) => { console.error('The page could not load:', error); render(<Recovery failed />) })
 // Once the page is shown: this experience's other views, then, when the browser is idle and at most 3 s later, the other
 // experience, so no first switch waits for code (spec S6).
 const idle = (run: () => void) => 'requestIdleCallback' in window ? requestIdleCallback(run, { timeout: 3000 }) : setTimeout(run, 1000)

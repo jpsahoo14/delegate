@@ -1,6 +1,6 @@
 // Pieces the card types share: the draft, the context lines, the options to pick, the meeting, and what else a send does.
-import { time, whoOf } from '../../../model/format.ts'
-import type { CardUi, ItemCard } from '../../../model/types.ts'
+import { time, whoOf } from '../../../../model/format.ts'
+import type { CardUi, ItemCard } from '../../../../model/types.ts'
 import { env } from '../../../state/store.ts'
 import { esc, html, join, raw, type H } from '../../html.ts'
 import { I } from '../../icons.ts'

@@ -2,13 +2,14 @@ import { createHash, randomBytes } from 'node:crypto'
 import { createServer, type Server } from 'node:http'
 import { join } from 'node:path'
 import type { Store } from '../store/state.ts'
+import { experienceOf } from '../store/state.ts'
 import { hashOf } from '../knowledge/format.ts'
 import { readScope, writeText } from '../store/fs.ts'
 import { actResult } from '../mcp/server.ts'
 import { SEEN_KEYS, view } from './view.ts'
 import { renderApp } from './shell.ts'
 import { answerAutomation, propose as proposeAutomation, type AutomateInput } from '../runner/automations.ts'
-import { NAME } from '../brand.ts'
+import { NAME, CMD } from '../brand.ts'
 import { versionInfo, versionInfoLater, type VersionInfo } from '../os/autoupdate.ts'
 import { saveSetting, settingsView } from './settings.ts'
 import { adoProbe, type BuildProbe } from '../runner/probe.ts'
@@ -20,7 +21,7 @@ import { reactAsset, reactPage } from './react-build.ts'
 import { chatNormalActionId, reactProjection, IntentError } from './react-projection.ts'
 import { submissionReceipt, submitIntent } from './react-submissions.ts'
 import { intentSchema } from './react/domain/contracts.ts'
-import { listsOf, numbersModel, RULES as NUMBER_RULES } from './app/model/numbers.ts'
+import { listsOf, numbersModel, RULES as NUMBER_RULES } from './model/numbers.ts'
 import { ROOT } from '../paths.ts'
 import { pageDelta } from './react/domain/page-delta.ts'
 
@@ -81,11 +82,14 @@ export function saveSeenFrom(s: Store, body: unknown) {
 	const iso = new Date(now).toISOString(), t = typeof at === 'string' && !Number.isNaN(Date.parse(at)) ? new Date(at).toISOString() : iso
 	s.saveSeen(ok, t < iso ? t : iso, k => !k.startsWith('item:') || live.has(k.slice(5)))
 }
-// POST /ui and the panel's ui_save: the choice, or that the first-time note was closed.
+// POST /ui and the panel's ui_save: the choice, the React page's experience, or that the first-time note was closed.
 export function saveUiFrom(s: Store, body: unknown): { ok: boolean; ui?: ReturnType<Store['ui']> } {
-	const b = (body ?? {}) as { ui?: unknown; noted?: unknown }
-	if (b.ui !== 'new' && b.ui !== 'classic' && b.ui !== 'react' && b.noted !== true) return { ok: false }
-	return { ok: true, ui: s.saveUi(b.ui === 'new' || b.ui === 'classic' || b.ui === 'react' ? b.ui : s.ui().ui, b.noted === true) }
+	const b = (body ?? {}) as { ui?: unknown; noted?: unknown; experience?: unknown }
+	const ui = b.ui === 'new' || b.ui === 'classic' || b.ui === 'react' ? b.ui : undefined
+	const experience = b.experience === 'new' || b.experience === 'classic' ? b.experience : undefined
+	if (!ui && !experience && b.noted !== true) return { ok: false }
+	// Choosing the old Classic or New also chooses that experience, so the React page opens the same way.
+	return { ok: true, ui: s.saveUi(ui ?? s.ui().ui, b.noted === true, experience ?? (ui === 'new' || ui === 'classic' ? ui : undefined)) }
 }
 
 // A local page with working buttons. Only this machine can reach it, and only with the token in its link (R-HIL-09).
@@ -178,7 +182,7 @@ export function serveInbox(get: () => Store, port = 0, token = randomBytes(16).t
 				})
 				return
 			}
-			json(404, { text: 'That preview endpoint does not exist.' })
+			json(404, { text: 'That endpoint does not exist.' })
 			return
 		}
 		if (req.method === 'GET' && u.pathname.startsWith('/web-react/')) {
@@ -187,39 +191,37 @@ export function serveInbox(get: () => Store, port = 0, token = randomBytes(16).t
 				if (!asset) { res.writeHead(404).end(); return }
 				res.writeHead(200, { 'content-type': asset.type, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' }).end(asset.content)
 			} catch (error) {
-				res.writeHead(500, { 'content-type': 'text/plain' }).end(`Preview asset unavailable: ${String(error)}`)
+				res.writeHead(500, { 'content-type': 'text/plain' }).end(`Page asset unavailable: ${String(error)}`)
 			}
 			return
 		}
-		// Home counts what happened since the owner last looked; opening the page is looking.
+		// Home counts what happened since the owner last looked; opening the page is looking. The React page is the only page:
+		// ui=new or ui=classic in a link (and the old choice saved on a machine) only chooses its experience.
 		if (req.method === 'GET' && u.pathname === '/') {
 			// A page that cannot be drawn says why, instead of stopping the server.
-			let page, react = false
+			let page
 			try {
 				const s = get(), recover = u.searchParams.get('ui')
-				if (recover === 'new' || recover === 'classic') {
-					s.saveUi(recover)
+				if (recover === 'new' || recover === 'classic' || recover === 'react') {
+					if (recover !== 'react') s.saveUi(recover, false, recover)
 					u.searchParams.delete('ui')
-					res.writeHead(303, { location: u.pathname + u.search, 'cache-control': 'no-store' }).end()
+					res.writeHead(303, { location: u.pathname + u.search + (recover === 'classic' ? '#classic/home' : recover === 'new' ? '#now' : ''), 'cache-control': 'no-store' }).end()
 					return
 				}
-				react = s.ui().ui === 'react'
-				if (react) {
-					try { page = reactPage(token, previewRoot); reactVisit = { since: s.visitSince(), fallbackSince: new Date(Date.now() - 86_400_000).toISOString() } } catch (error) {
-						console.error('React preview unavailable; showing New instead:', error)
-						react = false
-						page = renderApp({ ...withUi(s, withVersion(s, view(s, s.visitSince())), true), ui: { ...s.ui(), ui: 'new' } }, 'page')
-							.replace('<body>', '<body><p role="alert">React preview unavailable. Showing New instead. Choose a version from App version to save it.</p>')
-					}
-				} else page = renderApp(withUi(s, withVersion(s, view(s, s.visitSince()))), 'page')
+				try { page = reactPage(token, previewRoot, experienceOf(s.ui())) } catch (error) {
+					console.error(`${NAME}'s page files could not be read:`, error)
+					res.writeHead(500, { ...headers, 'content-security-policy': "default-src 'none'; img-src data:" }).end(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="color-scheme" content="light dark"><link rel="icon" href="data:,"><title>${NAME}</title></head><body><h1>${NAME}'s page files are missing</h1><p role="alert">The page could not be read from dist/web-react. Run "${CMD} update", or "npm run build" when running from source, then reload.</p></body></html>`)
+					return
+				}
+				reactVisit = { since: s.visitSince(), fallbackSince: new Date(Date.now() - 86_400_000).toISOString() }
 			} catch (e) { res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' }).end(`The page could not be drawn: ${(e as Error)?.message ?? e}`); return }
-			const pageHeaders = react ? {
+			res.writeHead(200, {
 				...headers,
 				'content-security-policy': "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
 				'referrer-policy': 'no-referrer',
-			} : headers
-			res.writeHead(200, pageHeaders).end(page); return
+			}).end(page); return
 		}
+		// Kept for one release for a tab of the old page still open over the update: its poll sees the new version and reloads.
 		if (req.method === 'GET' && u.pathname === '/data') {
 			res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' }).end(JSON.stringify(withUi(get(), withVersion(get(), view(get(), u.searchParams.get('since') || undefined)), u.searchParams.get('ui') === 'new')))
 			return

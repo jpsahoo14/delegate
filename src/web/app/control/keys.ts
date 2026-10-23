@@ -1,5 +1,5 @@
 // The keyboard: the queue keys on Needs you, g h, u, ?, and Escape (the key list in the experience shows them all).
-import type { ItemCard } from '../model/types.ts'
+import type { ItemCard } from '../../model/types.ts'
 import * as A from '../state/actions.ts'
 import { S, V, cardOf } from '../state/store.ts'
 import { current, field, render } from '../view/render.ts'

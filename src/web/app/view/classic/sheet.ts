@@ -1,7 +1,7 @@
 // The automation sheet on Ongoing: pick what to set up, then a reminder or a watch. And an automation's row.
-import { clock, first, plural, when, whoOf } from '../../model/format.ts'
-import { BY, EVERY, HOURS, peopleOf } from '../../model/forms.ts'
-import type { AutoForm, AutomationRow } from '../../model/types.ts'
+import { clock, first, plural, when, whoOf } from '../../../model/format.ts'
+import { BY, EVERY, HOURS, peopleOf } from '../../../model/forms.ts'
+import type { AutoForm, AutomationRow } from '../../../model/types.ts'
 import { S, V, env } from '../../state/store.ts'
 import { esc, html, raw, type H } from '../html.ts'
 import { I } from '../icons.ts'

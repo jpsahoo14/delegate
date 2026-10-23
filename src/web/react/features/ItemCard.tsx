@@ -13,6 +13,7 @@ import { Field, Sources } from './CardFields.tsx'
 import { SentTime } from './SentTime.tsx'
 import './card.css'
 import { useScreenNavigation } from '../classic/navigation.tsx'
+import { useSetting } from '../data/screens.ts'
 
 // The card (spec S1, design-spec/mockups/card-redesign.html): the same blocks in New's opened row and Classic's Needs-you card.
 // 1 their message · 2 what you'll send · 3 what happens when you send · 4 actions · 5 Details.
@@ -40,6 +41,14 @@ export function MessageBubble({ text: raw, teams, open, onToggle }: { text: stri
 }
 const clip = (text: string) => text.length > SHOWN ? `${text.slice(0, SHOWN)}…` : text
 const compact = (iso: string) => <SentTime at={iso} />
+
+// Some read tools are switched off and a job ran out of routes (#17 b): the same one-click Allow all as Settings, or Settings itself.
+const ALLOW_ALL = { key: 'toolsAll', label: 'Allow all read tools', help: '', kind: 'switch' as const, section: 'you' as const, value: 'false', group: '*' }
+function ToolsOff() {
+	const state = useSetting(ALLOW_ALL), { href } = useScreenNavigation()
+	return <p className="card-tools-off">Some read tools are off, so it may not have had the one it needed. <Button variant="outline" disabled={state.busy || (!state.error && !!state.text)} onClick={state.toggle}>{state.busy ? 'Saving...' : 'Allow all read tools'}</Button> <a href={href('settings/tools')}>Choose in Settings</a>
+		{state.text && <span role={state.error ? 'alert' : 'status'}> {state.text}{!state.error && ' Try again to run it with them.'}</span>}</p>
+}
 
 export function ItemCard({ code, placementId, inline = false, asks, fallback, readOnly = false }: { code: string; placementId?: string; inline?: boolean; asks?: { codes: string[]; onOpen: (code: string) => void }; fallback?: Snapshot; readOnly?: boolean }) {
 	const presentation = useCardPresentation(code, placementId, fallback), snapshot = useSnapshot()
@@ -115,7 +124,10 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 	const writeOwn = actions.find(action => action.kind === 'write-own')
 	const reopen = actions.find(action => action.kind === 'reopen')
 	const failed = item.runFailed && <section className="card-block card-failed">
-		<p role="status" className="warnline"><Icon name="warn" /> {NAME} couldn't draft this at {when(item.runFailed.at)}: {item.runFailed.why}.</p>
+		<p role="status" className="warnline"><Icon name="warn" /> {item.runFailed.review && item.prLabel ? `Couldn't finish the review of ${item.prLabel.replace(/ · .*$/, '')}` : `${NAME} couldn't draft this`} at {when(item.runFailed.at)}: {item.runFailed.why}.</p>
+		{item.runFailed.review && <p><a href={item.runFailed.review} target="_blank" rel="noreferrer">Review it yourself</a> <span className="muted">opens the PR</span></p>}
+		{item.runFailed.toolsOff && !readOnly && <ToolsOff />}
+		{item.runFailed.tried?.length ? <details className="card-tried"><summary>What it tried ({item.runFailed.tried.length})</summary><ul>{item.runFailed.tried.map((route, n) => <li key={n}>{route}</li>)}</ul></details> : null}
 		{writeOwn && !readOnly && (ui.editing ? <><Field code={code} rev={item.rev} field="answer" label={`Your reply to ${first}, ${replyWhere}`} value={ui.answer ?? ''} edit={edit} rows={4} />
 			<div className="action-bar"><ActionButton action={writeOwn} label="Send your reply" input={{ text: ui.answer ?? '' }} disabled={!ui.answer?.trim()} disabledReason="Write your reply first." />
 				<Button variant="outline" onClick={() => edit({ editing: false })}>Cancel</Button></div></>

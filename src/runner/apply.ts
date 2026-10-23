@@ -97,9 +97,18 @@ async function applyOne(store: Store, src: Source, cfg: Config, wf: Workflow, a:
 	// "Are you in <group>?": yes or no is remembered in config, and the PR's role is read again at once (queue-new #7C).
 	const yesNo = wf.groupAsk && a.verb === 'answer' ? /^\s*(?:(yes|yeah|yep|y|i am)|(no|nope|n|i'm not|i am not))\b/i.exec(a.text ?? '') : undefined
 	if (wf.groupAsk && yesNo) return groupAnswer(store, src, wf, a, !!yesNo[1], probe)
-	// "Try again" on a run that gave no result: the item runs once more, as it was (queue-new #11).
+	// "Try again" on a run that gave no result: the item runs once more, as it was (queue-new #11). A job that ran out of routes is
+	// queued again with its tries reset and a fresh session, so it is not led by its own conclusion (#17 b).
 	if (wf.runFailed && a.verb === 'answer' && /^\s*try again\s*$/i.test(a.text ?? '')) {
-		store.log({ event: 'run-retried', code: wf.code, why: wf.runFailed.why })
+		store.log({ event: 'run-retried', code: wf.code, why: wf.runFailed.why, ...(wf.runFailed.job ? { job: wf.runFailed.job } : {}) })
+		const job = wf.runFailed.job ? store.job(wf.runFailed.job) : undefined
+		if (job) {
+			Object.assign(job, { state: 'queued', purpose: 'work', retry: undefined, nextAt: undefined, error: undefined, run: undefined, session: { ...job.session, id: randomUUID() } })
+			store.saveJob(job)
+			Object.assign(wf, { job: job.id, state: 'waiting_on_task', runFailed: undefined, question: undefined, status: `Working: ${job.goal}`, waitingSince: new Date().toISOString() })
+			store.save(wf)
+			return reply(store, src, a, `${MARK} Trying ${wf.code} again. You'll see what it finds first.`)
+		}
 		Object.assign(wf, { state: 'running', runFailed: undefined, question: undefined, status: 'Trying again', pending: wf.pending.length ? wf.pending : wf.msgIds.slice(-1) })
 		store.save(wf)
 		return reply(store, src, a, `${MARK} Trying ${wf.code} again. You'll see the draft first.`)

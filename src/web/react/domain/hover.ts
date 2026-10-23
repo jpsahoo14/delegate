@@ -83,8 +83,7 @@ const BY_LABEL: Record<string, string> = {
 	'Make it an item': `Treat this message as an ask for you: ${NAME} drafts a reply for your OK.`,
 	'Make an item': `Treat this message as an ask for you: ${NAME} drafts a reply for your OK.`,
 	'Create reminder': `${NAME} sends [{name}|them] this message on schedule, from your account.`,
-	Experience: 'Switch between New and Classic. Same items and data; nothing is sent.',
-	'App version': 'Choose which version of the page to use: Classic, New or React (preview). The page reloads.',
+	Experience: 'Switch between New and Classic. Same items and data; nothing is sent. This machine opens the one you chose next time.',
 }
 // A row's Skip is "don't track"; the facts form has its own Skip, by kind.
 const BY_KIND_LABEL: Record<string, string> = { 'row|Skip': "Don't track this. Nothing is sent.", 'row|Close': `End this work. ${NAME} stops following it and closes its parts. Nothing is sent.` }

@@ -1,8 +1,8 @@
 // One row on Now (design-spec/new-experience.md §5): the headline, the facts, "Next:", its markers, and its one action.
 // The server built every word (src/web/next.ts); this draws it and says times in the owner's time.
-import { FRESH_TEXT, freshOf, rowMark } from '../../model/derive.ts'
-import { plural, when, forPage } from '../../model/format.ts'
-import type { NextRow, Owner } from '../../model/types.ts'
+import { FRESH_TEXT, freshOf, rowMark } from '../../../model/derive.ts'
+import { plural, when, forPage } from '../../../model/format.ts'
+import type { NextRow, Owner } from '../../../model/types.ts'
 import { S, U, V, cardOf, env } from '../../state/store.ts'
 import { card } from '../classic/card.ts'
 import { av, rowState } from '../classic/parts.ts'

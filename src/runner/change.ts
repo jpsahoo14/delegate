@@ -8,6 +8,7 @@ import { deployMoved, prMoved, prOf, prTarget, sameVote, type BuildProbe } from 
 import { MAY_REVIEW, roleOn, roleWhy } from './review-gate.ts'
 import { isDeploy } from '../core/deploy.ts'
 import { callKey, ledgerRec, madeBefore } from './ledger.ts'
+import { staleCatalog } from './catalog.ts'
 export { madeBefore }
 
 // Calls one tool on one of the owner's tool servers.
@@ -141,6 +142,8 @@ export const mcpCaller = (cfg: Config): Caller => async (server, tool, args) => 
 	const mcp = clientFor({ ...s, command: s.command })
 	try {
 		const bad = await mcp.argsProblem(tool, args)
+		// A tool the server no longer has: its list is read again before the next run is given tools (#17).
+		if (bad?.includes('has no tool')) staleCatalog(server)
 		if (bad) throw new Error(bad)
 		return await mcp.call(tool, args)
 	} finally { await mcp.close().catch(() => undefined) }

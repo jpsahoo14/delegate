@@ -1,5 +1,5 @@
 // Small pieces every tab uses: the button, a key, an avatar, a list's heading, and a row's working state.
-import type { Who } from '../../model/types.ts'
+import type { Who } from '../../../model/types.ts'
 import { S, env, peek } from '../../state/store.ts'
 import { esc, html, raw, type H } from '../html.ts'
 import { I } from '../icons.ts'

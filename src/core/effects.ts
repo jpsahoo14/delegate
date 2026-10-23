@@ -1,4 +1,5 @@
 import { site } from './site.ts'
+import { classifyTool, type ToolInfo } from './tool-class.ts'
 import type { Call, Config, Effect, PrFacts, Workflow } from './types.ts'
 import { NAME } from '../brand.ts'
 import { DEPLOY, deployLine, deployRefusal, isDeploy, isPipelineTool, pipelineOf, ringParts, targetOf } from './deploy.ts'
@@ -34,16 +35,15 @@ export const forbidden = (c: Call) => /delete/i.test(c.tool) || never(c.args, pr
 
 // A read tool never writes: a `*_write` tool, a pipeline write or run, or a whole server (every tool it has) would give a worker
 // a change before the owner's ok, outside every gate here. servers: the tool servers' names (owned work, round 2 P2-1).
-// Other servers name their writes by verb: SendMessage, createFolder, do_action, kusto_command (round 3 P2-1).
-const WRITE_VERBS = new Set(['send', 'create', 'update', 'delete', 'cancel', 'accept', 'tentatively', 'decline', 'forward', 'reply', 'move', 'rename', 'share', 'upload', 'set', 'add', 'remove', 'flag', 'post', 'reactivate', 'request', 'do', 'ingest', 'copy', 'resolve'])
-const verbWrite = (tool: string) => {
-	const name = tool.replace(/^[^-]*-/, '').replace(/[:(].*$/, '')
-	const words = name.replace(/([a-z])([A-Z])/g, '$1_$2').toLowerCase().split('_').filter(Boolean)
-	return WRITE_VERBS.has(words[0] ?? '') || (words[0] === 'kusto' && ['command', 'ingest'].includes(words[1] ?? ''))
-}
-export function unsafeRead(tools: string[], servers: string[]): string | undefined {
+// The verdict is the classifier's (#17), with the server's own listing when there is one, so the two never disagree.
+export function unsafeRead(tools: string[], servers: string[], info?: (server: string, tool: string) => ToolInfo | undefined): string | undefined {
 	const whole = (t: string) => t === '*' || servers.includes(t.replace(/(?:-\*|\(\*\))$/, ''))
-	const t = tools.find(t => /_write(?:[:(]|$)/i.test(t) || /pipelines?_write|run_?pipeline/i.test(t) || whole(t) || verbWrite(t))
+	const write = (t: string) => {
+		const base = t.replace(/[:(].*$/, ''), server = servers.filter(s => base.startsWith(`${s}-`)).sort((a, b) => b.length - a.length)[0] ?? base.split('-')[0]
+		const tool = base.startsWith(`${server}-`) ? base.slice(server.length + 1) : base
+		return classifyTool(server, info?.(server, tool) ?? { name: tool }).cls === 'write'
+	}
+	const t = tools.find(t => whole(t) || write(t))
 	return t && `${t} is never a read tool: it can change things, and workers would hold it before your ok. Remove it from the read tools in setup`
 }
 // A refusal of the owner's setup (a write tool as a read tool, a shell in a clone, a tool the AI CLI cannot name) is the

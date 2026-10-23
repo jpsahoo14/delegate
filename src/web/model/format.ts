@@ -1,7 +1,7 @@
 // Words and times as the page says them. Pure: the same input gives the same text.
 import type { Who } from './types.ts'
-import { time } from '../../react/domain/time.ts'
-export { time, when } from '../../react/domain/time.ts'
+import { time } from '../react/domain/time.ts'
+export { time, when } from '../react/domain/time.ts'
 
 export const first = (n: string | undefined) => String(n || 'Someone').split(' ')[0]
 export const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? '' : 's'}`

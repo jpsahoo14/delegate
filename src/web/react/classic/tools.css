@@ -168,3 +168,8 @@
 	.classic-experience :is(.ct-num-column,.ct-num-meter,.ct-switch-track,.ct-fact-check){border:1px solid CanvasText}
 	.classic-experience .ct-fact>input:checked+.ct-fact-check{background:Highlight;color:HighlightText}
 }
+.classic-experience #setting-tools>.ct-setting-row{margin-bottom:10px}
+.classic-experience .tools-server>summary{cursor:pointer}
+.classic-experience .tools-server .ct-setting-rows{margin-top:6px}
+.classic-experience .tools-server h4{font-size:12px;font-weight:600;color:var(--text-3);margin:12px 0 0}
+.classic-experience .tools-server-line{margin:0;font-size:13px;color:var(--text-2)}

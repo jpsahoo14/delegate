@@ -1,5 +1,5 @@
 // The live page's controls: delegated events, keys, the address, the countdowns, and fresh data. The snapshot has none.
-import { mmss } from '../model/format.ts'
+import { mmss } from '../../model/format.ts'
 import { poll } from '../io/poll.ts'
 import * as A from '../state/actions.ts'
 import { S, U, V, env } from '../state/store.ts'

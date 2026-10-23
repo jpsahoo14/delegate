@@ -11,11 +11,12 @@ import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Config, DeployTarget, Rule } from '../core/types.ts'
 import type { Store } from '../store/state.ts'
-import { here } from '../store/state.ts'
+import { experienceOf, here } from '../store/state.ts'
 import { CMD, NAME } from '../brand.ts'
 import { UPDATE_EVERY_MIN } from '../os/autoupdate.ts'
 import { nameFor, runLines, runsOf } from '../core/runinfo.ts'
 import { habitUndoable, undoMs } from '../runner/habits.ts'
+import { cachedCatalogs, denied, listable, readCatalog, workerTools } from '../runner/catalog.ts'
 
 // The settings the page can change, in one table: how each is shown, read, checked, and saved (B13).
 // Each saves to the shared config (or profile.md) in the storage folder, so every machine and the next cycle use it.
@@ -24,6 +25,8 @@ type Kind = 'text' | 'line' | 'list' | 'number' | 'choice' | 'bool' | 'time' | '
 export type Section = 'learned' | 'you' | 'replies' | 'timing' | 'system'
 type Spec = {
 	key: string; label: string; help: string | ((cfg: Config) => string); kind: Kind; section: Section; options?: { value: string; label: string }[]; advanced?: true
+	// A read tool's server, shown under Tools your drafts may read; '*' for the whole list.
+	group?: string
 	read: (cfg: Config, store: Store) => string
 	parse: (raw: string, store: Store) => Parsed
 	// A setting that must be checked against another system before it is saved (owned work: a deploy target).
@@ -149,14 +152,66 @@ const changeSpecs = (cfg: Config): Spec[] => changeChoices(cfg).map(entry => ({
 		if (raw !== 'true' && raw !== 'false') return { ok: false, why: 'Turn it on or off.' }
 		const cfg = store.config(), on = raw === 'true'
 		// A read tool is never also a write tool: workers would hold it before the owner's ok (setup's rule).
-		if (on && cfg.agent.tools.includes(toolOf(entry))) return { ok: false, why: `${toolOf(entry)} is one of the read tools workers hold, so it cannot also be a change. Remove it from the read tools in setup first.` }
+		if (on && workerTools(cfg, 'job').includes(toolOf(entry))) return { ok: false, why: `${toolOf(entry)} is one of the read tools workers hold, so it cannot also be a change. Remove it from the read tools in setup first.` }
 		return { ok: true, save: c => ({ ...c, agent: { ...c.agent, effectTools: on ? [...new Set([...(c.agent.effectTools ?? []), entry])] : (c.agent.effectTools ?? []).filter(x => x !== entry) } }) }
 	},
 }))
-// Every setting the page can change: the table, with the change switches after "Where Delegate may deploy".
-const specsOf = (cfg: Config): Spec[] => { const i = SETTINGS.findIndex(x => x.key === 'deployTo') + 1; return [...SETTINGS.slice(0, i), ...changeSpecs(cfg), ...SETTINGS.slice(i)] }
+// Every setting the page can change: the table, with the change switches after "Where Delegate may deploy", then the read tools.
+const specsOf = (cfg: Config): Spec[] => { const i = SETTINGS.findIndex(x => x.key === 'deployTo') + 1; return [...SETTINGS.slice(0, i), ...changeSpecs(cfg), ...toolSpecs(cfg), ...SETTINGS.slice(i)] }
 
-export type SettingRow = { key: string; label: string; help: string; kind: Kind; section: Section; value: string; options?: { value: string; label: string }[]; advanced?: true }
+// Tools your drafts may read (#17, design §5), from each server's catalog: a switch per read (on unless denied), and each tool the
+// classifier can't place with Allow as read. A write is never offered. Before the tools migration there is no list to switch.
+const withDeny = (c: Config, deny: string[]) => ({ ...c, agent: { ...c.agent, deny: [...new Set(deny)] } })
+function toolSpecs(cfg: Config): Spec[] {
+	if (!cfg.agent.deny) return []
+	const out: Spec[] = []
+	for (const [server, cat] of Object.entries(cachedCatalogs(cfg))) {
+		if (cfg.agent.pendingTrim?.includes(server)) continue
+		for (const t of cat.tools.filter(x => x.cls === 'read')) {
+			const name = `${server}-${t.name}`
+			out.push({ key: `read:${name}`, label: t.name, help: t.description ?? '', kind: 'switch', section: 'you', group: server,
+				read: c => String(!denied(c.agent.deny ?? [], name)),
+				saved: raw => raw === 'true' ? `${t.name} is on: drafts may read with it.` : `${t.name} is off: drafts won't be given it.`,
+				parse: raw => raw === 'true' || raw === 'false' ? { ok: true, save: c => withDeny(c, raw === 'true' ? (c.agent.deny ?? []).filter(d => d !== name) : [...(c.agent.deny ?? []), name]) } : { ok: false, why: 'Turn it on or off.' } })
+		}
+		for (const t of cat.tools.filter(x => x.cls === 'unknown')) {
+			const name = `${server}-${t.name}`
+			out.push({ key: `allow:${name}`, label: t.name, help: c => `${t.description ? `${t.description} ` : ''}${(c.agent.allowRead ?? []).includes(name) ? 'You allowed it as a read: drafts call it without asking you.' : `Not used: ${t.why}.`}`, kind: 'switch', section: 'you', group: server,
+				read: c => String((c.agent.allowRead ?? []).includes(name)),
+				saved: raw => raw === 'true' ? `${t.name} is allowed: drafts may call it without asking you.` : `${t.name} is not used any more.`,
+				parse: raw => {
+					if (raw !== 'true' && raw !== 'false') return { ok: false, why: 'Allow it or not.' }
+					// Checked again at save: a server may have changed the tool since the page was drawn.
+					const now = readCatalog(server)?.tools.find(x => x.name === t.name)
+					if (raw === 'true' && now?.cls === 'write') return { ok: false, why: `${t.name} changes things (${now.why}), so it is never a read tool.` }
+					const allow = (c: Config) => raw === 'true' ? [...new Set([...(c.agent.allowRead ?? []), name])] : (c.agent.allowRead ?? []).filter(x => x !== name)
+					return { ok: true, save: c => ({ ...c, agent: { ...c.agent, allowRead: allow(c).length ? allow(c) : undefined, ...(raw === 'true' ? { deny: (c.agent.deny ?? []).filter(d => d !== name) } : {}) } }) }
+				} })
+		}
+	}
+	if (cfg.agent.toolsTrimmed || cfg.agent.deny.length) out.push({ key: 'toolsAll', label: 'Allow all read tools', help: 'Turns every read tool on again, on every server, including ones a server adds later.', kind: 'switch', section: 'you', group: '*',
+		read: () => 'false', saved: () => 'Drafts may read with every read tool again.',
+		parse: raw => raw === 'true' ? { ok: true, save: c => { const { toolsTrimmed: _t, ...agent } = c.agent; return { ...c, agent: { ...agent, deny: [] } } } } : { ok: false, why: 'Nothing to undo: turn single tools off instead.' } })
+	return out
+}
+// Per server: how many reads drafts get, and what the owner should know (it can't be listed; a switched name it no longer offers).
+export type ToolsView = { servers: { name: string; reads: number; on: number; unknown: number; line?: string; gone: string[] }[] }
+export function toolsView(cfg: Config): ToolsView | undefined {
+	if (!cfg.agent.deny) return undefined
+	const cats = cachedCatalogs(cfg), names = new Set(Object.keys(cats))
+	const when = (iso?: string) => (iso ? new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '')
+	const servers = listable(cfg).map(([name]) => {
+		const c = cats[name], reads = c?.tools.filter(t => t.cls === 'read') ?? [], offered = new Set(c?.tools.map(t => `${name}-${t.name}`) ?? [])
+		const gone = c?.tools.length ? [...(cfg.agent.deny ?? []), ...(cfg.agent.allowRead ?? [])].filter(t => t.startsWith(`${name}-`) && !t.endsWith('-*') && !offered.has(t)) : []
+		const line = cfg.agent.pendingTrim?.includes(name) ? `Waiting for ${name} to answer, to keep your shorter list; until then drafts use your old list for it.`
+			: !c?.tools.length ? `Couldn't list ${name}'s tools${c?.error ? ` (${c.error})` : ''}; drafts can't use them until it answers.`
+			: c.error ? `Couldn't list ${name}'s tools since ${when(c.errorAt)}; using the list from ${when(c.at)}.` : undefined
+		return { name, reads: reads.length, on: reads.filter(t => !denied(cfg.agent.deny ?? [], `${name}-${t.name}`)).length, unknown: c?.tools.filter(t => t.cls === 'unknown').length ?? 0, ...(line ? { line } : {}), gone: names.has(name) ? gone : [] }
+	})
+	return { servers }
+}
+
+export type SettingRow = { key: string; label: string; help: string; kind: Kind; section: Section; value: string; options?: { value: string; label: string }[]; advanced?: true; group?: string }
 export type ReadOnlyRow = { label: string; value: string; how: string }
 
 // What Delegate knows about the owner and acts on, in one place (R-HAB-03): standing instructions, said or learned, and suggestions.
@@ -199,16 +254,18 @@ export function aboutText(store: Store): string {
 	].join('\n')
 }
 
-export function settingsView(store: Store, experience?: 'classic' | 'new'): { rows: SettingRow[]; fixed: ReadOnlyRow[]; about: AboutView; models: ModelsView } {
+export function settingsView(store: Store, experience?: 'classic' | 'new'): { rows: SettingRow[]; fixed: ReadOnlyRow[]; about: AboutView; models: ModelsView; tools?: ToolsView } {
 	const cfg = store.config()
 	// The new experience names its places differently: Waiting, and the foot of Now (PM review of N1a, 7).
-	const words = (t: string) => (experience ?? store.ui().ui) !== 'classic' ? t.replace('Waiting on others', 'Waiting').replace('Check for updates on Home', 'Check for updates at the foot of Now') : t
+	const words = (t: string) => (experience ?? experienceOf(store.ui())) !== 'classic' ? t.replace('Waiting on others', 'Waiting').replace('Check for updates on Home', 'Check for updates at the foot of Now') : t
 	return {
-		rows: specsOf(cfg).map(s => ({ key: s.key, label: words(s.label), help: words(typeof s.help === 'function' ? s.help(cfg) : s.help), kind: s.kind, section: s.section, value: s.read(cfg, store), options: s.options, ...(s.advanced ? { advanced: true as const } : {}) })),
+		rows: specsOf(cfg).map(s => ({ key: s.key, label: words(s.label), help: words(typeof s.help === 'function' ? s.help(cfg) : s.help), kind: s.kind, section: s.section, value: s.read(cfg, store), options: s.options, ...(s.advanced ? { advanced: true as const } : {}), ...(s.group ? { group: s.group } : {}) })),
+		...((t => (t ? { tools: t } : {}))(toolsView(cfg))),
 		about: aboutView(store),
 		models: modelsView(store),
 		fixed: [
-			{ label: 'Tools drafts may read', value: cfg.agent.tools.filter(t => !['view', 'glob', 'grep'].includes(t)).join(', ') || 'none', how: `Say "set up ${CMD}" and change the tools step.` },
+			// Once the tools list is per tool (#17), it is switched in Tools your drafts may read instead.
+			...(cfg.agent.deny ? [] : [{ label: 'Tools drafts may read', value: workerTools(cfg, 'job').filter(t => !['view', 'glob', 'grep'].includes(t)).join(', ') || 'none', how: `Say "set up ${CMD}" and change the tools step.` }]),
 			// Changes allowed in setup that Settings never offers as a switch, such as a whole tool: shown, changed only in setup.
 			...((x => x.length ? [{ label: 'Other changes setup allows (each after your ok)', value: x.map(changeName).join('; '), how: `Say "set up ${CMD}" and change the tools step.` }] : [])((cfg.agent.effectTools ?? []).filter(e => !offerable(e)))),
 			{ label: 'Reads your chats from', value: cfg.runner ?? 'the machine where setup last finished', how: `On another machine, say "move ${NAME} here".` },

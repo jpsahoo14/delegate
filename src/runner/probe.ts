@@ -119,7 +119,8 @@ export async function probeBuilds(store: Store, probe: BuildProbe | undefined, n
 // A pull request link in an item: its project, repository, and number (Azure DevOps needs all three to read it).
 const PR_LINK = /https?:\/\/(?:[\w-]+\.visualstudio\.com|dev\.azure\.com\/[\w-]+)\/([^/\s]+)\/_git\/([^/\s?#]+)\/pullrequest\/(\d+)/i
 // remote: the repo by its remote, from the PR's own link, never the AI's key (owned work).
-export type PrRef = { project: string; repo: string; id: number; remote?: string }
+// url: the PR's own web link, as the item has it.
+export type PrRef = { project: string; repo: string; id: number; remote?: string; url?: string }
 // The ask's own PR wins over an old job. A pronoun follow-up can use the asker's earlier link, never another sender's PR.
 export function prTarget(store: Store, w: Workflow): number | undefined {
 	const job = w.job ? store.job(w.job) : undefined
@@ -142,7 +143,7 @@ export function prRefFor(store: Store, w: Workflow, target: number): PrRef | und
 	const job = w.job ? store.job(w.job) : undefined
 	const sources = [...(w.draft?.sources ?? []), ...(job?.result?.reply?.sources ?? [])].map(s => s.ref)
 	const texts = [w.lastAsk, job?.goal, ...(job?.asks ?? []), ...(w.work?.links ?? []), ...store.thread(w.id).map(m => m.text), ...sources]
-	for (const t of texts) for (const m of (t ?? '').matchAll(new RegExp(PR_LINK.source, 'gi'))) if (Number(m[3]) === target) return { project: decodeURIComponent(m[1]), repo: decodeURIComponent(m[2]), id: target, remote: remoteOf(m[0]) }
+	for (const t of texts) for (const m of (t ?? '').matchAll(new RegExp(PR_LINK.source, 'gi'))) if (Number(m[3]) === target) return { project: decodeURIComponent(m[1]), repo: decodeURIComponent(m[2]), id: target, remote: remoteOf(m[0]), url: m[0] }
 	const c = (w.effects ?? []).find(e => isVote(e.call) && prIdOf(e.call) === target)?.call
 	return c?.args.project && c.args.repositoryId ? { project: String(c.args.project), repo: String(c.args.repositoryId), id: target } : undefined
 }

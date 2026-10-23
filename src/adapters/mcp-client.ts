@@ -5,15 +5,20 @@ import { join } from 'node:path'
 import type { Config } from '../core/types.ts'
 import { inTemp, readJson } from '../store/fs.ts'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
+import { ToolListChangedNotificationSchema } from '@modelcontextprotocol/sdk/types.js'
+import { classifyTool, type ToolInfo } from '../core/tool-class.ts'
 
 const sessionLost = (error: unknown) => {
 	if (typeof error === 'object' && error !== null && 'code' in error && error.code === -32001) return true
 	return /-32001\b|Session not found/i.test(error instanceof Error ? error.message : String(error))
 }
 // Only reads are called again after a lost session: a send or a change may have landed although its answer was lost
-// (bug 10-23 R4: a rule reply posted twice). Anything not on this list is treated as a write.
-const ADO_READS = new Set(['repo_pull_request', 'repo_pull_request_thread', 'repo_repository', 'repo_file', 'repo_branch', 'repo_search_commits', 'pipelines_build', 'pipelines_build_log', 'pipelines_definition', 'pipelines_run', 'pipelines_artifact', 'wit_work_item', 'wit_query', 'wit_backlog', 'search_wiki', 'search_workitem', 'search_code', 'core_list_projects', 'core_list_project_teams', 'wiki', 'work', 'advsec_alerts'])
-export const readOnlyTool = (tool: string) => /^(?:List|Get|Search|Find|Read|Fetch)[A-Z_]|^(?:list|get|search|find|read|fetch)[A-Z_]|^fetch_blob$|^readSmallBinaryFile$/.test(tool) || ADO_READS.has(tool)
+// (bug 10-23 R4: a rule reply posted twice). The classifier decides (#17), with the server's own listing when this client has it;
+// a tool its server marks read-only is repeated only when it is also marked idempotent (design §6). Anything else is a write.
+export const readOnlyTool = (tool: string, info?: ToolInfo) => {
+	const t = info ?? { name: tool }
+	return classifyTool('', t).cls === 'read' && (t.annotations?.readOnlyHint !== true || t.annotations.idempotentHint === true)
+}
 // A write whose answer was lost: it may or may not have been made. Never repeated automatically; the caller reads back.
 export class LostResponse extends Error {
 	readonly tool: string
@@ -25,14 +30,25 @@ export class McpClient {
 	private connecting?: Promise<void>
 	private readonly command: string[]
 	private readonly env?: Record<string, string>
-	// env: the whole environment for the server, when its config names variables of its own.
-	constructor(command: string[], env?: Record<string, string>) { this.command = command; this.env = env }
+	private readonly name?: string
+	// The catalog's hook: a server that says its tool list changed is listed again (#17, design §2).
+	static onListChanged?: (server: string) => void
+	// env: the whole environment for the server, when its config names variables of its own. name: the server's name in the config.
+	constructor(command: string[], env?: Record<string, string>, name?: string) { this.command = command; this.env = env; this.name = name }
 
 	// One connection, shared by calls that start together; two connects on one client throw.
 	private connect(): Promise<void> {
 		const [cmd, ...rest] = this.command
+		if (!this.connecting && this.name) { const name = this.name; this.client.setNotificationHandler(ToolListChangedNotificationSchema, async () => { McpClient.onListChanged?.(name) }) }
 		this.connecting ??= this.client.connect(new StdioClientTransport({ command: cmd, args: rest, stderr: 'pipe', ...(this.env ? { env: this.env } : {}) })).catch(e => { this.connecting = undefined; throw e })
 		return this.connecting
+	}
+
+	// The server's own listing of a tool, read once, for deciding whether a call may be repeated.
+	private infos?: Map<string, ToolInfo>
+	private async retryable(tool: string): Promise<boolean> {
+		if (!this.infos) { try { this.infos = new Map((await this.listAll()).tools.map(t => [t.name, t])) } catch { this.infos = new Map() } }
+		return readOnlyTool(tool, this.infos.get(tool))
 	}
 
 	private async request(tool: string, args: Record<string, unknown>, retry = true): Promise<Awaited<ReturnType<Client['callTool']>>> {
@@ -44,14 +60,14 @@ export class McpClient {
 		} catch (error) {
 			if (!retry || !sessionLost(error)) throw error
 			await this.reconnect(client)
-			if (!readOnlyTool(tool)) throw new LostResponse(tool, error)
+			if (!(await this.retryable(tool))) throw new LostResponse(tool, error)
 			console.warn(`MCP session lost for ${tool}; reconnecting once.`)
 			return this.request(tool, args, false)
 		}
 		const text = (result.content as { type: string; text?: string }[] | undefined)?.map(c => c.text ?? '').join('') ?? ''
 		if (retry && result.isError && sessionLost(text)) {
 			await this.reconnect(client)
-			if (!readOnlyTool(tool)) throw new LostResponse(tool, text)
+			if (!(await this.retryable(tool))) throw new LostResponse(tool, text)
 			console.warn(`MCP session lost for ${tool}; reconnecting once.`)
 			return this.request(tool, args, false)
 		}
@@ -81,6 +97,20 @@ export class McpClient {
 		const missing = (schema.required ?? []).filter(k => args[k] === undefined || args[k] === '')
 		if (!unknown.length && !missing.length) return undefined
 		return `${tool} would reject it (${[unknown.length ? `it does not take ${unknown.join(', ')}` : '', missing.length ? `it needs ${missing.join(', ')}` : ''].filter(Boolean).join('; ')}; it takes ${known.join(', ')}), so it was not called`
+	}
+
+	// Every tool the server lists, page by page, with its name and version (#17: the catalog classifies them).
+	async listAll(): Promise<{ server?: { name: string; version: string }; tools: ToolInfo[] }> {
+		await this.connect()
+		const tools: ToolInfo[] = []
+		let cursor: string | undefined
+		do {
+			const page = await this.client.listTools(cursor ? { cursor } : undefined)
+			tools.push(...page.tools.map(t => ({ name: t.name, description: t.description, annotations: t.annotations as ToolInfo['annotations'], inputSchema: t.inputSchema as ToolInfo['inputSchema'] })))
+			cursor = page.nextCursor
+		} while (cursor)
+		const v = this.client.getServerVersion()
+		return { server: v ? { name: v.name, version: v.version } : undefined, tools }
 	}
 
 	// The text parts as sent, for tools whose result is not JSON (such as a file's base64).
@@ -139,8 +169,8 @@ export function toolServers(cfg: Config): Record<string, ServerSpec> {
 // A client for a server with a command, started as its config says: ${VAR} taken from this process's environment,
 // and the whole environment, as the AI CLI starts it, with its own env on top (review 10-21b P2-2, 10-21c P2-1).
 const expand = (v: string) => v.replace(/\$\{(\w+)\}/g, (_, k: string) => process.env[k] ?? '')
-export function clientFor(s: ServerSpec & { command: string }): McpClient {
+export function clientFor(s: ServerSpec & { command: string }, name?: string): McpClient {
 	const own = Object.fromEntries(Object.entries(s.env ?? {}).map(([k, v]) => [k, expand(String(v))]))
 	const env = Object.fromEntries(Object.entries({ ...process.env, ...own }).filter((x): x is [string, string] => x[1] !== undefined))
-	return new McpClient([expand(s.command), ...(s.args ?? []).map(expand)], env)
+	return new McpClient([expand(s.command), ...(s.args ?? []).map(expand)], env, name)
 }

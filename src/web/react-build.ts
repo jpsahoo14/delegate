@@ -9,9 +9,10 @@ export function reactAssets(root = ROOT): Set<string> {
 	return new Set(Object.values(manifest).flatMap(e => [e.file, ...(e.css ?? []), ...(e.assets ?? [])]))
 }
 
-export function reactPage(token: string, root = ROOT): string {
+// experience: which of New and Classic opens when the address names no screen (saved per machine).
+export function reactPage(token: string, root = ROOT, experience: 'new' | 'classic' = 'new'): string {
 	reactAssets(root)
-	return readFileSync(join(directory(root), 'index.html'), 'utf8').replaceAll('__PAGE_TOKEN__', encodeURIComponent(token)).replace(
+	return readFileSync(join(directory(root), 'index.html'), 'utf8').replaceAll('__PAGE_TOKEN__', encodeURIComponent(token)).replace(/<html\b/, `<html data-experience="${experience === 'classic' ? 'classic' : 'new'}"`).replace(
 		/(src|href)="\.\/([^"]+)"/g,
 		(_, attribute: string, file: string) => `${attribute}="/web-react/${file}?t=${encodeURIComponent(token)}"`,
 	)

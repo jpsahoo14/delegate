@@ -1,7 +1,7 @@
 // The classic experience: the page as it has been since the mockup (design-spec/mockup). See view/experience.ts for the contract.
-import { plural } from '../../model/format.ts'
-import { tabsOf } from '../../model/derive.ts'
-import type { AutoForm } from '../../model/types.ts'
+import { plural } from '../../../model/format.ts'
+import { tabsOf } from '../../../model/derive.ts'
+import type { AutoForm } from '../../../model/types.ts'
 import { S, V, env, openCards } from '../../state/store.ts'
 import type { Experience } from '../experience.ts'
 import { esc, html, raw, str, type H } from '../html.ts'

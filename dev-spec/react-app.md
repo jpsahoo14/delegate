@@ -1,5 +1,154 @@
 # React preview
 
+## Generic read tools, step 6: a review that can't read a file (#17)
+
+**Prompt.** `job.md` now tells review workers: when the PR's change list leaves out a file's content (too large, binary or
+generated), read the file at the PR's head commit with the repository's file-read tool, such as `repo_file`, before deciding it
+can't be reviewed. When nothing can read it, the blocker names the file and its size.
+
+**Blocked card (queue #17 b).** A job that runs out of routes with no question and no reply now becomes a failed run, like #11's
+card (`runFailed` gains `tried` and `job`):
+- The status is one line, `Couldn't finish: <why>`, never the whole blocker.
+- The card says "Couldn't finish the review of PR N at <time>: <why>." with:
+  - **Review it yourself**, which opens the PR (`PrRef.url`);
+  - a "What it tried (n)" fold;
+  - when read tools are off, "Some read tools are off …" with **Allow all read tools** (the Settings save) and a link to Settings.
+- Actions: **Try again** is primary, then Later and Skip. A review offers no "Write the reply yourself" and no answer box.
+- Try again queues the job again, with its tries reset and a fresh session. It logs `run-retried` with the job.
+
+Proof (fictional Temp roots, real `migrate()` and tick, stub PR reader, fictional `ado` stub server whose `get_changes` omits a
+1.2 MB threat model and whose `repo_file` returns it). The stub worker (quota) calls the server only through the tools in its
+`--available-tools`, built by the real `buildArgs`.
+- **Old defaults, migrated:** the job was offered `ado-repo_file` and read `/models/invite-register.tm7` at c0ffee1 (the server
+  log and the session log both show `ado-repo_file`). The review finished with "Reviewed it. One point: …".
+- **Hand-trimmed list:** the job was not offered `repo_file` and stopped after 2 runs with the blocked card, the same in New and
+  Classic at 1280 light and 400 dark: the reason line, the PR link, What it tried (4), Allow all read tools, Try again and Later,
+  with Skip under ⋯ and no answer box. Allow all read tools cleared `deny`. Try again re-queued the job, which read the file, and
+  the card showed the finished review.
+
+## Generic read tools, step 5: Settings › Tools your drafts may read (#17)
+
+A new block under "You and your replies", after "Changes Delegate may propose", in both New and Classic. It is the shared
+`features/ToolsSettings.tsx`; each experience passes its own switch row and class names (design §5).
+
+What it shows, from each server's catalog (`settings.ts` `toolSpecs` and `toolsView`):
+- Each server is folded to one line, such as "ado: 10 of 12 read tools on · 1 not placed". Opened, it has a switch per read;
+  off adds it to `agent.deny`.
+- Each tool it can't place shows its description and reason, with **Allow as read**. Allowing first asks inline: "Drafts will be
+  able to call it without asking you." Allow adds it to `allowRead`, and the row becomes a switch. A tool that has become a write
+  since the page was drawn is refused at save.
+- A deny or allow entry the server no longer offers shows as "Not offered by ado now: …".
+- A server that can't be listed shows a plain line (the MCP error code is stripped).
+- When the list is trimmed or anything is off, **Allow all read tools** clears `deny` and `toolsTrimmed`.
+
+Tool rows carry a `group` (the server) in the Settings contract, so they stay out of the "Changes" switches. The old fixed row
+"Tools drafts may read" shows only before the migration.
+
+Proof (Edge, fictional Temp root, stub worker (quota)):
+- **Servers:** fictional acme-stub, ado, teams, and a down globex-docs.
+- **New:** Allow as read on frob went through Cancel (nothing saved), then Allow. The config got `allowRead`, the next run's tools
+  included frob, and the row turned into a switch whose help says it was allowed.
+- **Switch round trip:** list_things off removed it from the run's tools; on restored it.
+- **Classic:** Allow all read tools gave `deny []`, put ado wiki back in the run's tools, and the button went away.
+- **Both:** the down server's line showed, ado showed "Not offered by ado now: old_tool", and dark at 400 px had no horizontal
+  overflow.
+
+## Generic read tools, step 4: the tools migration (#17)
+
+The data schema is now 2. `admin.ts migrate` (1 → 2) backs up `config.json` as `config.backup-<date>.json` in the root, runs
+`tools-migrate.ts` `migrateTools` and logs `tools-migrated` (design §3). An old `agent.tools` allow list is converted:
+- Built-ins (no server prefix) stay in `tools`.
+- **All defaults present:** for each server whose old setup defaults (`OLD_READ_DEFAULTS` plus `site().read`, now data only) are
+  all in the list, the server gets every read. Tools the owner added go to `allowRead`.
+- **Hand-trimmed:** a server with a default missing keeps the owner's choice as `deny` (that server's catalog reads not in his
+  list), and the config gets `toolsTrimmed`.
+- **Not listed yet:** a trimmed server never listed on this machine goes to `pendingTrim`, with the old list in `trimmedFrom`.
+  Workers keep that server's old part, never all its reads. The tick settles it after the first listing (`finishTrim`, logged
+  `tools-migrated` `why: deferred`).
+
+The setup tools step now writes the new shape: built-ins plus `deny: []`. A list passed to the step, or an old one, is converted
+the same way. The step then lists the servers and says "N read tools from <servers>; M more it can't place wait for you in
+Settings". `READ_DEFAULTS` is gone from `setup.ts`. The Settings change switch and the "Tools drafts may read" row use
+`workerTools`.
+
+Proof (fictional Temp roots, real `migrate()` and tick, fictional `ado` and `teams` stub servers; stub worker (quota)):
+- **A** (old defaults plus `ado-repo_file`): `deny []`, `allowRead [ado-repo_file]`, a backup file, `tools-migrated
+  all-reads`, and jobs get all 12 ado reads. A second migrate said "Data is up to date."
+- **B** (no wiki tools, ado listed): deny holds repo_file, repo_branch, repo_repository, repo_search_commits, search_wiki and
+  wiki; `toolsTrimmed`; jobs get the 6 he kept.
+- **C** (same list, ado down): `pendingTrim [ado]` and the old 6 kept. A tick with ado still down changed nothing; a tick with ado
+  up wrote the same deny as B and logged `deferred`.
+- **D** (fresh setup tools step): built-ins, `deny []`, "14 read tools from ado, teams; 1 more it can't place …".
+
+## Generic read tools, step 3: runs get every read tool (#17)
+
+`catalog.ts` `workerTools(cfg, kind)` builds a run's read tools (design §2). It is used for reply runs (`dispatch` `runOne`,
+`promise`), what-next runs (`runAsk`) and jobs (`startJobs`, including execute jobs). `buildArgs` passes the list through
+unchanged. A run's tools are:
+- the owner's built-ins (`agent.tools`);
+- plus every **read** in the cached catalogs;
+- plus `agent.allowRead`;
+- minus `agent.deny` (`<server>-<tool>` or `<server>-*`);
+- minus `UNTRACKED` Teams reads for reply runs.
+
+A config with no `deny` (not migrated yet) keeps its old list exactly. While a server is in `pendingTrim`, it keeps only its part
+of the old list (`trimmedFrom`), never all its reads. `refuseStart` and the jobs and promise checks now run `unsafeRead` on that
+list, with each tool's own listing from the catalog. New optional config fields: `deny`, `allowRead`, `toolsTrimmed`,
+`pendingTrim`, `trimmedFrom`.
+
+Proof (fictional Temp roots, real tick, stub worker (quota), fictional `acme-stub` and `teams` servers, args from the real
+`buildArgs`):
+- **Migrated** (`deny: []`):
+  - The reply run got get_thing, list_things and repo_blob, and no teams reads.
+  - The review job also got teams-ListChats and SearchTeamsMessages.
+  - Neither run got thing_write, send_note, delete_all, frob or SendMessageToChat.
+- **Legacy:** each run got exactly the old list.
+- **Deny** get_thing and `teams-*`, with `allowRead` frob: get_thing and every teams tool were gone, and frob was added.
+- **`allowRead` thing_write:** the run was refused ("never a read tool") before it started.
+
+## Generic read tools, step 2: each server's tool catalog (#17)
+
+`src/runner/catalog.ts` lists each of the owner's tool servers that this machine can start (not Delegate's own servers, and not
+remote servers). It classifies every tool and caches the result in `LOCAL_DIR/catalog/<server>.json`, never in the synced root
+(design §2). The cache holds `serverInfo` name@version, a hash of the tool names, annotations and schemas, and a hash of the
+server's command and args.
+
+The tick lists servers while the chats are read and waits for the listing before `dispatch`. Under `NODE_TEST_CONTEXT` it lists
+nothing. A server is listed again when:
+- its cache is a day old;
+- its command or args changed;
+- it sent `notifications/tools/list_changed`;
+- a change called a tool it says it lacks ("has no tool" marks the cache stale).
+
+A failed listing keeps the last good list and waits 10 minutes before trying again. Health `catalog:<server>` then says "Couldn't
+list X's tools since <first failure>; using the list from <time>". A server never listed contributes no reads.
+
+The lost-session retry in `mcp-client.ts` no longer uses the `ADO_READS` list. It retries only a tool the classifier calls read,
+using the server's own listing. A tool annotated read-only is retried only when it is also annotated `idempotentHint`.
+
+Proof (fictional Temp root, real tick, stub worker (quota), fictional `acme-stub` server):
+- The first tick cached get_thing, list_things and repo_blob as read; thing_write, send_note and delete_all (falsely annotated
+  read-only) as write; frob as unknown.
+- A second tick did not list again.
+- With the server down and the cache stale, the list was kept, Health named both times, and the next tick did not retry.
+- Version 2.0.0 (new args) was listed again, added search_things and cleared Health.
+- A call to a missing tool marked the cache stale.
+- The retry rule allowed only list_things and repo_blob.
+
+## Generic read tools, step 1: one classifier for any MCP tool (#17)
+
+`src/core/tool-class.ts` `classifyTool(server, tool)` says whether any tool reads or changes things, with no server names in it
+(design: reviews/advisers/engineer-generic-read-tools.md §1). Annotations decide first (`readOnlyHint: false` or
+`destructiveHint` is a write); then any write evidence wins (a name ending in `write`, `run_pipeline`, a write verb as the first
+word, or as the second after a one-word namespace when the tool has no action enum, or any write action in its enum); then a read
+annotation, a read verb, or an action enum whose every value reads makes a read; anything else is unknown, never a read. A
+description that says it sends, creates, deletes, posts, approves, modifies or updates only demotes a read to unknown. `unsafeRead`
+now asks the classifier, so the backstop and the classifier never disagree. The old hard-coded lists live as test data in
+`src/core/tool-class.fixtures.json` (54 tools, with the action enums the servers list). Proof (script, no server): 0 mismatches;
+the design's stub tools came out as specified (`get_thing`, `list_things`, `repo_blob` read; `thing_write`, `send_note` and
+`delete_all`, which is annotated read-only, write; `frob` unknown); `wit_query` is unknown (its "wiql" action names no verb) and
+will be offered under Allow as read; the existing `unsafeRead` expectations in tick.test.ts all still hold.
+
 ## A person answering the owner is a Catch up line, never silent noise (queue-new #18)
 
 The reply prompt (`reply.md`) says a person writing to the owner in a 1:1, or answering his own message, is never noise: with no

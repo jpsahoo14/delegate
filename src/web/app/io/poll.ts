@@ -1,6 +1,6 @@
 // Fresh data every 20 s, faster while an Ask answer is on its way, with backoff while offline.
 import { sleep, type IO } from './transport.ts'
-import type { View } from '../model/types.ts'
+import type { View } from '../../model/types.ts'
 
 export type PollHooks = { since(): string | undefined; ui?(): 'new' | 'classic'; waiting(): boolean; got(v: View): void; lost(): void }
 export function poll(io: IO, every: number, o: PollHooks) {

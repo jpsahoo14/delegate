@@ -26,6 +26,8 @@ import { checkJobs, executeDirect, legacyEffects, realProcs, settleCompleted, st
 import type { Caller } from './change.ts'
 import { checkOpen } from './continue.ts'
 import { pruneSessionNotes } from './own.ts'
+import { refreshCatalogs } from './catalog.ts'
+import { finishTrim } from './tools-migrate.ts'
 import { stampPlaces } from './place.ts'
 import { writeSnapshot } from '../web/server.ts'
 import { notify } from '../os/notify.ts'
@@ -125,6 +127,8 @@ export async function tick(store: Store, deps: { source?: Source; run?: RunWorke
 		// Stopped means no reading or drafting, but runs already started are still watched and their budgets enforced (tester P1-10).
 		if (store.control().stopped) { closeProbe(); store.setHealth('source'); checkOpen(store, procs, procs.bootMs?.()); await checkJobs(store, src, cfg, procs, deps.probe); reschedule(store, cfg, false, t0); return { skipped: 'stopped', commands, answers, asks: 0, runs: 0, nudged: false, ms: Date.now() - t0 } }
 		planSweep(store)
+		// Each tool server's tools are listed while the chats are read, and are ready before any draft runs (#17). Tests list nothing.
+		const listing = process.env.NODE_TEST_CONTEXT ? Promise.resolve(0) : refreshCatalogs(store, cfg).catch(e => { store.log({ event: 'catalog-failed', error: String(e).slice(0, 300) }); return 0 })
 		let found: Awaited<ReturnType<typeof discover>>, asks: number
 		const before = store.chats()
 		// Chat cursors are saved only after a whole read, so a failure resumes in order.
@@ -150,6 +154,9 @@ export async function tick(store: Store, deps: { source?: Source; run?: RunWorke
 		const due = store.workflows().filter(w => dueWork(w, Date.now(), store))
 		for (const w of due) { askWhatNext(w, store); store.save(w) }
 		// The owner's own words may promise a vote: its PR is read through the same probe, then closed (Slice 3).
+		// A server whose part of an old, shorter tools list waited for a listing is settled before drafts get tools (#17).
+		await listing
+		finishTrim(store)
 		const runs = await dispatch(store, src, cfg, deps.run, probe).finally(closeProbe)
 		// Jobs run detached: the tick starts and checks them, and never waits (R-LNG-02).
 		const handedBack = checkOpen(store, procs, procs.bootMs?.())

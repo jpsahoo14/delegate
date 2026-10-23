@@ -1,9 +1,9 @@
 // Numbers: is Delegate handling more of the owner's asks, correctly, without missing any? (R-NEX-11, design-spec/north-star-tab.md)
 // Drawn from S.num, which state/numbers.ts fills when the tab opens and when its window changes. Every number is a link to
 // #numbers/<list>, which shows exactly the rows it counted, in Done's row format.
-import { RULES, WINDOWS, WINDOW_LABEL, listsOf, numbersModel, type Bar, type Card, type Link, type List, type NumbersModel, type RuleKey } from '../../../model/numbers.ts'
-import { when } from '../../../model/format.ts'
-import type { NumbersPage } from '../../../model/types.ts'
+import { RULES, WINDOWS, WINDOW_LABEL, listsOf, numbersModel, type Bar, type Card, type Link, type List, type NumbersModel, type RuleKey } from '../../../../model/numbers.ts'
+import { when } from '../../../../model/format.ts'
+import type { NumbersPage } from '../../../../model/types.ts'
 import { S, env } from '../../../state/store.ts'
 import { hasNumbers } from '../../../state/numbers.ts'
 import { esc, html, join, raw, type H } from '../../html.ts'

@@ -1,13 +1,13 @@
 // Typing, picking, and submitting: fields keep the owner's words in the page state; forms send them.
-import { RESULTS, primaryOf } from '../model/derive.ts'
-import type { ItemCard, KnowledgeCard } from '../model/types.ts'
+import { RESULTS, primaryOf } from '../../model/derive.ts'
+import type { ItemCard, KnowledgeCard } from '../../model/types.ts'
 import * as A from '../state/actions.ts'
 import { S, U, cardOf, env } from '../state/store.ts'
 import { current, render } from '../view/render.ts'
 import { focusOn } from './ui.ts'
 import { loadNumbers } from '../state/numbers.ts'
 import { switchUi } from './switch.ts'
-import type { WindowKey } from '../model/types.ts'
+import type { WindowKey } from '../../model/types.ts'
 
 export function onChange(e: Event) {
 	const t = e.target as HTMLInputElement

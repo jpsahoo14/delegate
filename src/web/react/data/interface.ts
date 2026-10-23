@@ -1,5 +1,4 @@
 import { create } from 'zustand'
-import { recoveryHref, switchVersion, type Version } from '../services/version.ts'
 import { useData } from './store.ts'
 import { useSettingsDrafts } from './screens.ts'
 import { usePageForms } from './forms.ts'
@@ -11,10 +10,8 @@ type Interface = {
 	themeChoice: 'auto' | 'light' | 'dark'
 	switching: boolean
 	error?: string
-	recoveryHref: string
 	toggleTheme: () => void
 	setThemeChoice: (choice: 'auto' | 'light' | 'dark') => void
-	chooseVersion: (version: Version) => Promise<void>
 	reloadPreview: () => void
 }
 
@@ -46,7 +43,6 @@ export const useInterface = create<Interface>((set, get) => ({
 	theme,
 	themeChoice: choice,
 	switching: false,
-	recoveryHref: recoveryHref(),
 	reloadPreview() { if (!hasUnsentWork() || window.confirm('Discard your edit and reload?')) location.reload() },
 	toggleTheme() {
 		const next = get().theme === 'dark' ? 'light' : 'dark'
@@ -57,15 +53,6 @@ export const useInterface = create<Interface>((set, get) => ({
 		document.documentElement.dataset.theme = theme
 		try { if (choice === 'auto') localStorage.removeItem('delegate-theme'); else localStorage.setItem('delegate-theme', choice) } catch { /* Storage is optional. */ }
 		set({ theme, themeChoice: choice })
-	},
-	async chooseVersion(version) {
-		if (get().switching || version === 'react') return
-		if (hasUnsentWork() && !window.confirm('Discard your edit?')) return
-		set({ switching: true, error: undefined })
-		try { await switchVersion(version) } catch (error) {
-			console.error('Could not save the app version:', error)
-			set({ switching: false, error: 'Could not switch versions. Your current version is unchanged. Check your connection and try again.' })
-		}
 	},
 }))
 window.matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', event => {

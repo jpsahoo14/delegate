@@ -44,7 +44,11 @@ export type ChatsState = { startedAt: string; seen: Record<string, string>; read
 type Lease = { machine: string; at: string }
 export type OpenWindow = { machine: string; pid: number; runId: string; since: string; closed?: boolean }
 export type Health = Record<string, { text: string; since: string; machine: string }>
-export type UiChoice = { ui: 'new' | 'classic' | 'react'; at?: string; tried?: string; noted?: true }
+export type Experience = 'new' | 'classic'
+// experience: New or Classic inside the React page, kept beside ui so an older build still reads ui as before.
+export type UiChoice = { ui: 'new' | 'classic' | 'react'; experience?: Experience; at?: string; tried?: string; noted?: true }
+// The experience to open: the saved one, else Classic for a machine that chose the old Classic, else New.
+export const experienceOf = (c: UiChoice): Experience => c.experience ?? (c.ui === 'classic' ? 'classic' : 'new')
 export type PageSubmission = {
 	id: string; answerId: string; fingerprint: string; item: string; rev: string; at: string
 	phase: 'prepared' | 'queued' | 'refused'; accepted: boolean; ids: string[]; text: string; processed?: boolean; status: number
@@ -251,13 +255,19 @@ export class Store {
 	// The "New experience" switch, one file per machine and never in seen/, whose marks merge across machines (R-NEX-01).
 	// A missing or bad file is classic. at: when it was last set; tried: when it was first turned on; noted: the first-time note was closed.
 	ui(): UiChoice {
-		try { const u = readJson<Partial<UiChoice>>(this.p('state', 'ui', `${this.machine}.json`), {}); return u && (u.ui === 'new' || u.ui === 'classic' || u.ui === 'react') ? { ui: u.ui, ...(typeof u.at === 'string' ? { at: u.at } : {}), ...(typeof u.tried === 'string' ? { tried: u.tried } : {}), ...(u.noted ? { noted: true } : {}) } : { ui: 'classic' } } catch { return { ui: 'classic' } }
+		try {
+			const u = readJson<Partial<UiChoice>>(this.p('state', 'ui', `${this.machine}.json`), {})
+			return u && (u.ui === 'new' || u.ui === 'classic' || u.ui === 'react') ? { ui: u.ui, ...(u.experience === 'new' || u.experience === 'classic' ? { experience: u.experience } : {}), ...(typeof u.at === 'string' ? { at: u.at } : {}), ...(typeof u.tried === 'string' ? { tried: u.tried } : {}), ...(u.noted ? { noted: true } : {}) } : { ui: 'classic' }
+		} catch { return { ui: 'classic' } }
 	}
-	saveUi(ui: UiChoice['ui'], noted = false): UiChoice {
+	// experience: only a real choice passes one (the experience switch, or choosing the old Classic or New); a note closed keeps it.
+	saveUi(ui: UiChoice['ui'], noted = false, experience?: Experience): UiChoice {
 		const was = this.ui(), at = new Date().toISOString()
-		const next: UiChoice = { ui, at, ...(was.tried || ui === 'new' ? { tried: was.tried ?? at } : {}), ...(was.noted || noted ? { noted: true } : {}) }
+		const exp = experience ?? was.experience
+		const next: UiChoice = { ui, ...(exp ? { experience: exp } : {}), at, ...(was.tried || ui === 'new' ? { tried: was.tried ?? at } : {}), ...(was.noted || noted ? { noted: true } : {}) }
 		this.w(this.p('state', 'ui', `${this.machine}.json`), next)
 		if (was.ui !== ui) this.log({ event: 'ui', from: was.ui, to: ui })
+		if (experienceOf(was) !== experienceOf(next)) this.log({ event: 'experience', from: experienceOf(was), to: experienceOf(next) })
 		return next
 	}
 	// "Check now" from any machine: one file per machine, so two machines never write the same file.

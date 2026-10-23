@@ -1,8 +1,8 @@
 // What the owner's clicks do to the page's state and to Delegate. Drawing is lent by the view through hooks (state/store.ts).
-import { KIND_KEY, dirty, freshOf, latest, rowMark } from '../model/derive.ts'
-import { find } from '../model/find.ts'
-import { automationInput, markCommand, rowWatchCommand, rowWatchOf, sheetWatchCommand } from '../model/forms.ts'
-import type { ItemCard, KnowledgeCard, Kind, NextRow, View } from '../model/types.ts'
+import { KIND_KEY, dirty, freshOf, latest, rowMark } from '../../model/derive.ts'
+import { find } from '../../model/find.ts'
+import { automationInput, markCommand, rowWatchCommand, rowWatchOf, sheetWatchCommand } from '../../model/forms.ts'
+import type { ItemCard, KnowledgeCard, Kind, NextRow, View } from '../../model/types.ts'
 import { sleep, type Result } from '../io/transport.ts'
 import { S, U, V, cardOf, env, hooks, openCards, queue, replaceCard, setView, syncOrder } from './store.ts'
 

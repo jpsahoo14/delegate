@@ -4,7 +4,7 @@ import { hashUi, pickUi, type Ui } from '../model/ui.ts'
 import { S, V, cardOf, env } from '../state/store.ts'
 import { render } from '../view/render.ts'
 import { say } from './ui.ts'
-import type { UiChoice } from '../model/types.ts'
+import type { UiChoice } from '../../model/types.ts'
 
 const KEY = 'delegate-ui'
 // The AI-chat panel may not allow storage: every use is optional.

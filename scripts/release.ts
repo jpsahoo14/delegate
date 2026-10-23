@@ -17,5 +17,5 @@ for (const f of ['.claude-plugin/plugin.json']) {
 	writeFileSync(p, readFileSync(p, 'utf8').replace(/"version":\s*"[^"]+"/, `"version": "${next}"`))
 }
 run('npm', ['run', 'build'])
-run('git', ['commit', '--quiet', '-am', `Release ${next}`])
+execFileSync('git', ['commit', '--quiet', '-am', `Release ${next}`], { cwd: root, stdio: 'inherit' })
 console.log(`Committed release ${next}. Publish it: npm run publish:github -- --tag`)

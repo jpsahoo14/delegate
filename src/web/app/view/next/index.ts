@@ -1,9 +1,9 @@
 // The new experience (R-NEX-02): Now, Done, Numbers, and Settings. Now sorts every open thread by whose move it is; Done, Settings,
 // and To learn are the classic views as they are. Behind the "New experience" switch. See view/experience.ts for the contract.
-import { newCount } from '../../model/derive.ts'
-import { when } from '../../model/format.ts'
+import { newCount } from '../../../model/derive.ts'
+import { when } from '../../../model/format.ts'
 import { newRoute } from '../../model/ui.ts'
-import type { AutoForm } from '../../model/types.ts'
+import type { AutoForm } from '../../../model/types.ts'
 import { S, V, env } from '../../state/store.ts'
 import type { Experience } from '../experience.ts'
 import { esc, html, raw, str, type H } from '../html.ts'

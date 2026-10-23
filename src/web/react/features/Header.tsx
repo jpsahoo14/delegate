@@ -6,10 +6,9 @@ import { when, nextCheck } from '../domain/time.ts'
 import type { Snapshot } from '../domain/contracts.ts'
 import { NAME } from '../brand.ts'
 import { ExperienceToggle } from '../classic/navigation.tsx'
-import { hoverOf } from '../domain/hover.ts'
 
 export function Header({ current, move, snapshot, offline }: { current: string; move: number; snapshot?: Snapshot; offline: boolean }) {
-	const { themeChoice, switching, chooseVersion, setThemeChoice } = useInterface()
+	const { themeChoice, setThemeChoice } = useInterface()
 	const { menu, setMenu } = useNavigation()
 	const reading = snapshot?.status.reading
 	// The next Teams check, honestly, while a runner is reading (latency c).
@@ -40,11 +39,7 @@ export function Header({ current, move, snapshot, offline }: { current: string; 
 				{id === 'done' && !!snapshot?.doneNew && <span className="count count-muted" aria-label={`${snapshot.doneNew} new`}>{snapshot.doneNew}</span>}
 			</a>)}</nav>
 			<div className="desktop-status">{pill}</div>
-			<div className="version-controls"><ExperienceToggle /><label className="sr-only" htmlFor="app-version">App version</label>
-				<select id="app-version" value="react" disabled={switching} title={hoverOf('', 'App version')} aria-describedby="app-version-hover" onChange={event => {
-					const version = event.target.value
-					if (version === 'classic' || version === 'new' || version === 'react') void chooseVersion(version)
-				}}><option value="classic">Classic</option><option value="new">New</option><option value="react">React (preview)</option></select><span id="app-version-hover" className="sr-only">{hoverOf('', 'App version')}</span>
+			<div className="version-controls"><ExperienceToggle />
 			</div>
 			<Button variant="ghost" className="theme-button" onClick={changeTheme} aria-label={`Theme: ${themeLabel}`} title={`Theme: ${themeLabel}`}><Icon name={themeIcon} /><span>Theme: {themeLabel}</span></Button>
 		</div>

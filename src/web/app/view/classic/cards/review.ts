@@ -1,6 +1,6 @@
 // A review: the changes to make, each one checked by default, then the reply.
-import { plural, forPage } from '../../../model/format.ts'
-import type { CardUi, ItemCard } from '../../../model/types.ts'
+import { plural, forPage } from '../../../../model/format.ts'
+import type { CardUi, ItemCard } from '../../../../model/types.ts'
 import { env } from '../../../state/store.ts'
 import { esc, html, raw, type H } from '../../html.ts'
 import { I } from '../../icons.ts'

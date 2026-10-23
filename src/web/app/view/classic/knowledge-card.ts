@@ -1,7 +1,7 @@
 // A To learn card: facts read from the owner's chats, waiting for their ok before they are saved.
-import { factsOn, kCmd } from '../../model/derive.ts'
-import { plural } from '../../model/format.ts'
-import type { KnowledgeCard } from '../../model/types.ts'
+import { factsOn, kCmd } from '../../../model/derive.ts'
+import { plural } from '../../../model/format.ts'
+import type { KnowledgeCard } from '../../../model/types.ts'
 import { S, U, env } from '../../state/store.ts'
 import { esc, html, raw, type H } from '../html.ts'
 import { I } from '../icons.ts'

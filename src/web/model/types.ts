@@ -1,10 +1,10 @@
 // The page's data: the view the server builds (src/web/view.ts), and what the owner is doing with it on this page.
-import type { AutomationRow, DoneRow, ItemCard, KnowledgeCard, Tile, View, Who } from '../../view.ts'
-import type { Mode } from '../../shell.ts'
-import type { Chip, NextRow, NextView, Owner, RowAction, RowKind } from '../../next.ts'
-import type { UiChoice } from '../../../store/state.ts'
-import type { NumbersPage } from '../../numbers.ts'
-import type { WindowKey } from '../../../core/numbers.ts'
+import type { AutomationRow, DoneRow, ItemCard, KnowledgeCard, Tile, View, Who } from '../view.ts'
+import type { Mode } from '../shell.ts'
+import type { Chip, NextRow, NextView, Owner, RowAction, RowKind } from '../next.ts'
+import type { UiChoice } from '../../store/state.ts'
+import type { NumbersPage } from '../numbers.ts'
+import type { WindowKey } from '../../core/numbers.ts'
 
 export type { AutomationRow, Chip, DoneRow, ItemCard, KnowledgeCard, Mode, NextRow, NextView, NumbersPage, Owner, RowAction, RowKind, Tile, UiChoice, View, Who, WindowKey }
 

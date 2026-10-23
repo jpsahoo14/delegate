@@ -6,25 +6,25 @@ import { card, knowledge as knowledgeCard, readingOf, view, who as displayWho, t
 import { nextView, snapshot as placementSnapshot, place, todoHeadline, type NextRow } from './next.ts'
 import { emptyEntities, snapshotSchema, type Action, type Intent, type Snapshot } from './react/domain/contracts.ts'
 import { knowledgeOf } from '../runner/proposals.ts'
-import { find, teamsMessage } from './app/model/find.ts'
-import { freshOf, rowMark } from './app/model/derive.ts'
+import { find, teamsMessage } from './model/find.ts'
+import { freshOf, rowMark } from './model/derive.ts'
 import { NAME } from '../brand.ts'
 import { isPersona } from '../core/intake.ts'
 import { PAGE_REPLY_CHANGED, automationApprovalRev, pageChangeId, pageDigest, pageOptionId, proposalApprovalRev, workflowApprovalRev } from '../core/page-approval.ts'
 import type { Config, PageApproval, Workflow } from '../core/types.ts'
 import { meaningParts, pendingEffects, refusal, shown } from '../core/effects.ts'
-import { byDate, forPage, sourceChip } from './app/model/format.ts'
-import { isNew, itemSeen, newCount, seenIn, sinceOf } from './app/model/derive.ts'
+import { byDate, forPage, sourceChip } from './model/format.ts'
+import { isNew, itemSeen, newCount, seenIn, sinceOf } from './model/derive.ts'
 import { byEnd, watchItemTarget, watchTarget } from '../runner/track.ts'
 import { watchChannel, actResult } from '../mcp/server.ts'
 import { answerAutomation, propose as proposeAutomation } from '../runner/automations.ts'
 import { report as reportProblem } from '../store/feedback.ts'
 import { parseChannelLink } from '../adapters/channels.ts'
-import { BY, newReminder, peopleOf } from './app/model/forms.ts'
+import { BY, newReminder, peopleOf } from './model/forms.ts'
 import { approvedReplyText, currentDraft, reopenable } from '../core/policy.ts'
 import { madeBefore, maybeOf } from '../runner/ledger.ts'
 import { stillApproved } from '../runner/jobs.ts'
-import { prTarget } from '../runner/probe.ts'
+import { prOf, prTarget } from '../runner/probe.ts'
 import { pageText } from './page-text.ts'
 import { pageManagementRev, workflowManagementRev } from '../store/page-revision.ts'
 import { active } from '../runner/work.ts'
@@ -240,7 +240,8 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 		if (editable.has(id) && wf.runFailed && !draft) {
 			// A run that gave no result (queue-new #11): Try again re-runs it as it was; the owner can write the reply instead. No question.
 			actionIds.push(offer(id, rev, 'try-again', 'Try again', () => ({ code: id, verb: 'answer', text: 'try again' }), { staleness: 'exact', expect }))
-			actionIds.push(offer(id, rev, 'write-own', 'Write the reply yourself', input => ({ code: id, verb: 'send', text: requiredText(input) }), { effect: 'sends', staleness: 'exact', expect, input: 'text' }))
+			// A review that ran out of routes is reviewed by the owner on the PR itself (the card's link), not answered by a reply (#17 b).
+			if (!(wf.runFailed.job && wf.intent === 'pr_review')) actionIds.push(offer(id, rev, 'write-own', 'Write the reply yourself', input => ({ code: id, verb: 'send', text: requiredText(input) }), { effect: 'sends', staleness: 'exact', expect, input: 'text' }))
 			actionIds.push(offer(id, rev, 'later', 'Later', () => ({ code: id, verb: 'later' })), offer(id, rev, 'dismiss', 'Skip', () => ({ code: id, verb: 'skip' })))
 		}
 		else if (editable.has(id)) {
@@ -299,7 +300,8 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 			status: pageText(c.status),
 			attention: replyChanged ? PAGE_REPLY_CHANGED : agentWait ?? (wf.runFailed && !draft ? undefined : notSent ? pageText(wf.status) : recovery || stopped || c.draft?.holding ? pageText(job?.error ?? wf.status) || 'The previous run could not finish. Use the available action, ask a question or review the visible holding reply.' : !draft && job?.state === 'done' && job.result && !job.result.reply && wf.status.endsWith(job.result.summary) ? pageText(job.result.summary) : undefined),
 			attentionKind: replyChanged ? 'reply-changed' : agentWait ? 'agent-setup' : wf.runFailed && !draft || recovery || stopped || c.draft?.holding ? 'run-failed' : undefined,
-			runFailed: wf.runFailed && !draft ? { at: wf.runFailed.at, why: pageText(wf.runFailed.why) } : undefined,
+			// A job's failure also carries the routes it tried, the PR to review by hand, and whether some read tools are off (#17 b).
+			runFailed: wf.runFailed && !draft ? { at: wf.runFailed.at, why: pageText(wf.runFailed.why), ...(wf.runFailed.tried?.length ? { tried: wf.runFailed.tried.map(pageText) } : {}), ...(wf.runFailed.job && wf.intent === 'pr_review' ? (u => (u ? { review: u } : {}))(safeLink(prOf(store, wf)?.url)) : {}), ...(wf.runFailed.job && (cfg.agent.toolsTrimmed || cfg.agent.deny?.length) ? { toolsOff: true } : {}) } : undefined,
 			// The PR a review's question, facts and changes are about, named on the card (queue-new #10 c).
 			prLabel: (pr => (pr ? `PR ${pr}${wf.prAuthor ? ` · ${wf.prAuthor}` : ''}` : undefined))(Number(/^pr:.*?(\d+)$/i.exec((wf.job && facts.jobs.get(wf.job)?.key) || '')?.[1] ?? 0) || (wf.intent === 'pr_review' ? prTarget(store, wf) : undefined)),
 			question: c.question === undefined ? undefined : (failedJobDirections(wf) ? forPage(c.question) : pageText(c.question)) || undefined,

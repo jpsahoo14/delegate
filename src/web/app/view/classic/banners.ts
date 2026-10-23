@@ -1,5 +1,5 @@
 // The banners above every tab: lost connection, and the first health problem with its fix.
-import { plural, when } from '../../model/format.ts'
+import { plural, when } from '../../../model/format.ts'
 import { S, U, V, env } from '../../state/store.ts'
 import { esc, html, type H } from '../html.ts'
 import { I } from '../icons.ts'

@@ -198,7 +198,8 @@ export type Workflow = {
 	// Votes taken off the card because the owner may not vote there at the last read; they come back once he may (queue-new #7A).
 	heldVotes?: { pr: number; effects: Effect[]; why: string }
 	// The last AI run for the item ended with no result: a plain reason with its time, never a question (queue-new #11).
-	runFailed?: { at: string; kind: 'setup' | 'content' | 'other'; why: string }
+	// tried and job: a job that ran out of routes (#17): what it tried, for Details, and the job Try again queues again.
+	runFailed?: { at: string; kind: 'setup' | 'content' | 'other'; why: string; tried?: string[]; job?: string }
 	// The reviewer groups on the PR the card asks about ("Are you in …?"); the answer is remembered in config (queue-new #7C).
 	groupAsk?: { pr: number; groups: string[] }
 	prDraft?: string
@@ -362,7 +363,11 @@ export type Config = {
 	discover?: boolean
 	exclude?: string[]
 	knowledge?: string[]
-	agent: { flavor: 'copilot' | 'claude'; command: string[]; tools: string[]; model?: string; maxCredits?: number; effectTools?: string[]; mcpServers?: Record<string, unknown> }
+	// tools: built-ins the owner chose (view, glob, grep), or, before the tools migration (#17), the whole read list. deny: catalog reads
+	// the owner switched off ("<server>-<tool>" or "<server>-*"); allowRead: tools the classifier can't place that he allowed as reads;
+	// toolsTrimmed: his old list was shorter than the defaults (Settings offers Allow all read tools); pendingTrim: servers whose part of
+	// that old list waits for a listing; trimmedFrom: the old list itself, kept until then.
+	agent: { flavor: 'copilot' | 'claude'; command: string[]; tools: string[]; model?: string; maxCredits?: number; effectTools?: string[]; mcpServers?: Record<string, unknown>; deny?: string[]; allowRead?: string[]; toolsTrimmed?: boolean; pendingTrim?: string[]; trimmedFrom?: string[] }
 	jobs?: { minutes: number; credits?: number; parallel?: number }
 	// team: a shared folder (for example a synced SharePoint library) that holds the team's cards (R-KNO-06).
 	cards?: { adapter: 'files'; root?: string; team?: string }

@@ -1,5 +1,5 @@
 // Needs you: the queue on the left, one card at a time, Previous and Next, and the keys for it.
-import { first } from '../../../model/format.ts'
+import { first } from '../../../../model/format.ts'
 import { S, openCards, queue } from '../../../state/store.ts'
 import { esc, html, raw, type H } from '../../html.ts'
 import { I } from '../../icons.ts'

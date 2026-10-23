@@ -1,5 +1,5 @@
 // A meeting ask: when it is, then the choice or the reply.
-import type { CardUi, ItemCard } from '../../../model/types.ts'
+import type { CardUi, ItemCard } from '../../../../model/types.ts'
 import { esc, html, type H } from '../../html.ts'
 import { ctx, meetingStrip, options, preview } from './blocks.ts'
 

@@ -1,4 +1,4 @@
-import { planRetry, retryStatus } from './retry.ts'
+import { blockerOf, planRetry, retryStatus } from './retry.ts'
 import { NAME } from '../brand.ts'
 import { active, afterSend, canCloseApproval, canCloseReport, hasDecisions, homeOf, mergeReportWork, newTurn, pendingParts, reReviewAsk, step, watchEnded, watchNews } from './work.ts'
 import { confidence } from '../core/policy.ts'
@@ -28,6 +28,7 @@ import { openWindow } from '../os/window.ts'
 import { LOCAL_DIR, type Store } from '../store/state.ts'
 import { buildJobPrompt } from '../worker/prompt.ts'
 import { checked, WORKER_SERVER, WORKER_TOOLS, workerMcp, readDirs } from './dispatch.ts'
+import { catalogInfo, workerTools } from './catalog.ts'
 import { isBootstrap, YOURS, type BootSource } from './bootstrap.ts'
 import { knowledgeOf, propose } from './proposals.ts'
 import { learnedClaims } from './learn.ts'
@@ -197,13 +198,14 @@ export function startJobs(store: Store, cfg: Config, procs: Procs, hold: string[
 		// A validate job reads telemetry only when the owner has a telemetry server (owned work).
 		// No worker holds a write tool among its read tools (round 2 P2-1), and none works in the owner's clone, or the folder an owned
 		// session runs in, with a shell: it could run a pipeline or a deploy script outside make_change (review 10-21 P2-9, round 2 P2-2).
-		const unsafe = unsafeRead(cfg.agent.tools, Object.keys(toolServers(cfg)))
+		const reads = workerTools(cfg, 'job')
+		const unsafe = unsafeRead(reads, Object.keys(toolServers(cfg)), catalogInfo(cfg))
 		if (unsafe) { fail(store, job, unsafe); continue }
-		const shell = shellTool(cfg.agent.tools)
+		const shell = shellTool(reads)
 		if (shell && isValidate(job)) { fail(store, job, `A validate job never runs with a shell tool (${shell}): it could run a pipeline outside your ok. Remove ${shell} from the read tools in setup`); continue }
 		if (shell && (clone || job.repo)) { fail(store, job, shellInClone(shell)); continue }
 		const telemetry = job.purpose === 'work' && isValidate(job) ? telemetryTools(cfg) : []
-		const tools = job.purpose === 'execute' ? cfg.agent.tools : [...new Set([...cfg.agent.tools, ...(intents(store.root).find(i => i.id === job.intent)?.tools ?? []), ...telemetry])]
+		const tools = job.purpose === 'execute' ? reads : [...new Set([...reads, ...(intents(store.root).find(i => i.id === job.intent)?.tools ?? []), ...telemetry])]
 		const agent = { ...cfg.agent, tools, maxCredits: cfg.jobs?.credits ?? cfg.agent.maxCredits }
 		// A long-lived tracker starts a fresh session from its last result once its history is large (R-TRK-03).
 		if (job.every && sessionBytes(job.session.id) > TRACKER_SESSION_LIMIT) { job.session = { ...job.session, id: randomUUID() }; store.log({ event: 'tracker-rotated', job: job.id }) }
@@ -930,11 +932,15 @@ function shortOfGoal(store: Store, job: Job, r: Report) {
 	// The earlier result stays, so a fresh try knows what was found before; what fell short is in the retry.
 	if (!('stop' in p)) return queueRetry(store, job, p.retry, p.fresh)
 	// Out of tries, or blocked: the owner sees why, what was tried, and a reply that only says the answer is coming. No changes are offered.
+	// With no question and no reply to show, the item is a failed run (#17 b): one plain line, Try again queues the job again, and the
+	// routes it tried go in Details, never the whole blocker as its status.
 	const draft = r.reply ? { ...r.reply, holding: true as const } : undefined
 	const now = new Date().toISOString()
+	const b = blockerOf(r.blocker), tried = [...new Set([...(job.retry?.tried ?? []), ...b.tried])]
 	for (const wf of parentsOf(store, job)) {
+		const failed = !r.question && !draft ? { at: now, kind: 'content' as const, why: b.why.replace(/[.\s]+$/, ''), ...(tried.length ? { tried } : {}), job: job.id } : undefined
 		// Never an older ask's draft: only this run's holding reply, or none.
-		Object.assign(wf, { state: 'needs_human', waitingSince: undefined, status: p.stop, question: r.question, draft, learnAfter: undefined, effects: [], approved: undefined, newCount: 0, revAt: now, decision: { action: 'draft', reason: 'The work is not finished', confidence: 'low' } })
+		Object.assign(wf, { state: 'needs_human', waitingSince: undefined, status: failed ? `Couldn't finish: ${failed.why}` : p.stop, question: r.question, draft, runFailed: failed, learnAfter: undefined, effects: [], approved: undefined, newCount: 0, revAt: now, decision: { action: 'draft', reason: 'The work is not finished', confidence: 'low' } })
 		const home = homeOf(store, wf)
 		if (home.work && step(home, `${home === wf ? '' : `${wf.code}: `}Not finished: ${p.stop}`, { ref: `job:${job.id}:${hashOf(p.stop)}` }) && home !== wf) store.save(home)
 		store.save(wf)

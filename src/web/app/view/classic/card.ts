@@ -1,9 +1,9 @@
 // The card around every item: who and where, the ask and its thread, open work, the type's body, why, the action,
 // and the Ask thread. A card handled this visit stays as a short line, with Not right and Ask still there.
-import { primaryOf } from '../../model/derive.ts'
-import { doing, first, plural, refusalOf, sourceChip, when, forPage } from '../../model/format.ts'
-import { MARKS } from '../../model/forms.ts'
-import type { CardUi, DoneRow, ItemCard, Who } from '../../model/types.ts'
+import { primaryOf } from '../../../model/derive.ts'
+import { doing, first, plural, refusalOf, sourceChip, when, forPage } from '../../../model/format.ts'
+import { MARKS } from '../../../model/forms.ts'
+import type { CardUi, DoneRow, ItemCard, Who } from '../../../model/types.ts'
 import { S, U, V, env } from '../../state/store.ts'
 import { esc, html, join, raw, type H } from '../html.ts'
 import { I } from '../icons.ts'

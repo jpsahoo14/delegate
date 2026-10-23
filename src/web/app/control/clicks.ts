@@ -1,7 +1,7 @@
 // Every click on the page, delegated from the document by data-act (view/experience.ts lists the contract).
-import { kCmd, primaryOf } from '../model/derive.ts'
-import { newReminder, peopleOf } from '../model/forms.ts'
-import type { CardUi, ItemCard, KnowledgeCard } from '../model/types.ts'
+import { kCmd, primaryOf } from '../../model/derive.ts'
+import { newReminder, peopleOf } from '../../model/forms.ts'
+import type { CardUi, ItemCard, KnowledgeCard } from '../../model/types.ts'
 import * as A from '../state/actions.ts'
 import { S, U, V, cardOf, env, replaceCard } from '../state/store.ts'
 import { current, render } from '../view/render.ts'

@@ -17,7 +17,8 @@ import { active, homeOf, keepTodos, newTurn, statusOf } from './work.ts'
 import { close, say } from './intake.ts'
 import { backupSession, restoreSession } from './own.ts'
 import { startFollow, startWatch } from './track.ts'
-import { takeRead, UNTRACKED } from './sharing.ts'
+import { takeRead } from './sharing.ts'
+import { catalogInfo, workerTools } from './catalog.ts'
 import { unsafeRead } from '../core/effects.ts'
 import { toolServers } from '../adapters/mcp-client.ts'
 import { shellInClone, shellTool } from './validate.ts'
@@ -104,15 +105,16 @@ export async function checkPromise(store: Store, src: Source, cfg: Config, wf: W
 	store.save(wf, false)
 	let report, error: string | undefined
 	try {
-		const unsafe = unsafeRead(cfg.agent.tools, Object.keys(toolServers(cfg)))
+		const tools = workerTools(cfg, 'reply')
+		const unsafe = unsafeRead(tools, Object.keys(toolServers(cfg)), catalogInfo(cfg))
 		if (unsafe) throw new Error(unsafe)
 		// Never in the owner's clone with a shell: it could run code from the PR outside the ok (review P1-3).
-		const shell = job?.repo && shellTool(cfg.agent.tools)
+		const shell = job?.repo && shellTool(tools)
 		if (shell) throw new Error(shellInClone(shell))
 		const { cwd, mcpConfigPath } = workerMcp(store, wf.id, runId)
 		store.addRun()
 		restoreSession(store, session)
-		const res = await run({ ...cfg.agent, tools: cfg.agent.tools.filter(t => !UNTRACKED.test(t)) }, { workflowId: wf.id, runId, sessionId: session, prompt: buildPromisePrompt(wf, store.thread(wf.id), cfg, store.root, prTarget(store, wf)), cwd: job?.repo ?? cwd, mcpConfigPath, extraTools: WORKER_TOOLS, dirs: readDirs(store, cfg) })
+		const res = await run({ ...cfg.agent, tools }, { workflowId: wf.id, runId, sessionId: session, prompt: buildPromisePrompt(wf, store.thread(wf.id), cfg, store.root, prTarget(store, wf)), cwd: job?.repo ?? cwd, mcpConfigPath, extraTools: WORKER_TOOLS, dirs: readDirs(store, cfg) })
 		takeRead(store.root, runId)
 		backupSession(store, session)
 		report = store.peekReport(wf.id, runId)

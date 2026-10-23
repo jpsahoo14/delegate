@@ -1,6 +1,6 @@
 // How the page reaches Delegate: the shell defines window.DELEGATE_IO per mode (src/web/shell.ts, design-spec/client-contract.md).
 // The snapshot has none; the chat panel has no settings or seen marks.
-import type { Boot, ItemCard, KnowledgeCard, NumbersPage, UiChoice, View, WindowKey } from '../model/types.ts'
+import type { Boot, ItemCard, KnowledgeCard, NumbersPage, UiChoice, View, WindowKey } from '../../model/types.ts'
 
 export type Called = { ok: boolean; text: string; ids: string[] }
 export type Result = { applied: boolean; card?: ItemCard | KnowledgeCard; text?: string; state?: string }

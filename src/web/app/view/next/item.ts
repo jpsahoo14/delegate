@@ -1,8 +1,8 @@
 // An open item with work (design-spec/new-experience.md §6, N2): your move, the checklist with who does each step, Report your
 // result, and what happened. The server built every word from the work record (src/web/next.ts workOf); this draws it.
-import { RESULTS } from '../../model/derive.ts'
-import { plural, when } from '../../model/format.ts'
-import type { NextRow, Owner } from '../../model/types.ts'
+import { RESULTS } from '../../../model/derive.ts'
+import { plural, when } from '../../../model/format.ts'
+import type { NextRow, Owner } from '../../../model/types.ts'
 import { S, env, peek } from '../../state/store.ts'
 import { esc, html, raw, str, type H } from '../html.ts'
 import { B, rowState } from '../classic/parts.ts'

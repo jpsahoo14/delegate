@@ -1,5 +1,5 @@
 // Which experience draws the page (R-NEX-01). Pure: the address, the server's file for this machine, and this browser's cache.
-import type { UiChoice, View } from './types.ts'
+import type { UiChoice, View } from '../../model/types.ts'
 
 export type Ui = Exclude<UiChoice['ui'], 'react'>
 // #ui=new or #ui=classic in a link sets it, for beta invites.

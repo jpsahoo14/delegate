@@ -19,7 +19,7 @@
 // - on Now, S.nowLook (each row's mark when this look first showed it) and the rows' item marks a moment later (N1b).
 // Opening forms is state too (S.sheet, S.form, S.wform, S.watchForm): the controls and actions set them, the view only reads.
 // (The shared redraw step in view/render.ts keeps S.deferred and S.pressing; that is not the experience's.)
-import type { AutoForm } from '../model/types.ts'
+import type { AutoForm } from '../../model/types.ts'
 import type { Theme } from './theme.ts'
 
 export type Experience = {

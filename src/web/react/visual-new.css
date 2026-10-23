@@ -72,6 +72,14 @@ main[data-ui=new] .tool-sheet h2{font-size:17px;margin:0 0 16px}
 .new-settings [aria-checked=true] .setting-switch-track{background:var(--accent);box-shadow:none}
 .new-settings [aria-checked=true] .setting-switch-track i{transform:translateX(12px);background:var(--on-accent)}
 .new-settings .settings-more>summary{cursor:pointer}
+.new-settings #setting-tools>h3{font-size:13px;font-weight:600;color:var(--text-3);text-transform:uppercase;letter-spacing:.06em;margin:26px 0 6px}
+.new-settings #setting-tools>p{margin:0 0 10px}
+.new-settings #setting-tools>.setting-row{background:var(--surface);border-radius:var(--r-lg);box-shadow:var(--shadow-1);margin-bottom:10px}
+.new-settings .tools-server>summary{cursor:pointer;font-size:14px}
+.new-settings .tools-server .settings-rows{box-shadow:none;border-radius:0;background:none;margin-top:6px}
+.new-settings .tools-server .setting-row{padding:10px 0}
+.new-settings .tools-server h4{font-size:12.5px;font-weight:600;color:var(--text-3);margin:12px 0 0}
+.new-settings .tools-server-line{margin:0;font-size:13px;color:var(--text-2)}
 .new-knowledge{max-width:720px}
 .new-knowledge>h1{font-size:24px;line-height:1.55;margin:8px 0 0;letter-spacing:-.02em}
 .new-knowledge>p.muted{font-size:14px;margin:0 0 18px}
@@ -336,7 +344,6 @@ main[data-ui=new] .tool-sheet h2{font-size:17px;margin:0 0 16px}
 	.header-inner .version-controls{gap:8px;padding:4px 0;flex-wrap:nowrap}
 	.header-inner .experience-choice{font-size:0;gap:0}
 	.header-inner .experience-choice select{width:82px}
-	.header-inner #app-version{width:132px}
 	.header-inner .status-pill{padding:4px 8px}
 	.header-inner .status-full{display:none}
 	.header-inner .status-compact:not(:empty){display:inline}

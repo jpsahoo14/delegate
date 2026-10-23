@@ -1,5 +1,5 @@
 import { useCallback, useId } from 'react'
-import { useNavigation } from '../data/navigation.ts'
+import { rememberExperience, useNavigation } from '../data/navigation.ts'
 import { experienceReady, warmExperience } from '../data/views.ts'
 import { hoverOf } from '../domain/hover.ts'
 
@@ -22,7 +22,10 @@ export function ExperienceToggle({ disabled = false }: { disabled?: boolean }) {
 		const mapped = classic ? shared ? screen : screen.startsWith('focus/') ? screen.replace('focus/', 'now/') : screen.startsWith('ongoing') ? 'now/waiting' : 'now' :
 			`classic/${shared ? screen : /^now\/A\d+(\/|$)/.test(screen) ? screen.replace('now/', 'focus/') : screen === 'now/waiting' ? 'ongoing' : 'home'}`
 		const target = previous?.to === route ? previous.from : mapped
-		const go = () => { useNavigation.setState({ experienceReturn: { from: route, to: target }, menu: false }); navigate(target) }
+		const go = () => {
+			useNavigation.setState({ experienceReturn: { from: route, to: target }, menu: false }); navigate(target)
+			rememberExperience(classic ? 'new' : 'classic')
+		}
 		// The other experience's code normally loads while idle; a switch before it arrives keeps this screen, dimmed, until it does (spec S6).
 		if (experienceReady(!classic)) { go(); return }
 		const page = document.documentElement

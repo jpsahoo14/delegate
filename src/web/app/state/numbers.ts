@@ -1,7 +1,7 @@
 // The Numbers tab's calls (R-NEX-11). The numbers come only when the tab opens and when its window changes; /data never
 // carries them, and polling never asks again.
-import { numbersModel } from '../model/numbers.ts'
-import type { WindowKey } from '../model/types.ts'
+import { numbersModel } from '../../model/numbers.ts'
+import type { WindowKey } from '../../model/types.ts'
 import { S, env, hooks } from './store.ts'
 
 // The owner asked for this, so it draws at once, even with focus still on the window select (review P1-1): renderSoon waits

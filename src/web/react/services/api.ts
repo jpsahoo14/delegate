@@ -29,7 +29,7 @@ async function request<T>(path: string, schema: z.ZodType<T>, options: RequestIn
 		performance.measure('delegate-page-json', { start: started, end: decoded })
 		performance.measure('delegate-page-validation', { start: decoded, end: performance.now() })
 	}
-	if (!parsed.success) throw new Error(`${NAME} returned data this preview cannot read. Reload after updating.`)
+	if (!parsed.success) throw new Error(`${NAME} returned data this page cannot read. Reload after updating.`)
 	const etag = response.headers.get('etag')
 	if (etag && remember) remember(etag, parsed.data)
 	return parsed.data
@@ -63,3 +63,5 @@ export const fetchNumbers = (window: string, signal?: AbortSignal) => request(`/
 export const saveSetting = (key: string, value: string) => request('/settings', saveResultSchema, { method: 'POST', body: JSON.stringify({ key, value }) })
 export const saveSeen = (filters: string[], at: string) => request('/seen', z.object({ ok: z.literal(true) }), { method: 'POST', body: JSON.stringify({ filters, at }) })
 export const dismissExperienceNote = () => request('/ui', z.object({ ok: z.literal(true) }), { method: 'POST', body: JSON.stringify({ noted: true }) })
+// Which experience this machine opens next time; best effort, the switch itself never waits for it.
+export const saveExperience = (experience: 'new' | 'classic') => request('/ui', z.object({ ok: z.literal(true) }), { method: 'POST', body: JSON.stringify({ experience }) })

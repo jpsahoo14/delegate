@@ -5,7 +5,8 @@ import { assertTestSafe } from '../store/fs.ts'
 import { closeFamily } from './apply.ts'
 import { realProcs } from './jobs.ts'
 import { stopWatch } from './track.ts'
-import { sharingHold, sourceChats, takeRead, UNTRACKED } from './sharing.ts'
+import { sharingHold, sourceChats, takeRead } from './sharing.ts'
+import { catalogInfo, workerTools } from './catalog.ts'
 import { existsSync } from 'node:fs'
 import { backupSession, restoreSession } from './own.ts'
 import { mkdirSync, writeFileSync } from 'node:fs'
@@ -227,17 +228,19 @@ export function workerMcp(store: Store, targetId: string, runId: string, interac
 const lessonFits = (cfg: Config, chat: string | undefined, here: string) => { const l = levelOf(cfg, chat); return !l || (l === 'private' && chat === here) }
 
 // A setup error that stops a run before it starts, the same for every run: never retried (round 2 P2-1, P2-2).
-function refuseStart(cfg: Config, folder?: string) {
-	const unsafe = unsafeRead(cfg.agent.tools, Object.keys(toolServers(cfg)))
+// tools: the run's read tools (workerTools, #17).
+function refuseStart(cfg: Config, tools: string[], folder?: string) {
+	const unsafe = unsafeRead(tools, Object.keys(toolServers(cfg)), catalogInfo(cfg))
 	if (unsafe) throw new Error(unsafe)
-	checkAgentTools(cfg.agent)
-	const shell = folder && shellTool(cfg.agent.tools)
+	checkAgentTools({ ...cfg.agent, tools })
+	const shell = folder && shellTool(tools)
 	if (shell) throw new Error(shellInClone(shell))
 }
 
 async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run: RunWorker, probe?: BuildProbe, catalogRetried = false, separate = false): Promise<void> {
 	if (blockedAgent(store, cfg)) return
-	refuseStart(cfg)
+	const tools = workerTools(cfg, 'reply')
+	refuseStart(cfg, tools)
 	if (wf.state !== 'running') return runAsk(store, src, cfg, wf, run)
 	await probePRs(store, cfg, probe, Date.now(), true, [wf])
 	if (wf.state !== 'running' || blockedAgent(store, cfg)) return
@@ -252,7 +255,7 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 	restoreSession(store, wf.session.id)
 	const logStart = sessionLog(cfg.agent.flavor, wf.session.id).length
 	// Reply runs read other chats only through history_search, which records them (need to know).
-	const res = await run({ ...cfg.agent, tools: cfg.agent.tools.filter(t => !UNTRACKED.test(t)) }, { workflowId: wf.id, runId, sessionId: wf.session.id, prompt, cwd, mcpConfigPath, extraTools: WORKER_TOOLS, dirs: readDirs(store, cfg) })
+	const res = await run({ ...cfg.agent, tools }, { workflowId: wf.id, runId, sessionId: wf.session.id, prompt, cwd, mcpConfigPath, extraTools: WORKER_TOOLS, dirs: readDirs(store, cfg) })
 	// The CLI never started: no session to keep and no report to read; it counts toward the start tries.
 	if (res.error?.startsWith('Could not start')) { takeRead(store.root, runId); throw new Error(res.error) }
 	const read = takeRead(store.root, runId)
@@ -418,12 +421,13 @@ async function runAsk(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 	const runId = ulid()
 	const job = wf.job ? store.job(wf.job) : undefined
 	const session = retrySession ?? job?.session.id ?? wf.session.id
-	refuseStart(cfg, job?.repo)
+	const tools = workerTools(cfg, 'job')
+	refuseStart(cfg, tools, job?.repo)
 	const { cwd, mcpConfigPath } = workerMcp(store, wf.id, runId)
 	store.addRun()
 	restoreSession(store, session)
 	const logStart = sessionLog(cfg.agent.flavor, session).length
-	const res = await run(cfg.agent, { workflowId: wf.id, runId, sessionId: session, prompt: buildAskPrompt(wf, store.thread(wf.id), cfg, store.root), cwd: job?.repo ?? cwd, mcpConfigPath, extraTools: WORKER_TOOLS, dirs: readDirs(store, cfg) })
+	const res = await run({ ...cfg.agent, tools }, { workflowId: wf.id, runId, sessionId: session, prompt: buildAskPrompt(wf, store.thread(wf.id), cfg, store.root), cwd: job?.repo ?? cwd, mcpConfigPath, extraTools: WORKER_TOOLS, dirs: readDirs(store, cfg) })
 	backupSession(store, session)
 	const report = store.peekReport(wf.id, runId)
 	const fresh = store.workflow(wf.id)!

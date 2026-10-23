@@ -6,7 +6,7 @@ export const settingsSchema = z.object({
 	rows: z.array(z.object({
 		key: text, label: text, help: text, kind: z.enum(['text', 'line', 'list', 'number', 'choice', 'bool', 'time', 'switch']),
 		section: z.enum(['learned', 'you', 'replies', 'timing', 'system']), value: text,
-		options: z.array(z.object({ value: text, label: text })).optional(), advanced: z.boolean().optional(),
+		options: z.array(z.object({ value: text, label: text })).optional(), advanced: z.boolean().optional(), group: optional,
 	})),
 	fixed: z.array(z.object({ label: text, value: text, how: text })),
 	about: z.object({
@@ -15,6 +15,7 @@ export const settingsSchema = z.object({
 		chats: z.array(z.object({ name: text, says: text, actionIds: strings.optional() })),
 	}),
 	models: z.object({ set: text, lines: strings }),
+	tools: z.object({ servers: z.array(z.object({ name: text, reads: z.number(), on: z.number(), unknown: z.number(), line: optional, gone: strings })) }).optional(),
 })
 export const saveResultSchema = z.object({ ok: z.boolean(), text })
 const numberRow = z.object({

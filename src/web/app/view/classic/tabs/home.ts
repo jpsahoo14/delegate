@@ -1,6 +1,6 @@
 // Home: what happened while the owner was away, what needs them, Catch up, a missed-message box, and the version.
-import { first, plural, when, forPage } from '../../../model/format.ts'
-import type { Tile } from '../../../model/types.ts'
+import { first, plural, when, forPage } from '../../../../model/format.ts'
+import type { Tile } from '../../../../model/types.ts'
 import { S, V, env, openCards } from '../../../state/store.ts'
 import { esc, html, raw, type H } from '../../html.ts'
 import { I } from '../../icons.ts'

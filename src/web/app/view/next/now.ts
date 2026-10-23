@@ -1,7 +1,7 @@
 // Now: every open thread once, by whose move it is (design-spec/new-experience.md §4, reviews/pm-n1a.md). Under the tabs, one
 // line says what the other sections hold, so the first screen answers the five-second test; on a narrow panel it replaces them.
-import { first, mmss, plural, when } from '../../model/format.ts'
-import type { DoneRow, NextRow } from '../../model/types.ts'
+import { first, mmss, plural, when } from '../../../model/format.ts'
+import type { DoneRow, NextRow } from '../../../model/types.ts'
 import { S, U, V, env } from '../../state/store.ts'
 import { banners } from '../classic/banners.ts'
 import { B, rowState } from '../classic/parts.ts'
@@ -9,8 +9,8 @@ import { sheet } from '../classic/sheet.ts'
 import { esc, html, join, raw, type H } from '../html.ts'
 import { I } from '../icons.ts'
 import { row } from './row.ts'
-import { sinceOf } from '../../model/derive.ts'
-import { find } from '../../model/find.ts'
+import { sinceOf } from '../../../model/derive.ts'
+import { find } from '../../../model/find.ts'
 import { row as doneRow } from '../classic/tabs/done.ts'
 
 type Sec = 'move' | 'working' | 'waiting' | 'catchup'

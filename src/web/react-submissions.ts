@@ -1,6 +1,6 @@
 import type { PageSubmission, Store } from '../store/state.ts'
 import { enqueueParsed } from '../mcp/server.ts'
-import { forPage } from './app/model/format.ts'
+import { forPage } from './model/format.ts'
 import { resolvePageIntent, IntentError } from './react-projection.ts'
 import type { Intent, Receipt } from './react/domain/contracts.ts'
 import { ulid } from '../core/ids.ts'

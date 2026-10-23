@@ -10,6 +10,8 @@ import type { Config } from '../core/types.ts'
 import { WRITE_DEFAULTS, toolOf, unsafeRead } from '../core/effects.ts'
 import { remoteOf, saveCodeFolders } from '../runner/repos.ts'
 import { cliConfigPath, toolServers } from '../adapters/mcp-client.ts'
+import { cachedCatalogs, refreshCatalogs, workerTools } from '../runner/catalog.ts'
+import { migrateTools, OLD_READ_DEFAULTS } from '../runner/tools-migrate.ts'
 import { assertTestSafe, readJson, writeJson } from '../store/fs.ts'
 import { here, LOCAL_DIR, portable, Store, loadLocal } from '../store/state.ts'
 import { TAKEOVER_MIN } from '../runner/tick.ts'
@@ -148,17 +150,26 @@ async function apply(step: Step, v: never, deps: Deps): Promise<string> {
 		}
 		case 'tools': {
 			// {} keeps what this folder already has, or picks the defaults from the owner's own tool servers (dogfood: setup asked too much).
+			// Drafts may read with every read tool the servers list (#17); a list given here, or an old one, becomes a deny list.
 			const t0 = v as z.infer<typeof VALUES.tools>
-			const t = t0.tools ? t0 : cfg.agent.tools?.length ? { tools: cfg.agent.tools, effectTools: cfg.agent.effectTools } : defaultTools()
+			const t = t0.tools ? t0 : cfg.agent.deny || cfg.agent.tools?.length ? { tools: cfg.agent.tools, effectTools: cfg.agent.effectTools } : defaultTools()
 			const unsafe = unsafeRead(t.tools ?? [], Object.keys({ ...toolServers(cfg), ...(t.servers ?? {}) }))
 			if (unsafe) throw new Error(unsafe)
-			cfg.agent.tools = t.tools!
+			if (t0.tools) { const { deny: _d, allowRead: _a, toolsTrimmed: _t, pendingTrim: _p, trimmedFrom: _f, ...rest } = cfg.agent; cfg.agent = { ...rest, tools: t.tools! } }
+			else cfg.agent.tools = t.tools!
+			if ('deny' in t && t.deny) cfg.agent.deny = t.deny
 			cfg.agent.effectTools = t.effectTools ?? cfg.agent.effectTools
 			if (t.servers) cfg.agent.mcpServers = { ...cfg.agent.mcpServers, ...Object.fromEntries(Object.entries(t.servers).map(([k, s]) => [k, { type: 'local', command: s.command, args: s.args ?? [], tools: ['*'] }])) }
 			if (t0.repos) cfg.repos = t0.repos
 			if (t0.codeFolders) { const missing = t0.codeFolders.filter(f => !existsSync(f)); if (missing.length) throw new Error(`Not a folder on this machine: ${missing.join(', ')}`); saveCodeFolders(t0.codeFolders) }
 			store.saveConfig(cfg)
-			return `${cfg.agent.tools.length} read tools, ${cfg.agent.effectTools?.length ?? 0} write tools for approved changes${t.servers ? `, from ${Object.keys(t.servers).join(', ')}` : ''}`
+			// Listed now, so the owner sees what drafts may read; tests list nothing.
+			if (!process.env.NODE_TEST_CONTEXT) await refreshCatalogs(store, store.config(), Date.now(), true).catch(() => 0)
+			const moved = migrateTools(store, 'setup')
+			const now = store.config(), cats = cachedCatalogs(now), reads = workerTools(now, 'job').filter(x => x.includes('-')).length
+			const unsure = Object.values(cats).reduce((n, c) => n + c.tools.filter(x => x.cls === 'unknown').length, 0)
+			const listed = Object.keys(cats).length ? `${reads} read tools from ${Object.keys(cats).join(', ')}${unsure ? `; ${unsure} more it can't place wait for you in Settings` : ''}` : `${now.agent.tools.length} read tools`
+			return `${listed}${moved?.mode === 'trimmed' ? ' (your shorter list kept)' : ''}, ${now.agent.effectTools?.length ?? 0} write tools for approved changes${t.servers ? `, from ${Object.keys(t.servers).join(', ')}` : ''}`
 		}
 		case 'knowledge': {
 			const k = v as z.infer<typeof VALUES.knowledge>
@@ -229,21 +240,18 @@ export function agentProblem(flavor: Flavor, command: string[]): string | undefi
 const lastLine = (s: string) => s.split(/\r?\n/).map(l => l.trim()).filter(Boolean).slice(-2).join(' ').slice(0, 240)
 export const signedIn = (flavor: Flavor, command: string[]) => !agentProblem(flavor, command)
 
-// Defaults from the tool servers the owner's AI CLI already has: read-only tools for workers, and the changes Delegate
-// may make after an ok, one action each where a tool does several (owner, 2026-10-20: a PR vote is fine with the owner's ok).
-export const READ_DEFAULTS: Record<string, string[]> = {
-	teams: ['ListChats', 'ListChatMessages', 'GetChatMessage', 'GetChat', 'SearchTeamMessagesQueryParameters', 'ListChannelMessages', 'ListChannelMessageReplies'],
-	calendar: ['ListCalendarView', 'FindMeetingTimes', 'GetUserDateAndTimeZoneSettings'],
-	ado: ['repo_pull_request', 'repo_pull_request_thread', 'pipelines_build', 'pipelines_build_log', 'wit_work_item', 'search_workitem', 'search_wiki', 'wiki'],
-}
+// Defaults from the tool servers the owner's AI CLI already has: drafts read with every read tool those servers list (#17), and the
+// changes Delegate may make after an ok, one action each where a tool does several (owner, 2026-10-20: a PR vote is fine with the owner's ok).
+// The servers Delegate starts for itself are the ones it knows how to use: the old read defaults name them.
 // Writes are only proposed; each runs after the owner's ok (R-HIL-29). A workplace adds its own servers in site.json.
 const WRITE = WRITE_DEFAULTS
 export function defaultTools(mcpConfig = cliConfigPath('copilot')) {
 	const have = readJson<{ mcpServers?: Record<string, { command?: string; args?: string[] }> }>(mcpConfig, {}).mcpServers ?? {}
-	const read = { ...READ_DEFAULTS, ...site().read }, write = { ...WRITE, ...site().write }
+	const read = { ...OLD_READ_DEFAULTS, ...site().read }, write = { ...WRITE, ...site().write }
 	const names = Object.keys(read).filter(n => have[n]?.command)
 	return {
-		tools: ['view', 'glob', 'grep', ...names.flatMap(n => read[n].map(t => `${n}-${t}`))],
+		tools: ['view', 'glob', 'grep'],
+		deny: [] as string[],
 		effectTools: names.flatMap(n => (write[n] ?? []).map(t => `${n}-${t}`)),
 		servers: Object.fromEntries(names.map(n => [n, { command: have[n].command!, args: have[n].args ?? [] }])),
 	}

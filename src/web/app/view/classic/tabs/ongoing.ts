@@ -1,7 +1,7 @@
 // Ongoing: everything Delegate is doing or waiting on, in one place (round 3 #4). Running and Automations are sections here.
-import { plural, when } from '../../../model/format.ts'
-import { INTERVALS } from '../../../model/forms.ts'
-import type { View } from '../../../model/types.ts'
+import { plural, when } from '../../../../model/format.ts'
+import { INTERVALS } from '../../../../model/forms.ts'
+import type { View } from '../../../../model/types.ts'
 import { S, U, V, env } from '../../../state/store.ts'
 import { esc, html, raw, type H } from '../../html.ts'
 import { I } from '../../icons.ts'

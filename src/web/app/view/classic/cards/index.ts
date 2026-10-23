@@ -1,6 +1,6 @@
 // Each card type draws its own body; the card around it is the same for all (view/classic/card.ts).
 // A new type is a module here and a line in BODY, and its primary action in model/derive.ts.
-import type { CardUi, ItemCard } from '../../../model/types.ts'
+import type { CardUi, ItemCard } from '../../../../model/types.ts'
 import type { H } from '../../html.ts'
 import * as choice from './choice.ts'
 import * as meeting from './meeting.ts'
