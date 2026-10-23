@@ -60,6 +60,37 @@ Guard (Engineer check): a style rule never decides. `decide()` skips it, so it c
 Proved with stub workers (quota) on fictional roots: the spec's checks 1-7 (including Robin's style not reaching Kim's
 draft, Edit, Undo, and the negative cases), a style rule listed before a send rule for the same person still sending
 exactly once, and Settings Turn on, Save style and Undo in New and Classic at 1280 light and 400 dark.
+## Classic S1-S5/S8/S9: one card, shared messages and sent times
+
+- ClassicCard is now only a routing adapter to ItemCard, including multi-ask
+  navigation and retained snapshots; no second card layout, editor or action
+  mapping remains. Classic keeps its shell, queue, tabs and feedback rows.
+- Shared ItemCard has an explicit read-only snapshot mode: no action buttons,
+  editable reply or Ask submission is mounted. Local Details/thread folds remain
+  usable. The existing pin/revision resolver also accepts Classic's visited
+  fallback, preserving exact-revision safety and retained text.
+- Classic queue and Home use shared sentAt/SentTime instead of creation time;
+  queue codes move into time tooltips, with message then chat on separate lines.
+  Ongoing and Done use MessageBubble and SentTime for messages and activity,
+  while keeping their existing watch, Undo and feedback controls.
+- Signed AI replies show the canonical sendText in the shared editor; changing
+  it is still an owner edit, with no second signature. Huge queue/Home previews
+  are bounded to 200 characters, not merely visually ellipsized.
+- Edge1280light/400dark: normalized shared card DOM was identical; signed
+  preview, retained stale edit/disabled Send, snapshot0actions/0editable fields,
+  four-part ask switching, scroll-limited long message and 1,801-character huge
+  bubble passed. Owner edit sent once exactly; Home Watch made1watch, Needs me
+  reached Needs you after a stub draft, controls0tabs/body1target, no overflow/errors.
+
+## Classic S5/S7: direct Teams links and shared accessible hover text
+
+- Approved design: direct Open in Teams in the card head, plus sibling external
+  links on queue/Home needs rows, never nested anchors or item submissions.
+- Local buttons use the same hover map as action buttons, retaining explicit
+  item-specific text. Every hover has matching hidden description text. Plain
+  Send/Cancel/Close stay without unsolicited titles. Hint covers chips/links.
+- Exact-blocked approval uses the stale disabled reason, not an input hint.
+
 ## bug 10-22 E08/E40/Core10 J2/J8: unrelated asks reused another home
 
 - Before: Robin's incident 5091 message entered his PR 2203 home while its

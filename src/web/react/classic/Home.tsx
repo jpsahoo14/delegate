@@ -15,6 +15,8 @@ import { when } from '../domain/time.ts'
 import { versionLabel } from '../domain/version.ts'
 import { useClassicMarkSeen } from './data.ts'
 import { useScreenNavigation } from './navigation.tsx'
+import { sentAt } from '../features/ItemCard.tsx'
+import { SentTime } from '../features/SentTime.tsx'
 
 const destinations: Record<string, string> = {
 	replies: 'done/replies', reviews: 'done/reviews', tasks: 'done/changes', prs: 'done/changes', invites: 'done/changes',
@@ -67,10 +69,11 @@ export default function Home({ readOnly = false }: { readOnly?: boolean }) {
 		<div className="classic-tiles"><section className="classic-tile classic-needs" role="group" aria-labelledby="classic-needs-title">
 			{needs.length ? <><h2 className="classic-needs-head" id="classic-needs-title"><span className="classic-needs-number">{needs.length}</span><span>{needs.length === 1 ? 'needs you' : 'need you'}</span></h2>
 				<ul>{needs.slice(0, 4).map(item => {
+					const sent = sentAt(item)
 					const person = entities.people[item.personId], avatar: CSSProperties & { '--hue': number } = { '--hue': person.hue }
 					const retry = item.actionIds.some(id => entities.actions[id].kind === 'answer' && entities.actions[id].recovery)
 					const headline = retry ? `Answer ${item.code} to retry with directions, or skip it` : item.question || item.ask || item.job
-					return <li key={item.id}><a href={`#classic/focus/${item.code}`}><span className="classic-avatar" style={avatar} aria-hidden="true">{person.initials}</span><strong>{person.name.split(' ')[0]}</strong><span className="classic-peek-headline">{headline}</span></a></li>
+					return <li className="classic-needs-row" key={item.id}><a href={`#classic/focus/${item.code}`}><span className="classic-avatar" style={avatar} aria-hidden="true">{person.initials}</span><strong>{person.name.split(' ')[0]}</strong>					<span className="classic-peek-headline">					{headline?.slice(0, 200)}</span><SentTime at={sent.at} added={sent.added} waiting code={item.code} /></a>{item.teams && <Button asChild variant="ghost" size="icon-xs" aria-label="Open in Teams"><a href={item.teams} target="_blank" rel="noopener noreferrer"><Icon name="ext" /></a></Button>}</li>
 				})}</ul><div className="classic-needs-foot">
 					{!readOnly && <a className="classic-start" href={`#classic/focus/${needs[0].code}`}>Start with {entities.people[needs[0].personId].name.split(' ')[0]} <Icon name="arrow" /></a>}
 					{needs.length > 4 && <span>and {needs.length - 4} more</span>}

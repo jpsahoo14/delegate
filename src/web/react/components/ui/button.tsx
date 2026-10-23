@@ -2,6 +2,18 @@ import * as React from "react"
 import { cva, type VariantProps } from "class-variance-authority"
 import { cn } from "../../lib/utils.ts"
 import { Slot } from "radix-ui"
+import { hoverOf } from "../../domain/hover.ts"
+
+function textOf(node: React.ReactNode): string {
+  if (typeof node === "string" || typeof node === "number") return String(node)
+  if (Array.isArray(node)) return node.map(textOf).join("")
+  return React.isValidElement<{ children?: React.ReactNode }>(node) ? textOf(node.props.children) : ""
+}
+
+export function Hint({ text, children }: { text?: string; children: React.ReactElement }) {
+  const id = React.useId()
+  return <><Slot.Root title={text} aria-describedby={text ? id : undefined}>{children}</Slot.Root>{text && <span id={id} className="sr-only">{text}</span>}</>
+}
 
 const buttonVariants = cva(
   "inline-flex shrink-0 items-center justify-center gap-2 rounded-md text-sm font-medium whitespace-nowrap transition-all outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
@@ -48,15 +60,20 @@ function Button({
     asChild?: boolean
   }) {
   const Comp = asChild ? Slot.Root : "button"
+  const id = React.useId()
+  const hover = props.title ?? hoverOf("", props["aria-label"] ?? textOf(props.children))
+  const described = props["aria-describedby"] ?? (hover ? id : undefined)
 
   return (
-    <Comp
+    <><Comp
       data-slot="button"
       data-variant={variant}
       data-size={size}
       className={cn(buttonVariants({ variant, size, className }))}
       {...props}
-    />
+      title={hover}
+      aria-describedby={described}
+    />{hover && !props["aria-describedby"] && <span id={id} className="sr-only">{hover}</span>}</>
   )
 }
 

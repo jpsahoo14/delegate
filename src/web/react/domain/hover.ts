@@ -78,6 +78,7 @@ const BY_LABEL: Record<string, string> = {
 	'Mark normal again': 'Treat this chat like any other again.',
 	'Check now': `Ask ${NAME} to read your chats again now, instead of waiting for the next cycle.`,
 	'Make it an item': `Treat this message as an ask for you: ${NAME} drafts a reply for your OK.`,
+	'Make an item': `Treat this message as an ask for you: ${NAME} drafts a reply for your OK.`,
 	'Create reminder': `${NAME} sends [{name}|them] this message on schedule, from your account.`,
 	Experience: 'Switch between New and Classic. Same items and data; nothing is sent.',
 	'App version': 'Choose which version of the page to use: Classic, New or React (preview). The page reloads.',

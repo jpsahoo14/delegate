@@ -1,8 +1,9 @@
-import { useEffect, useRef, type CSSProperties } from 'react'
+import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { chipHover } from '../domain/hover.ts'
-import { Button } from '../components/ui/button.tsx'
-import { useAction, useCardPresentation, useEdit, useItemBusy, useShowLatest } from '../data/hooks.ts'
-import type { Entities, Intent, Item } from '../domain/contracts.ts'
+import { Button, Hint } from '../components/ui/button.tsx'
+import { useAction, useCardPresentation, useEdit, useItemBusy, useShowLatest, useSnapshot } from '../data/hooks.ts'
+import type { Entities, Intent, Item, Snapshot } from '../domain/contracts.ts'
+import type { CardUi } from '../data/store.ts'
 import { ActionButton, ActionState } from './ActionButton.tsx'
 import { NAME } from '../brand.ts'
 import { useCopyDetails, useEditInChat } from '../data/browser.ts'
@@ -38,17 +39,23 @@ export function MessageBubble({ text, teams, open, onToggle }: { text: string; t
 const clip = (text: string) => text.length > SHOWN ? `${text.slice(0, SHOWN)}…` : text
 const compact = (iso: string) => <SentTime at={iso} />
 
-export function ItemCard({ code, placementId, inline = false, asks }: { code: string; placementId?: string; inline?: boolean; asks?: { codes: string[]; onOpen: (code: string) => void } }) {
-	const { item, entities, ui, draft, actions, primary: declared, newer, todoIds } = useCardPresentation(code, placementId)
+export function ItemCard({ code, placementId, inline = false, asks, fallback, readOnly = false }: { code: string; placementId?: string; inline?: boolean; asks?: { codes: string[]; onOpen: (code: string) => void }; fallback?: Snapshot; readOnly?: boolean }) {
+	const presentation = useCardPresentation(code, placementId, fallback), snapshot = useSnapshot()
+	const [localUi, setLocalUi] = useState<CardUi>({})
+	const item = readOnly ? snapshot?.entities.items[code] : presentation.item
+	const entities = readOnly ? snapshot?.entities : presentation.entities
+	const ui = readOnly ? localUi : presentation.ui, actions = readOnly ? [] : presentation.actions
+	const draft = item?.draftId && entities ? entities.drafts[item.draftId] : undefined
+	const declared = readOnly ? undefined : presentation.primary, newer = !readOnly && presentation.newer, todoIds = readOnly ? item?.todoIds ?? [] : presentation.todoIds
 	const act = useAction()
-	const edit = useEdit(code, item?.rev ?? ''), showLatest = useShowLatest(code), busy = useItemBusy(code), article = useRef<HTMLElement>(null)
+	const liveEdit = useEdit(code, item?.rev ?? ''), showLatest = useShowLatest(code), busy = useItemBusy(code), article = useRef<HTMLElement>(null)
+	const edit = readOnly ? (patch: Partial<CardUi>) => setLocalUi(previous => ({ ...previous, ...patch })) : liveEdit
 	const chatEdit = useEditInChat(), detailsCopy = useCopyDetails()
 	const pendingAsk = !!item && !!entities && item.noteIds.some(id => entities.notes[id]?.answer === undefined)
 	useEffect(() => {
 		const target = inline ? article.current?.closest('.now-row') : article.current
-		target?.scrollIntoView({ block: 'start' })
-		article.current?.focus({ preventScroll: true })
-	}, [code, inline])
+		if (!readOnly) { target?.scrollIntoView({ block: 'start' }); article.current?.focus({ preventScroll: true }) }
+	}, [code, inline, readOnly])
 	// Details opens by itself while an Ask answer is pending, and stays open until the owner closes it.
 	useEffect(() => { if (pendingAsk && ui.folds?.details === undefined) edit({ folds: { ...ui.folds, details: true } }) }, [pendingAsk, ui.folds, edit])
 	if (!item || !entities) return <p role="status">This item is no longer open. Refresh the list to see where it moved.</p>
@@ -56,12 +63,12 @@ export function ItemCard({ code, placementId, inline = false, asks }: { code: st
 	const placement = placementId ? entities.placements[placementId] : undefined
 	const workId = placement?.workId ?? item.workId, work = workId ? entities.work[workId] : undefined
 	const timeline = item.workId ? entities.work[item.workId] : work
-	const report = work?.reportActionId ? entities.actions[work.reportActionId] : undefined
+	const report = !readOnly && work?.reportActionId ? entities.actions[work.reportActionId] : undefined
 	// Your step (S2): its form is the card's primary; the row's free-text "Tell Delegate" is gone (redirecting is in Details › Ask).
 	const primary = report ?? declared
 	const fold = (key: string, open: boolean) => { if (ui.folds?.[key] !== open) edit({ folds: { ...ui.folds, [key]: open } }) }
 	const editable = !!draft && actions.some(action => action.kind === 'send-edit')
-	const replyText = ui.editText ?? draft?.text ?? ''
+	const replyText = ui.editText ?? draft?.sendText ?? draft?.text ?? ''
 	const input: Intent['input'] = primary?.kind === 'send-edit' ? { text: replyText, excluded: ui.excluded } :
 		primary?.kind === 'pick' ? { picks: ui.picks ?? item.picked ?? [] } :
 			primary?.input === 'text' ? { text: ui.answer ?? '' } : { excluded: ui.excluded }
@@ -85,19 +92,19 @@ export function ItemCard({ code, placementId, inline = false, asks }: { code: st
 		<div className="card-head"><span className="card-avatar" style={avatar} aria-hidden="true">{person.initials}</span>
 			<h2 id={`card-title-${code}`} className="card-who">{person.name}</h2><span className="card-where">· {whereOf(chat)} ·</span>
 			<SentTime at={sent.at} added={sent.added} full code={code} />
-			{chat.guests && <span className="chip" title={chipHover('guests')}>Guests in chat</span>}
-			<span className="card-head-end">{item.teams && <a className="card-teams" href={item.teams} target="_blank" rel="noopener noreferrer" title="Open this message in Teams, in a new tab.">Open in Teams <Icon name="ext" /></a>}</span>
+			{chat.guests && <Hint text={chipHover('guests')}><span className="chip">Guests in chat</span></Hint>}
+			<span className="card-head-end">{item.teams && <Hint text="Open this message in Teams, in a new tab."><a className="card-teams" href={item.teams} target="_blank" rel="noopener noreferrer">Open in Teams <Icon name="ext" /></a></Hint>}</span>
 		</div>
 		{item.ask && <MessageBubble text={item.ask} teams={item.teams} open={ui.folds?.ask ?? false} onToggle={open => fold('ask', open)} />}
 		{earlier > 0 && <details className="card-thread" open={ui.folds?.thread ?? false} onToggle={event => fold('thread', event.currentTarget.open)}>
-			<summary title="Show the earlier messages of this conversation here. Nothing changes in Teams.">Show {earlier} earlier message{earlier === 1 ? '' : 's'}</summary>
+			<Hint text="Show the earlier messages of this conversation here. Nothing changes in Teams."><summary>Show {earlier} earlier message{earlier === 1 ? '' : 's'}</summary></Hint>
 			<ol className="thread-list">{item.thread.map((message, n) => <li key={n}><strong>{message.who}</strong> <time dateTime={message.at}>{when(message.at)}</time><p>{clip(message.text)}</p></li>)}</ol>
 		</details>}
 		{item.earlier && <p className="card-earlier"><Icon name="clock" /> {item.earlier}</p>}
 		{newer && <p role="status" className="warnline"><Icon name="warn" /> Changed since you looked. Your current text is kept. <Button variant="outline" onClick={showLatest} disabled={busy}>Show new version</Button></p>}
 		{warnings.map((line, n) => <p key={n} className="warnline"><Icon name="warn" /> {line}</p>)}
 		{item.openOn && <p className="card-status">Open in a terminal on {item.openOn} · {NAME} waits until you close it</p>}
-		{item.before && <p className="chip" title={chipHover('before')}>From before setup</p>}
+		{item.before && <Hint text={chipHover('before')}><p className="chip">From before setup</p></Hint>}
 		{placement?.chips.some(chip => chip.kind === 'retrying') && <p className="warnline">Retrying{placement.nextText ? `: ${placement.nextText.replace('{at}', placement.next?.at ? when(placement.next.at) : 'soon')}` : ''}</p>}
 	</section>
 
@@ -166,7 +173,7 @@ export function ItemCard({ code, placementId, inline = false, asks }: { code: st
 		{draft && <section className="card-block reply-section">
 			{editable ? <Field code={code} rev={item.rev} field="editText" rows={Math.min(14, Math.max(3, Math.ceil(replyText.length / 70) + replyText.split('\n').length))}
 				label={draft.holding ? `Holding reply to ${first}, ${replyWhere} · says you are on it; not the answer yet` : `Your reply to ${first}, ${replyWhere}`}
-				value={replyText} edit={edit} patch={value => ({ editText: value, editing: value !== draft.text })} />
+				value={replyText} edit={edit} patch={value => ({ editText: value, editing: value !== (draft.sendText ?? draft.text) })} />
 				: <><h3>{draft.holding ? `Holding reply to ${first}` : `Your reply to ${first}, ${replyWhere}`}</h3><div className="draft">{draft.sendText ?? draft.text}</div></>}
 			{replyText.length > 400 && <p className="muted reply-count">{replyText.length.toLocaleString()} characters · the whole reply is shown above before you send</p>}
 			{draft.preview && !ui.editing && <p className="muted"><Icon name="spark" />{' '}{item.picked?.length ? 'The reply for your pick' : 'New draft from your answer'}. Not sent yet.</p>}
@@ -175,13 +182,13 @@ export function ItemCard({ code, placementId, inline = false, asks }: { code: st
 
 	// Block 3: what else happens when you send. Changes (each can be left out), to-dos you keep, and a watch.
 	const handled = item.effectIds?.filter(id => !item.changeIds.includes(id)) ?? []
-	const keep = draft && editable ? item.todos ?? [] : []
+	const keep = draft && (editable || readOnly) ? item.todos ?? [] : []
 	const block3 = (item.changeIds.length > 0 || keep.length > 0 || !!item.follow) && <section className="card-block card-after">
 		<h3>{draft ? `When you send, ${NAME} will also` : item.changeIds.some(id => entities.changes[id].state === 'approved') ? 'Approved changes' : `When you approve, ${NAME} will`}</h3>
 		{item.changeIds.map((id, index) => {
 			const change = entities.changes[id], excluded = ui.excluded?.includes(change.n) ?? false
 			const group = prChanges.includes(change) && prNumber && (index === 0 || !prChanges.includes(entities.changes[item.changeIds[index - 1]])) ? <p className="after-group">On PR {prNumber} (Azure DevOps)</p> : null
-			return <div className="change" key={id}>{group}<label><input type="checkbox" checked={!excluded} disabled={busy || change.state === 'approved'}
+			return <div className="change" key={id}>{group}<label><input type="checkbox" checked={!excluded} disabled={readOnly || busy || change.state === 'approved'}
 				onChange={() => edit({ excluded: excluded ? ui.excluded!.filter(n => n !== change.n) : [...(ui.excluded ?? []), change.n] })} /> {change.action}</label>
 				<p className="muted">{change.target}: {change.summary}</p>
 				{change.meaning?.filter(part => !part.warn).map((part, n) => <p key={n} className="muted">{part.text}</p>)}
@@ -194,7 +201,7 @@ export function ItemCard({ code, placementId, inline = false, asks }: { code: st
 		{item.follow && <p><Icon name="clock" /> Watch {item.follow.target} until {item.follow.until}</p>}
 	</section>
 	const earlierTodos = todoIds.length > 0 && <section className="card-block"><h3>Still to do from an earlier reply</h3><ul>{todoIds.map(id => <li key={id}>{entities.todos[id].text}</li>)}</ul>
-		{[...new Set(todoIds.map(id => `${entities.todos[id].code}/todo-done`))].filter(id => id !== primary?.id && entities.actions[id]).map(id => {
+		{!readOnly && [...new Set(todoIds.map(id => `${entities.todos[id].code}/todo-done`))].filter(id => id !== primary?.id && entities.actions[id]).map(id => {
 			const action = entities.actions[id]
 			return <div key={id}><ActionButton action={action} /><ActionState item={action.item} rev={action.rev} /></div>
 		})}</section>
@@ -253,10 +260,10 @@ export function ItemCard({ code, placementId, inline = false, asks }: { code: st
 		<section className="ask-thread"><h4>Ask {NAME}</h4>{item.noteIds.map(id => {
 			const note = entities.notes[id]
 			return <div key={id}><p><strong>You:</strong> {note.question}</p><p>{note.answer === '' ? 'The answer contained only chat instructions. Review the item using its available buttons, or ask a follow-up.' : note.answer ?? 'Waiting for an answer...'}</p><Sources ids={note.sourceIds} entities={entities} />
-				{note.useActionId && <ActionButton action={entities.actions[note.useActionId]} disabled={newer} disabledReason="stale" />}
+				{!readOnly && note.useActionId && <ActionButton action={entities.actions[note.useActionId]} disabled={newer} disabledReason="stale" />}
 			</div>
 		})}
-			<Field code={code} rev={item.rev} field="ask" label={`Ask ${NAME} about this`} value={ui.ask ?? ''} edit={edit} rows={2} />
+			{!readOnly && <Field code={code} rev={item.rev} field="ask" label={`Ask ${NAME} about this`} value={ui.ask ?? ''} edit={edit} rows={2} />}
 			{actions.filter(action => action.kind === 'ask').map(action => <ActionButton key={action.id} action={action} input={{ text: ui.ask }} disabled={!ui.ask?.trim()} disabledReason="Type your question first." />)}
 		</section>
 	</details>
@@ -271,10 +278,10 @@ export function ItemCard({ code, placementId, inline = false, asks }: { code: st
 			}
 		}}>
 		{asks ? <AsksList codes={asks.codes} current={code} entities={entities} onOpen={asks.onOpen} /> : placement && placement.subjects.length >= 2 && <AsksList codes={placement.subjects} current={code} entities={entities} />}
-		{block1}{block2}{block3}{earlierTodos}{block4}
+		{block1}<fieldset className="card-readonly" disabled={readOnly}>{block2}{block3}</fieldset>{earlierTodos}{!readOnly && block4}
 		{chatEdit.message && <p role="status">{chatEdit.message}</p>}
 		{others.map(action => <div key={action.id}>{action.meaning && <p>{action.meaning}</p>}<ActionButton action={action} disabled={newer && action.staleness === 'exact' || action.effect !== 'local' && !action.meaning} disabledReason={newer ? 'stale' : undefined} /></div>)}
-		<ActionState item={code} rev={item.rev} />
+		{!readOnly && <ActionState item={code} rev={item.rev} />}
 		{primary && primary.rev !== item.rev && <ActionState item={primary.item} rev={primary.rev} />}
 		{block5}
 	</article>

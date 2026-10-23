@@ -7,6 +7,9 @@ import { Icon } from '../components/ui/icon.tsx'
 import { Avatar } from './Avatar.tsx'
 import { OngoingSheet } from './OngoingSheet.tsx'
 import { NAME } from '../brand.ts'
+import { useState } from 'react'
+import { MessageBubble } from '../features/ItemCard.tsx'
+import { SentTime } from '../features/SentTime.tsx'
 import './ongoing.css'
 
 const INTERVALS: [number, string][] = [[60, '1 h'], [120, '2 h'], [240, '4 h'], [480, '8 h'], [1440, '1 day']]
@@ -56,6 +59,7 @@ function Watch({ watch, actions }: { watch: Entities['watches'][string]; actions
 }
 
 export default function Ongoing() {
+	const [opened, setOpened] = useState<Record<string, boolean>>({})
 	const snapshot = useSnapshot(), entities = useEntities(), classic = snapshot?.classic
 	if (!classic) return <p role="alert">Classic data is not available. Reload after the app finishes updating.</p>
 	const watches = Object.values(entities.watches), waiting = Object.values(entities.waiting), channels = Object.values(entities.channels), automations = Object.values(entities.automations)
@@ -71,13 +75,13 @@ export default function Ongoing() {
 					{row.last && <span className="ongoing-meta">Last: {preview(row.last.what, 160)} · {when(row.last.at)}</span>}
 					{row.checkAt && <span className="ongoing-meta">I&apos;ll ask you on {shortDate(row.checkAt)} if nothing happens</span>}
 					<Timing action={actions.find(action => action.input === 'interval')} every={row.every} endsAt={row.endsAt} extend={actions.find(action => action.kind === 'classic-extend')} /><RowState actions={actions} />
-				</div><RowActions actions={actions.filter(action => ['classic-close', 'stop-watch'].includes(action.kind))} />
+				</div><a href={`#classic/focus/${row.code}`}>Open</a><RowActions actions={actions.filter(action => ['classic-close', 'stop-watch'].includes(action.kind))} />
 			</li>
 		})}</ul></section>}
 		{waiting.length > 0 && <section><h2 className="ongoing-section-title ongoing-first-title">Waiting on others</h2><p className="ongoing-description">No answer for a day. Follow up drafts a short nudge for you to check first.</p><div className="ongoing-grid">{waiting.map(row => {
 			const actions = actionsOf(row.actionIds)
-			return <article className="ongoing-card" key={row.id} data-classic-waiting={row.code} aria-labelledby={`waiting-${row.code}`}><div className="ongoing-card-head"><span className="ongoing-icon"><Icon name="clock" /></span><div className="ongoing-text"><h3 id={`waiting-${row.code}`}>You asked {row.to}</h3><span className="ongoing-meta">{row.chat} · {when(row.at)}{row.link && <> · <a href={row.link} target="_blank" rel="noopener noreferrer">Open in Teams</a></>}</span></div><span className="code">{row.code}</span></div>
-				<blockquote className="ongoing-ask">{preview(row.text, 280)}</blockquote><RowActions actions={actions.map(action => action.kind === 'follow-up' ? { ...action, label: 'Follow up' } : action)} primary="follow-up" /><RowState actions={actions} />
+			return <article className="ongoing-card" key={row.id} data-classic-waiting={row.code} aria-labelledby={`waiting-${row.code}`}><div className="ongoing-card-head"><span className="ongoing-icon"><Icon name="clock" /></span><div className="ongoing-text"><h3 id={`waiting-${row.code}`}>You asked {row.to}</h3>			<span className="ongoing-meta">{row.chat} · <SentTime at={row.at} code={row.code} />{row.link && <> · <a href={row.link} target="_blank" rel="noopener noreferrer">Open in Teams</a></>}</span></div><span className="code">{row.code}</span></div>
+				<MessageBubble text={row.text} teams={row.link} open={!!opened[row.code]} onToggle={value => setOpened(previous => ({ ...previous, [row.code]: value }))} /><RowActions actions={actions.map(action => action.kind === 'follow-up' ? { ...action, label: 'Follow up' } : action)} primary="follow-up" /><RowState actions={actions} />
 			</article>
 		})}</div></section>}
 		{updates.length > 0 && <section><h2 className="ongoing-section-title ongoing-first-title">{updates.length} update{updates.length === 1 ? '' : 's'}</h2><div className="ongoing-grid">{updates.map(watch => <Watch key={watch.id} watch={watch} actions={actionsOf(classic.watchActionIds[watch.code] ?? watch.actionIds)} />)}</div></section>}

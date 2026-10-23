@@ -1,4 +1,5 @@
 /* The card (spec S1-S4, mockup design-spec/mockups/card-redesign.html): shared by New's opened row and Classic's Needs-you card. */
+.card-readonly{border:0;padding:0;margin:0;min-width:0}
 .item-card .card-block{padding:14px 0;border-top:1px solid var(--border);margin:0}
 .item-card>.card-block:first-child{border-top:0;padding-top:4px}
 .item-card .card-block>h3,.item-card .card-after>h3{font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--text-2);margin:0 0 8px}

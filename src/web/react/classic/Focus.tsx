@@ -9,11 +9,15 @@ import { useData } from '../data/store.ts'
 import { useNavigation } from '../data/navigation.ts'
 import type { Entities, Snapshot } from '../domain/contracts.ts'
 import { ViewportList } from '../components/ViewportList.tsx'
+import { sentAt } from '../features/ItemCard.tsx'
+import { SentTime } from '../features/SentTime.tsx'
+import { codeHover } from '../domain/hover.ts'
 
-const QueueItem = memo(function QueueItem({ item, person, active, current }: { item: Entities['items'][string]; person: Entities['people'][string]; active: boolean; current: boolean }) {
-	return <a className={active ? undefined : 'classic-queue-handled'} href={`#classic/focus/${item.code}`} aria-current={current ? 'step' : undefined} data-classic-code={item.code} data-classic-live={active}>
-		{active ? <Avatar person={person} /> : <span className="classic-queue-check"><Icon name="check" /></span>}<span className="classic-queue-text"><span className="classic-queue-name">{person.name.split(/[\s,(]+/)[0]}<span className="code">{item.code}</span></span><span className="classic-queue-preview">{item.question || item.ask || ''}</span></span>
-	</a>
+const QueueItem = memo(function QueueItem({ item, person, chat, active, current }: { item: Entities['items'][string]; person: Entities['people'][string]; chat: Entities['chats'][string]; active: boolean; current: boolean }) {
+	const sent = sentAt(item)
+	return <div className="classic-queue-row"><a className={active ? undefined : 'classic-queue-handled'} href={`#classic/focus/${item.code}`} title={codeHover(item.code)} aria-current={current ? 'step' : undefined} data-classic-code={item.code} data-classic-live={active}>
+		{active ? <Avatar person={person} /> : <span className="classic-queue-check"><Icon name="check" /></span>}<span className="classic-queue-text"><span className="classic-queue-name"><span>{person.name.split(/[\s,(]+/)[0]}</span><SentTime at={sent.at} added={sent.added} waiting={active} code={item.code} /></span><span className="classic-queue-preview">		{(item.question || item.ask || '').slice(0, 200)}</span><span className="classic-queue-chat">{chat.group ? `in ${chat.name}` : '1:1 chat'}</span></span>
+	</a>{item.teams && <Button asChild variant="ghost" size="icon-xs" aria-label="Open in Teams"><a href={item.teams} target="_blank" rel="noopener noreferrer"><Icon name="ext" /></a></Button>}</div>
 })
 
 export default function Focus() {
@@ -38,10 +42,10 @@ export default function Focus() {
 	const next = index >= 0 ? live[index + 1] : shown.slice(shown.indexOf(code) + 1).find(code => incoming.includes(code)) ?? live[0]
 	return <><h1 className="sr-only">Needs you</h1>
 		{!shown.length ? <section className="empty"><h2>That&apos;s everything</h2><p>Nothing needs you right now.</p><a href="#classic/home">Home</a> - <a href="#classic/done">See what was done</a></section> :
-			<div className="classic-focus">{wide && <nav className="classic-queue" aria-label="Needs you queue"><h2><span>Needs you</span><span>{live.length}</span></h2><ViewportList ordered scrollable className="classic-queue-window" ids={shown} estimate={58} gap={2} target={code} retained={Object.keys(pins)} render={id => {
+			<div className="classic-focus">{wide && <nav className="classic-queue" aria-label="Needs you queue"><h2><span>Needs you</span><span>{live.length}</span></h2>			<ViewportList ordered scrollable className="classic-queue-window" ids={shown} estimate={74} gap={2} target={code} retained={Object.keys(pins)} render={id => {
 				const data = entities.items[id] ? entities : pins[id]?.snapshot.entities ?? visit.snapshots[id].entities
 				const item = data.items[id], person = data.people[item.personId], active = incoming.includes(id)
-				return <QueueItem item={item} person={person} active={active} current={id === code} />
+				return <QueueItem item={item} person={person} chat={data.chats[item.chatId]} active={active} current={id === code} />
 			}} /></nav>}<section className="classic-open-card">
 				<div className="classic-pager"><a href="#classic/home" aria-label="Back to Home"><Icon name="back" /></a><span className="classic-pager-spacer" />
 					<Button variant="outline" aria-label="Previous item" disabled={index <= 0} onClick={() => navigate(`focus/${live[index - 1]}`)}><Icon name="left" /><span className="classic-pager-label">Previous</span></Button>
