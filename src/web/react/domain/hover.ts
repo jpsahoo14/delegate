@@ -92,11 +92,11 @@ const BY_KIND_LABEL: Record<string, string> = { 'row|Skip': "Don't track this. N
 const PLAIN = new Set(['Send', 'Cancel', 'Close', 'Save', 'Edit', 'Open', 'Hide', 'Prev', 'Previous', 'Next'])
 
 export const CHIP_HOVER: Record<string, string> = {
-	A: "This item's code. You can use it in chat, for example to reply or close it.",
-	K: `A set of facts ${NAME} learned or proposes to save.`,
-	R: `A reminder ${NAME} sends for you.`,
-	W: 'Something you asked someone and are waiting on.',
-	H: `A habit ${NAME} suggests or follows.`,
+	A: "{code}: this item's code. Use it in chat, for example \"ok {code}\" to reply or \"close {code}\".",
+	K: `{code}: a set of facts ${NAME} learned or proposes to save.`,
+	R: `{code}: a reminder ${NAME} sends for you.`,
+	W: '{code}: something you asked someone and are waiting on.',
+	H: `{code}: a habit ${NAME} suggests or follows.`,
 	new: 'Changed since you last looked, on any of your machines.',
 	back: 'This was waiting on someone else and now needs you again.',
 	changed: 'The watched thing changed since you last clicked Got it.',
@@ -114,7 +114,7 @@ export const CHIP_HOVER: Record<string, string> = {
 
 // A chip's or item code's hover text; undefined when the chip has none (spec S7, chips and codes).
 export const chipHover = (kind: string, values: HoverValues = {}) => CHIP_HOVER[kind] ? fill(CHIP_HOVER[kind], values) || undefined : undefined
-export const codeHover = (code: string) => /^[AKRWH]\d+$/i.test(code) ? CHIP_HOVER[code[0].toUpperCase()] : undefined
+export const codeHover = (code: string) => /^[AKRWH]\d+$/i.test(code) ? CHIP_HOVER[code[0].toUpperCase()].replaceAll('{code}', code.toUpperCase()) : undefined
 
 // Fills the values; a bracketed clause with a missing value is dropped, or replaced by its fallback.
 export function fill(template: string, values: HoverValues = {}): string {
