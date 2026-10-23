@@ -22,7 +22,8 @@ import { kindOf } from './discover.ts'
 import { ulid } from '../core/ids.ts'
 import { randomUUID } from 'node:crypto'
 import { answerProposal, knowledgeOf, nextProposal } from './proposals.ts'
-import { CMD } from '../brand.ts'
+import { CMD, NAME } from '../brand.ts'
+import { MAY_REVIEW } from './review-gate.ts'
 import { askAtOf } from '../core/numbers.ts'
 import { FOLLOW_DAYS, startFollow, startWatch, stopWatch, watchCommand } from './track.ts'
 import { adoProbe, askPrs, prRefFor, prRefOf, probePRs, prTarget, recheckDeploy, recheckPr, sameVote, voteDropped, type BuildProbe } from './probe.ts'
@@ -93,6 +94,9 @@ export async function applyAnswers(store: Store, src: Source, cfg: Config, procs
 
 async function applyOne(store: Store, src: Source, cfg: Config, wf: Workflow, a: Answer, procs: Procs, probe?: BuildProbe) {
 	wf.answerSurface = a.surface
+	// "Are you in <group>?": yes or no is remembered in config, and the PR's role is read again at once (queue-new #7C).
+	const yesNo = wf.groupAsk && a.verb === 'answer' ? /^\s*(?:(yes|yeah|yep|y|i am)|(no|nope|n|i'm not|i am not))\b/i.exec(a.text ?? '') : undefined
+	if (wf.groupAsk && yesNo) return groupAnswer(store, src, wf, a, !!yesNo[1], probe)
 	// "watch A41" from the self-chat: the same as from the AI chat or the page.
 	if (a.verb === 'watch') return reply(store, src, a, `${MARK} ${watchCommand(store, { code: wf.code, text: a.text }).text}`)
 	if (a.verb === 'unwatch') {
@@ -334,6 +338,28 @@ async function followUp(store: Store, src: Source, cfg: Config, w: Waiting, a: A
 	// The wait stays open until they answer; the follow-up item is linked so the page does not show both.
 	store.saveWaiting(store.waiting().map(x => (x.code === w.code ? { ...x, item: wf.code } : x)))
 	return `Drafting a follow-up to ${who} as ${wf.code}. You'll see it before anything is sent.`
+}
+
+// The owner's yes or no to "Are you in <group>?". Saved in config for every PR, and this PR is read again: a yes may bring back the
+// vote taken off the card; with no vote held, the review is drafted again so it can propose one (queue-new #7C).
+async function groupAnswer(store: Store, src: Source, wf: Workflow, a: Answer, yes: boolean, probe?: BuildProbe) {
+	const ask = wf.groupAsk!, cfg = store.config(), low = (s: string) => s.toLowerCase()
+	const add = (list: string[] | undefined) => [...(list ?? []).filter(g => !ask.groups.some(x => low(x) === low(g))), ...ask.groups]
+	const drop = (list: string[] | undefined) => { const left = (list ?? []).filter(g => !ask.groups.some(x => low(x) === low(g))); return left.length ? left : undefined }
+	const owner = yes ? { ...cfg.owner, reviewerGroups: add(cfg.owner.reviewerGroups), notReviewerGroups: drop(cfg.owner.notReviewerGroups) }
+		: { ...cfg.owner, notReviewerGroups: add(cfg.owner.notReviewerGroups), reviewerGroups: drop(cfg.owner.reviewerGroups) }
+	store.saveConfig({ ...cfg, owner })
+	Object.assign(wf, { groupAsk: undefined, question: undefined, revAt: new Date().toISOString() })
+	store.log({ event: 'group-answer', code: wf.code, pr: ask.pr, yes, groups: ask.groups.length })
+	const live = probe ?? adoProbe(store.config())
+	try { if (live?.pr) await probePRs(store, store.config(), live, Date.now(), true, [wf]) } finally { if (!probe) await live?.close?.() }
+	const named = ask.groups.map(g => `"${g}"`).join(', ')
+	if (yes && wf.prRole && MAY_REVIEW.includes(wf.prRole) && !wf.heldVotes && !pendingEffects(wf.effects).some(e => isVote(e.call)) && wf.todos?.some(t => /Not made for you: /.test(t))) {
+		Object.assign(wf, { state: 'running', todos: wf.todos.filter(t => !/Not made for you: .*group that reviews it/.test(t)), status: `You're in ${named}; reviewing PR ${ask.pr} again so it can propose your vote`, pending: wf.pending.length ? wf.pending : wf.msgIds.slice(-1) })
+		if (!wf.todos?.length) wf.todos = undefined
+	}
+	store.save(wf)
+	await reply(store, src, a, `${MARK} ${yes ? `Noted: you're in ${named}.` : `Noted: you're not in ${named}.`} ${NAME} remembers it for every PR; change it in Settings › You and your replies › Your reviewer groups.`)
 }
 
 // pick: an option with a ready reply becomes the draft at once, as a preview; several options, or one without a reply, rewrite like an answer.

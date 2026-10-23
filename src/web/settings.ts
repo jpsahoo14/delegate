@@ -61,6 +61,10 @@ export const SETTINGS: Spec[] = [
 		parse: raw => (raw.trim().length < 20 ? { ok: false, why: 'Write at least a sentence about yourself.' } : { ok: true, save: (cfg, s) => { writeFileSync(join(s.root, 'profile.md'), raw.trim() + '\n'); return cfg } }) },
 	{ key: 'aliases', label: 'Names people call you', help: 'Besides your first name, such as initials. A group message that uses one is for you.', kind: 'list', section: 'you',
 		read: c => (c.aliases ?? []).join(', '), parse: raw => set({ aliases: list(raw).filter(a => a.length >= 2) }) },
+	// Reviewer groups the owner confirmed are his (queue-new #7C): a PR reviewed by one of them is his to review and vote on.
+	{ key: 'reviewerGroups', label: 'Your reviewer groups', help: `Azure DevOps reviewer groups you are in, such as [Acme]\\Web Reviewers or just Web Reviewers. ${NAME} reviews and votes on a PR one of them reviews. It asks on the card about a group it does not know.`, kind: 'list', section: 'you',
+		read: c => (c.owner.reviewerGroups ?? []).join(', '),
+		parse: raw => { const groups = list(raw); return { ok: true, save: c => ({ ...c, owner: { ...c.owner, reviewerGroups: groups.length ? groups : undefined, notReviewerGroups: c.owner.notReviewerGroups?.filter(g => !groups.some(x => x.toLowerCase() === g.toLowerCase())) } }) } } },
 	{ key: 'knowledge', label: 'Notes folders', help: 'Folders of your notes, relative to the storage folder or absolute. Drafts search them.', kind: 'list', section: 'you',
 		read: c => (c.knowledge ?? []).join(', '),
 		parse: (raw, s) => { const fs = list(raw), missing = fs.filter(f => !existsSync(here(s.root, f))); return missing.length ? { ok: false, why: `Not found on this machine: ${missing.join(', ')}` } : set({ knowledge: fs }) } },

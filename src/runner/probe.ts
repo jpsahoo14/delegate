@@ -9,7 +9,7 @@ import { NAME } from '../brand.ts'
 import { active, approvalAsk, approvalMention, approvalReplyMatches, canCloseApproval, homeOf, linksIn, newTurn, reReviewAsk, statusOf, step, wake } from './work.ts'
 import { closeFamily } from './apply.ts'
 import { realProcs } from './jobs.ts'
-import { isAddMe, MAY_REVIEW, roleOn } from './review-gate.ts'
+import { addMeEffect, isAddMe, MAY_REVIEW, groupQuestion, roleOn, roleWhy, unknownGroups } from './review-gate.ts'
 
 // Checklist steps that wait on a build are checked by the runner, not the AI (R-WRK-13).
 // branch, version, repo: where the build is from, for a deploy's build check (review 10-21 P1-3).
@@ -188,6 +188,7 @@ export async function probePRs(store: Store, cfg: Config, probe: BuildProbe | un
 			continue
 		}
 		w.prRole = await roleOn(cfg, probe, ref, st)
+		regateVotes(store, cfg, w, ref, st)
 		// A review declined by the gate starts by itself once the owner is a reviewer (added in Azure DevOps, or by Add me), within
 		// a week of the ask; a PR that could not be read is decided again now that it can be (review gate G6, G13).
 		const declined = w.reviewDecline
@@ -265,6 +266,45 @@ function setEffects(store: Store, w: Workflow, f: (es?: Effect[]) => Effect[]) {
 	const job = w.job ? store.job(w.job) : undefined
 	if (job?.result) { job.result = { ...job.result, effects: f(job.result.effects) }; store.saveJob(job) }
 	w.revAt = new Date().toISOString()
+}
+
+// A vote already on the card is re-gated each time the owner's role on its PR is read: one he may not cast (a role outside
+// MAY_REVIEW) leaves the card for a to-do with the reason, so ok never offers what the last backstop would refuse; a group the
+// runner cannot match is asked about once; and the vote comes back once he may vote (queue-new #7A, #7C).
+const NOT_MADE = 'Not made for you: '
+function regateVotes(store: Store, cfg: Config, w: Workflow, ref: PrRef, st: PrState) {
+	if (w.state !== 'needs_human' || !w.prRole) return
+	const ours = (e: Effect) => !!pendingEffects([e]).length && isVote(e.call) && prIdOf(e.call) === ref.id
+	const votes = (w.effects ?? []).filter(ours)
+	if (!MAY_REVIEW.includes(w.prRole)) {
+		const why = roleWhy(cfg, w.prRole)
+		const gated = w.todos?.some(t => t.endsWith(`${NOT_MADE}${why}`))
+		if (!votes.length && !gated) return
+		const addMe = w.prRole === 'none' && votes.length ? addMeEffect(cfg, w, ref) : undefined
+		if (votes.length) {
+			setEffects(store, w, es => [...(es ?? []).filter(e => !ours(e)), ...(addMe && !es?.some(isAddMe) ? [addMe] : [])])
+			w.heldVotes = { pr: ref.id, effects: [...(w.heldVotes?.pr === ref.id ? w.heldVotes.effects : []), ...votes], why }
+			w.todos = [...new Set([...(w.todos ?? []), ...votes.map(e => `${e.summary.replace(/[.\s]+$/, '')}. ${NOT_MADE}${why}`)])]
+		}
+		const groups = w.prRole === 'group-unknown' ? unknownGroups(cfg, st) : []
+		// The group question comes before the generic "the reply counts on a change" one: its answer can bring the vote back.
+		const ask = groups.length > 0 && w.groupAsk?.pr !== ref.id && (!w.question || w.question.startsWith('The reply counts on '))
+		if (ask) {
+			w.groupAsk = { pr: ref.id, groups }
+			w.question = groupQuestion(w.groupAsk)
+		}
+		if (votes.length || ask) store.log({ event: 'vote-regated', code: w.code, pr: ref.id, role: w.prRole, votes: votes.length, asked: ask ? groups.length : 0 })
+		return
+	}
+	// A held vote is restored only to the item it was taken from, and only while the item still shows the same review.
+	const held = w.heldVotes
+	if (held?.pr !== ref.id) return
+	setEffects(store, w, es => [...(es ?? []).filter(e => !isAddMe(e) && !ours(e)), ...held.effects])
+	w.todos = w.todos?.filter(t => !held.effects.some(e => t === `${e.summary.replace(/[.\s]+$/, '')}. ${NOT_MADE}${held.why}`))
+	if (!w.todos?.length) w.todos = undefined
+	if (w.groupAsk?.pr === ref.id) { w.groupAsk = undefined; w.question = undefined }
+	w.heldVotes = undefined
+	store.log({ event: 'vote-restored', code: w.code, pr: ref.id, role: w.prRole, votes: held.effects.length })
 }
 
 function clearResetVotes(store: Store, w: Workflow, id: number, state: PrState, vote: number | undefined) {

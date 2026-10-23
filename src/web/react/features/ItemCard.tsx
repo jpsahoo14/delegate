@@ -208,6 +208,12 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 			return <div key={id}><ActionButton action={action} /><ActionState item={action.item} rev={action.rev} /></div>
 		})}</section>
 
+	// An approved batch that partly ran: one plain line above the actions says what was done and what was not, and why (queue-new #7D).
+	const allChanges = [...new Set([...item.changeIds, ...(item.effectIds ?? [])])].map(id => entities.changes[id]).filter(Boolean)
+	const made = allChanges.filter(change => change.state === 'made'), notDone = allChanges.filter(change => change.state !== 'made' && change.state !== 'left-out' && change.error)
+	const doneSoFar = made.length > 0 && notDone.length > 0 && <p className="card-block done-so-far" role="status">
+		<strong>Done:</strong> {made.map(change => change.action).join('; ')}. <strong>Not done:</strong> {notDone.map(change => `${change.action}, ${change.error!.replace(/\.$/, '').replace(/^Error: /, '')}`).join('; ')}.</p>
+
 	// Block 4: one primary that says its result, Later, and ⋯ (Edit in Teams, Dismiss, Continue in a terminal).
 	const primaryLabel = report && primary?.id === report.id ? `Draft my update to ${first}` : reviewLabel ?? (draft?.holding && primary?.kind === 'approve' && !item.changeIds.length ? 'Send holding reply' : decision && primary?.kind === 'answer' ? 'Send decision' : undefined)
 	const block4 = <div className="card-block action-bar card-actions">
@@ -280,7 +286,7 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 			}
 		}}>
 		{asks ? <AsksList codes={asks.codes} current={code} entities={entities} onOpen={asks.onOpen} /> : placement && placement.subjects.length >= 2 && <AsksList codes={placement.subjects} current={code} entities={entities} />}
-		{block1}<fieldset className="card-readonly" disabled={readOnly}>{block2}{block3}</fieldset>{earlierTodos}{!readOnly && block4}
+		{block1}<fieldset className="card-readonly" disabled={readOnly}>{block2}{block3}</fieldset>{earlierTodos}{doneSoFar}{!readOnly && block4}
 		{chatEdit.message && <p role="status">{chatEdit.message}</p>}
 		{others.map(action => <div key={action.id}>{action.meaning && <p>{action.meaning}</p>}<ActionButton action={action} disabled={newer && action.staleness === 'exact' || action.effect !== 'local' && !action.meaning} disabledReason={newer ? 'stale' : undefined} /></div>)}
 		{!readOnly && <ActionState item={code} rev={item.rev} />}

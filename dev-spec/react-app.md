@@ -1,5 +1,25 @@
 # React preview
 
+## A50: no vote the backstop would refuse, nothing half-made, groups the owner confirmed, and changes made without an AI run (queue-new #7)
+
+(A) Each PR read re-gates a vote already on the card (`regateVotes` in `probePRs`): when the owner's role is outside
+MAY_REVIEW, the vote leaves the card (item and job alike) for a to-do with the reason and is kept as `heldVotes`; it comes back
+when a later read lets him vote. With role "none", Add me is offered. (B) Before a non-vote change in an approved batch,
+`makeChange` reads every vote in it (`batchVoteBlocked`); if one cannot be cast, nothing else is made ("Not made: it was
+approved together with …"). (C) `owner.reviewerGroups` / `owner.notReviewerGroups` (full "[Org]\Group" or short name) count in
+`ownerRole`; Settings › You and your replies › "Your reviewer groups" edits them; a PR group in neither list is asked about once
+on the card ("Are you in …? Answer yes or no"), and the answer is saved and the PR read again. (D) Each change made or refused
+is a work step ("Made: … (ref)", "Not made: … (why)"), and a card whose approved batch partly ran shows "Done: … Not done: …"
+above the actions. (E) An approved batch whose changes all carry their exact call is made in the same pass through
+`makeChange` (`executeDirect`, run marked `direct`), with no AI run; a batch with any change lacking a call keeps the change run.
+Fictional root, stub worker (quota), stub PR reader, stub tool-server caller: a vote proposed while the owner was a direct
+reviewer left the card with the reason once only an unknown group reviewed the PR, and the card asked about that group (New
+and Classic at 1280); ok then made nothing; "yes" saved the group and brought the vote back; ok made the comment and the vote
+(69 and 85 ms after ok) and sent the reply within 0.2 s, with two "Made:" steps and no AI run; a PR with new commits before
+the batch made nothing; a batch whose second comment failed at the server showed "Done: comment on PR … Not done: …, ADO
+500 …" in New and Classic. Note for the test phase: tests that drive the change run through `procs.start` for fully specified
+changes now take the direct path.
+
 ## A reply is checked against Azure DevOps only when it claims a vote; several PRs are each checked (queue-new #12)
 
 Before #12, any reply with "approv" in it (or any reply to an approval ask) went through the owner-vote check, so a review that

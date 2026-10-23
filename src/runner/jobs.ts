@@ -43,6 +43,7 @@ import { clearCalling, maybeOf } from './ledger.ts'
 import { removeRunFiles } from '../adapters/run-files.ts'
 import { agentSetupFailure, type AgentSetupFailure } from '../core/agent-failure.ts'
 import { blockedAgent, holdAgent, waitingForAgent } from './agent-health.ts'
+import { makeChange, mcpCaller, serverOf, type Caller } from './change.ts'
 
 export type Procs = {
 	start: (cfg: Config['agent'], i: RunInput & { workflowId: string; runId: string }) => { pid: number }
@@ -249,7 +250,7 @@ export async function checkJobs(store: Store, src: Source, cfg: Config, procs: P
 		const over = Date.now() - Date.parse(run.startedAt) > (run.wrapUp ? WRAP_UP_MINUTES : minutes) * 60_000
 		// After a restart the recorded process ID can belong to an unrelated program, and a run from another machine is not ours to stop.
 		const rebooted = Date.parse(run.startedAt) < (procs.bootMs?.() ?? Date.now() - uptime() * 1000)
-		const live = run.machine === store.machine && !rebooted && procs.alive(run.pid)
+		const live = !run.direct && run.machine === store.machine && !rebooted && procs.alive(run.pid)
 		if (run.machine !== store.machine && !r) {
 			if (over) fail(store, job, `Stopped after ${minutes} minutes on ${run.machine}, with no result`)
 			continue
@@ -444,6 +445,32 @@ export function settleCompleted(store: Store, procs: Procs = realProcs) {
 }
 
 // The approved changes ran. The reply goes out only to items whose ok still matches what they approved.
+// An approved change that carries its exact call needs no AI run: each is made through make_change's own path (the owner's tool
+// server, the ledger, the PR read right before a vote), in this pass, and the batch is finished at once (queue-new #7E: a change run
+// spent 42 s starting and 1.5 min of model time on two fully specified calls). A batch with any change lacking a call keeps the run.
+export const directCall = (cfg: Config, e: Effect) => !!e.call?.tool && !!e.call.args && !!serverOf(cfg, e.call.tool)
+export async function executeDirect(store: Store, src: Source, cfg: Config, procs: Procs, probe?: BuildProbe, call: Caller = mcpCaller(cfg)): Promise<number> {
+	let n = 0
+	for (const job of store.jobs().filter(j => j.state === 'queued' && j.purpose === 'execute' && !store.openWindow(j.id))) {
+		if (store.control().paused || store.control().stopped) break
+		if (!parentsOf(store, job).some(p => stillApproved(p, job))) continue
+		const effects = job.result?.effects ?? []
+		const todo = effects.map((e, i) => (pendingEffects([e]).length ? i : -1)).filter(i => i >= 0)
+		if (!todo.length || todo.some(i => !directCall(cfg, effects[i]))) continue
+		const runId = ulid(), t0 = Date.now()
+		Object.assign(job, { state: 'running', error: undefined, retry: undefined, run: { id: runId, pid: 0, startedAt: new Date().toISOString(), machine: store.machine, purpose: 'execute', asks: job.asks.length, direct: true } })
+		store.saveJob(job)
+		store.log({ event: 'job-start', job: job.id, key: job.key, purpose: 'execute', runId, direct: true })
+		for (const i of todo) await makeChange(store, job.id, runId, i, call, probe)
+		store.writeReport({ workflowId: job.id, intent: 'other', state: 'done', summary: 'Made the approved changes' }, runId)
+		await finishExecute(store, src, cfg, job, procs, probe)
+		store.archiveReport(job.id, runId)
+		store.log({ event: 'job-direct', job: job.id, changes: todo.length, ms: Date.now() - t0 })
+		n++
+	}
+	return n
+}
+
 async function finishExecute(store: Store, src: Source, cfg: Config, job: Job, procs: Procs, probe?: BuildProbe) {
 	// A change counts as made only when make_change recorded it, never because the run says so (next action).
 	const effects = foldChanges(store, job)
@@ -459,6 +486,18 @@ async function finishExecute(store: Store, src: Source, cfg: Config, job: Job, p
 	// Kept and removed say whether the changes went as proposed (removed: left out by the owner, or dropped as no longer needed).
 	// Logged before the replies go out, so the changes come first in the log, as they did in the chat (R-NEX-11).
 	store.log({ event: 'job-executed', job: job.id, items: parents.map(w => w.code), kept: effects.filter(e => !e.off).length, removed: effects.filter(e => e.off).length, done: effects.length - left.length, left: left.length, ...usedBy(job) })
+	// Each change this run made or refused is a step in the item's history, so Details says what happened (queue-new #7D).
+	const ranNow = Object.entries(store.changes(job.id, job.run!.id))
+	for (const home of new Set(parents.filter(wf => stillApproved(wf, before)).map(wf => homeOf(store, wf)))) {
+		let moved = false
+		for (const [i, c] of ranNow) {
+			const e = effects[Number(i)]
+			if (!e || c.state === 'calling') continue
+			moved = step(home, c.state === 'done' ? `Made: ${e.summary.replace(/[.\s]+$/, '')}${c.ref && c.ref !== 'done' ? ` (${c.ref})` : ''}` : `Not made: ${e.summary.replace(/[.\s]+$/, '')} (${(c.error ?? 'it failed').replace(/^Error: /, '').replace(/\.$/, '').slice(0, 160)})`, { ref: `change:${job.run!.id}:${i}` }) || moved
+		}
+		if (moved && !parents.some(p => p.id === home.id)) store.save(home)
+		else if (moved) for (const p of parents.filter(p => p.id === home.id)) p.work = home.work
+	}
 	for (const wf of parents) {
 		const ok = stillApproved(wf, before)
 		const replyDigest = wf.approved?.replyDigest

@@ -44,6 +44,16 @@ export async function makeChange(store: Store, jobId: string, runId: string, ind
 	const unusable = !to ? `No tool server is set up for ${e.call!.tool}${cli.error ? `: ${cli.path} could not be read (${cli.error})` : ''}.`
 		: !spec?.command ? `The ${to[0]} tool server is remote (${spec?.type ?? 'http'}); ${NAME} cannot call it yet.` : undefined
 	if (unusable) { store.saveChange(jobId, runId, index, { call: key, state: 'failed', error: unusable, at: at() }); return { error: unusable } }
+	// Changes approved together were written assuming each other (a comment that says "this approval is for …"): when a vote in the
+	// batch cannot be cast now, nothing else in it is made either, and the owner sees why (queue-new #7B, A50).
+	if (!isVote(e.call)) {
+		const blocked = await batchVoteBlocked(store, job, runId, owner, probe)
+		if (blocked) {
+			const error = `Not made: it was approved together with "${blocked.summary}", which cannot be made (${blocked.error.replace(/\.$/, '')}).`
+			store.saveChange(jobId, runId, index, { call: key, state: 'failed', error, at: at() })
+			return { error }
+		}
+	}
 	// The ledger: a call made in any run is never made again, whatever the lists say (review 10-21e P1). A vote is a state, so the
 	// PR read right before it decides instead: one the PR shows is never cast, and one reset by hand is cast again (re-review P2-4).
 	const made = isVote(e.call) ? undefined : madeBefore(store, e)
@@ -79,6 +89,24 @@ export async function makeChange(store: Store, jobId: string, runId: string, ind
 		store.saveChange(jobId, runId, index, { call: key, state: 'failed', error, at: at() }); ledger({ state: 'failed', error })
 		return { error }
 	}
+}
+
+// The first vote in a change run's batch that cannot be cast now, read once per vote and recorded, so its own call refuses the same.
+async function batchVoteBlocked(store: Store, job: NonNullable<ReturnType<Store['job']>>, runId: string, owner: Workflow, probe?: BuildProbe): Promise<{ summary: string; error: string } | undefined> {
+	const effects = job.result?.effects ?? []
+	for (const [i, v] of effects.entries()) {
+		if (!pendingEffects([v]).length || !isVote(v.call)) continue
+		const had = store.changes(job.id, runId)[i]
+		if (had?.state === 'failed') return { summary: v.summary, error: had.error ?? 'it failed' }
+		if (had) continue
+		const moved = await voteMoved(store, owner, v, probe)
+		if (moved && 'error' in moved) {
+			store.saveChange(job.id, runId, i, { call: JSON.stringify(v.call), state: 'failed', error: moved.error, at: new Date().toISOString(), ...(moved.stale ? { stale: true as const } : {}) })
+			store.log({ event: 'batch-vote-blocked', job: job.id, index: i, error: moved.error.slice(0, 200) })
+			return { summary: v.summary, error: moved.error }
+		}
+	}
+	return undefined
 }
 
 // The PR as it is right before the vote: still active, at the commit reviewed, and what the owner was shown about it.

@@ -27,7 +27,7 @@ import { ackJob, afterDraft, ownerActive } from './autosend.ts'
 import { attachJob, carry, jobForRecheck, recheckJob } from './jobs.ts'
 import { askedVote, asksInvite, isInvite, isVote, pendingEffects, proposalEffects, refusedAsk, sameHead, sameProposal, vet, voteName, voteValue } from '../core/effects.ts'
 import { probePRs, prRefOf, prTarget, sameVote, voteNow, type BuildProbe } from './probe.ts'
-import { decline, isReviewJob, MAY_REVIEW, reviewGate, voteGate } from './review-gate.ts'
+import { decline, groupQuestion, isReviewJob, MAY_REVIEW, reviewGate, voteGate } from './review-gate.ts'
 import { checkPromise, failPromise, promisesDue } from './promise.ts'
 import { heldBy } from './owner.ts'
 import { knowledgeOf, resolveEvidence } from './proposals.ts'
@@ -305,7 +305,8 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 		const read = v.effects.some(e => isVote(e.call)) ? await voteNow(store, cfg, fresh, v.effects, probe) : undefined
 		const effects = proposalEffects(read && !read.why && !read.again && read.effects.length === v.effects.length ? read.effects : v.effects, [fresh])
 		if (v.todos.length) Object.assign(fresh, { todos: [...new Set([...(fresh.todos ?? []), ...v.todos])],
-			question: fresh.question ?? (fresh.draft ? refusedAsk(fresh.code, v.todos.length) : `These changes need you: ${v.todos.join('; ')}`) })
+			// "Are you in <group>?" stays the question while it is open: its answer can bring the vote back (queue-new #7C).
+			question: fresh.question ?? (wf.groupAsk ? groupQuestion(wf.groupAsk) : fresh.draft ? refusedAsk(fresh.code, v.todos.length) : `These changes need you: ${v.todos.join('; ')}`) })
 		if (fresh.kind === 'reply' && effects.length) {
 			// Only this turn's unfinished proposal can keep a receipt; a live reset invalidates a vote receipt.
 			const made = (fresh.effects ?? []).filter(e => e.done)

@@ -143,7 +143,7 @@ export type Job = {
 	branch?: string
 	redacted?: boolean
 	// A relay run is a message to the owner's open session on some machine (research/cross-session-opus.md): no process here, so no pid to watch.
-	run?: { id: Id; pid: number; startedAt: string; machine: string; purpose: 'work' | 'execute'; asks: number; wrapUp?: boolean; relay?: string }
+	run?: { id: Id; pid: number; startedAt: string; machine: string; purpose: 'work' | 'execute'; asks: number; wrapUp?: boolean; relay?: string; direct?: true }
 	// Set when the job's session is the owner's own open session: asks go to it as messages, never as a second process on its history.
 	// sent: asks the session has; from: where the run in flight started; ok: asks the owner let through (review 10-19 #5, #12).
 	relay?: { machine: string; session: string; what: string; sent?: number; from?: number; ok?: number }
@@ -193,6 +193,10 @@ export type Workflow = {
 	// The owner's place on the item's PR at the last read, and why a review was not started (PR review gate, owner rule 10-23).
 	prRole?: PrRole
 	reviewDecline?: { pr: number; role: PrRole | 'unread' | 'not-asked'; at: string; ask?: string }
+	// Votes taken off the card because the owner may not vote there at the last read; they come back once he may (queue-new #7A).
+	heldVotes?: { pr: number; effects: Effect[]; why: string }
+	// The reviewer groups on the PR the card asks about ("Are you in …?"); the answer is remembered in config (queue-new #7C).
+	groupAsk?: { pr: number; groups: string[] }
 	prDraft?: string
 	completionSeen?: string
 	draft?: Draft
@@ -344,7 +348,9 @@ export type WatchedChat = { id: string; name: string; test?: boolean; group?: bo
 
 export type Config = {
 	schema: 1
-	owner: Person & { upn?: string }
+	// reviewerGroups: reviewer groups the owner confirmed are his ("[Org]\Group" or the short name); notReviewerGroups: ones he said
+	// are not. A group on a PR that is in neither stays unknown, never guessed (queue-new #7C).
+	owner: Person & { upn?: string; reviewerGroups?: string[]; notReviewerGroups?: string[] }
 	// IANA zone of the owner's wall clock, saved at setup; work hours use it (Bet 1).
 	tz?: string
 	source: { kind?: string; command: string[]; docs?: string[]; selfChatId: string; tools?: Partial<Record<'list' | 'send' | 'sendSelf' | 'get' | 'chats' | 'del' | 'edit' | 'presence' | 'members' | 'message', string>> }

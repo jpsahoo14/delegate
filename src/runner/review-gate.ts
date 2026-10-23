@@ -21,11 +21,18 @@ export function ownerRole(cfg: Config, st: PrState, teams?: string[]): PrRole {
 	const groups = all.filter(r => r.group)
 	if (!groups.length) return 'none'
 	// A team reviewer is "[Project]\Team"; the owner's teams are read by name. A group that is not one of them (a security
-	// group, or a team he is not in) cannot be told apart, so it is never taken as his.
+	// group, or a team he is not in) cannot be told apart, so it is never taken as his, unless he confirmed it (queue-new #7C).
 	const short = (n: string) => norm(n.split('\\').at(-1))
-	const mine = teams ? groups.filter(g => teams.some(t => norm(t) === short(g.name))) : []
-	if (!mine.length) return 'group-unknown'
+	const listed = (g: string, list?: string[]) => !!list?.some(x => norm(x) === norm(g) || norm(x) === short(g))
+	const mine = groups.filter(g => listed(g.name, cfg.owner.reviewerGroups) || !!teams?.some(t => norm(t) === short(g.name)))
+	if (!mine.length) return groups.every(g => listed(g.name, cfg.owner.notReviewerGroups)) ? 'none' : 'group-unknown'
 	return mine.some(g => g.vote < 5 && !g.declined) ? 'group' : 'group-approved'
+}
+// The PR's reviewer groups the owner has not said yes or no to: asked about once on the card (queue-new #7C).
+export function unknownGroups(cfg: Config, st: PrState): string[] {
+	const short = (n: string) => norm(n.split('\\').at(-1))
+	const said = [...(cfg.owner.reviewerGroups ?? []), ...(cfg.owner.notReviewerGroups ?? [])]
+	return (st.reviewers ?? []).filter(r => r.group && !said.some(x => norm(x) === norm(r.name) || norm(x) === short(r.name))).map(r => r.name)
 }
 
 // The owner's teams per project, read at most hourly; a failed read is "not known", never "none".
@@ -115,3 +122,5 @@ export function addMeEffect(cfg: Config, wf: Workflow, ref: PrRef): Effect | und
 	return { system: 'azure devops', action: 'add reviewer', target: `PR ${ref.id}`, summary: `Add you as an optional reviewer on PR ${ref.id}`, call }
 }
 export const isAddMe = (e?: Effect) => e?.call?.args.action === 'update_reviewers' && e.call.args.reviewerAction === 'add'
+// The card's one question about reviewer groups the runner cannot match to the owner (queue-new #7C).
+export const groupQuestion = (ask: { pr: number; groups: string[] }) => `Are you in ${ask.groups.map(g => `"${g}"`).join(' or ')}, the reviewer group${ask.groups.length > 1 ? 's' : ''} on PR ${ask.pr}? Answer "yes" or "no"; ${NAME} remembers it.`

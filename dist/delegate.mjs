@@ -42050,9 +42050,15 @@ function ownerRole(cfg, st, teams) {
   const groups2 = all.filter((r) => r.group);
   if (!groups2.length) return "none";
   const short3 = (n) => norm2(n.split("\\").at(-1));
-  const mine = teams ? groups2.filter((g) => teams.some((t2) => norm2(t2) === short3(g.name))) : [];
-  if (!mine.length) return "group-unknown";
+  const listed2 = (g, list2) => !!list2?.some((x) => norm2(x) === norm2(g) || norm2(x) === short3(g));
+  const mine = groups2.filter((g) => listed2(g.name, cfg.owner.reviewerGroups) || !!teams?.some((t2) => norm2(t2) === short3(g.name)));
+  if (!mine.length) return groups2.every((g) => listed2(g.name, cfg.owner.notReviewerGroups)) ? "none" : "group-unknown";
   return mine.some((g) => g.vote < 5 && !g.declined) ? "group" : "group-approved";
+}
+function unknownGroups(cfg, st) {
+  const short3 = (n) => norm2(n.split("\\").at(-1));
+  const said2 = [...cfg.owner.reviewerGroups ?? [], ...cfg.owner.notReviewerGroups ?? []];
+  return (st.reviewers ?? []).filter((r) => r.group && !said2.some((x) => norm2(x) === norm2(r.name) || norm2(x) === short3(r.name))).map((r) => r.name);
 }
 async function teamsFor(probe, project, now = Date.now()) {
   const hit = teamCache.get(project);
@@ -42130,7 +42136,7 @@ function addMeEffect(cfg, wf, ref) {
   if (!allows(cfg.agent.effectTools, call)) return void 0;
   return { system: "azure devops", action: "add reviewer", target: `PR ${ref.id}`, summary: `Add you as an optional reviewer on PR ${ref.id}`, call };
 }
-var MAY_REVIEW, norm2, teamCache, REVIEW_ASK, isReviewJob, roleWhy, isAddMe;
+var MAY_REVIEW, norm2, teamCache, REVIEW_ASK, isReviewJob, roleWhy, isAddMe, groupQuestion;
 var init_review_gate = __esm({
   "src/runner/review-gate.ts"() {
     "use strict";
@@ -42144,6 +42150,7 @@ var init_review_gate = __esm({
     isReviewJob = (key, intent) => /^pr:/i.test(key.trim()) || intent === "pr_review";
     roleWhy = (cfg, role) => role === "author" ? "the PR is yours" : role === "declined" ? "you declined it in Azure DevOps" : role === "group-approved" ? "your team already approved it" : role === "group-unknown" ? `${NAME} cannot tell whether you are in the group that reviews it` : role === "ambiguous" ? `two reviewers there are named ${cfg.owner.name}` : role === "none" ? "you are not on its reviewer list" : "you are a reviewer";
     isAddMe = (e) => e?.call?.args.action === "update_reviewers" && e.call.args.reviewerAction === "add";
+    groupQuestion = (ask) => `Are you in ${ask.groups.map((g) => `"${g}"`).join(" or ")}, the reviewer group${ask.groups.length > 1 ? "s" : ""} on PR ${ask.pr}? Answer "yes" or "no"; ${NAME} remembers it.`;
   }
 });
 
@@ -44409,7 +44416,8 @@ ${res.summary ?? ""}`));
     const effects = proposalEffects(read4 && !read4.why && !read4.again && read4.effects.length === v.effects.length ? read4.effects : v.effects, [fresh]);
     if (v.todos.length) Object.assign(fresh, {
       todos: [.../* @__PURE__ */ new Set([...fresh.todos ?? [], ...v.todos])],
-      question: fresh.question ?? (fresh.draft ? refusedAsk(fresh.code, v.todos.length) : `These changes need you: ${v.todos.join("; ")}`)
+      // "Are you in <group>?" stays the question while it is open: its answer can bring the vote back (queue-new #7C).
+      question: fresh.question ?? (wf.groupAsk ? groupQuestion(wf.groupAsk) : fresh.draft ? refusedAsk(fresh.code, v.todos.length) : `These changes need you: ${v.todos.join("; ")}`)
     });
     if (fresh.kind === "reply" && effects.length) {
       const made = (fresh.effects ?? []).filter((e) => e.done);
@@ -45914,6 +45922,8 @@ ${nextProposal(store2, kp.code, answer.surface === "self" ? 6 : Infinity)}`}`).s
 }
 async function applyOne(store2, src, cfg, wf, a, procs, probe) {
   wf.answerSurface = a.surface;
+  const yesNo = wf.groupAsk && a.verb === "answer" ? /^\s*(?:(yes|yeah|yep|y|i am)|(no|nope|n|i'm not|i am not))\b/i.exec(a.text ?? "") : void 0;
+  if (wf.groupAsk && yesNo) return groupAnswer(store2, src, wf, a, !!yesNo[1], probe);
   if (a.verb === "watch") return reply(store2, src, a, `${MARK} ${watchCommand(store2, { code: wf.code, text: a.text }).text}`);
   if (a.verb === "unwatch") {
     const blocked = stopPromisedWatch(store2, procs, wf);
@@ -46186,6 +46196,31 @@ async function followUp(store2, src, cfg, w, a) {
   store2.save(wf);
   store2.saveWaiting(store2.waiting().map((x) => x.code === w.code ? { ...x, item: wf.code } : x));
   return `Drafting a follow-up to ${who2} as ${wf.code}. You'll see it before anything is sent.`;
+}
+async function groupAnswer(store2, src, wf, a, yes, probe) {
+  const ask = wf.groupAsk, cfg = store2.config(), low = (s3) => s3.toLowerCase();
+  const add = (list2) => [...(list2 ?? []).filter((g) => !ask.groups.some((x) => low(x) === low(g))), ...ask.groups];
+  const drop = (list2) => {
+    const left = (list2 ?? []).filter((g) => !ask.groups.some((x) => low(x) === low(g)));
+    return left.length ? left : void 0;
+  };
+  const owner2 = yes ? { ...cfg.owner, reviewerGroups: add(cfg.owner.reviewerGroups), notReviewerGroups: drop(cfg.owner.notReviewerGroups) } : { ...cfg.owner, notReviewerGroups: add(cfg.owner.notReviewerGroups), reviewerGroups: drop(cfg.owner.reviewerGroups) };
+  store2.saveConfig({ ...cfg, owner: owner2 });
+  Object.assign(wf, { groupAsk: void 0, question: void 0, revAt: (/* @__PURE__ */ new Date()).toISOString() });
+  store2.log({ event: "group-answer", code: wf.code, pr: ask.pr, yes, groups: ask.groups.length });
+  const live2 = probe ?? adoProbe(store2.config());
+  try {
+    if (live2?.pr) await probePRs(store2, store2.config(), live2, Date.now(), true, [wf]);
+  } finally {
+    if (!probe) await live2?.close?.();
+  }
+  const named = ask.groups.map((g) => `"${g}"`).join(", ");
+  if (yes && wf.prRole && MAY_REVIEW.includes(wf.prRole) && !wf.heldVotes && !pendingEffects(wf.effects).some((e) => isVote(e.call)) && wf.todos?.some((t2) => /Not made for you: /.test(t2))) {
+    Object.assign(wf, { state: "running", todos: wf.todos.filter((t2) => !/Not made for you: .*group that reviews it/.test(t2)), status: `You're in ${named}; reviewing PR ${ask.pr} again so it can propose your vote`, pending: wf.pending.length ? wf.pending : wf.msgIds.slice(-1) });
+    if (!wf.todos?.length) wf.todos = void 0;
+  }
+  store2.save(wf);
+  await reply(store2, src, a, `${MARK} ${yes ? `Noted: you're in ${named}.` : `Noted: you're not in ${named}.`} ${NAME} remembers it for every PR; change it in Settings \u203A You and your replies \u203A Your reviewer groups.`);
 }
 function pick2(store2, cfg, wf, a) {
   const c = wf.choices;
@@ -46729,6 +46764,7 @@ var init_apply = __esm({
     init_ids();
     init_proposals();
     init_brand();
+    init_review_gate();
     init_numbers();
     init_track();
     init_probe();
@@ -46911,6 +46947,7 @@ async function probePRs(store2, cfg, probe, now = Date.now(), force = false, sub
       continue;
     }
     w.prRole = await roleOn(cfg, probe, ref, st);
+    regateVotes(store2, cfg, w, ref, st);
     const declined = w.reviewDecline;
     if (!subjects && declined && declined.pr === ref.id && declined.role !== "not-asked" && (MAY_REVIEW.includes(w.prRole) || declined.role === "unread") && /^active$/i.test(st.status) && now - Date.parse(declined.at) < 7 * 864e5) {
       Object.assign(w, {
@@ -46984,6 +47021,41 @@ function setEffects(store2, w, f) {
     store2.saveJob(job);
   }
   w.revAt = (/* @__PURE__ */ new Date()).toISOString();
+}
+function regateVotes(store2, cfg, w, ref, st) {
+  if (w.state !== "needs_human" || !w.prRole) return;
+  const ours4 = (e) => !!pendingEffects([e]).length && isVote(e.call) && prIdOf(e.call) === ref.id;
+  const votes = (w.effects ?? []).filter(ours4);
+  if (!MAY_REVIEW.includes(w.prRole)) {
+    const why2 = roleWhy(cfg, w.prRole);
+    const gated = w.todos?.some((t2) => t2.endsWith(`${NOT_MADE}${why2}`));
+    if (!votes.length && !gated) return;
+    const addMe = w.prRole === "none" && votes.length ? addMeEffect(cfg, w, ref) : void 0;
+    if (votes.length) {
+      setEffects(store2, w, (es) => [...(es ?? []).filter((e) => !ours4(e)), ...addMe && !es?.some(isAddMe) ? [addMe] : []]);
+      w.heldVotes = { pr: ref.id, effects: [...w.heldVotes?.pr === ref.id ? w.heldVotes.effects : [], ...votes], why: why2 };
+      w.todos = [.../* @__PURE__ */ new Set([...w.todos ?? [], ...votes.map((e) => `${e.summary.replace(/[.\s]+$/, "")}. ${NOT_MADE}${why2}`)])];
+    }
+    const groups2 = w.prRole === "group-unknown" ? unknownGroups(cfg, st) : [];
+    const ask = groups2.length > 0 && w.groupAsk?.pr !== ref.id && (!w.question || w.question.startsWith("The reply counts on "));
+    if (ask) {
+      w.groupAsk = { pr: ref.id, groups: groups2 };
+      w.question = groupQuestion(w.groupAsk);
+    }
+    if (votes.length || ask) store2.log({ event: "vote-regated", code: w.code, pr: ref.id, role: w.prRole, votes: votes.length, asked: ask ? groups2.length : 0 });
+    return;
+  }
+  const held = w.heldVotes;
+  if (held?.pr !== ref.id) return;
+  setEffects(store2, w, (es) => [...(es ?? []).filter((e) => !isAddMe(e) && !ours4(e)), ...held.effects]);
+  w.todos = w.todos?.filter((t2) => !held.effects.some((e) => t2 === `${e.summary.replace(/[.\s]+$/, "")}. ${NOT_MADE}${held.why}`));
+  if (!w.todos?.length) w.todos = void 0;
+  if (w.groupAsk?.pr === ref.id) {
+    w.groupAsk = void 0;
+    w.question = void 0;
+  }
+  w.heldVotes = void 0;
+  store2.log({ event: "vote-restored", code: w.code, pr: ref.id, role: w.prRole, votes: held.effects.length });
 }
 function clearResetVotes(store2, w, id, state, vote) {
   if (vote === void 0 || !/^active$/i.test(state.status)) return;
@@ -47186,7 +47258,7 @@ async function deployMoved(store2, w, e, probe) {
     return `Could not read ${ring} right before the deploy (${String(err).slice(0, 120)}).`;
   }
 }
-var EVERY_MS, PR_LINK, VOTE, prChanges, factsOf2, noVoteNeeded, voteDropped, sameVote, clock3, deploys, projectOf, sameCall;
+var EVERY_MS, PR_LINK, VOTE, prChanges, factsOf2, NOT_MADE, noVoteNeeded, voteDropped, sameVote, clock3, deploys, projectOf, sameCall;
 var init_probe = __esm({
   "src/runner/probe.ts"() {
     "use strict";
@@ -47205,6 +47277,7 @@ var init_probe = __esm({
     VOTE = { "10": (id) => `approved PR ${id}`, "5": (id) => `approved PR ${id} with suggestions`, "-5": (id) => `voted "Waiting for author" on PR ${id}`, "-10": (id) => `rejected PR ${id}` };
     prChanges = (w) => pendingEffects(w.effects).filter((e) => isVote(e.call) && prIdOf(e.call) !== void 0);
     factsOf2 = (st) => ({ title: st.title ?? "", author: st.author ?? "", required: st.required ?? [], autoComplete: !!st.autoComplete });
+    NOT_MADE = "Not made for you: ";
     noVoteNeeded = (id, state) => `PR ${id} is ${state}, so no vote is needed`;
     voteDropped = (status3 = "") => /^PR \d+ is \w+, so no vote is needed$/.test(status3);
     sameVote = (a, b) => a === b || a >= 5 && (b ?? 0) >= 5;
@@ -47277,6 +47350,148 @@ var init_ledger = __esm({
     voteOf = (c) => isVote(c) ? String(voteValue(c) ?? c.args.vote ?? "") : void 0;
     maybeOf = (store2, e) => !!e.maybe || !!e.call && !isVote(e.call) && store2.callRec(callKey(e.call))?.state === "calling";
     ledgerRec = (e, r) => ({ call: callKey(e.call), head: e.head, vote: voteOf(e.call), at: (/* @__PURE__ */ new Date()).toISOString(), ...r });
+  }
+});
+
+// src/runner/change.ts
+async function makeChange(store2, jobId, runId, index, call, probe) {
+  const job = store2.job(jobId), e = job?.result?.effects[index];
+  if (!job || !e) return { error: `There is no change ${index}.` };
+  if (e.done) return { ref: e.done.ref };
+  const had = store2.changes(jobId, runId)[index];
+  if (had?.state === "done") return { ref: had.ref };
+  if (had?.state === "failed") return { error: had.error };
+  if (had?.state === "calling") return { error: `Change ${index} may have been made already: its call has no answer yet, so it is not repeated.` };
+  if (e.maybe) return { error: `Change ${index} may have been made already. The owner must check, then say to make it again.` };
+  const owner2 = parentsOf(store2, job).find((p) => stillApproved(p, job));
+  if (!pendingEffects([e]).length || !owner2) return { error: `Change ${index} was not approved by the owner.` };
+  const cfg = store2.config();
+  const why2 = refusal(cfg, e, prTarget(store2, owner2));
+  if (why2) {
+    const error62 = `Change ${index} cannot be made: ${why2}.`;
+    if (why2.startsWith(OLD_INVITE)) store2.saveChange(jobId, runId, index, { call: JSON.stringify(e.call), state: "failed", error: error62, at: (/* @__PURE__ */ new Date()).toISOString() });
+    return { error: error62 };
+  }
+  const key = JSON.stringify(e.call), at3 = () => (/* @__PURE__ */ new Date()).toISOString();
+  const to = serverOf(cfg, e.call.tool), spec = to && toolServers(cfg)[to[0]], cli = cliServers(cfg.agent.flavor);
+  const unusable = !to ? `No tool server is set up for ${e.call.tool}${cli.error ? `: ${cli.path} could not be read (${cli.error})` : ""}.` : !spec?.command ? `The ${to[0]} tool server is remote (${spec?.type ?? "http"}); ${NAME} cannot call it yet.` : void 0;
+  if (unusable) {
+    store2.saveChange(jobId, runId, index, { call: key, state: "failed", error: unusable, at: at3() });
+    return { error: unusable };
+  }
+  if (!isVote(e.call)) {
+    const blocked = await batchVoteBlocked(store2, job, runId, owner2, probe);
+    if (blocked) {
+      const error62 = `Not made: it was approved together with "${blocked.summary}", which cannot be made (${blocked.error.replace(/\.$/, "")}).`;
+      store2.saveChange(jobId, runId, index, { call: key, state: "failed", error: error62, at: at3() });
+      return { error: error62 };
+    }
+  }
+  const made = isVote(e.call) ? void 0 : madeBefore(store2, e);
+  if (made) {
+    store2.saveChange(jobId, runId, index, { call: JSON.stringify(e.call), state: "done", ref: made.ref, at: made.at });
+    return { ref: made.ref };
+  }
+  const open2 = store2.callRec(callKey(e.call));
+  if (open2?.state === "calling" && !isVote(e.call)) {
+    store2.saveChange(jobId, runId, index, { call: key, state: "calling", at: open2.at });
+    return { error: `Change ${index} may have been made already: an earlier call has no answer. The owner must check, then say to make it again.` };
+  }
+  const moved = isVote(e.call) ? await voteMoved(store2, owner2, e, probe) : isDeploy(e.call) ? await deployMoved(store2, owner2, e, probe).then((error62) => error62 ? { error: error62, stale: void 0 } : void 0) : void 0;
+  if (moved && "cast" in moved) {
+    const ref = "already on the PR";
+    store2.saveChange(jobId, runId, index, { call: key, state: "done", ref, at: at3() });
+    return { ref };
+  }
+  if (moved) {
+    store2.saveChange(jobId, runId, index, { call: key, state: "failed", error: moved.error, at: at3(), ...moved.stale ? { stale: true } : {} });
+    return { error: moved.error };
+  }
+  const ledger = (r) => store2.saveCallRec(ledgerRec(e, r));
+  store2.saveChange(jobId, runId, index, { call: key, state: "calling", at: at3() });
+  ledger({ state: "calling" });
+  try {
+    const r = await call(to[0], to[1], toolShape(e.call).args);
+    const ref = String(r?.id ?? "done");
+    store2.saveChange(jobId, runId, index, { call: key, state: "done", ref, at: at3() });
+    ledger({ state: "done", ref });
+    return { ref };
+  } catch (err) {
+    if (err instanceof LostResponse) {
+      const read3 = isVote(e.call) ? await voteMoved(store2, owner2, e, probe) : void 0;
+      if (read3 && "cast" in read3) {
+        const ref = "already on the PR";
+        store2.saveChange(jobId, runId, index, { call: key, state: "done", ref, at: at3() });
+        ledger({ state: "done", ref });
+        return { ref };
+      }
+      store2.log({ event: "change-uncertain", jobId, index, tool: e.call.tool, error: err.message.slice(0, 300) });
+      return { error: `Change ${index} may have been made already: its answer was lost, so it is not repeated. Check it, then say to make it again.` };
+    }
+    const error62 = String(err).slice(0, 300);
+    store2.saveChange(jobId, runId, index, { call: key, state: "failed", error: error62, at: at3() });
+    ledger({ state: "failed", error: error62 });
+    return { error: error62 };
+  }
+}
+async function batchVoteBlocked(store2, job, runId, owner2, probe) {
+  const effects = job.result?.effects ?? [];
+  for (const [i, v] of effects.entries()) {
+    if (!pendingEffects([v]).length || !isVote(v.call)) continue;
+    const had = store2.changes(job.id, runId)[i];
+    if (had?.state === "failed") return { summary: v.summary, error: had.error ?? "it failed" };
+    if (had) continue;
+    const moved = await voteMoved(store2, owner2, v, probe);
+    if (moved && "error" in moved) {
+      store2.saveChange(job.id, runId, i, { call: JSON.stringify(v.call), state: "failed", error: moved.error, at: (/* @__PURE__ */ new Date()).toISOString(), ...moved.stale ? { stale: true } : {} });
+      store2.log({ event: "batch-vote-blocked", job: job.id, index: i, error: moved.error.slice(0, 200) });
+      return { summary: v.summary, error: moved.error };
+    }
+  }
+  return void 0;
+}
+async function voteMoved(store2, wf, e, probe) {
+  const c = e.call, ref = prOf(store2, wf) ?? { project: String(c.args.project ?? ""), repo: String(c.args.repositoryId ?? ""), id: prIdOf(c) };
+  if (!probe?.pr) return { error: `PR ${ref.id} could not be read right before the vote: no Azure DevOps server is set up.` };
+  try {
+    const st = await probe.pr(ref.project, ref.repo, ref.id), why2 = prMoved(st, e);
+    if (why2.length) return { error: `PR ${ref.id} changed since your review (${why2.join(", ")}).`, stale: true };
+    const me = store2.config().owner.name.trim().toLowerCase(), mine = st.votes.filter((v) => v.name.trim().toLowerCase() === me);
+    if (me && mine.length === 1 && sameVote(mine[0].vote, voteValue(c))) return { cast: true };
+    const role = await roleOn(store2.config(), probe, ref, st);
+    return MAY_REVIEW.includes(role) ? void 0 : { error: `No vote was cast on PR ${ref.id}: ${roleWhy(store2.config(), role)}.` };
+  } catch (err) {
+    return { error: `Could not read PR ${ref.id} right before the vote (${String(err).slice(0, 120)}).` };
+  }
+}
+function serverOf(cfg, tool) {
+  const s3 = Object.keys(toolServers(cfg)).filter((n) => tool.startsWith(`${n}-`)).sort((a, b) => b.length - a.length)[0];
+  return s3 ? [s3, tool.slice(s3.length + 1)] : void 0;
+}
+var mcpCaller;
+var init_change = __esm({
+  "src/runner/change.ts"() {
+    "use strict";
+    init_mcp_client();
+    init_brand();
+    init_effects();
+    init_jobs();
+    init_probe();
+    init_review_gate();
+    init_deploy();
+    init_ledger();
+    mcpCaller = (cfg) => async (server, tool, args2) => {
+      const s3 = toolServers(cfg)[server];
+      if (!s3?.command) throw new Error(s3 ? `The ${server} tool server is remote (${s3.type ?? "http"}); ${NAME} cannot call it yet.` : `No command for the ${server} tool server`);
+      const mcp = clientFor({ ...s3, command: s3.command });
+      try {
+        const bad = await mcp.argsProblem(tool, args2);
+        if (bad) throw new Error(bad);
+        return await mcp.call(tool, args2);
+      } finally {
+        await mcp.close().catch(() => void 0);
+      }
+    };
   }
 });
 
@@ -47467,7 +47682,7 @@ async function checkJobs(store2, src, cfg, procs, probe, startedBefore) {
     const r = store2.peekReport(job.id, run2.id);
     const over = Date.now() - Date.parse(run2.startedAt) > (run2.wrapUp ? WRAP_UP_MINUTES : minutes) * 6e4;
     const rebooted = Date.parse(run2.startedAt) < (procs.bootMs?.() ?? Date.now() - uptime3() * 1e3);
-    const live2 = run2.machine === store2.machine && !rebooted && procs.alive(run2.pid);
+    const live2 = !run2.direct && run2.machine === store2.machine && !rebooted && procs.alive(run2.pid);
     if (run2.machine !== store2.machine && !r) {
       if (over) fail(store2, job, `Stopped after ${minutes} minutes on ${run2.machine}, with no result`);
       continue;
@@ -47654,6 +47869,27 @@ function settleCompleted(store2, procs = realProcs) {
     store2.log({ event: "work-completed", code: wf.code, reason: "persisted completion receipt" });
   }
 }
+async function executeDirect(store2, src, cfg, procs, probe, call = mcpCaller(cfg)) {
+  let n = 0;
+  for (const job of store2.jobs().filter((j2) => j2.state === "queued" && j2.purpose === "execute" && !store2.openWindow(j2.id))) {
+    if (store2.control().paused || store2.control().stopped) break;
+    if (!parentsOf(store2, job).some((p) => stillApproved(p, job))) continue;
+    const effects = job.result?.effects ?? [];
+    const todo = effects.map((e, i) => pendingEffects([e]).length ? i : -1).filter((i) => i >= 0);
+    if (!todo.length || todo.some((i) => !directCall(cfg, effects[i]))) continue;
+    const runId = ulid3(), t0 = Date.now();
+    Object.assign(job, { state: "running", error: void 0, retry: void 0, run: { id: runId, pid: 0, startedAt: (/* @__PURE__ */ new Date()).toISOString(), machine: store2.machine, purpose: "execute", asks: job.asks.length, direct: true } });
+    store2.saveJob(job);
+    store2.log({ event: "job-start", job: job.id, key: job.key, purpose: "execute", runId, direct: true });
+    for (const i of todo) await makeChange(store2, job.id, runId, i, call, probe);
+    store2.writeReport({ workflowId: job.id, intent: "other", state: "done", summary: "Made the approved changes" }, runId);
+    await finishExecute(store2, src, cfg, job, procs, probe);
+    store2.archiveReport(job.id, runId);
+    store2.log({ event: "job-direct", job: job.id, changes: todo.length, ms: Date.now() - t0 });
+    n++;
+  }
+  return n;
+}
 async function finishExecute(store2, src, cfg, job, procs, probe) {
   const effects = foldChanges(store2, job);
   const stale = Object.values(store2.changes(job.id, job.run.id)).find((c) => c.stale);
@@ -47663,6 +47899,17 @@ async function finishExecute(store2, src, cfg, job, procs, probe) {
   const before = { ...job, result: { ...job.result, effects: job.result?.effects ?? [] } };
   const parents = parentsOf(store2, job);
   store2.log({ event: "job-executed", job: job.id, items: parents.map((w) => w.code), kept: effects.filter((e) => !e.off).length, removed: effects.filter((e) => e.off).length, done: effects.length - left.length, left: left.length, ...usedBy(job) });
+  const ranNow = Object.entries(store2.changes(job.id, job.run.id));
+  for (const home of new Set(parents.filter((wf) => stillApproved(wf, before)).map((wf) => homeOf(store2, wf)))) {
+    let moved = false;
+    for (const [i, c] of ranNow) {
+      const e = effects[Number(i)];
+      if (!e || c.state === "calling") continue;
+      moved = step(home, c.state === "done" ? `Made: ${e.summary.replace(/[.\s]+$/, "")}${c.ref && c.ref !== "done" ? ` (${c.ref})` : ""}` : `Not made: ${e.summary.replace(/[.\s]+$/, "")} (${(c.error ?? "it failed").replace(/^Error: /, "").replace(/\.$/, "").slice(0, 160)})`, { ref: `change:${job.run.id}:${i}` }) || moved;
+    }
+    if (moved && !parents.some((p) => p.id === home.id)) store2.save(home);
+    else if (moved) for (const p of parents.filter((p2) => p2.id === home.id)) p.work = home.work;
+  }
   for (const wf of parents) {
     const ok = stillApproved(wf, before);
     const replyDigest = wf.approved?.replyDigest;
@@ -48064,7 +48311,7 @@ function scrubLog(store2, runId) {
 function parentsOf(store2, job) {
   return job.parents.map((id) => store2.workflow(id)).filter((w) => !!w && w.state !== "done" && (w.job === job.id || w.work?.watch === job.id));
 }
-var realProcs, RECHECK, asksRecheck, NEVER_RELAY, keyOf2, effectsKey, stillApproved, executing, WRAP_UP_MINUTES, WRAP_UP, ended, usedBy, switchOf, MISSES, MISS_RETRY_MINUTES, hhmm3, changeText, TRACKER_SESSION_LIMIT;
+var realProcs, RECHECK, asksRecheck, NEVER_RELAY, keyOf2, effectsKey, stillApproved, executing, WRAP_UP_MINUTES, WRAP_UP, ended, usedBy, directCall, switchOf, MISSES, MISS_RETRY_MINUTES, hhmm3, changeText, TRACKER_SESSION_LIMIT;
 var init_jobs = __esm({
   "src/runner/jobs.ts"() {
     "use strict";
@@ -48107,6 +48354,7 @@ var init_jobs = __esm({
     init_run_files();
     init_agent_failure();
     init_agent_health();
+    init_change();
     realProcs = {
       start: (cfg, i) => startAgent(cfg, i, join22(LOCAL_DIR, "sessions", `${i.runId}.log`)),
       alive: (pid) => aliveAs(pid),
@@ -48133,6 +48381,7 @@ var init_jobs = __esm({
       ended.delete(job.id);
       return u;
     };
+    directCall = (cfg, e) => !!e.call?.tool && !!e.call.args && !!serverOf(cfg, e.call.tool);
     switchOf = (c) => {
       const one = `${c.tool}:${String(c.args.action ?? "")}`;
       return changeName(one) !== one ? changeName(one) : changeName(c.tool);
@@ -51079,6 +51328,19 @@ var SETTINGS = [
     read: (c) => (c.aliases ?? []).join(", "),
     parse: (raw) => set2({ aliases: list(raw).filter((a) => a.length >= 2) })
   },
+  // Reviewer groups the owner confirmed are his (queue-new #7C): a PR reviewed by one of them is his to review and vote on.
+  {
+    key: "reviewerGroups",
+    label: "Your reviewer groups",
+    help: `Azure DevOps reviewer groups you are in, such as [Acme]\\Web Reviewers or just Web Reviewers. ${NAME} reviews and votes on a PR one of them reviews. It asks on the card about a group it does not know.`,
+    kind: "list",
+    section: "you",
+    read: (c) => (c.owner.reviewerGroups ?? []).join(", "),
+    parse: (raw) => {
+      const groups2 = list(raw);
+      return { ok: true, save: (c) => ({ ...c, owner: { ...c.owner, reviewerGroups: groups2.length ? groups2 : void 0, notReviewerGroups: c.owner.notReviewerGroups?.filter((g) => !groups2.some((x) => x.toLowerCase() === g.toLowerCase())) } }) };
+    }
+  },
   {
     key: "knowledge",
     label: "Notes folders",
@@ -51471,120 +51733,7 @@ init_own();
 init_track();
 init_work();
 init_status();
-
-// src/runner/change.ts
-init_mcp_client();
-init_brand();
-init_effects();
-init_jobs();
-init_probe();
-init_review_gate();
-init_deploy();
-init_ledger();
-async function makeChange(store2, jobId, runId, index, call, probe) {
-  const job = store2.job(jobId), e = job?.result?.effects[index];
-  if (!job || !e) return { error: `There is no change ${index}.` };
-  if (e.done) return { ref: e.done.ref };
-  const had = store2.changes(jobId, runId)[index];
-  if (had?.state === "done") return { ref: had.ref };
-  if (had?.state === "failed") return { error: had.error };
-  if (had?.state === "calling") return { error: `Change ${index} may have been made already: its call has no answer yet, so it is not repeated.` };
-  if (e.maybe) return { error: `Change ${index} may have been made already. The owner must check, then say to make it again.` };
-  const owner2 = parentsOf(store2, job).find((p) => stillApproved(p, job));
-  if (!pendingEffects([e]).length || !owner2) return { error: `Change ${index} was not approved by the owner.` };
-  const cfg = store2.config();
-  const why2 = refusal(cfg, e, prTarget(store2, owner2));
-  if (why2) {
-    const error62 = `Change ${index} cannot be made: ${why2}.`;
-    if (why2.startsWith(OLD_INVITE)) store2.saveChange(jobId, runId, index, { call: JSON.stringify(e.call), state: "failed", error: error62, at: (/* @__PURE__ */ new Date()).toISOString() });
-    return { error: error62 };
-  }
-  const key = JSON.stringify(e.call), at3 = () => (/* @__PURE__ */ new Date()).toISOString();
-  const to = serverOf(cfg, e.call.tool), spec = to && toolServers(cfg)[to[0]], cli = cliServers(cfg.agent.flavor);
-  const unusable = !to ? `No tool server is set up for ${e.call.tool}${cli.error ? `: ${cli.path} could not be read (${cli.error})` : ""}.` : !spec?.command ? `The ${to[0]} tool server is remote (${spec?.type ?? "http"}); ${NAME} cannot call it yet.` : void 0;
-  if (unusable) {
-    store2.saveChange(jobId, runId, index, { call: key, state: "failed", error: unusable, at: at3() });
-    return { error: unusable };
-  }
-  const made = isVote(e.call) ? void 0 : madeBefore(store2, e);
-  if (made) {
-    store2.saveChange(jobId, runId, index, { call: JSON.stringify(e.call), state: "done", ref: made.ref, at: made.at });
-    return { ref: made.ref };
-  }
-  const open2 = store2.callRec(callKey(e.call));
-  if (open2?.state === "calling" && !isVote(e.call)) {
-    store2.saveChange(jobId, runId, index, { call: key, state: "calling", at: open2.at });
-    return { error: `Change ${index} may have been made already: an earlier call has no answer. The owner must check, then say to make it again.` };
-  }
-  const moved = isVote(e.call) ? await voteMoved(store2, owner2, e, probe) : isDeploy(e.call) ? await deployMoved(store2, owner2, e, probe).then((error62) => error62 ? { error: error62, stale: void 0 } : void 0) : void 0;
-  if (moved && "cast" in moved) {
-    const ref = "already on the PR";
-    store2.saveChange(jobId, runId, index, { call: key, state: "done", ref, at: at3() });
-    return { ref };
-  }
-  if (moved) {
-    store2.saveChange(jobId, runId, index, { call: key, state: "failed", error: moved.error, at: at3(), ...moved.stale ? { stale: true } : {} });
-    return { error: moved.error };
-  }
-  const ledger = (r) => store2.saveCallRec(ledgerRec(e, r));
-  store2.saveChange(jobId, runId, index, { call: key, state: "calling", at: at3() });
-  ledger({ state: "calling" });
-  try {
-    const r = await call(to[0], to[1], toolShape(e.call).args);
-    const ref = String(r?.id ?? "done");
-    store2.saveChange(jobId, runId, index, { call: key, state: "done", ref, at: at3() });
-    ledger({ state: "done", ref });
-    return { ref };
-  } catch (err) {
-    if (err instanceof LostResponse) {
-      const read3 = isVote(e.call) ? await voteMoved(store2, owner2, e, probe) : void 0;
-      if (read3 && "cast" in read3) {
-        const ref = "already on the PR";
-        store2.saveChange(jobId, runId, index, { call: key, state: "done", ref, at: at3() });
-        ledger({ state: "done", ref });
-        return { ref };
-      }
-      store2.log({ event: "change-uncertain", jobId, index, tool: e.call.tool, error: err.message.slice(0, 300) });
-      return { error: `Change ${index} may have been made already: its answer was lost, so it is not repeated. Check it, then say to make it again.` };
-    }
-    const error62 = String(err).slice(0, 300);
-    store2.saveChange(jobId, runId, index, { call: key, state: "failed", error: error62, at: at3() });
-    ledger({ state: "failed", error: error62 });
-    return { error: error62 };
-  }
-}
-async function voteMoved(store2, wf, e, probe) {
-  const c = e.call, ref = prOf(store2, wf) ?? { project: String(c.args.project ?? ""), repo: String(c.args.repositoryId ?? ""), id: prIdOf(c) };
-  if (!probe?.pr) return { error: `PR ${ref.id} could not be read right before the vote: no Azure DevOps server is set up.` };
-  try {
-    const st = await probe.pr(ref.project, ref.repo, ref.id), why2 = prMoved(st, e);
-    if (why2.length) return { error: `PR ${ref.id} changed since your review (${why2.join(", ")}).`, stale: true };
-    const me = store2.config().owner.name.trim().toLowerCase(), mine = st.votes.filter((v) => v.name.trim().toLowerCase() === me);
-    if (me && mine.length === 1 && sameVote(mine[0].vote, voteValue(c))) return { cast: true };
-    const role = await roleOn(store2.config(), probe, ref, st);
-    return MAY_REVIEW.includes(role) ? void 0 : { error: `No vote was cast on PR ${ref.id}: ${roleWhy(store2.config(), role)}.` };
-  } catch (err) {
-    return { error: `Could not read PR ${ref.id} right before the vote (${String(err).slice(0, 120)}).` };
-  }
-}
-function serverOf(cfg, tool) {
-  const s3 = Object.keys(toolServers(cfg)).filter((n) => tool.startsWith(`${n}-`)).sort((a, b) => b.length - a.length)[0];
-  return s3 ? [s3, tool.slice(s3.length + 1)] : void 0;
-}
-var mcpCaller = (cfg) => async (server, tool, args2) => {
-  const s3 = toolServers(cfg)[server];
-  if (!s3?.command) throw new Error(s3 ? `The ${server} tool server is remote (${s3.type ?? "http"}); ${NAME} cannot call it yet.` : `No command for the ${server} tool server`);
-  const mcp = clientFor({ ...s3, command: s3.command });
-  try {
-    const bad = await mcp.argsProblem(tool, args2);
-    if (bad) throw new Error(bad);
-    return await mcp.call(tool, args2);
-  } finally {
-    await mcp.close().catch(() => void 0);
-  }
-};
-
-// src/mcp/server.ts
+init_change();
 init_probe();
 
 // src/web/shell.ts
@@ -54279,9 +54428,22 @@ async function tick(store2, deps = {}) {
       store2.log({ event: "probe-failed", error: String(e).slice(0, 300) });
     }
     const answers2 = await applyAnswers(store2, src, cfg, procs, false, probe);
-    const jobsMark = Date.now(), jobsNow = answers2 ? startJobs(store2, cfg, procs, ["bootstrap:chats"]) : 0;
+    const jobsMark = Date.now(), jobsNow = answers2 ? await executeDirect(store2, src, cfg, procs, probe, deps.call) + startJobs(store2, cfg, procs, ["bootstrap:chats"]) : 0;
     const closeProbe = () => {
       if (!deps.probe) void probe?.close?.().catch(() => void 0);
+    };
+    const direct = async () => {
+      let p;
+      try {
+        p = deps.probe ?? adoProbe(cfg);
+      } catch {
+        p = void 0;
+      }
+      try {
+        return await executeDirect(store2, src, cfg, procs, p, deps.call);
+      } finally {
+        if (!deps.probe) await p?.close?.().catch(() => void 0);
+      }
     };
     if (store2.control().stopped) {
       closeProbe();
@@ -54348,7 +54510,7 @@ async function tick(store2, deps = {}) {
     } finally {
       if (!deps.history) await h?.close();
     }
-    const jobsStarted = startJobs(store2, cfg, procs, h?.conversations ? ["bootstrap:chats"] : []);
+    const jobsStarted = await direct() + startJobs(store2, cfg, procs, h?.conversations ? ["bootstrap:chats"] : []);
     capHealth(store2, cfg);
     const now = Date.now();
     if (store2.workflows().some((w) => w.state === "scheduled" && w.sendAt && Date.parse(w.sendAt) <= now) || store2.automations().some((a) => a.state === "active" && a.next && Date.parse(a.next) <= now)) {
@@ -54360,7 +54522,7 @@ async function tick(store2, deps = {}) {
       }
     }
     const lateAnswers = await applyAnswers(store2, src, cfg, procs, true);
-    const jobsLate = lateAnswers ? startJobs(store2, cfg, procs, ["bootstrap:chats"]) : 0;
+    const jobsLate = lateAnswers ? await direct() + startJobs(store2, cfg, procs, ["bootstrap:chats"]) : 0;
     const autoSent = await dueSends(store2, src, cfg, deps.probe) + await dueAutomations(store2, src, cfg);
     const nudged = await nudge(store2, src, cfg);
     try {

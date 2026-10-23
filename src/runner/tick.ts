@@ -22,7 +22,8 @@ import { discover } from './discover.ts'
 import { dueSends } from './autosend.ts'
 import { daily } from './daily.ts'
 import { dueAutomations } from './automations.ts'
-import { checkJobs, legacyEffects, realProcs, settleCompleted, startJobs, type Procs } from './jobs.ts'
+import { checkJobs, executeDirect, legacyEffects, realProcs, settleCompleted, startJobs, type Procs } from './jobs.ts'
+import type { Caller } from './change.ts'
 import { checkOpen } from './continue.ts'
 import { stampPlaces } from './place.ts'
 import { writeSnapshot } from '../web/server.ts'
@@ -36,7 +37,7 @@ export type TickResult = { skipped?: string; commands: number; answers: number; 
 // One tick converges on the end state in dev-spec/runner.md. Safe to run twice.
 export const TAKEOVER_MIN = 30
 
-export async function tick(store: Store, deps: { source?: Source; run?: RunWorker; procs?: Procs; force?: boolean; history?: History; probe?: BuildProbe; mono?: () => number } = {}): Promise<TickResult> {
+export async function tick(store: Store, deps: { source?: Source; run?: RunWorker; procs?: Procs; force?: boolean; history?: History; probe?: BuildProbe; mono?: () => number; call?: Caller } = {}): Promise<TickResult> {
 	const t0 = Date.now()
 	// A monotonic clock does not advance while the machine sleeps, so a sleep inside a cycle shows as the difference.
 	const mono = deps.mono ?? (() => performance.now()), p0 = mono()
@@ -103,8 +104,15 @@ export async function tick(store: Store, deps: { source?: Source; run?: RunWorke
 		try { probe = deps.probe ?? adoProbe(cfg) } catch (e) { store.log({ event: 'probe-failed', error: String(e).slice(0, 300) }) }
 		const answers = await applyAnswers(store, src, cfg, procs, false, probe)
 		// An approval's change job starts in this pass, before any draft runs, never one pass later (latency a). Jobs run detached.
-		const jobsMark = Date.now(), jobsNow = answers ? startJobs(store, cfg, procs, ['bootstrap:chats']) : 0
+		// Approved changes with their exact calls are made in this pass, with no AI run (queue-new #7E).
+		const jobsMark = Date.now(), jobsNow = answers ? await executeDirect(store, src, cfg, procs, probe, deps.call) + startJobs(store, cfg, procs, ['bootstrap:chats']) : 0
 		const closeProbe = () => { if (!deps.probe) void probe?.close?.().catch(() => undefined) }
+		// After the pass's PR reads are closed, a direct change batch opens its own reader for the PR read before a vote.
+		const direct = async () => {
+			let p: BuildProbe | undefined
+			try { p = deps.probe ?? adoProbe(cfg) } catch { p = undefined }
+			try { return await executeDirect(store, src, cfg, procs, p, deps.call) } finally { if (!deps.probe) await p?.close?.().catch(() => undefined) }
+		}
 		// Stopped means no reading or drafting, but runs already started are still watched and their budgets enforced (tester P1-10).
 		if (store.control().stopped) { closeProbe(); store.setHealth('source'); checkOpen(store, procs, procs.bootMs?.()); await checkJobs(store, src, cfg, procs, deps.probe); reschedule(store, cfg, false, t0); return { skipped: 'stopped', commands, answers, asks: 0, runs: 0, nudged: false, ms: Date.now() - t0 } }
 		planSweep(store)
@@ -142,7 +150,7 @@ export async function tick(store: Store, deps: { source?: Source; run?: RunWorke
 		const h = deps.history ?? historyFor(cfg)
 		try { if (!sweeping(store)) await planChats(store, h, new Date()) } catch (e) { store.log({ event: 'harvest-plan-failed', error: String(e).slice(0, 300) }) } finally { if (!deps.history) await h?.close() }
 		// A plan that could not run this time waits for the next cycle; it never falls back to one run over 50 chats.
-		const jobsStarted = startJobs(store, cfg, procs, h?.conversations ? ['bootstrap:chats'] : [])
+		const jobsStarted = await direct() + startJobs(store, cfg, procs, h?.conversations ? ['bootstrap:chats'] : [])
 		capHealth(store, cfg)
 		// A pause or stop typed while drafts were being written applies before anything goes out (review 10-20 R1d).
 		const now = Date.now()
@@ -150,7 +158,7 @@ export async function tick(store: Store, deps: { source?: Source; run?: RunWorke
 			try { await readOwnerCommands(store, src, cursors); store.saveCursors(cursors) } catch (e) { store.log({ event: 'controls-reread-failed', error: String(e).slice(0, 200) }) }
 		}
 		const lateAnswers = await applyAnswers(store, src, cfg, procs, true)
-		const jobsLate = lateAnswers ? startJobs(store, cfg, procs, ['bootstrap:chats']) : 0
+		const jobsLate = lateAnswers ? await direct() + startJobs(store, cfg, procs, ['bootstrap:chats']) : 0
 		const autoSent = await dueSends(store, src, cfg, deps.probe) + await dueAutomations(store, src, cfg)
 		const nudged = await nudge(store, src, cfg)
 		// Habit suggestions wait until nothing needs a reply, and are told once (R-HAB-01, review: not a second inbox).
