@@ -13,6 +13,7 @@ import type { Store } from '../store/state.ts'
 import { applyAnswers } from './apply.ts'
 import { dispatch, nudge, type RunWorker } from './dispatch.ts'
 import { intake, readOwnerCommands, say, takeMissed } from './intake.ts'
+import { retryOwnerReplies } from './owner-reply.ts'
 import { planSweep, sweep, sweeping } from './sweep.ts'
 import { untold } from '../os/autoupdate.ts'
 import { closeDead } from '../mesh/inbox.mjs'
@@ -109,6 +110,7 @@ export async function tick(store: Store, deps: { source?: Source; run?: RunWorke
 		const before = store.chats()
 		// Chat cursors are saved only after a whole read, so a failure resumes in order.
 		try { found = await discover(store, src, cfg); asks = await intake(store, src, cfg, cursors, found.chats) } catch (e) { closeProbe(); return await down(e, false) }
+		await retryOwnerReplies(store, cfg, t0)
 		store.setHealth('source')
 		if (store.schedule().backoff) store.saveSchedule({ ...store.schedule(), backoff: undefined })
 		store.saveCursors(cursors)

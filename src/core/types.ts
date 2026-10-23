@@ -26,7 +26,7 @@ export type Rule = {
 	style?: string
 }
 
-export type Msg = { id: string; at: string; from: Person; text: string; byOwner: boolean; ownerReply?: { askId: string; answered?: boolean } }
+export type Msg = { id: string; at: string; from: Person; text: string; byOwner: boolean; ownerReply?: { askId: string; answered?: boolean; text?: string } }
 
 // stale: set by the runner when a card citation does not resolve or has expired; it then counts as no card (R-ANS-02).
 // label: the sensitivity label of a file or page the draft quotes, such as Confidential (R-SEC-08).

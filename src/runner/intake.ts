@@ -7,7 +7,7 @@ import { answers, askedOf, type Waiting } from '../core/waiting.ts'
 import { randomUUID } from 'node:crypto'
 import type { Config, Msg, Person, WatchedChat, Workflow } from '../core/types.ts'
 import { asSpeaker, classify, continuesOwner, htmlToText, inlineImages, nextTurn, replyTarget, type RawMsg, type Turn } from '../core/intake.ts'
-import { ownerReplies } from './owner-reply.ts'
+import { matchesOwnerDraft, ownReplyText, ownerReplies, rememberOwnerReply } from './owner-reply.ts'
 import { MARK, plain, renderPhone } from '../core/render.ts'
 import { catchUpLines, inbox, nextProposal } from './proposals.ts'
 import { statusText } from './status.ts'
@@ -133,24 +133,7 @@ export async function intake(store: Store, src: Source, cfg: Config, cursors: Re
 				const item = to ? workOfAsk(store, open, raw, c.text, to) : undefined
 				if (to && !store.waiting().some(w => w.msgId === raw.id)) store.saveWaiting([...store.waiting(), { code: store.nextCode('W'), chat: { id: chat.id, name: chat.name }, msgId: raw.id, at: raw.at, to, text: c.text.slice(0, 600), state: 'waiting', ...(item ? { item } : {}) }])
 				const replied = await ownerReplies(store, cfg, raw, c.text, open)
-				for (const o of open) {
-					const askAt = askAtOf(store.thread(o.id), o.msgIds)
-					appendThread(store, o, { ...toMsg(raw, cfg.owner, c.text, true), ownerReply: { askId: o.lastMsgId, answered: replied.get(o.id) } })
-					// On open work the owner's message is a step and answers only the current turn (R-WRK-02).
-					if (replied.get(o.id)) {
-						if (inWork(store, o)) { const h = homeOf(store, o); ownerStep(o, c.text, raw.id, h); if (h !== o) store.save(h) }
-						else {
-							// Replying in Teams instead of from Delegate teaches it the same way an edited send does (dogfood 10-20).
-							if (o.draft?.text && !o.sent && o.state === 'needs_human') {
-								store.log({ event: 'replied', workflowId: o.id, code: o.code, chat: o.chat.id, asker: o.asker, intent: o.intent, draft: o.draft.text, text: c.text.slice(0, 2000) })
-								outcome(store, o, 'sent', { draft: o.draft.text, sent: c.text, approvedBy: 'owner', msgId: raw.id })
-							}
-							close(o, 'You replied yourself')
-							o.closedBy = 'replied'
-						}
-					}
-					store.save(o, true, o.closedBy === 'replied' ? { askAt, replyAt: raw.at } : undefined)
-				}
+				for (const o of open) recordOwnerReply(store, o, toMsg(raw, cfg.owner, c.text, true), replied.get(o.id), ownReplyText(raw, c.text))
 				// Naming a link of work that started in another chat makes this chat a part of it (R-WRK-10).
 				const home = open.some(o => inWork(store, o)) ? undefined : homeNamed(store.workflows(), c.text)
 				if (home && home.chat.id !== chat.id) {
@@ -369,6 +352,26 @@ function keepImages(store: Store, raw: RawMsg) { if (raw.html) for (const i of i
 function appendThread(store: Store, wf: Workflow, m: Msg) {
 	const t = store.thread(wf.id).filter(x => x.id !== m.id)
 	store.saveThread(wf.id, [...t, m])
+}
+
+export function recordOwnerReply(store: Store, item: Workflow, message: Msg, answered?: boolean, text = message.text) {
+	const askAt = askAtOf(store.thread(item.id), item.msgIds)
+	rememberOwnerReply(store, item, message, answered, text)
+	if (answered) {
+		if (inWork(store, item)) {
+			const home = homeOf(store, item)
+			ownerStep(item, message.text, message.id, home)
+			if (home !== item) store.save(home)
+		} else {
+			if (item.draft?.text && !item.sent && item.state === 'needs_human') {
+				store.log({ event: 'replied', workflowId: item.id, code: item.code, chat: item.chat.id, asker: item.asker, intent: item.intent, draft: item.draft.text, text: text.slice(0, 2000) })
+				outcome(store, item, 'sent', { draft: item.draft.text, sent: text, approvedBy: 'owner', msgId: message.id })
+			}
+			close(item, matchesOwnerDraft(text, item) ? 'You sent it yourself' : 'You replied yourself')
+			item.closedBy = 'replied'
+		}
+	}
+	store.save(item, true, item.closedBy === 'replied' ? { askAt, replyAt: message.at } : undefined)
 }
 
 // The open work an owner's @-ask in this chat belongs to, if any (bug 10-21; code review round 3, P2-2). A reply to one of a

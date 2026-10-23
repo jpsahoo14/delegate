@@ -11,7 +11,7 @@ import { effectLine, MARK, plain, renderMore, renderPreview } from '../core/rend
 import { SendUncertain, type SendOpts, type Source } from '../adapters/source.ts'
 import type { Store } from '../store/state.ts'
 import { close, isControl, say } from './intake.ts'
-import { ownerReplies } from './owner-reply.ts'
+import { matchesOwnerDraft, ownReplyText, ownerReplies, OWNER_REPLY_UNCHECKED, rememberOwnerReply } from './owner-reply.ts'
 import { approveEffects, cancelRetry, carry, okRelay, realProcs, stopPromisedWatch, stopTracker, withdraw, type Procs } from './jobs.ts'
 import { openContinue } from './continue.ts'
 import { heldBy } from './owner.ts'
@@ -426,23 +426,25 @@ async function threadSince(store: Store, src: Source, cfg: Config, wf: Workflow,
 	const c = { ownerId: cfg.owner.id, ownerName: cfg.owner.name, aliases: cfg.aliases, test: wf.chat.test, group: !!wf.chat.group, sentIds: store.sentIds() }
 	const openHere = store.openInChat(wf.chat.id)
 	const claimed = new Set(openHere.filter(o => o.id !== wf.id).flatMap(o => o.msgIds))
-	let asker: string | undefined, ours = false, ownerReplied = false, ownerAt: string | undefined, ownerUnknown = false
+	let asker: string | undefined, ours = false, ownerReplied = false, ownerAt: string | undefined, ownerUnknown = false, ownerExact = false
 	for (const m of fresh.msgs) {
 		// Reconcile before sending: our earlier send may have landed even if we never recorded it (R-STO-06).
 		// Checked before classify, which skips marked text.
 		// Only a post never recorded can be ours landing late: another item's recorded reply, even with the same words, never counts (review 10-20).
 		// Ending the same way counts only for a signed reply: the signature is in the post. Unsigned, only the exact text is ours.
-		if (m.from?.id === cfg.owner.id && want && !c.sentIds.has(m.id) && (norm(m.body) === want || signed && squash(m.body).endsWith(squash(want)))) { ours = true; continue }
+		if (m.from?.id === cfg.owner.id && want && !c.sentIds.has(m.id) && (norm(m.body) === want || signed && squash(m.body).endsWith(squash(want)))) { ours = true; ownerAt ??= m.at; continue }
 		const k = classify(m, c)
 		if (k.kind === 'ask' && k.from.id === wf.asker?.id && !claimed.has(m.id)) asker = m.id
 		if (k.kind !== 'owner') continue
 		// A message open work already took as a step belongs to an earlier turn.
 		if (homeOf(store, wf).work?.steps.some(s => s.ref === `owner:${m.id}`)) continue
-		const replied = await ownerReplies(store, cfg, m, k.text, openHere)
-		if (replied.get(wf.id)) { ownerReplied = true; ownerAt ??= m.at }
+		const replied = await ownerReplies(store, cfg, m, k.text, openHere, { ai: false })
+		const ownText = ownReplyText(m, k.text)
+		for (const item of openHere) rememberOwnerReply(store, item, { id: m.id, at: m.at, from: cfg.owner, text: k.text, byOwner: true }, replied.get(item.id), ownText)
+		if (replied.get(wf.id)) { ownerReplied = true; ownerAt ??= m.at; ownerExact ||= matchesOwnerDraft(ownText, wf) }
 		else if (!replied.has(wf.id)) ownerUnknown = true
 	}
-	return { asker, ours, ownerReplied, ownerAt, ownerUnknown }
+	return { asker, ours, ownerReplied, ownerAt, ownerUnknown, ownerExact }
 }
 
 export async function send(store: Store, src: Source, cfg: Config, wf: Workflow, text: string | undefined, by: SendBy, probe?: BuildProbe): Promise<boolean> {
@@ -536,16 +538,13 @@ export async function send(store: Store, src: Source, cfg: Config, wf: Workflow,
 		return false
 	}
 	if (await askGone(store, src, cfg, wf, a)) return false
-	const { asker, ours, ownerReplied, ownerAt, ownerUnknown } = await threadSince(store, src, cfg, wf, out ? norm(mdToHtml(out)) : '', !!out && out !== text)
+	const { asker, ours, ownerReplied, ownerAt, ownerUnknown, ownerExact } = await threadSince(store, src, cfg, wf, out ? norm(mdToHtml(out)) : '', !!out && out !== text)
 	if (ownerUnknown && !ownerReplied && !ours) {
-		Object.assign(wf, { state: 'needs_human', sendAt: undefined, status: 'Not sent: I could not check whether you already replied in the chat. Try again after the check succeeds.' })
-		store.save(wf)
-		await reply(store, src, a, `${MARK} ${wf.status}`, true)
-		return false
+		store.log({ event: 'owner-reply-fallback', code: wf.code, byRule: by.ruleId, note: OWNER_REPLY_UNCHECKED })
 	}
 	if (ownerReplied) {
 		if (inWork(store, wf)) { const home = homeOf(store, wf); Object.assign(wf, { state: 'open', status: statusOf(home), pending: [] }); step(home, `${wf === home ? '' : `${wf.code}: `}You replied in the chat yourself`); newTurn(wf, !!wf.sent); if (home !== wf) store.save(home) }
-		else { const askAt = askAtOf(store.thread(wf.id), wf.msgIds); close(wf, 'You replied yourself'); wf.closedBy = 'replied'; store.save(wf, true, { askAt, replyAt: ownerAt }) }
+		else { const askAt = askAtOf(store.thread(wf.id), wf.msgIds); close(wf, ownerExact ? 'You sent it yourself' : 'You replied yourself'); wf.closedBy = 'replied'; store.save(wf, true, { askAt, replyAt: ownerAt }) }
 		await reply(store, src, a, `${MARK} Not sent ${wf.code}: you already replied in the chat.`)
 		return false
 	}
@@ -562,7 +561,7 @@ export async function send(store: Store, src: Source, cfg: Config, wf: Workflow,
 	})
 	if (!gate.send) {
 		if (gate.rerun) Object.assign(wf, { state: 'running', status: 'New messages arrived. Redrafting.' })
-		if (ours) close(wf, 'Sent earlier')
+		if (ours) { const askAt = askAtOf(store.thread(wf.id), wf.msgIds); close(wf, 'You sent it yourself'); wf.closedBy = 'replied'; store.save(wf, true, { askAt, replyAt: ownerAt }) }
 		if (by.ruleId && !gate.rerun && !ours) Object.assign(wf, { state: 'needs_human', sendAt: undefined, status: `Not sent automatically: ${gate.reason}` })
 		await reply(store, src, a, `${MARK} Not sent ${wf.code}: ${gate.reason}.`)
 		return false

@@ -17,6 +17,31 @@ Guard (Engineer check): a style rule never decides. `decide()` skips it, so it c
 Proved with stub workers (quota) on fictional roots: the spec's checks 1-7 (including Robin's style not reaching Kim's
 draft, Edit, Undo, and the negative cases), a style rule listed before a send rule for the same person still sending
 exactly once, and Settings Turn on, Save style and Undo in New and Classic at 1280 light and 400 dark.
+## bug 10-22 R2 J1: owner-reply AI failure blocked Send and left stale Health
+
+- Before: an unrelated owner FYI plus a real-process stub returning HTTP 402
+  left the draft unsent with "Sends wait", even after an explicit owner OK.
+- Send now uses reply-target evidence, normalized whole-draft matches and saved
+  ask-specific judgments only. It never starts an AI classification on the
+  critical path. An unknown judgment informs in Health; it does not bypass
+  any ordinary send gate, or block an approved or rule-authorized send.
+- Intake also recognizes the owner's draft text without AI, including a
+  surrounding message, but not a word fragment or words inside an old quote.
+  An exact match is closed as "You sent it yourself".
+- Unknown checks retain the unquoted owner words and the exact ask revision.
+  Existing failed checks retry on the next cycle even with no new owner post;
+  successful checks, or having no relevant open checks left, clear Health.
+  A newly failed check is not immediately repeated in the same cycle.
+- Manual acceptance: a 402 stub, an explicit Send once, a rule send once,
+  owner-text and reply-link duplicate prevention, and recovery in one cycle,
+  through both React experiences on isolated fictional roots. No real AI.
+- Observed in Edge at 1280: each experience posted one explicit reply and one
+  signed rule reply; replay and the second rule attempt posted nothing. Exact
+  owner posts at intake and pre-send used zero classification runs, with no
+  duplicate send. The warning was visible before Send and absent after one
+  successful recovery cycle (333/213 ms with the stub). A legacy refusal also
+  cleared in one cycle without changing thread order or the approval revision.
+  Zero browser errors and zero new owner Copilot session entries.
 
 ## PR-review gate: review or vote only when asked and a reviewer (owner rule 10-23)
 
