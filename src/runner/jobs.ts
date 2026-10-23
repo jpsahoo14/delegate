@@ -5,8 +5,8 @@ import { confidence } from '../core/policy.ts'
 import { PAGE_REPLY_CHANGED } from '../core/page-approval.ts'
 import { uptime } from 'node:os'
 import { allows, changeName, changeSays, isVote, unsafeRead, pendingEffects, proposalEffects, refusal, refusedAsk, reviewAgain, carryMarks, shown, vet, voteValue, SETUP_REFUSAL, OLD_INVITE, OLD_INVITE_ASK } from '../core/effects.ts'
-import { prOf, prTarget, type BuildProbe } from './probe.ts'
-import { isAddMe, voteGate } from './review-gate.ts'
+import { prOf, prRefFor, prTarget, type BuildProbe } from './probe.ts'
+import { isAddMe, isReviewJob, voteGate } from './review-gate.ts'
 import { noticeHabits } from './habits.ts'
 import { cloneFor, cloneTodo, repoRef } from './repos.ts'
 import { deployed, deployRunning, findingNotBlocker, isValidate, proposeTargets, shellInClone, shellTool, telemetryNote, telemetryTools } from './validate.ts'
@@ -337,6 +337,21 @@ function readUse(store: Store, job: Job): Record<string, unknown> {
 	return Object.keys(out).length ? { ...out, runId: run.id, ...(lastAt !== undefined && lastAt >= started ? { ms: lastAt - started } : {}) } : {}
 }
 
+// A choice between options that is not the owner's own (no "approve", "vote", "you"): a spec or product question (queue-new #10).
+export const specChoice = (q: string) => /\?/.test(q) && /\b(?:or|versus|vs\.?)\b/i.test(q) && !/\b(?:you|your|approv\w*|vote|review it|sign[ -]?off|merge)\b/i.test(q)
+// The question as a comment to the PR's author, on the review's PR; undefined when the PR cannot be placed.
+function authorAsk(store: Store, parents: Workflow[], job: Job, question: string): Effect | undefined {
+	const id = Number(/(\d+)\s*$/.exec(canonicalKey(job.key))?.[1] ?? 0) || parents.map(w => prTarget(store, w)).find(Boolean)
+	const owner = parents.find(w => id && prRefFor(store, w, id))
+	const ref = owner && id ? prRefFor(store, owner, id) : undefined
+	if (!ref) return undefined
+	const author = parents.map(w => w.prAuthor).find(Boolean)?.split(/\s+/)[0]
+	// Addressed to the author, so the card and the PR both say who is asked.
+	const content = author ? `${author}, ${/^[A-Z][a-z]/.test(question) ? question[0].toLowerCase() + question.slice(1) : question}` : question
+	return { system: 'azure devops', action: 'comment', target: `PR ${ref.id}`, summary: `Ask ${author ?? 'the author'} on PR ${ref.id}: ${question}`.slice(0, 300),
+		call: { tool: 'ado-repo_pull_request_thread_write', args: { action: 'create', project: ref.project, repositoryId: ref.repo, pullRequestId: ref.id, content } } }
+}
+
 export function finishWork(store: Store, job: Job, r: Report, asksAtStart: number) {
 	if (isBootstrap(job) || job.key.startsWith('learn:')) return finishBootstrap(store, job, r)
 	if (job.every && !r.effects?.length && !r.question) return finishCheck(store, job, r, asksAtStart)
@@ -348,6 +363,12 @@ export function finishWork(store: Store, job: Job, r: Report, asksAtStart: numbe
 	if (r.reply) r = checked(store, cfg, r)
 	// Each proposed change must be one the owner allows, on this item's PR; any other becomes a to-do with the reason (owner, 2026-10-20).
 	const parents = parentsOf(store, job)
+	// In a PR review, a product or spec choice belongs to the PR's author: it becomes a proposed comment to them, never the owner's
+	// question (queue-new #10). A question for the owner alone (approve with a thread open, review at all) stays one.
+	if (r.question && isReviewJob(job.key, r.intent) && specChoice(r.question)) {
+		const ask = authorAsk(store, parents, job, r.question)
+		if (ask) { r = { ...r, question: undefined, effects: [...(r.effects ?? []), ask] }; store.log({ event: 'question-to-author', job: job.id, key: job.key, pr: ask.call?.args.pullRequestId }) }
+	}
 	const v = vet(cfg, r.effects, parents.map(w => prTarget(store, w)).find(Boolean))
 	// A review's vote only while the owner may review the PR, at its last read (review gate G7).
 	const reader = parents.find(w => w.prRole)

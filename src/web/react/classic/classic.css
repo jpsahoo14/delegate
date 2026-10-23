@@ -97,10 +97,10 @@ a.classic-tile:hover{box-shadow:var(--shadow-2)}
 .classic-mini b{font-weight:600}
 .classic-mini div>span{display:block;font-size:12.5px;color:var(--text-3)}
 .classic-focus{display:grid;grid-template-columns:272px minmax(0,1fr);gap:28px;align-items:start}
-.classic-queue{position:sticky;top:80px}
-.classic-queue h2{font-size:12px;line-height:1.5;font-weight:650;color:var(--text-3);text-transform:uppercase;letter-spacing:.06em;margin:4px 8px 8px;display:flex;justify-content:space-between}
+.classic-queue{position:sticky;top:80px;height:calc(100dvh - 96px);display:flex;flex-direction:column;overflow:clip}
+.classic-queue h2{font-size:12px;line-height:1.5;font-weight:650;color:var(--text-3);text-transform:uppercase;letter-spacing:.06em;margin:4px 8px 8px;display:flex;justify-content:space-between;flex:none}
 .classic-queue ol{display:flex;flex-direction:column;gap:2px}
-.classic-queue ol.classic-queue-window{display:block;max-height:calc(100dvh - 120px);overflow:auto;overscroll-behavior:contain}
+.classic-queue ol.classic-queue-window{display:block;flex:1;min-height:0;overflow:auto;overscroll-behavior:contain}
 .classic-queue a{display:flex;gap:10px;padding:9px 10px;border-radius:10px;text-decoration:none;color:var(--text);align-items:flex-start}
 .classic-queue a:hover{background:var(--surface-2)}
 .classic-queue a[aria-current=step]{background:var(--surface);box-shadow:var(--shadow-1)}
@@ -255,6 +255,10 @@ a.classic-tile:hover{box-shadow:var(--shadow-2)}
 .classic-experience dialog{margin:auto;max-height:calc(100dvh - 28px);overflow:auto}
 .classic-experience section[id]{scroll-margin-top:80px}
 @media(hover:none){.classic-catchup-row>.action-bar{opacity:1}}
+@media(min-width:961px){
+	.classic-focus{min-height:calc(100dvh - 96px)}
+	.classic-experience main:has(.classic-focus){padding-bottom:16px}
+}
 @media(max-width:960px){.classic-focus{grid-template-columns:minmax(0,1fr)}.classic-queue{display:none}.classic-open-card{max-width:none}}
 @media(min-width:861px) and (max-width:1200px){
 	.classic-experience .brand-name{display:none}

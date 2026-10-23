@@ -45343,6 +45343,13 @@ async function intake(store2, src, cfg, cursors, chats = cfg.watch, o = {}) {
       const follows = groupJudgment ? route(store2, live2.filter((o2) => o2.asker?.id === c.from.id), raw, c.from.id, void 0, c.text) : void 0;
       if (groupJudgment && !follows) for (const o2 of open2) appendThread(store2, o2, toMsg(raw, c.from, c.text, false));
       let wf = follows ?? (groupJudgment ? void 0 : route(store2, live2, raw, c.kind === "ask" || c.kind === "context" ? c.from.id : "", c.kind === "ask" && !backlog ? recentItem(store2, chat2.id, c.from.id, hours, now) : void 0, c.text));
+      if (wf && c.kind === "ask") {
+        const asked = linksIn(c.text).filter((l) => l.startsWith("pr:")).map((l) => l.slice(3)), own3 = ownLinks(store2, wf).filter((l) => l.startsWith("pr:")).map((l) => l.split(/[:/]/).at(-1));
+        if (asked.length && own3.length && asked.some((id) => !own3.includes(id))) {
+          store2.log({ event: "join-refused", code: wf.code, by: "intake", reason: `the ask is about PR ${asked.join(", PR ")}, and ${wf.code} is about PR ${own3.join(", PR ")}` });
+          wf = void 0;
+        }
+      }
       const named = c.kind === "ask" && !groupJudgment && !(wf && inWork(store2, wf)) ? homeNamed(store2, store2.workflows(), c.text) : void 0;
       const elsewhere = named && named.chat.id !== chat2.id ? named : void 0;
       if (elsewhere) wf = live2.find((o2) => o2.partOf === elsewhere.id && freshAsk(store2, o2, Date.parse(raw.at)) && askRelation(store2, o2, c.text) === "same");
@@ -46990,6 +46997,7 @@ async function probePRs(store2, cfg, probe, now = Date.now(), force = false, sub
       continue;
     }
     w.prRole = await roleOn(cfg, probe, ref, st);
+    if (st.author) w.prAuthor = st.author;
     regateVotes(store2, cfg, w, ref, st);
     const declined = w.reviewDecline;
     if (!subjects && declined && declined.pr === ref.id && declined.role !== "not-asked" && (MAY_REVIEW.includes(w.prRole) || declined.role === "unread") && /^active$/i.test(st.status) && now - Date.parse(declined.at) < 7 * 864e5) {
@@ -47817,6 +47825,21 @@ function readUse(store2, job) {
   const out = ran(run2.purpose === "execute" ? "change" : job.intent === "pr_review" || canonicalKey2(job.key).startsWith("pr:") ? "review" : "job", use);
   return Object.keys(out).length ? { ...out, runId: run2.id, ...lastAt !== void 0 && lastAt >= started2 ? { ms: lastAt - started2 } : {} } : {};
 }
+function authorAsk(store2, parents, job, question) {
+  const id = Number(/(\d+)\s*$/.exec(canonicalKey2(job.key))?.[1] ?? 0) || parents.map((w) => prTarget(store2, w)).find(Boolean);
+  const owner2 = parents.find((w) => id && prRefFor(store2, w, id));
+  const ref = owner2 && id ? prRefFor(store2, owner2, id) : void 0;
+  if (!ref) return void 0;
+  const author = parents.map((w) => w.prAuthor).find(Boolean)?.split(/\s+/)[0];
+  const content = author ? `${author}, ${/^[A-Z][a-z]/.test(question) ? question[0].toLowerCase() + question.slice(1) : question}` : question;
+  return {
+    system: "azure devops",
+    action: "comment",
+    target: `PR ${ref.id}`,
+    summary: `Ask ${author ?? "the author"} on PR ${ref.id}: ${question}`.slice(0, 300),
+    call: { tool: "ado-repo_pull_request_thread_write", args: { action: "create", project: ref.project, repositoryId: ref.repo, pullRequestId: ref.id, content } }
+  };
+}
 function finishWork(store2, job, r, asksAtStart) {
   if (isBootstrap(job) || job.key.startsWith("learn:")) return finishBootstrap(store2, job, r);
   if (job.every && !r.effects?.length && !r.question) return finishCheck(store2, job, r, asksAtStart);
@@ -47828,6 +47851,13 @@ function finishWork(store2, job, r, asksAtStart) {
   const cfg = store2.config();
   if (r.reply) r = checked(store2, cfg, r);
   const parents = parentsOf(store2, job);
+  if (r.question && isReviewJob(job.key, r.intent) && specChoice(r.question)) {
+    const ask = authorAsk(store2, parents, job, r.question);
+    if (ask) {
+      r = { ...r, question: void 0, effects: [...r.effects ?? [], ask] };
+      store2.log({ event: "question-to-author", job: job.id, key: job.key, pr: ask.call?.args.pullRequestId });
+    }
+  }
   const v = vet(cfg, r.effects, parents.map((w) => prTarget(store2, w)).find(Boolean));
   const reader = parents.find((w) => w.prRole);
   if (reader) v.effects = voteGate(store2, cfg, reader, v.effects, v.todos, false);
@@ -48354,7 +48384,7 @@ function scrubLog(store2, runId) {
 function parentsOf(store2, job) {
   return job.parents.map((id) => store2.workflow(id)).filter((w) => !!w && w.state !== "done" && (w.job === job.id || w.work?.watch === job.id));
 }
-var realProcs, RECHECK, asksRecheck, NEVER_RELAY, keyOf2, effectsKey, stillApproved, executing, WRAP_UP_MINUTES, WRAP_UP, ended, usedBy, directCall, switchOf, MISSES, MISS_RETRY_MINUTES, hhmm3, changeText, TRACKER_SESSION_LIMIT;
+var realProcs, RECHECK, asksRecheck, NEVER_RELAY, keyOf2, effectsKey, stillApproved, executing, WRAP_UP_MINUTES, WRAP_UP, ended, usedBy, specChoice, directCall, switchOf, MISSES, MISS_RETRY_MINUTES, hhmm3, changeText, TRACKER_SESSION_LIMIT;
 var init_jobs = __esm({
   "src/runner/jobs.ts"() {
     "use strict";
@@ -48424,6 +48454,7 @@ var init_jobs = __esm({
       ended.delete(job.id);
       return u;
     };
+    specChoice = (q2) => /\?/.test(q2) && /\b(?:or|versus|vs\.?)\b/i.test(q2) && !/\b(?:you|your|approv\w*|vote|review it|sign[ -]?off|merge)\b/i.test(q2);
     directCall = (cfg, e) => !!e.call?.tool && !!e.call.args && !!serverOf(cfg, e.call.tool);
     switchOf = (c) => {
       const one = `${c.tool}:${String(c.args.action ?? "")}`;
@@ -52794,6 +52825,7 @@ var item = external_exports.object({
   promise: external_exports.object({ said: text2, failed: optional2 }).optional(),
   todos: strings.optional(),
   runFailed: external_exports.object({ at: text2, why: text2 }).optional(),
+  prLabel: optional2,
   follow: external_exports.object({ target: text2, until: text2, everyHours: external_exports.number() }).optional()
 });
 var action = external_exports.object({
@@ -53488,6 +53520,8 @@ ${code} stays ${byCode.get(code)?.state === "done" ? "done" : "open"}. Nothing i
       attention: replyChanged ? PAGE_REPLY_CHANGED : agentWait ?? (wf.runFailed && !draft2 ? void 0 : notSent ? pageText(wf.status) : recovery || stopped || c.draft?.holding ? pageText(job?.error ?? wf.status) || "The previous run could not finish. Use the available action, ask a question or review the visible holding reply." : !draft2 && job?.state === "done" && job.result && !job.result.reply && wf.status.endsWith(job.result.summary) ? pageText(job.result.summary) : void 0),
       attentionKind: replyChanged ? "reply-changed" : agentWait ? "agent-setup" : wf.runFailed && !draft2 || recovery || stopped || c.draft?.holding ? "run-failed" : void 0,
       runFailed: wf.runFailed && !draft2 ? { at: wf.runFailed.at, why: pageText(wf.runFailed.why) } : void 0,
+      // The PR a review's question, facts and changes are about, named on the card (queue-new #10 c).
+      prLabel: ((pr) => pr ? `PR ${pr}${wf.prAuthor ? ` \xB7 ${wf.prAuthor}` : ""}` : void 0)(Number(/^pr:.*?(\d+)$/i.exec(wf.job && facts.jobs.get(wf.job)?.key || "")?.[1] ?? 0) || (wf.intent === "pr_review" ? prTarget(store2, wf) : void 0)),
       question: c.question === void 0 ? void 0 : (failedJobDirections(wf) ? forPage(c.question) : pageText(c.question)) || void 0,
       choices: c.choices && { ...c.choices, prompt: forPage(c.choices.prompt), options: c.choices.options.map((option) => ({ ...option, id: pageOptionId(option) })) },
       sourceIds: sources(id, id, why2.sources),

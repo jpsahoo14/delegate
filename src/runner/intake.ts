@@ -1,4 +1,4 @@
-import { active, addPart, homeNamed, homeOf, inWork, linksIn, newTurn, ownerStep, statusOf, step } from './work.ts'
+import { active, addPart, homeNamed, homeOf, inWork, linksIn, newTurn, ownerStep, ownLinks, statusOf, step } from './work.ts'
 import { reopenPromise } from './promise.ts'
 import { watchCommand } from './track.ts'
 import { askAtOf } from '../core/numbers.ts'
@@ -169,6 +169,11 @@ export async function intake(store: Store, src: Source, cfg: Config, cursors: Re
 			const follows = groupJudgment ? route(store, live.filter(o => o.asker?.id === c.from.id), raw, c.from.id, undefined, c.text) : undefined
 			if (groupJudgment && !follows) for (const o of open) appendThread(store, o, toMsg(raw, c.from, c.text, false))
 			let wf = follows ?? (groupJudgment ? undefined : route(store, live, raw, c.kind === 'ask' || c.kind === 'context' ? c.from.id : '', c.kind === 'ask' && !backlog ? recentItem(store, chat.id, c.from.id, hours, now) : undefined, c.text))
+			// An ask about a different PR than the open item's own is its own item, with its own goal (queue-new #10 d).
+			if (wf && c.kind === 'ask') {
+				const asked = linksIn(c.text).filter(l => l.startsWith('pr:')).map(l => l.slice(3)), own = ownLinks(store, wf).filter(l => l.startsWith('pr:')).map(l => l.split(/[:/]/).at(-1))
+				if (asked.length && own.length && asked.some(id => !own.includes(id))) { store.log({ event: 'join-refused', code: wf.code, by: 'intake', reason: `the ask is about PR ${asked.join(', PR ')}, and ${wf.code} is about PR ${own.join(', PR ')}` }); wf = undefined }
+			}
 			// An ask that names a link of work from another chat goes to that work's part here, or starts one.
 			const named = c.kind === 'ask' && !groupJudgment && !(wf && inWork(store, wf)) ? homeNamed(store, store.workflows(), c.text) : undefined
 			const elsewhere = named && named.chat.id !== chat.id ? named : undefined

@@ -300,6 +300,8 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 			attention: replyChanged ? PAGE_REPLY_CHANGED : agentWait ?? (wf.runFailed && !draft ? undefined : notSent ? pageText(wf.status) : recovery || stopped || c.draft?.holding ? pageText(job?.error ?? wf.status) || 'The previous run could not finish. Use the available action, ask a question or review the visible holding reply.' : !draft && job?.state === 'done' && job.result && !job.result.reply && wf.status.endsWith(job.result.summary) ? pageText(job.result.summary) : undefined),
 			attentionKind: replyChanged ? 'reply-changed' : agentWait ? 'agent-setup' : wf.runFailed && !draft || recovery || stopped || c.draft?.holding ? 'run-failed' : undefined,
 			runFailed: wf.runFailed && !draft ? { at: wf.runFailed.at, why: pageText(wf.runFailed.why) } : undefined,
+			// The PR a review's question, facts and changes are about, named on the card (queue-new #10 c).
+			prLabel: (pr => (pr ? `PR ${pr}${wf.prAuthor ? ` · ${wf.prAuthor}` : ''}` : undefined))(Number(/^pr:.*?(\d+)$/i.exec((wf.job && facts.jobs.get(wf.job)?.key) || '')?.[1] ?? 0) || (wf.intent === 'pr_review' ? prTarget(store, wf) : undefined)),
 			question: c.question === undefined ? undefined : (failedJobDirections(wf) ? forPage(c.question) : pageText(c.question)) || undefined,
 			choices: c.choices && { ...c.choices, prompt: forPage(c.choices.prompt), options: c.choices.options.map(option => ({ ...option, id: pageOptionId(option) })) },
 			sourceIds: sources(id, id, why.sources), noteIds,

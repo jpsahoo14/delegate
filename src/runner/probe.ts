@@ -188,6 +188,7 @@ export async function probePRs(store: Store, cfg: Config, probe: BuildProbe | un
 			continue
 		}
 		w.prRole = await roleOn(cfg, probe, ref, st)
+		if (st.author) w.prAuthor = st.author
 		regateVotes(store, cfg, w, ref, st)
 		// A review declined by the gate starts by itself once the owner is a reviewer (added in Azure DevOps, or by Add me), within
 		// a week of the ask; a PR that could not be read is decided again now that it can be (review gate G6, G13).

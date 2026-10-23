@@ -1,5 +1,17 @@
 # React preview
 
+## A PR review leaves spec questions to the PR's author, and names its PR on the card (queue-new #10)
+
+The review prompt (`job.md`) keeps `question` for what the owner alone decides (approve with a thread open, review at all) and
+sends a product or spec choice to the PR's author as a proposed comment. As a backstop, `finishWork` turns a review report's
+`question` that offers a choice between options and asks nothing of the owner (`specChoice`) into a proposed comment on that PR,
+addressed to its author (`prAuthor`, saved at each PR read): "Alex, should grandfathering cover …". Items from a PR job carry
+`prLabel` ("PR 4800001 · Alex Chen"), shown in "Delegate needs to know", in warning facts and in the changes heading. An ask about
+a different PR than the open item's own opens its own item (`join-refused`, by intake). Fictional root, stub worker (quota), stub
+review job and PR reader: the A48-shaped review question became "Ask Alex on PR 4800001: …", a change under "When you send", with
+no "needs to know", in New and Classic at 1280; "Approve with the open thread … unresolved?" stayed the owner's question, headed
+"Delegate needs to know · PR 4800011 · Alex Chen"; a second PR asked in the same 1:1 became its own item.
+
 ## A join needs a shared subject; parts never bring other PRs; related asks show their chat (queue-new #9)
 
 `joinWhy` decides every join of an item into another's work: the same typed link (an item about a PR the home is not about never
@@ -27,6 +39,29 @@ failure (`repair-requeued`), and turns the others into a failed run with its rea
 the 7 setup-failed items of 9 (once only), left the content failure as a reason and the done item alone; the no-result card
 showed the reason and time with Try again, which re-ran once and showed the new draft, and "Write the reply yourself" opened the
 editor, in New and Classic at 1280 light and 400 dark.
+## bug 10-22 Classic Focus queue clipped beside a short card
+
+The desktop queue is a sticky viewport-height flex column: its heading does not
+shrink, and the remaining list area owns scrolling with a zero minimum height.
+The column clips overflow rather than letting off-screen queue rows enlarge
+the document; only the inner list is a scroll container.
+The Focus grid reserves the same minimum height independently of the card.
+Only desktop Focus uses the matching 16px bottom inset; the old 96px page
+padding would push the sticky column above its top boundary at document end.
+Narrow layout is unchanged, including not mounting the queue at <=960px.
+
+Before the fix, Edge1280x1400 with25 fictional asks placed the short-card queue
+heading above the viewport and ended its list near794px at document bottom.
+This is a layout boundary repair, not another virtualized-list implementation;
+the shared ViewportList and its target/keyboard behavior are retained.
+
+Verified in Edge with25 fictional asks, short and expanded long cards, and
+document top/middle/bottom at1280x1400 and1280x800 light. The queue stays
+at80px (81px at initial layout), its list ends16px above the viewport bottom,
+and the last row is reachable through the inner scrollbar. All52 j/k and
+left/right-arrow navigation steps kept the selected row in view. At400x860
+dark the queue remains unmounted; both card shapes scroll as before, with
+no horizontal overflow, browser errors or item submissions. No AI was run.
 
 ## A50: no vote the backstop would refuse, nothing half-made, groups the owner confirmed, and changes made without an AI run (queue-new #7)
 

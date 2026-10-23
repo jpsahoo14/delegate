@@ -86,7 +86,7 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 	const warnings = [
 		draft?.commitment && 'This reply makes a commitment. Check it before sending.',
 		item.newCount > 0 && `${first} wrote again after this draft${item.newCount > 1 ? ` (${item.newCount} new messages)` : ''}.`,
-		...(item.context ?? []).filter(context => context.tone === 'warn').map(context => `${context.label}: ${context.text}`),
+		...(item.context ?? []).filter(context => context.tone === 'warn').map(context => `${item.prLabel ? `${item.prLabel} · ` : ''}${context.label}: ${context.text}`),
 		...changeWarns,
 		item.attention,
 	].filter((line): line is string => !!line)
@@ -167,7 +167,7 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 			<p>{item.meeting.attendees.join(', ')}</p>
 		</section>}
 		{(question || answerBox || item.choices) && <section className="card-block card-answer">
-			{question && <><h3>{NAME} needs to know</h3><p className="question">{question}</p></>}
+			{question && <><h3>{NAME} needs to know{item.prLabel ? ` · ${item.prLabel}` : ''}</h3><p className="question">{question}</p></>}
 			{!question && item.question && !draft && <p className="question">{item.question}</p>}
 			{item.choices && <fieldset><legend>{item.choices.prompt}</legend>{item.choices.options.map((option, index) => {
 				const n = index + 1, selected = (ui.picks ?? item.picked ?? []).includes(n) && !ui.other
@@ -199,7 +199,7 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 		<h3>{draft ? `When you send, ${NAME} will also` : item.changeIds.some(id => entities.changes[id].state === 'approved') ? 'Approved changes' : `When you approve, ${NAME} will`}</h3>
 		{item.changeIds.map((id, index) => {
 			const change = entities.changes[id], excluded = ui.excluded?.includes(change.n) ?? false
-			const group = prChanges.includes(change) && prNumber && (index === 0 || !prChanges.includes(entities.changes[item.changeIds[index - 1]])) ? <p className="after-group">On PR {prNumber} (Azure DevOps)</p> : null
+			const group = prChanges.includes(change) && prNumber && (index === 0 || !prChanges.includes(entities.changes[item.changeIds[index - 1]])) ? <p className="after-group">On {item.prLabel?.startsWith(`PR ${prNumber} `) || item.prLabel === `PR ${prNumber}` ? item.prLabel : `PR ${prNumber}`} (Azure DevOps)</p> : null
 			return <div className="change" key={id}>{group}<label><input type="checkbox" checked={!excluded} disabled={readOnly || busy || change.state === 'approved'}
 				onChange={() => edit({ excluded: excluded ? ui.excluded!.filter(n => n !== change.n) : [...(ui.excluded ?? []), change.n] })} /> {change.action}</label>
 				<p className="muted">{change.target}: {change.summary}</p>

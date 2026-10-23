@@ -192,6 +192,8 @@ export type Workflow = {
 	prUnknown?: true
 	// The owner's place on the item's PR at the last read, and why a review was not started (PR review gate, owner rule 10-23).
 	prRole?: PrRole
+	// The PR's author at the last read, for a question the review leaves to them (queue-new #10).
+	prAuthor?: string
 	reviewDecline?: { pr: number; role: PrRole | 'unread' | 'not-asked'; at: string; ask?: string }
 	// Votes taken off the card because the owner may not vote there at the last read; they come back once he may (queue-new #7A).
 	heldVotes?: { pr: number; effects: Effect[]; why: string }
