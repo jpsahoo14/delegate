@@ -337,6 +337,9 @@ function readUse(store: Store, job: Job): Record<string, unknown> {
 	return Object.keys(out).length ? { ...out, runId: run.id, ...(lastAt !== undefined && lastAt >= started ? { ms: lastAt - started } : {}) } : {}
 }
 
+// A review fact about builds, pipelines, checks or CI, or about votes (the owner's, his group's, or the PR's tally) (queue-new #8).
+export const reviewNoise = (text: string) => /\b(?:builds?|pipelines?|CI|checks? (?:failed|passed|pending|running)|validation runs?)\b/i.test(text) || /\b(?:votes?|voted)\b/i.test(text)
+
 // A choice between options that is not the owner's own (no "approve", "vote", "you"): a spec or product question (queue-new #10).
 export const specChoice = (q: string) => /\?/.test(q) && /\b(?:or|versus|vs\.?)\b/i.test(q) && !/\b(?:you|your|approv\w*|vote|review it|sign[ -]?off|merge)\b/i.test(q)
 // The question as a comment to the PR's author, on the review's PR; undefined when the PR cannot be placed.
@@ -368,6 +371,13 @@ export function finishWork(store: Store, job: Job, r: Report, asksAtStart: numbe
 	if (r.question && isReviewJob(job.key, r.intent) && specChoice(r.question)) {
 		const ask = authorAsk(store, parents, job, r.question)
 		if (ask) { r = { ...r, question: undefined, effects: [...(r.effects ?? []), ask] }; store.log({ event: 'question-to-author', job: job.id, key: job.key, pr: ask.call?.args.pullRequestId }) }
+	}
+	// A review of someone else's PR shows the code facts only, never as warnings: no builds, checks or CI, and no vote of the owner
+	// or his reviewer group, which is what he is about to decide (queue-new #8). A watch on his own PR keeps them.
+	if (r.context?.length && isReviewJob(job.key, r.intent) && !job.every && !parents.some(w => w.prRole === 'author')) {
+		const kept = r.context.filter(f => !reviewNoise(`${f.label} ${f.text}`)).map(f => ({ ...f, tone: 'info' as const }))
+		if (kept.length !== r.context.length || r.context.some(f => f.tone === 'warn')) store.log({ event: 'review-context-trimmed', job: job.id, dropped: r.context.length - kept.length, warns: r.context.filter(f => f.tone === 'warn').length })
+		r = { ...r, context: kept.length ? kept : undefined }
 	}
 	const v = vet(cfg, r.effects, parents.map(w => prTarget(store, w)).find(Boolean))
 	// A review's vote only while the owner may review the PR, at its last read (review gate G7).

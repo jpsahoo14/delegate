@@ -1,5 +1,27 @@
 # React preview
 
+## A message on open work is news: no "No news" right after the owner replies (queue-new #13)
+
+`ownerStep` now moves open work's `checkAt` to now plus 3 days, and `due` takes the newest activity (the last step, or the last
+message in the item's or its parts' threads, from anyone) as news: within 3 days of it the check moves to that time plus 3 days
+and does not fire. "No news … since" quotes that newest activity. Once per store, `repairNoNews` sends a "No news" question
+that was asked after newer activity back to open work, checked again in 3 days (`repair-no-news`). Fictional root, stub worker
+(quota), times moved by rewriting the stored times: with the check date 6 hours past, the owner's reply kept the item open with
+the next check in 3 days; 4 days later with no messages exactly one "No news … since <reply day>" card appeared, and the next
+check added none; an A39-shaped item went back to open on load, logged; New showed "Waiting on you · 0" and Classic "All clear".
+
+## A PR review card shows code facts only: no builds, no votes, no warnings (queue-new #8)
+
+The review prompt (`job.md`) now says: when reviewing someone else's PR, do not read or report builds, checks or CI, and do not
+report the owner's own or his reviewer group's vote; another reviewer's blocking vote may go in `summary` as one plain line; only
+the owner's own PR notes its newest build on a recheck. As a backstop, `finishWork` drops a review's context facts about builds,
+pipelines, checks or CI and about votes (`reviewNoise`), and makes the rest `info`, so they never force must-see; a watch (a job
+with `every`) or the owner's own PR keeps them. The card now shows info facts in a "Found on PR N · Author" block (they were not
+shown before); warnings stay at the top. Fictional root, stub worker (quota), stub review job returning four warn facts (two code
+findings, "Live votes and dependency", "Newest builds"): the item kept the two code facts as info, was not must-see, and the card
+showed 0 warning lines and "Found on PR 4800001 · Alex Chen" with the two findings in New and Classic at 1280; a watch job kept
+all four, including the build blocker, as warnings.
+
 ## A PR review leaves spec questions to the PR's author, and names its PR on the card (queue-new #10)
 
 The review prompt (`job.md`) keeps `question` for what the owner alone decides (approve with a thread open, review at all) and

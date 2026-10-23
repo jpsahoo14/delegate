@@ -351,13 +351,27 @@ export function closeWork(wf: Workflow, why: string) {
 	Object.assign(wf, { state: 'done', status: `Closed: ${why}`, pending: [] })
 }
 
-// Open work with no news by its check date asks the owner what next (R-WRK-05).
-export function due(wf: Workflow, now = Date.now()): boolean {
-	return wf.state === 'open' && active(wf) && !!wf.work!.checkAt && Date.parse(wf.work!.checkAt) <= now
+// Open work with no news by its check date asks the owner what next (R-WRK-05). Any message on it (the owner's reply, the awaited
+// person's, anyone's in its chats) or a step is news: the check moves to that activity plus the interval, and never fires right
+// after it (queue-new #13).
+export const CHECK_DAYS = 3
+export function lastActivity(store: Store, wf: Workflow): string | undefined {
+	const parts = (wf.work?.parts ?? []).map(id => store.workflow(id)).filter((p): p is Workflow => !!p)
+	return [wf.work?.steps.at(-1)?.at, ...[wf, ...parts].map(w => store.thread(w.id).at(-1)?.at)].filter((x): x is string => !!x).sort().at(-1)
 }
-export function askWhatNext(wf: Workflow) {
+export function due(wf: Workflow, now = Date.now(), store?: Store): boolean {
+	if (!(wf.state === 'open' && active(wf) && !!wf.work!.checkAt && Date.parse(wf.work!.checkAt) <= now)) return false
+	const last = store && lastActivity(store, wf)
+	if (last && Date.parse(last) > now - CHECK_DAYS * DAY) {
+		wf.work!.checkAt = new Date(Date.parse(last) + CHECK_DAYS * DAY).toISOString()
+		store!.save(wf, false)
+		return false
+	}
+	return true
+}
+export function askWhatNext(wf: Workflow, store?: Store) {
 	const k = wf.work!
-	const since = k.steps.at(-1)?.at.slice(0, 10) ?? ''
+	const since = (store && lastActivity(store, wf) || k.steps.at(-1)?.at || '').slice(0, 10)
 	newTurn(wf, true)
 	Object.assign(wf, {
 		state: 'needs_human',
@@ -401,7 +415,24 @@ export function wake(wf: Workflow, status: string) {
 }
 export function ownerStep(wf: Workflow, text: string, msgId: string, home = wf) {
 	step(home, `${wf === home ? 'You wrote' : `You wrote to ${label(wf, home).replace(/: $/, '')}`}: ${text}`, { ref: `owner:${msgId}` })
+	// The owner's own message is news: no "no news" check right after it (queue-new #13).
+	if (home.work && !home.work.closed) home.work.checkAt = new Date(Date.now() + CHECK_DAYS * DAY).toISOString()
 	if (wf.state === 'waiting_on_task') return
 	newTurn(wf, !!wf.sent)
 	Object.assign(wf, { state: 'open', status: statusOf(home), pending: [] })
+}
+// Once per store (queue-new #13): a "No news" question asked right after activity (the owner had just replied) goes back to open
+// work, checked again after the interval.
+export function repairNoNews(store: Store): number {
+	let n = 0
+	for (const w of store.workflows().filter(x => x.state === 'needs_human' && x.work && !x.work.closed && /^No news on "/.test(x.question ?? ''))) {
+		const last = lastActivity(store, w)
+		if (!last || !w.work!.checkAt || last <= w.work!.checkAt) continue
+		w.work!.checkAt = new Date(Math.max(Date.now(), Date.parse(last)) + CHECK_DAYS * DAY).toISOString()
+		Object.assign(w, { state: 'open', question: undefined, status: statusOf(w), pending: [] })
+		store.save(w)
+		store.log({ event: 'repair-no-news', code: w.code, last, checkAt: w.work!.checkAt })
+		n++
+	}
+	return n
 }

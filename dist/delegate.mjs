@@ -47858,6 +47858,11 @@ function finishWork(store2, job, r, asksAtStart) {
       store2.log({ event: "question-to-author", job: job.id, key: job.key, pr: ask.call?.args.pullRequestId });
     }
   }
+  if (r.context?.length && isReviewJob(job.key, r.intent) && !job.every && !parents.some((w) => w.prRole === "author")) {
+    const kept = r.context.filter((f) => !reviewNoise(`${f.label} ${f.text}`)).map((f) => ({ ...f, tone: "info" }));
+    if (kept.length !== r.context.length || r.context.some((f) => f.tone === "warn")) store2.log({ event: "review-context-trimmed", job: job.id, dropped: r.context.length - kept.length, warns: r.context.filter((f) => f.tone === "warn").length });
+    r = { ...r, context: kept.length ? kept : void 0 };
+  }
   const v = vet(cfg, r.effects, parents.map((w) => prTarget(store2, w)).find(Boolean));
   const reader = parents.find((w) => w.prRole);
   if (reader) v.effects = voteGate(store2, cfg, reader, v.effects, v.todos, false);
@@ -48384,7 +48389,7 @@ function scrubLog(store2, runId) {
 function parentsOf(store2, job) {
   return job.parents.map((id) => store2.workflow(id)).filter((w) => !!w && w.state !== "done" && (w.job === job.id || w.work?.watch === job.id));
 }
-var realProcs, RECHECK, asksRecheck, NEVER_RELAY, keyOf2, effectsKey, stillApproved, executing, WRAP_UP_MINUTES, WRAP_UP, ended, usedBy, specChoice, directCall, switchOf, MISSES, MISS_RETRY_MINUTES, hhmm3, changeText, TRACKER_SESSION_LIMIT;
+var realProcs, RECHECK, asksRecheck, NEVER_RELAY, keyOf2, effectsKey, stillApproved, executing, WRAP_UP_MINUTES, WRAP_UP, ended, usedBy, reviewNoise, specChoice, directCall, switchOf, MISSES, MISS_RETRY_MINUTES, hhmm3, changeText, TRACKER_SESSION_LIMIT;
 var init_jobs = __esm({
   "src/runner/jobs.ts"() {
     "use strict";
@@ -48454,6 +48459,7 @@ var init_jobs = __esm({
       ended.delete(job.id);
       return u;
     };
+    reviewNoise = (text3) => /\b(?:builds?|pipelines?|CI|checks? (?:failed|passed|pending|running)|validation runs?)\b/i.test(text3) || /\b(?:votes?|voted)\b/i.test(text3);
     specChoice = (q2) => /\?/.test(q2) && /\b(?:or|versus|vs\.?)\b/i.test(q2) && !/\b(?:you|your|approv\w*|vote|review it|sign[ -]?off|merge)\b/i.test(q2);
     directCall = (cfg, e) => !!e.call?.tool && !!e.call.args && !!serverOf(cfg, e.call.tool);
     switchOf = (c) => {
@@ -48743,12 +48749,23 @@ function closeWork(wf, why2) {
   newTurn(wf, !!wf.sent);
   Object.assign(wf, { state: "done", status: `Closed: ${why2}`, pending: [] });
 }
-function due(wf, now = Date.now()) {
-  return wf.state === "open" && active(wf) && !!wf.work.checkAt && Date.parse(wf.work.checkAt) <= now;
+function lastActivity(store2, wf) {
+  const parts2 = (wf.work?.parts ?? []).map((id) => store2.workflow(id)).filter((p) => !!p);
+  return [wf.work?.steps.at(-1)?.at, ...[wf, ...parts2].map((w) => store2.thread(w.id).at(-1)?.at)].filter((x) => !!x).sort().at(-1);
 }
-function askWhatNext(wf) {
+function due(wf, now = Date.now(), store2) {
+  if (!(wf.state === "open" && active(wf) && !!wf.work.checkAt && Date.parse(wf.work.checkAt) <= now)) return false;
+  const last3 = store2 && lastActivity(store2, wf);
+  if (last3 && Date.parse(last3) > now - CHECK_DAYS * DAY3) {
+    wf.work.checkAt = new Date(Date.parse(last3) + CHECK_DAYS * DAY3).toISOString();
+    store2.save(wf, false);
+    return false;
+  }
+  return true;
+}
+function askWhatNext(wf, store2) {
   const k = wf.work;
-  const since = k.steps.at(-1)?.at.slice(0, 10) ?? "";
+  const since = (store2 && lastActivity(store2, wf) || k.steps.at(-1)?.at || "").slice(0, 10);
   newTurn(wf, true);
   Object.assign(wf, {
     state: "needs_human",
@@ -48784,11 +48801,25 @@ function wake(wf, status3) {
 }
 function ownerStep(wf, text3, msgId, home = wf) {
   step(home, `${wf === home ? "You wrote" : `You wrote to ${label(wf, home).replace(/: $/, "")}`}: ${text3}`, { ref: `owner:${msgId}` });
+  if (home.work && !home.work.closed) home.work.checkAt = new Date(Date.now() + CHECK_DAYS * DAY3).toISOString();
   if (wf.state === "waiting_on_task") return;
   newTurn(wf, !!wf.sent);
   Object.assign(wf, { state: "open", status: statusOf(home), pending: [] });
 }
-var DAY3, MAX_STEPS, active, inWork, label, sameLink, prIds, hasDecisions, openTodos, approvalMention2, untagged, sentencesOf, prNumbersIn, reReviewAsk, FIRST_PERSON, NAMED_APPROVED, APPROVED_BY, PENDING, VOTE_SAID, claimsApproval, approvalAsk2, approvalOnly;
+function repairNoNews(store2) {
+  let n = 0;
+  for (const w of store2.workflows().filter((x) => x.state === "needs_human" && x.work && !x.work.closed && /^No news on "/.test(x.question ?? ""))) {
+    const last3 = lastActivity(store2, w);
+    if (!last3 || !w.work.checkAt || last3 <= w.work.checkAt) continue;
+    w.work.checkAt = new Date(Math.max(Date.now(), Date.parse(last3)) + CHECK_DAYS * DAY3).toISOString();
+    Object.assign(w, { state: "open", question: void 0, status: statusOf(w), pending: [] });
+    store2.save(w);
+    store2.log({ event: "repair-no-news", code: w.code, last: last3, checkAt: w.work.checkAt });
+    n++;
+  }
+  return n;
+}
+var DAY3, MAX_STEPS, active, inWork, label, sameLink, prIds, hasDecisions, openTodos, approvalMention2, untagged, sentencesOf, prNumbersIn, reReviewAsk, FIRST_PERSON, NAMED_APPROVED, APPROVED_BY, PENDING, VOTE_SAID, claimsApproval, approvalAsk2, approvalOnly, CHECK_DAYS;
 var init_work = __esm({
   "src/runner/work.ts"() {
     "use strict";
@@ -48823,6 +48854,7 @@ var init_work = __esm({
       const goal = linksIn(k.goal).filter((l) => l.startsWith("pr:")), ask = linksIn(wf.lastAsk ?? "").filter((l) => l.startsWith("pr:"));
       return new Set([...k.links.filter((l) => /^pr:/i.test(l)), ...goal, ...ask].map((l) => l.split(/[:/]/).at(-1))).size <= 1;
     };
+    CHECK_DAYS = 3;
   }
 });
 
@@ -54553,6 +54585,10 @@ async function tick(store2, deps = {}) {
       repairParts(store2);
       store2.saveProbeMark({ ...store2.probeMark(), partsRepairAt: (/* @__PURE__ */ new Date()).toISOString() });
     }
+    if (!store2.probeMark().noNewsRepairAt) {
+      repairNoNews(store2);
+      store2.saveProbeMark({ ...store2.probeMark(), noNewsRepairAt: (/* @__PURE__ */ new Date()).toISOString() });
+    }
     settleCompleted(store2, procs);
     const cli = cliServers(cfg.agent.flavor);
     store2.setHealth("cli-config", cli.error ? `${NAME} could not read your AI CLI's tool list, ${cli.path} (${cli.error}). Changes through tool servers listed only there wait until it can.` : void 0);
@@ -54623,9 +54659,9 @@ async function tick(store2, deps = {}) {
     await describeDeploys(store2, probe).catch((e) => store2.log({ event: "probe-failed", error: String(e).slice(0, 300) }));
     await describeTargets(store2, probe).catch((e) => store2.log({ event: "probe-failed", error: String(e).slice(0, 300) }));
     await probePRs(store2, cfg, probe, Date.now(), kicked).catch((e) => store2.log({ event: "probe-failed", error: String(e).slice(0, 300) }));
-    const due2 = store2.workflows().filter((w) => due(w));
+    const due2 = store2.workflows().filter((w) => due(w, Date.now(), store2));
     for (const w of due2) {
-      askWhatNext(w);
+      askWhatNext(w, store2);
       store2.save(w);
     }
     const runs = await dispatch(store2, src, cfg, deps.run, probe).finally(closeProbe);

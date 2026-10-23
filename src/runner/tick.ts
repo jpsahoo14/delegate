@@ -1,4 +1,4 @@
-import { askWhatNext, due as dueWork, repairParts } from './work.ts'
+import { askWhatNext, due as dueWork, repairNoNews, repairParts } from './work.ts'
 import { adoProbe, describeDeploys, probeBuilds, probePRs, type BuildProbe } from './probe.ts'
 import { describeTargets } from './validate.ts'
 import { cliServers } from '../adapters/mcp-client.ts'
@@ -99,6 +99,8 @@ export async function tick(store: Store, deps: { source?: Source; run?: RunWorke
 		if (!store.probeMark().runFailRepairAt) { repairRunFailures(store); store.saveProbeMark({ ...store.probeMark(), runFailRepairAt: new Date().toISOString() }) }
 		// Once per store: parts an unchecked join attached to work about something else (queue-new #9).
 		if (!store.probeMark().partsRepairAt) { repairParts(store); store.saveProbeMark({ ...store.probeMark(), partsRepairAt: new Date().toISOString() }) }
+		// Once per store: a "No news" question asked right after activity (queue-new #13).
+		if (!store.probeMark().noNewsRepairAt) { repairNoNews(store); store.saveProbeMark({ ...store.probeMark(), noNewsRepairAt: new Date().toISOString() }) }
 		settleCompleted(store, procs)
 		// The owner's ok re-reads a pull request before voting on it, through the same read the PR checks use.
 		// The AI CLI's tool list is read for it; one that cannot be read is named in Health and never stops the cycle (review 10-21b P1).
@@ -142,8 +144,8 @@ export async function tick(store: Store, deps: { source?: Source; run?: RunWorke
 		await describeDeploys(store, probe).catch(e => store.log({ event: 'probe-failed', error: String(e).slice(0, 300) }))
 		await describeTargets(store, probe).catch(e => store.log({ event: 'probe-failed', error: String(e).slice(0, 300) }))
 		await probePRs(store, cfg, probe, Date.now(), kicked).catch(e => store.log({ event: 'probe-failed', error: String(e).slice(0, 300) }))
-		const due = store.workflows().filter(w => dueWork(w))
-		for (const w of due) { askWhatNext(w); store.save(w) }
+		const due = store.workflows().filter(w => dueWork(w, Date.now(), store))
+		for (const w of due) { askWhatNext(w, store); store.save(w) }
 		// The owner's own words may promise a vote: its PR is read through the same probe, then closed (Slice 3).
 		const runs = await dispatch(store, src, cfg, deps.run, probe).finally(closeProbe)
 		// Jobs run detached: the tick starts and checks them, and never waits (R-LNG-02).

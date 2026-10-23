@@ -121,6 +121,11 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 			: <Button variant="outline" onClick={() => edit({ editing: true })}>{writeOwn.label}</Button>)}
 	</section>
 
+	// What the work found (info facts), named by its PR when it comes from a PR job (queue-new #8, #10 c); warnings stay in block 1.
+	const infoFacts = (item.context ?? []).filter(context => context.tone !== 'warn')
+	const found = infoFacts.length > 0 && <section className="card-block card-facts"><h3>{item.prLabel ? `Found on ${item.prLabel}` : 'Found'}</h3>
+		<ul>{infoFacts.map((fact, n) => <li key={n}><strong>{fact.label}:</strong> {fact.text}</li>)}</ul></section>
+
 	// Block 2: what you'll send. Your step (S2), a decision or question, choices and a meeting, or the reply, editable in place.
 	const yourStep = work?.yours && report && <section className="card-block card-step">
 		<h3>Your step: {work.yours.what.replace(/[.\s]+$/, '')}</h3>
@@ -296,7 +301,7 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 			}
 		}}>
 		{asks ? <AsksList codes={asks.codes} current={code} entities={entities} onOpen={asks.onOpen} /> : placement && placement.subjects.length >= 2 && <AsksList codes={placement.subjects} current={code} entities={entities} />}
-		{block1}{failed}<fieldset className="card-readonly" disabled={readOnly}>{block2}{block3}</fieldset>{earlierTodos}{doneSoFar}{!readOnly && block4}
+		{block1}{failed}{found}<fieldset className="card-readonly" disabled={readOnly}>{block2}{block3}</fieldset>{earlierTodos}{doneSoFar}{!readOnly && block4}
 		{chatEdit.message && <p role="status">{chatEdit.message}</p>}
 		{others.map(action => <div key={action.id}>{action.meaning && <p>{action.meaning}</p>}<ActionButton action={action} disabled={newer && action.staleness === 'exact' || action.effect !== 'local' && !action.meaning} disabledReason={newer ? 'stale' : undefined} /></div>)}
 		{!readOnly && <ActionState item={code} rev={item.rev} />}
