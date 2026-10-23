@@ -1,5 +1,21 @@
 # React preview
 
+## A reply is checked against Azure DevOps only when it claims a vote; several PRs are each checked (queue-new #12)
+
+Before #12, any reply with "approv" in it (or any reply to an approval ask) went through the owner-vote check, so a review that
+withholds approval ("Not ready to approve. …") was held when the owner is a reviewer only through a group, and a review of three
+PRs was held with "no unambiguous PR link". Now `approvalClaim` decides: the owner's own approval or vote (`claimedVote`), a named
+reviewer's approval (`othersApproval`, #6), or nothing. Withholding, conditional and future words claim nothing and go with no PR
+read; proposed votes keep their own checks before they are cast (#7). The PRs a claim is about (`claimedPrs`): numbers in the
+claiming sentences, else every PR the ask named when the reply says "all three", "both" or "each", else the item's one PR; each is
+placed by its own link (`prRefFor`: ask, thread, work links, the draft's and job's sources, a vote's call) and read on its own. A hold
+names the PR: "the reply says PR N is approved, but your vote there is No vote", "does not say which PR it means; the ask names
+PR A, PR B, PR C", or "no link to PR N was found to read it (found links for …)". Fictional root, stub worker (quota), stub PR
+reader: a withholding review with the owner in a group only sent once with no PR read; "all three look ready for approval" on
+three PRs sent once with no read; "I approved all three" with one vote at 0 was held naming that PR; with all three approved it
+sent after three reads; "I approved it" on three PRs was held asking which; a PR with no link was held naming it; "Priya has
+approved" kept #6 (sent at 10, redrafted at 0); "I will approve once the build is green" sent with no read.
+
 ## A57: a titled link keeps its URL, and a reply about others' approval is checked against their votes (queue-new #6)
 
 `htmlToText` now keeps an anchor's http(s) address after its text when they differ ("Pull request 1741355: … (https://…/

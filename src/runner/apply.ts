@@ -1,6 +1,6 @@
 import { answerHabit, outcome } from './habits.ts'
 import { membersOf } from './sharing.ts'
-import { active, afterSend, approvalAsk, approvalMention, approvalReplyMatches, canCloseApproval, claimedVote, claimsApproval, closeWork, doneTodos, homeOf, inWork, keepTodos, linksIn, newTurn, openTodos, othersApproval, othersApprovalMismatch, pendingParts, statusOf, step, wait } from './work.ts'
+import { active, afterSend, approvalAsk, approvalMention, approvalReplyMatches, canCloseApproval, claimedVote, claimsApproval, closeWork, doneTodos, homeOf, inWork, keepTodos, linksIn, newTurn, openTodos, approvalClaim, claimedPrs, othersApprovalMismatch, pendingParts, type ApprovalClaim, statusOf, step, wait } from './work.ts'
 import { asksReviewAgain, claimsInvite, doLine, isInvite, isVote, OLD_INVITE, OLD_INVITE_ASK, pendingEffects, prIdOf, proposalEffects, refusal, refusedAsk, saidLine, sameChange, sameHead, shown, vet, voteName, voteValue } from '../core/effects.ts'
 import type { Answer, Config, Effect, Person, Workflow } from '../core/types.ts'
 import { sendGate } from '../core/gate.ts'
@@ -25,7 +25,7 @@ import { answerProposal, knowledgeOf, nextProposal } from './proposals.ts'
 import { CMD } from '../brand.ts'
 import { askAtOf } from '../core/numbers.ts'
 import { FOLLOW_DAYS, startFollow, startWatch, stopWatch, watchCommand } from './track.ts'
-import { adoProbe, prRefOf, probePRs, prTarget, recheckDeploy, recheckPr, sameVote, voteDropped, type BuildProbe } from './probe.ts'
+import { adoProbe, askPrs, prRefFor, prRefOf, probePRs, prTarget, recheckDeploy, recheckPr, sameVote, voteDropped, type BuildProbe } from './probe.ts'
 import { deployRunning, isValidate, reportsResult, saysTested, testedAsk } from './validate.ts'
 import { checkAgain, dropPromise, notePromise, promiseDue, reopenPromise, rest } from './promise.ts'
 import { isDeploy } from '../core/deploy.ts'
@@ -477,16 +477,45 @@ export async function send(store: Store, src: Source, cfg: Config, wf: Workflow,
 		store.save(wf); await told(why)
 		return false
 	}
-	if ((owner ? claimsApproval(text ?? '') : approvalAsk(wf.lastAsk ?? '') && !voteDropped(wf.status) || approvalMention(text ?? '')) && aboutPR) {
+	// The PR is read before a reply goes only when the reply CLAIMS a vote state: the owner's own approval or vote, or a named
+	// reviewer's approval (#6). Withholding, conditional or future words claim nothing and go with no PR read (queue-new #12).
+	const says: ApprovalClaim = owner ? (claimsApproval(text ?? '') ? 'owner' : 'none') : approvalClaim(text ?? '', cfg.owner.name)
+	if (says !== 'none' && aboutPR) {
 		const live = probe ?? adoProbe(cfg)
 		try {
 			if (!live?.pr) throw new Error('no live PR check is configured')
-			if (!ref) throw new Error('the approval ask has no unambiguous PR link')
+			// Each PR the claim is about, placed by its own link; several PRs (a review of three) are each checked (queue-new #12).
+			const asked = askPrs(store, wf), single = prTarget(store, wf), ids = claimedPrs(text ?? '', asked, single)
+			const list = (ns: number[]) => ns.map(n => `PR ${n}`).join(', ')
+			if (!ids.length) throw new Error(`the reply speaks of an approval but does not say which PR it means; the ask names ${list(asked) || 'no PR'}`)
+			const refs = ids.map(id => ({ id, ref: ref?.id === id ? ref : prRefFor(store, wf, id) }))
+			const lost = refs.find(r => !r.ref)
+			if (lost) {
+				const placed = refs.filter(r => r.ref).map(r => r.id)
+				throw new Error(`the reply speaks of an approval on PR ${lost.id}, but no link to it was found to read it${placed.length ? ` (found links for ${list(placed)})` : ''}`)
+			}
+			if (refs.length > 1) {
+				const said = claimedVote(text ?? ''), mine = cfg.owner.name.trim().toLowerCase()
+				for (const { id, ref: r } of refs) {
+					const st = await live.pr(r!.project, r!.repo, id).catch(e => { throw new Error(`PR ${id} could not be read (${String(e).replace(/^Error: /, '').slice(0, 100)})`) })
+					if (!/^(active|completed|abandoned)$/i.test(st.status) || !st.votes.length && !/completed|abandoned/i.test(st.status)) throw new Error(`PR ${id} could not be read: Azure DevOps gave no status or reviewers`)
+					const named = st.votes.filter(v => v.name.trim().toLowerCase() === mine), vote = named.length === 1 ? named[0].vote : undefined
+					const why = typeof says === 'object' ? othersApprovalMismatch(says.others, st, id)
+						: vote === undefined || (said === 'approval' ? vote < 5 : !sameVote(vote, said)) ? `the reply says PR ${id} is ${said === 'approval' || said === undefined ? 'approved' : `voted ${voteName(said)}`}, but your vote there is ${vote === undefined ? 'not readable' : voteName(vote)}` : undefined
+					store.log({ event: 'pr-claim-checked', code: wf.code, pr: id, status: st.status, ok: !why, ...(why ? { why } : {}) })
+					if (why) {
+						Object.assign(wf, { state: 'needs_human', sendAt: undefined, approved: undefined, status: `Not sent: ${why}. Set it in Azure DevOps first, or edit the reply.` })
+						store.save(wf); await told(`${why}. Set it in Azure DevOps first, or edit the reply.`)
+						return false
+					}
+				}
+			} else {
+			const ref = refs[0].ref!
 			const st = await live.pr(ref.project, ref.repo, ref.id)
-			if (!/^(active|completed|abandoned)$/i.test(st.status) || !st.votes.length && !/completed|abandoned/i.test(st.status)) throw new Error('the live PR response has no status or reviewers')
+			if (!/^(active|completed|abandoned)$/i.test(st.status) || !st.votes.length && !/completed|abandoned/i.test(st.status)) throw new Error(`PR ${ref.id} could not be read: Azure DevOps gave no status or reviewers`)
 			const mine = cfg.owner.name.trim().toLowerCase()
 			// A reply that only reports other reviewers' approval needs no vote of the owner's; their own votes are checked (queue-new #6).
-			const others = owner ? undefined : othersApproval(text ?? '', cfg.owner.name)
+			const others = typeof says === 'object' ? says.others : undefined
 			if (others) {
 				const why = othersApprovalMismatch(others, st, ref.id)
 				store.log({ event: 'pr-others-checked', code: wf.code, pr: ref.id, status: st.status, reviewers: st.votes.length, ok: !why, ...(why ? { why } : {}) })
@@ -497,7 +526,7 @@ export async function send(store: Store, src: Source, cfg: Config, wf: Workflow,
 					return false
 				}
 			}
-			if (!others && !/completed|abandoned/i.test(st.status) && (!mine || st.votes.filter(v => v.name.trim().toLowerCase() === mine).length !== 1)) throw new Error('the owner reviewer vote is missing or ambiguous')
+			if (!others && !/completed|abandoned/i.test(st.status) && (!mine || st.votes.filter(v => v.name.trim().toLowerCase() === mine).length !== 1)) throw new Error(`your reply speaks for your vote on PR ${ref.id}, but your vote there is missing or ambiguous`)
 			const votes = mine ? st.votes.filter(v => v.name.trim().toLowerCase() === mine) : []
 			let vote = votes.length === 1 ? votes[0].vote : undefined
 			// Only an owed execution reply on a completed PR can use its fully scoped receipt.
@@ -531,10 +560,12 @@ export async function send(store: Store, src: Source, cfg: Config, wf: Workflow,
 				await probePRs(store, cfg, { ...live, pr: async () => st }, Date.now(), true, [wf])
 				if (wf.state !== before || !wf.draft) { store.save(wf); await told(wf.status); return false }
 			}
+			}
 		} catch (e) {
-			Object.assign(wf, { state: 'needs_human', sendAt: undefined, status: `Not sent: the PR approval could not be verified (${String(e).slice(0, 160)})` })
+			const why = String(e).replace(/^Error: /, '').slice(0, 200)
+			Object.assign(wf, { state: 'needs_human', sendAt: undefined, status: `Not sent: the PR approval could not be verified (${why})` })
 			store.log({ event: 'pr-send-held', code: wf.code, reason: String(e).slice(0, 160) }); store.save(wf)
-			await told(`the PR approval could not be verified (${String(e).slice(0, 160)}).`)
+			await told(`the PR approval could not be verified (${why}).`)
 			return false
 		} finally { if (!probe) await live?.close?.() }
 	}

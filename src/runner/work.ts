@@ -236,11 +236,29 @@ export function claimedVote(text: string): number | 'approval' | undefined {
 		const v = /\bmy vote (?:is|was set to|has been set to)\s+(?:now\s+)?["']?(approved with suggestions|approved|waiting for author|waitingforauthor|rejected|no vote|novote)\b/i.exec(s)
 			?? /\b(?:I|we)(?:'ve|\s+have)?\s+(?:just\s+|now\s+|already\s+)?(?:voted|set my vote(?: on \S+(?: \d+)?)? to)\s+["']?(approved with suggestions|approved|waiting for author|waitingforauthor|rejected|no vote|novote)\b/i.exec(s)
 		if (v) { out = VOTE_SAID[v[1].toLowerCase().replace(/\s+/g, '')]; continue }
-		if (/\b(?:I|we)(?:'ve|\s+have)?\s+(?:just\s+|now\s+|already\s+)?(?:approved|signed[ -]?off)\b|^\W*(?:approved|LGTM)\b/i.test(s)) out ??= 'approval'
+		if (/\b(?:I|we)(?:'ve|\s+have)?\s+(?:just\s+|now\s+|already\s+)?(?:approved|signed[ -]?off)\b|^\W*(?:approved|signed[ -]?off|LGTM)\b/i.test(s)) out ??= 'approval'
 	}
 	return out
 }
 export const claimsApproval = (text: string) => claimedVote(text) !== undefined
+// What a reply claims about votes, which decides whether the PR is read before it goes (queue-new #12): 'owner' for the owner's own
+// approval or vote ("I approved it", "Approved.", "my vote is …"), others' approval (#6), or 'none'. Withholding, conditional and
+// future words ("not ready to approve", "will approve once …", "looks ready for approval") claim nothing and send with no PR read.
+export type ApprovalClaim = 'none' | 'owner' | { others: NonNullable<ReturnType<typeof othersApproval>> }
+export function approvalClaim(text: string, owner: string): ApprovalClaim {
+	if (!approvalMention(text)) return 'none'
+	const others = othersApproval(text, owner)
+	if (others && others.some(k => k.kind === 'named')) return { others }
+	return claimedVote(text) !== undefined ? 'owner' : 'none'
+}
+// The PRs a claim is about: numbers in the sentences that make it; else every PR the ask named when the reply says "all three",
+// "both", "each", "them"; else the one the item is about. Empty: it does not say which of several.
+export function claimedPrs(text: string, askPrs: number[], single?: number): number[] {
+	const said = sentencesOf(text).filter(approvalMention).flatMap(prNumbersIn)
+	if (said.length) return [...new Set(said)]
+	if (askPrs.length > 1 && /\b(?:all|both|each|every|them|these|those)\b/i.test(text)) return askPrs
+	return single ? [single] : askPrs.length === 1 ? askPrs : []
+}
 export const approvalAsk = (text: string) => approvalMention(text) && !reReviewAsk(text)
 export const approvalOnly = (wf: Workflow) => {
 	const k = wf.work

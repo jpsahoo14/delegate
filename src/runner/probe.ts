@@ -133,15 +133,23 @@ export function prTarget(store: Store, w: Workflow): number | undefined {
 }
 
 export function prOf(store: Store, w: Workflow): PrRef | undefined {
-	const job = w.job ? store.job(w.job) : undefined
 	const target = prTarget(store, w)
-	if (!target) return undefined
-	// Where the ask's text lost the link (stored before titled links kept their URL), the draft's and the job's sources may carry
-	// the same PR's full link; only one with the same number counts, never another PR's (queue-new #6).
+	return target ? prRefFor(store, w, target) : undefined
+}
+// Every place an item keeps a PR's full link: the ask, the job, work links, the thread, and the draft's and job reply's sources;
+// only a link with this number counts, never another PR's (queue-new #6, #12).
+export function prRefFor(store: Store, w: Workflow, target: number): PrRef | undefined {
+	const job = w.job ? store.job(w.job) : undefined
 	const sources = [...(w.draft?.sources ?? []), ...(job?.result?.reply?.sources ?? [])].map(s => s.ref)
 	const texts = [w.lastAsk, job?.goal, ...(job?.asks ?? []), ...(w.work?.links ?? []), ...store.thread(w.id).map(m => m.text), ...sources]
 	for (const t of texts) for (const m of (t ?? '').matchAll(new RegExp(PR_LINK.source, 'gi'))) if (Number(m[3]) === target) return { project: decodeURIComponent(m[1]), repo: decodeURIComponent(m[2]), id: target, remote: remoteOf(m[0]) }
-	return undefined
+	const c = (w.effects ?? []).find(e => isVote(e.call) && prIdOf(e.call) === target)?.call
+	return c?.args.project && c.args.repositoryId ? { project: String(c.args.project), repo: String(c.args.repositoryId), id: target } : undefined
+}
+// The PR numbers the ask (and the asker's messages in the item) name, in order.
+export function askPrs(store: Store, w: Workflow): number[] {
+	const thread = store.thread(w.id).filter(m => !m.byOwner && w.msgIds.includes(m.id)).map(m => m.text)
+	return [...new Set([w.lastAsk ?? '', ...thread].flatMap(t => linksIn(t).filter(l => l.startsWith('pr:')).map(l => Number(l.slice(3)))))]
 }
 
 const VOTE: Record<string, (id: number) => string> = { '10': id => `approved PR ${id}`, '5': id => `approved PR ${id} with suggestions`, '-5': id => `voted "Waiting for author" on PR ${id}`, '-10': id => `rejected PR ${id}` }

@@ -46319,66 +46319,96 @@ async function send(store2, src, cfg, wf, text3, by, probe) {
     await told(why2);
     return false;
   }
-  if ((owner2 ? claimsApproval(text3 ?? "") : approvalAsk(wf.lastAsk ?? "") && !voteDropped(wf.status) || approvalMention(text3 ?? "")) && aboutPR) {
+  const says2 = owner2 ? claimsApproval(text3 ?? "") ? "owner" : "none" : approvalClaim(text3 ?? "", cfg.owner.name);
+  if (says2 !== "none" && aboutPR) {
     const live2 = probe ?? adoProbe(cfg);
     try {
       if (!live2?.pr) throw new Error("no live PR check is configured");
-      if (!ref) throw new Error("the approval ask has no unambiguous PR link");
-      const st = await live2.pr(ref.project, ref.repo, ref.id);
-      if (!/^(active|completed|abandoned)$/i.test(st.status) || !st.votes.length && !/completed|abandoned/i.test(st.status)) throw new Error("the live PR response has no status or reviewers");
-      const mine = cfg.owner.name.trim().toLowerCase();
-      const others = owner2 ? void 0 : othersApproval(text3 ?? "", cfg.owner.name);
-      if (others) {
-        const why2 = othersApprovalMismatch(others, st, ref.id);
-        store2.log({ event: "pr-others-checked", code: wf.code, pr: ref.id, status: st.status, reviewers: st.votes.length, ok: !why2, ...why2 ? { why: why2 } : {} });
-        if (why2) {
-          Object.assign(wf, { state: "running", draft: void 0, prDraft: void 0, sendAt: void 0, approved: void 0, status: `The PR evidence does not support this reply (${why2}). Redrafting.`, pending: wf.pending.length ? wf.pending : wf.msgIds.slice(-1) });
-          store2.log({ event: "pr-reply-redraft", workflowId: wf.id, why: why2 });
+      const asked = askPrs(store2, wf), single = prTarget(store2, wf), ids = claimedPrs(text3 ?? "", asked, single);
+      const list2 = (ns) => ns.map((n) => `PR ${n}`).join(", ");
+      if (!ids.length) throw new Error(`the reply speaks of an approval but does not say which PR it means; the ask names ${list2(asked) || "no PR"}`);
+      const refs = ids.map((id) => ({ id, ref: ref?.id === id ? ref : prRefFor(store2, wf, id) }));
+      const lost = refs.find((r) => !r.ref);
+      if (lost) {
+        const placed = refs.filter((r) => r.ref).map((r) => r.id);
+        throw new Error(`the reply speaks of an approval on PR ${lost.id}, but no link to it was found to read it${placed.length ? ` (found links for ${list2(placed)})` : ""}`);
+      }
+      if (refs.length > 1) {
+        const said2 = claimedVote(text3 ?? ""), mine = cfg.owner.name.trim().toLowerCase();
+        for (const { id, ref: r } of refs) {
+          const st = await live2.pr(r.project, r.repo, id).catch((e) => {
+            throw new Error(`PR ${id} could not be read (${String(e).replace(/^Error: /, "").slice(0, 100)})`);
+          });
+          if (!/^(active|completed|abandoned)$/i.test(st.status) || !st.votes.length && !/completed|abandoned/i.test(st.status)) throw new Error(`PR ${id} could not be read: Azure DevOps gave no status or reviewers`);
+          const named2 = st.votes.filter((v) => v.name.trim().toLowerCase() === mine), vote = named2.length === 1 ? named2[0].vote : void 0;
+          const why2 = typeof says2 === "object" ? othersApprovalMismatch(says2.others, st, id) : vote === void 0 || (said2 === "approval" ? vote < 5 : !sameVote(vote, said2)) ? `the reply says PR ${id} is ${said2 === "approval" || said2 === void 0 ? "approved" : `voted ${voteName(said2)}`}, but your vote there is ${vote === void 0 ? "not readable" : voteName(vote)}` : void 0;
+          store2.log({ event: "pr-claim-checked", code: wf.code, pr: id, status: st.status, ok: !why2, ...why2 ? { why: why2 } : {} });
+          if (why2) {
+            Object.assign(wf, { state: "needs_human", sendAt: void 0, approved: void 0, status: `Not sent: ${why2}. Set it in Azure DevOps first, or edit the reply.` });
+            store2.save(wf);
+            await told(`${why2}. Set it in Azure DevOps first, or edit the reply.`);
+            return false;
+          }
+        }
+      } else {
+        const ref2 = refs[0].ref;
+        const st = await live2.pr(ref2.project, ref2.repo, ref2.id);
+        if (!/^(active|completed|abandoned)$/i.test(st.status) || !st.votes.length && !/completed|abandoned/i.test(st.status)) throw new Error(`PR ${ref2.id} could not be read: Azure DevOps gave no status or reviewers`);
+        const mine = cfg.owner.name.trim().toLowerCase();
+        const others = typeof says2 === "object" ? says2.others : void 0;
+        if (others) {
+          const why2 = othersApprovalMismatch(others, st, ref2.id);
+          store2.log({ event: "pr-others-checked", code: wf.code, pr: ref2.id, status: st.status, reviewers: st.votes.length, ok: !why2, ...why2 ? { why: why2 } : {} });
+          if (why2) {
+            Object.assign(wf, { state: "running", draft: void 0, prDraft: void 0, sendAt: void 0, approved: void 0, status: `The PR evidence does not support this reply (${why2}). Redrafting.`, pending: wf.pending.length ? wf.pending : wf.msgIds.slice(-1) });
+            store2.log({ event: "pr-reply-redraft", workflowId: wf.id, why: why2 });
+            store2.save(wf);
+            await told(`${why2}. Redrafting; I'll show the new draft first.`);
+            return false;
+          }
+        }
+        if (!others && !/completed|abandoned/i.test(st.status) && (!mine || st.votes.filter((v) => v.name.trim().toLowerCase() === mine).length !== 1)) throw new Error(`your reply speaks for your vote on PR ${ref2.id}, but your vote there is missing or ambiguous`);
+        const votes = mine ? st.votes.filter((v) => v.name.trim().toLowerCase() === mine) : [];
+        let vote = votes.length === 1 ? votes[0].vote : void 0;
+        if (mine && !wf.sent && wf.draft && /^completed$/i.test(st.status) && !st.votes.length) {
+          const askedAt = Date.parse(store2.thread(wf.id).filter((m) => !m.byOwner).at(-1)?.at ?? wf.createdAt);
+          const receipts = (wf.effects ?? []).filter((e2) => e2.done && isVote(e2.call) && prIdOf(e2.call) === ref2.id);
+          const e = receipts.length === 1 ? receipts[0] : void 0;
+          if (e?.done && !e.off && !e.maybe && !e.error && Date.parse(e.done.at) >= askedAt && String(e.call?.args.project ?? "").toLowerCase() === ref2.project.toLowerCase() && [ref2.repo, st.repo, st.repoId].some((repo) => repo && repo.toLowerCase() === String(e.call?.args.repositoryId ?? "").toLowerCase()) && (!e.head || !st.head || sameHead(e.head, st.head))) vote = voteValue(e.call);
+        }
+        const claim2 = owner2 ? claimedVote(text3 ?? "") : void 0;
+        if (owner2 && (vote === void 0 || (claim2 === "approval" ? vote < 5 : !sameVote(vote, claim2)))) {
+          const said2 = claim2 === "approval" ? `PR ${ref2.id} is approved` : `your vote on PR ${ref2.id} is ${voteName(claim2)}`;
+          const why2 = `your reply says ${said2}, but your vote there is ${vote === void 0 ? "not readable" : voteName(vote)}. Set it in Azure DevOps first, or edit the reply.`;
+          Object.assign(wf, { state: "needs_human", sendAt: void 0, approved: void 0, status: `Not sent: ${why2}` });
+          store2.log({ event: "pr-owner-claim-held", workflowId: wf.id, code: wf.code, vote, claim: claim2 });
           store2.save(wf);
-          await told(`${why2}. Redrafting; I'll show the new draft first.`);
+          await told(why2);
           return false;
         }
-      }
-      if (!others && !/completed|abandoned/i.test(st.status) && (!mine || st.votes.filter((v) => v.name.trim().toLowerCase() === mine).length !== 1)) throw new Error("the owner reviewer vote is missing or ambiguous");
-      const votes = mine ? st.votes.filter((v) => v.name.trim().toLowerCase() === mine) : [];
-      let vote = votes.length === 1 ? votes[0].vote : void 0;
-      if (mine && !wf.sent && wf.draft && /^completed$/i.test(st.status) && !st.votes.length) {
-        const askedAt = Date.parse(store2.thread(wf.id).filter((m) => !m.byOwner).at(-1)?.at ?? wf.createdAt);
-        const receipts = (wf.effects ?? []).filter((e2) => e2.done && isVote(e2.call) && prIdOf(e2.call) === ref.id);
-        const e = receipts.length === 1 ? receipts[0] : void 0;
-        if (e?.done && !e.off && !e.maybe && !e.error && Date.parse(e.done.at) >= askedAt && String(e.call?.args.project ?? "").toLowerCase() === ref.project.toLowerCase() && [ref.repo, st.repo, st.repoId].some((repo) => repo && repo.toLowerCase() === String(e.call?.args.repositoryId ?? "").toLowerCase()) && (!e.head || !st.head || sameHead(e.head, st.head))) vote = voteValue(e.call);
-      }
-      const claim2 = owner2 ? claimedVote(text3 ?? "") : void 0;
-      if (owner2 && (vote === void 0 || (claim2 === "approval" ? vote < 5 : !sameVote(vote, claim2)))) {
-        const said2 = claim2 === "approval" ? `PR ${ref.id} is approved` : `your vote on PR ${ref.id} is ${voteName(claim2)}`;
-        const why2 = `your reply says ${said2}, but your vote there is ${vote === void 0 ? "not readable" : voteName(vote)}. Set it in Azure DevOps first, or edit the reply.`;
-        Object.assign(wf, { state: "needs_human", sendAt: void 0, approved: void 0, status: `Not sent: ${why2}` });
-        store2.log({ event: "pr-owner-claim-held", workflowId: wf.id, code: wf.code, vote, claim: claim2 });
-        store2.save(wf);
-        await told(why2);
-        return false;
-      }
-      if (!owner2 && !others && !approvalReplyMatches(text3 ?? "", vote, ref.id)) {
-        Object.assign(wf, { state: "running", draft: void 0, prDraft: void 0, sendAt: void 0, approved: void 0, status: "The PR evidence does not support this approval reply. Redrafting.", pending: wf.pending.length ? wf.pending : wf.msgIds.slice(-1) });
-        store2.log({ event: "pr-reply-redraft", workflowId: wf.id });
-        store2.save(wf);
-        await told(`PR ${ref.id}'s live vote does not support this approval reply. Redrafting; I'll show the new draft first.`);
-        return false;
-      }
-      if (!owner2) {
-        const before = wf.state;
-        await probePRs(store2, cfg, { ...live2, pr: async () => st }, Date.now(), true, [wf]);
-        if (wf.state !== before || !wf.draft) {
+        if (!owner2 && !others && !approvalReplyMatches(text3 ?? "", vote, ref2.id)) {
+          Object.assign(wf, { state: "running", draft: void 0, prDraft: void 0, sendAt: void 0, approved: void 0, status: "The PR evidence does not support this approval reply. Redrafting.", pending: wf.pending.length ? wf.pending : wf.msgIds.slice(-1) });
+          store2.log({ event: "pr-reply-redraft", workflowId: wf.id });
           store2.save(wf);
-          await told(wf.status);
+          await told(`PR ${ref2.id}'s live vote does not support this approval reply. Redrafting; I'll show the new draft first.`);
           return false;
+        }
+        if (!owner2) {
+          const before = wf.state;
+          await probePRs(store2, cfg, { ...live2, pr: async () => st }, Date.now(), true, [wf]);
+          if (wf.state !== before || !wf.draft) {
+            store2.save(wf);
+            await told(wf.status);
+            return false;
+          }
         }
       }
     } catch (e) {
-      Object.assign(wf, { state: "needs_human", sendAt: void 0, status: `Not sent: the PR approval could not be verified (${String(e).slice(0, 160)})` });
+      const why2 = String(e).replace(/^Error: /, "").slice(0, 200);
+      Object.assign(wf, { state: "needs_human", sendAt: void 0, status: `Not sent: the PR approval could not be verified (${why2})` });
       store2.log({ event: "pr-send-held", code: wf.code, reason: String(e).slice(0, 160) });
       store2.save(wf);
-      await told(`the PR approval could not be verified (${String(e).slice(0, 160)}).`);
+      await told(`the PR approval could not be verified (${why2}).`);
       return false;
     } finally {
       if (!probe) await live2?.close?.();
@@ -46825,13 +46855,20 @@ function prTarget(store2, w) {
   return Number(ask[0] ?? [...owned][0] ?? /^pr:.*?(\d+)$/.exec(job?.key ?? "")?.[1] ?? (linked.length === 1 ? linked[0] : void 0) ?? prior[0] ?? (effects.length === 1 ? effects[0] : 0)) || void 0;
 }
 function prOf(store2, w) {
-  const job = w.job ? store2.job(w.job) : void 0;
   const target2 = prTarget(store2, w);
-  if (!target2) return void 0;
+  return target2 ? prRefFor(store2, w, target2) : void 0;
+}
+function prRefFor(store2, w, target2) {
+  const job = w.job ? store2.job(w.job) : void 0;
   const sources = [...w.draft?.sources ?? [], ...job?.result?.reply?.sources ?? []].map((s3) => s3.ref);
   const texts2 = [w.lastAsk, job?.goal, ...job?.asks ?? [], ...w.work?.links ?? [], ...store2.thread(w.id).map((m) => m.text), ...sources];
   for (const t2 of texts2) for (const m of (t2 ?? "").matchAll(new RegExp(PR_LINK.source, "gi"))) if (Number(m[3]) === target2) return { project: decodeURIComponent(m[1]), repo: decodeURIComponent(m[2]), id: target2, remote: remoteOf(m[0]) };
-  return void 0;
+  const c = (w.effects ?? []).find((e) => isVote(e.call) && prIdOf(e.call) === target2)?.call;
+  return c?.args.project && c.args.repositoryId ? { project: String(c.args.project), repo: String(c.args.repositoryId), id: target2 } : void 0;
+}
+function askPrs(store2, w) {
+  const thread2 = store2.thread(w.id).filter((m) => !m.byOwner && w.msgIds.includes(m.id)).map((m) => m.text);
+  return [...new Set([w.lastAsk ?? "", ...thread2].flatMap((t2) => linksIn(t2).filter((l) => l.startsWith("pr:")).map((l) => Number(l.slice(3)))))];
 }
 async function probePRs(store2, cfg, probe, now = Date.now(), force = false, subjects) {
   if (!probe?.pr) {
@@ -46899,10 +46936,10 @@ async function probePRs(store2, cfg, probe, now = Date.now(), force = false, sub
     const changed = mine !== void 0 && w.prVote !== void 0 && mine !== w.prVote && mine !== 0;
     const receipt = (w.effects ?? []).find((e) => e.done && isVote(e.call) && prIdOf(e.call) === ref.id);
     const madeHere = !!receipt && sameVote(mine ?? 0, voteValue(receipt.call));
-    const approvedNow = mine !== void 0 && mine >= 5 && !madeHere && (changed || approvalAsk(w.lastAsk ?? ""));
+    const approvedNow = mine !== void 0 && mine >= 5 && !madeHere && (changed || approvalAsk2(w.lastAsk ?? ""));
     const asked = Date.parse(store2.thread(w.id).filter((m) => !m.byOwner).at(-1)?.at ?? w.createdAt);
     const closedNow = /completed|abandoned/i.test(st.status) && (st.closedAt ? Date.parse(st.closedAt) > asked : w.prStatus !== void 0 && !/completed|abandoned/i.test(w.prStatus));
-    const stale = !!w.draft && w.prDraft !== w.prRead && (!!w.prDraft || !receipt && mine !== void 0 && mine >= 5 && approvalMention(w.draft.text));
+    const stale = !!w.draft && w.prDraft !== w.prRead && (!!w.prDraft || !receipt && mine !== void 0 && mine >= 5 && approvalMention2(w.draft.text));
     const ownerWriting = w.draft?.byOwner && mine !== void 0 && mine < 5 && !closedNow && approvalReplyMatches(w.draft.text, mine, ref.id);
     const reason = receipt && !w.sent || w.draft && w.prDraft === w.prRead || ownerWriting ? void 0 : closedNow ? `PR ${ref.id} was ${/completed/i.test(st.status) ? "completed" : "abandoned"}` : approvedNow || changed ? `You ${(VOTE[String(mine)] ?? ((id) => `voted on PR ${id}`))(ref.id)} in Azure DevOps` : stale ? `PR ${ref.id} changed since this draft` : void 0;
     if (mine !== void 0 && mine !== w.prVote) w.prVote = mine;
@@ -46918,7 +46955,7 @@ async function probePRs(store2, cfg, probe, now = Date.now(), force = false, sub
       if (home === w && canCloseApproval(store2, home) && (approvedNow || closedNow)) closeFamily(store2, realProcs, home, reason);
       else Object.assign(w, { state: "running", status: `PR checked: ${reason}; checking the remaining ask`, pending: w.pending.length ? w.pending : w.msgIds.slice(-1) });
       if (home !== w) store2.save(home);
-    } else if (stale && !approvedNow && !closedNow || reReviewAsk(w.lastAsk ?? "") || !approvalAsk(w.lastAsk ?? "") && !closedNow || /\b(?:and|then|also|after|before|plus)\b|[;&]/i.test(w.lastAsk ?? "")) Object.assign(w, { state: "running", status: `PR checked: ${reason}; checking the remaining ask`, pending: w.pending.length ? w.pending : w.msgIds.slice(-1) });
+    } else if (stale && !approvedNow && !closedNow || reReviewAsk(w.lastAsk ?? "") || !approvalAsk2(w.lastAsk ?? "") && !closedNow || /\b(?:and|then|also|after|before|plus)\b|[;&]/i.test(w.lastAsk ?? "")) Object.assign(w, { state: "running", status: `PR checked: ${reason}; checking the remaining ask`, pending: w.pending.length ? w.pending : w.msgIds.slice(-1) });
     else Object.assign(w, { state: "done", status: `Nothing needed: ${reason}`, pending: [], closedBy: "nothing" });
     store2.log({ event: "pr-moved", code: w.code, pr: ref.id, reason });
     store2.save(w);
@@ -48235,8 +48272,8 @@ function afterSend(wf, text3, msgId, home = wf, closeApproval = true, closeRepor
   return true;
 }
 function approvalReplyMatches(text3, vote, pr) {
-  if (!approvalMention(text3)) return true;
-  return sentencesOf(text3).filter(approvalMention).every((s3) => approvalSentenceMatches(s3, vote, pr));
+  if (!approvalMention2(text3)) return true;
+  return sentencesOf(text3).filter(approvalMention2).every((s3) => approvalSentenceMatches(s3, vote, pr));
 }
 function approvalSentenceMatches(sentence, vote, pr) {
   const line2 = sentence.replace(/[.!;]$/, "");
@@ -48260,7 +48297,7 @@ function othersSentence(sentence, owner2) {
   return PENDING.test(line2) && !/\bapproved\b/i.test(line2) ? { kind: "pending" } : void 0;
 }
 function othersApproval(text3, owner2) {
-  const said2 = sentencesOf(text3).filter(approvalMention);
+  const said2 = sentencesOf(text3).filter(approvalMention2);
   if (!said2.length) return void 0;
   const kinds = said2.map((s3) => othersSentence(s3, owner2.trim()));
   return kinds.every((k) => !!k) ? kinds : void 0;
@@ -48297,9 +48334,21 @@ function claimedVote(text3) {
       out = VOTE_SAID[v[1].toLowerCase().replace(/\s+/g, "")];
       continue;
     }
-    if (/\b(?:I|we)(?:'ve|\s+have)?\s+(?:just\s+|now\s+|already\s+)?(?:approved|signed[ -]?off)\b|^\W*(?:approved|LGTM)\b/i.test(s3)) out ??= "approval";
+    if (/\b(?:I|we)(?:'ve|\s+have)?\s+(?:just\s+|now\s+|already\s+)?(?:approved|signed[ -]?off)\b|^\W*(?:approved|signed[ -]?off|LGTM)\b/i.test(s3)) out ??= "approval";
   }
   return out;
+}
+function approvalClaim(text3, owner2) {
+  if (!approvalMention2(text3)) return "none";
+  const others = othersApproval(text3, owner2);
+  if (others && others.some((k) => k.kind === "named")) return { others };
+  return claimedVote(text3) !== void 0 ? "owner" : "none";
+}
+function claimedPrs(text3, askPrs2, single) {
+  const said2 = sentencesOf(text3).filter(approvalMention2).flatMap(prNumbersIn);
+  if (said2.length) return [...new Set(said2)];
+  if (askPrs2.length > 1 && /\b(?:all|both|each|every|them|these|those)\b/i.test(text3)) return askPrs2;
+  return single ? [single] : askPrs2.length === 1 ? askPrs2 : [];
 }
 function pendingParts(store2, home, except) {
   return (home.work?.parts ?? []).filter((id) => id !== except).some((id) => {
@@ -48311,7 +48360,7 @@ function canCloseReport(store2, home, reporter) {
   return !pendingParts(store2, home, reporter.id) && (home === reporter || !home.pending.length && !pendingEffects(home.effects).length);
 }
 function canCloseApproval(store2, home) {
-  return approvalOnly(home) && approvalAsk(home.lastAsk ?? "") && !/\b(?:then|also|after|before|plus)\b|[;&]|\band\b(?!\s+approve)/i.test(home.lastAsk ?? "") && !pendingParts(store2, home);
+  return approvalOnly(home) && approvalAsk2(home.lastAsk ?? "") && !/\b(?:then|also|after|before|plus)\b|[;&]|\band\b(?!\s+approve)/i.test(home.lastAsk ?? "") && !pendingParts(store2, home);
 }
 function statusOf(wf) {
   const k = wf.work;
@@ -48373,7 +48422,7 @@ function ownerStep(wf, text3, msgId, home = wf) {
   newTurn(wf, !!wf.sent);
   Object.assign(wf, { state: "open", status: statusOf(home), pending: [] });
 }
-var DAY3, MAX_STEPS, active, inWork, label, sameLink, hasDecisions, openTodos, approvalMention, untagged, sentencesOf, prNumbersIn, reReviewAsk, FIRST_PERSON, NAMED_APPROVED, APPROVED_BY, PENDING, VOTE_SAID, claimsApproval, approvalAsk, approvalOnly;
+var DAY3, MAX_STEPS, active, inWork, label, sameLink, hasDecisions, openTodos, approvalMention2, untagged, sentencesOf, prNumbersIn, reReviewAsk, FIRST_PERSON, NAMED_APPROVED, APPROVED_BY, PENDING, VOTE_SAID, claimsApproval, approvalAsk2, approvalOnly;
 var init_work = __esm({
   "src/runner/work.ts"() {
     "use strict";
@@ -48388,7 +48437,7 @@ var init_work = __esm({
     sameLink = (a, b) => a.split(":")[0].toLowerCase() === b.split(":")[0].toLowerCase() && a.split(/[:/]/).at(-1) === b.split(/[:/]/).at(-1);
     hasDecisions = (r) => !!r.choices || !!r.effects?.length;
     openTodos = (wf) => (wf.kept ?? []).filter((t2) => !t2.done);
-    approvalMention = (text3) => /approv|sign[ -]?off|\blgtm\b/i.test(text3);
+    approvalMention2 = (text3) => /approv|sign[ -]?off|\blgtm\b/i.test(text3);
     untagged = (text3) => text3.trim().replace(/\u2019/g, "'").replace(/^(?:\[[^\]\n]{1,120}\]\s*)+/, "");
     sentencesOf = (text3) => untagged(text3).split(/(?<=[.!?;])\s+|\n+/).map((s3) => s3.trim()).filter(Boolean);
     prNumbersIn = (text3) => [...text3.matchAll(/\b(?:PR|pull\s+request|pullrequest\/)\s*#?\s*(\d+)\b|(?:^|\s)#(\d{3,})\b/gi)].map((m) => Number(m[1] ?? m[2]));
@@ -48399,7 +48448,7 @@ var init_work = __esm({
     PENDING = /\b(?:approvals?|sign[ -]?offs?)\b.*\b(?:is|are)\s+(?:still\s+)?(?:pending|outstanding|needed|required|missing)\b|\b(?:still\s+)?(?:needs?|waiting\s+(?:on|for)|awaiting)\b.*\b(?:approvals?|sign[ -]?offs?)\b/i;
     VOTE_SAID = { approved: 10, approvedwithsuggestions: 5, waitingforauthor: -5, rejected: -10, novote: 0 };
     claimsApproval = (text3) => claimedVote(text3) !== void 0;
-    approvalAsk = (text3) => approvalMention(text3) && !reReviewAsk(text3);
+    approvalAsk2 = (text3) => approvalMention2(text3) && !reReviewAsk(text3);
     approvalOnly = (wf) => {
       const k = wf.work;
       if (!k || !/^(?:please\s+)?(?:review\s+(?:and|&)\s+)?(?:approve|sign[ -]?off)\s+(?:PR|pull request)\s*#?\s*\d{4,}[.!]?$/i.test(k.goal)) return false;
