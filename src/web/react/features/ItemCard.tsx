@@ -111,6 +111,16 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 		{placement?.chips.some(chip => chip.kind === 'retrying') && <p className="warnline">Retrying{placement.nextText ? `: ${placement.nextText.replace('{at}', placement.next?.at ? when(placement.next.at) : 'soon')}` : ''}</p>}
 	</section>
 
+	// A run that gave no result (queue-new #11): the reason and its time, never a question; Try again is the primary, or write it yourself.
+	const writeOwn = actions.find(action => action.kind === 'write-own')
+	const failed = item.runFailed && <section className="card-block card-failed">
+		<p role="status" className="warnline"><Icon name="warn" /> {NAME} couldn't draft this at {when(item.runFailed.at)}: {item.runFailed.why}.</p>
+		{writeOwn && !readOnly && (ui.editing ? <><Field code={code} rev={item.rev} field="answer" label={`Your reply to ${first}, ${replyWhere}`} value={ui.answer ?? ''} edit={edit} rows={4} />
+			<div className="action-bar"><ActionButton action={writeOwn} label="Send your reply" input={{ text: ui.answer ?? '' }} disabled={!ui.answer?.trim()} disabledReason="Write your reply first." />
+				<Button variant="outline" onClick={() => edit({ editing: false })}>Cancel</Button></div></>
+			: <Button variant="outline" onClick={() => edit({ editing: true })}>{writeOwn.label}</Button>)}
+	</section>
+
 	// Block 2: what you'll send. Your step (S2), a decision or question, choices and a meeting, or the reply, editable in place.
 	const yourStep = work?.yours && report && <section className="card-block card-step">
 		<h3>Your step: {work.yours.what.replace(/[.\s]+$/, '')}</h3>
@@ -228,7 +238,7 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 			{item.debug && <><pre>{item.debug.join('\n')}</pre><Button variant="outline" onClick={() => void detailsCopy.copy(item.debug!.join('\n'))}>Copy details</Button>{detailsCopy.message && <p role="status">{detailsCopy.message}</p>}</>}
 		</div></details>
 	</div>
-	const others = actions.filter(action => action.id !== primary?.id && action.id !== report?.id && !(report && action.id === declared?.id) && !['approve', 'approve-again', 'send-edit', 'answer', 'pick', 'ask', 'later', 'dismiss', 'continue', 'todo-done', 'reply-only', 'review-again'].includes(action.kind))
+	const others = actions.filter(action => action.id !== primary?.id && action.id !== report?.id && !(report && action.id === declared?.id) && !['approve', 'approve-again', 'send-edit', 'answer', 'pick', 'ask', 'later', 'dismiss', 'continue', 'todo-done', 'reply-only', 'review-again', 'try-again', 'write-own'].includes(action.kind))
 
 	// Block 5: Details, one collapsed line: why, sources, progress and history, changes already handled, and Ask Delegate.
 	const parts = [item.why.reason && 'why', item.sourceIds.length > 0 && `${item.sourceIds.length} source${item.sourceIds.length === 1 ? '' : 's'}`, (work?.planIds.length || timeline?.stepIds.length) && 'history', `ask ${NAME}`].filter(Boolean)
@@ -286,7 +296,7 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 			}
 		}}>
 		{asks ? <AsksList codes={asks.codes} current={code} entities={entities} onOpen={asks.onOpen} /> : placement && placement.subjects.length >= 2 && <AsksList codes={placement.subjects} current={code} entities={entities} />}
-		{block1}<fieldset className="card-readonly" disabled={readOnly}>{block2}{block3}</fieldset>{earlierTodos}{doneSoFar}{!readOnly && block4}
+		{block1}{failed}<fieldset className="card-readonly" disabled={readOnly}>{block2}{block3}</fieldset>{earlierTodos}{doneSoFar}{!readOnly && block4}
 		{chatEdit.message && <p role="status">{chatEdit.message}</p>}
 		{others.map(action => <div key={action.id}>{action.meaning && <p>{action.meaning}</p>}<ActionButton action={action} disabled={newer && action.staleness === 'exact' || action.effect !== 'local' && !action.meaning} disabledReason={newer ? 'stale' : undefined} /></div>)}
 		{!readOnly && <ActionState item={code} rev={item.rev} />}

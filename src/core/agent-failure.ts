@@ -1,7 +1,8 @@
 import type { Config } from './types.ts'
 import { pageDigest } from './page-approval.ts'
+import { NAME } from '../brand.ts'
 
-export type AgentSetupFailure = { kind: 'quota' | 'model'; text: string; retryAt?: string }
+export type AgentSetupFailure = { kind: 'quota' | 'model' | 'auth' | 'cli'; text: string; retryAt?: string }
 export type AgentHold = AgentSetupFailure & { config: string }
 
 export function activeAgentHold(hold: AgentHold | undefined, agent: Config['agent'], now = Date.now()): AgentHold | undefined {
@@ -23,6 +24,14 @@ export function agentSetupFailure(text: string, now = Date.now()): AgentSetupFai
 	}
 	if (/\bunknown model\b|\bmodel_not_found\b|\bmodel\s+(?:["'][^"'\r\n]{1,160}["']|[\w./:-]+)(?:\s+from\s+--model\s+flag)?\s+(?:is\s+)?(?:not available|unavailable|not found)/i.test(text)) {
 		return { kind: 'model', text: 'The selected AI model is not available to this account. Set another model in Settings.' }
+	}
+	// Not signed in, or the AI CLI is not there: setup the owner fixes, so items wait and are tried again every 10 minutes (queue-new #11).
+	const later = new Date(now + 10 * 60_000).toISOString()
+	if (/bad credentials|not logged in|please run \/login|unauthori[sz]ed|not signed in|sign[ -]?in (?:required|again)|authentication (?:failed|required)/i.test(text)) {
+		return { kind: 'auth', retryAt: later, text: `The AI CLI is not signed in on this machine. Sign in to it once; ${NAME} tries again every 10 minutes.` }
+	}
+	if (/\bENOENT\b|is not recognized as an internal or external command|command not found|cannot find the (?:AI )?CLI/i.test(text)) {
+		return { kind: 'cli', retryAt: later, text: `The AI CLI could not be started on this machine. Install it, or fix its path in setup; ${NAME} tries again every 10 minutes.` }
 	}
 	return undefined
 }

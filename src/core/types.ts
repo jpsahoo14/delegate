@@ -195,6 +195,8 @@ export type Workflow = {
 	reviewDecline?: { pr: number; role: PrRole | 'unread' | 'not-asked'; at: string; ask?: string }
 	// Votes taken off the card because the owner may not vote there at the last read; they come back once he may (queue-new #7A).
 	heldVotes?: { pr: number; effects: Effect[]; why: string }
+	// The last AI run for the item ended with no result: a plain reason with its time, never a question (queue-new #11).
+	runFailed?: { at: string; kind: 'setup' | 'content' | 'other'; why: string }
 	// The reviewer groups on the PR the card asks about ("Are you in …?"); the answer is remembered in config (queue-new #7C).
 	groupAsk?: { pr: number; groups: string[] }
 	prDraft?: string

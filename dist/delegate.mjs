@@ -1053,12 +1053,20 @@ function agentSetupFailure(text3, now = Date.now()) {
   if (/\bunknown model\b|\bmodel_not_found\b|\bmodel\s+(?:["'][^"'\r\n]{1,160}["']|[\w./:-]+)(?:\s+from\s+--model\s+flag)?\s+(?:is\s+)?(?:not available|unavailable|not found)/i.test(text3)) {
     return { kind: "model", text: "The selected AI model is not available to this account. Set another model in Settings." };
   }
+  const later = new Date(now + 10 * 6e4).toISOString();
+  if (/bad credentials|not logged in|please run \/login|unauthori[sz]ed|not signed in|sign[ -]?in (?:required|again)|authentication (?:failed|required)/i.test(text3)) {
+    return { kind: "auth", retryAt: later, text: `The AI CLI is not signed in on this machine. Sign in to it once; ${NAME} tries again every 10 minutes.` };
+  }
+  if (/\bENOENT\b|is not recognized as an internal or external command|command not found|cannot find the (?:AI )?CLI/i.test(text3)) {
+    return { kind: "cli", retryAt: later, text: `The AI CLI could not be started on this machine. Install it, or fix its path in setup; ${NAME} tries again every 10 minutes.` };
+  }
   return void 0;
 }
 var init_agent_failure = __esm({
   "src/core/agent-failure.ts"() {
     "use strict";
     init_page_approval();
+    init_brand();
   }
 });
 
@@ -44217,6 +44225,24 @@ async function dispatch(store2, src, cfg, run2 = runAgent, probe) {
   }
   return done2;
 }
+function repairRunFailures(store2, days2 = 14) {
+  const old = store2.workflows().filter((w) => w.state === "needs_human" && OLD_FALLBACK.test(w.question ?? ""));
+  if (!old.length) return 0;
+  const lastError = /* @__PURE__ */ new Map();
+  for (const e of store2.logs(days2)) if (e.event === "worker" && typeof e.workflowId === "string") lastError.set(e.workflowId, { at: String(e.at ?? ""), error: String(e.error ?? "") });
+  let n = 0;
+  for (const w of old) {
+    const last3 = lastError.get(w.id);
+    const setup = last3?.error ? agentSetupFailure(last3.error) : void 0;
+    if (setup) {
+      Object.assign(w, { state: "running", question: void 0, runFailed: void 0, status: `Running again: the earlier run failed because ${setup.text.replace(/^The /, "the ").replace(/\.\s.*$/, "")}`, pending: w.pending.length ? w.pending : w.msgIds.slice(-1) });
+      store2.log({ event: "repair-requeued", code: w.code, reason: setup.kind, error: last3.error.slice(0, 200) });
+      n++;
+    } else Object.assign(w, { question: void 0, runFailed: { at: last3?.at || w.updatedAt, kind: "other", why: last3?.error ? `the run failed (${last3.error.split(/\r?\n/)[0].replace(/^Error: /, "").slice(0, 140)})` : "the run stopped without a result" } });
+    store2.save(w);
+  }
+  return n;
+}
 function startFailed(store2, wf, e) {
   const raw = String(e).replace(/^Error: /, "");
   const account = agentSetupFailure(raw);
@@ -44236,7 +44262,7 @@ function startFailed(store2, wf, e) {
   }
   if (!fresh || fresh.state !== "running") return;
   const n = (fresh.startFails ?? 0) + 1;
-  Object.assign(fresh, n < 3 ? { startFails: n, status: `Could not start the AI run: ${why2}. Trying again on the next check.` } : { startFails: void 0, state: "needs_human", status: `Could not start the AI run 3 times: ${why2}. Check the AI CLI with "${CMD} doctor".` });
+  Object.assign(fresh, n < 3 ? { startFails: n, status: `Could not start the AI run: ${why2}. Trying again on the next check.` } : { startFails: void 0, state: "needs_human", status: `Could not start the AI run 3 times: ${why2}. Check the AI CLI with "${CMD} doctor".`, runFailed: { at: (/* @__PURE__ */ new Date()).toISOString(), kind: "other", why: `the AI run could not start 3 times (${why2.slice(0, 120)})` } });
   store2.save(fresh);
   store2.log({ event: "run-start-failed", workflowId: wf.id, code: wf.code, n, error: why2 });
 }
@@ -44347,6 +44373,7 @@ ${res.summary ?? ""}`));
     }
     store2.log({ event: "worker-catalog-retry-blocked", kind: "draft", workflowId: wf.id, code: wf.code, runId, reason: "daily-run-limit" });
   }
+  if (report2) fresh.runFailed = void 0;
   if (report2 && (fresh.pending.some((id) => !wf.pending.includes(id)) || report2.work?.closed && pendingEffects(fresh.effects).length)) {
     const newer2 = fresh.pending.some((id) => !wf.pending.includes(id));
     Object.assign(fresh, { state: newer2 ? "running" : "needs_human", approved: void 0, status: newer2 ? "New asks arrived during this run. Checking them next." : "Earlier changes are still unverified. Review them before closing this work." });
@@ -44380,7 +44407,7 @@ ${res.summary ?? ""}`));
   const reviewRef = job && isReviewJob(job.key, report2?.intent) ? prRefOf(store2, fresh) : void 0;
   const gate = job && isReviewJob(job.key, report2?.intent) ? reviewGate(store2, cfg, wf, reviewRef ?? { project: "", repo: "", id: Number(/(\d+)\s*$/.exec(job.key)?.[1] ?? 0) }, void 0, !!probe?.pr) : void 0;
   const declined = gate && !gate.ok ? gate : void 0;
-  if (!report2) Object.assign(fresh, { state: "needs_human", status: auth ? "Waiting for the AI CLI sign-in" : "The worker did not finish", question: auth ? "Sign in, then answer or skip this item" : "Check this item, then answer or skip it" });
+  if (!report2) Object.assign(fresh, { state: "needs_human", status: `${NAME} couldn't draft this: ${failWhy(res)}`, question: void 0, runFailed: { at: (/* @__PURE__ */ new Date()).toISOString(), kind: "other", why: failWhy(res) } });
   else if (declined) {
     fresh.intent = report2.intent;
     if (declined.addMe) fresh.job = void 0;
@@ -44586,7 +44613,7 @@ function greetBack(wf, text3) {
   const body = OPENERS.test(text3) ? text3[0].toLowerCase() + text3.slice(1) : text3;
   return `Hi ${first3}, ${body}`;
 }
-var AUTH, CATALOG_CHANGED, readDirs, WORKER_SERVER, WORKER_TOOLS, lessonFits, NO_QUESTION, GREETING2, OPENERS;
+var AUTH, CATALOG_CHANGED, OLD_FALLBACK, failWhy, readDirs, WORKER_SERVER, WORKER_TOOLS, lessonFits, NO_QUESTION, GREETING2, OPENERS;
 var init_dispatch = __esm({
   "src/runner/dispatch.ts"() {
     "use strict";
@@ -44630,6 +44657,11 @@ var init_dispatch = __esm({
     init_same_ask();
     AUTH = /bad credentials|not logged in|please run \/login|authenticat|unauthori[sz]ed|sign[ -]?in/i;
     CATALOG_CHANGED = /MCP tool catalog changed/i;
+    OLD_FALLBACK = /^(?:Check this item, then answer or skip it|Sign in, then answer or skip this item)$/;
+    failWhy = (res) => {
+      const first3 = (res.error ?? "").split(/\r?\n/).map((l) => l.trim()).find(Boolean)?.replace(/^Error: /, "");
+      return res.exitCode === 0 || !first3 ? "the run stopped without a result" : `the run failed (${first3.slice(0, 140)})`;
+    };
     readDirs = (store2, cfg) => [.../* @__PURE__ */ new Set([...(cfg.knowledge ?? []).map((f) => here2(store2.root, f)), cfg.cards?.root ?? join18(store2.root, "knowledge"), ...cfg.cards?.team ? [cfg.cards.team] : []])].filter((d) => existsSync17(d));
     WORKER_SERVER = "delegate_worker";
     WORKER_TOOLS = ["submit_report", "knowledge_search", "knowledge_read", "history_search", "doc_read", "image_read"].map((t2) => `${WORKER_SERVER}-${t2}`);
@@ -45924,6 +45956,12 @@ async function applyOne(store2, src, cfg, wf, a, procs, probe) {
   wf.answerSurface = a.surface;
   const yesNo = wf.groupAsk && a.verb === "answer" ? /^\s*(?:(yes|yeah|yep|y|i am)|(no|nope|n|i'm not|i am not))\b/i.exec(a.text ?? "") : void 0;
   if (wf.groupAsk && yesNo) return groupAnswer(store2, src, wf, a, !!yesNo[1], probe);
+  if (wf.runFailed && a.verb === "answer" && /^\s*try again\s*$/i.test(a.text ?? "")) {
+    store2.log({ event: "run-retried", code: wf.code, why: wf.runFailed.why });
+    Object.assign(wf, { state: "running", runFailed: void 0, question: void 0, status: "Trying again", pending: wf.pending.length ? wf.pending : wf.msgIds.slice(-1) });
+    store2.save(wf);
+    return reply(store2, src, a, `${MARK} Trying ${wf.code} again. You'll see the draft first.`);
+  }
   if (a.verb === "watch") return reply(store2, src, a, `${MARK} ${watchCommand(store2, { code: wf.code, text: a.text }).text}`);
   if (a.verb === "unwatch") {
     const blocked = stopPromisedWatch(store2, procs, wf);
@@ -52706,6 +52744,7 @@ var item = external_exports.object({
   debug: strings.optional(),
   promise: external_exports.object({ said: text2, failed: optional2 }).optional(),
   todos: strings.optional(),
+  runFailed: external_exports.object({ at: text2, why: text2 }).optional(),
   follow: external_exports.object({ target: text2, until: text2, everyHours: external_exports.number() }).optional()
 });
 var action = external_exports.object({
@@ -53328,7 +53367,11 @@ ${code} stays ${byCode.get(code)?.state === "done" ? "done" : "open"}. Nothing i
       allowEmpty: !!draft2,
       exactSingle: !draft2 && changes.length === 1 ? changes[0].action : void 0
     } : void 0;
-    if (editable.has(id)) {
+    if (editable.has(id) && wf.runFailed && !draft2) {
+      actionIds.push(offer(id, rev, "try-again", "Try again", () => ({ code: id, verb: "answer", text: "try again" }), { staleness: "exact", expect }));
+      actionIds.push(offer(id, rev, "write-own", "Write the reply yourself", (input2) => ({ code: id, verb: "send", text: requiredText(input2) }), { effect: "sends", staleness: "exact", expect, input: "text" }));
+      actionIds.push(offer(id, rev, "later", "Later", () => ({ code: id, verb: "later" })), offer(id, rev, "dismiss", "Skip", () => ({ code: id, verb: "skip" })));
+    } else if (editable.has(id)) {
       if (reviewAgain2) actionIds.push(offer(id, rev, "review-again", "Review again", () => ({ code: id, verb: "answer", text: "review again" })));
       else if ((draft2 && (!c.choices || draft2.preview) || changes.length && !c.question || c.promise?.failed) && !(wf.state === "needs_human" && wf.question && !(c.promise?.failed && !draft2))) {
         const label2 = c.promise?.failed && !draft2 ? "Check again" : changes.length ? `Approve selected changes${draft2 ? " and reply" : ""}` : draft2?.holding ? "Send holding reply" : "Send";
@@ -53393,13 +53436,14 @@ ${code} stays ${byCode.get(code)?.state === "done" ? "done" : "open"}. Nothing i
       actionIds,
       askAt: asksAt.get(id),
       status: pageText(c.status),
-      attention: replyChanged ? PAGE_REPLY_CHANGED : agentWait ?? (notSent ? pageText(wf.status) : recovery || stopped || c.draft?.holding ? pageText(job?.error ?? wf.status) || "The previous run could not finish. Use the available action, ask a question or review the visible holding reply." : !draft2 && job?.state === "done" && job.result && !job.result.reply && wf.status.endsWith(job.result.summary) ? pageText(job.result.summary) : void 0),
-      attentionKind: replyChanged ? "reply-changed" : agentWait ? "agent-setup" : recovery || stopped || c.draft?.holding ? "run-failed" : void 0,
+      attention: replyChanged ? PAGE_REPLY_CHANGED : agentWait ?? (wf.runFailed && !draft2 ? void 0 : notSent ? pageText(wf.status) : recovery || stopped || c.draft?.holding ? pageText(job?.error ?? wf.status) || "The previous run could not finish. Use the available action, ask a question or review the visible holding reply." : !draft2 && job?.state === "done" && job.result && !job.result.reply && wf.status.endsWith(job.result.summary) ? pageText(job.result.summary) : void 0),
+      attentionKind: replyChanged ? "reply-changed" : agentWait ? "agent-setup" : wf.runFailed && !draft2 || recovery || stopped || c.draft?.holding ? "run-failed" : void 0,
+      runFailed: wf.runFailed && !draft2 ? { at: wf.runFailed.at, why: pageText(wf.runFailed.why) } : void 0,
       question: c.question === void 0 ? void 0 : (failedJobDirections(wf) ? forPage(c.question) : pageText(c.question)) || void 0,
       choices: c.choices && { ...c.choices, prompt: forPage(c.choices.prompt), options: c.choices.options.map((option) => ({ ...option, id: pageOptionId(option) })) },
       sourceIds: sources(id, id, why2.sources),
       noteIds,
-      primaryActionId: recovery ? `${id}/answer` : ["review-again", "approve-again", ...c.choices && !draft2?.preview ? ["pick"] : [], "approve", "answer", "reopen"].map((kind) => `${id}/${kind}`).find((key) => actionIds.includes(key)),
+      primaryActionId: recovery ? `${id}/answer` : ["try-again", "review-again", "approve-again", ...c.choices && !draft2?.preview ? ["pick"] : [], "approve", "answer", "reopen"].map((kind) => `${id}/${kind}`).find((key) => actionIds.includes(key)),
       why: { reason: why2.reason, confidence: why2.confidence, gaps: why2.gaps, searched: why2.searched },
       teams: safeLink(c.teams)
     };
@@ -54418,6 +54462,10 @@ async function tick(store2, deps = {}) {
     store2.saveCursors(cursors);
     const jobsEarly = await checkJobs(store2, src, cfg, procs, deps.probe);
     legacyEffects(store2);
+    if (!store2.probeMark().runFailRepairAt) {
+      repairRunFailures(store2);
+      store2.saveProbeMark({ ...store2.probeMark(), runFailRepairAt: (/* @__PURE__ */ new Date()).toISOString() });
+    }
     settleCompleted(store2, procs);
     const cli = cliServers(cfg.agent.flavor);
     store2.setHealth("cli-config", cli.error ? `${NAME} could not read your AI CLI's tool list, ${cli.path} (${cli.error}). Changes through tool servers listed only there wait until it can.` : void 0);

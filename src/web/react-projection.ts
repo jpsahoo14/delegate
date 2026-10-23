@@ -237,7 +237,13 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 			suffix: draft ? ' and reply' : '', empty: draft ? 'Send reply only' : 'Nothing selected', allowEmpty: !!draft,
 			exactSingle: !draft && changes.length === 1 ? changes[0].action : undefined,
 		} : undefined
-		if (editable.has(id)) {
+		if (editable.has(id) && wf.runFailed && !draft) {
+			// A run that gave no result (queue-new #11): Try again re-runs it as it was; the owner can write the reply instead. No question.
+			actionIds.push(offer(id, rev, 'try-again', 'Try again', () => ({ code: id, verb: 'answer', text: 'try again' }), { staleness: 'exact', expect }))
+			actionIds.push(offer(id, rev, 'write-own', 'Write the reply yourself', input => ({ code: id, verb: 'send', text: requiredText(input) }), { effect: 'sends', staleness: 'exact', expect, input: 'text' }))
+			actionIds.push(offer(id, rev, 'later', 'Later', () => ({ code: id, verb: 'later' })), offer(id, rev, 'dismiss', 'Skip', () => ({ code: id, verb: 'skip' })))
+		}
+		else if (editable.has(id)) {
 			if (reviewAgain) actionIds.push(offer(id, rev, 'review-again', 'Review again', () => ({ code: id, verb: 'answer', text: 'review again' })))
 			else if ((draft && (!c.choices || draft.preview) || changes.length && !c.question || c.promise?.failed) &&
 				!(wf.state === 'needs_human' && wf.question && !(c.promise?.failed && !draft))) {
@@ -291,12 +297,13 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 			...rest, rev, id, personId, chatId, draftId, changeIds, effectIds, todoIds, workId, actionIds,
 			askAt: asksAt.get(id),
 			status: pageText(c.status),
-			attention: replyChanged ? PAGE_REPLY_CHANGED : agentWait ?? (notSent ? pageText(wf.status) : recovery || stopped || c.draft?.holding ? pageText(job?.error ?? wf.status) || 'The previous run could not finish. Use the available action, ask a question or review the visible holding reply.' : !draft && job?.state === 'done' && job.result && !job.result.reply && wf.status.endsWith(job.result.summary) ? pageText(job.result.summary) : undefined),
-			attentionKind: replyChanged ? 'reply-changed' : agentWait ? 'agent-setup' : recovery || stopped || c.draft?.holding ? 'run-failed' : undefined,
+			attention: replyChanged ? PAGE_REPLY_CHANGED : agentWait ?? (wf.runFailed && !draft ? undefined : notSent ? pageText(wf.status) : recovery || stopped || c.draft?.holding ? pageText(job?.error ?? wf.status) || 'The previous run could not finish. Use the available action, ask a question or review the visible holding reply.' : !draft && job?.state === 'done' && job.result && !job.result.reply && wf.status.endsWith(job.result.summary) ? pageText(job.result.summary) : undefined),
+			attentionKind: replyChanged ? 'reply-changed' : agentWait ? 'agent-setup' : wf.runFailed && !draft || recovery || stopped || c.draft?.holding ? 'run-failed' : undefined,
+			runFailed: wf.runFailed && !draft ? { at: wf.runFailed.at, why: pageText(wf.runFailed.why) } : undefined,
 			question: c.question === undefined ? undefined : (failedJobDirections(wf) ? forPage(c.question) : pageText(c.question)) || undefined,
 			choices: c.choices && { ...c.choices, prompt: forPage(c.choices.prompt), options: c.choices.options.map(option => ({ ...option, id: pageOptionId(option) })) },
 			sourceIds: sources(id, id, why.sources), noteIds,
-			primaryActionId: recovery ? `${id}/answer` : ['review-again', 'approve-again', ...(c.choices && !draft?.preview ? ['pick'] : []), 'approve', 'answer', 'reopen'].map(kind => `${id}/${kind}`).find(key => actionIds.includes(key)),
+			primaryActionId: recovery ? `${id}/answer` : ['try-again', 'review-again', 'approve-again', ...(c.choices && !draft?.preview ? ['pick'] : []), 'approve', 'answer', 'reopen'].map(kind => `${id}/${kind}`).find(key => actionIds.includes(key)),
 			why: { reason: why.reason, confidence: why.confidence, gaps: why.gaps, searched: why.searched }, teams: safeLink(c.teams),
 		}
 	}

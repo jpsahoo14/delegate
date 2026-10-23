@@ -11,7 +11,7 @@ import { saveLearned } from './proposals.ts'
 import type { History } from '../adapters/history.ts'
 import type { Store } from '../store/state.ts'
 import { applyAnswers } from './apply.ts'
-import { dispatch, nudge, type RunWorker } from './dispatch.ts'
+import { dispatch, nudge, repairRunFailures, type RunWorker } from './dispatch.ts'
 import { intake, readOwnerCommands, say, takeMissed } from './intake.ts'
 import { retryOwnerReplies } from './owner-reply.ts'
 import { planSweep, sweep, sweeping } from './sweep.ts'
@@ -95,6 +95,8 @@ export async function tick(store: Store, deps: { source?: Source; run?: RunWorke
 		// Finished reports land before the owner's answers, so an ok never acts on a turn that news already replaced (review P0.4).
 		const jobsEarly = await checkJobs(store, src, cfg, procs, deps.probe)
 		legacyEffects(store)
+		// Once per store: items an older version left with the failed-run question (queue-new #11).
+		if (!store.probeMark().runFailRepairAt) { repairRunFailures(store); store.saveProbeMark({ ...store.probeMark(), runFailRepairAt: new Date().toISOString() }) }
 		settleCompleted(store, procs)
 		// The owner's ok re-reads a pull request before voting on it, through the same read the PR checks use.
 		// The AI CLI's tool list is read for it; one that cannot be read is named in Health and never stops the cycle (review 10-21b P1).

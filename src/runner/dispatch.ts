@@ -1,4 +1,4 @@
-import { CMD } from '../brand.ts'
+import { CMD, NAME } from '../brand.ts'
 import { blockerOf } from './retry.ts'
 import { active, addPart, canCloseReport, hasDecisions, homeOf, mergeReportWork, settle, step } from './work.ts'
 import { assertTestSafe } from '../store/fs.ts'
@@ -94,6 +94,35 @@ export async function dispatch(store: Store, src: Source, cfg: Config, run: RunW
 	return done
 }
 
+// One-time repair of items an older version left with the fallback question after a failed run (queue-new #11). An open item whose
+// last run failed for a setup reason (model, quota, sign-in, missing CLI), matched on the logged worker error, is queued again;
+// a content failure is never re-run, and shows as a failed run with its reason instead of a question.
+const OLD_FALLBACK = /^(?:Check this item, then answer or skip it|Sign in, then answer or skip this item)$/
+export function repairRunFailures(store: Store, days = 14): number {
+	const old = store.workflows().filter(w => w.state === 'needs_human' && OLD_FALLBACK.test(w.question ?? ''))
+	if (!old.length) return 0
+	const lastError = new Map<string, { at: string; error: string }>()
+	for (const e of store.logs(days)) if (e.event === 'worker' && typeof e.workflowId === 'string') lastError.set(e.workflowId, { at: String(e.at ?? ''), error: String(e.error ?? '') })
+	let n = 0
+	for (const w of old) {
+		const last = lastError.get(w.id)
+		const setup = last?.error ? agentSetupFailure(last.error) : undefined
+		if (setup) {
+			Object.assign(w, { state: 'running', question: undefined, runFailed: undefined, status: `Running again: the earlier run failed because ${setup.text.replace(/^The /, 'the ').replace(/\.\s.*$/, '')}`, pending: w.pending.length ? w.pending : w.msgIds.slice(-1) })
+			store.log({ event: 'repair-requeued', code: w.code, reason: setup.kind, error: last!.error.slice(0, 200) })
+			n++
+		} else Object.assign(w, { question: undefined, runFailed: { at: last?.at || w.updatedAt, kind: 'other', why: last?.error ? `the run failed (${last.error.split(/\r?\n/)[0].replace(/^Error: /, '').slice(0, 140)})` : 'the run stopped without a result' } })
+		store.save(w)
+	}
+	return n
+}
+
+// Why a run gave no result, in plain words for the card (queue-new #11).
+const failWhy = (res: RunResult) => {
+	const first = (res.error ?? '').split(/\r?\n/).map(l => l.trim()).find(Boolean)?.replace(/^Error: /, '')
+	return res.exitCode === 0 || !first ? 'the run stopped without a result' : `the run failed (${first.slice(0, 140)})`
+}
+
 function startFailed(store: Store, wf: Workflow, e: unknown) {
 	const raw = String(e).replace(/^Error: /, '')
 	const account = agentSetupFailure(raw)
@@ -112,7 +141,7 @@ function startFailed(store: Store, wf: Workflow, e: unknown) {
 	}
 	if (!fresh || fresh.state !== 'running') return
 	const n = (fresh.startFails ?? 0) + 1
-	Object.assign(fresh, n < 3 ? { startFails: n, status: `Could not start the AI run: ${why}. Trying again on the next check.` } : { startFails: undefined, state: 'needs_human', status: `Could not start the AI run 3 times: ${why}. Check the AI CLI with "${CMD} doctor".` })
+	Object.assign(fresh, n < 3 ? { startFails: n, status: `Could not start the AI run: ${why}. Trying again on the next check.` } : { startFails: undefined, state: 'needs_human', status: `Could not start the AI run 3 times: ${why}. Check the AI CLI with "${CMD} doctor".`, runFailed: { at: new Date().toISOString(), kind: 'other' as const, why: `the AI run could not start 3 times (${why.slice(0, 120)})` } })
 	store.save(fresh)
 	store.log({ event: 'run-start-failed', workflowId: wf.id, code: wf.code, n, error: why })
 }
@@ -242,6 +271,7 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 		}
 		store.log({ event: 'worker-catalog-retry-blocked', kind: 'draft', workflowId: wf.id, code: wf.code, runId, reason: 'daily-run-limit' })
 	}
+	if (report) fresh.runFailed = undefined
 	if (report && (fresh.pending.some(id => !wf.pending.includes(id)) || report.work?.closed && pendingEffects(fresh.effects).length)) {
 		const newer = fresh.pending.some(id => !wf.pending.includes(id))
 		Object.assign(fresh, { state: newer ? 'running' : 'needs_human', approved: undefined, status: newer ? 'New asks arrived during this run. Checking them next.' : 'Earlier changes are still unverified. Review them before closing this work.' })
@@ -271,7 +301,8 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 	const reviewRef = job && isReviewJob(job.key, report?.intent) ? prRefOf(store, fresh) : undefined
 	const gate = job && isReviewJob(job.key, report?.intent) ? reviewGate(store, cfg, wf, reviewRef ?? { project: '', repo: '', id: Number(/(\d+)\s*$/.exec(job.key)?.[1] ?? 0) }, undefined, !!probe?.pr) : undefined
 	const declined = gate && !gate.ok ? gate : undefined
-	if (!report) Object.assign(fresh, { state: 'needs_human', status: auth ? 'Waiting for the AI CLI sign-in' : 'The worker did not finish', question: auth ? 'Sign in, then answer or skip this item' : 'Check this item, then answer or skip it' })
+	// A run with no result is an error shown as one, with its time and reason, never a question to answer (queue-new #11).
+	if (!report) Object.assign(fresh, { state: 'needs_human', status: `${NAME} couldn't draft this: ${failWhy(res)}`, question: undefined, runFailed: { at: new Date().toISOString(), kind: 'other', why: failWhy(res) } })
 	else if (declined) {
 		fresh.intent = report.intent
 		if (declined.addMe) fresh.job = undefined

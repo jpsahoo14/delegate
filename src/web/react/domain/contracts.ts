@@ -30,6 +30,7 @@ const item = z.object({
 	changeIds: strings, effectIds: strings.optional(), sourceIds: strings, noteIds: strings, todoIds: strings, actionIds: strings, primaryActionId: optional, workId: optional,
 	job: optional, why, status: text, attention: optional, attentionKind: z.enum(['reply-changed', 'run-failed', 'agent-setup']).optional(), openOn: optional, teams: optional, debug: strings.optional(),
 	promise: z.object({ said: text, failed: optional }).optional(), todos: strings.optional(),
+	runFailed: z.object({ at: text, why: text }).optional(),
 	follow: z.object({ target: text, until: text, everyHours: z.number() }).optional(),
 })
 const action = z.object({

@@ -97,6 +97,13 @@ async function applyOne(store: Store, src: Source, cfg: Config, wf: Workflow, a:
 	// "Are you in <group>?": yes or no is remembered in config, and the PR's role is read again at once (queue-new #7C).
 	const yesNo = wf.groupAsk && a.verb === 'answer' ? /^\s*(?:(yes|yeah|yep|y|i am)|(no|nope|n|i'm not|i am not))\b/i.exec(a.text ?? '') : undefined
 	if (wf.groupAsk && yesNo) return groupAnswer(store, src, wf, a, !!yesNo[1], probe)
+	// "Try again" on a run that gave no result: the item runs once more, as it was (queue-new #11).
+	if (wf.runFailed && a.verb === 'answer' && /^\s*try again\s*$/i.test(a.text ?? '')) {
+		store.log({ event: 'run-retried', code: wf.code, why: wf.runFailed.why })
+		Object.assign(wf, { state: 'running', runFailed: undefined, question: undefined, status: 'Trying again', pending: wf.pending.length ? wf.pending : wf.msgIds.slice(-1) })
+		store.save(wf)
+		return reply(store, src, a, `${MARK} Trying ${wf.code} again. You'll see the draft first.`)
+	}
 	// "watch A41" from the self-chat: the same as from the AI chat or the page.
 	if (a.verb === 'watch') return reply(store, src, a, `${MARK} ${watchCommand(store, { code: wf.code, text: a.text }).text}`)
 	if (a.verb === 'unwatch') {

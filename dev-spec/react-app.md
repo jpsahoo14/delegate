@@ -1,5 +1,19 @@
 # React preview
 
+## A failed AI run is a reason on the card, never a question; setup failures wait and re-run (queue-new #11)
+
+A run with no result sets `runFailed: { at, kind, why }` instead of the old "Check this item, then answer or skip it" question.
+The card shows "Delegate couldn't draft this at 11:51 PM: the run stopped without a result." with Try again as the primary
+(re-runs the item once), "Write the reply yourself" (opens a reply editor and sends the owner's words), Later, and Skip under ⋯;
+no answer box. Sign-in and missing-CLI failures join model and quota as agent holds (`agentSetupFailure` kinds `auth` and
+`cli`, tried again every 10 minutes), so a setup failure keeps the item in Working with the reason and re-runs it when the hold
+clears. Once per store, `repairRunFailures` re-queues open items with the old question whose last logged worker error is a setup
+failure (`repair-requeued`), and turns the others into a failed run with its reason. Fictional root, stub worker (quota): a
+"model not available" failure kept the item in Working, then it ran once more after the model changed; repair re-queued exactly
+the 7 setup-failed items of 9 (once only), left the content failure as a reason and the done item alone; the no-result card
+showed the reason and time with Try again, which re-ran once and showed the new draft, and "Write the reply yourself" opened the
+editor, in New and Classic at 1280 light and 400 dark.
+
 ## A50: no vote the backstop would refuse, nothing half-made, groups the owner confirmed, and changes made without an AI run (queue-new #7)
 
 (A) Each PR read re-gates a vote already on the card (`regateVotes` in `probePRs`): when the owner's role is outside
