@@ -11,7 +11,17 @@ import { when, time } from '../domain/time.ts'
 import { revisionKey, type Entities, type Placement } from '../domain/contracts.ts'
 import { Icon } from '../components/ui/icon.tsx'
 import { ViewportList } from '../components/ViewportList.tsx'
+import { sentAt, whereOf } from './ItemCard.tsx'
+import { SentTime } from './SentTime.tsx'
 import { isolateRowControls } from './row-navigation.ts'
+import './rows.css'
+
+// "Delegate is on it" (spec S3): running now (live runs and working rows) and in line (rows waiting on Delegate).
+function workingCounts(ids: string[], entities: Entities, running: number) {
+	const kinds = ids.map(id => entities.placements[id]?.kind)
+	const now = running + kinds.filter(kind => kind === 'working').length
+	return { now, line: ids.length - kinds.filter(kind => kind === 'working').length }
+}
 
 const calendarKey = () => `${new Date().toDateString()}|${new Intl.DateTimeFormat().resolvedOptions().timeZone}`
 const day = (iso: string) => {
@@ -21,27 +31,21 @@ const day = (iso: string) => {
 }
 
 const RowFacts = memo(function RowFacts({ row }: { row: Placement; day: string }) {
-	const facts = row.facts, quote = facts.quote, parts: ReactNode[] = []
-	const sameQuote = !!quote && quote.by === facts.who && (quote.verb === facts.verb || facts.verb === 'item created')
-	const at = facts.verb ? `${facts.verb} ${when(facts.at)}` : ''
+	// Who, where, when and their message are lines 1 and 2 (spec S3, S8); these are the rest, muted, and never "asked <time>".
+	const facts = row.facts, parts: ReactNode[] = []
 	if (facts.promise?.to) parts.push(`You promised ${facts.promise.to} ${day(facts.promise.at) === 'today' || day(facts.promise.at) === 'yesterday' ? '' : 'on '}${day(facts.promise.at)}`)
 	if (facts.promise?.why) parts.push(facts.promise.why)
-	if (facts.who) parts.push(facts.who)
-	if (facts.where) parts.push(facts.where)
 	if (row.when) parts.push(`starts ${when(row.when)}`)
-	if (sameQuote) parts.push(<>{at}: <span className="row-quote">"{quote.text}"</span></>)
-	else {
-		if (at && (!quote || quote.verb !== facts.verb)) parts.push(at)
-		if (quote) parts.push(<>{quote.by} {quote.verb}{quote.verb === facts.verb && at ? ` ${when(facts.at)}` : ''}: <span className="row-quote">"{quote.text}"</span></>)
-	}
+	if (facts.quote?.by === 'You') parts.push(<>You {facts.quote.verb}: <span className="row-quote">"{facts.quote.text}"</span></>)
 	for (const note of facts.notes ?? []) parts.push(<><span className="row-note-label">{note.label}{note.at ? ` ${when(note.at)}` : ''}:</span> {note.text}{note.since ? ` since ${day(note.since)}` : ''}</>)
 	if (facts.until) {
 		const until = new Date(facts.until)
 		parts.push(`until ${until.toLocaleDateString([], (until.getTime() - Date.now()) / 86_400_000 < 6.5 ? { weekday: 'short' } : { month: 'short', day: 'numeric' })}`)
 	}
 	if (facts.also) parts.push(`+${facts.also} ${facts.also === 1 ? 'chat' : 'chats'}`)
-	return <p className="row-facts">{parts.map((part, index) => <Fragment key={index}>{index > 0 ? ' · ' : ''}{part}</Fragment>)}{row.teams && <> <a href={row.teams} target="_blank" rel="noopener noreferrer" aria-label="Open in Teams"><Icon name="ext" /></a></>}</p>
-}, (before, after) => before.day === after.day && before.row.facts === after.row.facts && before.row.when === after.row.when && before.row.teams === after.row.teams)
+	if (!parts.length) return null
+	return <p className="row-facts">{parts.map((part, index) => <Fragment key={index}>{index > 0 ? ' · ' : ''}{part}</Fragment>)}</p>
+}, (before, after) => before.day === after.day && before.row.facts === after.row.facts && before.row.when === after.row.when)
 function RowControls({ row, open, toggle }: { row: Placement; open: boolean; toggle: () => void }) {
 	const primary = useData(state => (state.pinned[row.act]?.snapshot.entities.actions ?? state.entities.actions)[row.actionIds[0]])
 	if (row.section === 'waiting' && (!primary || primary.effect !== 'local')) return null
@@ -59,14 +63,9 @@ function LocalRowControls({ row, open, toggle }: { row: Placement; open: boolean
 	if (row.section === 'waiting' && (!primary || primary.effect !== 'local')) return null
 	if (!primary || primary.effect !== 'local') return <Button variant={row.section === 'move' && !open ? 'default' : 'outline'} onClick={toggle} aria-expanded={open}>{open ? 'Hide' : 'Open'}</Button>
 	return <>
-		{primary.input === 'text' ? <div className="row-tell" role="form" aria-label={primary.label}>
-			<label className="sr-only" htmlFor={`tell-${row.act}`}>What you did or found, for {NAME}</label>
-			<input id={`tell-${row.act}`} value={card.ui.answer ?? ''} placeholder={`Tell ${NAME} what you did, or what to do next`}
-				onChange={event => edit({ answer: event.target.value })} onFocus={() => edit({ focusedField: 'answer' })} onBlur={() => edit({ focusedField: undefined })}
-				onCompositionStart={() => edit({ composing: true })} onCompositionEnd={event => edit({ composing: false, answer: event.currentTarget.value })}
-				onKeyDown={event => { if (event.key === 'Enter' && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.parentElement?.querySelector<HTMLButtonElement>('[data-primary=true]')?.click() } }} />
-			<ActionButton action={primary} input={{ text: card.ui.answer ?? '' }} primary disabled={!card.ui.answer?.trim() || card.newer} />
-		</div> : <ActionButton action={primary} primary={row.section === 'move'} disabled={card.newer && primary.staleness === 'exact'} />}
+		{/* No free text on a row (spec S2): Update opens the card, whose form says what happened. */}
+		{primary.input === 'text' ? <Button variant={open ? 'outline' : 'default'} onClick={toggle} aria-expanded={open} title={row.kind === 'your-step' ? 'Open the form to say how your step went. Nothing is sent.' : undefined}>{open ? 'Hide' : row.kind === 'your-step' ? 'Update' : 'Open'}</Button>
+			: <ActionButton action={primary} primary={row.section === 'move'} disabled={card.newer && primary.staleness === 'exact'} />}
 		{actions.filter(action => action.id !== primary.id && !action.input).map(action => <ActionButton key={action.id} action={action} disabled={card.newer && action.staleness === 'exact'} />)}
 		{card.newer && <Button variant="outline" onClick={toggle}>Review newer version</Button>}
 		{[...new Map(actions.map(action => [`${action.item}@${action.rev}`, action])).values()].map(action => <ActionState key={`${action.item}@${action.rev}`} item={action.item} rev={action.rev} />)}
@@ -91,9 +90,9 @@ function Standalone({ id }: { id: string }) {
 export const NowRow = memo(function NowRow({ id, day }: { id: string; day?: string }) {
 	const row = usePlacement(id)
 	const card = useItemCard(row?.act ?? '')
-	const hasItem = !!card.item, person = card.entities?.people[row?.personId ?? '']
-	const hasReport = !!card.entities?.work[row?.workId ?? '']?.reportActionId
-	const hasRowAnswer = card.entities?.actions[row?.actionIds[0] ?? '']?.input === 'text'
+	const item = card.item, entities = card.entities
+	const hasItem = !!item, person = entities?.people[row?.personId ?? item?.personId ?? '']
+	const hasReport = !!entities?.work[row?.workId ?? '']?.reportActionId
 	const route = useNavigation(state => state.route), navigate = useNavigation(state => state.navigate)
 	if (!row) return null
 	const open = route === `now/${id}` || route.startsWith(`now/${id}/`)
@@ -101,22 +100,41 @@ export const NowRow = memo(function NowRow({ id, day }: { id: string; day?: stri
 	const icons: Partial<Record<string, ComponentProps<typeof Icon>['name']>> = { working: 'bolt', scheduled: 'clock', watch: 'eye', 'waiting-delegate': 'clock', reminder: 'clock', 'reminder-new': 'clock', catchup: 'eye', stopped: 'warn' }
 	const icon = icons[row.kind]
 	const avatarStyle: CSSProperties & { '--hue': number } = { '--hue': person?.hue ?? 210 }
-	return <article className={`now-row${open ? ' row-open' : ''}`} data-code={row.code} data-row-kind={row.kind} onClick={row.kind === 'catchup' ? isolateRowControls : undefined}>
+	const toggle = () => navigate(open ? 'now' : `now/${id}`)
+	// Spec S3: three lines. 1 who · where · when they wrote · Open in Teams; 2 their message; 3 what you'll do with it (or Delegate's headline and reason).
+	const chat = item && entities ? entities.chats[item.chatId] : undefined
+	const sent = item ? sentAt(item) : { at: row.facts.at, added: !row.facts.verb || row.facts.verb === 'item created' }
+	const quote = row.facts.quote && row.facts.quote.by !== 'You' ? row.facts.quote.text : undefined
+	const message = (quote ?? item?.ask)?.slice(0, 400).replace(/\s+/g, ' ').slice(0, 200)
+	const draft = item?.draftId && entities ? entities.drafts[item.draftId] : undefined
+	const work = row.workId && entities ? entities.work[row.workId] : undefined
+	const mine: [string, string] | undefined = row.section !== 'move' ? undefined
+		: row.kind === 'your-step' ? ['Your step', work?.yours?.what ?? row.headline]
+			: draft && ['reply', 'holding', 'review'].includes(row.kind) ? [draft.holding ? 'Holding reply' : 'Your reply', `${draft.sendText ?? draft.text}${item?.changeIds.length ? ` · plus ${item.changeIds.length} ${item.changeIds.length === 1 ? 'change' : 'changes'}` : ''}`]
+				: item?.question && row.kind === 'question' ? [`${NAME} needs to know`, item.question] : undefined
+	const who = person?.name ?? row.facts.who
+	return <article className={`now-row${open ? ' row-open' : ''}`} data-code={row.code} data-row-kind={row.kind} title={codeHover(row.act)} onClick={row.kind === 'catchup' ? isolateRowControls : undefined}>
 		<div className="row-content">
 			{person && !icon ? <span className="row-avatar" style={avatarStyle} aria-hidden="true">{person.initials}</span> : <span className="row-icon"><Icon name={icon ?? 'clock'} /></span>}
-			<div className="row-text"><div className="row-heading"><h3><button className="row-title" aria-label={`${open ? 'Hide' : 'Open'} ${row.headline}`} onClick={() => navigate(open ? 'now' : `now/${id}`)} aria-expanded={open}>{row.headline}</button></h3>{row.chips.map((chip, n) => <span key={`${chip.kind}-${n}`} className={`chip chip-${chip.kind}`} title={chipHover(chip.kind)}>{chip.text}</span>)}<span className="code" title={codeHover(row.act)}>{row.act}</span></div>
+			<div className="row-text">
+				<div className="row-line1">{who && <span className="row-name">{who}</span>}{(chat || row.facts.where) && <span className="row-where">· {chat ? whereOf(chat) : row.facts.where}</span>}
+					<SentTime at={sent.at} added={sent.added} waiting={row.section === 'move'} />
+					{row.teams && <a className="row-teams" href={row.teams} target="_blank" rel="noopener noreferrer" aria-label="Open in Teams" title="Open this message in Teams, in a new tab."><Icon name="ext" /></a>}
+					{row.chips.map((chip, n) => <span key={`${chip.kind}-${n}`} className={`chip chip-${chip.kind}`} title={chipHover(chip.kind)}>{chip.text}</span>)}</div>
+				{message && <p className="row-message">{message}</p>}
+				<h3 className="row-line3"><button className="row-title" aria-label={`${open ? 'Hide' : 'Open'} ${mine ? `${mine[0]}: ${mine[1]}` : row.headline}`} onClick={toggle} aria-expanded={open}>
+					{mine ? <><b>{mine[0]}:</b> {mine[1]}</> : row.headline}</button></h3>
 				<RowFacts row={row} day={day ?? calendarKey()} />
 				{row.gist && <p>{row.gist}</p>}
 				{row.warn && <p className="row-warning"><Icon name="warn" /><span>{row.warn}</span></p>}
-				{row.nextText && <p className="next-line">Next: {row.nextText.replace('{at}', row.next?.at ? when(row.next.at) : 'soon')}</p>}
-				{hasRowAnswer && !(open && hasReport) && <div className="row-inline-tell" data-row-controls><RowControls row={row} open={open} toggle={() => navigate(open ? 'now' : `now/${id}`)} /></div>}
+				{row.nextText && <p className="next-line">{row.next?.owner.kind === 'delegate' ? '' : 'Next: '}{row.nextText.replace('{at}', row.next?.at ? when(row.next.at) : 'soon')}</p>}
 			</div>
-			{!hasRowAnswer && !(open && hasReport) && <div className="row-controls" data-row-controls>
-				<RowControls row={row} open={open} toggle={() => navigate(open ? 'now' : `now/${id}`)} />
+			{!(open && hasReport) && <div className="row-controls" data-row-controls>
+				<RowControls row={row} open={open} toggle={toggle} />
 			</div>}
 		</div>
-		{open && <div className="inline-expansion">{row.subjects.length > 1 && <nav className="filter-bar" aria-label={`Items in ${row.code}`}>{row.subjects.map(subject => <Button key={subject} variant={shown === subject ? 'default' : 'outline'} onClick={() => navigate(`now/${id}/${subject}`)}>Open item {subject}</Button>)}</nav>}
-			{hasItem ? <ItemCard key={shown} code={shown} placementId={shown === row.act ? row.id : undefined} inline /> : <Standalone id={id} />}</div>}
+		{open && <div className="inline-expansion">
+			{hasItem ? <ItemCard key={shown} code={shown} placementId={shown === row.act ? row.id : undefined} inline asks={row.subjects.length > 1 ? { codes: row.subjects, onOpen: subject => navigate(`now/${id}/${subject}`) } : undefined} /> : <Standalone id={id} />}</div>}
 	</article>
 })
 
@@ -174,11 +192,15 @@ export default function Now() {
 		{!find && !quiet && <p className="since-line summary-line" aria-label="Now summary">
 			{snapshot.summary.off && !snapshot.summary.paused && <span className="chip">{snapshot.summary.off.text}{snapshot.summary.off.since ? ` since ${when(snapshot.summary.off.since)}` : ''}</span>}
 			{!!snapshot.sinceLine?.parts.length && <><span className="summary-part">Since {when(snapshot.sinceLine.at)}: </span>{snapshot.sinceLine.parts.map((part, index) => <Fragment key={part.href}>{index > 0 && <span className="summary-separator"> · </span>}<a className="summary-part" href={part.href}>{part.text}{part.href === '#numbers' && <span aria-hidden="true"> ›</span>}</a></Fragment>)}<span className="summary-separator"> · </span></>}
-			{sections.filter(section => section.id !== 'move').map((section, index) => {
-				const changed = section.id === 'waiting' ? section.ids.filter(id => entities.placements[id]?.chips.some(chip => chip.kind === 'changed')).length : 0
-				const label = `${section.id === 'working' ? `${NAME} is working on` : section.label} ${section.total ?? section.ids.length}${changed ? `, ${changed} changed` : ''}${section.id === 'catchup' && snapshot.summary.catchup.worth ? `, ${snapshot.summary.catchup.worth} worth a look` : ''}`
-				return <Fragment key={section.id}>{index > 0 && <span className="summary-separator"> · </span>}<a className="summary-part" href={`#now/${section.id}`} aria-current={selected === section.id ? 'location' : undefined}>{label}</a></Fragment>
-			})}
+			{(() => {
+				// Spec S3: "N need you · Delegate: A now, B in line · C waiting on others", then Catch up; each part opens its section.
+				const count = (id: string) => sections.find(section => section.id === id)
+				const move = count('move'), working = count('working'), waiting = count('waiting'), catchup = count('catchup')
+				const busy = workingCounts(working?.ids ?? [], entities, running.length)
+				const parts: [string, string][] = [['move', `${move?.total ?? move?.ids.length ?? 0} need you`], ['working', `${NAME}: ${busy.now} now, ${busy.line} in line`], ['waiting', `${waiting?.total ?? waiting?.ids.length ?? 0} waiting on others`]]
+				if (catchup && (catchup.total ?? catchup.ids.length)) parts.push(['catchup', `${catchup.total ?? catchup.ids.length} to catch up${snapshot.summary.catchup.worth ? `, ${snapshot.summary.catchup.worth} worth a look` : ''}`])
+				return parts.map(([id, label], index) => <Fragment key={id}>{index > 0 && <span className="summary-separator"> · </span>}<a className="summary-part" href={`#now/${id}`} aria-current={selected === id ? 'location' : undefined}>{label}</a></Fragment>)
+			})()}
 		</p>}
 		{undoable.length > 0 && <section aria-label="Replies you can undo" className="undo-strip">{undoable.map(row => {
 			const first = entities.people[row.personId].name.split(' ')[0], rule = /by rule (\S+)/.exec(row.by)?.[1]
@@ -190,10 +212,12 @@ export default function Now() {
 			const matches = search ? ids.filter(id => search.nowIds.includes(id)).length : ids.length
 			const retained = search ? ids.length - matches : 0
 			const runs = section.id === 'working' ? running : []
-			if (section.id !== 'move' && !ids.length && !runs.length) return null
+			if (section.id !== 'move' && section.id !== 'working' && !ids.length && !runs.length) return null
+			const busy = section.id === 'working' ? workingCounts(section.ids, entities, running.length) : undefined
 			return <section key={section.id} className="now-section" data-selected={find || selected === section.id ? 'true' : 'false'} aria-labelledby={`section-${section.id}`}>
-				<h2 id={`section-${section.id}`}>{section.label}<span className="section-count"> · {search ? matches : section.total ?? ids.length}{retained > 0 && ` + ${retained} kept`}</span></h2>
+				<h2 id={`section-${section.id}`}>{section.label}<span className="section-count"> · {busy ? `${busy.now} now · ${busy.line} in line` : search ? matches : section.total ?? ids.length}{retained > 0 && ` + ${retained} kept`}</span></h2>
 				{section.id === 'working' && snapshot.summary.paused && <p className="warning">Paused: drafts go on, nothing is sent.</p>}
+				{section.id === 'working' && !snapshot.summary.paused && snapshot.summary.off && !ids.length && !runs.length && <p className="muted">{snapshot.summary.off.text}{snapshot.summary.off.since ? ` since ${when(snapshot.summary.off.since)}` : ''}</p>}
 				{ids.length ? <ViewportList className="rows" ids={ids} estimate={112} retained={Object.keys(pinnedPlacements({ pinned: activePins }))} target={ids.includes(sub) ? sub : undefined}
 					render={id => <NowRow id={id} day={day} />} /> : section.id === 'move' ? <p className="empty">{find ? 'No matching open items.' : quiet ? 'Quiet. Nothing needs you, and nothing is waiting.' : `Nothing needs you. ${waitingSummary || 'Nothing is waiting either.'}`}</p> : null}
 				{runs.map((run, n) => <article className="bootstrap-progress" key={`${run.what}-${n}`}><h3>{run.what}</h3><p className="muted">Since <time dateTime={run.since}>{when(run.since)}</time></p><progress max={1} value={run.progress} aria-label={run.what} /></article>)}

@@ -42900,10 +42900,10 @@ function debugLines(w) {
   ];
 }
 function readingOf(store2, now = Date.now()) {
-  const c = store2.chats(), at3 = c.goodAt ?? c.readAt, machine2 = store2.lease()?.machine;
-  if (!at3) return { state: "never", machine: machine2 };
+  const c = store2.chats(), at3 = c.goodAt ?? c.readAt, machine2 = store2.lease()?.machine, here3 = store2.machine;
+  if (!at3) return { state: "never", machine: machine2, here: here3 };
   const min = (now - Date.parse(at3)) / 6e4;
-  return { state: min < 20 ? "ok" : min < 60 ? "late" : "off", machine: machine2, at: at3 };
+  return { state: min < 20 ? "ok" : min < 60 ? "late" : "off", machine: machine2, at: at3, here: here3 };
 }
 function detailsOf(store2) {
   const l = store2.lease(), ago2 = l ? Math.round((Date.now() - Date.parse(l.at)) / 6e4) : void 0;
@@ -52261,7 +52261,7 @@ var snapshotSchema = external_exports.object({
     autoSend: external_exports.boolean(),
     runs: external_exports.number(),
     cap: external_exports.number(),
-    reading: external_exports.object({ state: text2, machine: optional2, at: optional2 })
+    reading: external_exports.object({ state: text2, machine: optional2, at: optional2, here: optional2 })
   }),
   summary: external_exports.object({
     off: external_exports.object({ text: text2, since: optional2 }).optional(),
@@ -52581,6 +52581,26 @@ function reactProjection(store2, query = "", visit2) {
     bindings.set(id, { action: action2, resolve: resolve8, management: !!managementRev });
     return id;
   }
+  function continueOffer(item2, rev, kind, openOn) {
+    const reading = readingOf(store2), runner = reading.machine, elsewhere = !!runner && runner !== store2.machine;
+    const label2 = `Continue in a terminal${elsewhere ? ` on ${runner}` : ""}`;
+    const off = reading.state === "off" || reading.state === "never" || !runner;
+    const unavailable = openOn ? { label: label2, reason: `Already open on ${openOn}.` } : off ? { label: label2, reason: `${NAME} isn't running on any machine, so there is no session to open.` } : void 0;
+    return offer(item2, rev, kind, label2, () => {
+      if (unavailable) throw new IntentError(409, unavailable.reason);
+      return { code: item2, verb: "continue" };
+    }, {
+      meaning: elsewhere ? `Opens this item's AI session in a terminal on ${runner}, not on this computer. Go to that machine to use it. ${NAME} leaves the item alone until you close that window, then picks up the result.` : `Opens this item's AI session in a terminal on this computer, so you can take over or look at the work. ${NAME} leaves the item alone until you close that window, then picks up the result.`,
+      ...unavailable ? { unavailable } : {}
+    });
+  }
+  const isCode = (token) => /^[A-Z]\d{1,5}$/.test(token) && byCode.has(token);
+  const chatWords = (code) => {
+    const w = byCode.get(code);
+    return w ? w.chat.group ? w.chat.name : `${(w.asker?.name ?? "").split(/\s+/)[0]} \xB7 1:1` : void 0;
+  };
+  const whereWords = (home, where) => !where ? void 0 : !isCode(where) ? where : where === home ? "this chat" : chatWords(where);
+  const plainText = (text3) => text3.replace(/\s*\(([^()]*?),\s*([A-Z]\d{1,5})\)/g, (all, inner, code) => isCode(code) ? ` \xB7 ${inner}` : all).replace(/\s*\(([A-Z]\d{1,5})\)/g, (all, code) => isCode(code) ? "" : all).replace(/\b(?:part|job|sent|owner|completion|row):[^\s,;)]+/g, "").replace(/\b([A-Z]\d{1,5})(:\s|\b)/g, (all, code, tail) => isCode(code) ? tail.trim() ? "" : "" : all).replace(/\s{2,}/g, " ").replace(/\s+([,.;:])/g, "$1").trim();
   function markTodos(code, todos, kind = "todo-done", prefix = code) {
     const expect = pageDigest(todos.map((todo) => [todo.id, todo.text, todo.at]));
     return offer(
@@ -52688,12 +52708,12 @@ ${code} stays ${byCode.get(code)?.state === "done" ? "done" : "open"}. Nothing i
     if (work2 && workId) {
       const planIds = work2.plan.map((step2, position) => {
         const key = `${workId}/plan/${position}`;
-        entities.planSteps[key] = { ...step2, id: key, workId, position, owner: ownerOf(step2.who), now: false };
+        entities.planSteps[key] = { ...step2, what: plainText(step2.what), where: whereWords(id, step2.where), id: key, workId, position, owner: ownerOf(step2.who), now: false };
         return key;
       });
       const stepIds = work2.steps.map((step2, position) => {
         const key = `${workId}/step/${position}`;
-        entities.workSteps[key] = { ...step2, id: key, workId };
+        entities.workSteps[key] = { ...step2, what: plainText(step2.what), id: key, workId };
         return key;
       });
       entities.work[workId] = { ...work2, id: workId, itemId: id, stepIds, planIds, total: stepIds.length };
@@ -52755,7 +52775,7 @@ ${code} stays ${byCode.get(code)?.state === "done" ? "done" : "open"}. Nothing i
       const note = entities.notes[noteId];
       if (note.answer?.trim()) note.useActionId = offer(id, rev, "use-note", "Use this in the reply", () => ({ code: id, verb: "answer", text: `Use this: ${note.answer}` }), { staleness: "exact", expect: pageDigest(note.answer) }, noteId);
     }
-    if (c.openOn || wf.job) actionIds.push(offer(id, rev, "continue", "Open on your computer", () => ({ code: id, verb: "continue" })));
+    if (c.openOn || wf.job) actionIds.push(continueOffer(id, rev, "continue", c.openOn));
     const checkBack = wf.work?.watch ? facts.jobs.get(wf.work.watch) : void 0;
     if (active(wf) && checkBack?.every) {
       if (checkBack.endsAt) actionIds.push(offer(id, rev, "extend-watch", "Extend 7 days", () => ({ code: id, verb: "extend" })));
@@ -52793,16 +52813,22 @@ ${code} stays ${byCode.get(code)?.state === "done" ? "done" : "open"}. Nothing i
       teams: safeLink(c.teams)
     };
   }
+  const s3 = (row) => {
+    const subject = byCode.get(row.act), first3 = (subject?.asker?.name ?? "").split(/\s+/)[0];
+    const headline = subject?.startedBy === "room" && subject.state === "running" && first3 ? `${NAME} is checking whether ${first3}'s message needs you` : row.headline.replace(/^Draft a reply to /, `${NAME} will draft a reply to `);
+    return { ...row, headline, chips: row.chips.map((chip) => chip.kind === "room" ? { ...chip, text: "Posted to everyone" } : chip) };
+  };
+  const onDelegate = (row) => row.kind === "waiting-delegate" || row.kind === "working";
   const sections = [
-    ["move", "Your move", next2.move],
-    ["working", `${NAME} is working`, next2.working],
-    ["waiting", "Waiting", next2.waiting],
+    ["move", "Waiting on you", next2.move],
+    ["working", `${NAME} is on it`, [...next2.working, ...next2.waiting.filter(onDelegate).map((row) => ({ ...row, section: "working" }))]],
+    ["waiting", "Waiting on others", next2.waiting.filter((row) => !onDelegate(row))],
     ["catchup", "Catch up", next2.catchup.rows]
   ].map(([id, label2, rows]) => ({
     id,
     label: label2,
     total: rows.length,
-    ids: rows.map((row, position) => {
+    ids: rows.map(s3).map((row, position) => {
       const { who: who2, primary, more, draft: _draft, rev: rowRev, work: work2, todos, ...rest2 } = row;
       const actionIds = [];
       for (const [n, action2] of [primary, ...more ?? []].entries()) {
@@ -52852,12 +52878,12 @@ ${code} stays ${byCode.get(code)?.state === "done" ? "done" : "open"}. Nothing i
       if (work2 && workId) {
         const planIds = work2.steps.map((step2, n) => {
           const key = `${workId}/plan/${n}`;
-          entities.planSteps[key] = { ...step2, id: key, workId, position: n };
+          entities.planSteps[key] = { ...step2, what: plainText(step2.what), where: whereWords(row.act, step2.where), id: key, workId, position: n };
           return key;
         });
         const stepIds = work2.happened.map((step2, n) => {
           const key = `${workId}/step/${n}`;
-          entities.workSteps[key] = { ...step2, id: key, workId };
+          entities.workSteps[key] = { ...step2, what: plainText(step2.what), id: key, workId };
           return key;
         });
         const reportActionId = work2.report ? offer(row.act, entities.items[row.act]?.rev ?? rowRev ?? "", "report", "Draft my report", (input2) => {
@@ -53097,7 +53123,7 @@ ${code} stays ${byCode.get(code)?.state === "done" ? "done" : "open"}. Nothing i
         return retry2 ? { at: retry2.at, attempt: retry2.n, reason: pageText(retry2.last.why), tried: retry2.tried.map(pageText) } : void 0;
       })(),
       actionIds: row.code ? byCode.get(row.code)?.state === "scheduled" ? Object.values(entities.placements).find((placement2) => placement2.act === row.code && placement2.kind === "scheduled")?.actionIds ?? [] : [
-        offer(row.code, entities.items[row.code]?.rev ?? "", "classic-continue", "Open on your computer", () => ({ code: row.code, verb: "continue" })),
+        continueOffer(row.code, entities.items[row.code]?.rev ?? "", "classic-continue", byCode.get(row.code)?.openOn),
         ...entities.items[row.code]?.actionIds.filter((id) => entities.actions[id].kind === "dismiss") ?? []
       ] : []
     })),

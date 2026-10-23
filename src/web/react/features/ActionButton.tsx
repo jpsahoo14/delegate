@@ -18,8 +18,10 @@ export function ActionState({ item, rev }: { item: string; rev: string }) {
 	</>
 }
 
-export function ActionButton({ action, input, primary = false, disabled = false, ariaLabel, pendingLabel = 'Waiting...', prepareInput, disabledReason }: {
+export function ActionButton({ action, input, primary = false, disabled = false, ariaLabel, pendingLabel = 'Waiting...', prepareInput, disabledReason, label: shownLabel }: {
 	action: Action; input?: Intent['input']; primary?: boolean; disabled?: boolean; ariaLabel?: string; pendingLabel?: string; prepareInput?: () => Intent['input']
+	// A label the card says in its own words, such as "Draft my update to Pat"; the action's own label otherwise.
+	label?: string
 	// Why the caller disabled it, for the hover text: 'stale' (changed since you looked), 'pick' (no option picked), or words.
 	disabledReason?: 'stale' | 'pick' | string
 }) {
@@ -31,7 +33,7 @@ export function ActionButton({ action, input, primary = false, disabled = false,
 	const unavailable = useActionAvailability(action)
 	const online = useOnline(), snapshot = useSnapshot(), describedBy = useId()
 	const off = disabled || busy || window.expired || alreadySubmitted || presentation.unavailable || !!unavailable
-	const label = presentation.label
+	const label = shownLabel ?? presentation.label
 	// Spec S7: what it does, from the one shared map; a disabled control says why (by default from what it needs).
 	const what = hoverOf(action.kind, label, hoverValues(snapshot, action, { left: window.countdown }), action.meaning)
 	const reason = disabledReason ?? (disabled ? action.kind === 'pick' ? 'pick' : action.kind === 'answer' ? 'Type your answer first.' : action.input === 'text' ? 'Type your text first.' : undefined : undefined)

@@ -2,8 +2,8 @@ import type { Store } from '../store/state.ts'
 import type { Parsed } from '../core/verbs.ts'
 import { parseVerbs } from '../core/verbs.ts'
 import { hashOf } from '../knowledge/format.ts'
-import { card, knowledge as knowledgeCard, view, who as displayWho, type ItemCard, type SourceRow, type Who } from './view.ts'
-import { nextView, snapshot as placementSnapshot, place, todoHeadline } from './next.ts'
+import { card, knowledge as knowledgeCard, readingOf, view, who as displayWho, type ItemCard, type SourceRow, type Who } from './view.ts'
+import { nextView, snapshot as placementSnapshot, place, todoHeadline, type NextRow } from './next.ts'
 import { emptyEntities, snapshotSchema, type Action, type Intent, type Snapshot } from './react/domain/contracts.ts'
 import { knowledgeOf } from '../runner/proposals.ts'
 import { find } from './app/model/find.ts'
@@ -107,6 +107,32 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 		bindings.set(id, { action, resolve, management: !!managementRev })
 		return id
 	}
+	// "Continue in a terminal" (spec S7, owner 10-23): the terminal opens on the machine whose runner reads the chats, which may not
+	// be the one showing the page; it is named then. With no runner reading, or the window already open, it is unavailable, with why.
+	function continueOffer(item: string, rev: string, kind: string, openOn?: string): string {
+		const reading = readingOf(store), runner = reading.machine, elsewhere = !!runner && runner !== store.machine
+		const label = `Continue in a terminal${elsewhere ? ` on ${runner}` : ''}`
+		const off = reading.state === 'off' || reading.state === 'never' || !runner
+		const unavailable = openOn ? { label, reason: `Already open on ${openOn}.` } : off ? { label, reason: `${NAME} isn't running on any machine, so there is no session to open.` } : undefined
+		return offer(item, rev, kind, label, () => {
+			if (unavailable) throw new IntentError(409, unavailable.reason)
+			return { code: item, verb: 'continue' }
+		}, {
+			meaning: elsewhere ? `Opens this item's AI session in a terminal on ${runner}, not on this computer. Go to that machine to use it. ${NAME} leaves the item alone until you close that window, then picks up the result.`
+				: `Opens this item's AI session in a terminal on this computer, so you can take over or look at the work. ${NAME} leaves the item alone until you close that window, then picks up the result.`,
+			...(unavailable ? { unavailable } : {}),
+		})
+	}
+	// Spec S9: where a step happens, and what happened, in words; never an item code or a raw reference (part:, job:, sent:, owner:).
+	const isCode = (token: string) => /^[A-Z]\d{1,5}$/.test(token) && byCode.has(token)
+	const chatWords = (code: string) => { const w = byCode.get(code); return w ? w.chat.group ? w.chat.name : `${(w.asker?.name ?? '').split(/\s+/)[0]} · 1:1` : undefined }
+	const whereWords = (home: string, where?: string) => !where ? undefined : !isCode(where) ? where : where === home ? 'this chat' : chatWords(where)
+	const plainText = (text: string) => text
+		.replace(/\s*\(([^()]*?),\s*([A-Z]\d{1,5})\)/g, (all, inner, code) => isCode(code) ? ` · ${inner}` : all)
+		.replace(/\s*\(([A-Z]\d{1,5})\)/g, (all, code) => isCode(code) ? '' : all)
+		.replace(/\b(?:part|job|sent|owner|completion|row):[^\s,;)]+/g, '')
+		.replace(/\b([A-Z]\d{1,5})(:\s|\b)/g, (all, code, tail) => isCode(code) ? tail.trim() ? '' : '' : all)
+		.replace(/\s{2,}/g, ' ').replace(/\s+([,.;:])/g, '$1').trim()
 	function markTodos(code: string, todos: NonNullable<Workflow['kept']>, kind = 'todo-done', prefix = code): string {
 		const expect = pageDigest(todos.map(todo => [todo.id, todo.text, todo.at]))
 		return offer(code, expect, kind, kind === 'todo-row-done' ? 'Mark done' : todos.length === 1 ? 'Mark to-do done' : `Mark ${todos.length} to-dos done`,
@@ -181,12 +207,12 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 		if (work && workId) {
 			const planIds = work.plan.map((step, position) => {
 				const key = `${workId}/plan/${position}`
-				entities.planSteps[key] = { ...step, id: key, workId, position, owner: ownerOf(step.who), now: false }
+				entities.planSteps[key] = { ...step, what: plainText(step.what), where: whereWords(id, step.where), id: key, workId, position, owner: ownerOf(step.who), now: false }
 				return key
 			})
 			const stepIds = work.steps.map((step, position) => {
 				const key = `${workId}/step/${position}`
-				entities.workSteps[key] = { ...step, id: key, workId }
+				entities.workSteps[key] = { ...step, what: plainText(step.what), id: key, workId }
 				return key
 			})
 			entities.work[workId] = { ...work, id: workId, itemId: id, stepIds, planIds, total: stepIds.length }
@@ -241,7 +267,7 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 			const note = entities.notes[noteId]
 			if (note.answer?.trim()) note.useActionId = offer(id, rev, 'use-note', 'Use this in the reply', () => ({ code: id, verb: 'answer', text: `Use this: ${note.answer}` }), { staleness: 'exact', expect: pageDigest(note.answer) }, noteId)
 		}
-		if (c.openOn || wf.job) actionIds.push(offer(id, rev, 'continue', 'Open on your computer', () => ({ code: id, verb: 'continue' })))
+		if (c.openOn || wf.job) actionIds.push(continueOffer(id, rev, 'continue', c.openOn))
 		const checkBack = wf.work?.watch ? facts.jobs.get(wf.work.watch) : undefined
 		if (active(wf) && checkBack?.every) {
 			if (checkBack.endsAt) actionIds.push(offer(id, rev, 'extend-watch', 'Extend 7 days', () => ({ code: id, verb: 'extend' })))
@@ -268,11 +294,20 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 			why: { reason: why.reason, confidence: why.confidence, gaps: why.gaps, searched: why.searched }, teams: safeLink(c.teams),
 		}
 	}
+	// Spec S3: the sections say whose move it is, Delegate's queued rows say Delegate does them, and a group message is "Posted to everyone".
+	const s3 = (row: NextRow): NextRow => {
+		const subject = byCode.get(row.act), first = (subject?.asker?.name ?? '').split(/\s+/)[0]
+		const headline = subject?.startedBy === 'room' && subject.state === 'running' && first ? `${NAME} is checking whether ${first}'s message needs you`
+			: row.headline.replace(/^Draft a reply to /, `${NAME} will draft a reply to `)
+		return { ...row, headline, chips: row.chips.map(chip => chip.kind === 'room' ? { ...chip, text: 'Posted to everyone' } : chip) }
+	}
+	// Rows that wait on Delegate are Delegate's, never "Waiting on others" (spec S3); watches and reminders stay with others.
+	const onDelegate = (row: NextRow) => row.kind === 'waiting-delegate' || row.kind === 'working'
 	const sections: Snapshot['sections'] = ([
-		['move', 'Your move', next.move], ['working', `${NAME} is working`, next.working],
-		['waiting', 'Waiting', next.waiting], ['catchup', 'Catch up', next.catchup.rows],
+		['move', 'Waiting on you', next.move], ['working', `${NAME} is on it`, [...next.working, ...next.waiting.filter(onDelegate).map(row => ({ ...row, section: 'working' as NextRow['section'] }))]],
+		['waiting', 'Waiting on others', next.waiting.filter(row => !onDelegate(row))], ['catchup', 'Catch up', next.catchup.rows],
 	] as const).map(([id, label, rows]) => ({
-		id, label, total: rows.length, ids: rows.map((row, position) => {
+		id, label, total: rows.length, ids: rows.map(s3).map((row, position) => {
 			const { who, primary, more, draft: _draft, rev: rowRev, work, todos, ...rest } = row
 			const actionIds: string[] = []
 			for (const [n, action] of [primary, ...(more ?? [])].entries()) {
@@ -317,12 +352,12 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 			if (work && workId) {
 				const planIds = work.steps.map((step, n) => {
 					const key = `${workId}/plan/${n}`
-					entities.planSteps[key] = { ...step, id: key, workId, position: n }
+					entities.planSteps[key] = { ...step, what: plainText(step.what), where: whereWords(row.act, step.where), id: key, workId, position: n }
 					return key
 				})
 				const stepIds = work.happened.map((step, n) => {
 					const key = `${workId}/step/${n}`
-					entities.workSteps[key] = { ...step, id: key, workId }
+					entities.workSteps[key] = { ...step, what: plainText(step.what), id: key, workId }
 					return key
 				})
 				const reportActionId = work.report ? offer(row.act, entities.items[row.act]?.rev ?? rowRev ?? '', 'report', 'Draft my report', input => {
@@ -528,7 +563,7 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 				return retry ? { at: retry.at, attempt: retry.n, reason: pageText(retry.last.why), tried: retry.tried.map(pageText) } : undefined
 			})(),
 			actionIds: row.code ? byCode.get(row.code)?.state === 'scheduled' ? Object.values(entities.placements).find(placement => placement.act === row.code && placement.kind === 'scheduled')?.actionIds ?? [] : [
-				offer(row.code, entities.items[row.code]?.rev ?? '', 'classic-continue', 'Open on your computer', () => ({ code: row.code, verb: 'continue' })),
+				continueOffer(row.code, entities.items[row.code]?.rev ?? '', 'classic-continue', byCode.get(row.code)?.openOn),
 				...(entities.items[row.code]?.actionIds.filter(id => entities.actions[id].kind === 'dismiss') ?? []),
 			] : [],
 		})),

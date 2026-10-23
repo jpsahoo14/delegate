@@ -3,17 +3,19 @@ import type { CardUi } from '../data/store.ts'
 import type { Entities } from '../domain/contracts.ts'
 
 type FieldKey = 'editText' | 'answer' | 'ask' | 'report' | 'feedback' | 'watchText' | 'watchUntil'
-export function Field({ code, rev, field, label, value, edit, rows = 3, placeholder, singleLine = false }: {
+export function Field({ code, rev, field, label, value, edit, rows = 3, placeholder, singleLine = false, patch, describedBy }: {
 	code: string; rev: string; field: FieldKey; label: string; value: string; edit: (patch: Partial<CardUi>) => void; rows?: number; placeholder?: string; singleLine?: boolean
+	patch?: (value: string) => Partial<CardUi>; describedBy?: string
 }) {
 	const id = `${code}-${rev}-${field}`, Control = singleLine ? 'input' : 'textarea'
+	const change = (value: string) => patch ? patch(value) : { [field]: value }
 	useEffect(() => () => edit({ focusedField: undefined }), [edit])
-	return <label className="field-label" htmlFor={id}><span>{label}</span><Control id={id} data-field={field} value={value} rows={singleLine ? undefined : rows} placeholder={placeholder}
-		onChange={event => edit({ [field]: event.target.value })}
+	return <label className="field-label" htmlFor={id}><span>{label}</span><Control id={id} data-field={field} value={value} rows={singleLine ? undefined : rows} placeholder={placeholder} aria-describedby={describedBy}
+		onChange={event => edit(change(event.target.value))}
 		onFocus={() => edit({ focusedField: field })}
 		onBlur={() => edit({ focusedField: undefined })}
 		onCompositionStart={() => edit({ composing: true })}
-		onCompositionEnd={event => edit({ composing: false, [field]: event.currentTarget.value })}
+		onCompositionEnd={event => edit({ composing: false, ...change(event.currentTarget.value) })}
 		onKeyDown={event => {
 			if (field !== 'ask' || event.key !== 'Enter') return
 			event.stopPropagation()

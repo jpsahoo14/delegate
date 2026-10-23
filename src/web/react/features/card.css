@@ -1,0 +1,57 @@
+/* The card (spec S1-S4, mockup design-spec/mockups/card-redesign.html): shared by New's opened row and Classic's Needs-you card. */
+.item-card .card-block{padding:14px 0;border-top:1px solid var(--border);margin:0}
+.item-card>.card-block:first-child{border-top:0;padding-top:4px}
+.item-card .card-block>h3,.item-card .card-after>h3{font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--text-2);margin:0 0 8px}
+.card-head{display:flex;gap:8px;align-items:center;flex-wrap:wrap;min-width:0}
+.card-avatar{width:32px;height:32px;border-radius:50%;display:inline-grid;place-items:center;font-size:12px;font-weight:700;color:#fff;background:hsl(var(--hue) 55% 45%);flex:none}
+.card-avatar.small{width:24px;height:24px;font-size:10px}
+.item-card .card-who{font-size:15px;font-weight:600;margin:0;letter-spacing:0;text-transform:none;color:var(--text)}
+.card-where{color:var(--text-2)}
+.card-head-end{margin-left:auto}
+.card-teams{display:inline-flex;gap:4px;align-items:center;border:1px solid var(--border-strong);border-radius:8px;padding:4px 10px;color:var(--text);text-decoration:none;white-space:nowrap}
+.card-teams:hover{background:var(--surface-2)}
+.card-bubble{margin:10px 0 0 40px;background:var(--surface-2);border-radius:4px 12px 12px 12px;padding:9px 12px;white-space:pre-wrap;border:0;font-style:normal;max-width:760px}
+.card-thread{margin:8px 0 0 40px}.card-thread>summary{cursor:pointer;color:var(--accent)}
+.thread-list{list-style:none;margin:8px 0 0;padding:0 0 0 12px;border-left:2px solid var(--border);display:flex;flex-direction:column;gap:8px}
+.thread-list time{color:var(--text-3);margin-left:6px;font-size:12.5px}.thread-list p{margin:2px 0 0;white-space:pre-wrap}
+.card-earlier{margin:8px 0 0 40px;color:var(--text-3);font-size:12.5px}
+.item-card .warnline{margin:10px 0 0 40px;color:var(--warn);background:var(--warn-soft);border-radius:8px;padding:6px 10px}
+.card-status{margin:10px 0 0 40px;color:var(--text-2)}
+.item-card .card-message>.chip{margin:8px 0 0 40px}
+.card-answer .question{font-weight:600;margin:0 0 8px}
+.reply-section textarea{width:100%;min-height:72px;max-height:320px;font:inherit;line-height:1.5;resize:vertical}
+.card-after .change{margin:6px 0}.card-after .change>label{display:flex;gap:8px;align-items:flex-start;font-weight:600}
+.card-after .change>p{margin:2px 0 0 24px}.card-after>p{margin:6px 0;display:flex;gap:6px;align-items:center}
+.card-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.card-actions>.card-more-menu{margin-left:auto}
+.card-actions .card-more-menu>summary{display:grid;place-items:center;width:34px;height:34px;border-radius:8px;list-style:none;color:var(--text-2);cursor:pointer}
+.card-actions .card-more-menu>summary::-webkit-details-marker{display:none}
+.card-actions .card-more-content{position:absolute;right:0;bottom:100%;z-index:25;display:flex;flex-direction:column;gap:6px;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:8px;box-shadow:var(--shadow-2);min-width:220px;max-height:min(480px,60vh);overflow:auto}
+.card-details>summary{cursor:pointer;color:var(--text-2)}.card-details[open]>summary{margin-bottom:8px}
+.card-details h4{margin:12px 0 4px;font-size:13px}.card-details p,.card-details li{color:var(--text-2)}
+.card-details .history{list-style:none;padding:0;margin:0}.card-details .history li{display:grid;grid-template-columns:110px 1fr;gap:8px}
+.card-details .history time{color:var(--text-3)}
+.card-asks ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:2px}
+.ask-line{display:flex;gap:8px;align-items:center;width:100%;text-align:left;border:0;background:none;padding:5px 8px;border-radius:7px;cursor:pointer;color:inherit;font:inherit}
+.ask-line:hover{background:var(--surface-2)}.ask-line[aria-current=true]{background:var(--accent-soft)}
+.ask-words{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--text-2)}
+.sent-time{color:var(--text-3);white-space:nowrap;font-size:13px}.sent-time.sent-late{color:var(--warn)}
+/* S9: long and huge messages, long replies, progress, history, the decision and the PR review. */
+.card-bubble-wrap{margin-left:40px}.card-bubble-wrap>.card-bubble{margin-left:0}
+.card-bubble.clamp{max-height:9.3em;overflow:hidden;position:relative}
+.card-bubble.clamp::after{content:"";position:absolute;left:0;right:0;bottom:0;height:2.2em;background:linear-gradient(transparent,var(--surface-2))}
+.card-bubble.scroll{max-height:360px;overflow:auto}
+.item-card .link-button{border:0;background:none;padding:4px 0;color:var(--accent);cursor:pointer;font:inherit}
+.reply-count{margin:4px 0 0;font-size:12.5px}
+.card-decision .decide{background:var(--accent-soft);border-radius:10px;padding:10px 12px;font-weight:600;margin:0 0 8px}
+.card-review .verdict{display:flex;gap:10px;align-items:flex-start;margin:0 0 6px}
+.verdict-chip{font-weight:700;padding:2px 8px;border-radius:7px;white-space:nowrap}
+.verdict-chip.ready{background:color-mix(in srgb,#1a7f37 16%,transparent);color:#1a7f37}
+.verdict-chip.not-ready{background:var(--warn-soft);color:var(--warn)}
+.card-review .finding{border:1px solid var(--border);border-radius:8px;padding:8px 10px;margin:6px 0}
+.finding-loc{font-family:ui-monospace,Consolas,monospace;font-size:12px;color:var(--text-3)}.card-review .finding p{margin:2px 0 0}
+.card-after .after-group{font-size:12px;color:var(--text-3);text-transform:uppercase;letter-spacing:.04em;font-weight:700;margin:10px 0 2px}
+.card-details .steps{list-style:none;padding:0;margin:4px 0}.card-details .steps li{display:flex;gap:8px;align-items:baseline;margin:3px 0}
+.card-details .steps .step-mark{width:16px;text-align:center;flex:none}.card-details .steps small{margin-left:auto;color:var(--text-3);white-space:nowrap;padding-left:8px}
+.card-details .steps li[data-done],.card-details .steps-done li{text-decoration:none}
+.card-details .history li{align-items:baseline}@media(max-width:560px){.card-bubble-wrap{margin-left:0}.card-bubble,.card-thread,.card-earlier,.item-card .warnline,.card-status,.item-card .card-message>.chip{margin-left:0}.card-actions>[data-primary=true]{width:100%}.card-head-end{margin-left:0}}

@@ -105,12 +105,13 @@ export function debugLines(w: Workflow): string[] {
 }
 const SKIP = new Set(['state', 'outcome'])
 // Bet 1: whether chats are being read, from the last good read (the lease is written even when a read fails).
-export type Reading = { state: 'ok' | 'late' | 'off' | 'never'; machine?: string; at?: string }
+export type Reading = { state: 'ok' | 'late' | 'off' | 'never'; machine?: string; at?: string; here?: string }
+// here: the machine serving this page, so a page can tell whether the runner is on another machine (spec S7).
 export function readingOf(store: Store, now = Date.now()): Reading {
-	const c = store.chats(), at = c.goodAt ?? c.readAt, machine = store.lease()?.machine
-	if (!at) return { state: 'never', machine }
+	const c = store.chats(), at = c.goodAt ?? c.readAt, machine = store.lease()?.machine, here = store.machine
+	if (!at) return { state: 'never', machine, here }
 	const min = (now - Date.parse(at)) / 60_000
-	return { state: min < 20 ? 'ok' : min < 60 ? 'late' : 'off', machine, at }
+	return { state: min < 20 ? 'ok' : min < 60 ? 'late' : 'off', machine, at, here }
 }
 
 function detailsOf(store: Store): { runner: string; log: string[] } {

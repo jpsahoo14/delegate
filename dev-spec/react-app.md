@@ -1,5 +1,48 @@
 # React preview
 
+## Card redesign, part 4: real-data shapes (designer-card-redesign.md S9)
+
+A long message shows 6 lines and "Show the whole message (N characters)", opened in a box that scrolls past 360 px; above
+20,000 characters only the first 1,800 reach the card (the row shows 200), with Open in Teams for the rest. A reply over
+400 characters shows its count under the box. Details shows the first 5 sources, then "+ N more"; "Progress: X of N steps
+done" with the goal, the open steps (▸ the current one), who does each and where in words, and the done steps folded with
+✓ and no strikethrough; "What happened, newest first", 4 until "Show all". Item codes and raw references (part:, job:,
+sent:, owner:) are turned into words or removed in the projection. A decision the owner must make has its own block and
+box ("Your decision (Delegate continues from it)"). A holding reply reads "Holding reply to <name>, in <chat> · says you
+are on it; not the answer yet" with "Send holding reply". A PR review gets "Delegate's review of PR <n>" (verdict, the
+PR line, each finding), then the reply to the chat, then "On PR <n> (Azure DevOps)" with a checkbox per comment and for
+the vote; the primary says all of it ("Send reply, comment and approve", "Send reply and comment" without the vote).
+
+## Card redesign, part 2: the Now list (designer-card-redesign.md S3, with S8's row time)
+
+Sections are "Waiting on you", "Delegate is on it · N now · M in line" (running and in-line rows; rows waiting on Delegate
+never sit in "Waiting on others"), "Waiting on others" and "Catch up"; the summary reads "N need you · Delegate: A now,
+B in line · C waiting on others". A row is three lines: who · "in <chat>" or "1:1 chat" · when they wrote (S8 compact,
+warning color past 2 working days) · ↗; their message; then what you'll do with it ("Your reply:", "Holding reply:",
+"Your step:", "Delegate needs to know:") or Delegate's headline and reason. No code is drawn (tooltip only), no row has
+a free-text box (your step has Update), "Draft a reply to" reads "Delegate will draft a reply to", a group message's chip
+is "Posted to everyone", and one being judged reads "Delegate is checking whether <name>'s message needs you". These are
+React-projection changes; today's pages keep their wording. Reply rows keep Open, not Send: a row shows one line of the
+reply, and the owner's rule (10-21) is that a reply is sent only from where its whole text is visible.
+S8 in New: rows, the card head and Done rows show when the person wrote in one format (`10:42`, `Yesterday`, `Tue`,
+`Oct 12`; "Sent <full date and time>" on hover), from the newest message when they wrote again, else "added <time>";
+past 2 working days the time is in the warning color; a row relabels itself after midnight without a reload.
+
+## Card redesign, part 1: the shared card (designer-card-redesign.md S1, S2, S4, S7 terminal rule)
+
+`features/ItemCard.tsx` is the one card for New's opened row and, once the Classic builder wires it (S5), Classic's Needs-you
+card. Blocks, in order: their message (avatar · name · "in <chat>" or "1:1 chat" · sent time with the code as tooltip ·
+Open in Teams; the bubble; "Show N earlier messages" in place; every warning, never folded); what you'll send (the reply,
+editable in place and labelled "Your reply to <first name>, in <chat>", which makes the primary "Send your version"; or
+"Delegate needs to know" with Your answer; choices and the meeting; your step with How did it go? and "Draft my update to
+<name>"); "When you send, Delegate will also" (changes as checkboxes, to-dos kept, the watch); the actions (primary ·
+Later · ⋯ with Edit in Teams, Dismiss, Continue in a terminal); and one collapsed Details line (why, sources, progress,
+history, changes already handled, Ask Delegate; it opens while an ask is pending). Several asks in one conversation show
+"N asks in this conversation", replacing the "Open item" buttons. "Open on your computer" is "Continue in a terminal",
+named "on <machine>" when the runner is elsewhere and unavailable with its reason when no runner reads or the window is
+open; `status.reading.here` carries the page server's own machine. `SentTime`, `AsksList`, `firstName`, `whereOf` and
+`sentAt` are exported for Classic; `card.css` comes with the card.
+
 ## Edit habits: drafts follow how the owner keeps editing (Core 10 J6, pm-edit-habits.md)
 
 Each owner-edited send (never a rule send, never an off-record chat) logs `edit-style` with the kinds code can measure:

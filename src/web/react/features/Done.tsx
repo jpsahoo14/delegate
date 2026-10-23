@@ -6,6 +6,7 @@ import { useScreenNavigation } from '../classic/navigation.tsx'
 import { ActionButton, ActionState } from './ActionButton.tsx'
 import type { Entities } from '../domain/contracts.ts'
 import { ItemCard } from './ItemCard.tsx'
+import { SentTime } from './SentTime.tsx'
 import { useDoneEntries, useDoneLook } from '../data/done.ts'
 import { when } from '../domain/time.ts'
 import { Icon } from '../components/ui/icon.tsx'
@@ -53,7 +54,7 @@ export function Entry({ row: supplied, fresh = false, grouped = false, compact =
 			<div className="done-row">
 				{reply ? <span className="row-avatar" style={{ '--hue': person.hue } as CSSProperties}>{person.initials}</span> : <span className="row-icon"><Icon name={row.kind === 'catchup' ? row.high ? 'warn' : 'eye' : row.kind === 'reminder' ? 'clock' : row.kind === 'learned' ? 'book' : 'check'} /></span>}
 				<div className="done-body">{row.kind === 'catchup' && row.teams ? <a className="done-title" href={row.teams} target="_blank" rel="noopener noreferrer">{exchange}</a> : expandable ? <button className="done-title" onClick={onToggle} aria-expanded={expanded}>{exchange}</button> : <div className="done-title">{exchange}</div>}
-					<span className="done-meta">{[reply ? `${person.name}${where ? ` · ${where}` : ''}` : row.kind !== 'learned' ? row.by : '', reply ? row.by : '', when(row.at), actions.some(action => action.kind === 'undo') ? 'you can take it back' : ''].filter(Boolean).join(' · ')}{link && row.kind !== 'catchup' && <> · <a href={link} target="_blank" rel="noopener noreferrer">{row.teams ? 'Open in Teams' : 'Open source'}↗</a></>}</span>
+					<span className="done-meta">{[reply ? `${person.name}${where ? ` · ${where}` : ''}` : row.kind !== 'learned' ? row.by : '', reply ? row.by : ''].filter(Boolean).join(' · ')} · <SentTime at={row.at} />{actions.some(action => action.kind === 'undo') ? ' · you can take it back' : ''}{link && row.kind !== 'catchup' && <> · <a href={link} target="_blank" rel="noopener noreferrer">{row.teams ? 'Open in Teams' : 'Open source'}↗</a></>}</span>
 					{row.work && <span className="chip">{row.work}</span>}{row.watchedAs && <span className="chip">Watching as {row.watchedAs}</span>}
 					{(newer || blocked) && <p role="status" className="warning">This activity changed. Your unsent words are kept. <Button variant="outline" disabled={busy} onClick={showLatest}>Review current version</Button></p>}
 				</div>
@@ -84,7 +85,7 @@ export function Entry({ row: supplied, fresh = false, grouped = false, compact =
 		{!compact && row.ask && <p>{person.name} asked: {row.ask}</p>}
 		{!compact && row.said && <p><strong>{row.inTeams ? 'You (in Teams)' : 'You'}:</strong> {row.said}</p>}
 		{row.gist && <p className={compact ? 'classic-catchup-gist' : undefined}>{row.gist}</p>}
-		<p className="muted">{!compact && `${person.name} - `}{row.by}{compact ? ' · ' : ' - '}<time dateTime={row.at}>{when(row.at)}</time></p>
+		<p className="muted">{!compact && `${person.name} - `}{row.by}{compact ? ' · ' : ' - '}<SentTime at={row.at} /></p>
 		{!compact && row.work && <p>{row.work}</p>}
 		{(row.teams || row.href) && <a className={compact ? 'classic-catchup-source' : undefined} aria-label={compact ? row.teams ? 'Open in Teams' : 'Open source' : undefined} href={row.teams ?? row.href} target="_blank" rel="noopener noreferrer">{compact ? <Icon name="ext" /> : row.teams ? 'Open in Teams' : 'Open source'}</a>}
 		<div className="action-bar" data-row-controls>{actions.filter(action => !['wrong', 'incomplete', 'unneeded', 'watch-fyi'].includes(action.kind)).map(action => <ActionButton key={action.id} action={action} />)}
