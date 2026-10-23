@@ -87,8 +87,11 @@ export const useData = create<DataState>((set, get) => ({
 	edit(code, rev, patch) {
 		const state = get(), key = revisionKey(code, rev), ui = { ...state.byRevision[key], ...patch }
 		const pin = state.pinned[code]
+		// Only the revision on screen is pinned. A late edit to an older revision (a field's cleanup after the owner's own Draft reply
+		// was adopted) never pins the newer one, which then made the owner's own new draft look like someone else's change (bug 10-23 R3).
+		const shown = state.snapshot?.entities.items[code]?.rev ?? state.snapshot?.entities.knowledgeProposals[code]?.rev ?? rev
 		const pinned = patch.pending && pin ? { ...state.pinned, [code]: { ...pin, actionRev: rev } } :
-			dirty(ui) && !pin && state.snapshot ? { ...state.pinned, [code]: { rev: state.snapshot.entities.items[code]?.rev ?? rev, snapshot: state.snapshot, ...(ui.pending ? { actionRev: rev } : {}) } } : state.pinned
+			dirty(ui) && !pin && state.snapshot && shown === rev ? { ...state.pinned, [code]: { rev: shown, snapshot: state.snapshot, ...(ui.pending ? { actionRev: rev } : {}) } } : state.pinned
 		set({ byRevision: { ...state.byRevision, [key]: ui }, pinned, ...(patch.result ? { latestResult: patch.result } : {}), ...('error' in patch ? { latestError: patch.error } : {}) })
 	},
 	showLatest(code) {

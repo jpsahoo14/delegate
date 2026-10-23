@@ -1,5 +1,20 @@
 # React preview
 
+## bug 10-23 R3: the owner's own Draft reply came back as "Changed since you looked"
+
+New and Classic set `interacting` when the owner presses the primary button, and nothing clears it. The owner's own
+answer was adopted correctly: the pin was released once its receipt applied. Then the answer field's cleanup edited
+the old revision, still `interacting`, which pinned the card again to the snapshot of that moment, where the item
+was still drafting. The new draft then looked like someone else's change: Classic showed the stale banner over
+the old choices with Send disabled, and New kept the card without Send. Now a card is pinned only at the revision
+on screen, so a late edit to an older revision never pins a newer one. New also shows today's "New draft from your
+answer. Not sent yet." line under a preview draft, as Classic does.
+
+Proved on a fictional root in a live session with no reload, using a stub worker, in New and Classic at 1280 light
+and 400 dark. Other answer → Draft reply → the answer is applied (drafting) → 5 s later the redraft lands. The new
+draft shows with Send and the line about 1.4 s later, never the stale banner. A genuine foreign change while the
+owner types still shows the stale banner within 0.5 s and keeps the typed text.
+
 ## bug 10-23 perf: every tab took 7 s on the owner's store
 
 On a copy of the owner's store (99 MB), the page took 6.4 to 7.7 s and Settings 6.5 to 7 s.

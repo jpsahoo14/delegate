@@ -102,6 +102,7 @@ export function ItemCard({ code, placementId, inline = false }: { code: string; 
 			{actions.some(action => action.kind === 'send-edit') && <Button variant="ghost" data-card-edit onClick={() => edit(ui.editing ? { editing: false, editText: undefined } : { editing: true, editText: draft.text })} disabled={busy}><Icon name="edit" />{ui.editing ? 'Cancel edit' : 'Edit'}</Button>}
 			</div>{draft.commitment && <p className="warning">This reply makes a commitment. Check it before sending.</p>}
 			{ui.editing ? <Field code={code} rev={item.rev} field="editText" label="Edit your reply" value={ui.editText ?? draft.text} edit={edit} rows={5} /> : <div className="draft">{draft.sendText ?? draft.text}</div>}
+			{draft.preview && !ui.editing && <p className="muted"><Icon name="spark" />{' '}{item.picked?.length ? 'The reply for your pick' : 'New draft from your answer'}. Not sent yet.</p>}
 		</section>}
 		{item.changeIds.length > 0 && <section><h3>{item.changeIds.some(id => entities.changes[id].state === 'approved') ? 'Approved changes' : 'Changes for your approval'}</h3>{item.changeIds.map(id => {
 			const change = entities.changes[id], excluded = ui.excluded?.includes(change.n) ?? false
