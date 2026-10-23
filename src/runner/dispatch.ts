@@ -117,6 +117,16 @@ export function repairRunFailures(store: Store, days = 14): number {
 	return n
 }
 
+// A person's message to the owner: anything in a 1:1, or in a group the message right after his own (within a day) (queue-new #18).
+const BOT = /\b(?:bot|app|notifications?|alerts?|no-?reply|azure devops|github|jira|pipelines?)\b/i
+export function answersOwner(store: Store, wf: Workflow): boolean {
+	if (!wf.asker?.name || BOT.test(wf.asker.name) || !wf.lastAsk?.trim()) return false
+	if (!wf.chat.group) return true
+	const thread = store.thread(wf.id), first = thread.findIndex(m => wf.msgIds.includes(m.id) && !m.byOwner)
+	const before = first > 0 ? thread[first - 1] : undefined
+	return !!before?.byOwner && Date.parse(thread[first].at) - Date.parse(before.at) < 86_400_000
+}
+
 // Why a run gave no result, in plain words for the card (queue-new #11).
 const failWhy = (res: RunResult) => {
 	const first = (res.error ?? '').split(/\r?\n/).map(l => l.trim()).find(Boolean)?.replace(/^Error: /, '')
@@ -381,6 +391,14 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 	fresh.drewOn = drewOn.length ? drewOn : undefined
 	fresh.shareHold = drewOn.length ? await sharingHold(store, src, fresh, drewOn) : undefined
 	if (report && !job) await afterDraft(store, src, cfg, fresh)
+	// A person answering the owner (in a 1:1, or right after his own message) is never silent noise: with no reply needed it is a
+	// Catch up line with their words (queue-new #18). Bots and group chatter not addressed to him stay silent.
+	if (report && !job && fresh.state === 'done' && fresh.closedBy === 'nothing' && !fresh.fyi && answersOwner(store, fresh)) {
+		const said = (fresh.lastAsk ?? '').replace(/^\[as [^\]]+\]\s*/i, '').replace(/\s+/g, ' ').trim()
+		const first = (fresh.asker?.name ?? 'They').split(/\s+/)[0]
+		fresh.fyi = { line: `${first} replied · no reply needed`, weight: 'normal', at: new Date().toISOString(), gist: said.slice(0, 400) }
+		store.log({ event: 'fyi-kept', code: fresh.code, why: fresh.chat.group ? 'after the owner' : '1:1' })
+	}
 	if (report && !job && fresh.state === 'done' && fresh.closedBy === 'nothing') for (const msgId of wf.pending) auditSkip(store, wf.chat.id, msgId, fresh.fyi ? 'ai-fyi' : 'ai-noise', wf.id)
 	if (job && !declined) await ackJob(store, src, cfg, fresh)
 	store.save(fresh)

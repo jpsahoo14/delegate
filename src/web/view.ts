@@ -37,6 +37,8 @@ export type ItemCard = {
 	why: { reason?: string; confidence?: string; sources: SourceRow[]; gaps: string[]; searched?: string[] }
 	notes: Note[]; status: string; openOn?: string; teams?: string
 	todos?: string[]; follow?: { target: string; until: string; everyHours: number }
+	// Closed because the owner replied in Teams himself: his own message, and Delegate's draft that was never sent (queue-new #15).
+	ownReply?: { text: string; at: string; teams?: string }; unsent?: string
 	// The owner's own words already went out: said, and why checking what they promised failed (Slice 3).
 	promise?: { said: string; failed?: string }
 	work?: WorkView
@@ -173,14 +175,20 @@ function nextSteps(w: Workflow): Pick<ItemCard, 'replyOnly' | 'reviewAgain'> {
 
 export function card(store: Store, w: Workflow, k = knowledgeOf(store, store.config())): ItemCard {
 	const job = w.job ? store.job(w.job) : undefined
-	const draft = currentDraft(w, job)
+	// Answered by the owner in Teams: the card shows his own message, never the draft that was not sent or its warnings (queue-new #15).
+	const thread = store.thread(w.id), replied = closedHow(w) === 'replied' && !w.sent && w.state === 'done'
+	const mine = replied ? thread.filter(m => m.byOwner && m.ownerReply?.answered && m.ownerReply.askId === w.lastMsgId).at(-1) ?? thread.filter(m => m.byOwner).at(-1) : undefined
+	const unsent = replied ? currentDraft(w, job)?.text : undefined
+	const draft = replied ? undefined : currentDraft(w, job)
 	return {
 		code: w.code, type: cardType(w), rev: w.revAt ?? w.updatedAt, who: who(w.startedBy === 'owner' ? 'You' : w.asker?.name), at: w.createdAt,
 		chat: { name: w.chat.name, group: !!w.chat.group, guests: !!w.chat.guests },
 		ask: w.lastAsk === undefined ? undefined : htmlToText(w.lastAsk), newCount: w.newCount, earlier: w.earlier === undefined ? undefined : htmlToText(w.earlier), before: w.before ? store.thread(w.id).find(m => m.id === w.lastMsgId)?.at ?? w.createdAt : undefined,
-		thread: store.thread(w.id).slice(-12).map(m => ({ who: m.from.name, text: htmlToText(m.text).slice(0, 600), at: m.at, owner: !!m.byOwner })),
-		question: w.question === undefined ? undefined : htmlToText(w.question), draft: draft?.text && !/^_{3,}$/.test(draft.text.trim()) ? { text: draft.text, commitment: draft.commitment, preview: !!draft.preview, ...(draft.holding ? { holding: true } : {}) } : undefined,
-		choices: w.choices, picked: w.picked, context: [...(w.shareHold ? [{ label: 'Need to know', text: w.shareHold, tone: 'warn' as const }] : []), ...(w.context ?? [])].map(fact => ({ ...fact, label: htmlToText(fact.label), text: htmlToText(fact.text) })), meeting: w.meeting, job: job?.goal,
+		thread: thread.slice(-12).map(m => ({ who: m.from.name, text: htmlToText(m.text).slice(0, 600), at: m.at, owner: !!m.byOwner })),
+		question: w.question === undefined || replied ? undefined : htmlToText(w.question), draft: draft?.text && !/^_{3,}$/.test(draft.text.trim()) ? { text: draft.text, commitment: draft.commitment, preview: !!draft.preview, ...(draft.holding ? { holding: true } : {}) } : undefined,
+		choices: replied ? undefined : w.choices, picked: w.picked, context: [...(w.shareHold && !replied ? [{ label: 'Need to know', text: w.shareHold, tone: 'warn' as const }] : []), ...(w.context ?? []).filter(fact => !replied || fact.tone !== 'warn')].map(fact => ({ ...fact, label: htmlToText(fact.label), text: htmlToText(fact.text) })), meeting: w.meeting, job: job?.goal,
+		...(replied && mine ? { ownReply: { text: htmlToText(mine.ownerReply?.text ?? mine.text), at: mine.at, ...(teamsOf(w, mine.id) ? { teams: teamsOf(w, mine.id) } : {}) } } : {}),
+		...(unsent && !/^_{3,}$/.test(unsent.trim()) ? { unsent } : {}),
 		// Every field is built from the change's call, never the AI's words about it (review 10-21 P1-1).
 		changes: pendingEffects(w.effects).map((e, i) => { const s = shown(e), m = meaningParts(e); return { n: i + 1, summary: s.text, target: s.loc || s.system, system: s.system, action: s.line, detail: s.detail || undefined, ...(m ? { meaning: m } : {}) } }),
 		...nextSteps(w),
@@ -312,7 +320,8 @@ export function view(store: Store, since: string | undefined, now = new Date(), 
 	})
 	const running = [...g.running.filter(w => represented.has(w.code) && !todos.has(w.code)).map(w => ({ code: w.code, what: htmlToText(w.status), who: w.asker?.name, since: w.waitingSince ?? w.updatedAt })), ...bootLines(store).map(b => ({ code: '', what: htmlToText(b.what), since: b.since, ...(b.total ? { progress: (b.done ?? 0) / b.total } : {}) }))]
 	const state = c.stopped ? 'stopped' : c.paused || cfg.paused ? 'paused' : 'on'
-	const health = Object.entries(store.health()).map(([key, h]) => ({ key, text: h.text, since: h.since, fix: key === 'source' ? { label: 'Try again', command: 'retry' } : undefined }))
+	// A session history note is a line in Settings, never a banner: there is nothing for the owner to do (queue-new #16 c).
+	const health = Object.entries(store.health()).filter(([key]) => !key.startsWith('session:')).map(([key, h]) => ({ key, text: h.text, since: h.since, fix: key === 'source' ? { label: 'Try again', command: 'retry' } : undefined }))
 	if (state !== 'on') health.unshift({ key: 'paused', text: state === 'stopped' ? `${NAME} is stopped. It is not reading your chats.` : `${NAME} is paused. It keeps drafting, and sends nothing.`, since: '', fix: { label: 'Resume', command: 'resume' } })
 	const people = new Map<string, { chat: string; group: boolean }>()
 	// A test chat is a real chat: its group, or a real person in it, can get a reminder; a "[as Name]" persona never can.

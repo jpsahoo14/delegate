@@ -2,7 +2,8 @@ import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, sta
 import { assertTestSafe } from '../store/fs.ts'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
+import { NAME } from '../brand.ts'
 import type { Owner } from '../core/types.ts'
 import type { Store } from '../store/state.ts'
 import { findSession } from '../mesh/route.ts'
@@ -51,8 +52,38 @@ function move(from: string, to: string, events: Buffer) {
 	put(join(to, 'events.jsonl'), events)
 }
 function diverged(store: Store, id: string, dir: string, events: Buffer) {
-	put(join(dir, `events.conflict-${store.machine}-${Date.now()}.jsonl`), events)
-	store.setHealth(`session:${id}`, `The AI session ${id.slice(0, 8)} was changed on two machines. Both copies are kept in ${dir}; the newest work here continues.`)
+	keepCopy(dir, events)
+	noteDiverged(store, id)
+}
+// A conflict copy is named by its content, so the same history is kept once however many runs see it (queue-new #16 d).
+function keepCopy(dir: string, events: Buffer): string {
+	const p = join(dir, `events.conflict-${createHash('sha256').update(events).digest('hex').slice(0, 16)}.jsonl`)
+	if (!existsSync(p)) put(p, events)
+	return p
+}
+// One plain line for Settings, never a banner: no session id and no path (queue-new #16 c).
+function noteDiverged(store: Store, id: string) {
+	const code = store.workflows().find(w => w.session?.id === id)?.code ?? store.workflows().find(w => w.job && store.job(w.job)?.session.id === id)?.code
+	store.setHealth(`session:${id}`, `${code ? `Item ${code}'s` : 'An item\'s'} AI history differed between two machines; ${NAME} kept both and continues on ${store.lease()?.machine ?? store.machine}.`)
+}
+// The machine that holds the runner lease runs the items, so its history is the one that continues (queue-new #16 a).
+const leads = (store: Store) => store.lease()?.machine === store.machine
+function resolved(store: Store, id: string) {
+	if (store.health()[`session:${id}`]) store.setHealth(`session:${id}`)
+	store.log({ event: 'session-resolved', session: id.slice(0, 8), machine: store.machine })
+}
+// A session note no open item or job uses any more says nothing the owner can act on: it is cleared (queue-new #16 b).
+export function pruneSessionNotes(store: Store): number {
+	let n = 0
+	for (const key of Object.keys(store.health()).filter(k => k.startsWith('session:'))) {
+		const id = key.slice('session:'.length)
+		const used = store.workflows().some(w => w.state !== 'done' && w.session?.id === id) || store.jobs().some(j => (j.state === 'queued' || j.state === 'running') && j.session.id === id)
+		if (used) continue
+		store.setHealth(key)
+		store.log({ event: 'session-note-pruned', session: id.slice(0, 8) })
+		n++
+	}
+	return n
 }
 
 // The session holds raw tool output (telemetry, pipeline logs). Secrets are hidden in the copy that is synced, and the prefix check
@@ -64,10 +95,14 @@ export function backupSession(store: Store, id: string): boolean {
 	const local = raw && scrubbed(raw)
 	if (!local) return false
 	if (shared && !isPrefix(shared, local)) {
-		if (!isPrefix(local, shared)) diverged(store, id, to, local)
+		if (isPrefix(local, shared)) return false
+		// Diverged: the runner's history becomes the shared copy, the other is kept once, and later backups move forward again.
+		if (leads(store)) { keepCopy(to, shared); move(from, to, local); resolved(store, id); return true }
+		diverged(store, id, to, local)
 		return false
 	}
 	move(from, to, local)
+	if (store.health()[`session:${id}`]) resolved(store, id)
 	return true
 }
 
@@ -77,7 +112,12 @@ export function restoreSession(store: Store, id: string): boolean {
 	// took the session further (round 2 P2-5).
 	const shared = read(join(from, 'events.jsonl')), raw = read(join(to, 'events.jsonl')), local = raw && scrubbed(raw)
 	if (!shared || (local && isPrefix(shared, local))) return false
-	if (local && !isPrefix(local, shared)) { diverged(store, id, to, shared); return false }
+	if (local && !isPrefix(local, shared)) {
+		// The runner continues its own history: the other copy is kept once, and its own becomes the shared one.
+		if (leads(store)) { keepCopy(from, shared); move(to, from, local); resolved(store, id); return false }
+		diverged(store, id, to, shared)
+		return false
+	}
 	move(from, to, shared)
 	return true
 }

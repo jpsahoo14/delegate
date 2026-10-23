@@ -1,5 +1,40 @@
 # React preview
 
+## A person answering the owner is a Catch up line, never silent noise (queue-new #18)
+
+The reply prompt (`reply.md`) says a person writing to the owner in a 1:1, or answering his own message, is never noise: with no
+reply needed it still gets an `fyi`. As a backstop, a run that closes such an item with nothing (`intent: none`, no reply, no
+`fyi`) gives it one (`answersOwner`: any 1:1 message from a person, or a group message right after the owner's own within a day;
+senders named like bots are left out): "Kim replied · no reply needed" with their words as the gist, logged `fyi-kept`. Fictional
+root, stub worker (quota) that always reports intent none with no reply or fyi: a 1:1 "thank you! sorry, wrong person" after the
+owner's message and a group "got it, thanks Robin!" right after his message became Catch up rows in New and Classic Done; a release
+bot's post and group chatter ("lunch anyone?") stayed silent.
+
+## A session history that differs between machines resolves itself, quietly (queue-new #16)
+
+When the synced copy of an item's AI history and a machine's own copy are not prefixes of each other, the machine holding the
+runner lease (it runs the items) keeps the other copy once and makes its own history the shared copy, so later backups move
+forward and no run writes another conflict file. Another machine keeps its copy once and notes it. Conflict copies are named by a
+hash of their content (`events.conflict-<hash>.jsonl`), so the same history is never saved twice. The note is one plain line,
+"Item A1's AI history differed between two machines; Delegate kept both and continues on <runner>", shown in Settings › Updates and
+system › More, never as a banner; it clears when the runner resolves it, and each pass clears notes that no open item or job uses
+(`pruneSessionNotes`). Fictional root, two fake machines (two Store machines, two COPILOT_HOMEs in Temp), stub worker (quota): the
+other machine wrote one conflict copy over two runs and the note; the page had no banner and Settings showed the line; the runner's
+backup made its history the shared copy, kept the other copy once and cleared the note; another run wrote no new conflict copy;
+a seeded note for an unused session was pruned (`session-note-pruned`) while the open item's stayed; New and Classic Home showed no
+banner.
+
+## An item the owner answered in Teams shows his own reply, not Delegate's unsent draft (queue-new #15)
+
+`card()` (view.ts) now checks how a done item closed: when the owner replied himself (`closedBy: replied`, not sent by Delegate),
+the card carries `ownReply` (the owner's message that answered the ask, else his last one, with its time and Teams link) and
+`unsent` (Delegate's draft). It drops the draft, the question, the choices, the share hold and warning facts, which were all
+about a draft that never went. The card shows "You replied in Teams · <time>" with the owner's words, Reopen only under ⋯, and
+"Delegate's draft (not sent)" in Details. Fictional root, stub worker (quota): with Classic's focus view open on an item that had
+a draft and a share hold, the owner answered in Teams (a Teams reply to the ask); the card then showed "You replied in Teams ·
+12:18 AM" with his words, no "Your reply to Kim", no draft, no answer box and no "Need to know" warning, and Details showed the
+unsent draft. An item Delegate sent keeps its sent reply and gets no `ownReply`.
+
 ## A message on open work is news: no "No news" right after the owner replies (queue-new #13)
 
 `ownerStep` now moves open work's `checkAt` to now plus 3 days, and `due` takes the newest activity (the last step, or the last
@@ -21,6 +56,28 @@ shown before); warnings stay at the top. Fictional root, stub worker (quota), st
 findings, "Live votes and dependency", "Newest builds"): the item kept the two code facts as info, was not must-see, and the card
 showed 0 warning lines and "Found on PR 4800001 · Alex Chen" with the two findings in New and Classic at 1280; a watch job kept
 all four, including the build blocker, as warnings.
+## bug 10-22 Classic Settings chips were reset to the page top
+
+Classic's shell now follows the same screen/sub-route boundary as New. A
+Settings section or key owns its own scroll and focus, including direct links;
+the parent no longer schedules a later scroll-to-top over it. Other screen
+changes still reset and focus main, and Ongoing section links keep their
+existing section-scroll path.
+
+Section and row targets use the rendered sticky section-index height and its
+CSS top inset, plus a12px gap. This avoids the generic section80px scroll margin
+overriding the Settings offset, and keeps headings and focused deep-link fields
+below all chip rows when the index wraps on narrow screens. The existing
+open-fold and preventScroll focus behavior is unchanged.
+
+Edge fictional-root proof at1280light/400dark: all five chips selected and
+placed their headings12px below the sticky index (about117px/181px from the
+viewport top), without a second jump. pollIdle direct links and cold reloads
+opened the advanced fold and focused the exact row at the same offset. Browser
+Back/Forward retained section navigation. Home and plain Settings/Ongoing
+screen changes returned to0, with main focused; Ongoing/running still scrolled
+to its section. Zero config changes, setting/action submissions, overflow or
+browser errors; no AI or owner data was used.
 
 ## A PR review leaves spec questions to the PR's author, and names its PR on the card (queue-new #10)
 

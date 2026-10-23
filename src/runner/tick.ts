@@ -25,6 +25,7 @@ import { dueAutomations } from './automations.ts'
 import { checkJobs, executeDirect, legacyEffects, realProcs, settleCompleted, startJobs, type Procs } from './jobs.ts'
 import type { Caller } from './change.ts'
 import { checkOpen } from './continue.ts'
+import { pruneSessionNotes } from './own.ts'
 import { stampPlaces } from './place.ts'
 import { writeSnapshot } from '../web/server.ts'
 import { notify } from '../os/notify.ts'
@@ -101,6 +102,8 @@ export async function tick(store: Store, deps: { source?: Source; run?: RunWorke
 		if (!store.probeMark().partsRepairAt) { repairParts(store); store.saveProbeMark({ ...store.probeMark(), partsRepairAt: new Date().toISOString() }) }
 		// Once per store: a "No news" question asked right after activity (queue-new #13).
 		if (!store.probeMark().noNewsRepairAt) { repairNoNews(store); store.saveProbeMark({ ...store.probeMark(), noNewsRepairAt: new Date().toISOString() }) }
+		// A session history note no open item or job uses any more is cleared (queue-new #16 b).
+		pruneSessionNotes(store)
 		settleCompleted(store, procs)
 		// The owner's ok re-reads a pull request before voting on it, through the same read the PR checks use.
 		// The AI CLI's tool list is read for it; one that cannot be read is named in Health and never stops the cycle (review 10-21b P1).

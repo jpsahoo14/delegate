@@ -40,6 +40,7 @@ export default function Classic() {
 	const { themeChoice, switching, error, chooseVersion, setThemeChoice } = useInterface()
 	const seenError = useClassicSeen(), update = useVersionUpdate(), offline = useClassicOffline()
 	const main = useRef<HTMLElement>(null), dialog = useRef<HTMLDialogElement>(null)
+	const previousScreen = useRef<string | undefined>(undefined)
 	const [healthOpen, setHealthOpen] = useState(false)
 	useHashNavigation()
 	useClassicKeyboard(offline)
@@ -53,8 +54,11 @@ export default function Classic() {
 	const tabs: [string, string, number][] = [['home', 'Home', 0], ['focus', 'Needs you', needs], ['done', 'Done', snapshot?.doneNew ?? 0], ['ongoing', 'Ongoing', updates], ...(knowledge || retainedKnowledge || screen === 'knowledge' ? [['knowledge', 'To learn', knowledge] as [string, string, number]] : []), ...(!readOnly ? [['numbers', 'Numbers', 0] as [string, string, number], ['settings', 'Settings', 0] as [string, string, number]] : [])]
 	useEffect(() => {
 		document.title = `${NAME} - ${tabs.find(([id]) => id === screen)?.[1] ?? 'Home'}`
+		const before = previousScreen.current
+		previousScreen.current = screen
+		const section = screen === 'ongoing' && route.split('/')[1]
+		if (!section && (screen === 'settings' && route.includes('/') || route !== screen && before === screen)) return
 		const frame = requestAnimationFrame(() => {
-			const section = screen === 'ongoing' && route.split('/')[1]
 			if (section) document.getElementById(`classic-${section}`)?.scrollIntoView({ block: 'start' })
 			else { window.scrollTo(0, 0); if (screen !== 'focus') main.current?.focus({ preventScroll: true }) }
 		})

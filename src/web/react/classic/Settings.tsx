@@ -30,6 +30,8 @@ export default function Settings() {
 		if (target) {
 			const fold = target.closest('details')
 			if (fold instanceof HTMLDetailsElement) fold.open = true
+			const index = target.closest('.ct-settings')?.querySelector<HTMLElement>('.ct-settings-index')
+			if (index) target.style.scrollMarginTop = `${Number.parseFloat(getComputedStyle(index).top) + index.getBoundingClientRect().height + 12}px`
 			target.scrollIntoView({ block: 'start' })
 			target.querySelector<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>('input,textarea,select')?.focus({ preventScroll: true })
 		}

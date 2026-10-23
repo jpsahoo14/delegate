@@ -113,6 +113,7 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 
 	// A run that gave no result (queue-new #11): the reason and its time, never a question; Try again is the primary, or write it yourself.
 	const writeOwn = actions.find(action => action.kind === 'write-own')
+	const reopen = actions.find(action => action.kind === 'reopen')
 	const failed = item.runFailed && <section className="card-block card-failed">
 		<p role="status" className="warnline"><Icon name="warn" /> {NAME} couldn't draft this at {when(item.runFailed.at)}: {item.runFailed.why}.</p>
 		{writeOwn && !readOnly && (ui.editing ? <><Field code={code} rev={item.rev} field="answer" label={`Your reply to ${first}, ${replyWhere}`} value={ui.answer ?? ''} edit={edit} rows={4} />
@@ -160,6 +161,9 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 	})() : undefined
 	const block2 = <>
 		{review}
+		{item.ownReply && <section className="card-block card-own-reply"><h3>You replied in Teams · <time dateTime={item.ownReply.at}>{when(item.ownReply.at)}</time></h3>
+			<MessageBubble text={item.ownReply.text} teams={item.ownReply.teams} open={ui.folds?.own ?? false} onToggle={open => fold('own', open)} />
+			{item.ownReply.teams && <p><a className="card-teams" href={item.ownReply.teams} target="_blank" rel="noopener noreferrer">Open in Teams <Icon name="ext" /></a></p>}</section>}
 		{decision && <section className="card-block card-decision"><h3>{NAME} needs your decision</h3><p className="decide">{decision}</p>
 			{draft?.holding && <p className="muted">The full answer to {first} waits for this. You can send the holding reply below meanwhile.</p>}
 			<Field code={code} rev={item.rev} field="answer" label={`Your decision (${NAME} continues from it)`} value={ui.answer ?? ''} edit={edit} rows={2} />
@@ -239,11 +243,13 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 		<details className="card-more-menu"><summary aria-label="More" title="More: Edit in Teams, Dismiss, Continue in a terminal"><Icon name="more" /></summary><div className="card-more-content">
 			{item.teams && draft && <Button variant="outline" title="Open Teams with this draft so you can change and send it there. Delegate sees that you replied." onClick={() => void chatEdit.open(ui.editing ? ui.editText ?? draft.text : draft.text, item.teams!)}>Edit in Teams</Button>}
 			{actions.filter(action => ['dismiss', 'reply-only'].includes(action.kind)).map(action => <ActionButton key={action.id} action={action} disabled={newer && action.staleness === 'exact'} disabledReason="stale" />)}
+			{item.ownReply && reopen && <div className="card-reopen"><Field code={code} rev={item.rev} field="answer" label="Reopen: what should the new reply say?" value={ui.answer ?? ''} edit={edit} rows={2} />
+				<ActionButton action={reopen} input={{ text: ui.answer ?? '' }} disabled={!ui.answer?.trim()} disabledReason="Write what the reply should say first." /></div>}
 			{continueAction && <ActionButton action={continueAction} />}
 			{item.debug && <><pre>{item.debug.join('\n')}</pre><Button variant="outline" onClick={() => void detailsCopy.copy(item.debug!.join('\n'))}>Copy details</Button>{detailsCopy.message && <p role="status">{detailsCopy.message}</p>}</>}
 		</div></details>
 	</div>
-	const others = actions.filter(action => action.id !== primary?.id && action.id !== report?.id && !(report && action.id === declared?.id) && !['approve', 'approve-again', 'send-edit', 'answer', 'pick', 'ask', 'later', 'dismiss', 'continue', 'todo-done', 'reply-only', 'review-again', 'try-again', 'write-own'].includes(action.kind))
+	const others = actions.filter(action => action.id !== primary?.id && action.id !== report?.id && !(report && action.id === declared?.id) && !['approve', 'approve-again', 'send-edit', 'answer', 'pick', 'ask', 'later', 'dismiss', 'continue', 'todo-done', 'reply-only', 'review-again', 'try-again', 'write-own'].includes(action.kind) && !(item.ownReply && action.kind === 'reopen'))
 
 	// Block 5: Details, one collapsed line: why, sources, progress and history, changes already handled, and Ask Delegate.
 	const parts = [item.why.reason && 'why', item.sourceIds.length > 0 && `${item.sourceIds.length} source${item.sourceIds.length === 1 ? '' : 's'}`, (work?.planIds.length || timeline?.stepIds.length) && 'history', `ask ${NAME}`].filter(Boolean)
@@ -278,6 +284,7 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 			const effect = entities.changes[id]
 			return <li key={id}>{effect.state === 'made' ? 'Made' : effect.state === 'left-out' ? 'Left out' : effect.state}: {effect.action} - {effect.summary}</li>
 		})}</ul></>}
+		{item.unsent && <><h4>{NAME}'s draft (not sent)</h4><p className="muted">{item.unsent}</p></>}
 		{item.job && <p className="muted">{item.job}</p>}
 		<p className="muted">Item {code}</p>
 		<section className="ask-thread"><h4>Ask {NAME}</h4>{item.noteIds.map(id => {

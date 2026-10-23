@@ -20648,8 +20648,8 @@ function convertBaseSchema(schema, ctx) {
       });
     }
     ctx.processing.add(refPath);
-    const resolved = resolveRef(refPath, ctx);
-    const zodSchema2 = convertSchema(resolved, ctx);
+    const resolved2 = resolveRef(refPath, ctx);
+    const zodSchema2 = convertSchema(resolved2, ctx);
     ctx.refs.set(refPath, zodSchema2);
     ctx.processing.delete(refPath);
     return zodSchema2;
@@ -35018,17 +35018,17 @@ var require_fast_uri = __commonJS({
       if (baseMalformed || relativeMalformed || baseMalformedPercentEncoding || relativeMalformedPercentEncoding || baseMalformedSchemeSpecific || relativeMalformedSchemeSpecific || baseMalformedHost || relativeMalformedHost || baseMalformedScheme || relativeMalformedScheme) {
         throw new Error(baseParsed.error || relativeParsed.error || "URI is malformed.");
       }
-      const resolved = resolveComponent(baseParsed, relativeParsed, schemelessOptions, true);
-      const resolvedSchemeHandler = getSchemeHandler(options && options.scheme || resolved.scheme);
-      const resolvedHost = resolved.host;
+      const resolved2 = resolveComponent(baseParsed, relativeParsed, schemelessOptions, true);
+      const resolvedSchemeHandler = getSchemeHandler(options && options.scheme || resolved2.scheme);
+      const resolvedHost = resolved2.host;
       const resolvedHostIsIP = resolvedHost !== void 0 && resolvedHost !== "" && (isIPv4(resolvedHost) || normalizeIPv6(resolvedHost).isIPV6);
-      canonicalizeHost(resolved, options || {}, resolvedSchemeHandler, resolvedHostIsIP);
+      canonicalizeHost(resolved2, options || {}, resolvedSchemeHandler, resolvedHostIsIP);
       const encodedASCIIHost = resolvedHost && resolvedHost.indexOf("%") !== -1 && !new RegExp("\\P{ASCII}", "u").test(resolvedHost);
-      if (resolved.error && !encodedASCIIHost) {
-        throw new Error(resolved.error);
+      if (resolved2.error && !encodedASCIIHost) {
+        throw new Error(resolved2.error);
       }
       schemelessOptions.skipEscape = true;
-      return serialize(resolved, schemelessOptions);
+      return serialize(resolved2, schemelessOptions);
     }
     function resolveComponent(base, relative4, options, skipNormalization) {
       const target2 = {};
@@ -39408,9 +39408,9 @@ var require_resolveCommand = __commonJS({
         } catch (err) {
         }
       }
-      let resolved;
+      let resolved2;
       try {
-        resolved = which.sync(parsed.command, {
+        resolved2 = which.sync(parsed.command, {
           path: env[getPathKey({ env })],
           pathExt: withoutPathExt ? path.delimiter : void 0
         });
@@ -39420,10 +39420,10 @@ var require_resolveCommand = __commonJS({
           process.chdir(cwd);
         }
       }
-      if (resolved) {
-        resolved = path.resolve(hasCustomCwd ? parsed.options.cwd : "", resolved);
+      if (resolved2) {
+        resolved2 = path.resolve(hasCustomCwd ? parsed.options.cwd : "", resolved2);
       }
-      return resolved;
+      return resolved2;
     }
     function resolveCommand(parsed) {
       return resolveCommandAttempt(parsed) || resolveCommandAttempt(parsed, true);
@@ -41317,7 +41317,7 @@ var init_route = __esm({
 import { cpSync, existsSync as existsSync14, lstatSync as lstatSync2, mkdirSync as mkdirSync7, readFileSync as readFileSync14, renameSync as renameSync3, statSync as statSync6, writeFileSync as writeFileSync8 } from "node:fs";
 import { homedir as homedir6 } from "node:os";
 import { dirname as dirname8, join as join15 } from "node:path";
-import { randomUUID as randomUUID2 } from "node:crypto";
+import { createHash as createHash6, randomUUID as randomUUID2 } from "node:crypto";
 function sessionCwd(id) {
   const f = join15(sessions(), id, "workspace.yaml");
   return existsSync14(f) ? readFileSync14(f, "utf8").match(/^cwd:\s*(.+)$/m)?.[1].trim() : void 0;
@@ -41343,8 +41343,33 @@ function move(from, to, events) {
   put(join15(to, "events.jsonl"), events);
 }
 function diverged(store2, id, dir, events) {
-  put(join15(dir, `events.conflict-${store2.machine}-${Date.now()}.jsonl`), events);
-  store2.setHealth(`session:${id}`, `The AI session ${id.slice(0, 8)} was changed on two machines. Both copies are kept in ${dir}; the newest work here continues.`);
+  keepCopy(dir, events);
+  noteDiverged(store2, id);
+}
+function keepCopy(dir, events) {
+  const p = join15(dir, `events.conflict-${createHash6("sha256").update(events).digest("hex").slice(0, 16)}.jsonl`);
+  if (!existsSync14(p)) put(p, events);
+  return p;
+}
+function noteDiverged(store2, id) {
+  const code = store2.workflows().find((w) => w.session?.id === id)?.code ?? store2.workflows().find((w) => w.job && store2.job(w.job)?.session.id === id)?.code;
+  store2.setHealth(`session:${id}`, `${code ? `Item ${code}'s` : "An item's"} AI history differed between two machines; ${NAME} kept both and continues on ${store2.lease()?.machine ?? store2.machine}.`);
+}
+function resolved(store2, id) {
+  if (store2.health()[`session:${id}`]) store2.setHealth(`session:${id}`);
+  store2.log({ event: "session-resolved", session: id.slice(0, 8), machine: store2.machine });
+}
+function pruneSessionNotes(store2) {
+  let n = 0;
+  for (const key of Object.keys(store2.health()).filter((k) => k.startsWith("session:"))) {
+    const id = key.slice("session:".length);
+    const used = store2.workflows().some((w) => w.state !== "done" && w.session?.id === id) || store2.jobs().some((j2) => (j2.state === "queued" || j2.state === "running") && j2.session.id === id);
+    if (used) continue;
+    store2.setHealth(key);
+    store2.log({ event: "session-note-pruned", session: id.slice(0, 8) });
+    n++;
+  }
+  return n;
 }
 function backupSession(store2, id) {
   const from = join15(sessions(), id), to = join15(store2.root, "sessions", id);
@@ -41352,10 +41377,18 @@ function backupSession(store2, id) {
   const local2 = raw && scrubbed(raw);
   if (!local2) return false;
   if (shared && !isPrefix(shared, local2)) {
-    if (!isPrefix(local2, shared)) diverged(store2, id, to, local2);
+    if (isPrefix(local2, shared)) return false;
+    if (leads(store2)) {
+      keepCopy(to, shared);
+      move(from, to, local2);
+      resolved(store2, id);
+      return true;
+    }
+    diverged(store2, id, to, local2);
     return false;
   }
   move(from, to, local2);
+  if (store2.health()[`session:${id}`]) resolved(store2, id);
   return true;
 }
 function restoreSession(store2, id) {
@@ -41363,6 +41396,12 @@ function restoreSession(store2, id) {
   const shared = read2(join15(from, "events.jsonl")), raw = read2(join15(to, "events.jsonl")), local2 = raw && scrubbed(raw);
   if (!shared || local2 && isPrefix(shared, local2)) return false;
   if (local2 && !isPrefix(local2, shared)) {
+    if (leads(store2)) {
+      keepCopy(from, shared);
+      move(to, from, local2);
+      resolved(store2, id);
+      return false;
+    }
     diverged(store2, id, to, shared);
     return false;
   }
@@ -41399,11 +41438,12 @@ function scrubbed(raw) {
   const text3 = raw.toString("utf8"), clean3 = scrub(text3);
   return clean3 === text3 ? raw : Buffer.from(clean3, "utf8");
 }
-var sessions, sessionExists, sessionBytes, plain2, isPrefix, read2;
+var sessions, sessionExists, sessionBytes, plain2, isPrefix, read2, leads;
 var init_own = __esm({
   "src/runner/own.ts"() {
     "use strict";
     init_fs();
+    init_brand();
     init_route();
     init_secrets();
     sessions = () => join15(process.env.COPILOT_HOME ?? join15(homedir6(), ".copilot"), "session-state");
@@ -41418,6 +41458,7 @@ var init_own = __esm({
     plain2 = (s3) => !s3.endsWith(".lock") && !lstatSync2(s3).isSymbolicLink();
     isPrefix = (a, b) => a.length <= b.length && b.subarray(0, a.length).equals(a);
     read2 = (p) => existsSync14(p) && plain2(p) ? readFileSync14(p) : void 0;
+    leads = (store2) => store2.lease()?.machine === store2.machine;
   }
 });
 
@@ -43079,7 +43120,10 @@ function nextSteps(w) {
 }
 function card(store2, w, k = knowledgeOf(store2, store2.config())) {
   const job = w.job ? store2.job(w.job) : void 0;
-  const draft2 = currentDraft(w, job);
+  const thread2 = store2.thread(w.id), replied = closedHow(w) === "replied" && !w.sent && w.state === "done";
+  const mine = replied ? thread2.filter((m) => m.byOwner && m.ownerReply?.answered && m.ownerReply.askId === w.lastMsgId).at(-1) ?? thread2.filter((m) => m.byOwner).at(-1) : void 0;
+  const unsent = replied ? currentDraft(w, job)?.text : void 0;
+  const draft2 = replied ? void 0 : currentDraft(w, job);
   return {
     code: w.code,
     type: cardType(w),
@@ -43091,14 +43135,16 @@ function card(store2, w, k = knowledgeOf(store2, store2.config())) {
     newCount: w.newCount,
     earlier: w.earlier === void 0 ? void 0 : htmlToText(w.earlier),
     before: w.before ? store2.thread(w.id).find((m) => m.id === w.lastMsgId)?.at ?? w.createdAt : void 0,
-    thread: store2.thread(w.id).slice(-12).map((m) => ({ who: m.from.name, text: htmlToText(m.text).slice(0, 600), at: m.at, owner: !!m.byOwner })),
-    question: w.question === void 0 ? void 0 : htmlToText(w.question),
+    thread: thread2.slice(-12).map((m) => ({ who: m.from.name, text: htmlToText(m.text).slice(0, 600), at: m.at, owner: !!m.byOwner })),
+    question: w.question === void 0 || replied ? void 0 : htmlToText(w.question),
     draft: draft2?.text && !/^_{3,}$/.test(draft2.text.trim()) ? { text: draft2.text, commitment: draft2.commitment, preview: !!draft2.preview, ...draft2.holding ? { holding: true } : {} } : void 0,
-    choices: w.choices,
+    choices: replied ? void 0 : w.choices,
     picked: w.picked,
-    context: [...w.shareHold ? [{ label: "Need to know", text: w.shareHold, tone: "warn" }] : [], ...w.context ?? []].map((fact) => ({ ...fact, label: htmlToText(fact.label), text: htmlToText(fact.text) })),
+    context: [...w.shareHold && !replied ? [{ label: "Need to know", text: w.shareHold, tone: "warn" }] : [], ...(w.context ?? []).filter((fact) => !replied || fact.tone !== "warn")].map((fact) => ({ ...fact, label: htmlToText(fact.label), text: htmlToText(fact.text) })),
     meeting: w.meeting,
     job: job?.goal,
+    ...replied && mine ? { ownReply: { text: htmlToText(mine.ownerReply?.text ?? mine.text), at: mine.at, ...teamsOf(w, mine.id) ? { teams: teamsOf(w, mine.id) } : {} } } : {},
+    ...unsent && !/^_{3,}$/.test(unsent.trim()) ? { unsent } : {},
     // Every field is built from the change's call, never the AI's words about it (review 10-21 P1-1).
     changes: pendingEffects(w.effects).map((e, i) => {
       const s3 = shown(e), m = meaningParts(e);
@@ -43208,7 +43254,7 @@ function view(store2, since, now = /* @__PURE__ */ new Date(), workflows = store
   });
   const running2 = [...g.running.filter((w) => represented.has(w.code) && !todos.has(w.code)).map((w) => ({ code: w.code, what: htmlToText(w.status), who: w.asker?.name, since: w.waitingSince ?? w.updatedAt })), ...bootLines(store2).map((b) => ({ code: "", what: htmlToText(b.what), since: b.since, ...b.total ? { progress: (b.done ?? 0) / b.total } : {} }))];
   const state = c.stopped ? "stopped" : c.paused || cfg.paused ? "paused" : "on";
-  const health = Object.entries(store2.health()).map(([key, h]) => ({ key, text: h.text, since: h.since, fix: key === "source" ? { label: "Try again", command: "retry" } : void 0 }));
+  const health = Object.entries(store2.health()).filter(([key]) => !key.startsWith("session:")).map(([key, h]) => ({ key, text: h.text, since: h.since, fix: key === "source" ? { label: "Try again", command: "retry" } : void 0 }));
   if (state !== "on") health.unshift({ key: "paused", text: state === "stopped" ? `${NAME} is stopped. It is not reading your chats.` : `${NAME} is paused. It keeps drafting, and sends nothing.`, since: "", fix: { label: "Resume", command: "resume" } });
   const people = /* @__PURE__ */ new Map();
   for (const w of wfs) if (w.asker && !isThread(w.chat.id) && (w.chat.group || !(w.chat.test && isPersona(w.asker.id)))) people.set(w.chat.group ? w.chat.name : w.asker.name, { chat: w.chat.id, group: !!w.chat.group });
@@ -44243,6 +44289,13 @@ function repairRunFailures(store2, days2 = 14) {
   }
   return n;
 }
+function answersOwner(store2, wf) {
+  if (!wf.asker?.name || BOT.test(wf.asker.name) || !wf.lastAsk?.trim()) return false;
+  if (!wf.chat.group) return true;
+  const thread2 = store2.thread(wf.id), first3 = thread2.findIndex((m) => wf.msgIds.includes(m.id) && !m.byOwner);
+  const before = first3 > 0 ? thread2[first3 - 1] : void 0;
+  return !!before?.byOwner && Date.parse(thread2[first3].at) - Date.parse(before.at) < 864e5;
+}
 function startFailed(store2, wf, e) {
   const raw = String(e).replace(/^Error: /, "");
   const account = agentSetupFailure(raw);
@@ -44475,6 +44528,12 @@ ${res.summary ?? ""}`));
   fresh.drewOn = drewOn.length ? drewOn : void 0;
   fresh.shareHold = drewOn.length ? await sharingHold(store2, src, fresh, drewOn) : void 0;
   if (report2 && !job) await afterDraft(store2, src, cfg, fresh);
+  if (report2 && !job && fresh.state === "done" && fresh.closedBy === "nothing" && !fresh.fyi && answersOwner(store2, fresh)) {
+    const said2 = (fresh.lastAsk ?? "").replace(/^\[as [^\]]+\]\s*/i, "").replace(/\s+/g, " ").trim();
+    const first3 = (fresh.asker?.name ?? "They").split(/\s+/)[0];
+    fresh.fyi = { line: `${first3} replied \xB7 no reply needed`, weight: "normal", at: (/* @__PURE__ */ new Date()).toISOString(), gist: said2.slice(0, 400) };
+    store2.log({ event: "fyi-kept", code: fresh.code, why: fresh.chat.group ? "after the owner" : "1:1" });
+  }
   if (report2 && !job && fresh.state === "done" && fresh.closedBy === "nothing") for (const msgId of wf.pending) auditSkip(store2, wf.chat.id, msgId, fresh.fyi ? "ai-fyi" : "ai-noise", wf.id);
   if (job && !declined) await ackJob(store2, src, cfg, fresh);
   store2.save(fresh);
@@ -44618,7 +44677,7 @@ function greetBack(wf, text3) {
   const body = OPENERS.test(text3) ? text3[0].toLowerCase() + text3.slice(1) : text3;
   return `Hi ${first3}, ${body}`;
 }
-var AUTH, CATALOG_CHANGED, OLD_FALLBACK, failWhy, readDirs, WORKER_SERVER, WORKER_TOOLS, lessonFits, NO_QUESTION, GREETING2, OPENERS;
+var AUTH, CATALOG_CHANGED, OLD_FALLBACK, BOT, failWhy, readDirs, WORKER_SERVER, WORKER_TOOLS, lessonFits, NO_QUESTION, GREETING2, OPENERS;
 var init_dispatch = __esm({
   "src/runner/dispatch.ts"() {
     "use strict";
@@ -44663,6 +44722,7 @@ var init_dispatch = __esm({
     AUTH = /bad credentials|not logged in|please run \/login|authenticat|unauthori[sz]ed|sign[ -]?in/i;
     CATALOG_CHANGED = /MCP tool catalog changed/i;
     OLD_FALLBACK = /^(?:Check this item, then answer or skip it|Sign in, then answer or skip this item)$/;
+    BOT = /\b(?:bot|app|notifications?|alerts?|no-?reply|azure devops|github|jira|pipelines?)\b/i;
     failWhy = (res) => {
       const first3 = (res.error ?? "").split(/\r?\n/).map((l) => l.trim()).find(Boolean)?.replace(/^Error: /, "");
       return res.exitCode === 0 || !first3 ? "the run stopped without a result" : `the run failed (${first3.slice(0, 140)})`;
@@ -49774,6 +49834,7 @@ async function daily(store2, src, cfg, now = /* @__PURE__ */ new Date()) {
 init_automations();
 init_jobs();
 init_continue();
+init_own();
 
 // src/runner/place.ts
 init_whose();
@@ -49820,7 +49881,7 @@ function stampPlaces(store2, now = Date.now()) {
 // src/web/server.ts
 init_format2();
 init_fs();
-import { createHash as createHash6, randomBytes as randomBytes3 } from "node:crypto";
+import { createHash as createHash7, randomBytes as randomBytes3 } from "node:crypto";
 import { createServer } from "node:http";
 import { join as join31 } from "node:path";
 
@@ -51823,7 +51884,9 @@ function settingsView(store2, experience) {
       { label: "Tools drafts may read", value: cfg.agent.tools.filter((t2) => !["view", "glob", "grep"].includes(t2)).join(", ") || "none", how: `Say "set up ${CMD}" and change the tools step.` },
       // Changes allowed in setup that Settings never offers as a switch, such as a whole tool: shown, changed only in setup.
       ...((x) => x.length ? [{ label: "Other changes setup allows (each after your ok)", value: x.map(changeName).join("; "), how: `Say "set up ${CMD}" and change the tools step.` }] : [])((cfg.agent.effectTools ?? []).filter((e) => !offerable(e))),
-      { label: "Reads your chats from", value: cfg.runner ?? "the machine where setup last finished", how: `On another machine, say "move ${NAME} here".` }
+      { label: "Reads your chats from", value: cfg.runner ?? "the machine where setup last finished", how: `On another machine, say "move ${NAME} here".` },
+      // While a session history differs between machines: one plain line, nothing to do (queue-new #16 c).
+      ...Object.entries(store2.health()).filter(([key]) => key.startsWith("session:")).map(([, h]) => ({ label: "AI history", value: h.text, how: "Nothing to do. This line goes away by itself." }))
     ]
   };
 }
@@ -52858,6 +52921,8 @@ var item = external_exports.object({
   todos: strings.optional(),
   runFailed: external_exports.object({ at: text2, why: text2 }).optional(),
   prLabel: optional2,
+  ownReply: external_exports.object({ text: text2, at: text2, teams: optional2 }).optional(),
+  unsent: optional2,
   follow: external_exports.object({ target: text2, until: text2, everyHours: external_exports.number() }).optional()
 });
 var action = external_exports.object({
@@ -53558,7 +53623,7 @@ ${code} stays ${byCode.get(code)?.state === "done" ? "done" : "open"}. Nothing i
       choices: c.choices && { ...c.choices, prompt: forPage(c.choices.prompt), options: c.choices.options.map((option) => ({ ...option, id: pageOptionId(option) })) },
       sourceIds: sources(id, id, why2.sources),
       noteIds,
-      primaryActionId: recovery ? `${id}/answer` : ["try-again", "review-again", "approve-again", ...c.choices && !draft2?.preview ? ["pick"] : [], "approve", "answer", "reopen"].map((kind) => `${id}/${kind}`).find((key) => actionIds.includes(key)),
+      primaryActionId: recovery ? `${id}/answer` : ["try-again", "review-again", "approve-again", ...c.choices && !draft2?.preview ? ["pick"] : [], "approve", "answer", ...c.ownReply ? [] : ["reopen"]].map((kind) => `${id}/${kind}`).find((key) => actionIds.includes(key)),
       why: { reason: why2.reason, confidence: why2.confidence, gaps: why2.gaps, searched: why2.searched },
       teams: safeLink(c.teams)
     };
@@ -54030,9 +54095,9 @@ function submitLocked(store2, intent) {
     const receipt = submissionReceipt(store2, previous.id);
     return { status: store2.pageSubmission(previous.id).status, receipt };
   }
-  let resolved;
+  let resolved2;
   try {
-    resolved = resolvePageIntent(store2, intent);
+    resolved2 = resolvePageIntent(store2, intent);
   } catch (error62) {
     if (!(error62 instanceof IntentError)) throw error62;
     const refused = {
@@ -54064,13 +54129,13 @@ function submitLocked(store2, intent) {
     ids: [],
     text: "Preparing your action.",
     status: 202,
-    immediate: !!resolved.execute,
+    immediate: !!resolved2.execute,
     intent
   };
   store2.savePageSubmission(record3);
-  if (resolved.execute) {
+  if (resolved2.execute) {
     try {
-      const immediate = resolved.execute();
+      const immediate = resolved2.execute();
       const saved = { ...record3, phase: immediate.accepted ? "queued" : "refused", accepted: immediate.accepted, text: immediate.text, processed: true, status: immediate.accepted ? 200 : 422 };
       store2.savePageSubmission(saved);
       return { status: saved.status, receipt: submissionReceipt(store2, saved.id) };
@@ -54080,8 +54145,8 @@ function submitLocked(store2, intent) {
       return { status: error62.status, receipt: submissionReceipt(store2, record3.id) };
     }
   }
-  if (!resolved.parsed) throw new Error("The item action has no structured answer.");
-  const result = enqueueParsed(store2, [resolved.parsed], resolved.shownAt, "page", record3.answerId, resolved.page, record3.id);
+  if (!resolved2.parsed) throw new Error("The item action has no structured answer.");
+  const result = enqueueParsed(store2, [resolved2.parsed], resolved2.shownAt, "page", record3.answerId, resolved2.page, record3.id);
   const completed = store2.pageSubmission(record3.id);
   const queued = {
     ...record3,
@@ -54246,7 +54311,7 @@ function serveInbox(get, port = 0, token = randomBytes3(16).toString("hex"), pro
           const store2 = get(), start = performance.now(), snapshot2 = readScope(() => reactProjection(store2, query, reactVisit ?? { since: store2.lastViewed(), fallbackSince: initialSince }).snapshot);
           const body = { ...snapshot2, version: versionFor(store2) };
           const { now: _now, fetchedAt: _fetchedAt, ...content } = body;
-          const etag = `"${createHash6("sha256").update(JSON.stringify(content)).digest("hex")}"`;
+          const etag = `"${createHash7("sha256").update(JSON.stringify(content)).digest("hex")}"`;
           const extra = { etag, "server-timing": `projection;dur=${(performance.now() - start).toFixed(2)}` };
           const priorTag = req.headers["if-none-match"], prior = typeof priorTag === "string" ? reactPages.get(priorTag) : void 0;
           reactPages.delete(etag);
@@ -54589,6 +54654,7 @@ async function tick(store2, deps = {}) {
       repairNoNews(store2);
       store2.saveProbeMark({ ...store2.probeMark(), noNewsRepairAt: (/* @__PURE__ */ new Date()).toISOString() });
     }
+    pruneSessionNotes(store2);
     settleCompleted(store2, procs);
     const cli = cliServers(cfg.agent.flavor);
     store2.setHealth("cli-config", cli.error ? `${NAME} could not read your AI CLI's tool list, ${cli.path} (${cli.error}). Changes through tool servers listed only there wait until it can.` : void 0);
@@ -55036,7 +55102,7 @@ init_state();
 init_fs();
 init_scheduler();
 import { execFileSync as execFileSync4, spawn as spawn6, spawnSync as spawnSync5 } from "node:child_process";
-import { createHash as createHash7 } from "node:crypto";
+import { createHash as createHash8 } from "node:crypto";
 import { cpSync as cpSync2, existsSync as existsSync29, lstatSync as lstatSync3, mkdirSync as mkdirSync12, readFileSync as readFileSync24, readlinkSync, rmSync as rmSync9, symlinkSync, writeFileSync as writeFileSync16 } from "node:fs";
 import { homedir as homedir9 } from "node:os";
 import { basename as basename6, join as join33 } from "node:path";
@@ -55270,7 +55336,7 @@ function uninstall2(purge) {
   out.push(root ? `Your data is still in ${root}. Delete that folder yourself if you want it gone.` : "Done.");
   return out;
 }
-var fileHash = (f) => createHash7("sha256").update(readFileSync24(f, "utf8").replace(/\r\n/g, "\n")).digest("hex");
+var fileHash = (f) => createHash8("sha256").update(readFileSync24(f, "utf8").replace(/\r\n/g, "\n")).digest("hex");
 var pluginListed = (out = spawnSync5("copilot", ["plugin", "list"], { encoding: "utf8", windowsHide: true }).stdout ?? "") => /^\s*\W?\s*delegate(@\S+)?\s+\(v/m.test(out);
 var version2 = () => VERSION;
 

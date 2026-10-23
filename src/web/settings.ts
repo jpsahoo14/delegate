@@ -212,6 +212,8 @@ export function settingsView(store: Store, experience?: 'classic' | 'new'): { ro
 			// Changes allowed in setup that Settings never offers as a switch, such as a whole tool: shown, changed only in setup.
 			...((x => x.length ? [{ label: 'Other changes setup allows (each after your ok)', value: x.map(changeName).join('; '), how: `Say "set up ${CMD}" and change the tools step.` }] : [])((cfg.agent.effectTools ?? []).filter(e => !offerable(e)))),
 			{ label: 'Reads your chats from', value: cfg.runner ?? 'the machine where setup last finished', how: `On another machine, say "move ${NAME} here".` },
+			// While a session history differs between machines: one plain line, nothing to do (queue-new #16 c).
+			...Object.entries(store.health()).filter(([key]) => key.startsWith('session:')).map(([, h]) => ({ label: 'AI history', value: h.text, how: 'Nothing to do. This line goes away by itself.' })),
 		],
 	}
 }

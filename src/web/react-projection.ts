@@ -305,7 +305,7 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 			question: c.question === undefined ? undefined : (failedJobDirections(wf) ? forPage(c.question) : pageText(c.question)) || undefined,
 			choices: c.choices && { ...c.choices, prompt: forPage(c.choices.prompt), options: c.choices.options.map(option => ({ ...option, id: pageOptionId(option) })) },
 			sourceIds: sources(id, id, why.sources), noteIds,
-			primaryActionId: recovery ? `${id}/answer` : ['try-again', 'review-again', 'approve-again', ...(c.choices && !draft?.preview ? ['pick'] : []), 'approve', 'answer', 'reopen'].map(kind => `${id}/${kind}`).find(key => actionIds.includes(key)),
+			primaryActionId: recovery ? `${id}/answer` : ['try-again', 'review-again', 'approve-again', ...(c.choices && !draft?.preview ? ['pick'] : []), 'approve', 'answer', ...(c.ownReply ? [] : ['reopen'])].map(kind => `${id}/${kind}`).find(key => actionIds.includes(key)),
 			why: { reason: why.reason, confidence: why.confidence, gaps: why.gaps, searched: why.searched }, teams: safeLink(c.teams),
 		}
 	}
