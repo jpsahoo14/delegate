@@ -30,12 +30,13 @@ import * as scheduler from '../os/scheduler.ts'
 import { LOCAL_DIR } from '../store/state.ts'
 import { CLI } from '../paths.ts'
 import { intents } from '../core/intents.ts'
-import { docsFor, historyFor, imagesFor } from '../adapters/registry.ts'
+import { docsFor, historyFor } from '../adapters/registry.ts'
 import { REPORT, report, summary as feedbackSummary } from '../store/feedback.ts'
 import { parseChannelLink } from '../adapters/channels.ts'
 import { describe, propose as proposeAutomation } from '../runner/automations.ts'
 
 import { ClaimSchema, ReportSchema } from '../core/report.ts'
+import { IMAGE_DESCRIPTION, IMAGE_LINK, readImage, reportTaker, SUBMIT_DESCRIPTION } from '../worker/tools.ts'
 import { NAME } from '../brand.ts'
 
 const text = (t: string) => ({ content: [{ type: 'text' as const, text: t }] })
@@ -111,40 +112,17 @@ function registerKnowledgeReads(server: McpServer, get: () => Store) {
 // An image pasted into a message: inline ones were kept at intake; others are read through the chat source. Workers keep this one
 // (#21 §4) until the CLI's own view is shown to return images to the model.
 function registerImageRead(server: McpServer, get: () => Store) {
-	server.registerTool('image_read', {
-		description: 'Look at an image pasted into a message. Pass the link from its [image ...] line. Use it whenever the ask may depend on what the image shows; never describe an image you did not open.',
-		inputSchema: { link: z.string().describe('The link from the [image ...] line: https://graph.microsoft.com/... or inline:<key>') },
-	}, async ({ link }) => {
-		// An image pasted inline into the message was kept in the store at intake (bug 10-23 E17).
-		const inline = /^inline:([0-9a-f]{16,40})$/.exec(link.trim())
-		if (inline) {
-			const m = get().media(inline[1])
-			return m ? { content: [{ type: 'image' as const, data: m.data, mimeType: m.type }] } : { ...text('That inline image was not kept, so it cannot be opened. Say you cannot read it; never guess what it shows.'), isError: true }
-		}
-		const m = imagesFor(get().config())
-		if (!m) return text('This setup cannot open images. Say you cannot read it; never guess what it shows.')
-		try {
-			const r = await m.read(link)
-			return typeof r === 'string' ? { ...text(r), isError: true } : { content: [{ type: 'image' as const, data: r.data, mimeType: r.type }] }
-		} catch (e) { return { ...text(`Could not open it: ${String(e).slice(0, 200)}`), isError: true } } finally { await m.close() }
+	server.registerTool('image_read', { description: IMAGE_DESCRIPTION, inputSchema: { link: z.string().describe(IMAGE_LINK) } }, async ({ link }) => {
+		const r = await readImage(get(), link)
+		return r.image ? { content: [{ type: 'image' as const, data: r.image.data, mimeType: r.image.mimeType }] } : { ...text(r.text), ...(r.error ? { isError: true } : {}) }
 	})
 }
-
 function registerWorker(server: McpServer, store: Store) {
 	// A run reads the knowledge, chats and documents with the owner's own servers and the CLI's built-ins (#21); only these stay.
 	registerImageRead(server, () => store)
 	const wfId = process.env.DELEGATE_WORKFLOW!, runId = process.env.DELEGATE_RUN!
-	let submitted = false
-	server.registerTool('submit_report', { description: 'Submit your one report for this workflow. Call exactly once, then finish.', inputSchema: ReportSchema }, async r => {
-		if (r.workflowId !== wfId) return { ...text(`Wrong workflowId. Use "${wfId}".`), isError: true }
-		const known = intents(store.root).map(i => i.id)
-		if (!known.includes(r.intent)) return { ...text(`Unknown intent "${r.intent}". Use one of: ${known.join(', ')}.`), isError: true }
-		// In a Continue window the owner may refine; the last report wins.
-		if (submitted && !process.env.DELEGATE_INTERACTIVE) return { ...text('Already submitted. Finish now.'), isError: true }
-		store.writeReport(r, runId)
-		submitted = true
-		return text('Report saved. Call task_complete now.')
-	})
+	const take = reportTaker(store, wfId, runId, !!process.env.DELEGATE_INTERACTIVE)
+	server.registerTool('submit_report', { description: SUBMIT_DESCRIPTION, inputSchema: ReportSchema }, async r => { const o = take(r); return { ...text(o.text), ...(o.error ? { isError: true } : {}) } })
 	// A change run's only write: it runs exactly one approved call, and only while the owner's ok holds (next action).
 	server.registerTool('make_change', { description: 'Make one of the approved changes listed in the prompt, by its index, exactly as approved. Returns its reference, or why it was not made.', inputSchema: { index: z.number().int().min(0) } }, async ({ index }) => {
 		const probe = adoProbe(store.config())

@@ -366,8 +366,9 @@ export type Config = {
 	// tools: built-ins the owner chose (view, glob, grep), or, before the tools migration (#17), the whole read list. deny: catalog reads
 	// the owner switched off ("<server>-<tool>" or "<server>-*"); allowRead: tools the classifier can't place that he allowed as reads;
 	// toolsTrimmed: his old list was shorter than the defaults (Settings offers Allow all read tools); pendingTrim: servers whose part of
-	// that old list waits for a listing; trimmedFrom: the old list itself, kept until then.
-	agent: { flavor: 'copilot' | 'claude'; command: string[]; tools: string[]; model?: string; maxCredits?: number; effectTools?: string[]; mcpServers?: Record<string, unknown>; deny?: string[]; allowRead?: string[]; toolsTrimmed?: boolean; pendingTrim?: string[]; trimmedFrom?: string[] }
+	// that old list waits for a listing; trimmedFrom: the old list itself, kept until then. host: false turns the resident AI host off;
+	// hostFaults: host faults in a row before it is set aside for a while (default 2, #19b).
+	agent: { flavor: 'copilot' | 'claude'; command: string[]; tools: string[]; model?: string; maxCredits?: number; effectTools?: string[]; mcpServers?: Record<string, unknown>; deny?: string[]; allowRead?: string[]; toolsTrimmed?: boolean; pendingTrim?: string[]; trimmedFrom?: string[]; host?: boolean; hostFaults?: number }
 	jobs?: { minutes: number; credits?: number; parallel?: number }
 	// team: a shared folder (for example a synced SharePoint library) that holds the team's cards (R-KNO-06).
 	cards?: { adapter: 'files'; root?: string; team?: string }

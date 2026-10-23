@@ -40,6 +40,8 @@ export class McpClient {
 	private connect(): Promise<void> {
 		const [cmd, ...rest] = this.command
 		if (!this.connecting && this.name) { const name = this.name; this.client.setNotificationHandler(ToolListChangedNotificationSchema, async () => { McpClient.onListChanged?.(name) }) }
+		// A server that exits drops this connection; the next call starts it again (a warm host connection outlives one server, #19).
+		if (!this.connecting) { const c = this.client; c.onclose = () => { if (this.client === c) { this.client = new Client({ name: 'delegate', version: '0.1.0' }); this.connecting = undefined } } }
 		this.connecting ??= this.client.connect(new StdioClientTransport({ command: cmd, args: rest, stderr: 'pipe', ...(this.env ? { env: this.env } : {}) })).catch(e => { this.connecting = undefined; throw e })
 		return this.connecting
 	}
@@ -86,6 +88,12 @@ export class McpClient {
 		if (r.isError) throw new Error(`${tool} failed: ${text.slice(0, 300)}`)
 		return parseLoose<T>(text, r.structuredContent)
 	}
+	// The server's own words, as a model reads them: the resident host's tool proxies return this (#19).
+	async callText(tool: string, args: Record<string, unknown>): Promise<{ text: string; error: boolean }> {
+		const r = await this.request(tool, args)
+		return { text: (r.content as { type: string; text?: string }[] | undefined)?.map(c => c.text ?? '').join('\n') ?? '', error: !!r.isError }
+	}
+	async ready(): Promise<void> { await this.connect() }
 
 	// The tool's own input schema, read once: a change whose arguments it would reject is never called (bug 10-23 E16).
 	private schemas?: Promise<Map<string, { properties?: Record<string, unknown>; required?: string[] }>>

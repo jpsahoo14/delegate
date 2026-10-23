@@ -17,6 +17,9 @@ import { UPDATE_EVERY_MIN } from '../os/autoupdate.ts'
 import { nameFor, runLines, runsOf } from '../core/runinfo.ts'
 import { habitUndoable, undoMs } from '../runner/habits.ts'
 import { cachedCatalogs, denied, listable, readCatalog, workerTools } from '../runner/catalog.ts'
+import { hostOff } from '../host/locate.ts'
+import { hostFile } from '../host/host.ts'
+import { hostDisabledUntil, hostFaultLimit } from '../host/client.ts'
 
 // The settings the page can change, in one table: how each is shown, read, checked, and saved (B13).
 // Each saves to the shared config (or profile.md) in the storage folder, so every machine and the next cycle use it.
@@ -254,6 +257,21 @@ export function aboutText(store: Store): string {
 	].join('\n')
 }
 
+// What the host is doing on this machine, from its state file: never asks it anything, so Settings never waits on it.
+export function hostLine(cfg: Config, now = Date.now()): string {
+	const off = hostOff(cfg)
+	if (off) return `Off: ${off}, so each AI run starts its own process.`
+	// Set aside after host faults in a row (#19b): replies still go out, each on its own process, until then.
+	const until = hostDisabledUntil(now)
+	if (until) return `Not used: the AI host failed ${(n => n === 1 ? 'once' : n === 2 ? 'twice' : `${n} times`)(hostFaultLimit(cfg))}; using one process per run until ${new Date(until).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', ...(cfg.tz && validTz(cfg.tz) ? { timeZone: cfg.tz } : {}) })}.`
+	let h: { pid: number; startedAt: string; cli: string } | undefined
+	try { h = JSON.parse(readFileSync(hostFile(), 'utf8')) } catch { h = undefined }
+	const alive = (pid: number) => { try { process.kill(pid, 0); return true } catch (e) { return (e as NodeJS.ErrnoException).code === 'EPERM' } }
+	if (!h || !alive(h.pid)) return 'Not running: it starts with the next AI run.'
+	const mins = Math.round((now - Date.parse(h.startedAt)) / 60_000)
+	return `On for ${mins < 60 ? `${mins} min` : `${Math.floor(mins / 60)} h ${mins % 60} min`} (Copilot CLI ${h.cli}); its tool servers stay connected between runs.`
+}
+
 export function settingsView(store: Store, experience?: 'classic' | 'new'): { rows: SettingRow[]; fixed: ReadOnlyRow[]; about: AboutView; models: ModelsView; tools?: ToolsView } {
 	const cfg = store.config()
 	// The new experience names its places differently: Waiting, and the foot of Now (PM review of N1a, 7).
@@ -271,6 +289,8 @@ export function settingsView(store: Store, experience?: 'classic' | 'new'): { ro
 			{ label: 'Reads your chats from', value: cfg.runner ?? 'the machine where setup last finished', how: `On another machine, say "move ${NAME} here".` },
 			// While a session history differs between machines: one plain line, nothing to do (queue-new #16 c).
 			...Object.entries(store.health()).filter(([key]) => key.startsWith('session:')).map(([, h]) => ({ label: 'AI history', value: h.text, how: 'Nothing to do. This line goes away by itself.' })),
+			// The resident AI host on this machine (#19): on since when, or why runs use one process each.
+			{ label: 'AI host', value: hostLine(cfg), how: `It starts with the next AI run and stops after 20 minutes idle or in quiet hours. Set agent.host to false in config.json to use one process per run.` },
 		],
 	}
 }

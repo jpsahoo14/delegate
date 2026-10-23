@@ -1,5 +1,196 @@
 # React preview
 
+## Resident AI host: a host that can't run sets itself aside (#19b)
+
+The host loads the SDK from the owner's CLI package, which can change on a CLI update. Before this, a host that answered pings but
+couldn't open sessions failed every reply, and the next check sent it to the same host again.
+
+**What counts as a host fault.** Faults are counted only when the run, or the change, never got through the host:
+- **/run:** the session could not be created or resumed, or `sendAndWait` threw before the session log showed an
+  `assistant.turn_start` or `tool.execution_start` for this run. The host answers 502 `{hostFault}`.
+- **/call:** the tool server could not start or list its tools on the host, so the call was never made. The host answers 502
+  `{hostFault: 'server'}`. A call that may have been made stays `lost`, as before.
+- **Not a fault:** a model or tool error after the turn began. It stays the run's own failure (200, exit code 1).
+
+**What the client does** (`client.ts`):
+- **On a fault:** it logs `host-fault` and counts a strike in `host-start.json`. Then it makes **the same run** on one process at
+  once (`runAgent`; dispatch's session restore and backup wrap both), or the same change on its own client.
+- **On reaching the limit:** `hostFaultLimit(cfg)` faults in a row (`agent.hostFaults`, default 2, set in one place) drain the
+  host, log `host-disabled`, and set `disabledUntil` from the existing BACKOFF (5 s, 30 s, then 2 min per disable since the last
+  good run). `ensureHost` returns nothing until then, so every run uses one process.
+- **On success:** a good run or call resets the strikes and the disables.
+- **In Settings:** the System "AI host" row shows "Not used: the AI host failed twice; using one process per run until <time>".
+
+**Proof** (fictional root, stub model (quota)). A stub SDK package (DELEGATE_COPILOT_PKG) wraps the CLI's SDK and breaks it on
+demand.
+- **createSession throws:**
+  - Each run is drafted on spawn in the same check.
+  - The 2nd fault drains the host, and inside the window no host starts.
+  - After the 5 s window the host is tried again. Two more faults set it aside for 30 s, and a reply inside that window goes out
+    on one process.
+  - Once healthy, the host runs again and the counts reset.
+- **Fault after resume opened:** the same item and session are drafted on spawn. events.jsonl goes from 1 to 2 user messages,
+  every line parses, and the backup matches.
+- **The stub model returns 400:** exit 1 twice, no strike, and the same host is kept.
+- **/call to a server that can't start:** the call falls back to its own client twice, and then the host is disabled.
+- **Settings row in Edge:** checked in New and Classic, and at 400 dark.
+
+## Resident AI host, step 7: two machines, and the host on the page (#19)
+
+**Two machines.** The tick already stands down on a machine that isn't the runner before it reaches any host code, so only the
+runner starts a host. Every 5 minutes the host now drains and exits ("another machine reads the chats") when either:
+- the config names another runner (the owner's "move Delegate here", effective at once); or
+- another machine holds the lease.
+
+**On the page.** Settings › System (under More, in New and Classic) has an "AI host" row, read from `host.json` and the pid,
+without asking the host anything. It says:
+- "On for 1 h 15 min (Copilot CLI 1.0.103)…";
+- "Not running: it starts with the next AI run";
+- or "Off: <why>, so each AI run starts its own process" (`hostOff`: turned off in config, a custom AI command, Claude, or no CLI
+  SDK found).
+
+Proof (two fictional machines with their own `DELEGATE_LOCAL` and `COPILOT_HOME`, one root; each tick in its own process; stub
+model (quota)):
+- The runner pc-a's tick drafted on a host it started; standby pc-b's tick was skipped ("the runner is pc-a") and wrote no
+  `host.json`.
+- After the owner moved Delegate to pc-b, pc-a's tick was skipped, and pc-b's tick drafted on its own new host.
+- pc-a's host stopped at its 5-minute check (300 s), logged `host-stopped: another machine reads the chats`; pc-b's host kept
+  running.
+- In Edge, the Settings row showed the not-running, on, and off states in New and Classic.
+
+**Not built on the host yet:** job runs (reviews, change runs, trackers) still start one detached process each. Moving them needs
+detached host sessions that `checkJobs` can watch like pids.
+
+## Resident AI host, step 6: approved changes on the warm connection, memory, quiet hours (#19)
+
+**Direct changes (#7(E)) on the host.** `executeDirect` now gets `hostCaller(store, cfg)` from the tick. The call goes to the
+host's `/call` endpoint, which checks the arguments against the warm connection's cached schema and makes the call there, with no
+`listTools` or cold start per call. The fallbacks:
+- **The host never took the call** (none, refused connection, or not connected to that server): it falls back to `mcpCaller`, a
+  client per call, as before.
+- **The host took the call and then went away:** that is a `LostResponse` ("may or may not have been done"), never tried again.
+- **The server says it has no such tool:** the catalog is marked stale, as `mcpCaller` does.
+
+**Quiet hours.** The host stops at its next 30-second check once quiet hours begin with nothing running, as it already did after 20
+minutes idle. The first tick with work starts it again.
+
+Proof (fictional Temp roots, real tick and `executeDirect`, stub PR reader, stub ADO-like server that waits 25 s before
+`initialize`, stub model (quota)):
+- **Approving a review with a comment, a vote and a reply:**
+  - with the host off, a client per call: ok → done in 51.1 s (`job-direct` 2 in 50.9 s);
+  - on the warm host: ok → done in 0.2 s (`job-direct` 2 in 0.1 s);
+  - both made the thread comment and the vote once, sent the reply once, and used no AI run.
+- **Memory (the host and every process under it):** 365 MB idle in 5 processes (host, CLI runtime, ADO stub), and 461 MB while 3
+  runs drafted at once. Real tool servers will add their own size.
+- **Quiet hours** set to start now: `host-stopped: quiet hours` after 25 s. Once they ended, the first tick with work started the
+  host once.
+
+## Resident AI host, step 5: health and falling back (#19)
+
+- **A tool server that exits:** `McpClient` drops its connection on close (`onclose`), so the next call starts the server again. A
+  call in flight returns a tool failure to the model, and the run continues or reports why it could not finish.
+- **A host that goes away mid-run:** the run returns "Could not start: the AI host stopped during the run", which goes through the
+  existing start-failure path ("Trying again on the next check", up to 3 tries). The next `ensureHost` starts a new host.
+  Logged `host-lost`.
+- **A host whose process is alive but does not answer** is stopped before a new one starts, so two hosts never share runs.
+- A changed config hash (model, command, servers, CLI or Delegate version) drains the old host, which finishes its runs and exits,
+  and starts a new one, as step 1 built. `agent.host: false` keeps one process per run.
+
+Proof (fictional Temp root, real tick and dispatch, stub model (quota), fictional `globex-tracker` stub server):
+- **Tracker killed mid-call:** the stub tracker was killed 1 s into a slow `get_thing`. The run ended "Not finished: the
+  globex-tracker tool server stopped" with the connection error in what it tried.
+- **Next run:** it drafted in 1.8 s on the same host, through a new tracker process.
+- **Host killed mid-run:** the item showed "Trying again on the next check". At the next check a new host started and the run
+  drafted.
+- **`agent.model` changed:** the old host was drained (`host-replaced: config changed`, `host-stopped: drained`) and the run drafted
+  on the new host.
+- **`agent.host: false`:** the run drafted on the spawn path, and the host's run count did not move.
+
+## Resident AI host, steps 3-4: runs side by side, and kept apart (#19)
+
+No code change was needed: dispatch's pool already caps reply runs at `maxParallel`, and the host takes concurrent runs up to
+`maxParallel + jobs.parallel`. Each run has its own session, with memory, custom instructions and config discovery off, and the
+proxies share only the warm tool connection.
+
+Proof (fictional Temp root, real tick and dispatch on the host, stub model (quota) whose every turn waits 1 s and whose draft names
+every `CANARY-*` it can see in its request):
+- **Concurrency:** four asks in four chats in one check.
+  - Three runs overlapped (0.2-3.4, 0.2-3.6 and 0.2-3.7 s). The fourth started at 3.5 s, when a slot freed, and ended at 6.8 s.
+  - The whole check took 6.9 s.
+- **Isolation, one after another:** A's ask carried `CANARY-ACME-7`, and A's draft named it. B then asked for any canary it had
+  seen and drafted "none"; B's session log has no `CANARY-ACME-7`.
+- **Isolation, in parallel:** the same result.
+
+## Resident AI host, step 2: Delegate's worker tools in-process (#19)
+
+The two worker tools left after #21, `submit_report` and `image_read`, are now plain functions in `src/worker/tools.ts`
+(`reportTaker`, `readImage`), one implementation for both callers:
+- The per-run worker MCP server (`mcp/server.ts`) wraps them as before.
+- The host defines them as in-process tools, bound to the run's workflow and run id. `submit_report` is checked against the
+  report's own zod schema (`REPORT`), and the model sees it as JSON Schema.
+
+So a host run starts no worker server process. A run that asks for any other worker tool (a change run's `make_change`) still gets
+the per-run server for it.
+
+The design's "a reply run is not offered `acme-chat-List*`" is superseded by #21 (owner-approved). Reply runs now get the chat
+server's reads, and provenance comes from the session log.
+
+Proof (same fictional root and stubs as step 1, stub model (quota); at every stub-model turn the proof counts this tree's
+`cli.ts mcp` processes):
+- The spawn path showed 1 at each of its 3 turns; the host runs showed 0 at all 9.
+- Each host run called `globex-tracker-get_thing` and the in-process `delegate_worker-submit_report`, and drafted.
+- Warm starts dropped to 1.3 s and 1.1 s (from 2.1 s and 2.0 s), since there is no worker server to start.
+
+## Resident AI host, step 1: one runtime, tool servers connected once (#19)
+
+Design: reviews/advisers/engineer-resident-ai-host.md.
+
+**Assumption checks ([A]s) settled first:**
+- The owner's CLI (1.0.103) works as the SDK runtime.
+- A custom tool named with `-` is accepted and called.
+- Sessions write `COPILOT_HOME/session-state/<id>/events.jsonl`.
+
+**Deviation from the design.** The host does not add `@github/copilot-sdk` to `package.json`. It loads the SDK the owner's
+installed CLI ships (`<pkg>/copilot-sdk/index.js`; `host/locate.ts cliPackage`), so the SDK and the runtime always speak the same
+protocol. The npm SDK also carries native optional packages that the esbuild bundle can't hold.
+
+**The runtime.** It is started as `node <pkg>/index.js`, because the VS Code `copilot` shim can't find the CLI when `COPILOT_HOME`
+is redirected. Only the plain `copilot` command is hosted. A workplace wrapper, the Claude flavor, `agent.host: false`, or a CLI
+with no SDK keep one process per run (`hostOff`).
+
+**`delegate host`** (`host/host.ts`) is a detached process the tick starts through `ensureHost` (`host/client.ts`).
+- **State file:** `LOCAL_DIR/host.json` with pid, loopback port, token, the CLI version, and a config hash (command, model, tool
+  servers, CLI and Delegate versions).
+- **Warm servers:** it connects each of the owner's tool servers once and lists their tools.
+- **Per run:**
+  - it offers each tool the run may use as an in-process proxy, with the server's own schema, calling the warm connection;
+  - it creates the item's session, or resumes it when its log exists;
+  - it sends the prompt, then disconnects, so the next resume reads from disk and #16's restore and backup (done by `dispatch`
+    around the run) stay correct;
+  - only reads under the run's folders and its offered tools are approved;
+  - `enableConfigDiscovery`, custom instructions and memory are off.
+- **Delegate's own worker tools** still come from the per-run worker server as a session MCP server; step 2 moves them in-process.
+- **Model provider:** the owner's `COPILOT_PROVIDER_*` settings are passed to each session as its provider, since an SDK session,
+  unlike the CLI, does not read them.
+- **Leaving:** it exits after 20 minutes idle, on drain, or when another machine holds the runner lease.
+
+**Starting and falling back.**
+- `ensureHost` reuses a live host with the same config hash. On a mismatch it drains the old host and starts a new one.
+- It waits up to 15 s for a new host, with a backoff of 5 s, 30 s and 2 min after failures.
+- `hostRunner` sends reply runs to the host and falls back to `runAgent` when there is no host, or it is draining or busy. A host
+  that goes away mid-run gives a failed run, retried as today.
+- Jobs still start one process each.
+
+Proof (fictional Temp root, real tick and dispatch, stub model (quota) on loopback through `COPILOT_PROVIDER_*`, stub tool servers
+`acme-chat` and `globex-tracker` that wait 25 s before answering `initialize`):
+- **Spawn path:** one draft started in 27.5 s and took 30.3 s in total.
+- **Host:** it started once (0.9 s), and each server was ready once (25.4 s).
+- **Runs 1-3 on the host:**
+  - run 1 waited for the cold servers (start 27.5 s);
+  - runs 2 and 3 started in 2.1 s and 1.9 s and took 3.2 s and 3.0 s in total, so p50 start is 2.1 s;
+  - each called `globex-tracker-get_thing` through a proxy and `delegate_worker-submit_report`, and drafted;
+  - each session's `events.jsonl` was written and backed up to `<root>/sessions/<id>`.
+
 ## readsOf checked against real Copilot session logs (#21b)
 
 The reply provenance from #21 was proven on stub-written events, so `readsOf` was run read-only over the 139 real CLI 1.0.x

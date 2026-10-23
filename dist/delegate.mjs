@@ -177,9 +177,9 @@ function tidy(u) {
   for (const [k, v] of Object.entries(u)) if (Array.isArray(v) ? v.length : v !== void 0) out[k] = typeof v === "number" ? Math.round(v) : v;
   return out;
 }
-function readRun(out, startedAt, env = process.env, session = "", until) {
+function readRun(out, startedAt, env2 = process.env, session = "", until) {
   try {
-    const secrets = envSecrets(env), seen = /* @__PURE__ */ new Set();
+    const secrets = envSecrets(env2), seen = /* @__PURE__ */ new Set();
     const events = [...session && startedAt !== void 0 ? sessionEvents(session, startedAt, until) : [], ...eventsOf(out)].filter((e) => typeof e.id !== "string" || !seen.has(e.id) && !!seen.add(e.id));
     const models = [], weight = /* @__PURE__ */ new Map();
     const add = (id, name, w = 0) => {
@@ -307,7 +307,7 @@ var init_runinfo = __esm({
     ID = /^[A-Za-z0-9][\w.:/@+-]{0,79}$/;
     NAME2 = /^[A-Za-z0-9][\w .:/@()+-]{0,39}$/;
     SECRET_ENV = /TOKEN|KEY|SECRET|PASS|PAT$|AUTH|CREDENTIAL|COOKIE/i;
-    envSecrets = (env) => Object.entries(env).filter(([k, v]) => SECRET_ENV.test(k) && v && v.length >= 8).map(([, v]) => v);
+    envSecrets = (env2) => Object.entries(env2).filter(([k, v]) => SECRET_ENV.test(k) && v && v.length >= 8).map(([, v]) => v);
     num = (v) => typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : void 0;
     sum = (...vs) => {
       const ns = vs.map(num).filter((n) => n !== void 0);
@@ -1090,8 +1090,8 @@ function pageAnswerRefusal(answer, workflow, automation2, proposal, cfg, managem
   if (answer.verb === "close" && workflow?.kept?.some((todo) => !todo.done)) return "These to-dos changed. Nothing was marked. Open the current list.";
   if (guard.kind === "undo-send" && (!workflow?.sent || workflow.sent.msgId !== guard.sentMessageId)) return "That reply is no longer the current sent reply. Nothing was deleted.";
   if (guard.kind === "feedback-send" && (!workflow?.sent || workflow.sent.msgId !== guard.sentMessageId)) return "That reply changed. Nothing was sent, deleted or redrafted. Open its current activity first.";
-  const current = workflow ? workflowApprovalRev(workflow) : automation2 ? automationApprovalRev(automation2) : proposal ? proposalApprovalRev(proposal) : void 0;
-  if (current !== guard.expect) return "Changed since you looked. Nothing was sent or changed. Open the new version first.";
+  const current2 = workflow ? workflowApprovalRev(workflow) : automation2 ? automationApprovalRev(automation2) : proposal ? proposalApprovalRev(proposal) : void 0;
+  if (current2 !== guard.expect) return "Changed since you looked. Nothing was sent or changed. Open the new version first.";
   if (guard.replyDigest && (!cfg || !workflow?.draft || pageDigest(approvedReplyText(workflow.draft.text, workflow, cfg)) !== guard.replyDigest)) return "The reply signature changed since you looked. Nothing was sent or changed. Open the new version first.";
   return void 0;
 }
@@ -1317,9 +1317,9 @@ function cleanRunFiles(config2) {
     return message;
   }
 }
-function cleanEnv(env) {
+function cleanEnv(env2) {
   const out = {};
-  for (const [k, v] of Object.entries(env)) {
+  for (const [k, v] of Object.entries(env2)) {
     const name = k.toUpperCase();
     if (["COPILOT_ENABLE_BUILTIN_GITHUB_MCP", "COPILOT_MCP_APPS", "COPILOT_CLI_ENABLED_FEATURE_FLAGS"].includes(name) || name.startsWith("COPILOT_EXP_")) continue;
     if (new RegExp(`^(COPILOT|CLAUDE${(site().processNames ?? []).map((n) => `|${n.replace(/\W/g, "")}`).join("")})[A-Z_]*SESSION`, "i").test(k) || ["COPILOT_CLI", "COPILOT_CLI_RUN_AS_NODE", "AI_AGENT", "CLAUDECODE"].includes(k)) continue;
@@ -1347,13 +1347,13 @@ function runAgent(cfg, i, timeoutMs = 10 * 6e4, graceMs = 5e3) {
   }
   const [cmd2, ...pre] = cfg.command;
   const t0 = Date.now();
-  return new Promise((resolve8) => {
+  return new Promise((resolve9) => {
     let p;
     try {
       p = spawn(cmd2, [...pre, ...buildArgs(cfg, filePrompt(i, cfg.flavor))], { cwd: i.cwd, detached: true, windowsHide: true, stdio: ["ignore", "pipe", "pipe"], env: workerEnv(process.env) });
     } catch (error62) {
       const cleanup = cleanRunFiles(i.mcpConfigPath);
-      resolve8({ exitCode: -1, ms: Date.now() - t0, error: `${error62 instanceof SetupError ? `Could not start: ${error62.message}` : `Could not start ${cmd2}: ${String(error62)}`}${cleanup ? `. ${cleanup}` : ""}` });
+      resolve9({ exitCode: -1, ms: Date.now() - t0, error: `${error62 instanceof SetupError ? `Could not start: ${error62.message}` : `Could not start ${cmd2}: ${String(error62)}`}${cleanup ? `. ${cleanup}` : ""}` });
       return;
     }
     let out = "", err = "", done2 = false, timedOut = false, force;
@@ -1366,7 +1366,7 @@ function runAgent(cfg, i, timeoutMs = 10 * 6e4, graceMs = 5e3) {
       if (p.pid) live.delete(p.pid);
       const result = timedOut ? { ...r, exitCode: r.exitCode || -1, error: `${cmd2} timed out after ${Math.round(timeoutMs / 1e3)} s` } : r;
       const cleanup = cleanRunFiles(i.mcpConfigPath);
-      resolve8(cleanup ? { ...result, error: `${result.error ? `${result.error}. ` : ""}${cleanup}` } : result);
+      resolve9(cleanup ? { ...result, error: `${result.error ? `${result.error}. ` : ""}${cleanup}` } : result);
     };
     p.stdout?.on("data", (d) => {
       out += d;
@@ -1432,7 +1432,7 @@ var init_agent = __esm({
     SetupError = class extends Error {
     };
     agentLogDir = (mcpConfigPath) => join4(dirname3(mcpConfigPath), "logs", basename3(mcpConfigPath, ".json"));
-    workerEnv = (env) => ({ ...cleanEnv(env), DELEGATE_WORKER: "1" });
+    workerEnv = (env2) => ({ ...cleanEnv(env2), DELEGATE_WORKER: "1" });
     live = /* @__PURE__ */ new Set();
     hooked = false;
   }
@@ -5934,17 +5934,17 @@ function isRef(value) {
 function cloneIssues(issues) {
   return issues.map((iss) => iss.path ? { ...iss, path: iss.path.slice() } : { ...iss });
 }
-function isRecursive(inst, stack, resolve8) {
-  const cached2 = recursive.get(inst);
-  if (cached2 !== void 0)
-    return cached2 ? PROVEN : NONE;
+function isRecursive(inst, stack, resolve9) {
+  const cached3 = recursive.get(inst);
+  if (cached3 !== void 0)
+    return cached3 ? PROVEN : NONE;
   if (stack.has(inst))
     return PROVEN;
   stack.add(inst);
   let result = NONE;
   const check2 = (child) => {
     if (result !== PROVEN && child?._zod) {
-      const answer = isRecursive(child, stack, resolve8);
+      const answer = isRecursive(child, stack, resolve9);
       if (answer > result)
         result = answer;
     }
@@ -5955,7 +5955,7 @@ function isRecursive(inst, stack, resolve8) {
       const desc = Object.getOwnPropertyDescriptor(sh, key);
       if (spread && !desc.enumerable)
         continue;
-      const child = desc.get ? ASSUMED : desc.value?._zod ? isRecursive(desc.value, stack, resolve8) : NONE;
+      const child = desc.get ? ASSUMED : desc.value?._zod ? isRecursive(desc.value, stack, resolve9) : NONE;
       if (child > answer)
         answer = child;
     }
@@ -6019,7 +6019,7 @@ function isRecursive(inst, stack, resolve8) {
       break;
     // `$ZodLazy` caches its inner on the def, so a resolved edge is followed exactly
     case "lazy": {
-      const inner = def._cachedInner ?? (resolve8 ? inst._zod.innerType : void 0);
+      const inner = def._cachedInner ?? (resolve9 ? inst._zod.innerType : void 0);
       merge2(inner ? isRecursive(inner, stack, false) : ASSUMED);
       break;
     }
@@ -21267,15 +21267,15 @@ function visit(schema, fnOrHandlers) {
   };
   const cache2 = /* @__PURE__ */ new Map();
   function run2(s3) {
-    const cached2 = cache2.get(s3);
-    if (cached2 === RESOLVING) {
+    const cached3 = cache2.get(s3);
+    if (cached3 === RESOLVING) {
       return new $ZodLazy({
         type: "lazy",
         getter: () => cache2.get(s3)
       });
     }
-    if (cached2 !== void 0)
-      return cached2;
+    if (cached3 !== void 0)
+      return cached3;
     cache2.set(s3, RESOLVING);
     const inner = mapInner(s3);
     const mapped = fn(inner, inner !== s3);
@@ -22090,19 +22090,19 @@ function upgrade(w) {
   if (!w.kept && w.todos?.length && w.sent && (w.state === "done" || w.state === "open")) w.kept = [...new Set(w.todos)].map((text3, i) => ({ id: `t${i + 1}`, text: text3, at: w.sent.at }));
   return w;
 }
-function mergeSubmission(current, next2, detail = false) {
-  if (!current) return next2;
-  if (current.fingerprint !== next2.fingerprint || current.answerId !== next2.answerId || current.item !== next2.item || current.rev !== next2.rev) throw new Error("That submission identity was already used for a different action.");
-  const before = submissionRank(current), after = submissionRank(next2);
-  const winner = after > before || after === before && (before < 2 || detail) ? next2 : current;
+function mergeSubmission(current2, next2, detail = false) {
+  if (!current2) return next2;
+  if (current2.fingerprint !== next2.fingerprint || current2.answerId !== next2.answerId || current2.item !== next2.item || current2.rev !== next2.rev) throw new Error("That submission identity was already used for a different action.");
+  const before = submissionRank(current2), after = submissionRank(next2);
+  const winner = after > before || after === before && (before < 2 || detail) ? next2 : current2;
   return {
-    ...current,
+    ...current2,
     ...winner,
-    accepted: current.accepted || next2.accepted,
-    processed: current.processed || next2.processed,
-    refused: current.refused || next2.refused || current.phase === "refused" || next2.phase === "refused" || void 0,
-    uncertain: current.uncertain || next2.uncertain,
-    ids: [.../* @__PURE__ */ new Set([...current.ids, ...next2.ids])]
+    accepted: current2.accepted || next2.accepted,
+    processed: current2.processed || next2.processed,
+    refused: current2.refused || next2.refused || current2.phase === "refused" || next2.phase === "refused" || void 0,
+    uncertain: current2.uncertain || next2.uncertain,
+    ids: [.../* @__PURE__ */ new Set([...current2.ids, ...next2.ids])]
   };
 }
 function readReceiptLock(path) {
@@ -22590,8 +22590,8 @@ var init_state = __esm({
         return this.withPageSubmission(id, () => {
           const path = this.p("state", "page-submissions", `${id}.json`);
           for (let attempt = 0; ; attempt++) {
-            const current = this.pageSubmission(id), next2 = update2(current);
-            if (!next2 || JSON.stringify(current) === JSON.stringify(next2)) return next2;
+            const current2 = this.pageSubmission(id), next2 = update2(current2);
+            if (!next2 || JSON.stringify(current2) === JSON.stringify(next2)) return next2;
             try {
               this.w(path, next2);
               return next2;
@@ -22603,7 +22603,7 @@ var init_state = __esm({
         });
       }
       savePageSubmission(submission) {
-        return this.updatePageSubmission(submission.id, (current) => mergeSubmission(current, submission));
+        return this.updatePageSubmission(submission.id, (current2) => mergeSubmission(current2, submission));
       }
       completePageSubmission(answer, text3, refused = false) {
         if (!answer.pageSubmissionId) return;
@@ -22661,8 +22661,8 @@ var init_state = __esm({
       changes(jobId, runId) {
         return readJson(this.p("state", "changes", `${jobId}-${runId}.json`), {});
       }
-      callRec(call) {
-        return readJson(this.p("state", "calls", `${createHash2("sha256").update(call).digest("hex")}.json`), void 0);
+      callRec(call2) {
+        return readJson(this.p("state", "calls", `${createHash2("sha256").update(call2).digest("hex")}.json`), void 0);
       }
       saveCallRec(r) {
         this.w(this.p("state", "calls", `${createHash2("sha256").update(r.call).digest("hex")}.json`), r);
@@ -27144,17 +27144,17 @@ var init_v4 = __esm({
 });
 
 // node_modules/@modelcontextprotocol/sdk/dist/esm/types.js
-function assertCompleteRequestPrompt(request2) {
-  if (request2.params.ref.type !== "ref/prompt") {
-    throw new TypeError(`Expected CompleteRequestPrompt, but got ${request2.params.ref.type}`);
+function assertCompleteRequestPrompt(request3) {
+  if (request3.params.ref.type !== "ref/prompt") {
+    throw new TypeError(`Expected CompleteRequestPrompt, but got ${request3.params.ref.type}`);
   }
-  void request2;
+  void request3;
 }
-function assertCompleteRequestResourceTemplate(request2) {
-  if (request2.params.ref.type !== "ref/resource") {
-    throw new TypeError(`Expected CompleteRequestResourceTemplate, but got ${request2.params.ref.type}`);
+function assertCompleteRequestResourceTemplate(request3) {
+  if (request3.params.ref.type !== "ref/resource") {
+    throw new TypeError(`Expected CompleteRequestResourceTemplate, but got ${request3.params.ref.type}`);
   }
-  void request2;
+  void request3;
 }
 var LATEST_PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS, RELATED_TASK_META_KEY, JSONRPC_VERSION, AssertObjectSchema, ProgressTokenSchema, CursorSchema, TaskCreationParamsSchema, TaskMetadataSchema, RelatedTaskMetadataSchema, RequestMetaSchema, BaseRequestParamsSchema, TaskAugmentedRequestParamsSchema, isTaskAugmentedRequestParams, RequestSchema, NotificationsParamsSchema, NotificationSchema, ResultSchema, RequestIdSchema, JSONRPCRequestSchema, isJSONRPCRequest, JSONRPCNotificationSchema, isJSONRPCNotification, JSONRPCResultResponseSchema, isJSONRPCResultResponse, ErrorCode, JSONRPCErrorResponseSchema, isJSONRPCErrorResponse, JSONRPCMessageSchema, JSONRPCResponseSchema, EmptyResultSchema, CancelledNotificationParamsSchema, CancelledNotificationSchema, IconSchema, IconsSchema, BaseMetadataSchema, ImplementationSchema, FormElicitationCapabilitySchema, ElicitationCapabilitySchema, ClientTasksCapabilitySchema, ServerTasksCapabilitySchema, ClientCapabilitiesSchema, InitializeRequestParamsSchema, InitializeRequestSchema, ServerCapabilitiesSchema, InitializeResultSchema, InitializedNotificationSchema, PingRequestSchema, ProgressSchema, ProgressNotificationParamsSchema, ProgressNotificationSchema, PaginatedRequestParamsSchema, PaginatedRequestSchema, PaginatedResultSchema, TaskStatusSchema, TaskSchema, CreateTaskResultSchema, TaskStatusNotificationParamsSchema, TaskStatusNotificationSchema, GetTaskRequestSchema, GetTaskResultSchema, GetTaskPayloadRequestSchema, GetTaskPayloadResultSchema, ListTasksRequestSchema, ListTasksResultSchema, CancelTaskRequestSchema, CancelTaskResultSchema, ResourceContentsSchema, TextResourceContentsSchema, Base64Schema, BlobResourceContentsSchema, RoleSchema, AnnotationsSchema, ResourceSchema, ResourceTemplateSchema, ListResourcesRequestSchema, ListResourcesResultSchema, ListResourceTemplatesRequestSchema, ListResourceTemplatesResultSchema, ResourceRequestParamsSchema, ReadResourceRequestParamsSchema, ReadResourceRequestSchema, ReadResourceResultSchema, ResourceListChangedNotificationSchema, SubscribeRequestParamsSchema, SubscribeRequestSchema, UnsubscribeRequestParamsSchema, UnsubscribeRequestSchema, ResourceUpdatedNotificationParamsSchema, ResourceUpdatedNotificationSchema, PromptArgumentSchema, PromptSchema, ListPromptsRequestSchema, ListPromptsResultSchema, GetPromptRequestParamsSchema, GetPromptRequestSchema, TextContentSchema, ImageContentSchema, AudioContentSchema, ToolUseContentSchema, EmbeddedResourceSchema, ResourceLinkSchema, ContentBlockSchema, PromptMessageSchema, GetPromptResultSchema, PromptListChangedNotificationSchema, ToolAnnotationsSchema, ToolExecutionSchema, ToolSchema, ListToolsRequestSchema, ListToolsResultSchema, CallToolResultSchema, CompatibilityCallToolResultSchema, CallToolRequestParamsSchema, CallToolRequestSchema, ToolListChangedNotificationSchema, ListChangedOptionsBaseSchema, LoggingLevelSchema, SetLevelRequestParamsSchema, SetLevelRequestSchema, LoggingMessageNotificationParamsSchema, LoggingMessageNotificationSchema, ModelHintSchema, ModelPreferencesSchema, ToolChoiceSchema, ToolResultContentSchema, SamplingContentSchema, SamplingMessageContentBlockSchema, SamplingMessageSchema, CreateMessageRequestParamsSchema, CreateMessageRequestSchema, CreateMessageResultSchema, CreateMessageResultWithToolsSchema, BooleanSchemaSchema, StringSchemaSchema, NumberSchemaSchema, UntitledSingleSelectEnumSchemaSchema, TitledSingleSelectEnumSchemaSchema, LegacyTitledEnumSchemaSchema, SingleSelectEnumSchemaSchema, UntitledMultiSelectEnumSchemaSchema, TitledMultiSelectEnumSchemaSchema, MultiSelectEnumSchemaSchema, EnumSchemaSchema, PrimitiveSchemaDefinitionSchema, ElicitRequestFormParamsSchema, ElicitRequestURLParamsSchema, ElicitRequestParamsSchema, ElicitRequestSchema, ElicitationCompleteNotificationParamsSchema, ElicitationCompleteNotificationSchema, ElicitResultSchema, ResourceTemplateReferenceSchema, PromptReferenceSchema, CompleteRequestParamsSchema, CompleteRequestSchema, CompleteResultSchema, RootSchema, ListRootsRequestSchema, ListRootsResultSchema, RootsListChangedNotificationSchema, ClientRequestSchema, ClientNotificationSchema, ClientResultSchema, ServerRequestSchema, ServerNotificationSchema, ServerResultSchema, McpError, UrlElicitationRequiredError;
 var init_types2 = __esm({
@@ -30365,8 +30365,8 @@ var init_protocol = __esm({
         this._taskStore = _options?.taskStore;
         this._taskMessageQueue = _options?.taskMessageQueue;
         if (this._taskStore) {
-          this.setRequestHandler(GetTaskRequestSchema, async (request2, extra) => {
-            const task = await this._taskStore.getTask(request2.params.taskId, extra.sessionId);
+          this.setRequestHandler(GetTaskRequestSchema, async (request3, extra) => {
+            const task = await this._taskStore.getTask(request3.params.taskId, extra.sessionId);
             if (!task) {
               throw new McpError(ErrorCode.InvalidParams, "Failed to retrieve task: Task not found");
             }
@@ -30374,9 +30374,9 @@ var init_protocol = __esm({
               ...task
             };
           });
-          this.setRequestHandler(GetTaskPayloadRequestSchema, async (request2, extra) => {
+          this.setRequestHandler(GetTaskPayloadRequestSchema, async (request3, extra) => {
             const handleTaskResult = async () => {
-              const taskId = request2.params.taskId;
+              const taskId = request3.params.taskId;
               if (!await this._taskStore.getTask(taskId, extra.sessionId)) {
                 throw new McpError(ErrorCode.InvalidParams, `Task not found: ${taskId}`);
               }
@@ -30430,9 +30430,9 @@ var init_protocol = __esm({
             };
             return await handleTaskResult();
           });
-          this.setRequestHandler(ListTasksRequestSchema, async (request2, extra) => {
+          this.setRequestHandler(ListTasksRequestSchema, async (request3, extra) => {
             try {
-              const { tasks, nextCursor } = await this._taskStore.listTasks(request2.params?.cursor, extra.sessionId);
+              const { tasks, nextCursor } = await this._taskStore.listTasks(request3.params?.cursor, extra.sessionId);
               return {
                 tasks,
                 nextCursor,
@@ -30442,20 +30442,20 @@ var init_protocol = __esm({
               throw new McpError(ErrorCode.InvalidParams, `Failed to list tasks: ${error62 instanceof Error ? error62.message : String(error62)}`);
             }
           });
-          this.setRequestHandler(CancelTaskRequestSchema, async (request2, extra) => {
+          this.setRequestHandler(CancelTaskRequestSchema, async (request3, extra) => {
             try {
-              const task = await this._taskStore.getTask(request2.params.taskId, extra.sessionId);
+              const task = await this._taskStore.getTask(request3.params.taskId, extra.sessionId);
               if (!task) {
-                throw new McpError(ErrorCode.InvalidParams, `Task not found: ${request2.params.taskId}`);
+                throw new McpError(ErrorCode.InvalidParams, `Task not found: ${request3.params.taskId}`);
               }
               if (isTerminal(task.status)) {
                 throw new McpError(ErrorCode.InvalidParams, `Cannot cancel task in terminal status: ${task.status}`);
               }
-              await this._taskStore.updateTaskStatus(request2.params.taskId, "cancelled", "Client cancelled task execution.", extra.sessionId);
-              this._clearTaskQueue(request2.params.taskId, extra.sessionId);
-              const cancelledTask = await this._taskStore.getTask(request2.params.taskId, extra.sessionId);
+              await this._taskStore.updateTaskStatus(request3.params.taskId, "cancelled", "Client cancelled task execution.", extra.sessionId);
+              this._clearTaskQueue(request3.params.taskId, extra.sessionId);
+              const cancelledTask = await this._taskStore.getTask(request3.params.taskId, extra.sessionId);
               if (!cancelledTask) {
-                throw new McpError(ErrorCode.InvalidParams, `Task not found after cancellation: ${request2.params.taskId}`);
+                throw new McpError(ErrorCode.InvalidParams, `Task not found after cancellation: ${request3.params.taskId}`);
               }
               return {
                 _meta: {},
@@ -30576,10 +30576,10 @@ var init_protocol = __esm({
         }
         Promise.resolve().then(() => handler(notification)).catch((error62) => this._onerror(new Error(`Uncaught error in notification handler: ${error62}`)));
       }
-      _onrequest(request2, extra) {
-        const handler = this._requestHandlers.get(request2.method) ?? this.fallbackRequestHandler;
+      _onrequest(request3, extra) {
+        const handler = this._requestHandlers.get(request3.method) ?? this.fallbackRequestHandler;
         const capturedTransport = this._transport;
-        const relatedTaskId = request2.params?._meta?.[RELATED_TASK_META_KEY]?.taskId;
+        const relatedTaskId = request3.params?._meta?.[RELATED_TASK_META_KEY]?.taskId;
         const sessionId = capturedTransport?.sessionId;
         const store2 = this._taskStore;
         let relatedTaskFound = true;
@@ -30596,7 +30596,7 @@ var init_protocol = __esm({
         if (handler === void 0) {
           const errorResponse = {
             jsonrpc: "2.0",
-            id: request2.id,
+            id: request3.id,
             error: {
               code: ErrorCode.MethodNotFound,
               message: "Method not found"
@@ -30617,17 +30617,17 @@ var init_protocol = __esm({
           return;
         }
         const abortController = new AbortController();
-        this._requestHandlerAbortControllers.set(request2.id, abortController);
-        const taskCreationParams = isTaskAugmentedRequestParams(request2.params) ? request2.params.task : void 0;
-        const taskStore = this._taskStore ? this.requestTaskStore(request2, capturedTransport?.sessionId) : void 0;
+        this._requestHandlerAbortControllers.set(request3.id, abortController);
+        const taskCreationParams = isTaskAugmentedRequestParams(request3.params) ? request3.params.task : void 0;
+        const taskStore = this._taskStore ? this.requestTaskStore(request3, capturedTransport?.sessionId) : void 0;
         const fullExtra = {
           signal: abortController.signal,
           sessionId: capturedTransport?.sessionId,
-          _meta: request2.params?._meta,
+          _meta: request3.params?._meta,
           sendNotification: async (notification) => {
             if (abortController.signal.aborted)
               return;
-            const notificationOptions = { relatedRequestId: request2.id };
+            const notificationOptions = { relatedRequestId: request3.id };
             if (relatedTaskId) {
               notificationOptions.relatedTask = { taskId: relatedTaskId };
             }
@@ -30637,7 +30637,7 @@ var init_protocol = __esm({
             if (abortController.signal.aborted) {
               throw new McpError(ErrorCode.ConnectionClosed, "Request was cancelled");
             }
-            const requestOptions = { ...options, relatedRequestId: request2.id };
+            const requestOptions = { ...options, relatedRequestId: request3.id };
             if (relatedTaskId && !requestOptions.relatedTask) {
               requestOptions.relatedTask = { taskId: relatedTaskId };
             }
@@ -30648,7 +30648,7 @@ var init_protocol = __esm({
             return await this.request(r, resultSchema, requestOptions);
           },
           authInfo: extra?.authInfo,
-          requestId: request2.id,
+          requestId: request3.id,
           requestInfo: extra?.requestInfo,
           taskId: relatedTaskId,
           taskStore,
@@ -30661,16 +30661,16 @@ var init_protocol = __esm({
             throw new McpError(ErrorCode.ConnectionClosed, "Request was cancelled");
           }
           if (taskCreationParams) {
-            this.assertTaskHandlerCapability(request2.method);
+            this.assertTaskHandlerCapability(request3.method);
           }
-        }).then(() => handler(request2, fullExtra)).then(async (result) => {
+        }).then(() => handler(request3, fullExtra)).then(async (result) => {
           if (abortController.signal.aborted) {
             return;
           }
           const response = {
             result,
             jsonrpc: "2.0",
-            id: request2.id
+            id: request3.id
           };
           if (relatedTaskId && this._taskMessageQueue) {
             await this._enqueueTaskMessage(relatedTaskId, {
@@ -30687,7 +30687,7 @@ var init_protocol = __esm({
           }
           const errorResponse = {
             jsonrpc: "2.0",
-            id: request2.id,
+            id: request3.id,
             error: {
               code: Number.isSafeInteger(error62["code"]) ? error62["code"] : ErrorCode.InternalError,
               message: error62.message ?? "Internal error",
@@ -30704,8 +30704,8 @@ var init_protocol = __esm({
             await capturedTransport?.send(errorResponse);
           }
         }).catch((error62) => this._onerror(new Error(`Failed to send response: ${error62}`))).finally(() => {
-          if (this._requestHandlerAbortControllers.get(request2.id) === abortController) {
-            this._requestHandlerAbortControllers.delete(request2.id);
+          if (this._requestHandlerAbortControllers.get(request3.id) === abortController) {
+            this._requestHandlerAbortControllers.delete(request3.id);
           }
         });
       }
@@ -30809,11 +30809,11 @@ var init_protocol = __esm({
        *
        * @experimental Use `client.experimental.tasks.requestStream()` to access this method.
        */
-      async *requestStream(request2, resultSchema, options) {
+      async *requestStream(request3, resultSchema, options) {
         const { task } = options ?? {};
         if (!task) {
           try {
-            const result = await this.request(request2, resultSchema, options);
+            const result = await this.request(request3, resultSchema, options);
             yield { type: "result", result };
           } catch (error62) {
             yield {
@@ -30825,7 +30825,7 @@ var init_protocol = __esm({
         }
         let taskId;
         try {
-          const createResult = await this.request(request2, CreateTaskResultSchema, options);
+          const createResult = await this.request(request3, CreateTaskResultSchema, options);
           if (createResult.task) {
             taskId = createResult.task.taskId;
             yield { type: "taskCreated", task: createResult.task };
@@ -30858,7 +30858,7 @@ var init_protocol = __esm({
               return;
             }
             const pollInterval = task2.pollInterval ?? this._options?.defaultTaskPollInterval ?? 1e3;
-            await new Promise((resolve8) => setTimeout(resolve8, pollInterval));
+            await new Promise((resolve9) => setTimeout(resolve9, pollInterval));
             options?.signal?.throwIfAborted();
           }
         } catch (error62) {
@@ -30873,9 +30873,9 @@ var init_protocol = __esm({
        *
        * Do not use this method to emit notifications! Use notification() instead.
        */
-      request(request2, resultSchema, options) {
+      request(request3, resultSchema, options) {
         const { relatedRequestId, resumptionToken, onresumptiontoken, task, relatedTask } = options ?? {};
-        return new Promise((resolve8, reject) => {
+        return new Promise((resolve9, reject) => {
           const earlyReject = (error62) => {
             reject(error62);
           };
@@ -30885,9 +30885,9 @@ var init_protocol = __esm({
           }
           if (this._options?.enforceStrictCapabilities === true) {
             try {
-              this.assertCapabilityForMethod(request2.method);
+              this.assertCapabilityForMethod(request3.method);
               if (task) {
-                this.assertTaskCapability(request2.method);
+                this.assertTaskCapability(request3.method);
               }
             } catch (e) {
               earlyReject(e);
@@ -30897,16 +30897,16 @@ var init_protocol = __esm({
           options?.signal?.throwIfAborted();
           const messageId = this._requestMessageId++;
           const jsonrpcRequest = {
-            ...request2,
+            ...request3,
             jsonrpc: "2.0",
             id: messageId
           };
           if (options?.onprogress) {
             this._progressHandlers.set(messageId, options.onprogress);
             jsonrpcRequest.params = {
-              ...request2.params,
+              ...request3.params,
               _meta: {
-                ...request2.params?._meta || {},
+                ...request3.params?._meta || {},
                 progressToken: messageId
               }
             };
@@ -30953,7 +30953,7 @@ var init_protocol = __esm({
               if (!parseResult.success) {
                 reject(parseResult.error);
               } else {
-                resolve8(parseResult.data);
+                resolve9(parseResult.data);
               }
             } catch (error62) {
               reject(error62);
@@ -31110,8 +31110,8 @@ var init_protocol = __esm({
       setRequestHandler(requestSchema, handler) {
         const method = getMethodLiteral(requestSchema);
         this.assertRequestHandlerCapability(method);
-        this._requestHandlers.set(method, (request2, extra) => {
-          const parsed = parseWithCompat(requestSchema, request2);
+        this._requestHandlers.set(method, (request3, extra) => {
+          const parsed = parseWithCompat(requestSchema, request3);
           return Promise.resolve(handler(parsed, extra));
         });
       }
@@ -31215,31 +31215,31 @@ var init_protocol = __esm({
           }
         } catch {
         }
-        return new Promise((resolve8, reject) => {
+        return new Promise((resolve9, reject) => {
           if (signal.aborted) {
             reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
             return;
           }
-          const timeoutId = setTimeout(resolve8, interval);
+          const timeoutId = setTimeout(resolve9, interval);
           signal.addEventListener("abort", () => {
             clearTimeout(timeoutId);
             reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
           }, { once: true });
         });
       }
-      requestTaskStore(request2, sessionId) {
+      requestTaskStore(request3, sessionId) {
         const taskStore = this._taskStore;
         if (!taskStore) {
           throw new Error("No task store configured");
         }
         return {
           createTask: async (taskParams) => {
-            if (!request2) {
+            if (!request3) {
               throw new Error("No request provided");
             }
-            return await taskStore.createTask(taskParams, request2.id, {
-              method: request2.method,
-              params: request2.params
+            return await taskStore.createTask(taskParams, request3.id, {
+              method: request3.method,
+              params: request3.params
             }, sessionId);
           },
           getTask: async (taskId) => {
@@ -34136,20 +34136,20 @@ var require_compile = __commonJS({
     var util_1 = require_util();
     var validate_1 = require_validate();
     var SchemaEnv = class {
-      constructor(env) {
+      constructor(env2) {
         var _a3;
         this.refs = {};
         this.dynamicAnchors = {};
         let schema;
-        if (typeof env.schema == "object")
-          schema = env.schema;
-        this.schema = env.schema;
-        this.schemaId = env.schemaId;
-        this.root = env.root || this;
-        this.baseId = (_a3 = env.baseId) !== null && _a3 !== void 0 ? _a3 : (0, resolve_1.normalizeId)(schema === null || schema === void 0 ? void 0 : schema[env.schemaId || "$id"]);
-        this.schemaPath = env.schemaPath;
-        this.localRefs = env.localRefs;
-        this.meta = env.meta;
+        if (typeof env2.schema == "object")
+          schema = env2.schema;
+        this.schema = env2.schema;
+        this.schemaId = env2.schemaId;
+        this.root = env2.root || this;
+        this.baseId = (_a3 = env2.baseId) !== null && _a3 !== void 0 ? _a3 : (0, resolve_1.normalizeId)(schema === null || schema === void 0 ? void 0 : schema[env2.schemaId || "$id"]);
+        this.schemaPath = env2.schemaPath;
+        this.localRefs = env2.localRefs;
+        this.meta = env2.meta;
         this.$async = schema === null || schema === void 0 ? void 0 : schema.$async;
         this.refs = {};
       }
@@ -34247,7 +34247,7 @@ var require_compile = __commonJS({
       const schOrFunc = root.refs[ref];
       if (schOrFunc)
         return schOrFunc;
-      let _sch = resolve8.call(this, root, ref);
+      let _sch = resolve9.call(this, root, ref);
       if (_sch === void 0) {
         const schema = (_a3 = root.localRefs) === null || _a3 === void 0 ? void 0 : _a3[ref];
         const { schemaId } = this.opts;
@@ -34274,7 +34274,7 @@ var require_compile = __commonJS({
     function sameSchemaEnv(s1, s22) {
       return s1.schema === s22.schema && s1.root === s22.root && s1.baseId === s22.baseId;
     }
-    function resolve8(root, ref) {
+    function resolve9(root, ref) {
       let sch;
       while (typeof (sch = this.refs[ref]) == "string")
         ref = sch;
@@ -34333,15 +34333,15 @@ var require_compile = __commonJS({
           baseId = (0, resolve_1.resolveUrl)(this.opts.uriResolver, baseId, schId);
         }
       }
-      let env;
+      let env2;
       if (typeof schema != "boolean" && schema.$ref && !(0, util_1.schemaHasRulesButRef)(schema, this.RULES)) {
         const $ref = (0, resolve_1.resolveUrl)(this.opts.uriResolver, baseId, schema.$ref);
-        env = resolveSchema.call(this, root, $ref);
+        env2 = resolveSchema.call(this, root, $ref);
       }
       const { schemaId } = this.opts;
-      env = env || new SchemaEnv({ schema, schemaId, root, baseId });
-      if (env.schema !== env.root.schema)
-        return env;
+      env2 = env2 || new SchemaEnv({ schema, schemaId, root, baseId });
+      if (env2.schema !== env2.root.schema)
+        return env2;
       return void 0;
     }
   }
@@ -35104,7 +35104,7 @@ var require_fast_uri = __commonJS({
       }
       return uri;
     }
-    function resolve8(baseURI, relativeURI, options) {
+    function resolve9(baseURI, relativeURI, options) {
       const schemelessOptions = options ? Object.assign({ scheme: "null" }, options) : { scheme: "null" };
       const {
         parsed: baseParsed,
@@ -35137,49 +35137,49 @@ var require_fast_uri = __commonJS({
       schemelessOptions.skipEscape = true;
       return serialize(resolved2, schemelessOptions);
     }
-    function resolveComponent(base, relative4, options, skipNormalization) {
+    function resolveComponent(base, relative5, options, skipNormalization) {
       const target2 = {};
       if (!skipNormalization) {
         base = parse4(serialize(base, options), options);
-        relative4 = parse4(serialize(relative4, options), options);
+        relative5 = parse4(serialize(relative5, options), options);
       }
       options = options || {};
-      if (!options.tolerant && relative4.scheme) {
-        target2.scheme = relative4.scheme;
-        target2.userinfo = relative4.userinfo;
-        target2.host = relative4.host;
-        target2.port = relative4.port;
-        target2.path = removeDotSegments(relative4.path || "");
-        target2.query = relative4.query;
+      if (!options.tolerant && relative5.scheme) {
+        target2.scheme = relative5.scheme;
+        target2.userinfo = relative5.userinfo;
+        target2.host = relative5.host;
+        target2.port = relative5.port;
+        target2.path = removeDotSegments(relative5.path || "");
+        target2.query = relative5.query;
       } else {
-        if (relative4.userinfo !== void 0 || relative4.host !== void 0 || relative4.port !== void 0) {
-          target2.userinfo = relative4.userinfo;
-          target2.host = relative4.host;
-          target2.port = relative4.port;
-          target2.path = removeDotSegments(relative4.path || "");
-          target2.query = relative4.query;
+        if (relative5.userinfo !== void 0 || relative5.host !== void 0 || relative5.port !== void 0) {
+          target2.userinfo = relative5.userinfo;
+          target2.host = relative5.host;
+          target2.port = relative5.port;
+          target2.path = removeDotSegments(relative5.path || "");
+          target2.query = relative5.query;
         } else {
-          if (!relative4.path) {
+          if (!relative5.path) {
             target2.path = base.path;
-            if (relative4.query !== void 0) {
-              target2.query = relative4.query;
+            if (relative5.query !== void 0) {
+              target2.query = relative5.query;
             } else {
               target2.query = base.query;
             }
           } else {
-            if (relative4.path[0] === "/") {
-              target2.path = removeDotSegments(relative4.path);
+            if (relative5.path[0] === "/") {
+              target2.path = removeDotSegments(relative5.path);
             } else {
               if ((base.userinfo !== void 0 || base.host !== void 0 || base.port !== void 0) && !base.path) {
-                target2.path = "/" + relative4.path;
+                target2.path = "/" + relative5.path;
               } else if (!base.path) {
-                target2.path = relative4.path;
+                target2.path = relative5.path;
               } else {
-                target2.path = base.path.slice(0, base.path.lastIndexOf("/") + 1) + relative4.path;
+                target2.path = base.path.slice(0, base.path.lastIndexOf("/") + 1) + relative5.path;
               }
               target2.path = removeDotSegments(target2.path);
             }
-            target2.query = relative4.query;
+            target2.query = relative5.query;
           }
           target2.userinfo = base.userinfo;
           target2.host = base.host;
@@ -35187,7 +35187,7 @@ var require_fast_uri = __commonJS({
         }
         target2.scheme = base.scheme;
       }
-      target2.fragment = relative4.fragment;
+      target2.fragment = relative5.fragment;
       return target2;
     }
     function equal(uriA, uriB, options) {
@@ -35473,7 +35473,7 @@ var require_fast_uri = __commonJS({
     var fastUri = {
       SCHEMES,
       normalize,
-      resolve: resolve8,
+      resolve: resolve9,
       resolveComponent,
       equal,
       serialize,
@@ -36139,8 +36139,8 @@ var require_ref = __commonJS({
       schemaType: "string",
       code(cxt) {
         const { gen, schema: $ref, it } = cxt;
-        const { baseId, schemaEnv: env, validateName, opts, self } = it;
-        const { root } = env;
+        const { baseId, schemaEnv: env2, validateName, opts, self } = it;
+        const { root } = env2;
         if (($ref === "#" || $ref === "#/") && baseId === root.baseId)
           return callRootRef();
         const schOrEnv = compile_1.resolveRef.call(self, root, baseId, $ref);
@@ -36150,8 +36150,8 @@ var require_ref = __commonJS({
           return callValidate(schOrEnv);
         return inlineRefSchema(schOrEnv);
         function callRootRef() {
-          if (env === root)
-            return callRef(cxt, validateName, env, env.$async);
+          if (env2 === root)
+            return callRef(cxt, validateName, env2, env2.$async);
           const rootName = gen.scopeValue("root", { ref: root });
           return callRef(cxt, (0, codegen_1._)`${rootName}.validate`, root, root.$async);
         }
@@ -36181,14 +36181,14 @@ var require_ref = __commonJS({
     exports.getValidate = getValidate;
     function callRef(cxt, v, sch, $async) {
       const { gen, it } = cxt;
-      const { allErrors, schemaEnv: env, opts } = it;
+      const { allErrors, schemaEnv: env2, opts } = it;
       const passCxt = opts.passContext ? names_1.default.this : codegen_1.nil;
       if ($async)
         callAsyncRef();
       else
         callSyncRef();
       function callAsyncRef() {
-        if (!env.$async)
+        if (!env2.$async)
           throw new Error("async schema referenced by sync schema");
         const valid = gen.let("valid");
         gen.try(() => {
@@ -38688,8 +38688,8 @@ var init_client = __esm({
        *
        * @experimental
        */
-      requestStream(request2, resultSchema, options) {
-        return this._client.requestStream(request2, resultSchema, options);
+      requestStream(request3, resultSchema, options) {
+        return this._client.requestStream(request3, resultSchema, options);
       }
     };
   }
@@ -38869,8 +38869,8 @@ var init_client2 = __esm({
         }
         const method = methodValue;
         if (method === "elicitation/create") {
-          const wrappedHandler = async (request2, extra) => {
-            const validatedRequest = safeParse3(ElicitRequestSchema, request2);
+          const wrappedHandler = async (request3, extra) => {
+            const validatedRequest = safeParse3(ElicitRequestSchema, request3);
             if (!validatedRequest.success) {
               const errorMessage = validatedRequest.error instanceof Error ? validatedRequest.error.message : String(validatedRequest.error);
               throw new McpError(ErrorCode.InvalidParams, `Invalid elicitation request: ${errorMessage}`);
@@ -38884,7 +38884,7 @@ var init_client2 = __esm({
             if (params.mode === "url" && !supportsUrlMode) {
               throw new McpError(ErrorCode.InvalidParams, "Client does not support URL-mode elicitation requests");
             }
-            const result = await Promise.resolve(handler(request2, extra));
+            const result = await Promise.resolve(handler(request3, extra));
             if (params.task) {
               const taskValidationResult = safeParse3(CreateTaskResultSchema, result);
               if (!taskValidationResult.success) {
@@ -38913,14 +38913,14 @@ var init_client2 = __esm({
           return super.setRequestHandler(requestSchema, wrappedHandler);
         }
         if (method === "sampling/createMessage") {
-          const wrappedHandler = async (request2, extra) => {
-            const validatedRequest = safeParse3(CreateMessageRequestSchema, request2);
+          const wrappedHandler = async (request3, extra) => {
+            const validatedRequest = safeParse3(CreateMessageRequestSchema, request3);
             if (!validatedRequest.success) {
               const errorMessage = validatedRequest.error instanceof Error ? validatedRequest.error.message : String(validatedRequest.error);
               throw new McpError(ErrorCode.InvalidParams, `Invalid sampling request: ${errorMessage}`);
             }
             const { params } = validatedRequest.data;
-            const result = await Promise.resolve(handler(request2, extra));
+            const result = await Promise.resolve(handler(request3, extra));
             if (params.task) {
               const taskValidationResult = safeParse3(CreateTaskResultSchema, result);
               if (!taskValidationResult.success) {
@@ -39350,12 +39350,12 @@ var require_isexe = __commonJS({
         if (typeof Promise !== "function") {
           throw new TypeError("callback not provided");
         }
-        return new Promise(function(resolve8, reject) {
+        return new Promise(function(resolve9, reject) {
           isexe(path, options || {}, function(er, is) {
             if (er) {
               reject(er);
             } else {
-              resolve8(is);
+              resolve9(is);
             }
           });
         });
@@ -39421,27 +39421,27 @@ var require_which = __commonJS({
         opt = {};
       const { pathEnv, pathExt, pathExtExe } = getPathInfo(cmd2, opt);
       const found = [];
-      const step2 = (i) => new Promise((resolve8, reject) => {
+      const step2 = (i) => new Promise((resolve9, reject) => {
         if (i === pathEnv.length)
-          return opt.all && found.length ? resolve8(found) : reject(getNotFoundError(cmd2));
+          return opt.all && found.length ? resolve9(found) : reject(getNotFoundError(cmd2));
         const ppRaw = pathEnv[i];
         const pathPart = /^".*"$/.test(ppRaw) ? ppRaw.slice(1, -1) : ppRaw;
         const pCmd = path.join(pathPart, cmd2);
         const p = !pathPart && /^\.[\\\/]/.test(cmd2) ? cmd2.slice(0, 2) + pCmd : pCmd;
-        resolve8(subStep(p, i, 0));
+        resolve9(subStep(p, i, 0));
       });
-      const subStep = (p, i, ii) => new Promise((resolve8, reject) => {
+      const subStep = (p, i, ii) => new Promise((resolve9, reject) => {
         if (ii === pathExt.length)
-          return resolve8(step2(i + 1));
+          return resolve9(step2(i + 1));
         const ext = pathExt[ii];
         isexe(p + ext, { pathExt: pathExtExe }, (er, is) => {
           if (!er && is) {
             if (opt.all)
               found.push(p + ext);
             else
-              return resolve8(p + ext);
+              return resolve9(p + ext);
           }
-          return resolve8(subStep(p, i, ii + 1));
+          return resolve9(subStep(p, i, ii + 1));
         });
       });
       return cb ? step2(0).then((res) => cb(null, res), cb) : step2(0);
@@ -39505,7 +39505,7 @@ var require_resolveCommand = __commonJS({
     var which = require_which();
     var getPathKey = require_path_key();
     function resolveCommandAttempt(parsed, withoutPathExt) {
-      const env = parsed.options.env || process.env;
+      const env2 = parsed.options.env || process.env;
       const cwd = process.cwd();
       const hasCustomCwd = parsed.options.cwd != null;
       const shouldSwitchCwd = hasCustomCwd && process.chdir !== void 0 && !process.chdir.disabled;
@@ -39518,7 +39518,7 @@ var require_resolveCommand = __commonJS({
       let resolved2;
       try {
         resolved2 = which.sync(parsed.command, {
-          path: env[getPathKey({ env })],
+          path: env2[getPathKey({ env: env2 })],
           pathExt: withoutPathExt ? path.delimiter : void 0
         });
       } catch (e) {
@@ -39733,7 +39733,7 @@ var require_cross_spawn = __commonJS({
     var cp = __require("child_process");
     var parse4 = require_parse();
     var enoent = require_enoent();
-    function spawn8(command, args2, options) {
+    function spawn9(command, args2, options) {
       const parsed = parse4(command, args2, options);
       const spawned = cp.spawn(parsed.command, parsed.args, parsed.options);
       enoent.hookChildProcess(spawned, parsed);
@@ -39745,8 +39745,8 @@ var require_cross_spawn = __commonJS({
       result.error = result.error || enoent.verifyENOENTSync(result.status, parsed);
       return result;
     }
-    module.exports = spawn8;
-    module.exports.spawn = spawn8;
+    module.exports = spawn9;
+    module.exports.spawn = spawn9;
     module.exports.sync = spawnSync7;
     module.exports._parse = parse4;
     module.exports._enoent = enoent;
@@ -39800,7 +39800,7 @@ var init_stdio = __esm({
 import process2 from "node:process";
 import { PassThrough } from "node:stream";
 function getDefaultEnvironment() {
-  const env = {};
+  const env2 = {};
   for (const key of DEFAULT_INHERITED_ENV_VARS) {
     const value = process2.env[key];
     if (value === void 0) {
@@ -39809,9 +39809,9 @@ function getDefaultEnvironment() {
     if (value.startsWith("()")) {
       continue;
     }
-    env[key] = value;
+    env2[key] = value;
   }
-  return env;
+  return env2;
 }
 var import_cross_spawn, DEFAULT_INHERITED_ENV_VARS, StdioClientTransport;
 var init_stdio2 = __esm({
@@ -39851,7 +39851,7 @@ var init_stdio2 = __esm({
         if (this._process) {
           throw new Error("StdioClientTransport already started! If using Client class, note that connect() calls start() automatically.");
         }
-        return new Promise((resolve8, reject) => {
+        return new Promise((resolve9, reject) => {
           this._process = (0, import_cross_spawn.default)(this._serverParams.command, this._serverParams.args ?? [], {
             // merge default env with server env because mcp server needs some env vars
             env: {
@@ -39868,7 +39868,7 @@ var init_stdio2 = __esm({
             this.onerror?.(error62);
           });
           this._process.on("spawn", () => {
-            resolve8();
+            resolve9();
           });
           this._process.on("close", (_code) => {
             this._process = void 0;
@@ -39933,22 +39933,22 @@ var init_stdio2 = __esm({
         if (this._process) {
           const processToClose = this._process;
           this._process = void 0;
-          const closePromise = new Promise((resolve8) => {
+          const closePromise = new Promise((resolve9) => {
             processToClose.once("close", () => {
-              resolve8();
+              resolve9();
             });
           });
           try {
             processToClose.stdin?.end();
           } catch {
           }
-          await Promise.race([closePromise, new Promise((resolve8) => setTimeout(resolve8, 2e3).unref())]);
+          await Promise.race([closePromise, new Promise((resolve9) => setTimeout(resolve9, 2e3).unref())]);
           if (processToClose.exitCode === null) {
             try {
               processToClose.kill("SIGTERM");
             } catch {
             }
-            await Promise.race([closePromise, new Promise((resolve8) => setTimeout(resolve8, 2e3).unref())]);
+            await Promise.race([closePromise, new Promise((resolve9) => setTimeout(resolve9, 2e3).unref())]);
           }
           if (processToClose.exitCode === null) {
             try {
@@ -39960,15 +39960,15 @@ var init_stdio2 = __esm({
         this._readBuffer.clear();
       }
       send(message) {
-        return new Promise((resolve8) => {
+        return new Promise((resolve9) => {
           if (!this._process?.stdin) {
             throw new Error("Not connected");
           }
           const json2 = serializeMessage(message);
           if (this._process.stdin.write(json2)) {
-            resolve8();
+            resolve9();
           } else {
-            this._process.stdin.once("drain", resolve8);
+            this._process.stdin.once("drain", resolve9);
           }
         });
       }
@@ -40017,8 +40017,8 @@ function toolServers(cfg) {
 }
 function clientFor(s3, name) {
   const own3 = Object.fromEntries(Object.entries(s3.env ?? {}).map(([k, v]) => [k, expand(String(v))]));
-  const env = Object.fromEntries(Object.entries({ ...process.env, ...own3 }).filter((x) => x[1] !== void 0));
-  return new McpClient([expand(s3.command), ...(s3.args ?? []).map(expand)], env, name);
+  const env2 = Object.fromEntries(Object.entries({ ...process.env, ...own3 }).filter((x) => x[1] !== void 0));
+  return new McpClient([expand(s3.command), ...(s3.args ?? []).map(expand)], env2, name);
 }
 var sessionLost, readOnlyTool, LostResponse, McpClient, cliConfigPath, lastRead, expand;
 var init_mcp_client = __esm({
@@ -40053,9 +40053,9 @@ var init_mcp_client = __esm({
       // The catalog's hook: a server that says its tool list changed is listed again (#17, design §2).
       static onListChanged;
       // env: the whole environment for the server, when its config names variables of its own. name: the server's name in the config.
-      constructor(command, env, name) {
+      constructor(command, env2, name) {
         this.command = command;
-        this.env = env;
+        this.env = env2;
         this.name = name;
       }
       // One connection, shared by calls that start together; two connects on one client throw.
@@ -40066,6 +40066,15 @@ var init_mcp_client = __esm({
           this.client.setNotificationHandler(ToolListChangedNotificationSchema, async () => {
             _McpClient.onListChanged?.(name);
           });
+        }
+        if (!this.connecting) {
+          const c = this.client;
+          c.onclose = () => {
+            if (this.client === c) {
+              this.client = new Client({ name: "delegate", version: "0.1.0" });
+              this.connecting = void 0;
+            }
+          };
         }
         this.connecting ??= this.client.connect(new StdioClientTransport({ command: cmd2, args: rest2, stderr: "pipe", ...this.env ? { env: this.env } : {} })).catch((e) => {
           this.connecting = void 0;
@@ -40116,6 +40125,14 @@ var init_mcp_client = __esm({
         const text3 = r.content?.map((c) => c.text ?? "").join("") ?? "";
         if (r.isError) throw new Error(`${tool} failed: ${text3.slice(0, 300)}`);
         return parseLoose(text3, r.structuredContent);
+      }
+      // The server's own words, as a model reads them: the resident host's tool proxies return this (#19).
+      async callText(tool, args2) {
+        const r = await this.request(tool, args2);
+        return { text: r.content?.map((c) => c.text ?? "").join("\n") ?? "", error: !!r.isError };
+      }
+      async ready() {
+        await this.connect();
       }
       // The tool's own input schema, read once: a change whose arguments it would reject is never called (bug 10-23 E16).
       schemas;
@@ -41194,12 +41211,12 @@ function pidAlive(pid) {
     return e.code === "EPERM";
   }
 }
-function closeDead(root, machine2, alive3 = pidAlive) {
+function closeDead(root, machine2, alive4 = pidAlive) {
   const d = dirs(root).sessions;
   let n = 0;
   for (const f of listJson2(d)) {
     const s3 = readJson2(join12(d, f));
-    if (!s3 || s3.v !== V || s3.machine !== machine2 || s3.open === false || !s3.pid || alive3(s3.pid)) continue;
+    if (!s3 || s3.v !== V || s3.machine !== machine2 || s3.open === false || !s3.pid || alive4(s3.pid)) continue;
     const again = readJson2(join12(d, f));
     if (again?.pid !== s3.pid || again.open === false) continue;
     writeJsonAtomic(join12(d, f), { ...again, open: false }, machine2);
@@ -42331,9 +42348,9 @@ function voteGate(store2, cfg, wf, effects, todos, checkAsk = true) {
 }
 function addMeEffect(cfg, wf, ref) {
   if (!cfg.owner.upn) return void 0;
-  const call = { tool: "ado-repo_pull_request_write", args: { action: "update_reviewers", project: ref.project, repositoryId: ref.repo, pullRequestId: ref.id, reviewerIds: [cfg.owner.upn], reviewerAction: "add" } };
-  if (!allows(cfg.agent.effectTools, call)) return void 0;
-  return { system: "azure devops", action: "add reviewer", target: `PR ${ref.id}`, summary: `Add you as an optional reviewer on PR ${ref.id}`, call };
+  const call2 = { tool: "ado-repo_pull_request_write", args: { action: "update_reviewers", project: ref.project, repositoryId: ref.repo, pullRequestId: ref.id, reviewerIds: [cfg.owner.upn], reviewerAction: "add" } };
+  if (!allows(cfg.agent.effectTools, call2)) return void 0;
+  return { system: "azure devops", action: "add reviewer", target: `PR ${ref.id}`, summary: `Add you as an optional reviewer on PR ${ref.id}`, call: call2 };
 }
 var MAY_REVIEW, norm2, teamCache, REVIEW_ASK, SPLIT_ASK_MS, isReviewJob, roleWhy, isAddMe, groupQuestion;
 var init_review_gate = __esm({
@@ -43768,19 +43785,19 @@ async function retryOwnerReplies(store2, cfg, before = Infinity) {
     }
     let checked2 = true;
     for (const { message, items: items2 } of groups2.values()) {
-      const current = items2.map((item2) => store2.workflow(item2.id)).filter((item2) => !!item2 && item2.state !== "done" && items2.some((previous) => previous.id === item2.id && previous.lastMsgId === item2.lastMsgId));
-      if (!current.length) continue;
+      const current2 = items2.map((item2) => store2.workflow(item2.id)).filter((item2) => !!item2 && item2.state !== "done" && items2.some((previous) => previous.id === item2.id && previous.lastMsgId === item2.lastMsgId));
+      if (!current2.length) continue;
       const text3 = message.ownerReply?.text ?? message.text;
       const raw = { id: message.id, at: message.at, from: message.from, body: text3, html: false };
-      const result = await ownerReplies(store2, cfg, raw, text3, current);
-      for (const item2 of current) if (result.has(item2.id)) {
+      const result = await ownerReplies(store2, cfg, raw, text3, current2);
+      for (const item2 of current2) if (result.has(item2.id)) {
         const latest2 = store2.workflow(item2.id);
         if (latest2 && latest2.state !== "done" && latest2.lastMsgId === item2.lastMsgId) {
           if (result.get(item2.id)) recordOwnerReply(store2, latest2, message, true, text3);
           else rememberOwnerReply(store2, latest2, message, false, text3);
         }
       }
-      if (current.some((item2) => !result.has(item2.id))) {
+      if (current2.some((item2) => !result.has(item2.id))) {
         checked2 = false;
         break;
       }
@@ -46047,11 +46064,11 @@ async function voteNow(store2, cfg, w, effects, probe) {
   const me = cfg.owner.name.trim().toLowerCase(), named = st.votes.filter((v) => v.name.trim().toLowerCase() === me);
   const vote = named.length === 1 && Object.values(VOTES).includes(named[0].vote) ? named[0].vote : void 0;
   clearResetVotes(store2, w, ref.id, st, vote);
-  const current = { vote, head: st.head };
-  if (named.length === 1 && votes.every((e) => sameVote(named[0].vote, voteValue(e.call)))) return { effects: rest2, why: `you already voted on PR ${ref.id}`, ...current };
-  if (votes.some((e) => !sameHead(st.head, e.head))) return { effects: rest2, again: reviewAgain(w.code, `PR ${ref.id} changed since your review (new commits).`), ...current };
+  const current2 = { vote, head: st.head };
+  if (named.length === 1 && votes.every((e) => sameVote(named[0].vote, voteValue(e.call)))) return { effects: rest2, why: `you already voted on PR ${ref.id}`, ...current2 };
+  if (votes.some((e) => !sameHead(st.head, e.head))) return { effects: rest2, again: reviewAgain(w.code, `PR ${ref.id} changed since your review (new commits).`), ...current2 };
   const facts = factsOf(st);
-  return { effects: effects.map((e) => isVote(e.call) ? { ...e, pr: facts } : e), ...current };
+  return { effects: effects.map((e) => isVote(e.call) ? { ...e, pr: facts } : e), ...current2 };
 }
 function prMoved(st, e) {
   const was = e.pr, now = factsOf(st);
@@ -46229,18 +46246,18 @@ function openUrl(url2, run2 = spawn3) {
   const [cmd2, args2] = process.platform === "darwin" ? ["open", [url2]] : process.platform === "win32" ? ["cmd.exe", ["/d", "/s", "/c", `start "" "${url2}"`]] : ["xdg-open", [url2]];
   run2(cmd2, args2, { detached: true, stdio: "ignore", windowsVerbatimArguments: process.platform === "win32" }).unref();
 }
-function openWindow(title, argv, env, run2 = spawn3) {
+function openWindow(title, argv, env2, run2 = spawn3) {
   noTestWindow("window", title);
   if (process.platform === "darwin") {
     const file4 = join18(tmpdir2(), `delegate-${title.replace(/\W+/g, "-")}-${process.pid}.command`);
-    const lines = ["#!/bin/sh", ...Object.entries(env).map(([k, v]) => `export ${k}=${shq(v)}`), `rm -f ${shq(file4)}`, `exec ${argv.map(shq).join(" ")}`];
+    const lines = ["#!/bin/sh", ...Object.entries(env2).map(([k, v]) => `export ${k}=${shq(v)}`), `rm -f ${shq(file4)}`, `exec ${argv.map(shq).join(" ")}`];
     writeFileSync10(file4, lines.join("\n") + "\n", { mode: 493 });
     run2("open", [file4], { detached: true, stdio: "ignore" }).unref();
     return;
   }
   if (process.platform === "win32") {
     const cmd2 = `start "${title}" ${argv.map((a) => `"${a}"`).join(" ")}`;
-    run2("cmd.exe", ["/d", "/s", "/c", cmd2], { windowsVerbatimArguments: true, detached: true, stdio: "ignore", env: { ...process.env, ...env } }).unref();
+    run2("cmd.exe", ["/d", "/s", "/c", cmd2], { windowsVerbatimArguments: true, detached: true, stdio: "ignore", env: { ...process.env, ...env2 } }).unref();
     return;
   }
   throw new Error(`Opening a window is not supported on ${process.platform}. Run: ${argv.join(" ")}`);
@@ -46362,7 +46379,7 @@ var init_ledger = __esm({
 });
 
 // src/runner/change.ts
-async function makeChange(store2, jobId, runId, index, call, probe) {
+async function makeChange(store2, jobId, runId, index, call2, probe) {
   const job = store2.job(jobId), e = job?.result?.effects[index];
   if (!job || !e) return { error: `There is no change ${index}.` };
   if (e.done) return { ref: e.done.ref };
@@ -46419,7 +46436,7 @@ async function makeChange(store2, jobId, runId, index, call, probe) {
   store2.saveChange(jobId, runId, index, { call: key, state: "calling", at: at3() });
   ledger({ state: "calling" });
   try {
-    const r = await call(to[0], to[1], toolShape(e.call).args);
+    const r = await call2(to[0], to[1], toolShape(e.call).args);
     const ref = String(r?.id ?? "done");
     store2.saveChange(jobId, runId, index, { call: key, state: "done", ref, at: at3() });
     ledger({ state: "done", ref });
@@ -46907,7 +46924,7 @@ function settleCompleted(store2, procs = realProcs) {
     store2.log({ event: "work-completed", code: wf.code, reason: "persisted completion receipt" });
   }
 }
-async function executeDirect(store2, src, cfg, procs, probe, call = mcpCaller(cfg)) {
+async function executeDirect(store2, src, cfg, procs, probe, call2 = mcpCaller(cfg)) {
   let n = 0;
   for (const job of store2.jobs().filter((j) => j.state === "queued" && j.purpose === "execute" && !store2.openWindow(j.id))) {
     if (store2.control().paused || store2.control().stopped) break;
@@ -46919,7 +46936,7 @@ async function executeDirect(store2, src, cfg, procs, probe, call = mcpCaller(cf
     Object.assign(job, { state: "running", error: void 0, retry: void 0, run: { id: runId, pid: 0, startedAt: (/* @__PURE__ */ new Date()).toISOString(), machine: store2.machine, purpose: "execute", asks: job.asks.length, direct: true } });
     store2.saveJob(job);
     store2.log({ event: "job-start", job: job.id, key: job.key, purpose: "execute", runId, direct: true });
-    for (const i of todo) await makeChange(store2, job.id, runId, i, call, probe);
+    for (const i of todo) await makeChange(store2, job.id, runId, i, call2, probe);
     store2.writeReport({ workflowId: job.id, intent: "other", state: "done", summary: "Made the approved changes" }, runId);
     await finishExecute(store2, src, cfg, job, procs, probe);
     store2.archiveReport(job.id, runId);
@@ -49378,6 +49395,872 @@ var init_catalog = __esm({
   }
 });
 
+// src/adapters/demo.ts
+import { existsSync as existsSync24, readFileSync as readFileSync19 } from "node:fs";
+import { join as join26 } from "node:path";
+var DemoSource, demoRun, demoProcs;
+var init_demo = __esm({
+  "src/adapters/demo.ts"() {
+    "use strict";
+    init_fs();
+    DemoSource = class {
+      selfChatId = "self";
+      file;
+      constructor(root) {
+        this.file = join26(root, "demo", "chats.json");
+      }
+      all() {
+        return existsSync24(this.file) ? JSON.parse(readFileSync19(this.file, "utf8")) : {};
+      }
+      save(c) {
+        writeJson(this.file, c, "demo");
+      }
+      post(chatId, from, body) {
+        const c = this.all();
+        const last2 = Object.values(c).flat().reduce((m, x) => BigInt(x.id) > m ? BigInt(x.id) : m, BigInt(Date.now()));
+        const id = String(last2 + 1n);
+        c[chatId] = [...c[chatId] ?? [], { id, at: (/* @__PURE__ */ new Date()).toISOString(), from, html: false, body }];
+        this.save(c);
+        return id;
+      }
+      async newMessages(chatId, afterId, sinceIso) {
+        const msgs = this.all()[chatId] ?? [];
+        const newest2 = msgs.at(-1)?.id ?? afterId;
+        const out = afterId ? msgs.filter((m) => BigInt(m.id) > BigInt(afterId)) : sinceIso ? msgs.filter((m) => m.at > sinceIso) : [];
+        return { msgs: out, newest: newest2, truncated: false };
+      }
+      async recentChats() {
+        return Object.entries(this.all()).filter(([id]) => id !== "self").map(([id, m]) => ({ id, name: "Team chat (demo)", lastAt: m.at(-1)?.at ?? "" }));
+      }
+      async recent(chatId, n) {
+        return (this.all()[chatId] ?? []).slice(-n);
+      }
+      async send(chatId, text3) {
+        return { msgId: this.post(chatId, { id: "owner", name: "You" }, text3) };
+      }
+      async sendSelf(text3) {
+        return { msgId: this.post("self", { id: "owner", name: "You" }, text3) };
+      }
+      async deleteMessage(chatId, msgId) {
+        const c = this.all();
+        c[chatId] = (c[chatId] ?? []).filter((m) => m.id !== msgId);
+        this.save(c);
+      }
+      async editMessage(chatId, msgId, text3) {
+        const c = this.all();
+        const m = c[chatId]?.find((x) => x.id === msgId);
+        if (m) m.body = text3;
+        this.save(c);
+      }
+      async presence() {
+        return { availability: "Offline" };
+      }
+      // The pretend chat has no guests.
+      async members() {
+        return { guests: false };
+      }
+      async close() {
+      }
+    };
+    demoRun = (store2) => async (_cfg, i) => {
+      const ask = i.prompt.split("\n").filter((l) => l.startsWith(">> [id:")).join(" ");
+      const answered = i.prompt.match(/The owner answered your question: "([^"]*)"/)?.[1];
+      const asked = i.prompt.match(/The owner asks: "([^"]*)"/)?.[1];
+      const r = asked ? { workflowId: i.workflowId, intent: "other", state: "needs_human", summary: "Answered", answer: /ring|rollout|banner/i.test(asked) ? "Ring 1 started Oct 17 and needs one clean week, so ring 3 can start Oct 24 at the earliest." : "The knowledge says admin policy and sensitivity labels lock those options. Priya's team is under the strict policy since Oct 10.", reply: { text: "", commitment: false, sources: [{ ref: "card:meeting-options/architecture#demo", tier: "card", origin: "extracted" }] } } : /shall we meet|meet at|quick call|sync up/i.test(ask) && !answered ? {
+        workflowId: i.workflowId,
+        intent: "other",
+        state: "needs_human",
+        summary: "Arun wants to meet at 3",
+        question: "Arun wants to meet. Do you?",
+        reply: { text: "____", commitment: true, sources: [] },
+        meeting: { subject: "API changes", start: new Date((/* @__PURE__ */ new Date()).setHours(15, 0, 0, 0)).toISOString(), minutes: 30, attendees: ["Arun", "You"] },
+        context: [{ label: "Conflict", text: 'You have "1:1 with Ana" at 3:00 to 3:30 PM.', tone: "warn" }, { label: "Could be async", text: "He listed two questions in the thread.", tone: "info" }],
+        choices: { prompt: "Arun wants to meet. Do you?", other: true, options: [
+          { label: "Meet at 3:00", note: "Conflicts with 1:1 with Ana", reply: "Sounds good, sent an invite for 3.", effects: [{ system: "calendar", action: "create_event", target: "Arun", summary: "Invite: API changes \xB7 today 3:00 to 3:30 PM", call: { tool: "demo-calendar", args: { subject: "API changes", start: "15:00" } } }] },
+          { label: "Meet at 4:00 instead", note: "First free slot today", reply: "3 doesn't work for me, sent an invite for 4.", effects: [{ system: "calendar", action: "create_event", target: "Arun", summary: "Invite: API changes \xB7 today 4:00 to 4:30 PM", call: { tool: "demo-calendar", args: { subject: "API changes", start: "16:00" } } }] },
+          { label: "Answer async", note: "Reply without a meeting", reply: "Can we do this async? Send me the two questions and I'll answer today." }
+        ] }
+      } : /flag a or b|which flag|option a/i.test(ask) && !answered ? {
+        workflowId: i.workflowId,
+        intent: "release_deploy",
+        state: "needs_human",
+        summary: "Ana asks which flag to use",
+        question: "Flag A or B for the rollout?",
+        reply: { text: "____", commitment: true, sources: [] },
+        choices: { prompt: "Which flag?", other: true, options: [
+          { label: "Flag A (per ring)", note: "Vikram prefers it", reply: "Use flag A, so we can control it per ring." },
+          { label: "Flag B (global)", reply: "Use flag B; one switch is simpler for this change." }
+        ] }
+      } : answered ? { workflowId: i.workflowId, intent: "commitment_decision", state: "needs_human", summary: `Ship date: ${answered}`, reply: { text: `We plan to ship on ${answered}.`, commitment: true, sources: [] } } : /review|recheck/i.test(ask) ? { workflowId: i.workflowId, intent: "pr_review", state: "needs_human", summary: "Needs a review", job: { key: "pr:demo/web/1234", goal: "Review PR 1234" } } : /thanks|thank you/i.test(ask) ? { workflowId: i.workflowId, intent: "none", state: "done", summary: "Just a thank-you" } : /ship|date|when/i.test(ask) ? { workflowId: i.workflowId, intent: "commitment_decision", state: "needs_human", summary: "Asks for a ship date", reply: { text: "We plan to ship on ____.", commitment: true, sources: [] }, question: "Which date can you commit to?" } : { workflowId: i.workflowId, intent: "feature_knowledge", state: "needs_human", summary: "Asks why meeting options are locked", reply: { text: "Some options are set by admin policy or a sensitivity label, so organizers cannot change them.", commitment: false, sources: [{ ref: "card:meeting-options/architecture#demo", tier: "card", origin: "extracted" }, { ref: "https://docs.example.com/meeting-policies", tier: "live", origin: "extracted" }] } };
+      store2.writeReport(r, i.runId);
+      return { exitCode: 0, ms: 1 };
+    };
+    demoProcs = (store2) => ({
+      start: (_cfg, i) => {
+        const change2 = /Approved changes/.test(i.prompt);
+        if (change2) store2.saveChange(i.workflowId, i.runId, 0, { call: "", state: "done", ref: "demo-thread-1", at: (/* @__PURE__ */ new Date()).toISOString() });
+        const r = change2 ? { workflowId: i.workflowId, intent: "other", state: "done", summary: "Posted" } : /Workflow: tracker/.test(i.prompt) ? { workflowId: i.workflowId, intent: "other", state: "needs_human", summary: "Checks are running; 1 approval so far." } : { workflowId: i.workflowId, intent: "pr_review", state: "needs_human", summary: "1 finding: a missing null check in banner.tsx", reply: { text: "Left one comment on PR 1234: a null check in banner.tsx.", commitment: false, sources: [{ ref: "https://dev.azure.com/demo/web/pullrequest/1234", tier: "live", origin: "extracted" }] }, effects: [{ system: "ado", action: "comment", target: "PR 1234", summary: "banner.tsx line 42: check props.user before use", payload: { text: "props.user can be undefined here when the banner loads before sign-in." }, call: { tool: "demo-comment", args: { pullRequestId: 1234, content: "props.user can be undefined here when the banner loads before sign-in." } } }] };
+        store2.writeReport(r, i.runId);
+        return { pid: 1 };
+      },
+      alive: () => false,
+      kill: () => true,
+      openWindow: (title) => {
+        store2.log({ event: "demo-window", title });
+      }
+    });
+  }
+});
+
+// src/adapters/docs.ts
+import { inflateRawSync } from "node:zlib";
+function unzip(buf) {
+  const out = /* @__PURE__ */ new Map();
+  let end = buf.length - 22;
+  while (end >= 0 && buf.readUInt32LE(end) !== 101010256) end--;
+  if (end < 0) throw new Error("Not a zip file");
+  let at3 = buf.readUInt32LE(end + 16);
+  for (let i = buf.readUInt16LE(end + 10); i > 0; i--) {
+    const method = buf.readUInt16LE(at3 + 10), size = buf.readUInt32LE(at3 + 20), n = buf.readUInt16LE(at3 + 28);
+    const name = buf.toString("utf8", at3 + 46, at3 + 46 + n), local2 = buf.readUInt32LE(at3 + 42);
+    const start = local2 + 30 + buf.readUInt16LE(local2 + 26) + buf.readUInt16LE(local2 + 28);
+    const data = buf.subarray(start, start + size);
+    out.set(name, method === 8 ? inflateRawSync(data) : data);
+    at3 += 46 + n + buf.readUInt16LE(at3 + 30) + buf.readUInt16LE(at3 + 32);
+  }
+  return out;
+}
+function docxText(buf) {
+  const xml2 = unzip(buf).get("word/document.xml")?.toString("utf8");
+  if (!xml2) throw new Error("No document text in this file");
+  return xml2.replace(/<w:tab\/>/g, "	").replace(/<\/w:p>/g, "\n").replace(/<[^>]+>/g, "").replace(/&(amp|lt|gt|quot|apos);/g, (_, e) => ENT2[e]).replace(/\n{3,}/g, "\n\n").trim();
+}
+var ENT2, SharePointDocs;
+var init_docs = __esm({
+  "src/adapters/docs.ts"() {
+    "use strict";
+    init_mcp_client();
+    ENT2 = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" };
+    SharePointDocs = class {
+      mcp;
+      constructor(command, mcp = new McpClient(command)) {
+        this.mcp = mcp;
+      }
+      async read(name) {
+        const found = await this.mcp.call("findFileOrFolder", { searchQuery: name.replace(/\.docx$/i, "") });
+        const hit = (found.value ?? []).filter((h) => /\.docx$/i.test(h.name)).sort((a, b) => (b.lastModifiedDateTime ?? "").localeCompare(a.lastModifiedDateTime ?? ""))[0];
+        if (!hit?.parentReference?.driveId) return `No Word document matches "${name}". Try the exact file name.`;
+        const [b64 = ""] = await this.mcp.texts("readSmallBinaryFile", { documentLibraryId: hit.parentReference.driveId, fileId: hit.id });
+        return { name: hit.name, modified: hit.lastModifiedDateTime ?? "", by: hit.lastModifiedBy?.user?.displayName ?? "", text: docxText(Buffer.from(b64.trim(), "base64")) };
+      }
+      close() {
+        return this.mcp.close();
+      }
+    };
+  }
+});
+
+// src/adapters/media.ts
+var HOSTED, hostedPath, HostedImages;
+var init_media = __esm({
+  "src/adapters/media.ts"() {
+    "use strict";
+    init_mcp_client();
+    HOSTED = /^https:\/\/graph\.microsoft\.com\/v1\.0(\/(?:chats|teams)\/[^?#\s]+\/hostedContents\/[^/?#\s]+\/\$value)$/;
+    hostedPath = (link2) => HOSTED.exec(link2)?.[1];
+    HostedImages = class {
+      mcp;
+      tool;
+      constructor(command, tool = "fetch_blob", mcp = new McpClient(command)) {
+        this.mcp = mcp;
+        this.tool = tool;
+      }
+      async read(link2) {
+        const path = hostedPath(link2);
+        if (!path) return "Only images pasted into a Teams message can be opened.";
+        const r = await this.mcp.call(this.tool, { path });
+        if (!r.base64Content) return `The image could not be downloaded (status ${r.statusCode ?? "unknown"}).`;
+        return { data: r.base64Content, type: r.contentType ?? "image/png" };
+      }
+      close() {
+        return this.mcp.close();
+      }
+    };
+  }
+});
+
+// src/adapters/history.ts
+var TeamsHistory;
+var init_history = __esm({
+  "src/adapters/history.ts"() {
+    "use strict";
+    init_mcp_client();
+    TeamsHistory = class {
+      mcp;
+      owner;
+      constructor(cfg, mcp = new McpClient(cfg.source.command)) {
+        this.mcp = mcp;
+        this.owner = cfg.owner.name;
+      }
+      async search(query, o = {}) {
+        const words3 = query.replace(/["()]/g, " ").replace(/\b(AND|OR|NOT)\b/g, " ").replace(/\s+/g, " ").trim();
+        const kql = [o.mine ? `from:"${this.owner}"` : "", words3, o.before ? `sent<=${o.before.slice(0, 10)}` : ""].filter(Boolean).join(" AND ");
+        const r = await this.mcp.call("SearchTeamMessagesQueryParameters", { queryString: kql, from: 0 });
+        const hits = JSON.parse(r.rawResponse ?? "{}").value?.[0]?.hitsContainers?.[0]?.hits ?? [];
+        return hits.filter((h) => h.resource?.createdDateTime && (!o.before || h.resource.createdDateTime < o.before)).slice(0, o.limit ?? 10).map((h) => {
+          const who2 = h.resource.from?.emailAddress?.name ?? "someone";
+          return { at: h.resource.createdDateTime, who: who2, mine: who2 === this.owner, text: (h.summary ?? "").replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim(), link: (h.resource.webLink ?? "").replace(/\?context=.*$/, "") };
+        });
+      }
+      // Every conversation the owner wrote in since a day. The chat list stops at 50; search finds them all
+      // (measured: 158 conversations in 90 days, 145 calls, about 3 minutes). Week by week, so each window pages fully.
+      async conversations(sinceDay, now = /* @__PURE__ */ new Date()) {
+        const day3 = (t2) => new Date(t2).toISOString().slice(0, 10), D = 864e5;
+        const out = /* @__PURE__ */ new Map();
+        for (let last2 = Date.parse(day3(now.getTime())); day3(last2) >= sinceDay; last2 -= 7 * D) {
+          const first3 = Math.max(last2 - 6 * D, Date.parse(sinceDay));
+          for (let from = 0; from < 1e3; from += 25) {
+            const r = await this.mcp.call("SearchTeamMessagesQueryParameters", { queryString: `from:"${this.owner}" AND sent>=${day3(first3)} AND sent<=${day3(last2)}`, from });
+            const c = JSON.parse(r.rawResponse ?? "{}").value?.[0]?.hitsContainers?.[0];
+            for (const h of c?.hits ?? []) {
+              const id = h.resource?.chatId, at3 = h.resource?.createdDateTime ?? "";
+              if (!id) continue;
+              const team = /@thread\.(tacv2|skype)$/.test(id) ? h.resource?.channelIdentity?.teamId : void 0;
+              const o = out.get(id) ?? { id, ...team ? { team } : {}, mine: 0, lastAt: "" };
+              out.set(id, { ...o, mine: o.mine + 1, lastAt: at3 > o.lastAt ? at3 : o.lastAt });
+            }
+            if (!c?.moreResultsAvailable || !c.hits?.length) break;
+          }
+        }
+        return [...out.values()].sort((a, b) => b.mine - a.mine);
+      }
+      close() {
+        return this.mcp.close();
+      }
+    };
+  }
+});
+
+// src/adapters/source-teams.ts
+function toRaw(m) {
+  let replyToId = m.replyToId || void 0;
+  for (const attachment of m.attachments ?? []) {
+    if (replyToId || attachment.contentType !== "messageReference" || !attachment.content) continue;
+    try {
+      const reference = JSON.parse(attachment.content);
+      if (reference && typeof reference === "object" && "messageId" in reference && typeof reference.messageId === "string") replyToId = reference.messageId;
+    } catch (error62) {
+      console.warn("Could not read Teams reply reference:", error62);
+    }
+  }
+  return {
+    id: m.id,
+    at: m.createdDateTime,
+    from: m.from ? { id: m.from.id, name: m.from.displayName } : null,
+    html: m.body?.contentType?.toLowerCase() === "html",
+    body: m.body?.content ?? "",
+    deleted: !!m.deletedDateTime,
+    replyToId,
+    attachments: (m.attachments ?? []).filter((a) => a.contentType !== "messageReference").map((a) => ({ name: a.name ?? "", type: a.contentType ?? "file", url: a.contentUrl ?? void 0 }))
+  };
+}
+function idOf(r) {
+  const o = r;
+  return o.id ?? o.messageId ?? o.message?.id ?? "";
+}
+var DEFAULT_TOOLS, newer, esc3, TeamsSource, squashText;
+var init_source_teams = __esm({
+  "src/adapters/source-teams.ts"() {
+    "use strict";
+    init_mcp_client();
+    init_intake();
+    init_source();
+    init_format();
+    init_channels();
+    init_brand();
+    DEFAULT_TOOLS = { list: "ListChatMessages", send: "SendMessageToChat", sendSelf: "SendMessageToSelf", get: "GetChat", chats: "ListChats", del: "DeleteChatMessage", edit: "UpdateChatMessage", presence: "GetUserPresence", members: "ListChatMembers", message: "GetChatMessage" };
+    newer = (a, b) => BigInt(a) > BigInt(b);
+    esc3 = (s3) => s3.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    TeamsSource = class {
+      mcp;
+      tools;
+      selfChatId;
+      threads;
+      owner;
+      constructor(cfg, mcp = new McpClient(cfg.command), owner2 = "") {
+        this.mcp = mcp;
+        this.threads = new Threads(mcp, owner2);
+        this.owner = owner2;
+        this.tools = { ...DEFAULT_TOOLS, ...cfg.tools };
+        this.selfChatId = cfg.selfChatId;
+      }
+      // Messages newer than afterId (or, with no cursor, newer than sinceIso), oldest first.
+      // With neither, returns [] and the newest ID, so history is never answered.
+      async newMessages(chatId, afterId, sinceIso, o = {}) {
+        const maxPages = o.maxPages ?? 25;
+        if (isThread(chatId)) {
+          const { msgs: all, truncated } = await this.thread(chatId);
+          const newest3 = all.at(-1)?.id ?? afterId;
+          if (!afterId && !sinceIso) return { msgs: [], newest: newest3, truncated: false };
+          const msgs = all.filter((m) => afterId ? newer(m.id, afterId) : m.at > sinceIso);
+          const from = o.stop ? msgs.length - 1 - [...msgs].reverse().findIndex((m) => o.stop(m)) : msgs.length;
+          return { msgs: o.stop && from < msgs.length ? msgs.slice(from) : msgs, newest: newest3, truncated: truncated && !(o.stop && from < msgs.length) };
+        }
+        const out = [];
+        const bounded = !!afterId || !!sinceIso;
+        const isOld = (m) => afterId ? !newer(m.id, afterId) : !!sinceIso && m.createdDateTime <= sinceIso;
+        let nextLink;
+        let reached = false;
+        for (let page2 = 0; page2 < maxPages; page2++) {
+          const r = await this.mcp.call(this.tools.list, nextLink ? { chatId, nextLink, include: "attachments" } : { chatId, top: 20, include: "attachments" });
+          for (const m of r.messages ?? []) {
+            if (isOld(m)) {
+              reached = true;
+              break;
+            }
+            out.push(m);
+            if (o.stop?.(toRaw(m))) {
+              reached = true;
+              break;
+            }
+          }
+          nextLink = r.nextLink ?? r["@odata.nextLink"];
+          if (reached || !bounded || !nextLink) break;
+        }
+        const newest2 = out[0]?.id ?? afterId;
+        if (!bounded) return { msgs: [], newest: newest2, truncated: false };
+        return { msgs: out.reverse().map(toRaw), newest: newest2, truncated: !reached && !!nextLink };
+      }
+      async recentChats() {
+        const r = await this.mcp.call(this.tools.chats, {});
+        return (r.chats ?? []).map((c) => ({ id: c.id, name: c.topic || c.lastMessagePreview?.from || c.id, lastAt: c.lastMessagePreview?.createdDateTime ?? "" }));
+      }
+      // A thread is its start plus its replies, oldest first.
+      async thread(id) {
+        const t2 = parseThread(id);
+        const starts = await this.mcp.call("ListChannelMessages", { teamId: t2.teamId, channelId: t2.channelId, top: 50, include: "attachments" });
+        const root = (starts.messages ?? []).find((m) => m.id === t2.rootId);
+        const { msgs: replies, truncated } = await this.threads.replies(t2.teamId, t2.channelId, t2.rootId);
+        return { msgs: [...root ? [root] : [], ...replies].map(toRaw).sort((a, b) => newer(a.id, b.id) ? 1 : -1), truncated };
+      }
+      // Channel threads where the owner started, posted, or was mentioned, for discovery (owner question 2).
+      async channelThreads(cache2, sinceIso, channels = []) {
+        const c = await this.threads.freshness(await this.threads.discover(sinceIso, cache2, /* @__PURE__ */ new Date(), channels));
+        return { list: c.threads.map((t2) => ({ id: t2.id, name: `${t2.name} (thread)`, lastAt: c.last[t2.id]?.at ?? t2.hitAt, mine: t2.mine })), cache: c };
+      }
+      async recent(chatId, n) {
+        if (isThread(chatId)) return (await this.thread(chatId)).msgs.slice(-n);
+        const r = await this.mcp.call(this.tools.list, { chatId, top: n, include: "attachments" });
+        return (r.messages ?? []).reverse().map(toRaw);
+      }
+      // One message, even an old one, and the messages after it, oldest first (a missed link from before the install).
+      async around(chatId, msgId, max = 300) {
+        if (isThread(chatId)) {
+          const t2 = (await this.thread(chatId)).msgs, i = t2.findIndex((m) => m.id === msgId);
+          return i < 0 ? { after: [] } : { msg: t2[i], after: t2.slice(i + 1) };
+        }
+        const seen = [];
+        let p = await this.mcp.call(this.tools.list, { chatId, top: 50, include: "attachments" });
+        for (let i = 0; i < Math.ceil(max / 50); i++) {
+          seen.push(...p.messages ?? []);
+          const next2 = p.nextLink ?? p["@odata.nextLink"];
+          if (seen.some((m) => m.id === msgId) || !next2) break;
+          p = await this.mcp.call(this.tools.list, { chatId, top: 50, nextLink: next2 });
+        }
+        const all = seen.map(toRaw).sort((a, b) => newer(a.id, b.id) ? 1 : -1);
+        const at3 = all.findIndex((m) => m.id === msgId);
+        if (at3 >= 0) return { msg: all[at3], after: all.slice(at3 + 1) };
+        const one = await this.mcp.call(this.tools.message, { chatId, messageId: msgId }).catch(() => void 0);
+        return { msg: one?.id ? toRaw(one) : void 0, after: all.filter((m) => newer(m.id, msgId)) };
+      }
+      async send(chatId, text3, o = {}) {
+        const mentions = (o.mentions ?? []).flatMap((m) => {
+          const n = [m.name, m.name.split(" ")[0]].find((x) => new RegExp(`@${x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\p{L}])`, "u").test(text3));
+          return n ? [{ displayName: n, id: m.id, type: "user" }] : [];
+        });
+        const quote = o.replyTo ? `<blockquote><b>${esc3(o.replyTo.name)}</b>: ${esc3(o.replyTo.text.replace(/\s+/g, " ").slice(0, 200))}${o.replyTo.text.length > 200 ? "\u2026" : ""}</blockquote>` : "";
+        const extra = mentions.length ? { mentions: JSON.stringify(mentions) } : {};
+        if (isThread(chatId)) {
+          const t2 = parseThread(chatId), content2 = mdToHtml(text3);
+          return this.posted(chatId, content2, () => this.mcp.call("ReplyToChannelMessage", { teamId: t2.teamId, channelId: t2.channelId, messageId: t2.rootId, content: content2, contentType: "html" }));
+        }
+        const content = quote + mdToHtml(text3);
+        return this.posted(chatId, mdToHtml(text3), () => this.mcp.call(this.tools.send, { chatId, content, contentType: "html", ...extra }));
+      }
+      // A send whose answer was lost is never sent again: the chat is read back, and the message found there is the one sent.
+      // Not found, it may still land, so the caller holds it as not sure (bug 10-23 R4: a rule reply posted twice).
+      async posted(chatId, words3, post) {
+        const started2 = Date.now();
+        try {
+          return { msgId: idOf(await post()) };
+        } catch (e) {
+          if (!(e instanceof LostResponse)) throw e;
+          const want = squashText(words3), since = started2 - 12e4;
+          let recent = [];
+          try {
+            if (isThread(chatId)) {
+              const t2 = parseThread(chatId), p = await this.mcp.call("ListChannelMessageReplies", { teamId: t2.teamId, channelId: t2.channelId, messageId: t2.rootId, maxReplies: 20 });
+              recent = p.replies ?? p.messages ?? p.value ?? [];
+            } else recent = (await this.mcp.call(this.tools.list, { chatId, top: 20 })).messages ?? [];
+          } catch (read3) {
+            throw new SendUncertain(`${e.message}; reading the chat back failed too (${String(read3).slice(0, 120)})`);
+          }
+          const hit = recent.filter((m) => !m.deletedDateTime && Date.parse(m.createdDateTime) >= since && !!want && squashText(m.body?.content ?? "").endsWith(want)).sort((a, b) => newer(a.id, b.id) ? -1 : 1)[0];
+          if (hit) {
+            console.warn(`${NAME}: the send's answer was lost; found it in the chat as ${hit.id}.`);
+            return { msgId: hit.id };
+          }
+          throw new SendUncertain(e.message);
+        }
+      }
+      async sendSelf(text3) {
+        return { msgId: idOf(await this.mcp.call(this.tools.sendSelf, { content: mdToHtml(text3), contentType: "html" })) };
+      }
+      async deleteMessage(chatId, msgId) {
+        if (isThread(chatId)) throw new Error(`${NAME} cannot change channel messages`);
+        await this.mcp.call(this.tools.del, { chatId, messageId: msgId });
+      }
+      async editMessage(chatId, msgId, text3) {
+        if (isThread(chatId)) throw new Error(`${NAME} cannot change channel messages`);
+        await this.mcp.call(this.tools.edit, { chatId, messageId: msgId, content: mdToHtml(text3), contentType: "html" });
+      }
+      async presence() {
+        const r = await this.mcp.call(this.tools.presence, {});
+        const o = r.outOfOfficeSettings;
+        return { availability: r.availability ?? "Unknown", oof: o?.isOutOfOffice ? (o.message ?? "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim() || "out of office" : void 0 };
+      }
+      async members(chatId) {
+        const t2 = isThread(chatId) ? parseThread(chatId) : void 0;
+        const r = await this.mcp.call(t2 ? "ListChannelMembers" : this.tools.members, t2 ? { teamId: t2.teamId, channelId: t2.channelId } : { chatId });
+        const ms = r.members ?? [];
+        return { guests: ms.some((m) => (m.roles ?? []).includes("guest")), ids: ms.map((m) => m.userId).filter((u) => !!u), names: Object.fromEntries(ms.flatMap((m) => m.userId && m.displayName ? [[m.userId, m.displayName]] : [])) };
+      }
+      async chatName(chatId) {
+        const r = await this.mcp.call(this.tools.get, { chatId });
+        return r.topic ?? chatId;
+      }
+      async close() {
+        await this.mcp.close();
+      }
+      // Search is the only list of chats past the 50 newest (measured 10-20: 49 chats reached back 5 days). Chats only; channels come from channelThreads.
+      async awaiting(sinceIso, untilIso) {
+        if (!this.owner) return [];
+        const out = /* @__PURE__ */ new Map();
+        for (let from = 0; from < 1e3; from += 25) {
+          const r = await this.mcp.call("SearchTeamMessagesQueryParameters", { queryString: `to:"${this.owner}" AND sent>=${sinceIso.slice(0, 10)} AND sent<=${new Date(Date.parse(untilIso) + 864e5).toISOString().slice(0, 10)}`, from });
+          const c = JSON.parse(r.rawResponse ?? "{}").value?.[0]?.hitsContainers?.[0];
+          for (const h of c?.hits ?? []) {
+            const id = h.resource?.chatId, at3 = h.resource?.createdDateTime ?? "";
+            if (!id || /@thread\.(tacv2|skype)$/.test(id) || !(Date.parse(at3) > Date.parse(sinceIso) && Date.parse(at3) <= Date.parse(untilIso))) continue;
+            const was = out.get(id);
+            if (!was || Date.parse(at3) > Date.parse(was.lastAt)) out.set(id, { id, name: was?.name ?? h.resource?.from?.emailAddress?.name ?? id, lastAt: at3 });
+          }
+          if (!c?.moreResultsAvailable || !c.hits?.length) break;
+        }
+        return [...out.values()];
+      }
+    };
+    squashText = (html) => htmlToText(html).replace(/[^\p{L}\p{N}]+/gu, "").toLowerCase();
+  }
+});
+
+// src/adapters/registry.ts
+function adapter(s3) {
+  const a = ADAPTERS[kindOf2(s3)];
+  if (!a) throw new Error(`No adapter for source "${kindOf2(s3)}". Known: ${Object.keys(ADAPTERS).join(", ")}.`);
+  return a;
+}
+var beside, docsCommand, ADAPTERS, kindOf2, sourceFor, historyFor, docsFor, imagesFor;
+var init_registry = __esm({
+  "src/adapters/registry.ts"() {
+    "use strict";
+    init_demo();
+    init_docs();
+    init_media();
+    init_site();
+    init_history();
+    init_source_teams();
+    beside = (s3, server) => s3.command.at(-1) === "teams" ? [...s3.command.slice(0, -1), server] : void 0;
+    docsCommand = (s3) => s3.docs ?? beside(s3, "sharepoint");
+    ADAPTERS = {
+      teams: { source: (c, owner2) => new TeamsSource(c, void 0, owner2), history: (cfg) => new TeamsHistory(cfg), docs: (cfg) => {
+        const c = docsCommand(cfg.source);
+        return c && new SharePointDocs(c);
+      }, images: (cfg) => {
+        const im = site().images, c = im && beside(cfg.source, im.server);
+        return c && new HostedImages(c, im.tool);
+      } },
+      demo: { source: (_c, _o, root) => new DemoSource(root) }
+    };
+    kindOf2 = (s3) => s3.kind ?? (s3.command[0] === "demo" ? "demo" : "teams");
+    sourceFor = (s3, owner2, root) => adapter(s3).source(s3, owner2, root);
+    historyFor = (cfg) => adapter(cfg.source).history?.(cfg);
+    docsFor = (cfg) => adapter(cfg.source).docs?.(cfg);
+    imagesFor = (cfg) => adapter(cfg.source).images?.(cfg);
+  }
+});
+
+// src/host/locate.ts
+import { execFileSync as execFileSync3 } from "node:child_process";
+import { existsSync as existsSync27, readdirSync as readdirSync10 } from "node:fs";
+import { homedir as homedir8 } from "node:os";
+import { join as join29 } from "node:path";
+function packageAt(dir2, version3 = "") {
+  const runtime = join29(dir2, "index.js"), sdk = join29(dir2, "copilot-sdk", "index.js");
+  return existsSync27(runtime) && existsSync27(sdk) ? { dir: dir2, version: version3 || dir2.split(/[\\/]/).pop(), runtime, sdk } : void 0;
+}
+function newestIn(root) {
+  if (!existsSync27(root)) return void 0;
+  const dirs2 = readdirSync10(root).filter((v) => /^\d+\.\d+\.\d+/.test(v)).sort((a, b) => versionKey(b).localeCompare(versionKey(a)));
+  for (const v of dirs2) {
+    const p = packageAt(join29(root, v), v);
+    if (p) return p;
+  }
+  return void 0;
+}
+function npmGlobal() {
+  try {
+    return execFileSync3(process.platform === "win32" ? "npm.cmd" : "npm", ["root", "-g"], { encoding: "utf8", timeout: 1e4, windowsHide: true, shell: process.platform === "win32" }).trim();
+  } catch {
+    return void 0;
+  }
+}
+function cliPackage(now = Date.now()) {
+  if (cached2 && now - cached2.at < 6e5) return cached2.pkg;
+  const plat = `${process.platform}-${process.arch}`;
+  const roots = [
+    process.env.LOCALAPPDATA && join29(process.env.LOCALAPPDATA, "copilot", "pkg", plat),
+    join29(process.env.XDG_CACHE_HOME ?? join29(homedir8(), ".cache"), "copilot", "pkg", plat),
+    join29(homedir8(), "Library", "Caches", "copilot", "pkg", plat)
+  ].filter((r) => !!r);
+  const own3 = process.env.DELEGATE_COPILOT_PKG ? packageAt(process.env.DELEGATE_COPILOT_PKG) : void 0;
+  let pkg = own3 ?? roots.map(newestIn).find(Boolean);
+  if (!pkg) {
+    const g = npmGlobal();
+    pkg = g ? packageAt(join29(g, "@github", "copilot")) : void 0;
+  }
+  cached2 = { at: now, pkg };
+  return pkg;
+}
+function hostOff(cfg) {
+  const a = cfg.agent;
+  if (a.host === false) return "turned off in config";
+  if (a.flavor !== "copilot") return "only the Copilot CLI can host runs";
+  const plain4 = a.command.length === 1 && /^copilot(?:\.exe|\.cmd)?$/i.test(a.command[0].split(/[\\/]/).pop());
+  const direct = a.command.length === 2 && a.command[0] === process.execPath && /index\.js$/.test(a.command[1]);
+  if (!plain4 && !direct) return "a custom AI command runs one process per run";
+  if (!cliPackage()) return "the Copilot CLI's own SDK was not found";
+  return void 0;
+}
+var versionKey, cached2;
+var init_locate = __esm({
+  "src/host/locate.ts"() {
+    "use strict";
+    versionKey = (v) => v.split(/[.-]/).map((p) => /^\d+$/.test(p) ? p.padStart(6, "0") : p).join(".");
+  }
+});
+
+// src/worker/tools.ts
+function reportTaker(store2, wfId, runId, interactive = false) {
+  let submitted = false;
+  return (raw) => {
+    const p = REPORT2.safeParse(raw);
+    if (!p.success) return { text: `The report does not fit its schema: ${p.error.issues.slice(0, 5).map((i) => `${i.path.join(".") || "report"}: ${i.message}`).join("; ")}`, error: true };
+    const r = p.data;
+    if (r.workflowId !== wfId) return { text: `Wrong workflowId. Use "${wfId}".`, error: true };
+    const known2 = intents(store2.root).map((i) => i.id);
+    if (!known2.includes(r.intent)) return { text: `Unknown intent "${r.intent}". Use one of: ${known2.join(", ")}.`, error: true };
+    if (submitted && !interactive) return { text: "Already submitted. Finish now.", error: true };
+    store2.writeReport(r, runId);
+    submitted = true;
+    return { text: "Report saved. Call task_complete now." };
+  };
+}
+async function readImage(store2, link2) {
+  const inline = /^inline:([0-9a-f]{16,40})$/.exec(link2.trim());
+  if (inline) {
+    const m2 = store2.media(inline[1]);
+    return m2 ? { text: "image", image: { data: m2.data, mimeType: m2.type } } : { text: "That inline image was not kept, so it cannot be opened. Say you cannot read it; never guess what it shows.", error: true };
+  }
+  const m = imagesFor(store2.config());
+  if (!m) return { text: "This setup cannot open images. Say you cannot read it; never guess what it shows." };
+  try {
+    const r = await m.read(link2);
+    return typeof r === "string" ? { text: r, error: true } : { text: "image", image: { data: r.data, mimeType: r.type } };
+  } catch (e) {
+    return { text: `Could not open it: ${String(e).slice(0, 200)}`, error: true };
+  } finally {
+    await m.close();
+  }
+}
+var SUBMIT_DESCRIPTION, IMAGE_DESCRIPTION, IMAGE_LINK, REPORT2;
+var init_tools = __esm({
+  "src/worker/tools.ts"() {
+    "use strict";
+    init_intents();
+    init_zod();
+    init_report();
+    init_registry();
+    SUBMIT_DESCRIPTION = "Submit your one report for this workflow. Call exactly once, then finish.";
+    IMAGE_DESCRIPTION = "Look at an image pasted into a message. Pass the link from its [image ...] line. Use it whenever the ask may depend on what the image shows; never describe an image you did not open.";
+    IMAGE_LINK = "The link from the [image ...] line: https://graph.microsoft.com/... or inline:<key>";
+    REPORT2 = external_exports.object(ReportSchema);
+  }
+});
+
+// src/host/host.ts
+var host_exports = {};
+__export(host_exports, {
+  hostFile: () => hostFile,
+  hostHash: () => hostHash,
+  runHost: () => runHost
+});
+import { createHash as createHash8, randomUUID as randomUUID11 } from "node:crypto";
+import { existsSync as existsSync28, readFileSync as readFileSync22, renameSync as renameSync5, rmSync as rmSync9, writeFileSync as writeFileSync15 } from "node:fs";
+import { createServer } from "node:http";
+import { homedir as homedir9 } from "node:os";
+import { isAbsolute as isAbsolute6, join as join30, relative as relative4, resolve as resolve8 } from "node:path";
+import { pathToFileURL } from "node:url";
+function envProvider() {
+  const e = process.env;
+  if (!e.COPILOT_PROVIDER_BASE_URL) return void 0;
+  return { type: e.COPILOT_PROVIDER_TYPE ?? "openai", baseUrl: e.COPILOT_PROVIDER_BASE_URL, ...e.COPILOT_PROVIDER_API_KEY ? { apiKey: e.COPILOT_PROVIDER_API_KEY } : {}, ...e.COPILOT_PROVIDER_WIRE_API ? { wireApi: e.COPILOT_PROVIDER_WIRE_API } : {}, ...e.COPILOT_PROVIDER_BEARER_TOKEN ? { bearerToken: e.COPILOT_PROVIDER_BEARER_TOKEN } : {}, ...e.COPILOT_PROVIDER_MODEL_ID ? { modelId: e.COPILOT_PROVIDER_MODEL_ID } : {} };
+}
+function hostHash(cfg, cli = cliPackage()?.version ?? "") {
+  const servers = Object.fromEntries(listable(cfg).map(([n, s3]) => [n, { c: s3.command, a: s3.args ?? [], e: Object.keys(s3.env ?? {}).sort() }]));
+  return createHash8("sha256").update(JSON.stringify({ c: cfg.agent.command, m: cfg.agent.model ?? "", servers, cli, d: VERSION })).digest("hex").slice(0, 16);
+}
+async function runHost() {
+  const store2 = new Store(loadLocal()), cfg = store2.config(), pkg = cliPackage();
+  if (!pkg) throw new Error("The Copilot CLI's own SDK was not found");
+  const sdk = await import(pathToFileURL(pkg.sdk).href);
+  const t0 = Date.now();
+  const client = new sdk.CopilotClient({ connection: { kind: "stdio", path: process.execPath, args: [pkg.runtime] }, env: env() });
+  await client.start();
+  const warm = /* @__PURE__ */ new Map();
+  for (const [name, spec] of listable(cfg)) {
+    const mcp = clientFor(spec, name), at3 = Date.now();
+    const tools = mcp.listAll().then((r) => {
+      store2.log({ event: "host-server-ready", server: name, ms: Date.now() - at3, tools: r.tools.length });
+      return new Map(r.tools.map((t2) => [t2.name, t2]));
+    });
+    tools.catch((e) => store2.log({ event: "host-server-failed", server: name, error: String(e).slice(0, 200) }));
+    warm.set(name, { client: mcp, tools });
+  }
+  const limit = (cfg.maxParallel ?? 3) + (cfg.jobs?.parallel ?? 2);
+  let active2 = 0, draining = false, lastRun = Date.now(), runs = 0;
+  const serverOf2 = (tool) => [...warm.keys()].filter((n) => tool.startsWith(`${n}-`)).sort((a, b) => b.length - a.length)[0];
+  async function run2({ agent, input: input2 }) {
+    const t2 = Date.now(), id = input2.sessionId;
+    const names = [.../* @__PURE__ */ new Set([...agent.tools, ...input2.extraTools, "task_complete"])];
+    const tools = [];
+    for (const name of names) {
+      const server2 = serverOf2(name), w = server2 ? warm.get(server2) : void 0;
+      if (!server2 || !w) continue;
+      const tool = name.slice(server2.length + 1), info2 = (await w.tools.catch(() => /* @__PURE__ */ new Map())).get(tool);
+      if (!info2) continue;
+      tools.push(sdk.defineTool(name, {
+        description: info2.description ?? tool,
+        parameters: info2.inputSchema ?? { type: "object", properties: {} },
+        skipPermission: true,
+        handler: async (args2) => {
+          try {
+            const r = await w.client.callText(tool, args2 ?? {});
+            return r.error ? { textResultForLlm: r.text, resultType: "failure", error: r.text.slice(0, 300) } : r.text;
+          } catch (e) {
+            return { textResultForLlm: `The ${server2} tool server failed: ${String(e).slice(0, 300)}`, resultType: "failure", error: String(e).slice(0, 300) };
+          }
+        }
+      }));
+    }
+    const take = reportTaker(store2, input2.workflowId, input2.runId);
+    const out = (o) => o.image ? { textResultForLlm: o.text, binaryResultsForLlm: [{ data: o.image.data, mimeType: o.image.mimeType, type: "image" }], resultType: "success" } : o.error ? { textResultForLlm: o.text, resultType: "failure", error: o.text.slice(0, 300) } : o.text;
+    const inProcess = {
+      submit_report: () => sdk.defineTool(`${WORKER_SERVER2}-submit_report`, { description: SUBMIT_DESCRIPTION, parameters: REPORT_JSON, skipPermission: true, handler: async (args2) => out(take(args2)) }),
+      image_read: () => sdk.defineTool(`${WORKER_SERVER2}-image_read`, { description: IMAGE_DESCRIPTION, parameters: { type: "object", properties: { link: { type: "string", description: IMAGE_LINK } }, required: ["link"] }, skipPermission: true, handler: async (args2) => out(await readImage(store2, String(args2?.link ?? ""))) })
+    };
+    const mine = names.filter((n) => n.startsWith(`${WORKER_SERVER2}-`)).map((n) => n.slice(WORKER_SERVER2.length + 1));
+    for (const n of mine) if (inProcess[n]) tools.push(inProcess[n]());
+    const own3 = mine.some((n) => !inProcess[n]) ? JSON.parse(readFileSync22(input2.mcpConfigPath, "utf8")).mcpServers?.[WORKER_SERVER2] : void 0;
+    const dirs2 = [input2.cwd, ...input2.dirs ?? []];
+    const onPermissionRequest = async (r) => r.kind === "read" && r.path && under(r.path, dirs2) || r.kind === "mcp" && r.serverName === WORKER_SERVER2 || r.kind === "custom-tool" ? { kind: "approve-once" } : { kind: "reject", feedback: "Delegate runs may only read the folders they were given and use the tools they were offered." };
+    const provider = envProvider();
+    const config2 = {
+      model: agent.model ?? (provider ? process.env.COPILOT_PROVIDER_MODEL_ID : void 0),
+      ...provider ? { provider } : {},
+      tools,
+      availableTools: names,
+      workingDirectory: input2.cwd,
+      additionalDirectories: input2.dirs ?? [],
+      ...own3 ? { mcpServers: { [WORKER_SERVER2]: { type: "local", command: own3.command, args: own3.args, env: { ...env(), ...own3.env }, tools: ["*"] } } } : {},
+      onPermissionRequest,
+      enableConfigDiscovery: false,
+      skipCustomInstructions: true,
+      memory: { enabled: false }
+    };
+    let session;
+    let opened = false;
+    try {
+      session = existsSync28(sessionFile(id)) ? await client.resumeSession(id, config2) : await client.createSession({ sessionId: id, ...config2 });
+      opened = true;
+      const r = await session.sendAndWait({ prompt: input2.prompt }, RUN_MS);
+      await session.disconnect().catch(() => void 0);
+      session = void 0;
+      const used = readRun("", t2, process.env, sessionLog("copilot", id), Date.now()).use;
+      return { exitCode: 0, ms: Date.now() - t2, summary: r?.data?.content, used };
+    } catch (e) {
+      await session?.disconnect().catch(() => void 0);
+      session = void 0;
+      const why2 = String(e).replace(/^Error: /, "").slice(0, 400);
+      const turned = opened && turnStarted(sessionLog("copilot", id), t2);
+      return { exitCode: 1, ms: Date.now() - t2, error: `The AI host could not finish the run: ${why2}`, ...turned ? {} : { hostFault: opened ? "no model turn" : "session" } };
+    } finally {
+      await session?.disconnect().catch(() => void 0);
+    }
+  }
+  const token = randomUUID11();
+  const reply2 = (res, code, body2) => {
+    res.writeHead(code, { "content-type": "application/json" });
+    res.end(JSON.stringify(body2));
+  };
+  const body = (req) => new Promise((ok, no) => {
+    let s3 = "";
+    req.on("data", (c) => s3 += c);
+    req.on("end", () => ok(s3));
+    req.on("error", no);
+  });
+  const server = createServer(async (req, res) => {
+    if (req.headers.authorization !== `Bearer ${token}`) return reply2(res, 401, { error: "no" });
+    if (req.method === "GET" && req.url === "/ping") return reply2(res, 200, { ok: true, pid: process.pid, active: active2, runs, draining });
+    if (req.method === "POST" && req.url === "/drain") {
+      draining = true;
+      reply2(res, 200, { ok: true });
+      return maybeExit();
+    }
+    if (req.method === "POST" && req.url === "/call") {
+      const { server: name, tool, args: args2 } = JSON.parse(await body(req));
+      const w = warm.get(name);
+      if (!w || draining) return reply2(res, 404, { error: "not here" });
+      active2++;
+      lastRun = Date.now();
+      try {
+        try {
+          await w.tools;
+        } catch (e) {
+          return reply2(res, 502, { error: String(e).replace(/^Error: /, "").slice(0, 400), hostFault: "server" });
+        }
+        const bad = await w.client.argsProblem(tool, args2);
+        if (bad) return reply2(res, 200, { error: bad, notCalled: true });
+        reply2(res, 200, { result: await w.client.call(tool, args2) });
+      } catch (e) {
+        reply2(res, 200, { error: String(e).replace(/^Error: /, "").slice(0, 400), lost: e instanceof LostResponse });
+      } finally {
+        active2--;
+        lastRun = Date.now();
+        maybeExit();
+      }
+      return;
+    }
+    if (req.method === "POST" && req.url === "/run") {
+      if (draining) return reply2(res, 503, { error: "draining" });
+      if (active2 >= limit) return reply2(res, 429, { error: "busy" });
+      active2++;
+      runs++;
+      try {
+        const r = await run2(JSON.parse(await body(req)));
+        reply2(res, r.hostFault ? 502 : 200, r);
+      } catch (e) {
+        reply2(res, 500, { error: String(e).slice(0, 300) });
+      } finally {
+        active2--;
+        lastRun = Date.now();
+        maybeExit();
+      }
+      return;
+    }
+    reply2(res, 404, { error: "unknown" });
+  });
+  server.requestTimeout = 0;
+  server.headersTimeout = 6e4;
+  await new Promise((ok) => server.listen(0, "127.0.0.1", () => ok()));
+  const info = { pid: process.pid, port: server.address().port, token, startedAt: (/* @__PURE__ */ new Date()).toISOString(), cli: pkg.version, delegate: VERSION, configHash: hostHash(cfg, pkg.version) };
+  const tmp = `${hostFile()}.${process.pid}`;
+  writeFileSync15(tmp, JSON.stringify(info), { mode: 384 });
+  renameSync5(tmp, hostFile());
+  store2.log({ event: "host-started", pid: process.pid, cli: pkg.version, startMs: Date.now() - t0, servers: [...warm.keys()] });
+  let stopping = false;
+  async function stop(why2) {
+    if (stopping) return;
+    stopping = true;
+    store2.log({ event: "host-stopped", why: why2, runs });
+    server.close();
+    await Promise.all([...warm.values()].map((w) => w.client.close().catch(() => void 0)));
+    await client.stop().catch(() => void 0);
+    try {
+      const now = JSON.parse(readFileSync22(hostFile(), "utf8"));
+      if (now.pid === process.pid) rmSync9(hostFile(), { force: true });
+    } catch {
+    }
+    process.exit(0);
+  }
+  let drainWhy = "drained";
+  function maybeExit() {
+    if (draining && !active2) void stop(drainWhy);
+  }
+  setInterval(() => {
+    const now = store2.config();
+    if (!active2 && (Date.now() - lastRun > IDLE_MS || inQuietHours(/* @__PURE__ */ new Date(), now?.quiet))) void stop(Date.now() - lastRun > IDLE_MS ? "idle" : "quiet hours");
+  }, 3e4).unref();
+  setInterval(() => {
+    const s3 = new Store(loadLocal()), l = s3.lease(), pinned2 = s3.config()?.runner;
+    if (l && l.machine !== store2.machine || pinned2 && pinned2 !== store2.machine) {
+      draining = true;
+      drainWhy = "another machine reads the chats";
+      maybeExit();
+    }
+  }, LEASE_MS).unref();
+  for (const sig of ["SIGINT", "SIGTERM"]) process.once(sig, () => void stop(sig));
+}
+var hostFile, WORKER_SERVER2, REPORT_JSON, IDLE_MS, LEASE_MS, RUN_MS, env, under, turnStarted, sessionFile;
+var init_host = __esm({
+  "src/host/host.ts"() {
+    "use strict";
+    init_mcp_client();
+    init_policy();
+    init_agent();
+    init_runinfo();
+    init_paths();
+    init_catalog();
+    init_state();
+    init_locate();
+    init_zod();
+    init_tools();
+    hostFile = () => join30(LOCAL_DIR, "host.json");
+    WORKER_SERVER2 = "delegate_worker";
+    REPORT_JSON = external_exports.toJSONSchema(REPORT2);
+    IDLE_MS = 20 * 6e4;
+    LEASE_MS = 5 * 6e4;
+    RUN_MS = 10 * 6e4;
+    env = () => Object.fromEntries(Object.entries(workerEnv(process.env)).filter((e) => typeof e[1] === "string"));
+    under = (path, dirs2) => {
+      const p = resolve8(path);
+      return dirs2.some((d) => {
+        const r = relative4(resolve8(d), p);
+        return r === "" || !r.startsWith("..") && !isAbsolute6(r);
+      });
+    };
+    turnStarted = (log, since) => log.split("\n").some((l) => {
+      try {
+        const e = JSON.parse(l);
+        return (e.type === "assistant.turn_start" || e.type === "tool.execution_start") && Date.parse(e.timestamp ?? "") >= since;
+      } catch {
+        return false;
+      }
+    });
+    sessionFile = (id) => join30(process.env.COPILOT_HOME ?? join30(homedir9(), ".copilot"), "session-state", id, "events.jsonl");
+  }
+});
+
 // src/cli.ts
 init_site();
 
@@ -49390,10 +50273,10 @@ init_repos();
 init_mcp_client();
 init_catalog();
 import { spawnSync as spawnSync4 } from "node:child_process";
-import { randomUUID as randomUUID11 } from "node:crypto";
-import { existsSync as existsSync29, mkdirSync as mkdirSync13, readdirSync as readdirSync10, statSync as statSync11, writeFileSync as writeFileSync16 } from "node:fs";
-import { homedir as homedir8, hostname as hostname4 } from "node:os";
-import { join as join32 } from "node:path";
+import { randomUUID as randomUUID12 } from "node:crypto";
+import { existsSync as existsSync31, mkdirSync as mkdirSync13, readdirSync as readdirSync11, statSync as statSync11, writeFileSync as writeFileSync17 } from "node:fs";
+import { homedir as homedir10, hostname as hostname4 } from "node:os";
+import { join as join35 } from "node:path";
 
 // src/runner/tools-migrate.ts
 init_mcp_client();
@@ -49470,474 +50353,8 @@ init_probe();
 init_validate();
 init_mcp_client();
 init_habits();
-
-// src/adapters/demo.ts
-init_fs();
-import { existsSync as existsSync24, readFileSync as readFileSync19 } from "node:fs";
-import { join as join26 } from "node:path";
-var DemoSource = class {
-  selfChatId = "self";
-  file;
-  constructor(root) {
-    this.file = join26(root, "demo", "chats.json");
-  }
-  all() {
-    return existsSync24(this.file) ? JSON.parse(readFileSync19(this.file, "utf8")) : {};
-  }
-  save(c) {
-    writeJson(this.file, c, "demo");
-  }
-  post(chatId, from, body) {
-    const c = this.all();
-    const last2 = Object.values(c).flat().reduce((m, x) => BigInt(x.id) > m ? BigInt(x.id) : m, BigInt(Date.now()));
-    const id = String(last2 + 1n);
-    c[chatId] = [...c[chatId] ?? [], { id, at: (/* @__PURE__ */ new Date()).toISOString(), from, html: false, body }];
-    this.save(c);
-    return id;
-  }
-  async newMessages(chatId, afterId, sinceIso) {
-    const msgs = this.all()[chatId] ?? [];
-    const newest2 = msgs.at(-1)?.id ?? afterId;
-    const out = afterId ? msgs.filter((m) => BigInt(m.id) > BigInt(afterId)) : sinceIso ? msgs.filter((m) => m.at > sinceIso) : [];
-    return { msgs: out, newest: newest2, truncated: false };
-  }
-  async recentChats() {
-    return Object.entries(this.all()).filter(([id]) => id !== "self").map(([id, m]) => ({ id, name: "Team chat (demo)", lastAt: m.at(-1)?.at ?? "" }));
-  }
-  async recent(chatId, n) {
-    return (this.all()[chatId] ?? []).slice(-n);
-  }
-  async send(chatId, text3) {
-    return { msgId: this.post(chatId, { id: "owner", name: "You" }, text3) };
-  }
-  async sendSelf(text3) {
-    return { msgId: this.post("self", { id: "owner", name: "You" }, text3) };
-  }
-  async deleteMessage(chatId, msgId) {
-    const c = this.all();
-    c[chatId] = (c[chatId] ?? []).filter((m) => m.id !== msgId);
-    this.save(c);
-  }
-  async editMessage(chatId, msgId, text3) {
-    const c = this.all();
-    const m = c[chatId]?.find((x) => x.id === msgId);
-    if (m) m.body = text3;
-    this.save(c);
-  }
-  async presence() {
-    return { availability: "Offline" };
-  }
-  // The pretend chat has no guests.
-  async members() {
-    return { guests: false };
-  }
-  async close() {
-  }
-};
-var demoRun = (store2) => async (_cfg, i) => {
-  const ask = i.prompt.split("\n").filter((l) => l.startsWith(">> [id:")).join(" ");
-  const answered = i.prompt.match(/The owner answered your question: "([^"]*)"/)?.[1];
-  const asked = i.prompt.match(/The owner asks: "([^"]*)"/)?.[1];
-  const r = asked ? { workflowId: i.workflowId, intent: "other", state: "needs_human", summary: "Answered", answer: /ring|rollout|banner/i.test(asked) ? "Ring 1 started Oct 17 and needs one clean week, so ring 3 can start Oct 24 at the earliest." : "The knowledge says admin policy and sensitivity labels lock those options. Priya's team is under the strict policy since Oct 10.", reply: { text: "", commitment: false, sources: [{ ref: "card:meeting-options/architecture#demo", tier: "card", origin: "extracted" }] } } : /shall we meet|meet at|quick call|sync up/i.test(ask) && !answered ? {
-    workflowId: i.workflowId,
-    intent: "other",
-    state: "needs_human",
-    summary: "Arun wants to meet at 3",
-    question: "Arun wants to meet. Do you?",
-    reply: { text: "____", commitment: true, sources: [] },
-    meeting: { subject: "API changes", start: new Date((/* @__PURE__ */ new Date()).setHours(15, 0, 0, 0)).toISOString(), minutes: 30, attendees: ["Arun", "You"] },
-    context: [{ label: "Conflict", text: 'You have "1:1 with Ana" at 3:00 to 3:30 PM.', tone: "warn" }, { label: "Could be async", text: "He listed two questions in the thread.", tone: "info" }],
-    choices: { prompt: "Arun wants to meet. Do you?", other: true, options: [
-      { label: "Meet at 3:00", note: "Conflicts with 1:1 with Ana", reply: "Sounds good, sent an invite for 3.", effects: [{ system: "calendar", action: "create_event", target: "Arun", summary: "Invite: API changes \xB7 today 3:00 to 3:30 PM", call: { tool: "demo-calendar", args: { subject: "API changes", start: "15:00" } } }] },
-      { label: "Meet at 4:00 instead", note: "First free slot today", reply: "3 doesn't work for me, sent an invite for 4.", effects: [{ system: "calendar", action: "create_event", target: "Arun", summary: "Invite: API changes \xB7 today 4:00 to 4:30 PM", call: { tool: "demo-calendar", args: { subject: "API changes", start: "16:00" } } }] },
-      { label: "Answer async", note: "Reply without a meeting", reply: "Can we do this async? Send me the two questions and I'll answer today." }
-    ] }
-  } : /flag a or b|which flag|option a/i.test(ask) && !answered ? {
-    workflowId: i.workflowId,
-    intent: "release_deploy",
-    state: "needs_human",
-    summary: "Ana asks which flag to use",
-    question: "Flag A or B for the rollout?",
-    reply: { text: "____", commitment: true, sources: [] },
-    choices: { prompt: "Which flag?", other: true, options: [
-      { label: "Flag A (per ring)", note: "Vikram prefers it", reply: "Use flag A, so we can control it per ring." },
-      { label: "Flag B (global)", reply: "Use flag B; one switch is simpler for this change." }
-    ] }
-  } : answered ? { workflowId: i.workflowId, intent: "commitment_decision", state: "needs_human", summary: `Ship date: ${answered}`, reply: { text: `We plan to ship on ${answered}.`, commitment: true, sources: [] } } : /review|recheck/i.test(ask) ? { workflowId: i.workflowId, intent: "pr_review", state: "needs_human", summary: "Needs a review", job: { key: "pr:demo/web/1234", goal: "Review PR 1234" } } : /thanks|thank you/i.test(ask) ? { workflowId: i.workflowId, intent: "none", state: "done", summary: "Just a thank-you" } : /ship|date|when/i.test(ask) ? { workflowId: i.workflowId, intent: "commitment_decision", state: "needs_human", summary: "Asks for a ship date", reply: { text: "We plan to ship on ____.", commitment: true, sources: [] }, question: "Which date can you commit to?" } : { workflowId: i.workflowId, intent: "feature_knowledge", state: "needs_human", summary: "Asks why meeting options are locked", reply: { text: "Some options are set by admin policy or a sensitivity label, so organizers cannot change them.", commitment: false, sources: [{ ref: "card:meeting-options/architecture#demo", tier: "card", origin: "extracted" }, { ref: "https://docs.example.com/meeting-policies", tier: "live", origin: "extracted" }] } };
-  store2.writeReport(r, i.runId);
-  return { exitCode: 0, ms: 1 };
-};
-var demoProcs = (store2) => ({
-  start: (_cfg, i) => {
-    const change2 = /Approved changes/.test(i.prompt);
-    if (change2) store2.saveChange(i.workflowId, i.runId, 0, { call: "", state: "done", ref: "demo-thread-1", at: (/* @__PURE__ */ new Date()).toISOString() });
-    const r = change2 ? { workflowId: i.workflowId, intent: "other", state: "done", summary: "Posted" } : /Workflow: tracker/.test(i.prompt) ? { workflowId: i.workflowId, intent: "other", state: "needs_human", summary: "Checks are running; 1 approval so far." } : { workflowId: i.workflowId, intent: "pr_review", state: "needs_human", summary: "1 finding: a missing null check in banner.tsx", reply: { text: "Left one comment on PR 1234: a null check in banner.tsx.", commitment: false, sources: [{ ref: "https://dev.azure.com/demo/web/pullrequest/1234", tier: "live", origin: "extracted" }] }, effects: [{ system: "ado", action: "comment", target: "PR 1234", summary: "banner.tsx line 42: check props.user before use", payload: { text: "props.user can be undefined here when the banner loads before sign-in." }, call: { tool: "demo-comment", args: { pullRequestId: 1234, content: "props.user can be undefined here when the banner loads before sign-in." } } }] };
-    store2.writeReport(r, i.runId);
-    return { pid: 1 };
-  },
-  alive: () => false,
-  kill: () => true,
-  openWindow: (title) => {
-    store2.log({ event: "demo-window", title });
-  }
-});
-
-// src/adapters/docs.ts
-init_mcp_client();
-import { inflateRawSync } from "node:zlib";
-function unzip(buf) {
-  const out = /* @__PURE__ */ new Map();
-  let end = buf.length - 22;
-  while (end >= 0 && buf.readUInt32LE(end) !== 101010256) end--;
-  if (end < 0) throw new Error("Not a zip file");
-  let at3 = buf.readUInt32LE(end + 16);
-  for (let i = buf.readUInt16LE(end + 10); i > 0; i--) {
-    const method = buf.readUInt16LE(at3 + 10), size = buf.readUInt32LE(at3 + 20), n = buf.readUInt16LE(at3 + 28);
-    const name = buf.toString("utf8", at3 + 46, at3 + 46 + n), local2 = buf.readUInt32LE(at3 + 42);
-    const start = local2 + 30 + buf.readUInt16LE(local2 + 26) + buf.readUInt16LE(local2 + 28);
-    const data = buf.subarray(start, start + size);
-    out.set(name, method === 8 ? inflateRawSync(data) : data);
-    at3 += 46 + n + buf.readUInt16LE(at3 + 30) + buf.readUInt16LE(at3 + 32);
-  }
-  return out;
-}
-var ENT2 = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" };
-function docxText(buf) {
-  const xml2 = unzip(buf).get("word/document.xml")?.toString("utf8");
-  if (!xml2) throw new Error("No document text in this file");
-  return xml2.replace(/<w:tab\/>/g, "	").replace(/<\/w:p>/g, "\n").replace(/<[^>]+>/g, "").replace(/&(amp|lt|gt|quot|apos);/g, (_, e) => ENT2[e]).replace(/\n{3,}/g, "\n\n").trim();
-}
-var SharePointDocs = class {
-  mcp;
-  constructor(command, mcp = new McpClient(command)) {
-    this.mcp = mcp;
-  }
-  async read(name) {
-    const found = await this.mcp.call("findFileOrFolder", { searchQuery: name.replace(/\.docx$/i, "") });
-    const hit = (found.value ?? []).filter((h) => /\.docx$/i.test(h.name)).sort((a, b) => (b.lastModifiedDateTime ?? "").localeCompare(a.lastModifiedDateTime ?? ""))[0];
-    if (!hit?.parentReference?.driveId) return `No Word document matches "${name}". Try the exact file name.`;
-    const [b64 = ""] = await this.mcp.texts("readSmallBinaryFile", { documentLibraryId: hit.parentReference.driveId, fileId: hit.id });
-    return { name: hit.name, modified: hit.lastModifiedDateTime ?? "", by: hit.lastModifiedBy?.user?.displayName ?? "", text: docxText(Buffer.from(b64.trim(), "base64")) };
-  }
-  close() {
-    return this.mcp.close();
-  }
-};
-
-// src/adapters/media.ts
-init_mcp_client();
-var HOSTED = /^https:\/\/graph\.microsoft\.com\/v1\.0(\/(?:chats|teams)\/[^?#\s]+\/hostedContents\/[^/?#\s]+\/\$value)$/;
-var hostedPath = (link2) => HOSTED.exec(link2)?.[1];
-var HostedImages = class {
-  mcp;
-  tool;
-  constructor(command, tool = "fetch_blob", mcp = new McpClient(command)) {
-    this.mcp = mcp;
-    this.tool = tool;
-  }
-  async read(link2) {
-    const path = hostedPath(link2);
-    if (!path) return "Only images pasted into a Teams message can be opened.";
-    const r = await this.mcp.call(this.tool, { path });
-    if (!r.base64Content) return `The image could not be downloaded (status ${r.statusCode ?? "unknown"}).`;
-    return { data: r.base64Content, type: r.contentType ?? "image/png" };
-  }
-  close() {
-    return this.mcp.close();
-  }
-};
-
-// src/adapters/registry.ts
-init_site();
-
-// src/adapters/history.ts
-init_mcp_client();
-var TeamsHistory = class {
-  mcp;
-  owner;
-  constructor(cfg, mcp = new McpClient(cfg.source.command)) {
-    this.mcp = mcp;
-    this.owner = cfg.owner.name;
-  }
-  async search(query, o = {}) {
-    const words3 = query.replace(/["()]/g, " ").replace(/\b(AND|OR|NOT)\b/g, " ").replace(/\s+/g, " ").trim();
-    const kql = [o.mine ? `from:"${this.owner}"` : "", words3, o.before ? `sent<=${o.before.slice(0, 10)}` : ""].filter(Boolean).join(" AND ");
-    const r = await this.mcp.call("SearchTeamMessagesQueryParameters", { queryString: kql, from: 0 });
-    const hits = JSON.parse(r.rawResponse ?? "{}").value?.[0]?.hitsContainers?.[0]?.hits ?? [];
-    return hits.filter((h) => h.resource?.createdDateTime && (!o.before || h.resource.createdDateTime < o.before)).slice(0, o.limit ?? 10).map((h) => {
-      const who2 = h.resource.from?.emailAddress?.name ?? "someone";
-      return { at: h.resource.createdDateTime, who: who2, mine: who2 === this.owner, text: (h.summary ?? "").replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim(), link: (h.resource.webLink ?? "").replace(/\?context=.*$/, "") };
-    });
-  }
-  // Every conversation the owner wrote in since a day. The chat list stops at 50; search finds them all
-  // (measured: 158 conversations in 90 days, 145 calls, about 3 minutes). Week by week, so each window pages fully.
-  async conversations(sinceDay, now = /* @__PURE__ */ new Date()) {
-    const day3 = (t2) => new Date(t2).toISOString().slice(0, 10), D = 864e5;
-    const out = /* @__PURE__ */ new Map();
-    for (let last2 = Date.parse(day3(now.getTime())); day3(last2) >= sinceDay; last2 -= 7 * D) {
-      const first3 = Math.max(last2 - 6 * D, Date.parse(sinceDay));
-      for (let from = 0; from < 1e3; from += 25) {
-        const r = await this.mcp.call("SearchTeamMessagesQueryParameters", { queryString: `from:"${this.owner}" AND sent>=${day3(first3)} AND sent<=${day3(last2)}`, from });
-        const c = JSON.parse(r.rawResponse ?? "{}").value?.[0]?.hitsContainers?.[0];
-        for (const h of c?.hits ?? []) {
-          const id = h.resource?.chatId, at3 = h.resource?.createdDateTime ?? "";
-          if (!id) continue;
-          const team = /@thread\.(tacv2|skype)$/.test(id) ? h.resource?.channelIdentity?.teamId : void 0;
-          const o = out.get(id) ?? { id, ...team ? { team } : {}, mine: 0, lastAt: "" };
-          out.set(id, { ...o, mine: o.mine + 1, lastAt: at3 > o.lastAt ? at3 : o.lastAt });
-        }
-        if (!c?.moreResultsAvailable || !c.hits?.length) break;
-      }
-    }
-    return [...out.values()].sort((a, b) => b.mine - a.mine);
-  }
-  close() {
-    return this.mcp.close();
-  }
-};
-
-// src/adapters/source-teams.ts
-init_mcp_client();
-init_intake();
-init_source();
-init_format();
-init_channels();
-init_brand();
-var DEFAULT_TOOLS = { list: "ListChatMessages", send: "SendMessageToChat", sendSelf: "SendMessageToSelf", get: "GetChat", chats: "ListChats", del: "DeleteChatMessage", edit: "UpdateChatMessage", presence: "GetUserPresence", members: "ListChatMembers", message: "GetChatMessage" };
-var newer = (a, b) => BigInt(a) > BigInt(b);
-var esc3 = (s3) => s3.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-var TeamsSource = class {
-  mcp;
-  tools;
-  selfChatId;
-  threads;
-  owner;
-  constructor(cfg, mcp = new McpClient(cfg.command), owner2 = "") {
-    this.mcp = mcp;
-    this.threads = new Threads(mcp, owner2);
-    this.owner = owner2;
-    this.tools = { ...DEFAULT_TOOLS, ...cfg.tools };
-    this.selfChatId = cfg.selfChatId;
-  }
-  // Messages newer than afterId (or, with no cursor, newer than sinceIso), oldest first.
-  // With neither, returns [] and the newest ID, so history is never answered.
-  async newMessages(chatId, afterId, sinceIso, o = {}) {
-    const maxPages = o.maxPages ?? 25;
-    if (isThread(chatId)) {
-      const { msgs: all, truncated } = await this.thread(chatId);
-      const newest3 = all.at(-1)?.id ?? afterId;
-      if (!afterId && !sinceIso) return { msgs: [], newest: newest3, truncated: false };
-      const msgs = all.filter((m) => afterId ? newer(m.id, afterId) : m.at > sinceIso);
-      const from = o.stop ? msgs.length - 1 - [...msgs].reverse().findIndex((m) => o.stop(m)) : msgs.length;
-      return { msgs: o.stop && from < msgs.length ? msgs.slice(from) : msgs, newest: newest3, truncated: truncated && !(o.stop && from < msgs.length) };
-    }
-    const out = [];
-    const bounded = !!afterId || !!sinceIso;
-    const isOld = (m) => afterId ? !newer(m.id, afterId) : !!sinceIso && m.createdDateTime <= sinceIso;
-    let nextLink;
-    let reached = false;
-    for (let page2 = 0; page2 < maxPages; page2++) {
-      const r = await this.mcp.call(this.tools.list, nextLink ? { chatId, nextLink, include: "attachments" } : { chatId, top: 20, include: "attachments" });
-      for (const m of r.messages ?? []) {
-        if (isOld(m)) {
-          reached = true;
-          break;
-        }
-        out.push(m);
-        if (o.stop?.(toRaw(m))) {
-          reached = true;
-          break;
-        }
-      }
-      nextLink = r.nextLink ?? r["@odata.nextLink"];
-      if (reached || !bounded || !nextLink) break;
-    }
-    const newest2 = out[0]?.id ?? afterId;
-    if (!bounded) return { msgs: [], newest: newest2, truncated: false };
-    return { msgs: out.reverse().map(toRaw), newest: newest2, truncated: !reached && !!nextLink };
-  }
-  async recentChats() {
-    const r = await this.mcp.call(this.tools.chats, {});
-    return (r.chats ?? []).map((c) => ({ id: c.id, name: c.topic || c.lastMessagePreview?.from || c.id, lastAt: c.lastMessagePreview?.createdDateTime ?? "" }));
-  }
-  // A thread is its start plus its replies, oldest first.
-  async thread(id) {
-    const t2 = parseThread(id);
-    const starts = await this.mcp.call("ListChannelMessages", { teamId: t2.teamId, channelId: t2.channelId, top: 50, include: "attachments" });
-    const root = (starts.messages ?? []).find((m) => m.id === t2.rootId);
-    const { msgs: replies, truncated } = await this.threads.replies(t2.teamId, t2.channelId, t2.rootId);
-    return { msgs: [...root ? [root] : [], ...replies].map(toRaw).sort((a, b) => newer(a.id, b.id) ? 1 : -1), truncated };
-  }
-  // Channel threads where the owner started, posted, or was mentioned, for discovery (owner question 2).
-  async channelThreads(cache2, sinceIso, channels = []) {
-    const c = await this.threads.freshness(await this.threads.discover(sinceIso, cache2, /* @__PURE__ */ new Date(), channels));
-    return { list: c.threads.map((t2) => ({ id: t2.id, name: `${t2.name} (thread)`, lastAt: c.last[t2.id]?.at ?? t2.hitAt, mine: t2.mine })), cache: c };
-  }
-  async recent(chatId, n) {
-    if (isThread(chatId)) return (await this.thread(chatId)).msgs.slice(-n);
-    const r = await this.mcp.call(this.tools.list, { chatId, top: n, include: "attachments" });
-    return (r.messages ?? []).reverse().map(toRaw);
-  }
-  // One message, even an old one, and the messages after it, oldest first (a missed link from before the install).
-  async around(chatId, msgId, max = 300) {
-    if (isThread(chatId)) {
-      const t2 = (await this.thread(chatId)).msgs, i = t2.findIndex((m) => m.id === msgId);
-      return i < 0 ? { after: [] } : { msg: t2[i], after: t2.slice(i + 1) };
-    }
-    const seen = [];
-    let p = await this.mcp.call(this.tools.list, { chatId, top: 50, include: "attachments" });
-    for (let i = 0; i < Math.ceil(max / 50); i++) {
-      seen.push(...p.messages ?? []);
-      const next2 = p.nextLink ?? p["@odata.nextLink"];
-      if (seen.some((m) => m.id === msgId) || !next2) break;
-      p = await this.mcp.call(this.tools.list, { chatId, top: 50, nextLink: next2 });
-    }
-    const all = seen.map(toRaw).sort((a, b) => newer(a.id, b.id) ? 1 : -1);
-    const at3 = all.findIndex((m) => m.id === msgId);
-    if (at3 >= 0) return { msg: all[at3], after: all.slice(at3 + 1) };
-    const one = await this.mcp.call(this.tools.message, { chatId, messageId: msgId }).catch(() => void 0);
-    return { msg: one?.id ? toRaw(one) : void 0, after: all.filter((m) => newer(m.id, msgId)) };
-  }
-  async send(chatId, text3, o = {}) {
-    const mentions = (o.mentions ?? []).flatMap((m) => {
-      const n = [m.name, m.name.split(" ")[0]].find((x) => new RegExp(`@${x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\p{L}])`, "u").test(text3));
-      return n ? [{ displayName: n, id: m.id, type: "user" }] : [];
-    });
-    const quote = o.replyTo ? `<blockquote><b>${esc3(o.replyTo.name)}</b>: ${esc3(o.replyTo.text.replace(/\s+/g, " ").slice(0, 200))}${o.replyTo.text.length > 200 ? "\u2026" : ""}</blockquote>` : "";
-    const extra = mentions.length ? { mentions: JSON.stringify(mentions) } : {};
-    if (isThread(chatId)) {
-      const t2 = parseThread(chatId), content2 = mdToHtml(text3);
-      return this.posted(chatId, content2, () => this.mcp.call("ReplyToChannelMessage", { teamId: t2.teamId, channelId: t2.channelId, messageId: t2.rootId, content: content2, contentType: "html" }));
-    }
-    const content = quote + mdToHtml(text3);
-    return this.posted(chatId, mdToHtml(text3), () => this.mcp.call(this.tools.send, { chatId, content, contentType: "html", ...extra }));
-  }
-  // A send whose answer was lost is never sent again: the chat is read back, and the message found there is the one sent.
-  // Not found, it may still land, so the caller holds it as not sure (bug 10-23 R4: a rule reply posted twice).
-  async posted(chatId, words3, post) {
-    const started2 = Date.now();
-    try {
-      return { msgId: idOf(await post()) };
-    } catch (e) {
-      if (!(e instanceof LostResponse)) throw e;
-      const want = squashText(words3), since = started2 - 12e4;
-      let recent = [];
-      try {
-        if (isThread(chatId)) {
-          const t2 = parseThread(chatId), p = await this.mcp.call("ListChannelMessageReplies", { teamId: t2.teamId, channelId: t2.channelId, messageId: t2.rootId, maxReplies: 20 });
-          recent = p.replies ?? p.messages ?? p.value ?? [];
-        } else recent = (await this.mcp.call(this.tools.list, { chatId, top: 20 })).messages ?? [];
-      } catch (read3) {
-        throw new SendUncertain(`${e.message}; reading the chat back failed too (${String(read3).slice(0, 120)})`);
-      }
-      const hit = recent.filter((m) => !m.deletedDateTime && Date.parse(m.createdDateTime) >= since && !!want && squashText(m.body?.content ?? "").endsWith(want)).sort((a, b) => newer(a.id, b.id) ? -1 : 1)[0];
-      if (hit) {
-        console.warn(`${NAME}: the send's answer was lost; found it in the chat as ${hit.id}.`);
-        return { msgId: hit.id };
-      }
-      throw new SendUncertain(e.message);
-    }
-  }
-  async sendSelf(text3) {
-    return { msgId: idOf(await this.mcp.call(this.tools.sendSelf, { content: mdToHtml(text3), contentType: "html" })) };
-  }
-  async deleteMessage(chatId, msgId) {
-    if (isThread(chatId)) throw new Error(`${NAME} cannot change channel messages`);
-    await this.mcp.call(this.tools.del, { chatId, messageId: msgId });
-  }
-  async editMessage(chatId, msgId, text3) {
-    if (isThread(chatId)) throw new Error(`${NAME} cannot change channel messages`);
-    await this.mcp.call(this.tools.edit, { chatId, messageId: msgId, content: mdToHtml(text3), contentType: "html" });
-  }
-  async presence() {
-    const r = await this.mcp.call(this.tools.presence, {});
-    const o = r.outOfOfficeSettings;
-    return { availability: r.availability ?? "Unknown", oof: o?.isOutOfOffice ? (o.message ?? "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim() || "out of office" : void 0 };
-  }
-  async members(chatId) {
-    const t2 = isThread(chatId) ? parseThread(chatId) : void 0;
-    const r = await this.mcp.call(t2 ? "ListChannelMembers" : this.tools.members, t2 ? { teamId: t2.teamId, channelId: t2.channelId } : { chatId });
-    const ms = r.members ?? [];
-    return { guests: ms.some((m) => (m.roles ?? []).includes("guest")), ids: ms.map((m) => m.userId).filter((u) => !!u), names: Object.fromEntries(ms.flatMap((m) => m.userId && m.displayName ? [[m.userId, m.displayName]] : [])) };
-  }
-  async chatName(chatId) {
-    const r = await this.mcp.call(this.tools.get, { chatId });
-    return r.topic ?? chatId;
-  }
-  async close() {
-    await this.mcp.close();
-  }
-  // Search is the only list of chats past the 50 newest (measured 10-20: 49 chats reached back 5 days). Chats only; channels come from channelThreads.
-  async awaiting(sinceIso, untilIso) {
-    if (!this.owner) return [];
-    const out = /* @__PURE__ */ new Map();
-    for (let from = 0; from < 1e3; from += 25) {
-      const r = await this.mcp.call("SearchTeamMessagesQueryParameters", { queryString: `to:"${this.owner}" AND sent>=${sinceIso.slice(0, 10)} AND sent<=${new Date(Date.parse(untilIso) + 864e5).toISOString().slice(0, 10)}`, from });
-      const c = JSON.parse(r.rawResponse ?? "{}").value?.[0]?.hitsContainers?.[0];
-      for (const h of c?.hits ?? []) {
-        const id = h.resource?.chatId, at3 = h.resource?.createdDateTime ?? "";
-        if (!id || /@thread\.(tacv2|skype)$/.test(id) || !(Date.parse(at3) > Date.parse(sinceIso) && Date.parse(at3) <= Date.parse(untilIso))) continue;
-        const was = out.get(id);
-        if (!was || Date.parse(at3) > Date.parse(was.lastAt)) out.set(id, { id, name: was?.name ?? h.resource?.from?.emailAddress?.name ?? id, lastAt: at3 });
-      }
-      if (!c?.moreResultsAvailable || !c.hits?.length) break;
-    }
-    return [...out.values()];
-  }
-};
-function toRaw(m) {
-  let replyToId = m.replyToId || void 0;
-  for (const attachment of m.attachments ?? []) {
-    if (replyToId || attachment.contentType !== "messageReference" || !attachment.content) continue;
-    try {
-      const reference = JSON.parse(attachment.content);
-      if (reference && typeof reference === "object" && "messageId" in reference && typeof reference.messageId === "string") replyToId = reference.messageId;
-    } catch (error62) {
-      console.warn("Could not read Teams reply reference:", error62);
-    }
-  }
-  return {
-    id: m.id,
-    at: m.createdDateTime,
-    from: m.from ? { id: m.from.id, name: m.from.displayName } : null,
-    html: m.body?.contentType?.toLowerCase() === "html",
-    body: m.body?.content ?? "",
-    deleted: !!m.deletedDateTime,
-    replyToId,
-    attachments: (m.attachments ?? []).filter((a) => a.contentType !== "messageReference").map((a) => ({ name: a.name ?? "", type: a.contentType ?? "file", url: a.contentUrl ?? void 0 }))
-  };
-}
-function idOf(r) {
-  const o = r;
-  return o.id ?? o.messageId ?? o.message?.id ?? "";
-}
-var squashText = (html) => htmlToText(html).replace(/[^\p{L}\p{N}]+/gu, "").toLowerCase();
-
-// src/adapters/registry.ts
-var beside = (s3, server) => s3.command.at(-1) === "teams" ? [...s3.command.slice(0, -1), server] : void 0;
-var docsCommand = (s3) => s3.docs ?? beside(s3, "sharepoint");
-var ADAPTERS = {
-  teams: { source: (c, owner2) => new TeamsSource(c, void 0, owner2), history: (cfg) => new TeamsHistory(cfg), docs: (cfg) => {
-    const c = docsCommand(cfg.source);
-    return c && new SharePointDocs(c);
-  }, images: (cfg) => {
-    const im = site().images, c = im && beside(cfg.source, im.server);
-    return c && new HostedImages(c, im.tool);
-  } },
-  demo: { source: (_c, _o, root) => new DemoSource(root) }
-};
-var kindOf2 = (s3) => s3.kind ?? (s3.command[0] === "demo" ? "demo" : "teams");
-function adapter(s3) {
-  const a = ADAPTERS[kindOf2(s3)];
-  if (!a) throw new Error(`No adapter for source "${kindOf2(s3)}". Known: ${Object.keys(ADAPTERS).join(", ")}.`);
-  return a;
-}
-var sourceFor = (s3, owner2, root) => adapter(s3).source(s3, owner2, root);
-var historyFor = (cfg) => adapter(cfg.source).history?.(cfg);
-var docsFor = (cfg) => adapter(cfg.source).docs?.(cfg);
-var imagesFor = (cfg) => adapter(cfg.source).images?.(cfg);
-
-// src/runner/tick.ts
+init_demo();
+init_registry();
 init_bootstrap();
 init_proposals();
 init_apply();
@@ -50365,6 +50782,153 @@ init_continue();
 init_own();
 init_catalog();
 
+// src/host/client.ts
+init_agent();
+init_mcp_client();
+init_change();
+init_catalog();
+init_paths();
+init_fs();
+init_state();
+init_host();
+init_locate();
+import { spawn as spawn4 } from "node:child_process";
+import { closeSync as closeSync5, openSync as openSync5 } from "node:fs";
+import { request } from "node:http";
+import { join as join31 } from "node:path";
+var READY_MS = 15e3;
+var BACKOFF = [5e3, 3e4, 12e4];
+var markFile = () => join31(LOCAL_DIR, "host-start.json");
+var alive3 = (pid) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return e.code === "EPERM";
+  }
+};
+var readMark2 = () => readJson(markFile(), { at: "", fails: 0 });
+function hostDisabledUntil(now = Date.now()) {
+  const u = readMark2().disabledUntil;
+  return u && Date.parse(u) > now ? u : void 0;
+}
+function call(h, method, path, body, timeoutMs = 3e3) {
+  return new Promise((ok, no) => {
+    const data = body === void 0 ? void 0 : JSON.stringify(body);
+    const req = request({ host: "127.0.0.1", port: h.port, method, path, headers: { authorization: `Bearer ${h.token}`, ...data ? { "content-type": "application/json", "content-length": Buffer.byteLength(data) } : {} } }, (res) => {
+      let s3 = "";
+      res.setEncoding("utf8");
+      res.on("data", (c) => s3 += c);
+      res.on("end", () => {
+        try {
+          ok({ status: res.statusCode ?? 0, body: JSON.parse(s3 || "{}") });
+        } catch (e) {
+          no(e);
+        }
+      });
+    });
+    if (timeoutMs) req.setTimeout(timeoutMs, () => req.destroy(new Error("the AI host did not answer")));
+    req.on("error", no);
+    req.end(data);
+  });
+}
+var pingOk = (h) => call(h, "GET", "/ping").then((r) => r.status === 200 && !!r.body.ok, () => false);
+var current = () => readJson(hostFile(), void 0);
+async function ensureHost(store2, cfg) {
+  if (hostOff(cfg) || process.env.NODE_TEST_CONTEXT || hostDisabledUntil()) return void 0;
+  const h = current(), want = hostHash(cfg);
+  const live2 = h && alive3(h.pid), answers2 = live2 && await pingOk(h);
+  if (h && live2 && !answers2) {
+    try {
+      process.kill(h.pid);
+    } catch {
+    }
+    store2.log({ event: "host-replaced", why: "did not answer" });
+  }
+  if (h && answers2) {
+    if (h.configHash === want) return h;
+    await call(h, "POST", "/drain").catch(() => void 0);
+    store2.log({ event: "host-replaced", why: "config changed" });
+  }
+  const mark2 = readMark2();
+  if (mark2.fails && Date.now() - Date.parse(mark2.at) < BACKOFF[Math.min(mark2.fails, BACKOFF.length) - 1]) return void 0;
+  const log = openSync5(join31(LOCAL_DIR, "host.log"), "a");
+  try {
+    spawn4(process.execPath, [CLI, "host"], { detached: true, windowsHide: true, stdio: ["ignore", log, log], env: process.env }).unref();
+  } finally {
+    closeSync5(log);
+  }
+  const until = Date.now() + READY_MS;
+  while (Date.now() < until) {
+    await new Promise((r) => setTimeout(r, 250));
+    const n = current();
+    if (n && n.pid !== h?.pid && n.configHash === want && await pingOk(n)) {
+      writeJson(markFile(), { ...readMark2(), at: (/* @__PURE__ */ new Date()).toISOString(), fails: 0, strikes: 0, disabledUntil: void 0 }, store2.machine);
+      return n;
+    }
+  }
+  writeJson(markFile(), { ...mark2, at: (/* @__PURE__ */ new Date()).toISOString(), fails: mark2.fails + 1 }, store2.machine);
+  store2.log({ event: "host-start-failed", fails: mark2.fails + 1 });
+  return void 0;
+}
+var HOST_FAULTS = 2;
+var hostFaultLimit = (cfg) => Math.max(1, cfg.agent.hostFaults ?? HOST_FAULTS);
+function hostFault(store2, cfg, h, what, why2) {
+  const m = readMark2(), strikes = (m.strikes ?? 0) + 1, limit = hostFaultLimit(cfg);
+  store2.log({ event: "host-fault", what, strikes, error: why2?.slice(0, 160) });
+  if (strikes < limit) return writeJson(markFile(), { ...m, strikes }, store2.machine);
+  const disables = (m.disables ?? 0) + 1, until = new Date(Date.now() + BACKOFF[Math.min(disables, BACKOFF.length) - 1]).toISOString();
+  writeJson(markFile(), { ...m, at: (/* @__PURE__ */ new Date()).toISOString(), strikes: 0, disables, disabledUntil: until }, store2.machine);
+  store2.log({ event: "host-disabled", faults: strikes, until });
+  void call(h, "POST", "/drain").catch(() => void 0);
+}
+function hostGood(store2) {
+  const m = readMark2();
+  if (m.strikes || m.disables) writeJson(markFile(), { ...m, strikes: 0, disables: 0 }, store2.machine);
+}
+var hostCaller = (store2, cfg, fallback = mcpCaller(cfg)) => async (server, tool, args2) => {
+  const h = await ensureHost(store2, cfg);
+  if (!h) return fallback(server, tool, args2);
+  let r;
+  try {
+    r = await call(h, "POST", "/call", { server, tool, args: args2 }, 0);
+  } catch (e) {
+    if (e.code === "ECONNREFUSED") return fallback(server, tool, args2);
+    throw new LostResponse(`${server}-${tool}`, e);
+  }
+  if (r.status === 404) return fallback(server, tool, args2);
+  if (r.body.hostFault) {
+    hostFault(store2, cfg, h, `call ${server}-${tool}`, r.body.error);
+    return fallback(server, tool, args2);
+  }
+  if (r.body.lost) throw new LostResponse(`${server}-${tool}`, r.body.error);
+  if (r.body.error) {
+    if (r.body.notCalled && r.body.error.includes("has no tool")) staleCatalog(server);
+    throw new Error(r.body.error);
+  }
+  hostGood(store2);
+  return r.body.result;
+};
+var hostRunner = (store2, fallback = runAgent) => async (agent, input2) => {
+  const cfg = store2.config(), h = await ensureHost(store2, cfg);
+  if (!h) return fallback(agent, input2);
+  let r;
+  try {
+    r = await call(h, "POST", "/run", { agent, input: input2 }, 0);
+  } catch (e) {
+    store2.log({ event: "host-lost", workflowId: input2.workflowId, error: String(e).slice(0, 160) });
+    return { exitCode: 1, ms: 0, error: `Could not start: the AI host stopped during the run` };
+  }
+  if (r.status === 503 || r.status === 429) return fallback(agent, input2);
+  if (r.status === 502 && r.body.hostFault) {
+    hostFault(store2, cfg, h, `run ${r.body.hostFault}`, r.body.error);
+    return fallback(agent, input2);
+  }
+  if (r.status !== 200) return { exitCode: 1, ms: 0, error: `The AI host refused the run (${r.status})` };
+  hostGood(store2);
+  return r.body;
+};
+
 // src/runner/place.ts
 init_whose();
 init_format2();
@@ -50411,15 +50975,15 @@ function stampPlaces(store2, now = Date.now()) {
 init_state();
 init_format2();
 init_fs();
-import { createHash as createHash8, randomBytes as randomBytes3 } from "node:crypto";
-import { createServer } from "node:http";
-import { existsSync as existsSync28 } from "node:fs";
-import { join as join31 } from "node:path";
+import { createHash as createHash9, randomBytes as randomBytes3 } from "node:crypto";
+import { createServer as createServer2 } from "node:http";
+import { existsSync as existsSync30 } from "node:fs";
+import { join as join34 } from "node:path";
 
 // src/mcp/server.ts
 init_effects();
 init_policy();
-import { spawn as spawn4 } from "node:child_process";
+import { spawn as spawn5 } from "node:child_process";
 
 // node_modules/@modelcontextprotocol/sdk/dist/esm/server/index.js
 init_protocol();
@@ -50447,8 +51011,8 @@ var ExperimentalServerTasks = class {
    *
    * @experimental
    */
-  requestStream(request2, resultSchema, options) {
-    return this._server.requestStream(request2, resultSchema, options);
+  requestStream(request3, resultSchema, options) {
+    return this._server.requestStream(request3, resultSchema, options);
   }
   /**
    * Sends a sampling request and returns an AsyncGenerator that yields response messages.
@@ -50659,12 +51223,12 @@ var Server = class extends Protocol {
     this._capabilities = options?.capabilities ?? {};
     this._instructions = options?.instructions;
     this._jsonSchemaValidator = options?.jsonSchemaValidator ?? new AjvJsonSchemaValidator();
-    this.setRequestHandler(InitializeRequestSchema, (request2) => this._oninitialize(request2));
+    this.setRequestHandler(InitializeRequestSchema, (request3) => this._oninitialize(request3));
     this.setNotificationHandler(InitializedNotificationSchema, () => this.oninitialized?.());
     if (this._capabilities.logging) {
-      this.setRequestHandler(SetLevelRequestSchema, async (request2, extra) => {
+      this.setRequestHandler(SetLevelRequestSchema, async (request3, extra) => {
         const transportSessionId = extra.sessionId || extra.requestInfo?.headers["mcp-session-id"] || void 0;
-        const { level } = request2.params;
+        const { level } = request3.params;
         const parseResult = LoggingLevelSchema.safeParse(level);
         if (parseResult.success) {
           this._loggingLevels.set(transportSessionId, parseResult.data);
@@ -50714,14 +51278,14 @@ var Server = class extends Protocol {
     }
     const method = methodValue;
     if (method === "tools/call") {
-      const wrappedHandler = async (request2, extra) => {
-        const validatedRequest = safeParse3(CallToolRequestSchema, request2);
+      const wrappedHandler = async (request3, extra) => {
+        const validatedRequest = safeParse3(CallToolRequestSchema, request3);
         if (!validatedRequest.success) {
           const errorMessage = validatedRequest.error instanceof Error ? validatedRequest.error.message : String(validatedRequest.error);
           throw new McpError(ErrorCode.InvalidParams, `Invalid tools/call request: ${errorMessage}`);
         }
         const { params } = validatedRequest.data;
-        const result = await Promise.resolve(handler(request2, extra));
+        const result = await Promise.resolve(handler(request3, extra));
         if (params.task) {
           const taskValidationResult = safeParse3(CreateTaskResultSchema, result);
           if (!taskValidationResult.success) {
@@ -50852,10 +51416,10 @@ var Server = class extends Protocol {
     }
     assertToolsCallTaskCapability(this._capabilities.tasks?.requests, method, "Server");
   }
-  async _oninitialize(request2) {
-    const requestedVersion = request2.params.protocolVersion;
-    this._clientCapabilities = request2.params.capabilities;
-    this._clientVersion = request2.params.clientInfo;
+  async _oninitialize(request3) {
+    const requestedVersion = request3.params.protocolVersion;
+    this._clientCapabilities = request3.params.capabilities;
+    this._clientVersion = request3.params.clientInfo;
     const protocolVersion = SUPPORTED_PROTOCOL_VERSIONS.includes(requestedVersion) ? requestedVersion : LATEST_PROTOCOL_VERSION;
     return {
       protocolVersion,
@@ -51225,33 +51789,33 @@ var McpServer = class {
         return toolDefinition;
       })
     }));
-    this.server.setRequestHandler(CallToolRequestSchema, async (request2, extra) => {
+    this.server.setRequestHandler(CallToolRequestSchema, async (request3, extra) => {
       try {
-        const tool = this._registeredTools[request2.params.name];
+        const tool = this._registeredTools[request3.params.name];
         if (!tool) {
-          throw new McpError(ErrorCode.InvalidParams, `Tool ${request2.params.name} not found`);
+          throw new McpError(ErrorCode.InvalidParams, `Tool ${request3.params.name} not found`);
         }
         if (!tool.enabled) {
-          throw new McpError(ErrorCode.InvalidParams, `Tool ${request2.params.name} disabled`);
+          throw new McpError(ErrorCode.InvalidParams, `Tool ${request3.params.name} disabled`);
         }
-        const isTaskRequest = !!request2.params.task;
+        const isTaskRequest = !!request3.params.task;
         const taskSupport = tool.execution?.taskSupport;
         const isTaskHandler = "createTask" in tool.handler;
         if ((taskSupport === "required" || taskSupport === "optional") && !isTaskHandler) {
-          throw new McpError(ErrorCode.InternalError, `Tool ${request2.params.name} has taskSupport '${taskSupport}' but was not registered with registerToolTask`);
+          throw new McpError(ErrorCode.InternalError, `Tool ${request3.params.name} has taskSupport '${taskSupport}' but was not registered with registerToolTask`);
         }
         if (taskSupport === "required" && !isTaskRequest) {
-          throw new McpError(ErrorCode.MethodNotFound, `Tool ${request2.params.name} requires task augmentation (taskSupport: 'required')`);
+          throw new McpError(ErrorCode.MethodNotFound, `Tool ${request3.params.name} requires task augmentation (taskSupport: 'required')`);
         }
         if (taskSupport === "optional" && !isTaskRequest && isTaskHandler) {
-          return await this.handleAutomaticTaskPolling(tool, request2, extra);
+          return await this.handleAutomaticTaskPolling(tool, request3, extra);
         }
-        const args2 = await this.validateToolInput(tool, request2.params.arguments, request2.params.name);
+        const args2 = await this.validateToolInput(tool, request3.params.arguments, request3.params.name);
         const result = await this.executeToolHandler(tool, args2, extra);
         if (isTaskRequest) {
           return result;
         }
-        await this.validateToolOutput(tool, result, request2.params.name);
+        await this.validateToolOutput(tool, result, request3.params.name);
         return result;
       } catch (error62) {
         if (error62 instanceof McpError) {
@@ -51355,11 +51919,11 @@ var McpServer = class {
   /**
    * Handles automatic task polling for tools with taskSupport 'optional'.
    */
-  async handleAutomaticTaskPolling(tool, request2, extra) {
+  async handleAutomaticTaskPolling(tool, request3, extra) {
     if (!extra.taskStore) {
       throw new Error("No task store provided for task-capable tool.");
     }
-    const args2 = await this.validateToolInput(tool, request2.params.arguments, request2.params.name);
+    const args2 = await this.validateToolInput(tool, request3.params.arguments, request3.params.name);
     const handler = tool.handler;
     const taskExtra = { ...extra, taskStore: extra.taskStore };
     const createTaskResult = args2 ? await Promise.resolve(handler.createTask(args2, taskExtra)) : (
@@ -51370,7 +51934,7 @@ var McpServer = class {
     let task = createTaskResult.task;
     const pollInterval = task.pollInterval ?? 5e3;
     while (task.status !== "completed" && task.status !== "failed" && task.status !== "cancelled") {
-      await new Promise((resolve8) => setTimeout(resolve8, pollInterval));
+      await new Promise((resolve9) => setTimeout(resolve9, pollInterval));
       const updatedTask = await extra.taskStore.getTask(taskId);
       if (!updatedTask) {
         throw new McpError(ErrorCode.InternalError, `Task ${taskId} not found during polling`);
@@ -51387,21 +51951,21 @@ var McpServer = class {
     this.server.registerCapabilities({
       completions: {}
     });
-    this.server.setRequestHandler(CompleteRequestSchema, async (request2) => {
-      switch (request2.params.ref.type) {
+    this.server.setRequestHandler(CompleteRequestSchema, async (request3) => {
+      switch (request3.params.ref.type) {
         case "ref/prompt":
-          assertCompleteRequestPrompt(request2);
-          return this.handlePromptCompletion(request2, request2.params.ref);
+          assertCompleteRequestPrompt(request3);
+          return this.handlePromptCompletion(request3, request3.params.ref);
         case "ref/resource":
-          assertCompleteRequestResourceTemplate(request2);
-          return this.handleResourceCompletion(request2, request2.params.ref);
+          assertCompleteRequestResourceTemplate(request3);
+          return this.handleResourceCompletion(request3, request3.params.ref);
         default:
-          throw new McpError(ErrorCode.InvalidParams, `Invalid completion reference: ${request2.params.ref}`);
+          throw new McpError(ErrorCode.InvalidParams, `Invalid completion reference: ${request3.params.ref}`);
       }
     });
     this._completionHandlerInitialized = true;
   }
-  async handlePromptCompletion(request2, ref) {
+  async handlePromptCompletion(request3, ref) {
     const prompt = this._registeredPrompts[ref.name];
     if (!prompt) {
       throw new McpError(ErrorCode.InvalidParams, `Prompt ${ref.name} not found`);
@@ -51413,7 +51977,7 @@ var McpServer = class {
       return EMPTY_COMPLETION_RESULT;
     }
     const promptShape = getObjectShape(prompt.argsSchema);
-    const field = promptShape?.[request2.params.argument.name];
+    const field = promptShape?.[request3.params.argument.name];
     if (!isCompletable(field)) {
       return EMPTY_COMPLETION_RESULT;
     }
@@ -51421,22 +51985,22 @@ var McpServer = class {
     if (!completer) {
       return EMPTY_COMPLETION_RESULT;
     }
-    const suggestions2 = await completer(request2.params.argument.value, request2.params.context);
+    const suggestions2 = await completer(request3.params.argument.value, request3.params.context);
     return createCompletionResult(suggestions2);
   }
-  async handleResourceCompletion(request2, ref) {
+  async handleResourceCompletion(request3, ref) {
     const template = Object.values(this._registeredResourceTemplates).find((t2) => t2.resourceTemplate.uriTemplate.toString() === ref.uri);
     if (!template) {
       if (this._registeredResources[ref.uri]) {
         return EMPTY_COMPLETION_RESULT;
       }
-      throw new McpError(ErrorCode.InvalidParams, `Resource template ${request2.params.ref.uri} not found`);
+      throw new McpError(ErrorCode.InvalidParams, `Resource template ${request3.params.ref.uri} not found`);
     }
-    const completer = template.resourceTemplate.completeCallback(request2.params.argument.name);
+    const completer = template.resourceTemplate.completeCallback(request3.params.argument.name);
     if (!completer) {
       return EMPTY_COMPLETION_RESULT;
     }
-    const suggestions2 = await completer(request2.params.argument.value, request2.params.context);
+    const suggestions2 = await completer(request3.params.argument.value, request3.params.context);
     return createCompletionResult(suggestions2);
   }
   setResourceRequestHandlers() {
@@ -51451,7 +52015,7 @@ var McpServer = class {
         listChanged: true
       }
     });
-    this.server.setRequestHandler(ListResourcesRequestSchema, async (request2, extra) => {
+    this.server.setRequestHandler(ListResourcesRequestSchema, async (request3, extra) => {
       const resources = Object.entries(this._registeredResources).filter(([_, resource]) => resource.enabled).map(([uri, resource]) => ({
         uri,
         name: resource.name,
@@ -51481,8 +52045,8 @@ var McpServer = class {
       }));
       return { resourceTemplates };
     });
-    this.server.setRequestHandler(ReadResourceRequestSchema, async (request2, extra) => {
-      const uri = new URL(request2.params.uri);
+    this.server.setRequestHandler(ReadResourceRequestSchema, async (request3, extra) => {
+      const uri = new URL(request3.params.uri);
       const resource = this._registeredResources[uri.toString()];
       if (resource) {
         if (!resource.enabled) {
@@ -51521,21 +52085,21 @@ var McpServer = class {
         };
       })
     }));
-    this.server.setRequestHandler(GetPromptRequestSchema, async (request2, extra) => {
-      const prompt = this._registeredPrompts[request2.params.name];
+    this.server.setRequestHandler(GetPromptRequestSchema, async (request3, extra) => {
+      const prompt = this._registeredPrompts[request3.params.name];
       if (!prompt) {
-        throw new McpError(ErrorCode.InvalidParams, `Prompt ${request2.params.name} not found`);
+        throw new McpError(ErrorCode.InvalidParams, `Prompt ${request3.params.name} not found`);
       }
       if (!prompt.enabled) {
-        throw new McpError(ErrorCode.InvalidParams, `Prompt ${request2.params.name} disabled`);
+        throw new McpError(ErrorCode.InvalidParams, `Prompt ${request3.params.name} disabled`);
       }
       if (prompt.argsSchema) {
         const argsObj = normalizeObjectSchema(prompt.argsSchema);
-        const parseResult = await safeParseAsync3(argsObj, request2.params.arguments ?? {});
+        const parseResult = await safeParseAsync3(argsObj, request3.params.arguments ?? {});
         if (!parseResult.success) {
           const error62 = "error" in parseResult ? parseResult.error : "Unknown error";
           const errorMessage = getParseErrorMessage(error62);
-          throw new McpError(ErrorCode.InvalidParams, `Invalid arguments for prompt ${request2.params.name}: ${errorMessage}`);
+          throw new McpError(ErrorCode.InvalidParams, `Invalid arguments for prompt ${request3.params.name}: ${errorMessage}`);
         }
         const args2 = parseResult.data;
         const cb = prompt.callback;
@@ -51996,12 +52560,12 @@ var StdioServerTransport = class {
     this.onclose?.();
   }
   send(message) {
-    return new Promise((resolve8) => {
+    return new Promise((resolve9) => {
       const json2 = serializeMessage(message);
       if (this._stdout.write(json2)) {
-        resolve8();
+        resolve9();
       } else {
-        this._stdout.once("drain", resolve8);
+        this._stdout.once("drain", resolve9);
       }
     });
   }
@@ -52026,11 +52590,13 @@ init_deploy();
 init_repos();
 init_state();
 init_brand();
-import { existsSync as existsSync27, readFileSync as readFileSync22, statSync as statSync9, writeFileSync as writeFileSync15 } from "node:fs";
-import { join as join29 } from "node:path";
+import { existsSync as existsSync29, readFileSync as readFileSync23, statSync as statSync9, writeFileSync as writeFileSync16 } from "node:fs";
+import { join as join32 } from "node:path";
 init_runinfo();
 init_habits();
 init_catalog();
+init_locate();
+init_host();
 var set2 = (patch) => ({ ok: true, save: (cfg) => ({ ...cfg, ...patch }) });
 var list = (raw) => raw.split(/[,\n]/).map((s3) => s3.trim()).filter(Boolean);
 var num3 = (raw, min, max, key) => {
@@ -52055,9 +52621,9 @@ var SETTINGS = [
     help: `A few lines ${NAME} reads before every draft: what you do and how you write.`,
     kind: "text",
     section: "you",
-    read: (_c, s3) => existsSync27(join29(s3.root, "profile.md")) ? readFileSync22(join29(s3.root, "profile.md"), "utf8") : "",
+    read: (_c, s3) => existsSync29(join32(s3.root, "profile.md")) ? readFileSync23(join32(s3.root, "profile.md"), "utf8") : "",
     parse: (raw) => raw.trim().length < 20 ? { ok: false, why: "Write at least a sentence about yourself." } : { ok: true, save: (cfg, s3) => {
-      writeFileSync15(join29(s3.root, "profile.md"), raw.trim() + "\n");
+      writeFileSync16(join32(s3.root, "profile.md"), raw.trim() + "\n");
       return cfg;
     } }
   },
@@ -52091,7 +52657,7 @@ var SETTINGS = [
     section: "you",
     read: (c) => (c.knowledge ?? []).join(", "),
     parse: (raw, s3) => {
-      const fs = list(raw), missing = fs.filter((f) => !existsSync27(here2(s3.root, f)));
+      const fs = list(raw), missing = fs.filter((f) => !existsSync29(here2(s3.root, f)));
       return missing.length ? { ok: false, why: `Not found on this machine: ${missing.join(", ")}` } : set2({ knowledge: fs });
     }
   },
@@ -52439,7 +53005,7 @@ function whoOf(r) {
 function aboutView(store2) {
   const habits = store2.habits(), held = store2.heldRules(), cfg = store2.config();
   return {
-    profile: existsSync27(join29(store2.root, "profile.md")) ? readFileSync22(join29(store2.root, "profile.md"), "utf8").trim() : "",
+    profile: existsSync29(join32(store2.root, "profile.md")) ? readFileSync23(join32(store2.root, "profile.md"), "utf8").trim() : "",
     rules: store2.rules().map((r) => {
       const h = r.learned ? habits.find((x) => x.key === r.learned.key) : void 0;
       return {
@@ -52473,6 +53039,29 @@ function aboutText(store2) {
     `- Signature: ${signatureOf(cfg)}${signsApproved(cfg) ? ", also on replies you approve" : ", only on automatic replies"}`
   ].join("\n");
 }
+function hostLine(cfg, now = Date.now()) {
+  const off = hostOff(cfg);
+  if (off) return `Off: ${off}, so each AI run starts its own process.`;
+  const until = hostDisabledUntil(now);
+  if (until) return `Not used: the AI host failed ${((n) => n === 1 ? "once" : n === 2 ? "twice" : `${n} times`)(hostFaultLimit(cfg))}; using one process per run until ${new Date(until).toLocaleTimeString(void 0, { hour: "numeric", minute: "2-digit", ...cfg.tz && validTz(cfg.tz) ? { timeZone: cfg.tz } : {} })}.`;
+  let h;
+  try {
+    h = JSON.parse(readFileSync23(hostFile(), "utf8"));
+  } catch {
+    h = void 0;
+  }
+  const alive4 = (pid) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (e) {
+      return e.code === "EPERM";
+    }
+  };
+  if (!h || !alive4(h.pid)) return "Not running: it starts with the next AI run.";
+  const mins = Math.round((now - Date.parse(h.startedAt)) / 6e4);
+  return `On for ${mins < 60 ? `${mins} min` : `${Math.floor(mins / 60)} h ${mins % 60} min`} (Copilot CLI ${h.cli}); its tool servers stay connected between runs.`;
+}
 function settingsView(store2, experience) {
   const cfg = store2.config();
   const words3 = (t2) => (experience ?? experienceOf(store2.ui())) !== "classic" ? t2.replace("Waiting on others", "Waiting").replace("Check for updates on Home", "Check for updates at the foot of Now") : t2;
@@ -52488,7 +53077,9 @@ function settingsView(store2, experience) {
       ...((x) => x.length ? [{ label: "Other changes setup allows (each after your ok)", value: x.map(changeName).join("; "), how: `Say "set up ${CMD}" and change the tools step.` }] : [])((cfg.agent.effectTools ?? []).filter((e) => !offerable(e))),
       { label: "Reads your chats from", value: cfg.runner ?? "the machine where setup last finished", how: `On another machine, say "move ${NAME} here".` },
       // While a session history differs between machines: one plain line, nothing to do (queue-new #16 c).
-      ...Object.entries(store2.health()).filter(([key]) => key.startsWith("session:")).map(([, h]) => ({ label: "AI history", value: h.text, how: "Nothing to do. This line goes away by itself." }))
+      ...Object.entries(store2.health()).filter(([key]) => key.startsWith("session:")).map(([, h]) => ({ label: "AI history", value: h.text, how: "Nothing to do. This line goes away by itself." })),
+      // The resident AI host on this machine (#19): on since when, or why runs use one process each.
+      { label: "AI host", value: hostLine(cfg), how: `It starts with the next AI run and stops after 20 minutes idle or in quiet hours. Set agent.host to false in config.json to use one process per run.` }
     ]
   };
 }
@@ -52557,10 +53148,12 @@ init_scheduler();
 init_state();
 init_paths();
 init_intents();
+init_registry();
 init_feedback();
 init_channels();
 init_automations();
 init_report();
+init_tools();
 init_brand();
 var text = (t2) => ({ content: [{ type: "text", text: t2 }] });
 async function serve(store2) {
@@ -52635,39 +53228,18 @@ ${c.entries.map(show).join("\n")}`).join("\n\n") : show(r));
   });
 }
 function registerImageRead(server, get) {
-  server.registerTool("image_read", {
-    description: "Look at an image pasted into a message. Pass the link from its [image ...] line. Use it whenever the ask may depend on what the image shows; never describe an image you did not open.",
-    inputSchema: { link: external_exports.string().describe("The link from the [image ...] line: https://graph.microsoft.com/... or inline:<key>") }
-  }, async ({ link: link2 }) => {
-    const inline = /^inline:([0-9a-f]{16,40})$/.exec(link2.trim());
-    if (inline) {
-      const m2 = get().media(inline[1]);
-      return m2 ? { content: [{ type: "image", data: m2.data, mimeType: m2.type }] } : { ...text("That inline image was not kept, so it cannot be opened. Say you cannot read it; never guess what it shows."), isError: true };
-    }
-    const m = imagesFor(get().config());
-    if (!m) return text("This setup cannot open images. Say you cannot read it; never guess what it shows.");
-    try {
-      const r = await m.read(link2);
-      return typeof r === "string" ? { ...text(r), isError: true } : { content: [{ type: "image", data: r.data, mimeType: r.type }] };
-    } catch (e) {
-      return { ...text(`Could not open it: ${String(e).slice(0, 200)}`), isError: true };
-    } finally {
-      await m.close();
-    }
+  server.registerTool("image_read", { description: IMAGE_DESCRIPTION, inputSchema: { link: external_exports.string().describe(IMAGE_LINK) } }, async ({ link: link2 }) => {
+    const r = await readImage(get(), link2);
+    return r.image ? { content: [{ type: "image", data: r.image.data, mimeType: r.image.mimeType }] } : { ...text(r.text), ...r.error ? { isError: true } : {} };
   });
 }
 function registerWorker(server, store2) {
   registerImageRead(server, () => store2);
   const wfId = process.env.DELEGATE_WORKFLOW, runId = process.env.DELEGATE_RUN;
-  let submitted = false;
-  server.registerTool("submit_report", { description: "Submit your one report for this workflow. Call exactly once, then finish.", inputSchema: ReportSchema }, async (r) => {
-    if (r.workflowId !== wfId) return { ...text(`Wrong workflowId. Use "${wfId}".`), isError: true };
-    const known2 = intents(store2.root).map((i) => i.id);
-    if (!known2.includes(r.intent)) return { ...text(`Unknown intent "${r.intent}". Use one of: ${known2.join(", ")}.`), isError: true };
-    if (submitted && !process.env.DELEGATE_INTERACTIVE) return { ...text("Already submitted. Finish now."), isError: true };
-    store2.writeReport(r, runId);
-    submitted = true;
-    return text("Report saved. Call task_complete now.");
+  const take = reportTaker(store2, wfId, runId, !!process.env.DELEGATE_INTERACTIVE);
+  server.registerTool("submit_report", { description: SUBMIT_DESCRIPTION, inputSchema: ReportSchema }, async (r) => {
+    const o = take(r);
+    return { ...text(o.text), ...o.error ? { isError: true } : {} };
   });
   server.registerTool("make_change", { description: "Make one of the approved changes listed in the prompt, by its index, exactly as approved. Returns its reference, or why it was not made.", inputSchema: { index: external_exports.number().int().min(0) } }, async ({ index }) => {
     const probe = adoProbe(store2.config());
@@ -52823,7 +53395,7 @@ function actResult(store2, command, shownAt, from = "chat") {
     return { text: "Got it. It becomes an item in a minute, with why it was missed. Nothing is sent.", accepted: true, ids: [] };
   }
   if (command.trim() === "check update") {
-    if (!process.env.DELEGATE_NO_KICK) spawn4(process.execPath, [CLI, "update-now"], { detached: true, stdio: "ignore", env: process.env }).unref();
+    if (!process.env.DELEGATE_NO_KICK) spawn5(process.execPath, [CLI, "update-now"], { detached: true, stdio: "ignore", env: process.env }).unref();
     return { text: "Checking for a new version. The page reloads by itself if there is one.", accepted: true, ids: [] };
   }
   const parsed = parseVerbs(command);
@@ -52955,7 +53527,7 @@ function enqueueParsed(store2, parsed, shownAt, from = "page", answerId, page2, 
 function kickTick(store2) {
   store2.saveKick();
   if (process.env.DELEGATE_NO_KICK) return;
-  spawn4(process.execPath, [CLI, "tick", "--force"], { detached: true, stdio: "ignore", env: process.env }).unref();
+  spawn5(process.execPath, [CLI, "tick", "--force"], { detached: true, stdio: "ignore", env: process.env }).unref();
 }
 var page;
 function openInboxPage(get) {
@@ -53256,11 +53828,11 @@ init_next();
 
 // src/web/react-build.ts
 init_paths();
-import { readFileSync as readFileSync23, statSync as statSync10 } from "node:fs";
-import { join as join30, basename as basename5 } from "node:path";
+import { readFileSync as readFileSync24, statSync as statSync10 } from "node:fs";
+import { join as join33, basename as basename5 } from "node:path";
 import { deflateRawSync } from "node:zlib";
-var directory = (root) => join30(root, "dist", "web-react");
-var SNAPSHOT_TEMPLATE = join30("dist", "web-snapshot", "snapshot.html");
+var directory = (root) => join33(root, "dist", "web-react");
+var SNAPSHOT_TEMPLATE = join33("dist", "web-snapshot", "snapshot.html");
 var SNAPSHOT_DATA = '<script id="delegate-snapshot" type="application/json">__SNAPSHOT__</script>';
 var APP = /<script type="module" id="delegate-snapshot-app">([\s\S]*?)<\/script>/;
 var STYLE = /<style id="delegate-snapshot-style">([\s\S]*?)<\/style>/;
@@ -53268,9 +53840,9 @@ var packed = (id, text3) => `<script id="${id}" type="application/octet-stream">
 var LOADER = `<script>(async()=>{const read=async id=>new Response(new Blob([Uint8Array.from(atob(document.getElementById(id).textContent),c=>c.charCodeAt(0))]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).text();try{const[app,style,data]=await Promise.all(['delegate-snapshot-app','delegate-snapshot-style','delegate-snapshot'].map(read));const s=document.createElement('style');s.textContent=style;document.head.append(s);window.DELEGATE_SNAPSHOT=JSON.parse(data);history.replaceState(null,'',location.pathname+location.search+'#classic/snapshot');await import(URL.createObjectURL(new Blob([app],{type:'text/javascript'})))}catch(e){document.getElementById('react-root').textContent='This snapshot could not be opened in this browser: '+e}})()</script>`;
 var shell;
 function snapshotPage(snapshot2, root = ROOT) {
-  const file4 = join30(root, SNAPSHOT_TEMPLATE), key = `${file4}:${statSync10(file4).mtimeMs}`;
+  const file4 = join33(root, SNAPSHOT_TEMPLATE), key = `${file4}:${statSync10(file4).mtimeMs}`;
   if (shell?.key !== key) {
-    const template = readFileSync23(file4, "utf8"), app = APP.exec(template), style = STYLE.exec(template), end = template.lastIndexOf("</body>");
+    const template = readFileSync24(file4, "utf8"), app = APP.exec(template), style = STYLE.exec(template), end = template.lastIndexOf("</body>");
     if (!app || !style || end < 0 || !template.includes(SNAPSHOT_DATA)) throw new Error(`${SNAPSHOT_TEMPLATE} is not a snapshot page template.`);
     const html = template.slice(0, end).replace(app[0], () => packed("delegate-snapshot-app", app[1])).replace(style[0], () => packed("delegate-snapshot-style", style[1]));
     shell = { key, html: `${html}${LOADER}${template.slice(end)}` };
@@ -53278,12 +53850,12 @@ function snapshotPage(snapshot2, root = ROOT) {
   return shell.html.replace(SNAPSHOT_DATA, () => packed("delegate-snapshot", JSON.stringify(snapshot2)));
 }
 function reactAssets(root = ROOT) {
-  const manifest = JSON.parse(readFileSync23(join30(directory(root), ".vite", "manifest.json"), "utf8"));
+  const manifest = JSON.parse(readFileSync24(join33(directory(root), ".vite", "manifest.json"), "utf8"));
   return new Set(Object.values(manifest).flatMap((e) => [e.file, ...e.css ?? [], ...e.assets ?? []]));
 }
 function reactPage(token, root = ROOT, experience = "new") {
   reactAssets(root);
-  return readFileSync23(join30(directory(root), "index.html"), "utf8").replaceAll("__PAGE_TOKEN__", encodeURIComponent(token)).replace(/<html\b/, `<html data-experience="${experience === "classic" ? "classic" : "new"}"`).replace(
+  return readFileSync24(join33(directory(root), "index.html"), "utf8").replaceAll("__PAGE_TOKEN__", encodeURIComponent(token)).replace(/<html\b/, `<html data-experience="${experience === "classic" ? "classic" : "new"}"`).replace(
     /(src|href)="\.\/([^"]+)"/g,
     (_, attribute, file4) => `${attribute}="/web-react/${file4}?t=${encodeURIComponent(token)}"`
   );
@@ -53293,7 +53865,7 @@ function reactAsset(path, token, root = ROOT) {
   if (!assets.has(path)) return void 0;
   const js = path.endsWith(".js"), css = path.endsWith(".css");
   if (!js && !css) return void 0;
-  let content = readFileSync23(join30(directory(root), path), "utf8");
+  let content = readFileSync24(join33(directory(root), path), "utf8");
   if (js) for (const file4 of assets) for (const value of [file4, `./${basename5(file4)}`, `../${file4}`]) {
     for (const quote of ['"', "'", "`"]) content = content.replaceAll(`${quote}${value}${quote}`, `${quote}${value}?t=${encodeURIComponent(token)}${quote}`);
   }
@@ -53835,7 +54407,7 @@ function reactProjection(store2, query = "", visit2) {
       return id;
     });
   }
-  function offer(item2, rev, kind, label2, resolve8, options = {}, prefix = item2) {
+  function offer(item2, rev, kind, label2, resolve9, options = {}, prefix = item2) {
     const id = `${prefix}/${kind}`;
     if (options.staleness === void 0 && !managementRevisions.has(item2)) {
       const workflow = byCode.get(item2);
@@ -53845,7 +54417,7 @@ function reactProjection(store2, query = "", visit2) {
     const managementRev = options.staleness === void 0 ? managementRevisions.get(item2) : void 0;
     const action2 = { id, item: item2, rev: rev || managementRev || "", kind, label: label2, effect: "local", staleness: "none", ...managementRev ? { staleness: "exact", expect: managementRev } : {}, ...options };
     entities.actions[id] = action2;
-    bindings.set(id, { action: action2, resolve: resolve8, management: !!managementRev });
+    bindings.set(id, { action: action2, resolve: resolve9, management: !!managementRev });
     return id;
   }
   function continueOffer(item2, rev, kind, openOn) {
@@ -54539,8 +55111,8 @@ function readSubmissionReceipt(store2, id) {
   const applied = saved.processed || !saved.ids.length || outcomes.every((outcome2) => outcome2 !== void 0) || saved.ids.every((id2) => store2.answered(id2));
   const lostDetails = applied && saved.ids.length > 0 && !saved.processed && outcomes.some((outcome2) => outcome2 === void 0);
   const recorded = pageText(outcomes.join(" "));
-  const current = store2.byCode(saved.item);
-  const missingDetail = current && pageText(current.status) ? `Current item: ${pageText(current.status)}` : "No result detail was recorded. Open the item to verify what happened.";
+  const current2 = store2.byCode(saved.item);
+  const missingDetail = current2 && pageText(current2.status) ? `Current item: ${pageText(current2.status)}` : "No result detail was recorded. Open the item to verify what happened.";
   const text3 = lostDetails ? "The saved action was processed, but its detailed result is no longer available. Check the current item before acting; it will not be resent." : outcomes.length && outcomes.every((outcome2) => outcome2 !== void 0) ? recorded || missingDetail : applied ? pageText(saved.text) || missingDetail : `Queued. Waiting for ${NAME}.`;
   const refused = !!saved.refused || !saved.accepted || saved.ids.some((id2) => store2.outcomeRefused(id2));
   const uncertain = !!saved.uncertain || !!lostDetails;
@@ -54748,7 +55320,7 @@ function serveInbox(get, port = 0, token = randomBytes3(16).toString("hex"), pro
   }
   let reactVisit;
   const reactPages = /* @__PURE__ */ new Map();
-  const server = createServer((req, res) => {
+  const server = createServer2((req, res) => {
     const u = new URL(req.url ?? "/", "http://127.0.0.1");
     const host = req.headers.host ?? "";
     if (u.searchParams.get("t") !== token || !/^(127\.0\.0\.1|localhost):\d+$/.test(host)) {
@@ -54775,7 +55347,7 @@ function serveInbox(get, port = 0, token = randomBytes3(16).toString("hex"), pro
           const store2 = get(), start = performance.now(), snapshot2 = readScope(() => reactProjection(store2, query, reactVisit ?? { since: store2.lastViewed(), fallbackSince: initialSince }).snapshot);
           const body = { ...snapshot2, version: versionFor(store2) };
           const { now: _now, fetchedAt: _fetchedAt, ...content } = body;
-          const etag = `"${createHash8("sha256").update(JSON.stringify(content)).digest("hex")}"`;
+          const etag = `"${createHash9("sha256").update(JSON.stringify(content)).digest("hex")}"`;
           const extra = { etag, "server-timing": `projection;dur=${(performance.now() - start).toFixed(2)}` };
           const priorTag = req.headers["if-none-match"], prior = typeof priorTag === "string" ? reactPages.get(priorTag) : void 0;
           reactPages.delete(etag);
@@ -55023,19 +55595,19 @@ function serveInbox(get, port = 0, token = randomBytes3(16).toString("hex"), pro
     }
     res.writeHead(404).end();
   });
-  return new Promise((resolve8) => server.listen(port, "127.0.0.1", () => {
+  return new Promise((resolve9) => server.listen(port, "127.0.0.1", () => {
     const a = server.address();
-    resolve8({ url: `http://127.0.0.1:${typeof a === "object" && a ? a.port : port}/?t=${token}`, server });
+    resolve9({ url: `http://127.0.0.1:${typeof a === "object" && a ? a.port : port}/?t=${token}`, server });
   }));
 }
 function writeSnapshot(store2) {
   try {
-    if (!existsSync28(join31(ROOT, SNAPSHOT_TEMPLATE))) throw new Error(`${SNAPSHOT_TEMPLATE} is missing`);
+    if (!existsSync30(join34(ROOT, SNAPSHOT_TEMPLATE))) throw new Error(`${SNAPSHOT_TEMPLATE} is missing`);
     store2.setHealth("snapshot");
     const snapshot2 = readScope(() => reactProjection(store2, "", { since: store2.lastViewed(), fallbackSince: new Date(Date.now() - 864e5).toISOString() }).snapshot);
     const key = hashOf(JSON.stringify({ ...snapshot2, now: "", fetchedAt: "" }));
     if (store2.notify().snapshot === key) return false;
-    writeText(join31(store2.root, "inbox.html"), snapshotPage(snapshot2), store2.machine);
+    writeText(join34(store2.root, "inbox.html"), snapshotPage(snapshot2), store2.machine);
     store2.saveNotify({ ...store2.notify(), snapshot: key });
     return true;
   } catch (error62) {
@@ -55049,12 +55621,12 @@ function writeSnapshot(store2) {
 }
 
 // src/os/notify.ts
-import { spawn as spawn5 } from "node:child_process";
+import { spawn as spawn6 } from "node:child_process";
 function notify(title, body) {
   try {
     const q2 = (s3) => s3.replace(/["\\]/g, " ");
-    if (process.platform === "darwin") spawn5("osascript", ["-e", `display notification "${q2(body)}" with title "${q2(title)}"`], { detached: true, stdio: "ignore" }).unref();
-    else if (process.platform === "win32") spawn5("msg", ["*", `${q2(title)}: ${q2(body)}`], { detached: true, stdio: "ignore", windowsHide: true }).unref();
+    if (process.platform === "darwin") spawn6("osascript", ["-e", `display notification "${q2(body)}" with title "${q2(title)}"`], { detached: true, stdio: "ignore" }).unref();
+    else if (process.platform === "win32") spawn6("msg", ["*", `${q2(title)}: ${q2(body)}`], { detached: true, stdio: "ignore", windowsHide: true }).unref();
   } catch {
   }
 }
@@ -55135,7 +55707,7 @@ async function tick(store2, deps = {}) {
       store2.log({ event: "probe-failed", error: String(e).slice(0, 300) });
     }
     const answers2 = await applyAnswers(store2, src, cfg, procs, false, probe);
-    const jobsMark = Date.now(), jobsNow = answers2 ? await executeDirect(store2, src, cfg, procs, probe, deps.call) + startJobs(store2, cfg, procs, ["bootstrap:chats"]) : 0;
+    const jobsMark = Date.now(), jobsNow = answers2 ? await executeDirect(store2, src, cfg, procs, probe, deps.call ?? hostCaller(store2, cfg)) + startJobs(store2, cfg, procs, ["bootstrap:chats"]) : 0;
     const closeProbe = () => {
       if (!deps.probe) void probe?.close?.().catch(() => void 0);
     };
@@ -55147,7 +55719,7 @@ async function tick(store2, deps = {}) {
         p = void 0;
       }
       try {
-        return await executeDirect(store2, src, cfg, procs, p, deps.call);
+        return await executeDirect(store2, src, cfg, procs, p, deps.call ?? hostCaller(store2, cfg));
       } finally {
         if (!deps.probe) await p?.close?.().catch(() => void 0);
       }
@@ -55206,7 +55778,7 @@ async function tick(store2, deps = {}) {
     }
     await listing;
     finishTrim(store2);
-    const runs = await dispatch(store2, src, cfg, deps.run, probe).finally(closeProbe);
+    const runs = await dispatch(store2, src, cfg, deps.run ?? hostRunner(store2), probe).finally(closeProbe);
     const handedBack = checkOpen(store2, procs, procs.bootMs?.());
     const jobsDone = await checkJobs(store2, src, cfg, procs, deps.probe, jobsNow ? jobsMark : void 0);
     saveLearned(store2);
@@ -55323,6 +55895,7 @@ function backoff(store2) {
 // src/mcp/setup.ts
 init_bootstrap();
 init_proposals();
+init_registry();
 init_brand();
 var STEPS = ["storage", "source", "agent", "tools", "knowledge", "profile", "rules", "start"];
 var RuleSchema = external_exports.object({
@@ -55352,10 +55925,10 @@ var VALUES = {
   rules: external_exports.object({ text: external_exports.string(), compiled: external_exports.array(RuleSchema) }).partial(),
   start: external_exports.object({ background: external_exports.boolean().default(true), takeover: external_exports.boolean().optional(), alwaysOn: external_exports.boolean().optional().describe("This machine never sleeps, such as a server or a desktop in the cloud") })
 };
-var progressFile = () => join32(LOCAL_DIR, "setup.json");
+var progressFile = () => join35(LOCAL_DIR, "setup.json");
 var progress = () => {
   const p = readJson(progressFile(), { done: {} });
-  const root = readJson(join32(LOCAL_DIR, "local.json"), {}).root;
+  const root = readJson(join35(LOCAL_DIR, "local.json"), {}).root;
   return p.root && root && p.root !== root ? { root, done: {} } : p;
 };
 var machine = () => hostname4().split(".")[0];
@@ -55365,17 +55938,17 @@ function status2() {
   if (!next2) return ["Setup is complete. What was set:", ...STEPS.map((s3) => `- ${s3}: ${p.done[s3]}`), "Change any of it in Settings, or ask me."].join("\n");
   return [`Next step: ${next2}`, ...STEPS.map((s3) => `- ${s3}: ${p.done[s3] ? `done (${p.done[s3]})` : "to do"}`)].join("\n");
 }
-function workOneDrives(home = homedir8(), env = process.env) {
-  const list2 = (dir2, re) => existsSync29(dir2) ? readdirSync10(dir2).filter((n) => re.test(n)).map((n) => join32(dir2, n)) : [];
-  const all = [env.OneDriveCommercial ?? "", ...list2(join32(home, "Library", "CloudStorage"), /^OneDrive-(?!Personal$|SharedLibraries-)/), ...list2(home, /^OneDrive - /)];
+function workOneDrives(home = homedir10(), env2 = process.env) {
+  const list2 = (dir2, re) => existsSync31(dir2) ? readdirSync11(dir2).filter((n) => re.test(n)).map((n) => join35(dir2, n)) : [];
+  const all = [env2.OneDriveCommercial ?? "", ...list2(join35(home, "Library", "CloudStorage"), /^OneDrive-(?!Personal$|SharedLibraries-)/), ...list2(home, /^OneDrive - /)];
   const seen = /* @__PURE__ */ new Set();
-  return all.filter((d) => d && existsSync29(d) && !seen.has(d.toLowerCase()) && seen.add(d.toLowerCase()));
+  return all.filter((d) => d && existsSync31(d) && !seen.has(d.toLowerCase()) && seen.add(d.toLowerCase()));
 }
-var hasData = (d) => existsSync29(join32(d, "config.json")) && existsSync29(join32(d, "state"));
+var hasData = (d) => existsSync31(join35(d, "config.json")) && existsSync31(join35(d, "state"));
 function pickStorage(drives) {
-  const found = drives.map((d) => join32(d, NAME)).filter(hasData);
+  const found = drives.map((d) => join35(d, NAME)).filter(hasData);
   if (found.length === 1) return { root: found[0], why: " (it already had your data)" };
-  if (!found.length && drives.length === 1) return { root: join32(drives[0], NAME), why: " (your work OneDrive)" };
+  if (!found.length && drives.length === 1) return { root: join35(drives[0], NAME), why: " (your work OneDrive)" };
   const seen = found.length ? found : drives;
   throw new Error(`Ask the owner where to keep ${NAME}'s data, then save { root }. ${seen.length ? `More than one fits: ${seen.join(", ")}.` : "There is no work OneDrive on this machine; any folder synced to their other machines works."}`);
 }
@@ -55386,7 +55959,7 @@ async function save(step2, raw, deps = {}) {
   const v = VALUES[step2].parse(raw);
   const summary3 = await apply(step2, v, deps);
   const p = progress();
-  const root = readJson(join32(LOCAL_DIR, "local.json"), {}).root;
+  const root = readJson(join35(LOCAL_DIR, "local.json"), {}).root;
   const fresh = step2 === "storage" && p.root !== root;
   const next2 = { root, done: fresh ? {} : p.done };
   next2.done[step2] = summary3;
@@ -55398,13 +55971,13 @@ ${status2()}`;
 async function apply(step2, v, deps) {
   if (step2 === "storage") {
     const given = v.root;
-    const cur = readJson(join32(LOCAL_DIR, "local.json"), {}).root;
-    const pick3 = given ? { root: given, why: "" } : cur && existsSync29(cur) ? { root: cur, why: " (already in use on this machine)" } : pickStorage(deps.oneDrives?.() ?? workOneDrives());
+    const cur = readJson(join35(LOCAL_DIR, "local.json"), {}).root;
+    const pick3 = given ? { root: given, why: "" } : cur && existsSync31(cur) ? { root: cur, why: " (already in use on this machine)" } : pickStorage(deps.oneDrives?.() ?? workOneDrives());
     assertTestSafe(pick3.root);
     assertTestSafe(LOCAL_DIR);
     mkdirSync13(pick3.root, { recursive: true });
     mkdirSync13(LOCAL_DIR, { recursive: true });
-    writeFileSync16(join32(LOCAL_DIR, "local.json"), JSON.stringify({ root: pick3.root, machine: machine() }, null, "	"));
+    writeFileSync17(join35(LOCAL_DIR, "local.json"), JSON.stringify({ root: pick3.root, machine: machine() }, null, "	"));
     return `storage at ${pick3.root}${pick3.why}`;
   }
   const store2 = new Store(loadLocal());
@@ -55456,7 +56029,7 @@ Fix the first one you use (for most people: run it once and type /login), then r
       if (t2.servers) cfg.agent.mcpServers = { ...cfg.agent.mcpServers, ...Object.fromEntries(Object.entries(t2.servers).map(([k, s3]) => [k, { type: "local", command: s3.command, args: s3.args ?? [], tools: ["*"] }])) };
       if (t0.repos) cfg.repos = t0.repos;
       if (t0.codeFolders) {
-        const missing = t0.codeFolders.filter((f) => !existsSync29(f));
+        const missing = t0.codeFolders.filter((f) => !existsSync31(f));
         if (missing.length) throw new Error(`Not a folder on this machine: ${missing.join(", ")}`);
         saveCodeFolders(t0.codeFolders);
       }
@@ -55476,7 +56049,7 @@ Fix the first one you use (for most people: run it once and type /login), then r
         return `${cfg.knowledge.length} knowledge folder(s), kept`;
       }
       const folders = k.folders ?? [];
-      const missing = folders.filter((f) => !existsSync29(here2(store2.root, f)) || !statSync11(here2(store2.root, f)).isDirectory());
+      const missing = folders.filter((f) => !existsSync31(here2(store2.root, f)) || !statSync11(here2(store2.root, f)).isDirectory());
       if (missing.length) throw new Error(`Not a folder: ${missing.join(", ")}`);
       cfg.knowledge = folders.map((f) => portable(store2.root, here2(store2.root, f)));
       store2.saveConfig(cfg);
@@ -55487,18 +56060,18 @@ Fix the first one you use (for most people: run it once and type /login), then r
       if (aliases?.length) store2.saveConfig({ ...store2.config(), aliases });
       const called = aliases?.length ? `; people also call you ${aliases.join(", ")}` : "";
       if (!md3) {
-        if (existsSync29(join32(store2.root, "profile.md"))) return `profile kept${called}`;
+        if (existsSync31(join35(store2.root, "profile.md"))) return `profile kept${called}`;
         throw new Error("Draft the profile yourself instead of asking: the owner's name and job title (from Teams or the company directory), and how they write (greeting, length, tone) from a few of their own recent messages. Leave out other people and any facts. Save it as markdown; the owner can change it in Settings. Add aliases only if the owner tells you one.");
       }
-      writeFileSync16(join32(store2.root, "profile.md"), md3);
+      writeFileSync17(join35(store2.root, "profile.md"), md3);
       return `profile saved${called}`;
     }
     case "rules": {
       const r0 = v;
-      if (r0.text === void 0 && r0.compiled === void 0) return existsSync29(join32(store2.root, "rules.compiled.json")) ? "rules kept" : (writeJson(join32(store2.root, "rules.compiled.json"), { schema: 1, rules: [], confirmedAt: (/* @__PURE__ */ new Date()).toISOString() }, machine()), writeFileSync16(join32(store2.root, "rules.md"), "None.\n"), "no rules: every reply waits for your ok");
+      if (r0.text === void 0 && r0.compiled === void 0) return existsSync31(join35(store2.root, "rules.compiled.json")) ? "rules kept" : (writeJson(join35(store2.root, "rules.compiled.json"), { schema: 1, rules: [], confirmedAt: (/* @__PURE__ */ new Date()).toISOString() }, machine()), writeFileSync17(join35(store2.root, "rules.md"), "None.\n"), "no rules: every reply waits for your ok");
       const r = { text: r0.text ?? "", compiled: r0.compiled ?? [] };
-      writeFileSync16(join32(store2.root, "rules.md"), r.text.trim() + "\n");
-      writeJson(join32(store2.root, "rules.compiled.json"), { schema: 1, rules: r.compiled, confirmedAt: (/* @__PURE__ */ new Date()).toISOString() }, machine());
+      writeFileSync17(join35(store2.root, "rules.md"), r.text.trim() + "\n");
+      writeJson(join35(store2.root, "rules.compiled.json"), { schema: 1, rules: r.compiled, confirmedAt: (/* @__PURE__ */ new Date()).toISOString() }, machine());
       store2.saveHeldRules({});
       return `${r.compiled.length} confirmed rule(s)`;
     }
@@ -55525,7 +56098,7 @@ Fix the first one you use (for most people: run it once and type /login), then r
 var candidates = () => [...(site().agents ?? []).map((c) => ["copilot", c]), ["copilot", ["copilot"]], ["claude", ["claude"]]];
 function agentProblem(flavor, command) {
   const [cmd2, ...pre] = command;
-  const session = ["--session-id", randomUUID11()];
+  const session = ["--session-id", randomUUID12()];
   const args2 = flavor === "claude" ? ["-p", "Reply with the single word OK", ...session] : ["-p", "Reply with the single word OK", ...session, "--allow-all-tools", "--no-ask-user", "-s", "--disable-builtin-mcps", "--available-tools", "task_complete"];
   const r = spawnSync4(cmd2, [...pre, ...args2], { encoding: "utf8", timeout: 18e4, windowsHide: true, env: workerEnv(process.env) });
   const out = `${r.stdout ?? ""}
@@ -55576,9 +56149,9 @@ init_fs();
 init_feedback();
 init_proposals();
 init_state();
-import { existsSync as existsSync32, mkdirSync as mkdirSync16, writeFileSync as writeFileSync19 } from "node:fs";
+import { existsSync as existsSync34, mkdirSync as mkdirSync16, writeFileSync as writeFileSync20 } from "node:fs";
 import { hostname as hostname5 } from "node:os";
-import { join as join35 } from "node:path";
+import { join as join38 } from "node:path";
 init_continue();
 
 // src/admin.ts
@@ -55586,24 +56159,24 @@ init_paths();
 init_state();
 init_fs();
 init_scheduler();
-import { execFileSync as execFileSync4, spawn as spawn6, spawnSync as spawnSync5 } from "node:child_process";
-import { createHash as createHash9 } from "node:crypto";
-import { cpSync as cpSync2, existsSync as existsSync30, lstatSync as lstatSync3, mkdirSync as mkdirSync14, readFileSync as readFileSync24, readlinkSync, rmSync as rmSync9, symlinkSync, writeFileSync as writeFileSync17 } from "node:fs";
-import { homedir as homedir9 } from "node:os";
-import { basename as basename6, join as join33 } from "node:path";
+import { execFileSync as execFileSync5, spawn as spawn7, spawnSync as spawnSync5 } from "node:child_process";
+import { createHash as createHash10 } from "node:crypto";
+import { cpSync as cpSync2, existsSync as existsSync32, lstatSync as lstatSync3, mkdirSync as mkdirSync14, readFileSync as readFileSync25, readlinkSync, rmSync as rmSync10, symlinkSync, writeFileSync as writeFileSync18 } from "node:fs";
+import { homedir as homedir11 } from "node:os";
+import { basename as basename6, join as join36 } from "node:path";
 init_brand();
 init_route();
-var COPILOT = process.env.COPILOT_HOME ?? join33(homedir9(), ".copilot");
+var COPILOT = process.env.COPILOT_HOME ?? join36(homedir11(), ".copilot");
 var has = (cmd2) => spawnSync5(process.platform === "win32" ? "where" : "which", [cmd2], { stdio: "ignore" }).status === 0;
 var paths = () => ({ node: process.execPath, cli: CLI, local: LOCAL_DIR, pathEnv: process.env.PATH ?? "" });
 function installKind(root = ROOT) {
-  if (root.includes(join33(".copilot", "installed-plugins"))) return "copilot-plugin";
-  if (root.includes(join33(".claude", "plugins"))) return "claude-plugin";
-  return existsSync30(join33(root, ".git")) ? "git" : "other";
+  if (root.includes(join36(".copilot", "installed-plugins"))) return "copilot-plugin";
+  if (root.includes(join36(".claude", "plugins"))) return "claude-plugin";
+  return existsSync32(join36(root, ".git")) ? "git" : "other";
 }
 function install2() {
   const out = [];
-  const cfgFile = join33(COPILOT, "mcp-config.json");
+  const cfgFile = join36(COPILOT, "mcp-config.json");
   const cfg = readJson(cfgFile, {});
   cfg.mcpServers = { ...cfg.mcpServers, delegate: { type: "local", command: process.execPath, args: [CLI, "mcp"], tools: ["*"] } };
   writeJson(cfgFile, cfg, "install");
@@ -55613,16 +56186,16 @@ function install2() {
     const r = spawnSync5("claude", ["mcp", "add", "--scope", "user", "delegate", "--", process.execPath, CLI, "mcp"], { stdio: "pipe" });
     out.push(r.status === 0 ? `Registered the ${NAME} tools for Claude.` : `Could not register for Claude: ${String(r.stderr).slice(0, 120)}`);
   }
-  for (const dir2 of [join33(COPILOT, "skills"), join33(homedir9(), ".claude", "skills")]) {
-    if (!existsSync30(dirname11(dir2))) continue;
-    const link2 = join33(dir2, "delegate");
+  for (const dir2 of [join36(COPILOT, "skills"), join36(homedir11(), ".claude", "skills")]) {
+    if (!existsSync32(dirname11(dir2))) continue;
+    const link2 = join36(dir2, "delegate");
     assertTestSafe(dir2);
     mkdirSync14(dir2, { recursive: true });
-    if ((existsSync30(link2) || isLink(link2)) && !ours3(link2)) {
+    if ((existsSync32(link2) || isLink(link2)) && !ours3(link2)) {
       out.push(`Left ${link2} alone: it is not ${NAME}'s. Rename it to use ${NAME} there.`);
       continue;
     }
-    if (existsSync30(link2) || isLink(link2)) rmSync9(link2, { recursive: true, force: true });
+    if (existsSync32(link2) || isLink(link2)) rmSync10(link2, { recursive: true, force: true });
     try {
       symlinkSync(SKILL_DIR, link2, "junction");
     } catch {
@@ -55641,14 +56214,14 @@ function deleteAfterExit(path) {
 var MARKER = "delegate launcher";
 function launcherPath() {
   const onPath = new Set((process.env.PATH ?? "").split(process.platform === "win32" ? ";" : ":").map((p) => p.replace(/[\\/]+$/, "")));
-  const dirs2 = process.platform === "win32" ? [join33(homedir9(), "AppData", "Local", "Microsoft", "WindowsApps")] : [join33(homedir9(), ".local", "bin"), join33(homedir9(), "bin")];
-  const dir2 = dirs2.find((d) => onPath.has(d) && existsSync30(d));
-  return dir2 && join33(dir2, process.platform === "win32" ? "delegate.cmd" : "delegate");
+  const dirs2 = process.platform === "win32" ? [join36(homedir11(), "AppData", "Local", "Microsoft", "WindowsApps")] : [join36(homedir11(), ".local", "bin"), join36(homedir11(), "bin")];
+  const dir2 = dirs2.find((d) => onPath.has(d) && existsSync32(d));
+  return dir2 && join36(dir2, process.platform === "win32" ? "delegate.cmd" : "delegate");
 }
 function launcher2() {
   const p = launcherPath();
   if (!p) return void 0;
-  if (existsSync30(p) && !readFileSync24(p, "utf8").includes(MARKER)) return `Left ${p} alone: it is not ${NAME}'s.`;
+  if (existsSync32(p) && !readFileSync25(p, "utf8").includes(MARKER)) return `Left ${p} alone: it is not ${NAME}'s.`;
   const body = process.platform === "win32" ? `@rem ${MARKER}\r
 @"${process.execPath}" "${CLI}" %*\r
 ` : `#!/bin/sh
@@ -55656,7 +56229,7 @@ function launcher2() {
 exec "${process.execPath}" "${CLI}" "$@"
 `;
   assertTestSafe(p);
-  writeFileSync17(p, body, { mode: 493 });
+  writeFileSync18(p, body, { mode: 493 });
   return `Added the "delegate" command (${p}). Run "delegate" any time to open your inbox.`;
 }
 var isLink = (p) => {
@@ -55666,8 +56239,8 @@ var isLink = (p) => {
     return false;
   }
 };
-var ours3 = (p) => isLink(p) ? readlinkSync(p) === SKILL_DIR : existsSync30(join33(p, "workflows", "reply.md")) && /^name: delegate$/m.test(readFileSync24(join33(p, "SKILL.md"), "utf8"));
-var dirname11 = (p) => join33(p, "..");
+var ours3 = (p) => isLink(p) ? readlinkSync(p) === SKILL_DIR : existsSync32(join36(p, "workflows", "reply.md")) && /^name: delegate$/m.test(readFileSync25(join36(p, "SKILL.md"), "utf8"));
+var dirname11 = (p) => join36(p, "..");
 function runnerSilent(o) {
   if (!o.installed || !o.lease || o.lease.machine !== o.machine || o.runner && o.runner !== o.machine) return 0;
   const quiet = Math.round(((o.now ?? Date.now()) - Date.parse(o.lease.at)) / 6e4);
@@ -55677,9 +56250,9 @@ function doctor() {
   const out = [];
   const node2 = Number(process.versions.node.split(".")[0]);
   out.push({ ok: node2 >= 22, what: `Node ${process.versions.node}`, fix: "Install Node 22 or newer." });
-  const integrity = readJson(join33(ROOT, "INTEGRITY.json"), null);
+  const integrity = readJson(join36(ROOT, "INTEGRITY.json"), null);
   if (integrity) {
-    const bad = Object.entries(integrity.files).filter(([f, h]) => !existsSync30(join33(ROOT, f)) || fileHash(join33(ROOT, f)) !== h).map(([f]) => f);
+    const bad = Object.entries(integrity.files).filter(([f, h]) => !existsSync32(join36(ROOT, f)) || fileHash(join36(ROOT, f)) !== h).map(([f]) => f);
     out.push({ ok: !bad.length, what: bad.length ? `${bad.length} shipped file(s) changed: ${bad.slice(0, 3).join(", ")}` : `Files match release ${integrity.version}`, fix: `Run "${CMD} update" to restore them.` });
   }
   let store2;
@@ -55697,14 +56270,14 @@ function doctor() {
       out.push({ ok: has(cfg.agent.command[0]) && signedIn(cfg.agent.flavor, cfg.agent.command), what: `AI CLI "${cfg.agent.command.join(" ")}" answers`, fix: `Run "${cfg.agent.command.join(" ")}" once and sign in.` });
       for (const h of Object.values(store2.health())) out.push({ ok: false, what: h.text });
       const copies = store2.conflictCopies();
-      if (copies.length) out.push({ ok: false, what: `${copies.length} file(s) OneDrive copied after a sync conflict: ${copies.slice(0, 3).map((f) => basename6(f)).join(", ")}. They are ignored.`, fix: `Delete them from ${join33(store2.root, "state")} once you have looked at them.` });
+      if (copies.length) out.push({ ok: false, what: `${copies.length} file(s) OneDrive copied after a sync conflict: ${copies.slice(0, 3).map((f) => basename6(f)).join(", ")}. They are ignored.`, fix: `Delete them from ${join36(store2.root, "state")} once you have looked at them.` });
       const quiet = runnerSilent({ installed: status(), lease: store2.lease(), machine: store2.machine, runner: cfg.runner, idleMin: cfg.poll?.idleMin });
       if (quiet)
         out.push({ ok: false, what: `The background runner is installed but has not run for ${quiet} minutes`, fix: process.platform === "darwin" ? `Turn it on in System Settings > General > Login Items > Allow in the Background, then run "${CMD} service install".` : process.platform === "win32" ? `In Task Scheduler, check that the "${TASK}" task is enabled, then run "${CMD} service install".` : `Run "${CMD} service install".` });
     }
   }
-  const mcp = readJson(join33(COPILOT, "mcp-config.json"), {}).mcpServers?.delegate;
-  out.push({ ok: !!mcp && existsSync30(mcp.args?.[0] ?? ""), what: mcp ? `Copilot tools point to ${mcp.args?.[0]}` : `Copilot does not know the ${NAME} tools`, fix: `Run "${CMD} install".` });
+  const mcp = readJson(join36(COPILOT, "mcp-config.json"), {}).mcpServers?.delegate;
+  out.push({ ok: !!mcp && existsSync32(mcp.args?.[0] ?? ""), what: mcp ? `Copilot tools point to ${mcp.args?.[0]}` : `Copilot does not know the ${NAME} tools`, fix: `Run "${CMD} install".` });
   out.push(extensionCheck(COPILOT));
   out.push({ ok: status(), optional: true, what: status() ? "Background runner installed" : "Background runner not installed", fix: `Run "${CMD} service install" for replies while you are away.` });
   return out;
@@ -55714,14 +56287,14 @@ function update(o = { root: ROOT, cli: CLI }) {
   const out = [`${NAME} ${VERSION} (${kind})`];
   const head = () => {
     try {
-      return execFileSync4("git", ["rev-parse", "HEAD"], { cwd: o.root, encoding: "utf8", stdio: "pipe" }).trim();
+      return execFileSync5("git", ["rev-parse", "HEAD"], { cwd: o.root, encoding: "utf8", stdio: "pipe" }).trim();
     } catch {
       return "";
     }
   };
   const run2 = (cmd2, args2) => {
     try {
-      execFileSync4(cmd2, args2, { stdio: "pipe", cwd: o.root });
+      execFileSync5(cmd2, args2, { stdio: "pipe", cwd: o.root });
       return true;
     } catch (e) {
       out.push(`${cmd2} ${args2.join(" ")} failed: ${String(e).slice(0, 160)}`);
@@ -55732,7 +56305,7 @@ function update(o = { root: ROOT, cli: CLI }) {
   if (kind === "claude-plugin" && has("claude")) run2("claude", ["plugin", "update", "delegate"]) && out.push("Updated the Claude plugin.");
   const before = head();
   if (kind === "git" && o.from) {
-    const dirty = execFileSync4("git", ["status", "--porcelain", "--untracked-files=no"], { cwd: o.root, encoding: "utf8", stdio: "pipe" }).trim();
+    const dirty = execFileSync5("git", ["status", "--porcelain", "--untracked-files=no"], { cwd: o.root, encoding: "utf8", stdio: "pipe" }).trim();
     if (dirty) return [...out, `This copy has changes of its own, so it stays on ${before.slice(0, 7)}. Nothing changed.`];
     if (run2("git", ["remote", "set-url", "origin", o.from]) && run2("git", ["fetch", "--quiet", "--tags", "origin", "main"]) && run2("git", ["reset", "--hard", "--quiet", "FETCH_HEAD"])) {
       run2("git", ["branch", "--quiet", "--set-upstream-to=origin/main"]);
@@ -55741,7 +56314,7 @@ function update(o = { root: ROOT, cli: CLI }) {
   } else if (kind === "git") run2("git", ["pull", "--ff-only"]) && out.push("Pulled the newest code.");
   if (kind === "git" && head() !== before) {
     try {
-      for (const c of ["migrate", "install"]) out.push(...execFileSync4(process.execPath, [o.cli, c], { cwd: o.root, encoding: "utf8", stdio: "pipe", timeout: 12e4 }).split("\n").map((l) => l.trim()).filter(Boolean));
+      for (const c of ["migrate", "install"]) out.push(...execFileSync5(process.execPath, [o.cli, c], { cwd: o.root, encoding: "utf8", stdio: "pipe", timeout: 12e4 }).split("\n").map((l) => l.trim()).filter(Boolean));
     } catch (e) {
       out.push(`The new version did not finish installing: ${String(e.stderr || e).trim().split("\n")[0].slice(0, 200)}. Run "${CMD} install".`);
     }
@@ -55760,7 +56333,7 @@ function migrate() {
   } catch {
     return [];
   }
-  const file4 = join33(store2.root, "state", "version.json");
+  const file4 = join36(store2.root, "state", "version.json");
   const at3 = readJson(file4, { schema: 1 }).schema;
   if (at3 > SCHEMA2) return [`Your data is from a newer ${NAME} (schema ${at3}). Update this machine too.`];
   if (at3 === SCHEMA2) {
@@ -55769,7 +56342,7 @@ function migrate() {
   }
   const pinned2 = store2.config()?.runner;
   if (pinned2 && pinned2 !== store2.machine) return [`Data migration waits for the runner machine (${pinned2}).`];
-  cpSync2(join33(store2.root, "state"), join33(store2.root, "backups", `schema-${at3}`), { recursive: true });
+  cpSync2(join36(store2.root, "state"), join36(store2.root, "backups", `schema-${at3}`), { recursive: true });
   const tools = at3 < 2 ? migrateTools(store2, "schema 2") : void 0;
   writeJson(file4, { schema: SCHEMA2, version: VERSION }, store2.machine);
   return [`Migrated your data from schema ${at3} to ${SCHEMA2}; a backup is in backups/schema-${at3}.`, ...tools ? [toolsSaid(tools)] : []];
@@ -55777,7 +56350,7 @@ function migrate() {
 function uninstall2(purge) {
   const out = [];
   if (status()) out.push(uninstall(paths()));
-  const cfgFile = join33(COPILOT, "mcp-config.json");
+  const cfgFile = join36(COPILOT, "mcp-config.json");
   const cfg = readJson(cfgFile, {});
   if (cfg.mcpServers?.delegate) {
     delete cfg.mcpServers.delegate;
@@ -55788,20 +56361,20 @@ function uninstall2(purge) {
   if (ext) out.push(ext);
   if (has("claude")) spawnSync5("claude", ["mcp", "remove", "--scope", "user", "delegate"], { stdio: "ignore" });
   const lp = launcherPath();
-  if (lp && existsSync30(lp) && readFileSync24(lp, "utf8").includes(MARKER)) {
+  if (lp && existsSync32(lp) && readFileSync25(lp, "utf8").includes(MARKER)) {
     if (process.platform === "win32") {
       const d = deleteAfterExit(lp);
-      spawn6(d.command, d.options).unref();
+      spawn7(d.command, d.options).unref();
       out.push(`Removing ${lp} as soon as this command ends.`);
     } else {
       assertTestSafe(lp);
-      rmSync9(lp, { force: true });
+      rmSync10(lp, { force: true });
       out.push(`Removed ${lp}.`);
     }
   }
-  for (const link2 of [join33(COPILOT, "skills", "delegate"), join33(homedir9(), ".claude", "skills", "delegate")]) if ((existsSync30(link2) || isLink(link2)) && ours3(link2)) {
+  for (const link2 of [join36(COPILOT, "skills", "delegate"), join36(homedir11(), ".claude", "skills", "delegate")]) if ((existsSync32(link2) || isLink(link2)) && ours3(link2)) {
     assertTestSafe(link2);
-    rmSync9(link2, { recursive: true, force: true });
+    rmSync10(link2, { recursive: true, force: true });
     out.push(`Removed ${link2}.`);
   }
   if (has("copilot") && pluginListed()) {
@@ -55816,33 +56389,34 @@ function uninstall2(purge) {
   }
   if (purge) {
     assertTestSafe(LOCAL_DIR);
-    rmSync9(LOCAL_DIR, { recursive: true, force: true });
+    rmSync10(LOCAL_DIR, { recursive: true, force: true });
     out.push(`Removed ${LOCAL_DIR}.`);
   }
   out.push(root ? `Your data is still in ${root}. Delete that folder yourself if you want it gone.` : "Done.");
   return out;
 }
-var fileHash = (f) => createHash9("sha256").update(readFileSync24(f, "utf8").replace(/\r\n/g, "\n")).digest("hex");
+var fileHash = (f) => createHash10("sha256").update(readFileSync25(f, "utf8").replace(/\r\n/g, "\n")).digest("hex");
 var pluginListed = (out = spawnSync5("copilot", ["plugin", "list"], { encoding: "utf8", windowsHide: true }).stdout ?? "") => /^\s*\W?\s*delegate(@\S+)?\s+\(v/m.test(out);
 var version2 = () => VERSION;
 
 // src/demo.ts
 init_paths();
 init_state();
-import { spawnSync as spawnSync6 } from "node:child_process";
-import { existsSync as existsSync31, mkdirSync as mkdirSync15, rmSync as rmSync10, writeFileSync as writeFileSync18 } from "node:fs";
-import { homedir as homedir10 } from "node:os";
-import { join as join34 } from "node:path";
+init_demo();
 init_proposals();
 init_track();
 init_automations();
+import { spawnSync as spawnSync6 } from "node:child_process";
+import { existsSync as existsSync33, mkdirSync as mkdirSync15, rmSync as rmSync11, writeFileSync as writeFileSync19 } from "node:fs";
+import { homedir as homedir12 } from "node:os";
+import { join as join37 } from "node:path";
 init_brand();
-var HOME = join34(homedir10(), ".delegate-demo");
-var LOCAL2 = join34(HOME, "local");
-var ROOT2 = join34(HOME, "root");
+var HOME = join37(homedir12(), ".delegate-demo");
+var LOCAL2 = join37(HOME, "local");
+var ROOT2 = join37(HOME, "root");
 var CHAT = "demo-chat";
-function demoEnv(env = process.env) {
-  const clean3 = Object.fromEntries(Object.entries(env).filter(([k]) => !k.startsWith("DELEGATE_") && k !== "COPILOT_AGENT_SESSION_ID"));
+function demoEnv(env2 = process.env) {
+  const clean3 = Object.fromEntries(Object.entries(env2).filter(([k]) => !k.startsWith("DELEGATE_") && k !== "COPILOT_AGENT_SESSION_ID"));
   return { ...clean3, DELEGATE_LOCAL: LOCAL2, DELEGATE_ROOT: ROOT2, DELEGATE_NO_KICK: "1" };
 }
 var run = (args2) => spawnSync6(process.execPath, [CLI, ...args2], { stdio: args2[0] === "tick" ? "ignore" : "inherit", env: { ...demoEnv(), ...args2[0] === "open" ? { DELEGATE_NO_KICK: "" } : {} } });
@@ -55868,7 +56442,7 @@ Try these, one at a time:
   ${CMD} demo reset                     start over`;
 function demo(args2) {
   const words3 = args2.join(" ").trim();
-  if (!existsSync31(join34(ROOT2, "config.json")) || words3 === "reset") {
+  if (!existsSync33(join37(ROOT2, "config.json")) || words3 === "reset") {
     run(["demo-seed"]);
     if (!words3 || words3 === "reset") return console.log(GUIDE);
   }
@@ -55902,9 +56476,9 @@ function demo(args2) {
   run(["inbox"]);
 }
 async function seed() {
-  rmSync10(HOME, { recursive: true, force: true });
+  rmSync11(HOME, { recursive: true, force: true });
   mkdirSync15(LOCAL2, { recursive: true });
-  writeFileSync18(join34(LOCAL2, "local.json"), JSON.stringify({ root: ROOT2, machine: "demo" }));
+  writeFileSync19(join37(LOCAL2, "local.json"), JSON.stringify({ root: ROOT2, machine: "demo" }));
   const store2 = new Store({ root: ROOT2, machine: "demo" });
   store2.saveConfig({
     schema: 1,
@@ -55917,8 +56491,8 @@ async function seed() {
     quiet: { from: "00:00", to: "00:00" },
     runner: "demo"
   });
-  mkdirSync15(join34(ROOT2, "knowledge", "topics", "meeting-options"), { recursive: true });
-  writeFileSync18(join34(ROOT2, "knowledge", "topics", "meeting-options", "architecture.md"), "---\ntitle: Meeting options \xB7 architecture\ntype: card\ntopic: meeting-options\ncard: architecture\naudience: team\naliases: []\n---\n## Observations\n- [fact] Admin policy and sensitivity labels lock some meeting options; organizers cannot change those. ^demo (src: https://teams.microsoft.com/l/message/demo/1, 2026-10-01, Priya)\n");
+  mkdirSync15(join37(ROOT2, "knowledge", "topics", "meeting-options"), { recursive: true });
+  writeFileSync19(join37(ROOT2, "knowledge", "topics", "meeting-options", "architecture.md"), "---\ntitle: Meeting options \xB7 architecture\ntype: card\ntopic: meeting-options\ncard: architecture\naudience: team\naliases: []\n---\n## Observations\n- [fact] Admin policy and sensitivity labels lock some meeting options; organizers cannot change those. ^demo (src: https://teams.microsoft.com/l/message/demo/1, 2026-10-01, Priya)\n");
   const src = new DemoSource(ROOT2);
   src.post("self", { id: "owner", name: "You" }, "notes to self");
   src.post(CHAT, { id: "owner", name: "You" }, "Morning all!");
@@ -55965,9 +56539,9 @@ init_paths();
 init_route();
 init_numbers();
 init_brand();
-import { spawn as spawn7 } from "node:child_process";
+import { spawn as spawn8 } from "node:child_process";
 import { randomBytes as randomBytes4 } from "node:crypto";
-import { createServer as createServer2, request } from "node:http";
+import { createServer as createServer3, request as request2 } from "node:http";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 var [cmd, ...args] = process.argv.slice(2);
 var flag = (name) => {
@@ -55995,6 +56569,11 @@ async function main() {
       return loop(Number(flag("every") ?? 60));
     case "mcp":
       return serve(store);
+    // The resident AI host (#19): started by the tick, never by hand.
+    case "host": {
+      const { runHost: runHost2 } = await Promise.resolve().then(() => (init_host(), host_exports));
+      return runHost2();
+    }
     case "service":
       return console.log(service(args[0]));
     case "install":
@@ -56072,7 +56651,7 @@ async function main() {
       })());
     // The daily command: "delegate" alone opens Home, once setup is done (design-spec/home.md).
     case void 0:
-      if (!existsSync32(join35(LOCAL_DIR, "local.json")) && !process.env.DELEGATE_ROOT) return console.log(HELP);
+      if (!existsSync34(join38(LOCAL_DIR, "local.json")) && !process.env.DELEGATE_ROOT) return console.log(HELP);
     // falls through
     case "open": {
       const child = process.env.DELEGATE_PAGE;
@@ -56084,7 +56663,7 @@ async function main() {
         });
       }
       const token = randomBytes4(16).toString("hex"), port = await freePort(), url2 = `http://127.0.0.1:${port}/?t=${token}`;
-      supervise((p, t2) => spawn7(process.execPath, [fileURLToPath2(import.meta.url), "open"], { stdio: "inherit", env: { ...process.env, DELEGATE_PAGE: `${p}:${t2}` } }), port, token);
+      supervise((p, t2) => spawn8(process.execPath, [fileURLToPath2(import.meta.url), "open"], { stdio: "inherit", env: { ...process.env, DELEGATE_PAGE: `${p}:${t2}` } }), port, token);
       await waitFor(port);
       if (!args.includes("--no-browser")) openUrl(url2);
       console.log(`Your inbox is open at ${url2}
@@ -56124,14 +56703,14 @@ ${r.receipt.reply}` : ""}`).join("\n\n") || "No new replies.");
 var HELP = "delegate              open your inbox (Home)\ndelegate <init|tick [--force]|loop|mcp|inbox|act|open|status|numbers [--window this|last|4w|all]|sessions|send <session|name|PR> <text>|replies|demo|doctor|update|version|service install|uninstall>\n  init --root <folder> --owner-id <id> --owner-name <name> --watch <chatId>|<name>[|test][|group] ...";
 var store = () => new Store(loadLocal());
 var freePort = () => new Promise((res) => {
-  const s3 = createServer2().listen(0, "127.0.0.1", () => {
+  const s3 = createServer3().listen(0, "127.0.0.1", () => {
     const a = s3.address();
     s3.close(() => res(typeof a === "object" && a ? a.port : 0));
   });
 });
 var waitFor = async (port) => {
   for (let i = 0; i < 100; i++) {
-    if (await new Promise((r) => request({ host: "127.0.0.1", port, path: "/" }, () => r(true)).on("error", () => r(false)).end())) return;
+    if (await new Promise((r) => request2({ host: "127.0.0.1", port, path: "/" }, () => r(true)).on("error", () => r(false)).end())) return;
     await new Promise((r) => setTimeout(r, 100));
   }
 };
@@ -56157,7 +56736,7 @@ function init() {
   if (!root) throw new Error("--root is required");
   assertTestSafe(LOCAL_DIR);
   mkdirSync16(LOCAL_DIR, { recursive: true });
-  writeFileSync19(join35(LOCAL_DIR, "local.json"), JSON.stringify({ root, machine: hostname5().split(".")[0] }, null, "	"));
+  writeFileSync20(join38(LOCAL_DIR, "local.json"), JSON.stringify({ root, machine: hostname5().split(".")[0] }, null, "	"));
   const watch2 = flags("watch").map((w) => {
     const [id, name, ...opts] = w.split("|");
     return { id, name: name ?? id, test: opts.includes("test"), group: opts.includes("group") };

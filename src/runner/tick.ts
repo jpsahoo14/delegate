@@ -28,6 +28,7 @@ import { checkOpen } from './continue.ts'
 import { pruneSessionNotes } from './own.ts'
 import { refreshCatalogs } from './catalog.ts'
 import { finishTrim } from './tools-migrate.ts'
+import { hostCaller, hostRunner } from '../host/client.ts'
 import { stampPlaces } from './place.ts'
 import { writeSnapshot } from '../web/server.ts'
 import { notify } from '../os/notify.ts'
@@ -116,13 +117,13 @@ export async function tick(store: Store, deps: { source?: Source; run?: RunWorke
 		const answers = await applyAnswers(store, src, cfg, procs, false, probe)
 		// An approval's change job starts in this pass, before any draft runs, never one pass later (latency a). Jobs run detached.
 		// Approved changes with their exact calls are made in this pass, with no AI run (queue-new #7E).
-		const jobsMark = Date.now(), jobsNow = answers ? await executeDirect(store, src, cfg, procs, probe, deps.call) + startJobs(store, cfg, procs, ['bootstrap:chats']) : 0
+		const jobsMark = Date.now(), jobsNow = answers ? await executeDirect(store, src, cfg, procs, probe, deps.call ?? hostCaller(store, cfg)) + startJobs(store, cfg, procs, ['bootstrap:chats']) : 0
 		const closeProbe = () => { if (!deps.probe) void probe?.close?.().catch(() => undefined) }
 		// After the pass's PR reads are closed, a direct change batch opens its own reader for the PR read before a vote.
 		const direct = async () => {
 			let p: BuildProbe | undefined
 			try { p = deps.probe ?? adoProbe(cfg) } catch { p = undefined }
-			try { return await executeDirect(store, src, cfg, procs, p, deps.call) } finally { if (!deps.probe) await p?.close?.().catch(() => undefined) }
+			try { return await executeDirect(store, src, cfg, procs, p, deps.call ?? hostCaller(store, cfg)) } finally { if (!deps.probe) await p?.close?.().catch(() => undefined) }
 		}
 		// Stopped means no reading or drafting, but runs already started are still watched and their budgets enforced (tester P1-10).
 		if (store.control().stopped) { closeProbe(); store.setHealth('source'); checkOpen(store, procs, procs.bootMs?.()); await checkJobs(store, src, cfg, procs, deps.probe); reschedule(store, cfg, false, t0); return { skipped: 'stopped', commands, answers, asks: 0, runs: 0, nudged: false, ms: Date.now() - t0 } }
@@ -157,7 +158,8 @@ export async function tick(store: Store, deps: { source?: Source; run?: RunWorke
 		// A server whose part of an old, shorter tools list waited for a listing is settled before drafts get tools (#17).
 		await listing
 		finishTrim(store)
-		const runs = await dispatch(store, src, cfg, deps.run, probe).finally(closeProbe)
+		// Reply runs go to the resident AI host when there can be one; else one process per run, as before (#19).
+		const runs = await dispatch(store, src, cfg, deps.run ?? hostRunner(store), probe).finally(closeProbe)
 		// Jobs run detached: the tick starts and checks them, and never waits (R-LNG-02).
 		const handedBack = checkOpen(store, procs, procs.bootMs?.())
 		const jobsDone = await checkJobs(store, src, cfg, procs, deps.probe, jobsNow ? jobsMark : undefined)

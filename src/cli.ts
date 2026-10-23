@@ -49,6 +49,8 @@ async function main() {
 		}))
 		case 'loop': return loop(Number(flag('every') ?? 60))
 		case 'mcp': return serve(store)
+		// The resident AI host (#19): started by the tick, never by hand.
+		case 'host': { const { runHost } = await import('./host/host.ts'); return runHost() }
 		case 'service': return console.log(service(args[0]))
 		case 'install': return console.log(install().join('\n'))
 		case 'status': return console.log(statusText(store()))
