@@ -52,6 +52,8 @@ export type Procs = {
 	alive: (pid: number) => boolean
 	kill: (pid: number) => boolean
 	openWindow: (title: string, argv: string[], env: Record<string, string>) => void
+	// Whether a local terminal's process is still that window (continue.ts windowProcess); a test may stand in for it.
+	windowAlive?: (pid: number, since: string) => boolean
 	// When this machine started; a test machine may have started minutes ago.
 	bootMs?: () => number
 }

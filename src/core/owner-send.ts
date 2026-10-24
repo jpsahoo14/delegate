@@ -6,7 +6,7 @@ export const reviewDigest = (wf: Workflow, messages: { id: string; text: string;
 export const reasonMessages = (reason: NonNullable<Workflow['reason']>) => reason.kind === 'no-reply-needed' ? [] : [{ id: reason.msgId, text: reason.text, at: reason.at }]
 
 export function keepApprovedDraft(wf: Workflow, reason: string) {
-	if (!wf.ownerSend || wf.sent && wf.sent.at >= wf.ownerSend.at) return
+	if (!wf.ownerSend || wf.sent && !wf.sent.holding && wf.sent.at >= wf.ownerSend.at) return
 	wf.draft = { ...wf.ownerSend.draft }
 	const messages: { id: string; text: string; at: string }[] = []
 	wf.reason = { kind: 'no-reply-needed', why: reason, digest: reviewDigest(wf, messages) }

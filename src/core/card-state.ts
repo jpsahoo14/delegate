@@ -2,8 +2,10 @@
 // and the card draws them; nothing else picks a card's primary, its one editable box, or its warning line. Pure: no store, no clock.
 // The first rule whose `when` holds decides, as core/whose.ts places rows.
 
-export type ActionKind = 'approve' | 'send-anyway' | 'redraft' | 'send-edit' | 'answer' | 'pick' | 'later' | 'dismiss' | 'try-again' | 'write-own' | 'review-again' | 'reply-only' | 'reopen' | 'report'
-export type Mode = 'agent-wait' | 'own-reply' | 'review-again' | 'failed' | 'declined' | 'held' | 'your-step' | 'choices' | 'answer' | 'answer-with-holding'
+import { shareHoldText, type ShareHold } from './share.ts'
+
+export type ActionKind = 'take-back' | 'approve' | 'send-anyway' | 'redraft' | 'send-edit' | 'answer' | 'pick' | 'later' | 'dismiss' | 'try-again' | 'write-own' | 'review-again' | 'reply-only' | 'reopen' | 'report'
+export type Mode = 'in-terminal' | 'agent-wait' | 'own-reply' | 'review-again' | 'failed' | 'declined' | 'held' | 'your-step' | 'choices' | 'answer' | 'answer-with-holding'
 	| 'reply-with-question' | 'changes' | 'reply' | 'holding' | 'not-sent' | 'unknown'
 export type Failure = { kind: 'setup' | 'other' | 'content' | 'tool' | 'stopped'; at: string; why: string; tried: string[]; repeats: number; systemChanged: boolean; job?: string; review?: boolean }
 // Everything a card may depend on, computed once per item (card-facts.ts). draft.at: when Delegate (or the owner's edit) wrote it.
@@ -15,7 +17,8 @@ export type CardFacts = {
 	changes: number
 	replyCountsOnRefused?: boolean
 	failure?: Failure
-	hold?: { kind: 'agent' | 'paused' | 'active'; until?: string; text: string }
+	// window: the item is open in a terminal (the runner sets wf.openOn each tick; since is from its open record, #43).
+	hold?: { kind: 'agent' | 'paused' | 'active' | 'window'; until?: string; text: string; machine?: string; since?: string }
 	notSent?: { why: string }
 	// The owner's Send was held by the engine (SEND, wf.reason): the asker changed or added to the ask, or no reply looks needed.
 	held?: { kind: 'ask-edited' | 'asker-wrote-again' | 'no-reply-needed'; digest: string; who: string; why?: string }
@@ -23,11 +26,15 @@ export type CardFacts = {
 	declined?: { pr: number; addMe: boolean }
 	yourStep?: { kind: 'decision' | 'report'; what: string }
 	promiseFailed?: string
+	// Why the draft waits for the owner on need to know (#36): structured, worded by shareHoldText (PM wording).
+	shareHold?: ShareHold | string
 }
 export type CardState = {
 	mode: Mode; primary?: ActionKind; secondary: ActionKind[]; more: ActionKind[]
 	editor: 'reply' | 'answer' | 'none'
 	warn?: string
+	// The "Why it waited" line a need-to-know hold gives the card (#36, PE 17:05 point 6).
+	waited?: string
 	block3: 'when-you-send' | 'none'
 }
 
@@ -47,7 +54,11 @@ const failLine = (f: Failure) => `${f.kind === 'content' ? "Couldn't finish" : "
 
 type Rule = { mode: Mode; when: (f: CardFacts) => boolean; build: (f: CardFacts) => Omit<CardState, 'mode' | 'block3'> }
 const asked = (f: CardFacts) => !!f.question || f.yourStep?.kind === 'decision'
+// "since Thu 7:53 PM": the hold's start in this machine's time (a format, not a clock).
+const sinceWords = (at?: string) => at && Number.isFinite(Date.parse(at)) ? ` since ${new Date(at).toLocaleString('en-US', { weekday: 'short', hour: 'numeric', minute: '2-digit' })}` : ''
 export const RULES: Rule[] = [
+	// Open in a terminal (#43, PE 16:50): Delegate leaves the item alone, so the only page step is taking it back; it beats any state.
+	{ mode: 'in-terminal', when: f => f.hold?.kind === 'window', build: f => ({ primary: 'take-back', secondary: [], more: [], editor: 'none', warn: `Open in a terminal on ${f.hold!.machine ?? 'another machine'}${sinceWords(f.hold!.since)} · Delegate waits until you close it.` }) },
 	{ mode: 'agent-wait', when: f => f.hold?.kind === 'agent', build: f => ({ primary: 'write-own', secondary: [], more: ['dismiss'], editor: 'none', warn: f.hold!.text }) },
 	{ mode: 'own-reply', when: f => !!f.ownReply, build: () => ({ secondary: [], more: ['reopen'], editor: 'none' }) },
 	{ mode: 'failed', when: f => !!f.failure || !!f.promiseFailed && !f.draft, build: f => {
@@ -87,7 +98,8 @@ export function cardState(f: CardFacts): CardState {
 	const s = rule.build(f)
 	// "Your reply mentions something Delegate won't do": the reply is changed first, so the editor's version is what goes.
 	const warn = s.warn ?? (f.replyCountsOnRefused && s.editor === 'reply' ? "Your reply mentions something Delegate won't do. Change the reply first." : undefined)
-	return { mode: rule.mode, ...s, ...(warn ? { warn } : {}), block3: s.editor === 'reply' ? 'when-you-send' : 'none' }
+	const waited = f.draft ? shareHoldText(f.shareHold) : undefined
+	return { mode: rule.mode, ...s, ...(warn ? { warn } : {}), ...(waited ? { waited } : {}), block3: s.editor === 'reply' ? 'when-you-send' : 'none' }
 }
 
 // The invariants every card keeps (§4); a list of the broken ones, empty when the card is sound. Logged, never thrown.
@@ -96,7 +108,9 @@ export function checkCard(f: CardFacts, s: CardState): string[] {
 	const out: string[] = []
 	const all = [s.primary, ...s.secondary, ...s.more].filter(Boolean)
 	if (new Set(all).size !== all.length) out.push('an action is offered twice')
-	if (f.draft && !['not-sent', 'failed', 'own-reply', 'agent-wait', 'review-again', 'declined', 'your-step', 'choices'].includes(s.mode) && !all.includes('approve') && !all.includes('send-anyway') && !all.includes('send-edit')) out.push('a draft cannot be sent')
+	// The engine refuses everything but Take it back while a terminal holds the item (PE on c094cdc4), so the card offers nothing else.
+	if (s.mode === 'in-terminal' && all.some(k => k !== 'take-back')) out.push('a card held by a terminal offers what the engine refuses')
+	if (f.draft && !['in-terminal', 'not-sent', 'failed', 'own-reply', 'agent-wait', 'review-again', 'declined', 'your-step', 'choices'].includes(s.mode) && !all.includes('approve') && !all.includes('send-anyway') && !all.includes('send-edit')) out.push('a draft cannot be sent')
 	if (f.held && f.draft && !all.includes('send-anyway')) out.push('a held Send offers no Send anyway')
 	if (f.failure && f.draft && Date.parse(f.draft.at) > Date.parse(f.failure.at) && s.mode === 'failed') out.push('a failure older than the draft decided the card')
 	if (s.mode === 'unknown') out.push('no mode fits')

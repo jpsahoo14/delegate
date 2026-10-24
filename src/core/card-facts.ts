@@ -12,6 +12,8 @@ export type FactsInput = {
 	card: { question?: string; draft?: { holding?: boolean; preview?: boolean }; choices?: { multi?: boolean }; ownReply?: { at: string }; promise?: { failed?: string }; reviewAgain?: string }
 	changes: number
 	agentWait?: string
+	// Open in a terminal on this machine name since then (wf.openOn and its open record, #43).
+	window?: { machine: string; since?: string }
 	replyCountsOnRefused?: boolean
 	// How often the same cause failed before (from the log), when known.
 	repeats?: number
@@ -50,11 +52,12 @@ export function cardFacts(i: FactsInput): CardFacts {
 		changes: i.changes,
 		...(i.replyCountsOnRefused ? { replyCountsOnRefused: true } : {}),
 		...(failure ? { failure } : {}),
-		...(i.agentWait ? { hold: { kind: 'agent' as const, text: i.agentWait } } : {}),
+		...(i.window ? { hold: { kind: 'window' as const, text: 'Open in a terminal', machine: i.window.machine, ...(i.window.since ? { since: i.window.since } : {}) } } : i.agentWait ? { hold: { kind: 'agent' as const, text: i.agentWait } } : {}),
 		...(notSent ? { notSent } : {}),
 		...(held ? { held } : {}),
 		...(card.ownReply ? { ownReply: { at: card.ownReply.at } } : {}),
 		...(waiting && wf.reviewDecline ? { declined: { pr: wf.reviewDecline.pr, addMe: i.changes > 0 } } : {}),
 		...(card.promise?.failed ? { promiseFailed: card.promise.failed } : {}),
+		...(waiting && card.draft && wf.shareHold ? { shareHold: wf.shareHold } : {}),
 	}
 }

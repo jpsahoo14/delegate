@@ -78,6 +78,7 @@ export function factsOf(s: Snap, sub: Subject): Facts {
 		work: w.work && { open: !w.work.closed, next: nextWho(s, w.work), waiting: !!w.work.waitingOn },
 		todos: openTodos(w).length,
 		fyiUnread: !!w.fyi && (w.fyi.at ?? w.updatedAt) > s.catchupSeen,
+		...(w.openOn ? { window: true } : {}),
 	}
 }
 
@@ -172,7 +173,7 @@ export function dryText(rows: Placed[]): string {
 // Each placed thread as the new page draws it (design-spec/new-experience.md §5, reviews/pm-n1a.md). Code builds every word;
 // times stay timestamps. Quotation marks only for words someone wrote, with who wrote them; anything else is unquoted, after a label.
 export type RowKind =
-	| 'reply' | 'holding' | 'question' | 'choice' | 'meeting' | 'review' | 'promise' | 'check-date' | 'track' | 'your-step' | 'stopped' | 'reminder-new' | 'todo'
+	| 'reply' | 'holding' | 'question' | 'choice' | 'meeting' | 'review' | 'promise' | 'check-date' | 'track' | 'your-step' | 'stopped' | 'reminder-new' | 'todo' | 'in-terminal'
 	| 'waiting-person' | 'waiting-others' | 'watch' | 'waiting-delegate' | 'nobody' | 'reminder'
 	| 'working' | 'scheduled'
 	| 'catchup'
@@ -191,6 +192,8 @@ export const COMMANDS: Record<RowKind, string> = {
 	'waiting-person': 'ok <W code> | <code>: nudge them', 'waiting-others': '<code>: nudge them', watch: 'ok <code> (when changed)', 'waiting-delegate': '', nobody: '<code>: do the next step now', reminder: 'pause <code> | resume <code>',
 	working: '', scheduled: 'later <code>',
 	catchup: 'mine <code>',
+	// Open in a terminal (#43): the card's Take it back is a page action, with no text command.
+	'in-terminal': 'card',
 }
 // Holding reply is not a chip: the headline says it (PM review, cut list).
 export type Chip = { kind: 'before' | 'retrying' | 'guests' | 'changed' | 'room' | 'pointed' | 'held' | 'worth' | 'new' | 'back'; text: string }
@@ -361,6 +364,7 @@ function itemRow(s: Snap, p: Placed, w: Workflow): Body {
 		return { ...base, ...(held ? { chips: [...base.chips, { kind: 'held', text: 'Held: you are active in Teams' }] } : {}), kind: 'scheduled', headline: `Sends to ${name}${rule}: "${clip(w.draft?.text, 70)}"`, ...(p.section === 'working' ? { next } : {}), primary: { label: 'Hold', command: `later ${c}` } }
 	}
 	if (p.section === 'move') {
+		if (p.rule === 'in-terminal') return { ...base, kind: 'in-terminal', headline: `Open in a terminal on ${w.openOn} · ${NAME} waits until you close it`, primary: open }
 		if (p.rule === 'stopped') return { ...base, kind: 'stopped', headline: `Couldn't finish ${j?.goal ? gerund(clip(j.goal, 100)) : `this for ${name}`}: try again, or do it yourself`, facts: { ...facts, notes: [{ label: 'Why', text: whyOf(j?.error) }] }, primary: { label: 'Try again', command: `${c}: try again` }, more: [{ label: 'Close', command: `close ${c}` }] }
 		if (p.rule === 'todo') return todoRow(s, base, w)
 		if (p.rule === 'your-step') return { ...base, kind: 'your-step', headline: clip(w.work?.next?.what ?? w.work?.goal, 140), facts: { ...facts, notes: goal(w.work?.goal) }, primary: { label: 'Tell ' + NAME, command: `${c}: {text}` } }

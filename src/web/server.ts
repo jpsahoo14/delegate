@@ -102,6 +102,9 @@ export function serveInbox(get: () => Store, port = 0, token = randomBytes(16).t
 	if (!ver) try { askVersion(get()) } catch { /* the first request reads it */ }
 	let reactVisit: { since?: string; fallbackSince: string } | undefined
 	const reactPages = new Map<string, ReturnType<typeof reactProjection>['snapshot']>()
+	// Clicks whose POST this server is handling now, by submission id: a receipt poll says "still working" for them, so the page never
+	// resends a click that is only slow, and resends one the server never got (#42, PE 16:40).
+	const inFlight = new Set<string>()
 	const server = createServer((req, res) => {
 		// A request over a second is logged with where its time went (#27): lock waits, store reads and writes, OneDrive sleeps, JSON,
 		// and the rest (building the view). The counters are this process's, so a request that overlapped another shares its numbers.
@@ -168,10 +171,11 @@ export function serveInbox(get: () => Store, port = 0, token = randomBytes(16).t
 			if (req.method === 'GET' && u.pathname === '/api/v1/result') {
 				const id = u.searchParams.get('submission') ?? ''
 				if (!/^[a-f0-9-]{36}$/i.test(id)) { json(422, { text: 'A valid submission identity is required.' }); return }
+				if (inFlight.has(id)) { json(202, { working: true, text: 'Still working on it.' }); return }
 				try {
 					// A receipt poll reads each file once (#27 step 1), with its own copies because it may save the receipt.
 					const receipt = readScope(() => submissionReceipt(get(), id), { writes: true })
-					json(receipt ? 200 : 404, receipt ?? { text: 'This submission has not been confirmed. Keep checking; do not send it again.' })
+					json(receipt ? 200 : 404, receipt ?? { text: 'No saved click with this id.' })
 				} catch (error) { failure(error) }
 				return
 			}
@@ -187,12 +191,14 @@ export function serveInbox(get: () => Store, port = 0, token = randomBytes(16).t
 					if (tooLarge) return
 					let raw: unknown
 					try { raw = JSON.parse(body) } catch { json(422, { text: 'Could not read that action.' }); return }
-					const parsed = intentSchema.safeParse(raw)
-					if (!parsed.success) { json(422, { text: 'That action has invalid fields.' }); return }
+					const claimed = (raw as { submissionId?: unknown })?.submissionId, id = typeof claimed === 'string' && /^[a-f0-9-]{36}$/i.test(claimed) ? claimed : undefined
+					if (id) inFlight.add(id)
 					try {
+						const parsed = intentSchema.safeParse(raw)
+						if (!parsed.success) { json(422, { text: 'That action has invalid fields.' }); return }
 						const result = await submitIntentWhenFree(get(), parsed.data, undefined, fn => readScope(fn, { writes: true }))
 						json(result.status, result.receipt)
-					} catch (error) { failure(error) }
+					} catch (error) { failure(error) } finally { if (id) inFlight.delete(id) }
 				})
 				return
 			}

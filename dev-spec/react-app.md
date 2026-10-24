@@ -1,5 +1,163 @@
 # React preview
 
+## Merge of #29 (HOST) with #36: a redraft keeps what the draft it replaces drew on
+
+- `drewOn` on a redraft is the previous draft's chats plus `draftUse`'s chats (HOST's union, on #36's `draftUse`).
+- The previous draft's `records` carry over, so the record chips stay.
+- An unknown read now, or an unknown-reads hold behind the replaced draft (legacy string or `{ kind: 'reads' }`), holds as
+  `{ kind: 'reads' }`.
+- An earlier hold with no chats behind it (a record's: restricted, unread, customer) is kept when the new run finds no hold.
+- Proof on the merged tree, stub model (quota): a redraft after a chat-B draft keeps the `conversation` hold; one after a
+  restricted-incident hold keeps it and the record; an unheld item stays unheld; input tokens stay about 6.7k a call.
+
+## #36: need to know by source audience
+
+PM rule `pm-need-to-know-audience.md`, with the PE 17:05 corrections.
+
+- **Incident audience, from data.** The field names come from the owner's real session logs, read-only, names and booleans only; they
+  are written into #36's spec. An incident read with the incident tool's `get_incident_details_by_id` is org-visible only when `isSecurityRisk`,
+  `isRestricted` and `isSupportEngagement` are all present and `false` in its `structuredContent`. Anything missing or non-boolean
+  is Restricted (`core/share.ts incidentAudience`).
+- **ADO.**
+  - `ado-repo_pull_request`, `ado-wit_work_item` and `ado-wiki` reads are org-visible only in a project on the new
+    `orgVisibleProjects` list (Settings › You, "Projects anyone in your org can read"; empty by default).
+  - A work item's project comes from `System.TeamProject` when the call names none.
+  - No project at all means Restricted.
+- **Provenance.**
+  - `readsOf` records successful record reads with their id (`Look.tool: incident | ado | wiki`, `id`) as `Reads.records`, kept on the
+    item as `wf.records`.
+  - `draftUse`: a cited record counts only with a read of that id; otherwise it is `unread`, which holds. A restricted record that
+    was read counts even uncited.
+  - Cited chats always count. Read chats count unless every source is a record that was read (fail-closed).
+  - Documents count as the chat they were shared in (#40), and a Confidential label holds.
+- **`sharingHold`** returns `{ kind, record?, chat?, who?, level? }`, never prose. Kinds: `marked`, `members`, `guest`,
+  `restricted`, `unread`, `conversation`, `customer`, and `reads` (set by dispatch). The first that applies decides, in the PM's
+  order.
+  - Customer details are checked deterministically: GUIDs and emails in the draft that this chat's thread doesn't have.
+  - Owner sends are unchanged (`gate.ts`).
+  - Stored prose holds read as "Waiting for you: …".
+- **Shareable within my org.**
+  - A new chat level, for groups and meetings only (a 1:1 is refused).
+  - A shareable chat used elsewhere doesn't hold when the target chat has no guest.
+  - Any membership read that finds a guest clears it, logs `shareable-cleared`, and tells the owner once in his self-chat.
+  - Members are now cached with `guests`.
+- **Card and page.**
+  - `CardFacts.shareHold` gives `CardState.waited`, the "Why it waited" line in the PM's words. Golden G63–G70, one per kind;
+    70/70.
+  - "Need to know" keeps its warning.
+  - Record chips read "Incident 900001 · visible in your org" or "… · restricted" (source kind `Record`).
+  - The reply workflow says to cite the record, not the chat.
+- **Proof.** Fictional root, stub model (quota). Session-log events are in the AI CLI's own shape (as in the owner's logs); Teams
+  members come from a stub source. Each case went through the real `readsOf`, `draftUse` and `sharingHold`:
+  - **No hold:** Ex1 (an org-only chat, the incident read and cited); rule R1 sends it at high confidence.
+  - **Holds, each with its line:**
+    - Ex2: a guest in the chat;
+    - Ex3: a war-room quote that Dev isn't in. Marking the war room Shareable removes the hold;
+    - a restricted incident;
+    - missing audience fields;
+    - a cited incident never read;
+    - a PR in an unlisted project;
+    - an unlabelled doc shared in the war room;
+    - a private 1:1 quote;
+    - customer details.
+  - **Shareable:** a 1:1 can't be marked. A guest joining the Release room cleared its mark, with one notice.
+  - **The card, New and Classic:** shows the warning, the "Why it waited" line and the chips, and Send stays.
+  - **The inert owner copy:** the page builds, and the one-thread projection matches the whole one on all 114 items.
+
+## #43: a terminal hold uses the window's own process and a 12 h cap; Take it back
+
+PE 16:50 corrections, built as written.
+- **`checkOpen`.**
+  - A local window counts as open only when its pid is alive and runs `delegate continue` (`windowProcess`: the CIM/`ps` command
+    line matches `ours()` and "continue"), it started after boot, and it is under 12 h old (the cap remote windows had).
+  - The process-table answer is cached per pid and start for the life of the process.
+  - A release takes the existing closed path, and `continue-closed` gets
+    `why: closed | taken-back | over-12h | gone | not-ours`. No one-off is needed: the rule runs every tick.
+- **A late report.** `submit_report` from a window whose open record is gone, has another `runId`, or was taken back is refused:
+  "Delegate took this item back; what you decide here isn't used. Tell Delegate in the page instead." It is logged as
+  `continue-late-report`. The terminal is never killed.
+- **Card.**
+  - `CardFacts.hold` gains `kind: 'window'` with `machine` and `since` (from `wf.openOn` and the open record).
+  - Mode `in-terminal` comes first: primary `take-back`, no secondary, ⋯ `dismiss`, editor `none`. Its warn reads "Open in a
+    terminal on <machine> since <time> · Delegate waits until you close it."
+  - `checkCard` flags any other action on it.
+  - Golden G60–G62: it beats a running state, a draft, and a failure plus a question. 62/62.
+- **Placement.**
+  - `whose.ts` rule `in-terminal` (section `move`) comes first in precedence, and gives row kind `in-terminal` with that line.
+  - Running lists leave out items with `openOn`; Classic lists them under Needs you.
+- **Take it back.** A page action with exact rev that writes `closed` and `takenBack` on the open record and nothing else. Receipt:
+  "Taken back. Your terminal stays open; what you decide there now isn't used." The next tick applies a report the window already
+  submitted, as a preview, and releases the item.
+- **Open question for the PE.** The ⋯ Dismiss the spec gives this mode is refused by the engine while the window holds the item
+  ("Close the window first"), as before.
+- **Proof.** Fictional root, stub model (quota), Edge, real processes.
+  - **The stand-in window's command line** on Windows reads `node.exe -e … src\cli.ts continue A3`, so it matches.
+  - **First tick:** an A173-shaped hold whose pid belongs to an unrelated process was released (`not-ours`), and its paced
+    redraft ran on the next tick. A hold over 12 h on a stand-in `delegate continue` was released (`over-12h`).
+  - **A live stand-in window (Ana):**
+    - It stayed held: row `in-terminal` in the owner's section and Classic's Needs you, not in either Running list. The card is
+      `in-terminal` with Take it back in New and Classic.
+    - Its report submitted before Take it back came back as a preview after the next tick (`taken-back`).
+    - A report after Take it back was refused with the line, and the terminal kept running.
+  - **Earlier proofs still pass:** held Send, send-edit, refused/replay/422, and the #41 holding flows.
+
+## #41 + #42: a holding reply keeps the item open; a click the server never got is sent again once, or released
+
+**#41 (PE 16:40 spec).** An owner send of a draft with `holding: true` keeps the item open on its question.
+- **After the send:**
+  - The item goes to `needs_human` with its `question`, or "What should the full reply to <first> say?" when there was none.
+  - The draft is cleared and `approved` dropped.
+  - `wf.sent` records `holding: true`, alongside the `sent` log line's `holding`.
+  - The status is "Holding reply sent. <first> is waiting for the full answer." The card lands in `answer` mode through the
+    existing rules (golden G59).
+- **Nothing keyed on `wf.sent` blocks the full reply.** Each of these is gated on "the last send was not a holding reply":
+  - the done/correction checks and the sent-plus-promise waits in apply.ts;
+  - `reopenable`;
+  - `keepApprovedDraft`;
+  - intake's `recordOwnerReply` logging;
+  - the send gate's `alreadyReplied` ("A reply to this message already exists").
+- **Learning, need-to-know and promises.** Nothing is learned from a holding text. Need-to-know and promises are unchanged.
+- **A typed `ok`** sends a holding draft while its question is open, as the page's Send does.
+
+**#42 (PE 16:40 corrections).**
+- **Server.**
+  - It keeps an in-process set of submission ids whose POST it is handling: added once the body is read, before the intent is
+    parsed, and removed in `finally`.
+  - `/api/v1/result` answers 202 "Still working on it." for those, the receipt when one is saved, and 404 "No saved click with this
+    id." otherwise.
+- **Client storage.** A pending click keeps its exact request (`intent`) in tab storage, so it survives a reload.
+- **When a click is sent again.**
+  - Only on a 404 from `/result`: never on a 202, and never while the click's own POST is still out.
+  - Once automatically; again from Check saved result; and once more on the first poll after 10 minutes.
+- **What the replay can get.**
+  - A receipt: done.
+  - 409: the refused receipt's line.
+  - 422: logged, and the click is released.
+  - A definite 404 or 5xx, followed by a `/result` that still says 404: released with "Not saved. Your click didn't reach Delegate;
+    try again."
+  - A network failure: the click waits in `unreached` ("Your click may not have reached Delegate. Check saved result sends it once
+    more; it is never done twice."), without "Do not send again".
+- **A new click after a release** uses a new id.
+
+**Proof.** Fictional root, stub model (quota), Edge.
+
+- **#41**
+  - **Priya (New):** the holding reply sent +1 message, and the card is in `answer` mode in New and Classic. Her same-ask follow-up
+    joined the item's thread, the redraft produced the full draft, and Send sent +1; the item closed.
+  - **Kim (Classic):** holding reply +1, then answer, full draft and Send +1; the item closed.
+  - **Sam:** a typed `ok` sent the holding reply once and left the item open on its question.
+- **#42**
+  - **A, New, Kim's Send:** the first POST was dropped and sent again once. One answer, one log line, one message; the same request
+    sent again changed nothing.
+  - **B, Classic Waiting card:** W1 Dismiss with the first POST dropped; dismissed once.
+  - **C:** every POST answered 500. The click was released with the plain line and Send was enabled again; a new click went once.
+  - **D, Classic W2 Dismiss:** the POST and its replay were both lost, so it showed `unreached` with Check saved result; that button
+    dismissed it once.
+  - **E:** `/result` answered 202 while a POST waited on a lock held by another process, then 200; an unknown id got 404.
+- **Earlier proofs still pass:** held Send, send-edit, 2a, and refused/replay/422. On 2a, sending the edited holding reply now
+  keeps the item open.
+- **card-golden:** 59/59. G58: a CLI tool denial recorded as `other` is not permanent (PE 0c follow-up).
+
 ## #29 follow-up: retain two reply-run histories
 
 - After a reply run, its session records the previous managed reply ID and any retired IDs still awaiting cleanup.

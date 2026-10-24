@@ -183,7 +183,7 @@ try {
   store.save(item, false)
   await dispatch(store, { ...src, members: async () => ({ guests: false, ids: ['robin', 'kim'], names: { robin: 'Robin', kim: 'Kim' } }) },
     cfg, hostRunner(store), undefined, [item.id])
-  check(store.workflow(item.id).shareHold === item.shareHold, 'unknown-read hold survives even when known chats share the audience')
+  check(JSON.stringify(store.workflow(item.id).shareHold) === JSON.stringify({ kind: 'reads' }), 'unknown-read hold survives even when known chats share the audience')
   // A real tick starts the answer before intake; an external arrival during the turn holds its report.
   item = make()
   const id = item.id

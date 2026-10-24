@@ -10,9 +10,9 @@ const at = (daysAgo: number) => new Date(now - daysAgo * DAY).toISOString()
 const fail = (f: Partial<Failure> = {}): Failure => ({ kind: 'other', at: at(1), why: 'the run stopped without a result', tried: [], repeats: 0, systemChanged: false, ...f })
 const draft = (d: Partial<NonNullable<CardFacts['draft']>> = {}) => ({ holding: false, preview: false, at: at(0), ...d })
 const facts = (f: Partial<CardFacts> = {}): CardFacts => ({ state: 'needs_human', changes: 0, ...f })
-type Row = { id: string; what: string; facts: CardFacts; expect: { mode: string; primary?: string | null; secondary?: string[]; more?: string[]; editor?: string; warn?: string | null }; broken?: string[] }
+type Row = { id: string; what: string; facts: CardFacts; expect: { mode: string; primary?: string | null; secondary?: string[]; more?: string[]; editor?: string; warn?: string | null; waited?: string }; broken?: string[] }
 // A failed document read as an item records it, through cardFacts (pure), so the cause mapping itself is checked (#40 handoff).
-const docFailure = (why: string, tried: string[]) => cardFacts({ wf: { state: 'needs_human', status: `Couldn't finish: ${why}`, runFailed: { at: at(1), kind: 'content', why, tried, job: 'j9' }, updatedAt: at(1) } as any, card: {}, changes: 0 })
+const docFailure = (why: string, tried: string[], kind = 'content') => cardFacts({ wf: { state: 'needs_human', status: `Couldn't finish: ${why}`, runFailed: { at: at(1), kind, why, tried, job: 'j9' }, updatedAt: at(1) } as any, card: {}, changes: 0 })
 
 const rows: Row[] = [
 	// One per rule (§2), the least that selects it.
@@ -71,6 +71,25 @@ const rows: Row[] = [
 	{ id: 'G49', what: 'A76 (#40): Office file only as encoded binary: fixed now, Try again leads', facts: docFailure('Available readers return only the opening of the spec', ['readSmallBinaryFile: the whole file as base64, no decoder']), expect: { mode: 'failed', primary: 'try-again', secondary: ['write-own', 'later'] } },
 	{ id: 'G50', what: '#40: no access to the document', facts: docFailure("Couldn't open Robin's v7 spec: no access", []), expect: { mode: 'failed', primary: 'write-own', secondary: ['try-again', 'later'], more: ['dismiss'] } },
 	{ id: 'G51', what: '#40: the document is over the size limit', facts: docFailure("Couldn't open the Acme deck: too large to open (over 25 MB)", []), expect: { mode: 'failed', primary: 'write-own', secondary: ['try-again', 'later'] } },
+	// A CLI tool denial is not a document Delegate can't open: it keeps its own kind, so Try again leads (PE 0c follow-up).
+	{ id: 'G58', what: 'a CLI tool denial (recorded as other) is not permanent: Try again leads', facts: docFailure('The run stopped: the CLI denied the tool (no access to shell)', ['shell: permission denied'], 'other'), expect: { mode: 'failed', primary: 'try-again', secondary: ['write-own', 'later'] } },
+	// After a holding reply went (#41), the item is open on its question with no draft: the card asks for the answer.
+	{ id: 'G59', what: 'after the holding reply went: answer mode', facts: cardFacts({ wf: { state: 'needs_human', question: 'Which Acme region ships first?', status: 'Holding reply sent. Kim is waiting for the full answer.', sent: { msgId: 'm9', at: at(1), holding: true }, updatedAt: at(1) } as any, card: { question: 'Which Acme region ships first?' }, changes: 0 }), expect: { mode: 'answer', primary: 'answer', editor: 'answer' } },
+	// Open in a terminal (#43, PE 16:50): the hold beats any state; the page offers only Take it back (the engine refuses Dismiss while a window holds it).
+	{ id: 'G60', what: 'a terminal hold beats a running state', facts: facts({ state: 'running', hold: { kind: 'window', text: 'Open in a terminal', machine: 'PC-1', since: at(1) } }), expect: { mode: 'in-terminal', primary: 'take-back', secondary: [], more: [], editor: 'none', warn: 'Open in a terminal on PC-1 since' } },
+	{ id: 'G61', what: 'a terminal hold beats a draft (no "draft cannot be sent")', facts: facts({ draft: draft(), hold: { kind: 'window', text: 'Open in a terminal', machine: 'PC-1', since: at(1) } }), expect: { mode: 'in-terminal', primary: 'take-back', secondary: [] } },
+	{ id: 'G62', what: 'a terminal hold beats a failure and a question; nothing that moves the item on', facts: facts({ question: { text: 'Which region?', reviewAgain: false }, failure: fail(), hold: { kind: 'window', text: 'Open in a terminal', machine: 'PC-1' } }), expect: { mode: 'in-terminal', primary: 'take-back', secondary: [], more: [], warn: 'Open in a terminal on PC-1 · Delegate waits' } },
+	// Need to know (#36, PE 17:05 point 6): one "Why it waited" line per kind of hold, in the PM's words; the draft still sends on Send.
+	...([
+		['G63', { kind: 'guest', record: 'Incident 900001' }, 'Waiting for you: this chat has a guest or someone from outside your org, and the reply uses Incident 900001.'],
+		['G64', { kind: 'restricted', record: 'Incident 900002', who: 'a restricted incident' }, 'Waiting for you: Incident 900002 is a restricted incident.'],
+		['G65', { kind: 'conversation', chat: 'Globex war room', who: 'Dev' }, "Waiting for you: it uses Globex war room, and Dev isn't in it."],
+		['G66', { kind: 'customer', record: 'Incident 900001' }, 'Waiting for you: it names the customer from Incident 900001.'],
+		['G67', { kind: 'unread', record: 'Incident 900003' }, 'Waiting for you: it cites Incident 900003 without having read it.'],
+		['G68', { kind: 'marked', chat: 'Acme leads', level: 'private' }, 'Waiting for you: it uses Acme leads, which you marked private.'],
+		['G69', { kind: 'members', chat: 'Globex war room' }, "Waiting for you: it uses Globex war room, and I couldn't check who is in each chat."],
+		['G70', { kind: 'reads' }, "Waiting for you: it searched your chats and I couldn't tell which ones it read."],
+	] as const).map(([id, hold, line]) => ({ id, what: `need to know: ${hold.kind}`, facts: facts({ draft: draft(), shareHold: hold as any }), expect: { mode: 'reply', primary: 'approve', waited: line } })),
 	// What ⋯ holds (PE step-4 review): Answer instead only where a question is open.
 	{ id: 'G52', what: 'more: reply', facts: facts({ draft: draft() }), expect: { mode: 'reply', more: ['dismiss'] } },
 	{ id: 'G53', what: 'more: holding', facts: facts({ draft: draft({ holding: true }) }), expect: { mode: 'holding', more: ['dismiss'] } },
@@ -91,6 +110,7 @@ for (const r of rows) {
 	if (e.more && JSON.stringify(s.more) !== JSON.stringify(e.more)) why.push(`more ${s.more.join(',')}, expected ${e.more.join(',')}`)
 	if (e.editor && s.editor !== e.editor) why.push(`editor ${s.editor}, expected ${e.editor}`)
 	if (e.warn === null && s.warn) why.push(`warn "${s.warn}", expected none`)
+	if (e.waited && s.waited !== e.waited) why.push(`waited "${s.waited ?? ''}", expected "${e.waited}"`)
 	if (e.warn && !s.warn?.startsWith(e.warn)) why.push(`warn "${s.warn ?? ''}", expected "${e.warn}…"`)
 	if (JSON.stringify(broken) !== JSON.stringify(r.broken ?? [])) why.push(`invariants [${broken.join('; ')}], expected [${(r.broken ?? []).join('; ')}]`)
 	if (why.length) { bad++; console.log(`FAIL ${r.id} ${r.what}: ${why.join(' · ')}`) }

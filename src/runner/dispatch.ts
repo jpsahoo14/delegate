@@ -5,7 +5,7 @@ import { assertTestSafe } from '../store/fs.ts'
 import { closeFamily } from './apply.ts'
 import { realProcs } from './jobs.ts'
 import { stopWatch } from './track.ts'
-import { sharingHold, sourceChats } from './sharing.ts'
+import { draftUse, sharingHold } from './sharing.ts'
 import { readsOf, type Reads } from './provenance.ts'
 import { catalogInfo, workerTools } from './catalog.ts'
 import { existsSync, readFileSync } from 'node:fs'
@@ -23,7 +23,7 @@ import type { Source } from '../adapters/source.ts'
 import { here, LOCAL_DIR, type Store } from '../store/state.ts'
 import { buildAskPrompt, buildPrompt, replyFacts } from '../worker/prompt.ts'
 import { corrections } from '../store/feedback.ts'
-import { levelOf } from '../core/levels.ts'
+import { heldLevel } from '../core/levels.ts'
 import { CLI } from '../paths.ts'
 import { auditSkip, joinInto, say, splitOff } from './intake.ts'
 import { ackJob, afterDraft, ownerActive } from './autosend.ts'
@@ -304,7 +304,7 @@ export const readDirs = (store: Store, cfg: Config): string[] => [...new Set([..
 // (workerTools keeps that filter for it), so only its draft's own sources count, as before.
 export function runReads(store: Store, cfg: Config, session: string, logStart: number): Reads {
 	if (cfg.agent.flavor !== 'copilot') return { chats: [], searches: [], unknown: false, calls: [], knowledge: 0 }
-	return readsOf(sessionLog(cfg.agent.flavor, session).slice(logStart), knowledgeOf(store, cfg), readDirs(store, cfg), undefined, ref => store.documentChats(ref))
+	return readsOf(sessionLog(cfg.agent.flavor, session).slice(logStart), knowledgeOf(store, cfg), readDirs(store, cfg), undefined, ref => store.documentChats(ref), cfg.orgVisibleProjects ?? [])
 }
 
 // Every agent run gets the delegate MCP server in worker mode, scoped to one target and run (R-SEC-02).
@@ -333,7 +333,7 @@ export function workerMcp(store: Store, targetId: string, runId: string, interac
 }
 
 // A private chat's lessons stay in that chat; an off-the-record chat's are never used (round 3, per-chat level).
-const lessonFits = (cfg: Config, chat: string | undefined, here: string) => { const l = levelOf(cfg, chat); return !l || (l === 'private' && chat === here) }
+const lessonFits = (cfg: Config, chat: string | undefined, here: string) => { const l = heldLevel(cfg, chat); return !l || (l === 'private' && chat === here) }
 
 // A setup error that stops a run before it starts, the same for every run: never retried (round 2 P2-1, P2-2).
 // tools: the run's read tools (workerTools, #17).
@@ -365,6 +365,7 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 	const runId = ulid(), sessionId = retrySession ?? randomUUID(), startedAt = new Date().toISOString()
 	const previousDrewOn = wf.draft ? wf.drewOn ?? [] : []
 	const previousShareHold = wf.draft ? wf.shareHold : undefined
+	const previousRecords = wf.draft ? wf.records ?? [] : []
 	const completedJob = wf.job ? store.job(wf.job) : undefined
 	const jobContext = completedJob?.state === 'done' ? replyFacts(completedJob.result?.context ?? wf.context) : []
 	// Legacy completed jobs kept their findings only on the item. Snapshot once on read, without rerunning the job.
@@ -376,7 +377,7 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 	const others = wf.code && !separate ? store.openInChat(wf.chat.id).filter(o => o.id !== wf.id && o.code && !o.followUp && !o.sent && freshAsk(store, o) && askRelation(store, o, wf.lastAsk ?? '') !== 'different') : []
 	const home = homeOf(store, wf)
 	// A new item may belong to work that started in another chat; the worker sees the open work to say so (R-WRK-10).
-	const works = !wf.work && !wf.partOf ? store.workflows().filter(w => active(w) && !w.partOf && w.chat.id !== wf.chat.id && !levelOf(cfg, w.chat.id)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 8) : []
+	const works = !wf.work && !wf.partOf ? store.workflows().filter(w => active(w) && !w.partOf && w.chat.id !== wf.chat.id && !heldLevel(cfg, w.chat.id)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 8) : []
 	const prompt = buildPrompt(wf, store.thread(wf.id), cfg, store.root, store.owners(), others, corrections(store.lessons().filter(l => lessonFits(cfg, (l.detail as { chat?: string } | undefined)?.chat, wf.chat.id)), wf), { home: home === wf ? undefined : home, works, parts: home.work?.parts?.map(id => store.workflow(id)).filter((p): p is Workflow => !!p) ?? [], job: completedJob })
 	store.addRun()
 	const logStart = 0
@@ -529,9 +530,17 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 	// A draft that drew on another conversation not everyone here is in waits for the owner (R-SHR-01).
 	// What the run searched stays on the item for Why (queries and counts, never results).
 	fresh.looked = read.searches.length ? read.searches : undefined
-	const drewOn = report && !job && fresh.draft ? [...new Set([...previousDrewOn, ...sourceChats(fresh, knowledgeOf(store, cfg), read.chats)])] : []
-	fresh.drewOn = drewOn.length ? drewOn : undefined
-	fresh.shareHold = report && !job && fresh.draft && (read.unknown || previousShareHold === UNKNOWN_READ_HOLD || previousShareHold && !previousDrewOn.length) ? UNKNOWN_READ_HOLD : drewOn.length ? await sharingHold(store, src, fresh, drewOn) : undefined
+	// What it drew on, by audience (#36): records it read and cites, the chats it cites or read, and record links it never read.
+	// A redraft keeps what the draft it replaces drew on (#29): the new text may reuse its words without reading or citing them again.
+	const records = [...new Map([...previousRecords, ...(read.records ?? [])].map(r => [r.id, r])).values()]
+	const use = report && !job && fresh.draft ? draftUse(fresh, knowledgeOf(store, cfg), { ...read, records }) : undefined
+	if (use) use.chats = [...new Set([...previousDrewOn, ...use.chats])].filter(c => c !== fresh.chat.id)
+	fresh.drewOn = use?.chats.length ? use.chats : undefined
+	fresh.records = records.length ? records : undefined
+	// Unknown reads and earlier record-only holds persist. Customer names are transient, so their hold also survives a chat-backed redraft.
+	const readsBefore = previousShareHold === UNKNOWN_READ_HOLD || (typeof previousShareHold === 'object' && previousShareHold.kind === 'reads')
+	const kept = previousShareHold && (!previousDrewOn.length || typeof previousShareHold === 'object' && previousShareHold.kind === 'customer') ? (typeof previousShareHold === 'string' ? { kind: 'reads' as const } : previousShareHold) : undefined
+	fresh.shareHold = use && (read.unknown || readsBefore) ? { kind: 'reads' } : use ? (await sharingHold(store, src, fresh, use)) ?? kept : undefined
 	if (report && !job) await afterDraft(store, src, cfg, fresh)
 	// A person answering the owner (in a 1:1, or right after his own message) is never silent noise: with no reply needed it is a
 	// Catch up line with their words (queue-new #18). Bots and group chatter not addressed to him stay silent.

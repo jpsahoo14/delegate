@@ -17,6 +17,7 @@ import { finishWork, parentsOf, type Procs } from './jobs.ts'
 import { say } from './intake.ts'
 import { backupSession, restoreSession } from './own.ts'
 import { NAME } from '../brand.ts'
+import { alive, commandOf, ours } from '../os/process.ts'
 
 
 // Old items keep their job target; a newer reply run becomes the continuation target.
@@ -74,18 +75,34 @@ export function runWindow(store: Store, cfg: Config, code: string): number {
 	}
 }
 
+// A terminal counts as open at most 12 hours, on this machine as on another (#43, PE 16:50).
+const WINDOW_MS = 12 * 3_600_000
+// Whether a local window's process is still that window: alive, and running `delegate continue` (the process that marks the window
+// closed when it ends). A bare pid check also held for any program that later got the pid, or for another Delegate process such
+// as the page server. The process table is asked once per pid and start, for the life of this process; an unreadable command line
+// keeps the old answer, as aliveAs does.
+const asked = new Map<string, boolean>()
+export function windowProcess(pid: number, since: string): boolean {
+	if (!alive(pid)) return false
+	const key = `${pid}:${since}`
+	if (!asked.has(key)) { const cmd = commandOf(pid); asked.set(key, cmd === undefined || ours().test(cmd) && /\bcontinue\b/i.test(cmd)) }
+	return asked.get(key)!
+}
+
 // Each tick: mark open items, and take back closed windows with whatever the owner decided.
 export function checkOpen(store: Store, procs: Procs, bootMs = Date.now() - uptime() * 1000): number {
 	let n = 0
+	const isWindow = procs.windowAlive ?? windowProcess
 	for (const { id, o } of store.openWindows()) {
 		const job = store.job(id)
 		const items = job ? parentsOf(store, job) : [store.workflow(id)].filter((w): w is Workflow => !!w)
 		// A reservation without a window yet counts as open for two minutes; then the window never came.
 		const reserved = !o.pid && Date.now() - Date.parse(o.since) < 2 * 60_000
 		// A window on another machine cannot be checked from here: it is open until it says closed, for at most 12 hours.
-		const remote = o.machine !== store.machine && !!o.pid && Date.now() - Date.parse(o.since) < 12 * 3_600_000
+		const age = Date.now() - Date.parse(o.since)
+		const remote = o.machine !== store.machine && !!o.pid && age < WINDOW_MS
 		// A window from before this machine last started is gone, even if its process ID now belongs to another program.
-		const here = !!o.pid && o.machine === store.machine && Date.parse(o.since) > bootMs && procs.alive(o.pid)
+		const here = !!o.pid && o.machine === store.machine && Date.parse(o.since) > bootMs && age < WINDOW_MS && isWindow(o.pid, o.since)
 		if (!o.closed && (reserved || remote || here)) {
 			for (const wf of items.filter(w => w.openOn !== o.machine)) { wf.openOn = o.machine; store.save(wf) }
 			continue
@@ -104,7 +121,9 @@ export function checkOpen(store: Store, procs: Procs, bootMs = Date.now() - upti
 		store.archiveReport(id, o.runId)
 		if (o.machine === store.machine && o.runId) removeRunFiles(join(LOCAL_DIR, 'sessions', `mcp-${o.runId}.json`))
 		store.setOpenWindow(id, undefined)
-		store.log({ event: 'continue-closed', target: id, report: !!r })
+		// Why the item came back: the window said closed, the owner took it back, or the window is gone, not ours, or over 12 hours.
+		const why = o.takenBack ? 'taken-back' : o.closed ? 'closed' : !(age < WINDOW_MS) ? 'over-12h' : !o.pid || o.machine !== store.machine || Date.parse(o.since) <= bootMs || !alive(o.pid) ? 'gone' : 'not-ours'
+		store.log({ event: 'continue-closed', target: id, report: !!r, why })
 		n++
 	}
 	return n

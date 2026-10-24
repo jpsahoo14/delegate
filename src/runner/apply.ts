@@ -1,5 +1,5 @@
 import { answerHabit, outcome } from './habits.ts'
-import { membersOf } from './sharing.ts'
+import { clearShareable, membersOf } from './sharing.ts'
 import { active, afterSend, approvalAsk, approvalMention, approvalReplyMatches, canCloseApproval, claimedVote, claimsApproval, closeWork, doneTodos, homeOf, inWork, keepTodos, linksIn, newTurn, openTodos, approvalClaim, claimedPrs, othersApprovalMismatch, pendingParts, type ApprovalClaim, statusOf, step, wait } from './work.ts'
 import { asksReviewAgain, claimsInvite, doLine, isInvite, isVote, OLD_INVITE, OLD_INVITE_ASK, pendingEffects, prIdOf, proposalEffects, refusal, refusedAsk, saidLine, sameChange, sameHead, shown, vet, voteName, voteValue } from '../core/effects.ts'
 import type { Answer, Config, Effect, Person, Workflow } from '../core/types.ts'
@@ -142,8 +142,10 @@ async function applyOne(store: Store, src: Source, cfg: Config, wf: Workflow, a:
 		else if (a.verb === 'answer') newTurn(wf)
 		else if (['ok', 'pick', 'later', 'undo'].includes(a.verb)) return reply(store, src, a, `${MARK} ${wf.code} is in progress (${wf.status}) and has no draft. Say "${wf.code}: what to do next", "wait ${wf.code}: 3d", or "close ${wf.code}".`)
 	}
-	if (wf.state === 'done' && a.verb === 'send' && wf.sent && a.text) return correct(store, src, wf, a)
-	if (wf.state === 'done' && a.verb === 'edit' && wf.sent) return reply(store, src, a, `${MARK} ${wf.code} was already sent. To post a correction under it, say "send ${wf.code}: <text>".`)
+	// A holding reply is not the reply (#41): words after it are the full answer, never a correction of it.
+	const replied = !!wf.sent && !wf.sent.holding
+	if (wf.state === 'done' && a.verb === 'send' && replied && a.text) return correct(store, src, wf, a)
+	if (wf.state === 'done' && a.verb === 'edit' && replied) return reply(store, src, a, `${MARK} ${wf.code} was already sent. To post a correction under it, say "send ${wf.code}: <text>".`)
 	// Later is a hold: an automatic send waiting on its delay is cancelled too (final review P1-5).
 	if (a.verb === 'later') {
 		if (wf.state !== 'scheduled') return reply(store, src, a, `${MARK} Left ${wf.code} for later. It stays in your inbox.`)
@@ -175,14 +177,14 @@ async function applyOne(store: Store, src: Source, cfg: Config, wf: Workflow, a:
 	if ((a.verb === 'ok' || ((a.verb === 'edit' || a.verb === 'send') && effectsLeft)) && a.seenAt !== undefined && wf.revAt && (a.seenAt === '' || a.seenAt < wf.revAt) && (wf.state === 'needs_human' || wf.state === 'scheduled')) {
 		store.markShown([wf])
 		// The owner's own words already went: only the change they promised is left, with no reply to show (Slice 3).
-		if (wf.sent && !wf.draft?.text && effectsLeft) return reply(store, src, a, `${MARK} Here is ${wf.code} first. Nothing was changed. ${saidLine(pendingEffects(wf.effects))}: ok will ${effectLine(pendingEffects(wf.effects))}. Say "ok ${wf.code}" to do it.`)
+		if (replied && !wf.draft?.text && effectsLeft) return reply(store, src, a, `${MARK} Here is ${wf.code} first. Nothing was changed. ${saidLine(pendingEffects(wf.effects))}: ok will ${effectLine(pendingEffects(wf.effects))}. Say "ok ${wf.code}" to do it.`)
 		if (a.seenAt === '') return reply(store, src, a, `${MARK} Here is ${wf.code} first. Nothing was sent. ${wf.asker?.name ?? 'They'} asked: "${(wf.lastAsk ?? '').slice(0, 200)}". ${effectsLeft ? `ok will ${effectLine(pendingEffects(wf.effects))}, then reply` : 'Reply'}: "${wf.draft?.text ?? ''}". Say "ok ${wf.code}" to send it.`)
 		return reply(store, src, a, `${MARK} ${wf.code} changed after you looked. Nothing was sent or changed. It now ${effectsLeft ? `will ${effectLine(pendingEffects(wf.effects))}, then reply: "${wf.draft?.text ?? ''}"` : wf.draft?.text ? `says: "${wf.draft.text}"` : `asks: ${wf.question ?? wf.status}`}. Say "more ${wf.code}" to see it, then "ok ${wf.code}".`)
 	}
 	// The owner's own words went out and a check of what they promised failed: ok runs it once more (Slice 3).
 	if (a.verb === 'ok' && wf.promise?.state === 'failed' && !wf.draft?.text) { const r = checkAgain(store, wf); store.save(wf); return reply(store, src, a, `${MARK} ${r}`) }
 	// The reply already went and the change it promised waits: new words would be a second reply, so they wait until it is settled.
-	if ((a.verb === 'send' || a.verb === 'edit') && a.text && wf.sent && wf.promise?.state === 'offered') return reply(store, src, a, `${MARK} ${wf.code}'s reply already went to ${wf.asker?.name?.split(/\s+/)[0] ?? 'them'}. Say "ok ${wf.code}" to ${doLine(pendingEffects(wf.effects))}, or "skip ${wf.code}".`)
+	if ((a.verb === 'send' || a.verb === 'edit') && a.text && replied && wf.promise?.state === 'offered') return reply(store, src, a, `${MARK} ${wf.code}'s reply already went to ${wf.asker?.name?.split(/\s+/)[0] ?? 'them'}. Say "ok ${wf.code}" to ${doLine(pendingEffects(wf.effects))}, or "skip ${wf.code}".`)
 	if (a.verb === 'ok') { const r = okRelay(store, wf); if (r) { store.save(wf); return reply(store, src, a, `${MARK} ${r}`) } }
 	// New words on an item with changes are a preview that shows the changes again, never an approval of both (next action).
 	if (a.verb === 'send' && a.text && effectsLeft) a = { ...a, verb: 'edit' }
@@ -272,8 +274,8 @@ async function applyOne(store: Store, src: Source, cfg: Config, wf: Workflow, a:
 			// ok approves the draft the owner saw; a rewrite in progress has no such draft yet (review P1-1).
 			// A draft with a blank or an open question is not ready to send (persona test P0).
 			// The page's own Send, on the exact card the owner saw, sends the draft with a question still open (card state rules 10-11, #34);
-			// a typed ok still waits for the answer.
-			if (wf.state === 'needs_human' && wf.question && !a.page) return reply(store, src, a, `${MARK} ${wf.code} is not ready: ${wf.question}. Reply "${wf.code}: your answer", and I'll show the new draft.`)
+			// a typed ok still waits for the answer, unless the draft is a holding reply, which is meant to go while the question is open (#41).
+			if (wf.state === 'needs_human' && wf.question && !a.page && !wf.draft?.holding) return reply(store, src, a, `${MARK} ${wf.code} is not ready: ${wf.question}. Reply "${wf.code}: your answer", and I'll show the new draft.`)
 			if (wf.state === 'running') return reply(store, src, a, `${MARK} ${wf.code} is being rewritten with your answer. I'll show the new draft first.`)
 		// falls through
 		case 'send': {
@@ -736,12 +738,17 @@ export async function send(store: Store, src: Source, cfg: Config, wf: Workflow,
 	}
 	if (!by.ruleId && !ours && await newMessageHold(store, src, wf, a, messages)) return false
 	// Membership can change after drafting. An automatic send that quotes labeled content asks again first; a failed read holds it (review 085 P0-2).
-	if (by.ruleId && wf.draft?.sources.some(s => s.label)) wf.chat.guests = await src.members?.(wf.chat.id).then(m => m.guests, () => undefined)
+	if (by.ruleId && wf.draft?.sources.some(s => s.label)) {
+		wf.chat.guests = await src.members?.(wf.chat.id).then(m => m.guests, () => undefined)
+		// A guest in a chat marked Shareable within my org clears the mark at once (#36).
+		if (wf.chat.guests) await clearShareable(store, src, wf.chat.id)
+	}
 	// A send answers one inbound ask: only a send that answered the newest one (or came after it) makes this reply a duplicate.
 	// An earlier turn's send kept on the item never blocks a reply to a newer ask (bug 10-23 E34).
 	const newest = store.thread(wf.id).filter(m => !m.byOwner && wf.msgIds.includes(m.id)).sort((x, y) => x.at.localeCompare(y.at)).at(-1)
 	const sameOrLater = (a: string, b: string) => a === b || /^\d+$/.test(a) && /^\d+$/.test(b) && BigInt(a) >= BigInt(b)
-	const answered = !!wf.sent && (!newest || (wf.sent.askMsgId ? sameOrLater(wf.sent.askMsgId, newest.id) : Date.parse(wf.sent.at) >= Date.parse(newest.at)))
+	// A holding reply answered nothing yet: the full reply to the same ask still goes (#41).
+	const answered = !!wf.sent && !wf.sent.holding && (!newest || (wf.sent.askMsgId ? sameOrLater(wf.sent.askMsgId, newest.id) : Date.parse(wf.sent.at) >= Date.parse(newest.at)))
 	const gate = sendGate(wf, text, {
 		paused: !!cfg.paused || store.control().paused, ownerApproved: !by.ruleId, draftOnly: !by.ruleId,
 		newestThreadMsgId: asker ?? wf.lastMsgId, alreadyReplied: answered || ours, ruleAllows: !!by.ruleId,
@@ -777,14 +784,18 @@ export async function send(store: Store, src: Source, cfg: Config, wf: Workflow,
 	// counted on them and needed a second look, so it is not "handled as proposed" (R-NEX-11).
 	// Every new draft replaces effects, so an off change here belongs to this reply's turn.
 	const changesOff = (wf.effects ?? []).filter(e => e.off).length
+	// A holding reply keeps the item open on its question, and the full answer is still owed (#41, PE 16:40).
+	const holding = !!wf.draft?.holding
 	wf.needsMe = undefined
 	wf.ownerSend = undefined; wf.reason = undefined
-	wf.sent = { msgId, at: new Date().toISOString(), text, sendText: out !== text ? out : undefined, byRule: by.ruleId, undoUntil: new Date(Date.now() + p.undoMin * 60_000).toISOString(), ...(askMsgId ? { askMsgId } : {}) }
+	wf.sent = { msgId, at: new Date().toISOString(), text, sendText: out !== text ? out : undefined, byRule: by.ruleId, undoUntil: new Date(Date.now() + p.undoMin * 60_000).toISOString(), ...(askMsgId ? { askMsgId } : {}), ...(holding ? { holding: true as const } : {}) }
 	if (wf.approved) wf.approved.replyDigest = undefined
 	store.save(wf, false)
 	keepTodos(wf, wf.sent.at)
 	const home = homeOf(store, wf)
-	if (home.work) { afterSend(wf, out!, msgId, home, canCloseApproval(store, home), !home.pending.length && !pendingEffects(home.effects).length && !pendingParts(store, home, wf.id)); if (!active(home)) { stopWatch(store, home); closeFamily(store, realProcs, home, home.work.closed?.why ?? 'closed') } if (home !== wf) store.save(home) }
+	const first = (wf.asker?.name ?? 'them').split(/\s+/)[0]
+	if (holding) Object.assign(wf, { state: 'needs_human', question: wf.question ?? `What should the full reply to ${first} say?`, approved: undefined, status: `Holding reply sent. ${first} is waiting for the full answer.` })
+	else if (home.work) { afterSend(wf, out!, msgId, home, canCloseApproval(store, home), !home.pending.length && !pendingEffects(home.effects).length && !pendingParts(store, home, wf.id)); if (!active(home)) { stopWatch(store, home); closeFamily(store, realProcs, home, home.work.closed?.why ?? 'closed') } if (home !== wf) store.save(home) }
 	else close(wf, by.ruleId ? `Sent by rule ${by.ruleId}: "${text!.slice(0, 70)}"` : `Sent: "${text!.slice(0, 80)}"`)
 	// The owner's own words may promise what the draft did not: a short run checks, after the reply is out (Slice 3).
 	if (promiseDue(store, wf, by)) notePromise(store, wf, text!)
@@ -801,8 +812,10 @@ export async function send(store: Store, src: Source, cfg: Config, wf: Workflow,
 	const watching = wf.follow && !wf.follow.code ? (active(home) ? startWatch(store, home, wf.follow) : startFollow(store, wf.follow)) : undefined
 	if (watching && home !== wf) store.save(home)
 	if (watching) { wf.follow = { ...wf.follow!, code: watching }; store.save(wf) }
+	// A holding text is not the answer, so nothing is learned from it; the draft goes, and the full reply is drafted from the question.
+	if (holding) { wf.learnAfter = undefined; wf.draft = undefined; store.save(wf) }
 	if (wf.learnAfter && !by.ruleId) { learnFrom(store, cfg, wf, wf.learnAfter.draft, wf.learnAfter.sent); wf.learnAfter = undefined; store.save(wf) }
-	if (!by.ruleId) await reply(store, src, a, `${MARK} Sent ${wf.code} to ${wf.asker?.name ?? wf.chat.name}.${watching ? ` Watching ${wf.follow!.target} every ${wf.follow!.everyHours ?? 4} h as ${watching}; it stops after 7 days unless you extend it.` : ''}${wf.todos?.length ? ` Still yours to do: ${wf.todos.join('; ')}.` : ''}`)
+	if (!by.ruleId) await reply(store, src, a, `${MARK} Sent ${holding ? 'the holding reply of ' : ''}${wf.code} to ${wf.asker?.name ?? wf.chat.name}.${holding ? ' It stays open for the full answer.' : ''}${watching ? ` Watching ${wf.follow!.target} every ${wf.follow!.everyHours ?? 4} h as ${watching}; it stops after 7 days unless you extend it.` : ''}${wf.todos?.length ? ` Still yours to do: ${wf.todos.join('; ')}.` : ''}`)
 	return true
 }
 

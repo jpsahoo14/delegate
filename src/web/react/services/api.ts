@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { receiptSchema, snapshotSchema, type Intent, type Snapshot } from '../domain/contracts.ts'
+import { receiptSchema, snapshotSchema, type Intent, type Receipt, type Snapshot } from '../domain/contracts.ts'
 import { readPageDelta } from './validation.ts'
 import { numbersSchema, saveResultSchema, settingsSchema } from '../domain/screens.ts'
 import { NAME } from '../brand.ts'
@@ -72,6 +72,16 @@ export function takeEarlySnapshot(find: string): Promise<Snapshot> | undefined {
 }
 export const submit = (intent: Intent) => request('/api/v1/actions', receiptSchema, { method: 'POST', body: JSON.stringify(intent) })
 export const receipt = (submissionId: string) => request(`/api/v1/result?submission=${encodeURIComponent(submissionId)}`, receiptSchema)
+// What the server knows of a click (#42): its saved result, still being handled (202), or nothing saved under this id (404).
+export async function receiptState(submissionId: string): Promise<{ receipt: Receipt } | { working: true } | { missing: true }> {
+	try {
+		const r = await request(`/api/v1/result?submission=${encodeURIComponent(submissionId)}`, z.union([receiptSchema, z.object({ working: z.literal(true), text: z.string() })]))
+		return 'working' in r ? { working: true } : { receipt: r }
+	} catch (error) {
+		if (error instanceof ApiError && error.status === 404) return { missing: true }
+		throw error
+	}
+}
 export const fetchSettings = (signal?: AbortSignal, experience: 'new' | 'classic' = 'new') => request(`/api/v1/settings${experience === 'classic' ? '?experience=classic' : ''}`, settingsSchema, { signal })
 export const fetchNumbers = (window: string, signal?: AbortSignal) => request(`/api/v1/numbers?window=${encodeURIComponent(window)}`, numbersSchema, { signal })
 export const saveSetting = (key: string, value: string) => request('/settings', saveResultSchema, { method: 'POST', body: JSON.stringify({ key, value }) })

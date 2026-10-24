@@ -1,3 +1,4 @@
+import { shareHoldText } from './share.ts'
 import { pendingEffects } from './effects.ts'
 import type { Confidence, Config, Job, Person, Rule, Source, Workflow } from './types.ts'
 
@@ -59,7 +60,7 @@ export function decide(wf: Workflow, rules: Rule[], ctx: PolicyContext): Decisio
 	if (wf.needsMe) return d('draft', 'You said this one needs you')
 	if (wf.startedBy === 'room') return d('draft', 'It was sent to the whole chat; a reply there waits for you')
 	if (wf.work || wf.partOf) return d('draft', 'Replies on open work always wait for you')
-	if (wf.shareHold) return d('draft', wf.shareHold)
+	if (wf.shareHold) return d('draft', shareHoldText(wf.shareHold)!)
 	if (pendingEffects(wf.effects).length || wf.todos?.length || wf.follow) return d('draft', 'It promises changes, a follow-up, or something you must do')
 	if (!rule) return d('draft', 'No rule covers this sender and ask')
 	if (ctx.held?.includes(rule.id)) return d('draft', `Rule ${rule.id} is on hold: you said one of its replies was not needed`)
@@ -108,7 +109,7 @@ export function whyWaited(wf: Workflow, rules: Rule[], ctx: PolicyContext): stri
 		: wf.needsMe ? 'you said this one needs you'
 		: wf.startedBy === 'room' ? 'it was asked of the whole chat'
 		: wf.work || wf.partOf ? 'replies on open work always wait for you'
-		: wf.shareHold ? wf.shareHold.replace(/^./, c => c.toLowerCase())
+		: wf.shareHold ? shareHoldText(wf.shareHold)!.replace(/^Waiting for you: /, '').replace(/[.]$/, '').replace(/^./, c => c.toLowerCase())
 		: pendingEffects(wf.effects).length || wf.todos?.length || wf.follow ? 'it promises changes, a follow-up, or something you must do'
 		: labeledToGuests(wf) ? 'it quotes labeled content, and this chat has guests'
 		: wf.gaps?.length ? `it could not read ${wf.gaps.join(', ')}`
@@ -121,7 +122,8 @@ export function whyWaited(wf: Workflow, rules: Rule[], ctx: PolicyContext): stri
 
 // Labeled content never goes to a chat that has, or may have, guests without the owner (R-SEC-08).
 // An item Delegate closed without replying can be reopened by the owner's answer: "A40: this one is mine, review it" (dogfood 10-20).
-export const reopenable = (wf: Workflow, verb: string) => wf.state === 'done' && verb === 'answer' && wf.kind !== 'tracker' && !wf.sent && !wf.work && !wf.redacted
+// A holding reply is not the reply (#41): an item whose last send held can still be answered.
+export const reopenable = (wf: Workflow, verb: string) => wf.state === 'done' && verb === 'answer' && wf.kind !== 'tracker' && (!wf.sent || !!wf.sent.holding) && !wf.work && !wf.redacted
 
 export const labeledToGuests = (wf: Workflow): boolean => wf.chat.guests !== false && !!wf.draft?.sources.some(s => !!s.label && !/^(public|general|non-?business)$/i.test(s.label))
 

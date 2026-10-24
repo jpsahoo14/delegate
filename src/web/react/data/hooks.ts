@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
-import { fetchSnapshot, submit, receipt, dismissExperienceNote, ApiError, takeEarlySnapshot } from '../services/api.ts'
-import { pendingSubmissions, rememberSubmission, forgetSubmission } from '../services/pending.ts'
+import { fetchSnapshot, submit, receiptState, dismissExperienceNote, ApiError, takeEarlySnapshot } from '../services/api.ts'
+import { pendingSubmissions, rememberSubmission, forgetSubmission, type Pending } from '../services/pending.ts'
 import { revisionKey, type Action, type Intent, type Receipt, type Snapshot } from '../domain/contracts.ts'
 import { IDLE, pinnedPlacements, useData, type CardUi } from './store.ts'
 import { useNavigation } from './navigation.ts'
@@ -71,7 +71,7 @@ export function usePendingStatus(item: string, rev: string) {
 	useEffect(() => { if (!ui.pending) return; const timer = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(timer) }, [ui.pending?.submissionId])
 	return {
 		slow: !!ui.pending && now - (ui.pending.at ?? now) > 90_000,
-		check: () => { if (ui.pending) void client.invalidateQueries({ queryKey: ['receipt', ui.pending.submissionId] }) },
+		check: () => { if (ui.pending) { forceReplay(ui.pending.submissionId); void client.invalidateQueries({ queryKey: ['receipt', ui.pending.submissionId] }) } },
 	}
 }
 export function useActionWindow(expiresAt?: string) {
@@ -150,6 +150,51 @@ function restorePending(): void {
 		state.edit(entry.item, entry.rev, { pending: { submissionId: entry.submissionId, action: entry.action, phase: 'unknown', at: entry.at } })
 	}
 }
+// A click the server has no record of (#42, PE 16:40). The server says 202 while it handles a click, so a 404 means it never got
+// it: the exact request is sent once more (same id, rev and input; the server keeps one result per id). The click is released only
+// when that replay got a definite 404 or 5xx and the server still has no record; a replay lost on the network waits for Check saved
+// result, which sends it once more, and so does the first poll after 10 minutes.
+const NOT_SAVED = "Not saved. Your click didn't reach Delegate; try again."
+const UNREACHED = 'Your click may not have reached Delegate. Check saved result sends it once more; it is never done twice.'
+const WAITING = { waiting: true } as const
+const replays = new Map<string, { n: number; late?: boolean; forced?: boolean }>()
+// When this page first saw each restored click: the age of one saved without its time is counted from then.
+const firstSeen = new Map<string, number>()
+function forceReplay(id: string) { replays.set(id, { ...(replays.get(id) ?? { n: 0 }), forced: true }) }
+function release(saved: Pending, text: string) {
+	forgetSubmission(saved.submissionId); replays.delete(saved.submissionId); firstSeen.delete(saved.submissionId)
+	const state = useData.getState()
+	if (state.byRevision[revisionKey(saved.item, saved.rev)]?.pending?.submissionId === saved.submissionId) state.edit(saved.item, saved.rev, { pending: undefined, error: text })
+}
+async function replay(id: string, phase: string): Promise<Receipt | typeof WAITING> {
+	const saved = pendingSubmissions().find(entry => entry.submissionId === id)
+	// Its own POST is still on its way: keep checking.
+	if (phase === 'submitting') return WAITING
+	// A click saved before #42 kept no request to send again (W7, PE on db06346e). Called only after /result said 404, not 202:
+	// once it is a minute old the server never got it, so it is released and the owner can click again.
+	if (!saved?.intent) {
+		if (saved && !firstSeen.has(id)) firstSeen.set(id, Date.now())
+		if (saved && Date.now() - (saved.at ?? firstSeen.get(id)!) >= 60_000) release(saved, NOT_SAVED)
+		return WAITING
+	}
+	const r = replays.get(id) ?? { n: 0 }, late = Date.now() - (saved.at ?? Date.now()) > 10 * 60_000
+	if (!(r.n === 0 || r.forced || late && !r.late)) return WAITING
+	replays.set(id, { n: r.n + 1, late: r.late || late })
+	try { return await submit(saved.intent) } catch (error) {
+		if (!(error instanceof ApiError)) {
+			const state = useData.getState(), current = state.byRevision[revisionKey(saved.item, saved.rev)]
+			if (current?.pending?.submissionId === id) state.edit(saved.item, saved.rev, { pending: { ...current.pending, phase: 'unreached' }, error: UNREACHED })
+			return WAITING
+		}
+		const after = await receiptState(id).catch(() => undefined)
+		if (after && 'receipt' in after) return after.receipt
+		if (after && 'working' in after) return WAITING
+		if (error.status === 422) { console.error('A click sent again was refused as invalid:', error.message); release(saved, NOT_SAVED) }
+		else if (error.status === 404 || error.status >= 500) { if (after && 'missing' in after) release(saved, NOT_SAVED) }
+		else release(saved, error.message)
+		return WAITING
+	}
+}
 export function usePendingReceipts() {
 	const client = useQueryClient()
 	const byRevision = useData(state => state.byRevision)
@@ -166,14 +211,15 @@ export function usePendingReceipts() {
 	useEffect(() => { if (pending.length && storageError) setStorageError(undefined) }, [pending.length, storageError])
 	const results = useQueries({ queries: pending.map(entry => ({
 		queryKey: ['receipt', entry.submissionId],
-		queryFn: async () => {
-			const result = await receipt(entry.submissionId)
-			if (result.submissionId !== entry.submissionId || revisionKey(result.item, result.rev) !== entry.key) throw new Error('The saved result does not match this action. Nothing will be retried.')
+		queryFn: async (): Promise<Receipt | typeof WAITING> => {
+			const known = await receiptState(entry.submissionId)
+			const result = 'receipt' in known ? known.receipt : 'working' in known ? WAITING : await replay(entry.submissionId, entry.phase)
+			if ('submissionId' in result && (result.submissionId !== entry.submissionId || revisionKey(result.item, result.rev) !== entry.key)) throw new Error('The saved result does not match this action. Nothing will be retried.')
 			return result
 		}, retry: false, refetchInterval: window.DELEGATE_POLL_MS ?? 2000,
 	})) })
 	useEffect(() => {
-		for (const result of results) if (result.data) {
+		for (const result of results) if (result.data && 'submissionId' in result.data) {
 			if (!result.data.applied) {
 				const current = useData.getState().byRevision[revisionKey(result.data.item, result.data.rev)]
 				if (current?.pending && current.pending.phase !== 'queued') useData.getState().edit(result.data.item, result.data.rev, { pending: { ...current.pending, phase: 'queued' }, error: undefined })
@@ -204,14 +250,16 @@ export function useAction() {
 		if (action.needsConfirm && !window.confirm(action.meaning ?? 'Make this change?')) return
 		const submissionId = crypto.randomUUID()
 		const at = Date.now()
-		try { rememberSubmission({ submissionId, item: action.item, rev: action.rev, action: action.id, at }) } catch (error) {
+		// The exact request, kept with the pending click so a lost one is sent again unchanged (#42).
+		const intent: Intent = { submissionId, action: action.id, item: action.item, rev: action.rev, expect: action.expect, input }
+		try { rememberSubmission({ submissionId, item: action.item, rev: action.rev, action: action.id, at, intent }) } catch (error) {
 			console.error('Could not remember the submission:', error)
 			state.edit(action.item, action.rev, { error: 'This browser cannot remember pending actions. Enable tab storage before sending.' })
 			return
 		}
 		state.edit(action.item, action.rev, { pending: { submissionId, action: action.id, phase: 'submitting', at }, lastAction: action.id, submittedInput: input, submittedForm: capturePageForm(action), formConsumed: undefined, error: undefined, result: undefined })
 		try {
-			const result = await submit({ submissionId, action: action.id, item: action.item, rev: action.rev, expect: action.expect, input })
+			const result = await submit(intent)
 			if (result.submissionId !== submissionId || result.item !== action.item || result.rev !== action.rev) throw new Error('The server returned a result for another action.')
 			if (result.applied) complete(result)
 			else {

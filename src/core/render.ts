@@ -151,7 +151,10 @@ export function renderPreview(wf: Workflow): string {
 // One line per thing a run looked at: where, what, and how many hits, never what came back.
 const hitCount = (n: number) => (n === 1 ? '1 hit' : `${n} hits`)
 export const lookLine = (x: NonNullable<Workflow['looked']>[number]) =>
-	x.tool === 'read' ? `Read ${x.q}${x.n ? '' : ' (not found)'}` : `${x.tool === 'knowledge' ? 'Your knowledge' : 'Teams'}: "${x.q}" (${hitCount(x.n)})`
+	x.tool === 'read' ? `Read ${x.q}${x.n ? '' : ' (not found)'}`
+		// A record read through its system's tool (#36): its number, never a search line.
+		: x.tool === 'incident' ? `Read incident ${x.q}` : x.tool === 'ado' ? `Read ${x.id?.startsWith('pr:') ? 'PR' : 'work item'} ${x.q}` : x.tool === 'wiki' ? `Read a wiki page`
+			: `${x.tool === 'knowledge' ? 'Your knowledge' : 'Teams'}: "${x.q}" (${hitCount(x.n)})`
 
 export function renderMore(wf: Workflow, thread: Msg[], now: Date): string {
 	const t = thread.slice(-10).map(m => `- ${m.from.name}: ${clip(oneLine(m.text), 200)}`)

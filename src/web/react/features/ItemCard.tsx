@@ -124,7 +124,7 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 		{item.earlier && <p className="card-earlier"><Icon name="clock" /> {item.earlier}</p>}
 		{newer && <p role="status" className="warnline"><Icon name="warn" /> Changed since you looked. Your current text is kept. <Button variant="outline" onClick={showLatest} disabled={busy}>Show new version</Button></p>}
 		{warnings.map((line, n) => <p key={n} className="warnline"><Icon name="warn" /> {line}</p>)}
-		{item.openOn && <p className="card-status">Open in a terminal on {item.openOn} · {NAME} waits until you close it</p>}
+		{item.openOn && item.mode !== 'in-terminal' && <p className="card-status">Open in a terminal on {item.openOn} · {NAME} waits until you close it</p>}
 		{item.before && <Hint text={chipHover('before')}><p className="chip">From before setup</p></Hint>}
 		{placement?.chips.some(chip => chip.kind === 'retrying') && <p className="warnline">Retrying{placement.nextText ? `: ${placement.nextText.replace('{at}', placement.next?.at ? when(placement.next.at) : 'soon')}` : ''}</p>}
 	</section>

@@ -226,7 +226,8 @@ export type Workflow = {
 	ownerAnswer?: string
 	answerSurface?: 'chat' | 'self' | 'panel'
 	status: string
-	sent?: { msgId: string; at: string; byRule?: string; undoUntil?: string; text?: string; sendText?: string; askMsgId?: string }
+	// holding: the last send was a holding reply; the full answer is still owed and the item stays open (#41).
+	sent?: { msgId: string; at: string; byRule?: string; undoUntil?: string; text?: string; sendText?: string; askMsgId?: string; holding?: true }
 	sendAt?: string
 	acked?: boolean
 	decision?: { action: string; ruleId?: string; reason: string; confidence: Confidence }
@@ -256,11 +257,14 @@ export type Workflow = {
 	// A part: this chat's item for work whose record lives on another item (dev-spec/work.md part 2).
 	partOf?: Id
 	// Why this draft may not go by itself: it drew on a conversation not everyone in this chat is in (R-SHR-01).
-	shareHold?: string
+	// Why the draft waits for the owner (need to know, #36): structured since #36, prose when stored before it.
+	shareHold?: import('./share.ts').ShareHold | string
+	// The records the run read through their systems' tools, with the audience read from data (#36).
+	records?: import('./share.ts').SourceRecord[]
 	// The other chats the draft drew on, so a level the owner sets later still holds it at send time.
 	drewOn?: string[]
 	// What the last run searched in Teams history, for Why: queries and hit counts only.
-	looked?: { tool?: 'teams' | 'knowledge' | 'read'; q: string; n: number }[]
+	looked?: { tool?: 'teams' | 'knowledge' | 'read' | 'incident' | 'ado' | 'wiki'; q: string; n: number; id?: string }[]
 	// owner: the owner's own message. room: a message to the whole group chat that may be for the owner (dogfood 10-20).
 	startedBy?: 'owner' | 'room'
 	// Closed with no reply needed, but worth knowing: the line Catch up shows (design-spec/catch-up.md).
@@ -394,6 +398,8 @@ export type Config = {
 	channels?: false | { teamId: string; channelId: string; name: string }[]
 	// Chats the owner marked: private (anything from it waits for their ok elsewhere) or off the record (also never learned from or searched).
 	chatLevels?: Record<string, { level: ChatLevel; name: string; at: string }>
+	// ADO projects anyone in the owner's org can read (Settings › You, #36). A PR, work item or wiki page elsewhere is Restricted.
+	orgVisibleProjects?: string[]
 	// Once a day: the summary goes to the self-chat at this local time (R-HIL-07), and message text older than retentionDays is cleared (R-SEC-05).
 	summaryAt?: string
 	retentionDays?: number
@@ -451,7 +457,8 @@ export type Proposal = {
 // A session the owner keeps for a kind of ask; matching asks run in a fork of it (R-ADP-02, R-ADP-03).
 export type Owner = { id: string; what: string; session: string; cwd: string; machine: string; at: string }
 
-export type ChatLevel = 'private' | 'off'
+// shareable: a group or meeting chat the owner marked "Shareable within my org" (#36); quoted like an org-visible record.
+export type ChatLevel = 'private' | 'off' | 'shareable'
 
 // at: when it became an FYI, so a later save (a redaction, a sync) never makes a read one unread again.
 export type Fyi = { line: string; weight: 'high' | 'normal'; gist?: string; watch?: { target: string; until: string }; at?: string }

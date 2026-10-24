@@ -9,7 +9,7 @@ import { effectLine, renderList, renderMore } from '../core/render.ts'
 import type { Config, Entry } from '../core/types.ts'
 import { answerHabit } from '../runner/habits.ts'
 import { fromOffChat, recordRead, setChatLevel, type Look } from '../runner/sharing.ts'
-import { levelOf, offRecord } from '../core/levels.ts'
+import { heldLevel, offRecord } from '../core/levels.ts'
 import { parseMessageLink } from '../adapters/channels.ts'
 import { aboutText } from '../web/settings.ts'
 import { changeKnowledge, inbox, knowledgeOf, publish, remember, renderProposal } from '../runner/proposals.ts'
@@ -62,7 +62,7 @@ function registerKnowledgeReads(server: McpServer, get: () => Store) {
 	const k = () => knowledgeOf(get(), get().config())
 	// What the owner and others already said, anywhere in Teams. historyBefore pins the past in an eval, so the future is never read.
 	// Knowledge found from a chat the owner marked counts as read from it, cited or not, so a private chat holds the reply. Other hits do not: a search returns more than a reply uses.
-	const markedLinks = (cfg: Config, es: Entry[]) => es.flatMap(e => e.src.map(s => s.link)).filter(l => levelOf(cfg, parseMessageLink(l)?.chatId))
+	const markedLinks = (cfg: Config, es: Entry[]) => es.flatMap(e => e.src.map(s => s.link)).filter(l => heldLevel(cfg, parseMessageLink(l)?.chatId))
 	// What a worker run looked at: tool, query, and hit count, never the text it got back (round 3 #5).
 	const trace = (links: string[], q: string, tool: Look['tool'], n = links.length) => recordRead(get().root, process.env.DELEGATE_MODE === 'worker' ? process.env.DELEGATE_RUN : undefined, links, q, tool, n)
 	server.registerTool('history_search', {
@@ -193,8 +193,8 @@ function registerOwner(server: McpServer, get: () => Store) {
 	registerKnowledgeReads(server, get)
 	server.registerTool('about_me', { description: `What ${NAME} knows about the owner and acts on: their profile, standing instructions (said or learned, with evidence), habit suggestions, and learning settings. Use for "what do you know about me?". Show the returned text exactly.`, inputSchema: {} }, async () => text(aboutText(get())))
 	server.registerTool('chat_level', {
-		description: `Mark a chat when the owner says so in plain words: private (a reply in another chat that uses anything from it waits for the owner's ok), off the record (also never learned from or searched), or normal again. Show the result exactly.`,
-		inputSchema: { chat: z.string().describe('A Teams message link, a chat id, or the chat name the owner used'), level: z.enum(['normal', 'private', 'off']), name: z.string().optional().describe('What the owner calls the chat, when you pass a link') },
+		description: `Mark a chat when the owner says so in plain words: private (a reply in another chat that uses anything from it waits for the owner's ok), off the record (also never learned from or searched), shareable within my org (a group or meeting chat ${NAME} may quote in other chats where everyone is from the org), or normal again. Show the result exactly.`,
+		inputSchema: { chat: z.string().describe('A Teams message link, a chat id, or the chat name the owner used'), level: z.enum(['normal', 'private', 'off', 'shareable']), name: z.string().optional().describe('What the owner calls the chat, when you pass a link') },
 	}, async c => text(setChatLevel(get(), c.chat, c.level, c.name)))
 	server.registerTool('knowledge_change', {
 		description: 'Change or remove one knowledge entry when the owner says a fact is wrong, outdated, or should be forgotten. Find it first with knowledge_search; pass its citation. It is saved at once with an undo; show the result exactly.',

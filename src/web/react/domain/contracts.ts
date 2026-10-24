@@ -9,7 +9,7 @@ const owner = z.discriminatedUnion('kind', [
 	z.object({ kind: z.literal('you') }), z.object({ kind: z.literal('delegate') }),
 	z.object({ kind: z.literal('nobody') }), z.object({ kind: z.literal('others'), text }),
 ])
-const source = z.object({ id: text, itemId: text, kind: z.enum(['Knowledge', 'In the chat', 'Private']), label: text, href: optional, stale: z.boolean().optional(), locked: z.boolean().optional() })
+const source = z.object({ id: text, itemId: text, kind: z.enum(['Knowledge', 'In the chat', 'Private', 'Record']), label: text, href: optional, stale: z.boolean().optional(), locked: z.boolean().optional() })
 const why = z.object({ reason: optional, confidence: optional, gaps: strings, searched: strings.optional(), waited: optional })
 const change = z.object({
 	id: text, itemId: text, rev: text, n: z.number(), summary: text, target: text, system: text, action: text, detail: optional,

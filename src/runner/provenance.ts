@@ -7,12 +7,14 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { parseMessageLink } from '../adapters/channels.ts'
 import type { Knowledge } from '../knowledge/index.ts'
-import type { Look } from './sharing.ts'
+import type { DraftUse, Look } from './sharing.ts'
 import { documentKeys } from '../core/intake.ts'
+import { incidentAudience, type SourceRecord } from '../core/share.ts'
 
 // One Teams call: how its chats were known, or why they could not be.
 export type ReadCall = { tool: string; from: 'args' | 'result' | 'file' | 'none'; chats: number; unknown?: 'saved file gone' | 'no result' | 'unfinished' | 'empty log' | 'unshared document' }
-export type Reads = { chats: string[]; searches: Look[]; unknown: boolean; calls: ReadCall[]; knowledge: number }
+// records: the incidents, PRs, work items and wiki pages the run read successfully, each with its audience (#36).
+export type Reads = { chats: string[]; searches: Look[]; unknown: boolean; calls: ReadCall[]; knowledge: number; records?: SourceRecord[]; customerNames?: DraftUse['customerNames'] }
 type Event = { type?: string; data?: Record<string, unknown> }
 
 const CHAT_ID = /19:[\w.\-=:]+@(?:thread\.(?:v2|tacv2|skype)|unq\.gbl\.spaces)/g
@@ -38,13 +40,31 @@ const chatsIn = (text: string) => {
 	return [...new Set([...(plain.match(CHAT_ID) ?? []), ...[...text.matchAll(LINK)].map(m => parseMessageLink(m[0])?.chatId).filter((c): c is string => !!c)])]
 }
 const readSaved = (path: string) => { try { return existsSync(path) ? readFileSync(path, 'utf8') : undefined } catch { return undefined } }
+const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
+// Verified incident schema: owningTenantName and customFields[].{Name,StringValue}. Names stay in this run's memory, never records.
+function incidentNames(body: unknown, record: string): NonNullable<Reads['customerNames']> {
+	if (!object(body)) return []
+	const names: NonNullable<Reads['customerNames']> = [], custom: string[] = []
+	if (typeof body.owningTenantName === 'string' && body.owningTenantName.trim()) names.push({ record, field: 'owningTenantName', names: [body.owningTenantName.trim()] })
+	for (const field of Array.isArray(body.customFields) ? body.customFields : []) {
+		if (object(field) && typeof field.Name === 'string' && /^(?:customer|tenant)[ _-]*name$/i.test(field.Name.trim()) && typeof field.StringValue === 'string' && field.StringValue.trim()) custom.push(field.StringValue.trim())
+	}
+	if (custom.length) names.push({ record, field: 'customField', names: [...new Set(custom)] })
+	return names
+}
 
 // slice: the run's part of the session log (JSON lines). knowledgeDirs: the folders a card file path can be under.
-export function readsOf(slice: string, k: Knowledge, knowledgeDirs: string[], read = readSaved, documentChats: (ref: { url?: string; driveId?: string; itemId?: string }) => string[] = () => []): Reads {
+// orgProjects: the ADO projects the owner said anyone in his org can read (cfg.orgVisibleProjects, #36).
+export function readsOf(slice: string, k: Knowledge, knowledgeDirs: string[], read = readSaved, documentChats: (ref: { url?: string; driveId?: string; itemId?: string }) => string[] = () => [], orgProjects: string[] = []): Reads {
 	const events: Event[] = slice.split('\n').filter(l => l.trim()).flatMap(l => { try { return [JSON.parse(l) as Event] } catch { return [] } })
 	if (!events.length) return { chats: [], searches: [], unknown: true, calls: [{ tool: '', from: 'none', chats: 0, unknown: 'empty log' }], knowledge: 0 }
 	const starts = new Map<string, Record<string, unknown>>(), done = new Set<string>(), chats = new Set<string>(), searches: Look[] = [], calls: ReadCall[] = []
-	const documentAliases = new Map<string, string[]>()
+	const documentAliases = new Map<string, string[]>(), records = new Map<string, SourceRecord>()
+	const customerNames: NonNullable<Reads['customerNames']> = []
+	// A record read through its system's tool, with its id from the arguments (#36, PE 17:05). An ADO record is org-visible only in a
+	// project the owner listed; one with no project it can be told from is Restricted.
+	const listed = (project?: string) => !!project && orgProjects.some(p => p.trim().toLowerCase() === project.trim().toLowerCase())
+	const record = (r: SourceRecord) => { if (!records.has(r.id) || r.audience === 'restricted') records.set(r.id, r) }
 	let knowledge = 0
 	const underKnowledge = (s: string) => knowledgeDirs.some(d => s.toLowerCase().includes(d.replace(/\\/g, '/').toLowerCase()) || s.toLowerCase().includes(d.toLowerCase().replace(/\\/g, '\\\\')) || s.toLowerCase().includes(d.toLowerCase()))
 	const cardsIn = (s: string) => [...s.matchAll(CARD)].map(m => `${m[1]}/${m[2]}`)
@@ -70,6 +90,30 @@ export function readsOf(slice: string, k: Knowledge, knowledgeDirs: string[], re
 					}
 				} catch { /* Unreadable metadata cannot establish a document's sharing chat. */ }
 			}
+		}
+		// The incident tool's response carries its audience (core/share.ts incidentAudience); a missing field makes it Restricted.
+		if (/(?:^|-)get_incident_details_by_id$/.test(name) && d.success !== false && args.incidentId !== undefined) {
+			const id = String(args.incidentId).replace(/\D/g, ''), shown = resultText(d), saved = shown && SAVED.exec(shown)?.[1], full = saved ? read(saved) : shown
+			const structured = (d.result as { structuredContent?: unknown } | undefined)?.structuredContent
+			let body: unknown = structured
+			if (!body && full) { try { body = JSON.parse(full.slice(full.indexOf('{'), full.lastIndexOf('}') + 1)) } catch { body = undefined } }
+			if (id) {
+				const a = incidentAudience(body), label = `Incident ${id}`
+				record({ id: `inc:${id}`, label, audience: a.audience, ...(a.why ? { why: a.why } : {}) })
+				customerNames.push(...incidentNames(body, label))
+				searches.push({ tool: 'incident', q: id, n: 1, id: `inc:${id}` })
+			}
+			continue
+		}
+		const adoTool = String(start.toolName ?? '').replace(/^ado-/, '') || (/^ado$/i.test(String(start.mcpServerName ?? '')) ? name : '')
+		if ((/^ado-/.test(String(start.toolName ?? '')) || /^ado$/i.test(String(start.mcpServerName ?? ''))) && /^(?:repo_pull_request|wit_work_item|wiki)$/.test(adoTool) && d.success !== false) {
+			const tool = `ado-${adoTool}`
+			const text = resultText(d) ?? '', project = typeof args.project === 'string' ? args.project : /"System\.TeamProject"\s*:\s*"([^"]+)"/.exec(text)?.[1]
+			const ids: { id: string; label: string }[] = tool === 'ado-repo_pull_request' ? (args.pullRequestId !== undefined ? [{ id: `pr:${args.pullRequestId}`, label: `PR ${args.pullRequestId}` }] : [])
+				: tool === 'ado-wit_work_item' ? [args.id, args.workItemId, ...(Array.isArray(args.ids) ? args.ids : [])].filter(v => v !== undefined && v !== null).map(v => ({ id: `wi:${v}`, label: `Work item ${v}` }))
+				: typeof args.path === 'string' ? [{ id: `wiki:${args.path.replace(/^\/+/, '').replace(/-/g, ' ').toLowerCase()}`, label: 'Wiki page' }] : []
+			for (const r of ids) { record({ ...r, audience: listed(project) ? 'org' : 'restricted', ...(listed(project) ? {} : { why: project ? "in a project you haven't marked as readable by your org" : 'in a project I could not tell' }) }); searches.push({ tool: tool === 'ado-wiki' ? 'wiki' : 'ado', q: r.id.split(':').slice(1).join(':'), n: 1, id: r.id }) }
+			continue
 		}
 		if (docTool(start)) {
 			if (d.success === false) continue
@@ -109,5 +153,5 @@ export function readsOf(slice: string, k: Knowledge, knowledgeDirs: string[], re
 		calls.push({ tool: String(s.mcpToolName ?? s.toolName ?? ''), from: 'none', chats: 0, unknown: 'unfinished' })
 	}
 	for (const [id, s] of starts) if (docTool(s) && !done.has(id)) calls.push({ tool: String(s.mcpToolName ?? s.toolName ?? ''), from: 'none', chats: 0, unknown: 'unfinished' })
-	return { chats: [...chats], searches: searches.slice(-20), unknown: calls.some(c => c.unknown), calls, knowledge }
+	return { chats: [...chats], searches: searches.slice(-20), unknown: calls.some(c => c.unknown), calls, knowledge, ...(records.size ? { records: [...records.values()] } : {}), ...(customerNames.length ? { customerNames } : {}) }
 }

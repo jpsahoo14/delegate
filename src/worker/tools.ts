@@ -65,6 +65,11 @@ export function reportTaker(store: Store, wfId: string, runId: string, interacti
 		const known = intents(store.root).map(i => i.id)
 		if (!known.includes(r.intent)) return { text: `Unknown intent "${r.intent}". Use one of: ${known.join(', ')}.`, error: true }
 		if (submitted && !interactive) return { text: 'Already submitted. Finish now.', error: true }
+		// A terminal whose item Delegate took back (released, or taken back from the page) can't land a report silently (#43).
+		if (interactive) {
+			const o = store.openWindow(wfId)
+			if (!o || o.runId !== runId || o.takenBack) { store.log({ event: 'continue-late-report', target: wfId, runId }); return { text: "Delegate took this item back; what you decide here isn't used. Tell Delegate in the page instead.", error: true } }
+		}
 		store.writeReport(r, runId)
 		submitted = true
 		return { text: 'Report saved. Call task_complete now.' }

@@ -182,7 +182,8 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 		}, form ? 'watch' : undefined, prefix, rev)
 	}
 	const stoppedCodes = new Set(next.move.filter(row => row.kind === 'stopped').map(row => row.act))
-	const editable = new Set([...workflows.filter(workflow => workflow.state === 'needs_human').map(workflow => workflow.code), ...stoppedCodes])
+	// An item open in a terminal has one page step, Take it back (#43), whatever its state.
+	const editable = new Set([...workflows.filter(workflow => workflow.state === 'needs_human' || workflow.openOn && workflow.state !== 'done').map(workflow => workflow.code), ...stoppedCodes])
 	const ownerRules = store.rules()
 	for (const wf of workflows) {
 		const c = readyCards.get(wf.code) ?? card(store, wf, knowledge), id = c.code, rev = presentationRev(wf, cfg)
@@ -253,7 +254,8 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 		// actions it names, and only those (plus Ask, Continue, Reopen and the work tools below).
 		const job = wf.job ? facts.jobs.get(wf.job) : undefined
 		const agentWait = facts.agentWait && (wf.state === 'running' || wf.state === 'waiting_on_task' && job?.state === 'queued' || job?.state === 'failed' && job.error === facts.agentWait.text) ? facts.agentWait.text : undefined
-		const fx = cardFacts({ wf, job, card: { question: c.question, draft, choices: c.choices, ownReply: c.ownReply, promise: c.promise, reviewAgain }, changes: changes.length, agentWait })
+		const windowRec = wf.openOn ? store.openWindow(wf.id) ?? (wf.job ? store.openWindow(wf.job) : undefined) : undefined
+		const fx = cardFacts({ wf, job, ...(wf.openOn && wf.state !== 'done' ? { window: { machine: wf.openOn, ...(windowRec?.since ? { since: windowRec.since } : {}) } } : {}), card: { question: c.question, draft, choices: c.choices, ownReply: c.ownReply, promise: c.promise, reviewAgain }, changes: changes.length, agentWait })
 		const cs = cardState(fx)
 		if (editable.has(id)) {
 			const broken = checkCard(fx, cs)
@@ -283,6 +285,20 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 				// so the owner sends only the card he saw; "Redraft" starts over with the new message.
 				'send-anyway': () => actionIds.push(offer(id, rev, 'send-anyway', 'Send anyway', () => ({ code: id, verb: 'answer', text: 'Send anyway' }), { effect: 'sends', staleness: 'exact', expect })),
 				redraft: () => actionIds.push(offer(id, rev, 'redraft', 'Redraft', () => ({ code: id, verb: 'answer', text: 'Redraft' }), { staleness: 'exact', expect })),
+				// Take it back (#43): marks the window's record taken back and nothing else; the next tick releases the item and applies a
+				// report the window already submitted, as a preview.
+				'take-back': () => {
+					const key = windowRec ? (store.openWindow(wf.id) ? wf.id : wf.job!) : undefined
+					const at = offer(id, rev, 'take-back', 'Take it back', () => { throw new IntentError(422, 'This is not a queued item command.') }, { staleness: 'exact', expect, meaning: `Stops waiting for your terminal. ${NAME} picks the item up again on its next check; your terminal stays open.` })
+					bindings.get(at)!.execute = () => {
+						const open = key ? store.openWindow(key) : undefined
+						if (!open || open.closed) throw new IntentError(409, 'It is no longer open in a terminal. Open the item again.')
+						store.setOpenWindow(key!, { ...open, closed: true, takenBack: true })
+						store.log({ event: 'continue-taken-back', code: id, target: key })
+						return { accepted: true, text: "Taken back. Your terminal stays open; what you decide there now isn't used." }
+					}
+					actionIds.push(at)
+				},
 				later: () => actionIds.push(offer(id, rev, 'later', 'Later', () => ({ code: id, verb: 'later' }))),
 				dismiss: () => actionIds.push(offer(id, rev, 'dismiss', failed || c.promise || fx.held?.kind === 'no-reply-needed' ? 'Skip' : 'Dismiss', () => ({ code: id, verb: 'skip' }))),
 				// A run that gave no result (queue-new #11): Try again re-runs it as it was; a job that ran out of routes is queued again (#17 b).
@@ -339,7 +355,7 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 			sourceIds: sources(id, id, why.sources), noteIds,
 			primaryActionId: (editable.has(id) ? [cs.primary ?? ''] : c.ownReply ? [] : ['reopen']).map(kind => `${id}/${kind}`).find(key => actionIds.includes(key)),
 			// A holding reply's reason is part of Why, not a warning (rule 13).
-			why: { reason: why.reason ?? (cs.mode === 'holding' ? pageText(wf.status) || undefined : undefined), confidence: why.confidence, gaps: why.gaps, searched: why.searched, ...(waited.length ? { waited: `Why it waited: ${waited.join('; ')}.` } : {}) }, teams: safeLink(c.teams),
+			why: { reason: why.reason ?? (cs.mode === 'holding' ? pageText(wf.status) || undefined : undefined), confidence: why.confidence, gaps: why.gaps, searched: why.searched, ...(cs.waited ? { waited: pageText(cs.waited) } : waited.length ? { waited: `Why it waited: ${waited.join('; ')}.` } : {}) }, teams: safeLink(c.teams),
 		}
 	}
 	// Spec S3: the sections say whose move it is, Delegate's queued rows say Delegate does them, and a group message is "Posted to everyone".
@@ -591,7 +607,7 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 		}, undefined, key)
 		Object.assign(entities.actions[actionId], {
 			effect: 'changes-system', rev: pageDigest([chatId, level]), expect: pageDigest([chatId, level]), staleness: 'exact', needsConfirm: true,
-			meaning: `Stop treating ${level.name} as ${level.level === 'off' ? 'off the record' : 'private'}? Future learning and replies use the normal privacy checks.${level.level === 'off' ? ' Facts set aside from it come back to your knowledge.' : ' Existing stored facts are not changed.'}`,
+			meaning: `Stop treating ${level.name} as ${level.level === 'off' ? 'off the record' : level.level === 'shareable' ? 'shareable within your org' : 'private'}? Future learning and replies use the normal privacy checks.${level.level === 'off' ? ' Facts set aside from it come back to your knowledge.' : ' Existing stored facts are not changed.'}`,
 		})
 		settingsActions[key] = [actionId]
 	}
@@ -628,7 +644,7 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 	if (found?.link && !found.link.item) found.link.item = knownMessageCode(store, query)
 	const classicRunning = base.running.filter(row => !stoppedCodes.has(row.code))
 	const classic: Snapshot['classic'] = {
-		needsIds: [...new Set([...base.needs.map(item => item.code), ...stoppedCodes, ...workflows.filter(workflow => workflow.partOf && workflow.state === 'needs_human').map(workflow => workflow.code)])].sort((a, b) => byCode.get(a)!.createdAt.localeCompare(byCode.get(b)!.createdAt)), tiles: base.tiles,
+		needsIds: [...new Set([...base.needs.map(item => item.code), ...stoppedCodes, ...workflows.filter(workflow => workflow.openOn && workflow.state !== 'done').map(workflow => workflow.code), ...workflows.filter(workflow => workflow.partOf && workflow.state === 'needs_human').map(workflow => workflow.code)])].sort((a, b) => byCode.get(a)!.createdAt.localeCompare(byCode.get(b)!.createdAt)), tiles: base.tiles,
 		also: base.also.map(tile => tile.key === 'running' ? { ...tile, count: classicRunning.length } : tile).filter(tile => tile.key !== 'running' || tile.count > 0),
 		catchupIds: base.catchUp.top.map(row => Object.values(entities.doneEntries).find(entry => entry.code === row.code && entry.kind === row.kind && entry.at === row.at)?.id).filter((id): id is string => !!id),
 		running: classicRunning.map(row => ({

@@ -74,6 +74,9 @@ export const SETTINGS: Spec[] = [
 	{ key: 'knowledge', label: 'Notes folders', help: 'Folders of your notes, relative to the storage folder or absolute. Drafts search them.', kind: 'list', section: 'you',
 		read: c => (c.knowledge ?? []).join(', '),
 		parse: (raw, s) => { const fs = list(raw), missing = fs.filter(f => !existsSync(here(s.root, f))); return missing.length ? { ok: false, why: `Not found on this machine: ${missing.join(', ')}` } : set({ knowledge: fs }) } },
+	// Need to know (#36): Delegate can't read a project's real audience, so the owner says once which ones his whole org can read.
+	{ key: 'orgVisibleProjects', label: 'Projects anyone in your org can read', help: `Azure DevOps projects, such as Acme-Web. A PR, work item or wiki page from one of them may be repeated in chats where everyone is from your org. From any other project, a reply that uses it waits for you.`, kind: 'list', section: 'you',
+		read: c => (c.orgVisibleProjects ?? []).join(', '), parse: raw => set({ orgVisibleProjects: list(raw) }) },
 	// Owned work (eng-owned-work.md §a): the repos bound what may be changed; each machine finds its own clones, never synced.
 	{ key: 'repos', label: 'Repos you work in', help: 'A name and its remote each, such as Acme-Web https://dev.azure.com/acme/Web/_git/Acme-Web. Each machine finds its own copy.', kind: 'list', section: 'you',
 		read: c => (c.repos ?? []).map(r => `${r.name} ${r.remote}`).join(', '),

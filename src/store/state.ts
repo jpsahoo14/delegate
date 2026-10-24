@@ -46,7 +46,8 @@ export type Preview = { code: string; at: string }
 // readAt: the last read with no gap left open. goodAt: the last good read. endAt: when the reading machine last ended a cycle. notice: told after the next good read.
 export type ChatsState = { startedAt: string; seen: Record<string, string>; readAt?: string; gapFailAt?: string; goodAt?: string; endAt?: string; notice?: string }
 type Lease = { machine: string; at: string }
-export type OpenWindow = { machine: string; pid: number; runId: string; since: string; closed?: boolean }
+// takenBack: the owner took the item back from the page; the next tick releases it (#43).
+export type OpenWindow = { machine: string; pid: number; runId: string; since: string; closed?: boolean; takenBack?: boolean }
 export type Health = Record<string, { text: string; since: string; machine: string }>
 export type Experience = 'new' | 'classic'
 // experience: New or Classic inside the React page, kept beside ui so an older build still reads ui as before.
@@ -321,8 +322,9 @@ export class Store {
 
 	// Messages the owner said were missed, waiting for the next tick (B21).
 	// One file per missed link, written by whichever machine heard it, like answers: no shared file to race on (review 10-19 #6).
-	members(): Record<string, { ids: string[]; names?: Record<string, string>; at: string }> { return readJson(this.p('state', 'members.json'), {}) }
-	saveMembers(m: Record<string, { ids: string[]; names?: Record<string, string>; at: string }>) { this.w(this.p('state', 'members.json'), m) }
+	// guests: a guest or someone from another tenant was in the chat at that read (#36).
+	members(): Record<string, { ids: string[]; names?: Record<string, string>; guests?: boolean; at: string }> { return readJson(this.p('state', 'members.json'), {}) }
+	saveMembers(m: Record<string, { ids: string[]; names?: Record<string, string>; guests?: boolean; at: string }>) { this.w(this.p('state', 'members.json'), m) }
 	habits(): Habit[] { return readJson(this.p('state', 'habits.json'), []) }
 	saveHabits(h: Habit[]) { this.w(this.p('state', 'habits.json'), h) }
 	habit(code: string): Habit | undefined { return this.habits().find(h => h.code === code.toUpperCase()) }

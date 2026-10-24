@@ -9,6 +9,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { deflateSync } from 'node:zlib'
 import type { Config, Report, Workflow } from '../src/core/types.ts'
+import { shareHoldText } from '../src/core/share.ts'
 import type { Source } from '../src/adapters/source.ts'
 import type { RunInput } from '../src/adapters/agent.ts'
 
@@ -286,7 +287,7 @@ if (mode === '--sharepoint') {
 			} else {
 				assert.ok(w.shareHold); assert.equal(w.state, 'needs_human')
 				if (link === url) assert.deepEqual(w.drewOn, ['narrow'])
-				else assert.match(w.shareHold, /unknown|unverified|could not|couldn't/i)
+				else assert.match(shareHoldText(w.shareHold) ?? '', /unknown|unverified|could not|couldn't/i)
 				assert.equal(await dueSends(store, source, cfg), 0); assert.equal(posted, before)
 				store.writeAnswer({ code: w.code, verb: 'ok', surface: 'panel' }); await applyAnswers(store, source, cfg)
 				assert.equal(posted, before + 1, JSON.stringify(store.logs().slice(-8)))

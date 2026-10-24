@@ -1,3 +1,4 @@
+import { recordOfLink, shareHoldText, type SourceRecord } from '../core/share.ts'
 import { homeOf, openTodos } from '../runner/work.ts'
 import type { Automation, Choices, Fact, Meeting, Note, Proposal, Workflow } from '../core/types.ts'
 import { asksReviewAgain, isVote, meaningParts, pendingEffects, reviewAgainCmd, shown, type Meaning } from '../core/effects.ts'
@@ -21,7 +22,8 @@ import { htmlToText, isPersona } from '../core/intake.ts'
 // Only what the owner should see: no ids, paths, or raw citations.
 
 export type Who = { name: string; initials: string; hue: number }
-export type SourceRow = { kind: 'Knowledge' | 'In the chat' | 'Private'; label: string; href?: string; stale?: boolean; locked?: boolean }
+// Record: an incident, PR, work item or wiki page the run read, with its audience (#36).
+export type SourceRow = { kind: 'Knowledge' | 'In the chat' | 'Private' | 'Record'; label: string; href?: string; stale?: boolean; locked?: boolean }
 // meaning: what Azure DevOps says the change is about, in parts: a vote's PR and what an approval may do (a warning), or a
 // deploy's ring (next action, owned work)
 export type Change = { n: number; summary: string; target: string; system: string; action: string; detail?: string; meaning?: Meaning }
@@ -124,7 +126,10 @@ function detailsOf(store: Store): { runner: string; log: string[] } {
 }
 
 // The page is the owner's own, so a cited fact shows its words and a link to where it was said (B30).
-function source(ref: string, tier: string, stale?: boolean, label?: string, k?: Knowledge): SourceRow {
+// A record the run read shows its number and audience (#36): "Incident 900001 · visible in your org".
+function source(ref: string, tier: string, stale?: boolean, label?: string, k?: Knowledge, records?: SourceRecord[]): SourceRow {
+	const rec = recordOfLink(ref), read = rec && records?.find(r => r.id === rec.id)
+	if (rec && read) return { kind: 'Record', label: `${read.label} · ${read.audience === 'org' ? 'visible in your org' : 'restricted'}`, href: /^https:\/\//.test(ref) ? openLink(ref) : undefined, stale }
 	const e = ref.startsWith('card:') ? k?.read(ref) : undefined, fact = e && !Array.isArray(e) ? e : undefined
 	const link = fact?.src.map(x => x.link).find(l => /^https:\/\//.test(l)), open = link && openLink(link)
 	const priv = fact?.audience === 'private' || tier === 'private'
@@ -188,14 +193,14 @@ export function card(store: Store, w: Workflow, k = knowledgeOf(store, store.con
 		thread: thread.slice(-12).map(m => ({ who: m.from.name, text: htmlToText(m.text).slice(0, 600), at: m.at, owner: !!m.byOwner })),
 		question: w.question === undefined || replied ? undefined : htmlToText(w.question), draft: draft?.text && !/^_{3,}$/.test(draft.text.trim()) ? { text: draft.text, commitment: draft.commitment, preview: !!draft.preview, ...(draft.holding ? { holding: true } : {}) } : undefined,
 		reason: replied ? undefined : w.reason,
-		choices: replied ? undefined : w.choices, picked: w.picked, context: [...(w.shareHold && !replied ? [{ label: 'Need to know', text: w.shareHold, tone: 'warn' as const }] : []), ...(w.context ?? []).filter(fact => !replied || fact.tone !== 'warn')].map(fact => ({ ...fact, label: htmlToText(fact.label), text: htmlToText(fact.text) })), meeting: w.meeting, job: job?.goal,
+		choices: replied ? undefined : w.choices, picked: w.picked, context: [...(w.shareHold && !replied ? [{ label: 'Need to know', text: shareHoldText(w.shareHold)!.replace(/^Waiting for you: /, '').replace(/^./, ch => ch.toUpperCase()), tone: 'warn' as const }] : []), ...(w.context ?? []).filter(fact => !replied || fact.tone !== 'warn')].map(fact => ({ ...fact, label: htmlToText(fact.label), text: htmlToText(fact.text) })), meeting: w.meeting, job: job?.goal,
 		...(replied && mine ? { ownReply: { text: htmlToText(mine.ownerReply?.text ?? mine.text), at: mine.at, ...(teamsOf(w, mine.id) ? { teams: teamsOf(w, mine.id) } : {}) } } : {}),
 		...(unsent && !/^_{3,}$/.test(unsent.trim()) ? { unsent } : {}),
 		// Every field is built from the change's call, never the AI's words about it (review 10-21 P1-1).
 		changes: pendingEffects(w.effects).map((e, i) => { const s = shown(e), m = meaningParts(e); return { n: i + 1, summary: s.text, target: s.loc || s.system, system: s.system, action: s.line, detail: s.detail || undefined, ...(m ? { meaning: m } : {}) } }),
 		...nextSteps(w),
 		...(store.config().showDetails ? { debug: debugLines(w) } : {}),
-		why: { reason: w.decision?.reason, confidence: w.decision?.confidence, sources: (w.draft?.sources ?? []).map(s => source(s.ref, s.tier, s.stale, s.label, k)), gaps: w.gaps ?? [], searched: (w.looked ?? []).map(lookLine) },
+		why: { reason: w.decision?.reason, confidence: w.decision?.confidence, sources: (w.draft?.sources ?? []).map(s => source(s.ref, s.tier, s.stale, s.label, k, w.records)), gaps: w.gaps ?? [], searched: (w.looked ?? []).map(lookLine) },
 		...(w.promise?.state === 'offered' || w.promise?.state === 'failed' ? { promise: { said: w.promise.text, ...(w.promise.state === 'failed' ? { failed: w.promise.why ?? 'its run ended without a result' } : {}) } } : {}),
 		work: workView(w, homeOf(store, w)), notes: (w.notes ?? []).map(n => n.sources ? { ...n, sources: n.sources.map(s => ({ ...s, ref: openLink(s.ref) })) } : n), status: htmlToText(w.status), openOn: w.openOn, todos: w.todos?.map(htmlToText), follow: w.follow && { target: w.follow.target, until: w.follow.until, everyHours: w.follow.everyHours ?? 4 },
 		teams: teamsOf(w),
@@ -325,7 +330,8 @@ export function view(store: Store, since: string | undefined, now = new Date(), 
 		const next = todos.has(w.code) ? `You: ${openTodos(w).map(t => t.text).join('; ')}` : k ? nextOf(k) : undefined
 		return { code: w.code, who: who(w.asker?.name), chat: w.chat.name, goal: htmlToText(k?.goal ?? w.lastAsk ?? w.status), status: htmlToText(w.status), last: last && { at: last.at, what: htmlToText(last.what) }, next: next === undefined ? undefined : htmlToText(next), checkAt: k?.checkAt, every: job?.every, endsAt: job?.every ? job.endsAt : undefined, rev: w.updatedAt }
 	})
-	const running = [...g.running.filter(w => represented.has(w.code) && !todos.has(w.code)).map(w => ({ code: w.code, what: htmlToText(w.status), who: w.asker?.name, since: w.waitingSince ?? w.updatedAt })), ...(snap ? [] : bootLines(store)).map(b => ({ code: '', what: htmlToText(b.what), since: b.since, ...(b.total ? { progress: (b.done ?? 0) / b.total } : {}) }))]
+	// An item open in a terminal is not running: Delegate waits for the window (#43).
+	const running = [...g.running.filter(w => represented.has(w.code) && !todos.has(w.code) && !w.openOn).map(w => ({ code: w.code, what: htmlToText(w.status), who: w.asker?.name, since: w.waitingSince ?? w.updatedAt })), ...(snap ? [] : bootLines(store)).map(b => ({ code: '', what: htmlToText(b.what), since: b.since, ...(b.total ? { progress: (b.done ?? 0) / b.total } : {}) }))]
 	const state = c.stopped ? 'stopped' : c.paused || cfg.paused ? 'paused' : 'on'
 	// A session history note is a line in Settings, never a banner: there is nothing for the owner to do (queue-new #16 c).
 	const health = Object.entries(store.health()).filter(([key]) => !key.startsWith('session:')).map(([key, h]) => ({ key, text: h.text, since: h.since, fix: key === 'source' ? { label: 'Try again', command: 'retry' } : undefined }))

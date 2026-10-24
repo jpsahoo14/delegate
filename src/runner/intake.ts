@@ -366,7 +366,7 @@ export function recordOwnerReply(store: Store, item: Workflow, message: Msg, ans
 			ownerStep(item, message.text, message.id, home)
 			if (home !== item) store.save(home)
 		} else {
-			if (item.draft?.text && !item.sent && item.state === 'needs_human') {
+			if (item.draft?.text && (!item.sent || item.sent.holding) && item.state === 'needs_human') {
 				store.log({ event: 'replied', workflowId: item.id, code: item.code, chat: item.chat.id, asker: item.asker, intent: item.intent, draft: item.draft.text, text: text.slice(0, 2000) })
 				outcome(store, item, 'sent', { draft: item.draft.text, sent: text, approvedBy: 'owner', msgId: message.id })
 			}

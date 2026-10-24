@@ -21,6 +21,8 @@ export type Facts = {
 	// Open to-dos a sent reply left the owner, kept across turns (R-NEX-07).
 	todos?: number
 	fyiUnread: boolean
+	// Open in a terminal (wf.openOn, set by the runner each tick): Delegate waits for the owner's window (#43).
+	window?: boolean
 }
 
 export type Rule = { id: string; section: Section; when: (f: Facts) => boolean }
@@ -39,6 +41,8 @@ export const RULES: Rule[] = [
 	// An item with an open to-do is not done for the owner, whatever its state (rule 5).
 	{ id: 'catchup', section: 'catchup', when: f => f.state === 'done' && f.fyiUnread && !f.todos },
 	{ id: 'done', section: 'done', when: f => f.state === 'done' && !f.todos },
+	// An item open in a terminal is never under Running with progress: it is the owner's, until the window closes or he takes it back (#43).
+	{ id: 'in-terminal', section: 'move', when: f => !!f.window },
 	{ id: 'needs-you', section: 'move', when: f => f.state === 'needs_human' },
 	// A watch between checks is waiting_on_task with its job done: that is waiting, not stopped.
 	{ id: 'stopped', section: 'move', when: f => f.state === 'waiting_on_task' && (!f.job || f.job.state === 'failed' || (f.job.state === 'done' && !f.job.watch)) },
@@ -62,6 +66,6 @@ export function whoseMove(f: Facts): { section: Section; rule: string } {
 export const URGENCY: Section[] = ['move', 'working', 'waiting', 'catchup', 'done']
 // Within one section, the design's rule order (§3: 2, 2a, 4, 5, 6) picks the subject: a part's draft waiting for ok is not hidden
 // behind its home's to-do (review N2 P1-1). RULES differs only because rule 4 must first know that nothing runs.
-export const PRECEDENCE = ['needs-you', 'stopped', 'your-step', 'todo', 'job-running', 'starts-next', 'partner-wait', 'waiting', 'catchup', 'done']
+export const PRECEDENCE = ['in-terminal', 'needs-you', 'stopped', 'your-step', 'todo', 'job-running', 'starts-next', 'partner-wait', 'waiting', 'catchup', 'done']
 // A rule missing from PRECEDENCE ranks last, so it never wins a tie by accident (re-review N2 P2-D).
 export const rankOf = (id: string) => { const i = PRECEDENCE.indexOf(id); return i < 0 ? PRECEDENCE.length : i }

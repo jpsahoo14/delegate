@@ -11,7 +11,8 @@ export type CardUi = {
 	focusedField?: string; feedback?: string; feedbackKind?: string; watchText?: string; watchUntil?: string; watchBy?: string
 	watchByChoice?: '' | 'today' | 'fri' | 'week'
 	other?: boolean; resultKind?: 'Both work' | 'Issues found' | 'Blocked'
-	pending?: { submissionId: string; action: string; phase: 'submitting' | 'queued' | 'unknown'; at?: number }; result?: Receipt; error?: string
+	// unreached: the server had no record, and sending it again failed on the network; Check saved result sends it once more (#42).
+	pending?: { submissionId: string; action: string; phase: 'submitting' | 'queued' | 'unknown' | 'unreached'; at?: number }; result?: Receipt; error?: string
 	lastAction?: string; submittedInput?: Intent['input']
 	submittedForm?: SubmittedForm; formConsumed?: string
 }

@@ -11,10 +11,10 @@ export function ActionState({ item, rev }: { item: string; rev: string }) {
 	const ui = useCardUi(item, rev)
 	const pending = usePendingStatus(item, rev)
 	return <>
-		{ui.pending && <p role="status">{ui.pending.phase === 'submitting' ? 'Submitting your action...' : ui.pending.phase === 'unknown' ? 'Checking the saved submission. Do not send again.' : `Queued. Waiting for ${NAME}.`}</p>}
+		{ui.pending && <p role="status">{ui.pending.phase === 'submitting' ? 'Submitting your action...' : ui.pending.phase === 'unknown' ? 'Checking the saved submission. Do not send again.' : ui.pending.phase === 'unreached' ? 'Not confirmed yet.' : `Queued. Waiting for ${NAME}.`}</p>}
 		{ui.error && <p role="alert" className="error">{ui.error}</p>}
 		{ui.result && <p role={ui.result.refused || ui.result.uncertain ? 'alert' : 'status'}>{ui.result.text}</p>}
-		{ui.pending && (ui.error || pending.slow) && <div><p>Still checking the saved result. This action will not be resent.</p><Button variant="outline" onClick={pending.check}>Check saved result</Button></div>}
+		{ui.pending && (ui.error || pending.slow) && <div><p>Still checking the saved result. It is never done twice.</p><Button variant="outline" onClick={pending.check}>Check saved result</Button></div>}
 	</>
 }
 
