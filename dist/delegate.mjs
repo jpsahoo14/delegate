@@ -346,6 +346,7 @@ function readScope(fn, opts = {}) {
   }
 }
 function scoped(key, make) {
+  if (!/^[a-z]+:.+[\\/]/.test(key)) throw new Error(`A derived value's key must be <kind>:<folder>, not "${key}".`);
   if (!scope) return make();
   if (scope.has(key)) return copy(scope.get(key));
   const v = make();
@@ -22584,7 +22585,7 @@ function tryLock(path, token) {
     throw e;
   }
 }
-var localDay, documentKey, portable, here2, LOCAL_DIR, experienceOf, Store, submissionRank, receiptLocks, busyReceiptLock, BUSY;
+var localDay, documentKey, codeIndex, portable, here2, LOCAL_DIR, experienceOf, Store, submissionRank, receiptLocks, busyReceiptLock, BUSY;
 var init_state = __esm({
   "src/store/state.ts"() {
     "use strict";
@@ -22599,6 +22600,7 @@ var init_state = __esm({
     init_secrets();
     localDay = (d = /* @__PURE__ */ new Date()) => d.toLocaleDateString("sv");
     documentKey = (key) => createHash2("sha256").update(key).digest("hex");
+    codeIndex = /* @__PURE__ */ new Map();
     portable = (root, p) => {
       const r = relative(dirname5(root), p);
       return r && !r.startsWith("..") && !isAbsolute2(r) ? relative(root, p) : p;
@@ -22627,14 +22629,57 @@ var init_state = __esm({
         this.w(this.p("config.json"), c);
       }
       workflows() {
-        return records(this.p("state", "workflows")).map(upgrade);
+        const all = records(this.p("state", "workflows")).map(upgrade);
+        const known2 = codeIndex.get(this.p("state", "workflows")) ?? /* @__PURE__ */ new Map();
+        for (const w of all) known2.set(`${w.id}.json`, { code: w.code, ...w.partOf ? { partOf: w.partOf } : {} });
+        codeIndex.set(this.p("state", "workflows"), known2);
+        return all;
       }
       workflow(id) {
         const w = readJson(this.p("state", "workflows", `${id}.json`), void 0);
+        if (w) this.noteCode(w);
         return w && upgrade(w);
       }
+      // By code through an index kept for the process (#27 step 2): each workflow file's code and partOf. A code never changes; partOf
+      // can (intake's addPart, the worker's join, repairParts), so every read or save of an item refreshes its entry, and an item's
+      // thread is checked against the items themselves. A new or removed file is noticed from the folder's listing; only new files are
+      // read. The item itself is read to check it, so a stale entry can't return the wrong item.
       byCode(code) {
-        return this.workflows().find((w) => w.code === code.toUpperCase());
+        const c = code.toUpperCase(), name = [...this.codeIndex()].find(([, e]) => e.code === c)?.[0];
+        if (!name) return void 0;
+        const w = this.workflow(name.slice(0, -5));
+        if (w?.code === c) return w;
+        codeIndex.delete(this.p("state", "workflows"));
+        return this.workflows().find((x) => x.code === c);
+      }
+      // An item's thread, as the page places it (next.ts place): its home and every item whose partOf is the home, always with the item
+      // itself. Parts come from the home's own list and from the index, and each is read to confirm it is still a part (PE review of
+      // step 2: a part the runner joins or detaches after the page loaded).
+      itemThread(code) {
+        const w = this.byCode(code);
+        if (!w) return [];
+        const home = w.partOf ? this.workflow(w.partOf) ?? w : w;
+        const ids = /* @__PURE__ */ new Set([...home.work?.parts ?? [], ...[...this.codeIndex()].filter(([, e]) => e.partOf === home.id).map(([name]) => name.slice(0, -5))]);
+        ids.delete(home.id);
+        ids.delete(w.id);
+        const parts2 = [...ids].map((id) => this.workflow(id)).filter((x) => !!x && x.partOf === home.id);
+        return [...new Map([home, w, ...parts2].map((x) => [x.id, x])).values()].sort((a, b) => a.id.localeCompare(b.id));
+      }
+      noteCode(w) {
+        const known2 = codeIndex.get(this.p("state", "workflows"));
+        if (known2 && w.id && w.code) known2.set(`${w.id}.json`, { code: w.code, ...w.partOf ? { partOf: w.partOf } : {} });
+      }
+      codeIndex() {
+        const dir2 = this.p("state", "workflows"), names = listJson(dir2).map((f) => basename4(f));
+        const known2 = codeIndex.get(dir2) ?? /* @__PURE__ */ new Map();
+        const now = new Set(names);
+        for (const name of [...known2.keys()]) if (!now.has(name)) known2.delete(name);
+        for (const name of names) if (!known2.has(name)) {
+          const w = readJson(join6(dir2, name), null);
+          if (w && `${w.id}.json` === name) known2.set(name, { code: w.code, ...w.partOf ? { partOf: w.partOf } : {} });
+        }
+        codeIndex.set(dir2, known2);
+        return known2;
       }
       openInChat(chatId) {
         return this.workflows().filter((w) => w.chat.id === chatId && w.state !== "done").sort((a, b) => a.createdAt.localeCompare(b.createdAt));
@@ -22645,6 +22690,7 @@ var init_state = __esm({
         const before = this.workflow(wf.id)?.state;
         if (touch) wf.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
         this.w(this.p("state", "workflows", `${wf.id}.json`), wf);
+        this.noteCode(wf);
         if (before !== wf.state) this.log({ event: "state", workflowId: wf.id, code: wf.code, from: before ?? "new", to: wf.state, status: wf.status?.slice(0, 120), ...wf.state === "done" && wf.closedBy ? { closedBy: wf.closedBy } : {}, ...also });
       }
       // AI runs started today, by this machine's local day (final review P2-2).
@@ -23003,12 +23049,17 @@ var init_state = __esm({
       answerById(id) {
         if (!/^[a-zA-Z0-9-]+$/.test(id)) throw new Error("Invalid answer identity.");
         for (const directory2 of [this.p("state", "answers"), this.p("state", "done", "answers")]) {
+          const mine = readJson(join6(directory2, `${id}-${this.machine}.json`), void 0);
+          if (mine) return mine;
+        }
+        for (const directory2 of [this.p("state", "answers"), this.p("state", "done", "answers")]) {
           for (const file4 of listJson(directory2)) if (basename4(file4).startsWith(`${id}-`)) return readJson(file4, void 0);
         }
         return void 0;
       }
       answered(id) {
         if (!/^[0-9A-HJKMNP-TV-Z]{26}$/.test(id)) throw new Error("Invalid answer identity.");
+        if (readJson(this.p("state", "done", "answers", `${id}-${this.machine}.json`), void 0)?.id === id) return true;
         return listJson(this.p("state", "done", "answers")).some((file4) => basename4(file4).startsWith(`${id}-`) && readJson(file4, void 0)?.id === id);
       }
       pageSubmission(id) {
@@ -48465,9 +48516,9 @@ __export(next_exports, {
   snapshot: () => snapshot,
   todoHeadline: () => todoHeadline
 });
-function snapshot(store2, now = Date.now()) {
-  const cfg = store2.config(), c = store2.control(), workflows = store2.workflows();
-  const jobs = new Map(store2.jobs().map((j) => [j.id, j]));
+function snapshot(store2, now = Date.now(), only2) {
+  const cfg = store2.config(), c = store2.control(), workflows = only2 ?? store2.workflows();
+  const jobs = new Map((only2 ? only2.flatMap((w) => [w.job, w.work?.watch]).flatMap((id) => id ? [store2.job(id)] : []).filter((j) => !!j) : store2.jobs()).map((j) => [j.id, j]));
   const cap2 = cfg.dailyRuns ?? 200, runs = store2.runsToday(), reading = readingOf(store2, now).state;
   const runner = c.stopped ? "stopped" : reading === "off" || reading === "never" ? "off" : c.paused || cfg.paused ? "paused" : runs >= cap2 ? "capped" : "ok";
   const held = new Set(store2.openWindows().map((w) => w.id));
@@ -48782,7 +48833,7 @@ function nextView(store2, now = Date.now(), options = {}) {
   const cu = of("catchup").sort((a, b) => high(a) - high(b) || b.facts.at.localeCompare(a.facts.at));
   const reading = readingOf(store2, now);
   const off = s3.runner === "ok" ? void 0 : s3.runner === "paused" ? { text: "Paused: drafts go on, nothing is sent" } : s3.runner === "off" ? { text: `${NAME} is off`, ...reading.at ? { since: reading.at } : {} } : { text: s3.runner === "capped" ? "Daily limit reached; it runs again tomorrow" : `${NAME} is ${s3.runner}` };
-  return { move: move2, working, waiting, catchup: { count: cu.length, worth: cu.filter((r) => high(r) === 0).length, rows: options.allCatchup ? cu : cu.slice(0, 3) }, minute: { facts: store2.proposals().filter((p) => p.state === "needs_human").length, suggestions: store2.habits().filter((h) => h.state === "suggested").length }, ...off ? { off } : {}, ...store2.control().paused || store2.config().paused ? { paused: true } : {}, handled: handledThisWeek(store2, s3.workflows, new Date(now)) };
+  return { move: move2, working, waiting, catchup: { count: cu.length, worth: cu.filter((r) => high(r) === 0).length, rows: options.allCatchup ? cu : cu.slice(0, 3) }, minute: options.only ? { facts: 0, suggestions: 0 } : { facts: store2.proposals().filter((p) => p.state === "needs_human").length, suggestions: store2.habits().filter((h) => h.state === "suggested").length }, ...off ? { off } : {}, ...store2.control().paused || store2.config().paused ? { paused: true } : {}, handled: options.only ? 0 : handledThisWeek(store2, s3.workflows, new Date(now)) };
 }
 var isMe, nextWho, runnerWhy, titleOf, ownerText, NAMES, CARD_MORE, COMMANDS, INLINE_MAX, first2, firsts, clipPlain, clip2, teamsLink2, triesOf, every, whyOf, mustSee, SHORT, said, commentsOrChanges, pickPrompt, watchLine, REFUSED, CLONE, todoHeadline;
 var init_next = __esm({
@@ -49011,7 +49062,7 @@ function itemRows(store2, codes, wfs = store2.workflows()) {
   for (const w of wfs) if (w.code && want.has(w.code)) out[w.code] = itemRow2(store2, w) ?? { code: w.code, kind: "closed", who: who(w.asker?.name), sentence: `${w.asker?.name ?? "Someone"}: ${htmlToText(w.status.replace(/: ".*$/s, ""))}`, by: "", at: w.updatedAt, teams: teamsOf(w) };
   return out;
 }
-function doneRows(store2, since2, workflows = store2.workflows()) {
+function doneRows(store2, since2, workflows = store2.workflows(), items2 = false) {
   const rows = [], listed2 = /* @__PURE__ */ new Set();
   for (const w of workflows.filter((w2) => (w2.state === "done" || w2.state === "open" && w2.sent) && w2.code && (w2.intent !== "none" || w2.fyi) && w2.updatedAt > since2 && w2.kind !== "tracker")) {
     const r = itemRow2(store2, w), name = w.asker?.name ?? "Someone";
@@ -49019,6 +49070,7 @@ function doneRows(store2, since2, workflows = store2.workflows()) {
     if (w.sent?.msgId) listed2.add(w.sent.msgId);
     for (const e of (w.effects ?? []).filter((e2) => e2.done)) if (!(w.intent === "pr_review" && COMMENT.test(e.action))) rows.push({ code: w.code, kind: "change", who: who(name), sentence: htmlToText(shown(e).line), by: shown(e).system, at: e.done.at, own: true, href: /^https:\/\//.test(e.done?.ref ?? "") ? e.done.ref : void 0 });
   }
+  if (items2) return rows.sort((a, b) => b.at.localeCompare(a.at));
   const byCode = new Map(workflows.map((w) => [w.code, w]));
   for (const e of store2.logs(7).filter((e2) => e2.event === "sent" && String(e2.at) > since2 && typeof e2.msgId === "string" && !listed2.has(e2.msgId) && !String(e2.approvedBy ?? "").startsWith("automation:"))) {
     const w = byCode.get(String(e.code)), asker = e.asker, name = asker?.name ?? w?.asker?.name ?? "Someone";
@@ -49059,18 +49111,18 @@ function tiles(store2, since2, needs, done2) {
   ];
   return t2.filter((x) => x.key === "needs" || x.count > 0);
 }
-function view(store2, since2, now = /* @__PURE__ */ new Date(), workflows = store2.workflows()) {
+function view(store2, since2, now = /* @__PURE__ */ new Date(), workflows = store2.workflows(), snap) {
   const cfg = store2.config(), c = store2.control();
   const from = since2 ?? new Date(now.getTime() - 864e5).toISOString();
   const wfs = workflows;
   const g = groups(wfs, from);
-  const placements = place(snapshot(store2));
+  const placements = place(snap ?? snapshot(store2));
   const represented = new Set(placements.map((r) => r.act));
   const todos = new Set(placements.filter((r) => r.rule === "todo").map((r) => r.act));
   const needs = g.needs.filter((w) => represented.has(w.code) && !todos.has(w.code) && (w.kind !== "tracker" || pendingEffects(w.effects).length || w.question)).map((w) => card(store2, w));
-  const kp = store2.proposals().filter((p) => p.state === "needs_human").sort((a, b) => a.createdAt.localeCompare(b.createdAt)).map(knowledge);
+  const kp = snap ? [] : store2.proposals().filter((p) => p.state === "needs_human").sort((a, b) => a.createdAt.localeCompare(b.createdAt)).map(knowledge);
   const week = new Date(now.getTime() - 7 * 864e5).toISOString();
-  const done2 = doneRows(store2, from < week ? from : week, wfs).map((r) => ({ ...r, fresh: r.at > from }));
+  const done2 = doneRows(store2, from < week ? from : week, wfs, !!snap).map((r) => ({ ...r, fresh: r.at > from }));
   const autos = store2.automations().filter((a) => a.state !== "ended").map((a) => ({ code: a.code, sentence: describe3(a).replace(/^R\d+ · /, ""), to: a.to.name, text: a.text, when: when(a.schedule), state: a.state, why: a.why, next: a.next, count: a.count, rev: a.updatedAt }));
   const watching = g.watching.filter((w) => represented.has(w.code) && !todos.has(w.code)).map((w) => ({ code: w.code, what: htmlToText((w.lastAsk ?? "").replace(/^Watch /, "").replace(` until ${DEFAULT_UNTIL}`, "")), last: htmlToText(w.status), changedAt: w.changedAt, update: !!w.changedAt && w.changedAt > from && (!w.ackAt || w.changedAt > w.ackAt), rev: w.revAt ?? w.updatedAt, every: (w.job ? store2.job(w.job) : void 0)?.every, endsAt: (w.job ? store2.job(w.job) : void 0)?.endsAt, by: w.watchBy, nextAt: (w.job ? store2.job(w.job) : void 0)?.nextAt, from: w.watchFrom === "catchup" ? wfs.find((x) => x.watchedAs === w.code)?.code : void 0 }));
   const progress2 = wfs.filter((w) => represented.has(w.code) && (todos.has(w.code) || w.state === "open" || w.state === "waiting_on_sender")).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map((w) => {
@@ -49078,7 +49130,7 @@ function view(store2, since2, now = /* @__PURE__ */ new Date(), workflows = stor
     const next2 = todos.has(w.code) ? `You: ${openTodos(w).map((t2) => t2.text).join("; ")}` : k ? nextOf2(k) : void 0;
     return { code: w.code, who: who(w.asker?.name), chat: w.chat.name, goal: htmlToText(k?.goal ?? w.lastAsk ?? w.status), status: htmlToText(w.status), last: last2 && { at: last2.at, what: htmlToText(last2.what) }, next: next2 === void 0 ? void 0 : htmlToText(next2), checkAt: k?.checkAt, every: job?.every, endsAt: job?.every ? job.endsAt : void 0, rev: w.updatedAt };
   });
-  const running2 = [...g.running.filter((w) => represented.has(w.code) && !todos.has(w.code)).map((w) => ({ code: w.code, what: htmlToText(w.status), who: w.asker?.name, since: w.waitingSince ?? w.updatedAt })), ...bootLines(store2).map((b) => ({ code: "", what: htmlToText(b.what), since: b.since, ...b.total ? { progress: (b.done ?? 0) / b.total } : {} }))];
+  const running2 = [...g.running.filter((w) => represented.has(w.code) && !todos.has(w.code)).map((w) => ({ code: w.code, what: htmlToText(w.status), who: w.asker?.name, since: w.waitingSince ?? w.updatedAt })), ...(snap ? [] : bootLines(store2)).map((b) => ({ code: "", what: htmlToText(b.what), since: b.since, ...b.total ? { progress: (b.done ?? 0) / b.total } : {} }))];
   const state = c.stopped ? "stopped" : c.paused || cfg.paused ? "paused" : "on";
   const health = Object.entries(store2.health()).filter(([key]) => !key.startsWith("session:")).map(([key, h]) => ({ key, text: h.text, since: h.since, fix: key === "source" ? { label: "Try again", command: "retry" } : void 0 }));
   if (state !== "on") health.unshift({ key: "paused", text: state === "stopped" ? `${NAME} is stopped. It is not reading your chats.` : `${NAME} is paused. It keeps drafting, and sends nothing.`, since: "", fix: { label: "Resume", command: "resume" } });
@@ -49097,7 +49149,7 @@ function view(store2, since2, now = /* @__PURE__ */ new Date(), workflows = stor
     owner: cfg.owner.name,
     status: { state, autoSend: !!c.autoSend, runs: store2.runsToday(), cap: cfg.dailyRuns ?? 200, reading: readingOf(store2) },
     health,
-    tiles: tiles(store2, from, needs.length, done2.filter((r) => r.fresh)),
+    tiles: snap ? [] : tiles(store2, from, needs.length, done2.filter((r) => r.fresh)),
     also: [
       { key: "knowledge", count: kp.length, label: kp.length === 1 ? "to learn" : "to learn" },
       { key: "watching", count: updates, label: updates === 1 ? "update" : "updates", sub: [`${watching.length} watched`, ...progress2.length ? [`${progress2.length} in progress`] : []].join(" \xB7 ") },
@@ -49116,7 +49168,7 @@ function view(store2, since2, now = /* @__PURE__ */ new Date(), workflows = stor
     progress: progress2,
     waiting,
     automations: autos,
-    ...cfg.showDetails ? { details: detailsOf(store2) } : {},
+    ...cfg.showDetails && !snap ? { details: detailsOf(store2) } : {},
     channels: (store2.config()?.channels || []).map((c2) => ({ name: c2.name, link: `https://teams.microsoft.com/l/channel/${encodeURIComponent(c2.channelId)}/${encodeURIComponent(c2.name)}?groupId=${c2.teamId}` })),
     people: [...people].map(([name, p]) => ({ name, ...p })).sort((a, b) => a.name.localeCompare(b.name))
   };
@@ -49214,9 +49266,14 @@ var init_knowledge = __esm({
       }
       // "card:topic/card#id" resolves only on that card (tester 05 P1-7). Also "topic", "topic/card", or a bare unique id.
       read(ref) {
-        const all = this.cards();
         const [path, id] = ref.replace(/^card:/, "").split("#");
         const [topic, card2] = path.split("/");
+        if (id && card2 && /^[\w.-]+$/.test(topic) && /^[\w.-]+$/.test(card2)) {
+          const p = join20(this.root, "topics", topic, `${card2}.md`);
+          const c = existsSync19(p) ? parseCard(p, readText(p)) : void 0;
+          if (c?.topic === topic && c.card === card2) return c.entries.find((e) => e.id === id);
+        }
+        const all = this.cards();
         if (id) return all.find((c) => c.topic === topic && c.card === card2)?.entries.find((e) => e.id === id);
         const cards = all.filter((c) => c.topic === topic && (!card2 || c.card === card2));
         if (cards.length) return cards;
@@ -55397,12 +55454,13 @@ function knownMessageCode(store2, link2) {
 var brokenSeen = /* @__PURE__ */ new Set();
 var chatLevelKey = (chatId) => `chat:${hashOf(chatId)}`;
 var chatNormalActionId = (chatId) => `${chatLevelKey(chatId)}/chat-normal`;
-function reactProjection(store2, query = "", visit2) {
-  const stored = snapshot(store2);
+function reactProjection(store2, query = "", visit2, opts = {}) {
+  const onlyWfs = opts.only && store2.byCode(opts.only) ? store2.itemThread(opts.only) : void 0;
+  const stored = snapshot(store2, void 0, onlyWfs);
   const facts = { ...stored, workflows: stored.workflows.map((workflow) => currentDraft(workflow, workflow.job ? stored.jobs.get(workflow.job) : void 0) === workflow.draft ? workflow : { ...workflow, draft: void 0 }) };
   const placed = place(facts), placementOf = new Map(placed.map((placement2) => [placement2.code, placement2])), cfg = store2.config();
   const since2 = visit2 ? visit2.since : store2.lastViewed();
-  const base = view(store2, since2, new Date(facts.now), facts.workflows), next2 = nextView(store2, facts.now, { snapshot: facts, allCatchup: true }), entities = emptyEntities();
+  const base = view(store2, since2, new Date(facts.now), facts.workflows, onlyWfs ? stored : void 0), next2 = nextView(store2, facts.now, { snapshot: facts, allCatchup: true, only: !!onlyWfs }), entities = emptyEntities();
   const bindings = /* @__PURE__ */ new Map(), workflows = facts.workflows, byCode = new Map(workflows.map((w) => [w.code, w]));
   const expectations = /* @__PURE__ */ new Map();
   const managementRevisions = /* @__PURE__ */ new Map();
@@ -55683,7 +55741,7 @@ ${code} stays ${byCode.get(code)?.state === "done" ? "done" : "open"}. Nothing i
     }
     const replyChanged = wf.state === "needs_human" && wf.status === PAGE_REPLY_CHANGED;
     const notSent = !replyChanged && wf.state === "needs_human" && (!!draft2 && /^(?:Not sent: |Not sure it was sent)/.test(wf.status) || /^Could not start: /.test(wf.status));
-    const waited = draft2 && wf.state === "needs_human" && !wf.sent ? whyWaited(wf, ownerRules, policyContext(store2, cfg, wf)).map(pageText) : [];
+    const waited = !onlyWfs && draft2 && wf.state === "needs_human" && !wf.sent ? whyWaited(wf, ownerRules, policyContext(store2, cfg, wf)).map(pageText) : [];
     entities.items[id] = {
       ...rest2,
       rev,
@@ -55897,7 +55955,7 @@ ${code} stays ${byCode.get(code)?.state === "done" ? "done" : "open"}. Nothing i
     ]
   };
   const readyProposals = new Map(base.knowledge.map((proposal) => [proposal.code, proposal]));
-  for (const proposal of store2.proposals()) {
+  for (const proposal of onlyWfs ? [] : store2.proposals()) {
     const k = readyProposals.get(proposal.code) ?? knowledge(proposal);
     const factIds = k.facts.map((fact, n) => {
       const id = `${k.code}/fact/${n}`;
@@ -56114,7 +56172,7 @@ ${code} stays ${byCode.get(code)?.state === "done" ? "done" : "open"}. Nothing i
     reminderDefaults: newReminder(""),
     recipients: peopleOf(base).map((person3) => ({ id: hashOf(person3.chat), name: person3.name, group: person3.group })),
     // An empty list says why, so the owner knows to type a name (reminder recipients, 10-23).
-    ...base.people.length ? {} : { recipientsNote: `No one to choose yet: reminders go to people and group chats ${NAME} has seen asks from.${store2.workflows().some((w) => w.chat.test && !w.chat.group && w.asker && isPersona(w.asker.id)) ? ' People played with "[as Name]" in test chats are not real, so they are not listed.' : ""} They appear here once they write to you.` },
+    ...base.people.length ? {} : { recipientsNote: `No one to choose yet: reminders go to people and group chats ${NAME} has seen asks from.${workflows.some((w) => w.chat.test && !w.chat.group && w.asker && isPersona(w.asker.id)) ? ' People played with "[as Name]" in test chats are not real, so they are not listed.' : ""} They appear here once they write to you.` },
     settingsActions,
     doneNew: newCount(base),
     sinceLine: sinceOf({ ...base, since: base.since ?? visit2?.fallbackSince, next: next2 }),
@@ -56130,7 +56188,8 @@ ${code} stays ${byCode.get(code)?.state === "done" ? "done" : "open"}. Nothing i
   return { snapshot: snapshot2, bindings };
 }
 function resolvePageIntent(store2, intent) {
-  const binding = reactProjection(store2).bindings.get(intent.action);
+  const own3 = intent.action.startsWith(`${intent.item}/`) && store2.byCode(intent.item) ? reactProjection(store2, "", void 0, { only: intent.item }).bindings.get(intent.action) : void 0;
+  const binding = own3 ?? reactProjection(store2).bindings.get(intent.action);
   if (!binding || binding.action.item !== intent.item) throw new IntentError(410, "That action is no longer offered. Open the refreshed item.");
   if (binding.action.staleness === "exact" && (binding.action.expect !== intent.expect || !binding.management && binding.action.rev !== intent.rev)) {
     throw new IntentError(409, "Changed since you looked. Open the new version first.");
@@ -56138,7 +56197,7 @@ function resolvePageIntent(store2, intent) {
   if (binding.execute) return { execute: () => binding.execute(intent.input) };
   const parsed = binding.resolve(intent.input);
   if (binding.management) return { parsed, page: { kind: "manage", expect: binding.action.expect } };
-  const workflow = store2.byCode(intent.item), automation2 = store2.automation(intent.item), proposal = store2.proposal(intent.item);
+  const workflow = store2.byCode(intent.item), automation2 = workflow ? void 0 : store2.automation(intent.item), proposal = workflow || automation2 ? void 0 : store2.proposal(intent.item);
   let page2;
   if (binding.action.staleness === "exact") {
     const expect = workflow ? workflowApprovalRev(workflow) : automation2 ? automationApprovalRev(automation2) : proposal ? proposalApprovalRev(proposal) : void 0;

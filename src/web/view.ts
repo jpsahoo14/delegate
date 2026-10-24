@@ -13,7 +13,7 @@ import { NAME } from '../brand.ts'
 import type { versionInfo } from '../os/autoupdate.ts'
 import type { settingsView } from './settings.ts'
 import type { UiChoice } from '../store/state.ts'
-import { place, snapshot, type NextView } from './next.ts'
+import { place, snapshot, type NextView, type Snap } from './next.ts'
 import { currentDraft } from '../core/policy.ts'
 import { htmlToText, isPersona } from '../core/intake.ts'
 
@@ -246,7 +246,8 @@ export function itemRows(store: Store, codes: Iterable<string>, wfs: Workflow[] 
 	return out
 }
 
-function doneRows(store: Store, since: string, workflows = store.workflows()): DoneRow[] {
+// `items` alone (one thread, #27 step 2) leaves out the rows from the send log and learned facts, which carry no item action.
+function doneRows(store: Store, since: string, workflows = store.workflows(), items = false): DoneRow[] {
 	const rows: DoneRow[] = [], listed = new Set<string>()
 	for (const w of workflows.filter(w => (w.state === 'done' || w.state === 'open' && w.sent) && w.code && (w.intent !== 'none' || w.fyi) && w.updatedAt > since && w.kind !== 'tracker')) {
 		const r = itemRow(store, w), name = w.asker?.name ?? 'Someone'
@@ -256,6 +257,7 @@ function doneRows(store: Store, since: string, workflows = store.workflows()): D
 	}
 	// Every reply that went, as Numbers counts them: one an item made before it opened again, or an earlier one of the same item,
 	// stays in Done from the send log (bug 10-23 E60). Its words are what was sent; feedback acts on the item's current reply only.
+	if (items) return rows.sort((a, b) => b.at.localeCompare(a.at))
 	const byCode = new Map(workflows.map(w => [w.code, w]))
 	for (const e of store.logs(7).filter(e => e.event === 'sent' && String(e.at) > since && typeof e.msgId === 'string' && !listed.has(e.msgId) && !String(e.approvedBy ?? '').startsWith('automation:'))) {
 		const w = byCode.get(String(e.code)), asker = e.asker as { name?: string } | undefined, name = asker?.name ?? w?.asker?.name ?? 'Someone'
@@ -300,20 +302,22 @@ function tiles(store: Store, since: string, needs: number, done: DoneRow[]): Til
 	return t.filter(x => x.key === 'needs' || x.count > 0)
 }
 
-export function view(store: Store, since: string | undefined, now = new Date(), workflows = store.workflows()): View {
+// With `snap` (one thread's placement, #27 step 2) the page-wide parts are left out: knowledge to review, tiles, boot lines,
+// details, and Done rows from the logs. What the thread's own cards and rows need is the same as on the full page.
+export function view(store: Store, since: string | undefined, now = new Date(), workflows = store.workflows(), snap?: Snap): View {
 	const cfg = store.config(), c = store.control()
 	const from = since ?? new Date(now.getTime() - 86_400_000).toISOString()
 	const wfs = workflows
 	const g = groups(wfs, from)
-	const placements = place(snapshot(store))
+	const placements = place(snap ?? snapshot(store))
 	const represented = new Set(placements.map(r => r.act))
 	const todos = new Set(placements.filter(r => r.rule === 'todo').map(r => r.act))
 	// A tracker needs the owner only when it proposes changes or asks something; otherwise it lives under Ongoing.
 	const needs = g.needs.filter(w => represented.has(w.code) && !todos.has(w.code) && (w.kind !== 'tracker' || pendingEffects(w.effects).length || w.question)).map(w => card(store, w))
-	const kp = store.proposals().filter(p => p.state === 'needs_human').sort((a, b) => a.createdAt.localeCompare(b.createdAt)).map(knowledge)
+	const kp = snap ? [] : store.proposals().filter(p => p.state === 'needs_human').sort((a, b) => a.createdAt.localeCompare(b.createdAt)).map(knowledge)
 	// Done keeps a week of history; only what is new since the owner last looked counts on Home (dogfood: replies vanished after a restart).
 	const week = new Date(now.getTime() - 7 * 86_400_000).toISOString()
-	const done = doneRows(store, from < week ? from : week, wfs).map(r => ({ ...r, fresh: r.at > from }))
+	const done = doneRows(store, from < week ? from : week, wfs, !!snap).map(r => ({ ...r, fresh: r.at > from }))
 	const autos = store.automations().filter(a => a.state !== 'ended').map(a => ({ code: a.code, sentence: describe(a).replace(/^R\d+ · /, ''), to: a.to.name, text: a.text, when: when(a.schedule), state: a.state, why: a.why, next: a.next, count: a.count, rev: a.updatedAt }))
 	const watching = g.watching.filter(w => represented.has(w.code) && !todos.has(w.code)).map(w => ({ code: w.code, what: htmlToText((w.lastAsk ?? '').replace(/^Watch /, '').replace(` until ${DEFAULT_UNTIL}`, '')), last: htmlToText(w.status), changedAt: w.changedAt, update: !!w.changedAt && w.changedAt > from && (!w.ackAt || w.changedAt > w.ackAt), rev: w.revAt ?? w.updatedAt , every: (w.job ? store.job(w.job) : undefined)?.every, endsAt: (w.job ? store.job(w.job) : undefined)?.endsAt, by: w.watchBy, nextAt: (w.job ? store.job(w.job) : undefined)?.nextAt, from: w.watchFrom === 'catchup' ? wfs.find(x => x.watchedAs === w.code)?.code : undefined }))
 	const progress = wfs.filter(w => represented.has(w.code) && (todos.has(w.code) || w.state === 'open' || w.state === 'waiting_on_sender')).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map(w => {
@@ -321,7 +325,7 @@ export function view(store: Store, since: string | undefined, now = new Date(), 
 		const next = todos.has(w.code) ? `You: ${openTodos(w).map(t => t.text).join('; ')}` : k ? nextOf(k) : undefined
 		return { code: w.code, who: who(w.asker?.name), chat: w.chat.name, goal: htmlToText(k?.goal ?? w.lastAsk ?? w.status), status: htmlToText(w.status), last: last && { at: last.at, what: htmlToText(last.what) }, next: next === undefined ? undefined : htmlToText(next), checkAt: k?.checkAt, every: job?.every, endsAt: job?.every ? job.endsAt : undefined, rev: w.updatedAt }
 	})
-	const running = [...g.running.filter(w => represented.has(w.code) && !todos.has(w.code)).map(w => ({ code: w.code, what: htmlToText(w.status), who: w.asker?.name, since: w.waitingSince ?? w.updatedAt })), ...bootLines(store).map(b => ({ code: '', what: htmlToText(b.what), since: b.since, ...(b.total ? { progress: (b.done ?? 0) / b.total } : {}) }))]
+	const running = [...g.running.filter(w => represented.has(w.code) && !todos.has(w.code)).map(w => ({ code: w.code, what: htmlToText(w.status), who: w.asker?.name, since: w.waitingSince ?? w.updatedAt })), ...(snap ? [] : bootLines(store)).map(b => ({ code: '', what: htmlToText(b.what), since: b.since, ...(b.total ? { progress: (b.done ?? 0) / b.total } : {}) }))]
 	const state = c.stopped ? 'stopped' : c.paused || cfg.paused ? 'paused' : 'on'
 	// A session history note is a line in Settings, never a banner: there is nothing for the owner to do (queue-new #16 c).
 	const health = Object.entries(store.health()).filter(([key]) => !key.startsWith('session:')).map(([key, h]) => ({ key, text: h.text, since: h.since, fix: key === 'source' ? { label: 'Try again', command: 'retry' } : undefined }))
@@ -338,7 +342,7 @@ export function view(store: Store, since: string | undefined, now = new Date(), 
 	return {
 		now: now.toISOString(), since, owner: cfg.owner.name,
 		status: { state, autoSend: !!c.autoSend, runs: store.runsToday(), cap: cfg.dailyRuns ?? 200, reading: readingOf(store) },
-		health, tiles: tiles(store, from, needs.length, done.filter(r => r.fresh)),
+		health, tiles: snap ? [] : tiles(store, from, needs.length, done.filter(r => r.fresh)),
 		also: [
 			{ key: 'knowledge', count: kp.length, label: kp.length === 1 ? 'to learn' : 'to learn' },
 			{ key: 'watching', count: updates, label: updates === 1 ? 'update' : 'updates', sub: [`${watching.length} watched`, ...(progress.length ? [`${progress.length} in progress`] : [])].join(' · ') },
@@ -350,7 +354,7 @@ export function view(store: Store, since: string | undefined, now = new Date(), 
 		seen: store.seen(),
 		catchUp: catchUpOf(done.filter(r => r.kind === 'catchup' && r.at > (store.seen().catchup ?? from))),
 		needs, knowledge: kp, done, running, watching, progress, waiting, automations: autos,
-		...(cfg.showDetails ? { details: detailsOf(store) } : {}),
+		...(cfg.showDetails && !snap ? { details: detailsOf(store) } : {}),
 		channels: (store.config()?.channels || []).map(c => ({ name: c.name, link: `https://teams.microsoft.com/l/channel/${encodeURIComponent(c.channelId)}/${encodeURIComponent(c.name)}?groupId=${c.teamId}` })),
 		people: [...people].map(([name, p]) => ({ name, ...p })).sort((a, b) => a.name.localeCompare(b.name)),
 	}

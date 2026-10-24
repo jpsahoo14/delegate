@@ -69,13 +69,17 @@ const brokenSeen = new Set<string>()
 export const chatLevelKey = (chatId: string) => `chat:${hashOf(chatId)}`
 export const chatNormalActionId = (chatId: string) => `${chatLevelKey(chatId)}/chat-normal`
 
-export function reactProjection(store: Store, query = '', visit?: { since?: string; fallbackSince: string }): { snapshot: Snapshot; bindings: Map<string, Binding> } {
-	const stored = placementSnapshot(store)
+// `only` projects one item's thread (its home and parts, which the page places together): the same body, fed only those workflows
+// and their jobs, so a page action reads that thread and not the whole store (#27 step 2). Its item actions match the full projection's;
+// page-wide parts (knowledge, tiles, counts, Done from the logs) are left out.
+export function reactProjection(store: Store, query = '', visit?: { since?: string; fallbackSince: string }, opts: { only?: string } = {}): { snapshot: Snapshot; bindings: Map<string, Binding> } {
+	const onlyWfs = opts.only && store.byCode(opts.only) ? store.itemThread(opts.only) : undefined
+	const stored = placementSnapshot(store, undefined, onlyWfs)
 	const facts = { ...stored, workflows: stored.workflows.map(workflow => currentDraft(workflow, workflow.job ? stored.jobs.get(workflow.job) : undefined) === workflow.draft ? workflow : { ...workflow, draft: undefined }) }
 	const placed = place(facts), placementOf = new Map(placed.map(placement => [placement.code, placement])), cfg = store.config()
 	// A first visit has no cursor; its newly written lastViewed mark is not one.
 	const since = visit ? visit.since : store.lastViewed()
-	const base = view(store, since, new Date(facts.now), facts.workflows), next = nextView(store, facts.now, { snapshot: facts, allCatchup: true }), entities = emptyEntities()
+	const base = view(store, since, new Date(facts.now), facts.workflows, onlyWfs ? stored : undefined), next = nextView(store, facts.now, { snapshot: facts, allCatchup: true, only: !!onlyWfs }), entities = emptyEntities()
 	const bindings = new Map<string, Binding>(), workflows = facts.workflows, byCode = new Map(workflows.map(w => [w.code, w]))
 	const expectations = new Map<string, string>()
 	const managementRevisions = new Map<string, string | undefined>()
@@ -314,7 +318,8 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 		// A send the engine refused (owner words claiming an approval the PR does not show, an unverifiable PR) says why on the card (bug 10-23 E35).
 		const notSent = !replyChanged && wf.state === 'needs_human' && (!!draft && /^(?:Not sent: |Not sure it was sent)/.test(wf.status) || /^Could not start: /.test(wf.status))
 		// Why a waiting draft didn't go out by itself, from the rules and checks that would have sent it (#33).
-		const waited = draft && wf.state === 'needs_human' && !wf.sent ? whyWaited(wf, ownerRules, policyContext(store, cfg, wf)).map(pageText) : []
+		// Not for one thread (#27 step 2): its hourly count reads every item, and an action never needs the line.
+		const waited = !onlyWfs && draft && wf.state === 'needs_human' && !wf.sent ? whyWaited(wf, ownerRules, policyContext(store, cfg, wf)).map(pageText) : []
 		entities.items[id] = {
 			...rest, rev, id, personId, chatId, draftId, changeIds, effectIds, todoIds, workId, actionIds,
 			askAt: asksAt.get(id),
@@ -483,7 +488,7 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 		],
 	}
 	const readyProposals = new Map(base.knowledge.map(proposal => [proposal.code, proposal]))
-	for (const proposal of store.proposals()) {
+	for (const proposal of onlyWfs ? [] : store.proposals()) {
 		const k = readyProposals.get(proposal.code) ?? knowledgeCard(proposal)
 		const factIds = k.facts.map((fact, n) => {
 			const id = `${k.code}/fact/${n}`
@@ -673,7 +678,7 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 		entities, sections, seen: base.seen, status: base.status, running: base.running.filter(run => !run.code), classic, lastUndoId,
 		pageActionIds, reminderDefaults: newReminder(''), recipients: peopleOf(base).map(person => ({ id: hashOf(person.chat), name: person.name, group: person.group })),
 		// An empty list says why, so the owner knows to type a name (reminder recipients, 10-23).
-		...(base.people.length ? {} : { recipientsNote: `No one to choose yet: reminders go to people and group chats ${NAME} has seen asks from.${store.workflows().some(w => w.chat.test && !w.chat.group && w.asker && isPersona(w.asker.id)) ? ' People played with "[as Name]" in test chats are not real, so they are not listed.' : ''} They appear here once they write to you.` }),
+		...(base.people.length ? {} : { recipientsNote: `No one to choose yet: reminders go to people and group chats ${NAME} has seen asks from.${workflows.some(w => w.chat.test && !w.chat.group && w.asker && isPersona(w.asker.id)) ? ' People played with "[as Name]" in test chats are not real, so they are not listed.' : ''} They appear here once they write to you.` }),
 		settingsActions, doneNew: newCount(base), sinceLine: sinceOf({ ...base, since: base.since ?? visit?.fallbackSince, next }),
 		summary: { minute: next.minute, handled: next.handled, catchup: { count: next.catchup.count, worth: next.catchup.worth }, off: next.off, paused: next.paused },
 		showExperienceNote: !store.ui().noted,
@@ -687,7 +692,9 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 }
 
 export function resolvePageIntent(store: Store, intent: Intent): { parsed?: Parsed; execute?: () => Immediate; shownAt?: string; page?: PageApproval } {
-	const binding = reactProjection(store).bindings.get(intent.action)
+	// An item's own action (`A12/approve`) is found in that item's projection; a row, Done or page action in the whole one (#27 step 2).
+	const own = intent.action.startsWith(`${intent.item}/`) && store.byCode(intent.item) ? reactProjection(store, '', undefined, { only: intent.item }).bindings.get(intent.action) : undefined
+	const binding = own ?? reactProjection(store).bindings.get(intent.action)
 	if (!binding || binding.action.item !== intent.item) throw new IntentError(410, 'That action is no longer offered. Open the refreshed item.')
 	// Management expectations describe the decision; row timestamps also move on routine checks.
 	if (binding.action.staleness === 'exact' && (binding.action.expect !== intent.expect || !binding.management && binding.action.rev !== intent.rev)) {
@@ -696,7 +703,9 @@ export function resolvePageIntent(store: Store, intent: Intent): { parsed?: Pars
 	if (binding.execute) return { execute: () => binding.execute!(intent.input) }
 	const parsed = binding.resolve(intent.input)
 	if (binding.management) return { parsed, page: { kind: 'manage', expect: binding.action.expect! } }
-	const workflow = store.byCode(intent.item), automation = store.automation(intent.item), proposal = store.proposal(intent.item)
+	// A workflow wins (see expect below), so a reminder or proposal is looked up only when the item is neither: a proposal lookup
+	// reads every proposal (#27 step 2).
+	const workflow = store.byCode(intent.item), automation = workflow ? undefined : store.automation(intent.item), proposal = workflow || automation ? undefined : store.proposal(intent.item)
 	let page: PageApproval | undefined
 	if (binding.action.staleness === 'exact') {
 		const expect = workflow ? workflowApprovalRev(workflow) : automation ? automationApprovalRev(automation) : proposal ? proposalApprovalRev(proposal) : undefined

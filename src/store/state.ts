@@ -20,6 +20,8 @@ import type { AgentHold } from '../core/agent-failure.ts'
 
 export const localDay = (d = new Date()) => d.toLocaleDateString('sv')
 const documentKey = (key: string) => createHash('sha256').update(key).digest('hex')
+// Each workflow folder's file name → code and partOf, kept for the process (Store.byCode).
+const codeIndex = new Map<string, Map<string, { code: string; partOf?: string }>>()
 
 // A folder in the same synced drive as the storage root is saved relative to it ("../Features"), so every machine
 // finds it although the drive's path differs (macOS "OneDrive-Acme", Windows "OneDrive - Acme").
@@ -84,12 +86,60 @@ export class Store {
 	config(): Config { return readJson<Config>(this.p('config.json'), null as unknown as Config) }
 	saveConfig(c: Config) { this.w(this.p('config.json'), c) }
 
-	workflows(): Workflow[] { return records<Workflow>(this.p('state', 'workflows')).map(upgrade) }
+	workflows(): Workflow[] {
+		const all = records<Workflow>(this.p('state', 'workflows')).map(upgrade)
+		// What a whole read saw goes into the code index too, so a page load warms it for the first click (#27 step 2).
+		const known = codeIndex.get(this.p('state', 'workflows')) ?? new Map<string, { code: string; partOf?: string }>()
+		for (const w of all) known.set(`${w.id}.json`, { code: w.code, ...(w.partOf ? { partOf: w.partOf } : {}) })
+		codeIndex.set(this.p('state', 'workflows'), known)
+		return all
+	}
 	workflow(id: string): Workflow | undefined {
 		const w = readJson<Workflow | undefined>(this.p('state', 'workflows', `${id}.json`), undefined)
+		if (w) this.noteCode(w)
 		return w && upgrade(w)
 	}
-	byCode(code: string): Workflow | undefined { return this.workflows().find(w => w.code === code.toUpperCase()) }
+	// By code through an index kept for the process (#27 step 2): each workflow file's code and partOf. A code never changes; partOf
+	// can (intake's addPart, the worker's join, repairParts), so every read or save of an item refreshes its entry, and an item's
+	// thread is checked against the items themselves. A new or removed file is noticed from the folder's listing; only new files are
+	// read. The item itself is read to check it, so a stale entry can't return the wrong item.
+	byCode(code: string): Workflow | undefined {
+		const c = code.toUpperCase(), name = [...this.codeIndex()].find(([, e]) => e.code === c)?.[0]
+		// The index was just brought up to date with the folder, so a code it lacks is no workflow's (a reminder's, a proposal's).
+		if (!name) return undefined
+		const w = this.workflow(name.slice(0, -5))
+		if (w?.code === c) return w
+		codeIndex.delete(this.p('state', 'workflows'))
+		return this.workflows().find(x => x.code === c)
+	}
+	// An item's thread, as the page places it (next.ts place): its home and every item whose partOf is the home, always with the item
+	// itself. Parts come from the home's own list and from the index, and each is read to confirm it is still a part (PE review of
+	// step 2: a part the runner joins or detaches after the page loaded).
+	itemThread(code: string): Workflow[] {
+		const w = this.byCode(code)
+		if (!w) return []
+		const home = w.partOf ? this.workflow(w.partOf) ?? w : w
+		const ids = new Set([...(home.work?.parts ?? []), ...[...this.codeIndex()].filter(([, e]) => e.partOf === home.id).map(([name]) => name.slice(0, -5))])
+		ids.delete(home.id); ids.delete(w.id)
+		const parts = [...ids].map(id => this.workflow(id)).filter((x): x is Workflow => !!x && x.partOf === home.id)
+		return [...new Map([home, w, ...parts].map(x => [x.id, x])).values()].sort((a, b) => a.id.localeCompare(b.id))
+	}
+	private noteCode(w: Workflow) {
+		const known = codeIndex.get(this.p('state', 'workflows'))
+		if (known && w.id && w.code) known.set(`${w.id}.json`, { code: w.code, ...(w.partOf ? { partOf: w.partOf } : {}) })
+	}
+	private codeIndex(): Map<string, { code: string; partOf?: string }> {
+		const dir = this.p('state', 'workflows'), names = listJson(dir).map(f => basename(f))
+		const known = codeIndex.get(dir) ?? new Map<string, { code: string; partOf?: string }>()
+		const now = new Set(names)
+		for (const name of [...known.keys()]) if (!now.has(name)) known.delete(name)
+		for (const name of names) if (!known.has(name)) {
+			const w = readJson<Workflow | null>(join(dir, name), null)
+			if (w && `${w.id}.json` === name) known.set(name, { code: w.code, ...(w.partOf ? { partOf: w.partOf } : {}) })
+		}
+		codeIndex.set(dir, known)
+		return known
+	}
 	openInChat(chatId: string): Workflow[] {
 		return this.workflows().filter(w => w.chat.id === chatId && w.state !== 'done').sort((a, b) => a.createdAt.localeCompare(b.createdAt))
 	}
@@ -99,6 +149,7 @@ export class Store {
 		const before = this.workflow(wf.id)?.state
 		if (touch) wf.updatedAt = new Date().toISOString()
 		this.w(this.p('state', 'workflows', `${wf.id}.json`), wf)
+		this.noteCode(wf)
 		if (before !== wf.state) this.log({ event: 'state', workflowId: wf.id, code: wf.code, from: before ?? 'new', to: wf.state, status: wf.status?.slice(0, 120), ...(wf.state === 'done' && wf.closedBy ? { closedBy: wf.closedBy } : {}), ...also })
 	}
 
@@ -339,6 +390,11 @@ export class Store {
 	}
 	answerById(id: string): Answer | undefined {
 		if (!/^[a-zA-Z0-9-]+$/.test(id)) throw new Error('Invalid answer identity.')
+		// This machine's page wrote it, so its own file is looked at first, without listing a growing folder (#27 step 2).
+		for (const directory of [this.p('state', 'answers'), this.p('state', 'done', 'answers')]) {
+			const mine = readJson<Answer | undefined>(join(directory, `${id}-${this.machine}.json`), undefined)
+			if (mine) return mine
+		}
 		for (const directory of [this.p('state', 'answers'), this.p('state', 'done', 'answers')]) {
 			for (const file of listJson(directory)) if (basename(file).startsWith(`${id}-`)) return readJson<Answer | undefined>(file, undefined)
 		}
@@ -346,6 +402,7 @@ export class Store {
 	}
 	answered(id: string): boolean {
 		if (!/^[0-9A-HJKMNP-TV-Z]{26}$/.test(id)) throw new Error('Invalid answer identity.')
+		if (readJson<Answer | undefined>(this.p('state', 'done', 'answers', `${id}-${this.machine}.json`), undefined)?.id === id) return true
 		return listJson(this.p('state', 'done', 'answers')).some(file => basename(file).startsWith(`${id}-`) && readJson<Answer | undefined>(file, undefined)?.id === id)
 	}
 	pageSubmission(id: string): PageSubmission | undefined {

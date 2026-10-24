@@ -70,9 +70,15 @@ export class FilesKnowledge implements Knowledge {
 
 	// "card:topic/card#id" resolves only on that card (tester 05 P1-7). Also "topic", "topic/card", or a bare unique id.
 	read(ref: string): Entry | Card[] | undefined {
-		const all = this.cards()
 		const [path, id] = ref.replace(/^card:/, '').split('#')
 		const [topic, card] = path.split('/')
+		// A cited fact names its card's folder: that one file is read when it says it is that card, not every card (#27 step 2).
+		if (id && card && /^[\w.-]+$/.test(topic) && /^[\w.-]+$/.test(card)) {
+			const p = join(this.root, 'topics', topic, `${card}.md`)
+			const c = existsSync(p) ? parseCard(p, readText(p)) : undefined
+			if (c?.topic === topic && c.card === card) return c.entries.find(e => e.id === id)
+		}
+		const all = this.cards()
 		if (id) return all.find(c => c.topic === topic && c.card === card)?.entries.find(e => e.id === id)
 		const cards = all.filter(c => c.topic === topic && (!card || c.card === card))
 		if (cards.length) return cards

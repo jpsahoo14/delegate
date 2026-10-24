@@ -33,9 +33,10 @@ export type Snap = {
 	runner: Facts['runner']; queue: Map<string, NonNullable<Facts['queue']>>; slots: Set<string>; catchupSeen: string; me: string[]; tz?: string; now: number; agentWait?: AgentSetupFailure
 }
 
-export function snapshot(store: Store, now = Date.now()): Snap {
-	const cfg = store.config(), c = store.control(), workflows = store.workflows()
-	const jobs = new Map(store.jobs().map(j => [j.id, j]))
+// One thread's placement reads only its items and their jobs (#27 step 2): the page's action path places one card, not the store.
+export function snapshot(store: Store, now = Date.now(), only?: Workflow[]): Snap {
+	const cfg = store.config(), c = store.control(), workflows = only ?? store.workflows()
+	const jobs = new Map((only ? only.flatMap(w => [w.job, w.work?.watch]).flatMap(id => (id ? [store.job(id)] : [])).filter((j): j is Job => !!j) : store.jobs()).map(j => [j.id, j]))
 	const cap = cfg.dailyRuns ?? 200, runs = store.runsToday(), reading = readingOf(store, now).state
 	// Paused only changes what is sent; whether anything runs comes first. Stopped, then no machine reading, then paused
 	// (set in the config or by the owner, as status and the send gate read it), then the day's limit (review round 3, P1, P2-5).
@@ -494,7 +495,7 @@ export function rowsOf(s: Snap, placed: Placed[]): NextRow[] {
 }
 
 // The new page's data, built only when the new page asks (/data?ui=new): classic never pays for it.
-export function nextView(store: Store, now = Date.now(), options: { snapshot?: Snap; allCatchup?: boolean } = {}): NextView {
+export function nextView(store: Store, now = Date.now(), options: { snapshot?: Snap; allCatchup?: boolean; only?: boolean } = {}): NextView {
 	const s = options.snapshot ?? snapshot(store, now), rows = rowsOf(s, place(s))
 	const of = (sec: Section) => rows.filter(r => r.section === sec)
 	// Your move: meetings that start within 2 hours first, then the oldest ask first.
@@ -508,5 +509,6 @@ export function nextView(store: Store, now = Date.now(), options: { snapshot?: S
 	const reading = readingOf(store, now)
 	// Paused drafts go on and sends wait (tick.ts drafts every cycle; gate.ts refuses every send).
 	const off = s.runner === 'ok' ? undefined : s.runner === 'paused' ? { text: 'Paused: drafts go on, nothing is sent' } : s.runner === 'off' ? { text: `${NAME} is off`, ...(reading.at ? { since: reading.at } : {}) } : { text: s.runner === 'capped' ? 'Daily limit reached; it runs again tomorrow' : `${NAME} is ${s.runner}` }
-	return { move, working, waiting, catchup: { count: cu.length, worth: cu.filter(r => high(r) === 0).length, rows: options.allCatchup ? cu : cu.slice(0, 3) }, minute: { facts: store.proposals().filter(p => p.state === 'needs_human').length, suggestions: store.habits().filter(h => h.state === 'suggested').length }, ...(off ? { off } : {}), ...(store.control().paused || store.config().paused ? { paused: true } : {}), handled: handledThisWeek(store, s.workflows, new Date(now)) }
+	// One thread (#27 step 2) has no page-wide counts: they read every proposal and a week of logs.
+	return { move, working, waiting, catchup: { count: cu.length, worth: cu.filter(r => high(r) === 0).length, rows: options.allCatchup ? cu : cu.slice(0, 3) }, minute: options.only ? { facts: 0, suggestions: 0 } : { facts: store.proposals().filter(p => p.state === 'needs_human').length, suggestions: store.habits().filter(h => h.state === 'suggested').length }, ...(off ? { off } : {}), ...(store.control().paused || store.config().paused ? { paused: true } : {}), handled: options.only ? 0 : handledThisWeek(store, s.workflows, new Date(now)) }
 }

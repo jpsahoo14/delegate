@@ -1,5 +1,69 @@
 # React preview
 
+## #27 step 2 fix: an item's thread survives a join or detach after the page loaded (PE review of 52ce1bd4)
+
+- **The bug.** The code index assumed `partOf` never changes, but intake's `addPart`, the worker's join and `repairParts` change it.
+  After the runner joined an item to a home, the page server's stale index left the clicked part out of its own thread.
+- **The fix.**
+  - `itemThread` always includes the clicked item.
+  - It takes the home's parts from `home.work.parts` (read fresh) together with the index, and reads each to confirm
+    `partOf === home.id`.
+  - `workflow()` and `save()` refresh the item's index entry. The comment now says `partOf` can change.
+- **Proof** (fictional root, stub model (quota); the page loads, then a separate runner process joins A2 into A1, then detaches
+  it with `repairParts`):
+
+  |  | Before the fix | After |
+  |---|---|---|
+  | A2's one-thread projection right after the join | Not equal to the whole | Equal |
+  | After the detach, and for the home A1 | Equal | Equal |
+
+  The clicks (stale Send, fresh Later) answered as the whole projection does in both versions. Before the fix that was only
+  because the miss fell back to the whole projection.
+- **Re-run on the inert owner-shape copy:**
+  - 114/114 items with identical item actions, at most 31 reads;
+  - the whole page byte-identical;
+  - Later, Dismiss and Send 26–36 reads.
+
+## #27 step 2 follow-up: Send no longer reads every proposal; scoped() keys must name their folder
+
+- **resolvePageIntent** looks up a reminder or knowledge proposal only when the item is no workflow, as its `expect` already
+  preferred the workflow. Every Send used to read all proposals: 232 files on the owner's copy.
+- **`scoped()`** throws for a key that isn't `<kind>:<folder>`, so a new derived value can't escape write invalidation (PE review
+  of step 1, note 1).
+- **Inert copy of the owner's root** (Temp, 114 items, page server in-process, 12 clicks, stub model (quota)):
+  - Later, Dismiss and Send: 26–36 reads, at most 48 ms each (Send was 260 reads before this). Receipts: 4 reads, ≤ 12 ms.
+  - The page: 540 reads, about 1 s.
+  - A knowledge action (K1) still goes through the whole projection: 542 reads, 1.07 s, 202.
+
+## #27 step 2: a page action projects only its item's thread; code index; answer and knowledge lookups by name
+
+PE spec `engineer-store-read-model.md`, step 2.
+- **One-thread projection.** `reactProjection(store, query, visit, { only: code })` runs the same body on the item's thread only:
+  its home and parts, found through `Store.itemThread`, which is how `place()` groups them. Their jobs come with them.
+  - `snapshot(store, now, only)`, `view(…, snap)` and `nextView({ only })` leave out the page-wide parts: knowledge to review,
+    tiles, boot lines, details, Done rows from the logs, the week count, and the knowledge-proposal loop. The "Why it waited" line
+    is left out too; its hourly count reads every item, and no action depends on it.
+- **resolvePageIntent** finds an item's own action (`A12/approve`) in that thread's projection. A row, Done or page action still
+  uses the whole projection.
+- **Store indexes.**
+  - `byCode` keeps a per-process index of each workflow file's code and `partOf`, which are fixed when the item is made.
+    - The folder listing finds new and removed files; only new files are read.
+    - The item is read to confirm it is the one asked for.
+    - A code the up-to-date index lacks is no workflow's.
+    - `workflows()` fills the index, so a page load warms it.
+  - `answered`/`answerById` look at this machine's own answer file before listing the folder.
+- **Knowledge.** `read("card:topic/card#id")` reads that one card file when its front matter says it is that card; otherwise it
+  reads all cards, as before.
+- **Proof.** Stub model (quota).
+  - **Inert copy of the owner's root (114 items):** the one-thread projection offers exactly the full projection's 408 item
+    actions on every item (id, kind, label, rev, expect, staleness, effect, input, availability, resolved answer). It reads at most
+    31 files (median 22).
+  - **Whole page before and after:** byte-identical (1,591,521 chars).
+  - **Fictional 235-item root in OneDrive, 20 clicks:** reads per action 487 → 18–19; p95 0.83 s → 26 ms; receipt reads
+    237 → 4, 8 ms. Before step 1 it was 58,094 reads and 37.9 s.
+  - **Unchanged behaviour:** the card proofs, the refused/replay/422/Send-once checks, and a page action through the whole
+    projection.
+
 ## #27 step 1: page actions and receipts read each file once; writes update the read scope
 
 PE spec `engineer-store-read-model.md`, step 1.

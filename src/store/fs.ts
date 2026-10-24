@@ -34,6 +34,8 @@ const copy = <T>(v: T): T => (fresh && v && typeof v === 'object' ? structuredCl
 // One value per request for anything derived from files (knowledge cards), computed once however often it is asked for. Its key
 // ends with the folder it is derived from ("cards:<dir>"), so a write under that folder drops it.
 export function scoped<T>(key: string, make: () => T): T {
+	// A key that names no folder would never be dropped by a write (PE review of #27 step 1).
+	if (!/^[a-z]+:.+[\\/]/.test(key)) throw new Error(`A derived value's key must be <kind>:<folder>, not "${key}".`)
 	if (!scope) return make()
 	if (scope.has(key)) return copy(scope.get(key) as T)
 	const v = make()
