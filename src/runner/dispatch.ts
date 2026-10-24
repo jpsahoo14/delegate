@@ -301,16 +301,15 @@ export const readDirs = (store: Store, cfg: Config): string[] => [...new Set([..
 // (workerTools keeps that filter for it), so only its draft's own sources count, as before.
 export function runReads(store: Store, cfg: Config, session: string, logStart: number): Reads {
 	if (cfg.agent.flavor !== 'copilot') return { chats: [], searches: [], unknown: false, calls: [], knowledge: 0 }
-	return readsOf(sessionLog(cfg.agent.flavor, session).slice(logStart), knowledgeOf(store, cfg), readDirs(store, cfg))
+	return readsOf(sessionLog(cfg.agent.flavor, session).slice(logStart), knowledgeOf(store, cfg), readDirs(store, cfg), undefined, ref => store.documentChats(ref))
 }
 
 // Every agent run gets the delegate MCP server in worker mode, scoped to one target and run (R-SEC-02).
-// What every worker may call on the delegate server: report once, and open an image kept at intake. It reads everything else with the
-// owner's own servers and the CLI's built-ins (#21).
+// Workers report once and open images or Office documents. Other reads use the owner's native tools (#21/#40).
 // Its own server name: the owner's global "delegate" server (from install) would otherwise shadow it, and the worker would get no tools.
 export const WORKER_SERVER = 'delegate_worker'
-// Only Delegate's contract (#21): the report, and image_read for an image kept at intake, until the CLI's view is shown to return images.
-export const WORKER_TOOLS = ['submit_report', 'image_read'].map(t => `${WORKER_SERVER}-${t}`)
+// Delegate's own report and decoding tools, shared by spawned and hosted runs.
+export const WORKER_TOOLS = ['submit_report', 'image_read', 'doc_read'].map(t => `${WORKER_SERVER}-${t}`)
 
 export function workerMcp(store: Store, targetId: string, runId: string, interactive = false): { cwd: string; mcpConfigPath: string } {
 	const cwd = join(LOCAL_DIR, 'sessions')

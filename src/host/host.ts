@@ -19,7 +19,7 @@ import { diagnose, hostSkips, listable, readCatalog } from '../runner/catalog.ts
 import { LOCAL_DIR, loadLocal, Store } from '../store/state.ts'
 import { cliPackage, hostIdleMin } from './locate.ts'
 import { z } from 'zod'
-import { IMAGE_DESCRIPTION, IMAGE_LINK, readImage, REPORT, reportTaker, SUBMIT_DESCRIPTION, type ToolOut } from '../worker/tools.ts'
+import { DOCUMENT, DOCUMENT_DESCRIPTION, documentReader, IMAGE_DESCRIPTION, IMAGE_LINK, readImage, REPORT, reportTaker, SUBMIT_DESCRIPTION, type ToolOut } from '../worker/tools.ts'
 
 export type HostInfo = { pid: number; port: number; token: string; startedAt: string; cli: string; delegate: string; configHash: string }
 // hostFault: the run never reached the model through the host (#19b); the caller makes it on one process instead.
@@ -105,10 +105,12 @@ export async function runHost(): Promise<void> {
 		}
 		// Delegate's own worker tools run in-process, bound to this workflow and run (step 2): no worker server process per run.
 		const take = reportTaker(store, input.workflowId, input.runId)
+		const readDocument = documentReader(store)
 		const out = (o: ToolOut) => o.image ? { textResultForLlm: o.text, binaryResultsForLlm: [{ data: o.image.data, mimeType: o.image.mimeType, type: 'image' }], resultType: 'success' } : o.error ? { textResultForLlm: o.text, resultType: 'failure', error: o.text.slice(0, 300) } : o.text
 		const inProcess: Record<string, () => unknown> = {
 			submit_report: () => sdk.defineTool(`${WORKER_SERVER}-submit_report`, { description: SUBMIT_DESCRIPTION, parameters: REPORT_JSON, skipPermission: true, handler: async (args: unknown) => out(take(args)) }),
 			image_read: () => sdk.defineTool(`${WORKER_SERVER}-image_read`, { description: IMAGE_DESCRIPTION, parameters: { type: 'object', properties: { link: { type: 'string', description: IMAGE_LINK } }, required: ['link'] }, skipPermission: true, handler: async (args: { link?: string }) => out(await readImage(store, String(args?.link ?? ''))) }),
+			doc_read: () => sdk.defineTool(`${WORKER_SERVER}-doc_read`, { description: DOCUMENT_DESCRIPTION, parameters: z.toJSONSchema(DOCUMENT), skipPermission: true, handler: async (args: unknown) => out(await readDocument(args)) }),
 		}
 		const mine = names.filter(n => n.startsWith(`${WORKER_SERVER}-`)).map(n => n.slice(WORKER_SERVER.length + 1))
 		for (const n of mine) if (inProcess[n]) tools.push(inProcess[n]())

@@ -8,7 +8,7 @@ import type { ReadOpts, SendOpts, Source } from './source.ts'
 import { isThread, parseThread, Threads, type ThreadCache, type WatchedChannel } from './channels.ts'
 import { NAME } from '../brand.ts'
 
-export type TeamsMsg = { id: string; createdDateTime: string; lastModifiedDateTime?: string; lastEditedDateTime?: string | null; deletedDateTime?: string | null; replyToId?: string | null; from?: { id: string; displayName: string } | null; body?: { contentType: string; content: string }; attachments?: { name?: string | null; contentType?: string; contentUrl?: string | null; content?: string | null }[] }
+export type TeamsMsg = { id: string; createdDateTime: string; lastModifiedDateTime?: string; lastEditedDateTime?: string | null; deletedDateTime?: string | null; replyToId?: string | null; from?: { id: string; displayName: string } | null; body?: { contentType: string; content: string }; attachments?: { name?: string | null; contentType?: string; contentUrl?: string | null; content?: string | null; driveId?: string; itemId?: string }[] }
 type Page = { messages?: TeamsMsg[]; nextLink?: string; '@odata.nextLink'?: string }
 
 const DEFAULT_TOOLS = { list: 'ListChatMessages', send: 'SendMessageToChat', sendSelf: 'SendMessageToSelf', get: 'GetChat', chats: 'ListChats', del: 'DeleteChatMessage', edit: 'UpdateChatMessage', presence: 'GetUserPresence', members: 'ListChatMembers', message: 'GetChatMessage' }
@@ -208,7 +208,7 @@ export function toRaw(m: TeamsMsg): RawMsg {
 		body: m.body?.content ?? '',
 		deleted: !!m.deletedDateTime,
 		replyToId,
-		attachments: (m.attachments ?? []).filter(a => a.contentType !== 'messageReference').map(a => ({ name: a.name ?? '', type: a.contentType ?? 'file', url: a.contentUrl ?? undefined })),
+		attachments: (m.attachments ?? []).filter(a => a.contentType !== 'messageReference').map(a => ({ name: a.name ?? '', type: a.contentType ?? 'file', url: a.contentUrl ?? undefined, ...(a.driveId && a.itemId ? { driveId: a.driveId, itemId: a.itemId } : {}) })),
 	}
 }
 

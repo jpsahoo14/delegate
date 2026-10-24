@@ -6,6 +6,7 @@ import { site } from '../core/site.ts'
 import { TeamsHistory, type History } from './history.ts'
 import type { Source } from './source.ts'
 import { TeamsSource } from './source-teams.ts'
+import { clientFor, toolServers } from './mcp-client.ts'
 
 // One entry per chat system. A new one (Slack) is a Source and a History class plus a line here (docs/adapters.md).
 type Adapter = { source(cfg: Config['source'], owner: string, root: string): Source; history?(cfg: Config): History; docs?(cfg: Config): Documents | undefined; images?(cfg: Config): Images | undefined }
@@ -29,5 +30,9 @@ function adapter(s: Config['source']): Adapter {
 
 export const sourceFor = (s: Config['source'], owner: string, root: string): Source => adapter(s).source(s, owner, root)
 export const historyFor = (cfg: Config): History | undefined => adapter(cfg.source).history?.(cfg)
-export const docsFor = (cfg: Config): Documents | undefined => adapter(cfg.source).docs?.(cfg)
+export const docsFor = (cfg: Config): Documents | undefined => {
+	const spec = toolServers(cfg).sharepoint
+	if (!cfg.source.docs && spec?.command) return new SharePointDocs([], clientFor({ ...spec, command: spec.command }, 'sharepoint'))
+	return adapter(cfg.source).docs?.(cfg)
+}
 export const imagesFor = (cfg: Config): Images | undefined => adapter(cfg.source).images?.(cfg)

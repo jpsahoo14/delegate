@@ -23,7 +23,15 @@ Message ids must sort by time as numbers (`BigInt`), the way Teams ids do. A sys
 
 ## Documents (`src/adapters/docs.ts`)
 
-`read(name)` returns a shared document's whole text, found by file name or title, with when and by whom it last changed; or a short reason it could not. Teams uses the SharePoint MCP server beside it (`source.docs` overrides the command). The Word file is unzipped locally, so no AI call is spent reading it.
+`read({url})` or `read({driveId, itemId})` fetches an Office document through the owner's SharePoint server (`source.docs` overrides its command). Name search stays with the native tools. Metadata checks the 25 MB download limit before fetching. Word paragraphs, PowerPoint slides in presentation order, and Excel sheet/cell text (up to 2,000 rows per sheet) are decoded locally; PDF is not supported. ZIP expansion is bounded too.
+
+URL metadata prefers `getFileOrFolderMetadataByUrl`, falling back to `getFileMetadataByUrl`, with the advertised argument `fileOrFolderUrl`, `fileUrl` or `url` in that order. Both accept Graph DriveItem metadata. Reads by ids use `getFileOrFolderMetadata({documentLibraryId, fileOrFolderId})`, falling back to `getFileMetadata({documentLibraryId, fileId})`; without either tool they fail explicitly rather than download without a size check. Binary reads use `readSmallBinaryFile({documentLibraryId: driveId, fileId: itemId})` and accept raw base64 text or JSON containing `contentBytes`/`base64`. A server-side size refusal is a hard content failure even below the local 25 MB cap; the live server's exact cap is not yet known.
+
+Each uncached read logs `document-read` with its metadata tool name, downloaded byte size and page count, or `document-read-failed` with a plain `reason`. Successful read logs contain no document name, URL, ids or text. Paging reuses the cached pages without downloading or logging the read again. The owner's first post-release retry is the live confirmation.
+
+Workers and the resident host share `doc_read`: page 1 starts with an outline and page count, and each later page names its heading context. Every response is at most 30,000 characters, with one decoded document cached for paging within a run. Binary content never enters the model or its session log. Permission, size and unsupported-format failures return plain content-blocker lines, not automatic retries.
+
+Intake keeps attachment URLs and any supplied drive/item ids in the thread and prompt. The document-sharing index stores hashes of identities, not URLs or file names, and is seeded lazily from existing stored attachment lines, then updated by thread writes. Session-log document arguments map through this index to sharing chats, including ids resolved from a known URL or a recorded native metadata lookup. Unshared or unfinished document reads are unknown and hold automatic sends; owner-approved sends retain their existing override. Card-state owns retry button selection, including newly fixed decoder causes.
 
 ## Slack mapping
 

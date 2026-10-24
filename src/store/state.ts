@@ -6,6 +6,7 @@ import type { Answer, Automation, CallRec, Change, Config, Job, Local, Msg, Owne
 import { itemCode, ulid } from '../core/ids.ts'
 import type { Waiting } from '../core/waiting.ts'
 import type { Turn } from '../core/intake.ts'
+import { documentKeys, messageDocuments } from '../core/intake.ts'
 import { emptyThreadCache, type ThreadCache } from '../adapters/channels.ts'
 import type { Schedule } from '../core/schedule.ts'
 import type { Habit } from '../runner/habits.ts'
@@ -18,6 +19,7 @@ import { scrubDeep } from '../core/secrets.ts'
 import type { AgentHold } from '../core/agent-failure.ts'
 
 export const localDay = (d = new Date()) => d.toLocaleDateString('sv')
+const documentKey = (key: string) => createHash('sha256').update(key).digest('hex')
 
 // A folder in the same synced drive as the storage root is saved relative to it ("../Features"), so every machine
 // finds it although the drive's path differs (macOS "OneDrive-Acme", Windows "OneDrive - Acme").
@@ -193,7 +195,41 @@ export class Store {
 	}
 
 	thread(id: string): Msg[] { return readJson<Msg[]>(this.p('state', 'threads', `${id}.json`), []) }
-	saveThread(id: string, msgs: Msg[]) { this.w(this.p('state', 'threads', `${id}.json`), msgs.slice(-40)) }
+	saveThread(id: string, msgs: Msg[]) {
+		this.w(this.p('state', 'threads', `${id}.json`), msgs.slice(-40))
+		const refs = msgs.flatMap(messageDocuments).flatMap(documentKeys).map(documentKey)
+		if (!refs.length) return
+		const chat = this.workflow(id)?.chat.id
+		if (!chat) return
+		const shares = this.documentShares()
+		let changed = false
+		for (const key of refs) if (!shares[key]?.includes(chat)) { shares[key] = [...(shares[key] ?? []), chat]; changed = true }
+		if (changed) this.w(this.p('state', 'document-shares.json'), shares)
+	}
+	// Seed old attachment lines once, then maintain this index with thread writes. No whole-store scan per document or tick.
+	documentShares(): Record<string, string[]> {
+		const file = this.p('state', 'document-shares.json')
+		if (existsSync(file)) return readJson(file, {})
+		const shares: Record<string, string[]> = {}
+		for (const w of this.workflows()) for (const key of this.thread(w.id).flatMap(messageDocuments).flatMap(documentKeys).map(documentKey)) {
+			shares[key] = [...new Set([...(shares[key] ?? []), w.chat.id])]
+		}
+		this.w(file, shares)
+		return shares
+	}
+	documentChats(ref: { url?: string; driveId?: string; itemId?: string }): string[] {
+		const shares = this.documentShares()
+		return [...new Set(documentKeys(ref).map(documentKey).flatMap(k => shares[k] ?? []))]
+	}
+	documentAlias(ref: { driveId?: string; itemId?: string }, url?: string) {
+		if (!url) return
+		const shares = this.documentShares(), chats = documentKeys({ url }).map(documentKey).flatMap(k => shares[k] ?? [])
+		if (!chats.length) return
+		const keys = documentKeys(ref).map(documentKey)
+		if (keys.every(key => chats.every(chat => shares[key]?.includes(chat)))) return
+		for (const key of keys) shares[key] = [...new Set([...(shares[key] ?? []), ...chats])]
+		this.w(this.p('state', 'document-shares.json'), shares)
+	}
 
 	threadCache(): ThreadCache { return readJson(this.p('state', 'threads.json'), emptyThreadCache()) }
 	saveThreadCache(c: ThreadCache) { this.w(this.p('state', 'threads.json'), c) }

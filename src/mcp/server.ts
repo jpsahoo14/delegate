@@ -30,19 +30,19 @@ import * as scheduler from '../os/scheduler.ts'
 import { LOCAL_DIR } from '../store/state.ts'
 import { CLI } from '../paths.ts'
 import { intents } from '../core/intents.ts'
-import { docsFor, historyFor } from '../adapters/registry.ts'
+import { historyFor } from '../adapters/registry.ts'
 import { REPORT, report, summary as feedbackSummary } from '../store/feedback.ts'
 import { parseChannelLink } from '../adapters/channels.ts'
 import { describe, propose as proposeAutomation } from '../runner/automations.ts'
 
 import { ClaimSchema, ReportSchema } from '../core/report.ts'
-import { IMAGE_DESCRIPTION, IMAGE_LINK, readImage, reportTaker, SUBMIT_DESCRIPTION } from '../worker/tools.ts'
+import { DOCUMENT_DESCRIPTION, DOCUMENT_INPUT, documentReader, IMAGE_DESCRIPTION, IMAGE_LINK, readImage, reportTaker, SUBMIT_DESCRIPTION } from '../worker/tools.ts'
 import { NAME } from '../brand.ts'
 
 const text = (t: string) => ({ content: [{ type: 'text' as const, text: t }] })
 
 
-// Worker mode exposes only submit_report, scoped to one workflow and run (R-SEC-02).
+// Worker reports and approved changes are scoped to one workflow and run (R-SEC-02).
 // The store loads lazily, so setup can run before a storage root exists.
 export async function serve(store: () => Store) {
 	await build(store).connect(new StdioServerTransport())
@@ -80,18 +80,7 @@ function registerKnowledgeReads(server: McpServer, get: () => Store) {
 		} catch (e) { return { ...text(`Search failed: ${String(e).slice(0, 200)}`), isError: true } } finally { await h.close() }
 	})
 	registerImageRead(server, get)
-	server.registerTool('doc_read', {
-		description: 'Read a shared Word document in full, by its file name or title. Use it for a document review: one call returns the whole text.',
-		inputSchema: { name: z.string().describe('The file name or title, such as "free-text-location-dev-spec-overview-v4.docx"') },
-	}, async ({ name }) => {
-		const d = docsFor(get().config())
-		if (!d) return text('This setup has no document source.')
-		try {
-			const r = await d.read(name)
-			trace([], name.split(/[\\/]/).pop()!.slice(0, 80), 'read', typeof r === 'string' ? 0 : 1)
-			return text(typeof r === 'string' ? r : `${r.name}, last changed ${r.modified.slice(0, 10)} by ${r.by}.\n\n${r.text.slice(0, 80_000)}${r.text.length > 80_000 ? '\n\n(cut at 80,000 characters)' : ''}`)
-		} catch (e) { return { ...text(`Could not read it: ${String(e).slice(0, 200)}`), isError: true } } finally { await d.close() }
-	})
+	registerDocumentRead(server, get)
 	const cite = (h: Entry) => `card:${h.topic}/${h.card}#${h.id}`
 	server.registerTool('knowledge_search', { description: 'Search the owner\'s knowledge cards. Each hit has a citation to put in reply.sources, and source links you can open for more context.', inputSchema: { query: z.string(), types: z.array(z.enum(['fact', 'decision', 'faq', 'owner', 'status', 'open'])).optional() } }, async ({ query, types }) => {
 		const cfg = get().config(), hits = k().search(query, { types }).filter(h => !fromOffChat(cfg, h.src))
@@ -118,8 +107,9 @@ function registerImageRead(server: McpServer, get: () => Store) {
 	})
 }
 function registerWorker(server: McpServer, store: Store) {
-	// A run reads the knowledge, chats and documents with the owner's own servers and the CLI's built-ins (#21); only these stay.
+	// Native reads remain native; Office decoding is shared with the host (#40).
 	registerImageRead(server, () => store)
+	registerDocumentRead(server, () => store)
 	const wfId = process.env.DELEGATE_WORKFLOW!, runId = process.env.DELEGATE_RUN!
 	const take = reportTaker(store, wfId, runId, !!process.env.DELEGATE_INTERACTIVE)
 	server.registerTool('submit_report', { description: SUBMIT_DESCRIPTION, inputSchema: ReportSchema }, async r => { const o = take(r); return { ...text(o.text), ...(o.error ? { isError: true } : {}) } })
@@ -128,6 +118,15 @@ function registerWorker(server: McpServer, store: Store) {
 		const probe = adoProbe(store.config())
 		const r = await makeChange(store, wfId, runId, index, mcpCaller(store.config()), probe).finally(() => probe?.close?.().catch(() => undefined))
 		return r.error ? { ...text(r.error), isError: true } : text(`Made change ${index}: ${r.ref}`)
+	})
+}
+
+function registerDocumentRead(server: McpServer, get: () => Store) {
+	let read: ReturnType<typeof documentReader> | undefined
+	server.registerTool('doc_read', { description: DOCUMENT_DESCRIPTION, inputSchema: DOCUMENT_INPUT, annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true } }, async args => {
+		read ??= documentReader(get())
+		const o = await read(args)
+		return { ...text(o.text), ...(o.error ? { isError: true } : {}) }
 	})
 }
 

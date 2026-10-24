@@ -1,9 +1,9 @@
 {
-	"version": "0.2.34",
+	"version": "0.2.35",
 	"files": {
-		".claude-plugin/plugin.json": "eaf43979c4b4d9e14bb1b86a06d66444ced90b7810cdc373bc0c7ccd3693d1b1",
+		".claude-plugin/plugin.json": "4e201680d0e2da7fb52f03aa8c359f45ec66c67e3e12fe53204eb9e36ce134ad",
 		".mcp.json": "777d2fb1bbc1dee696b6829465777cff3fbb526fd018cda0b9fc4bf06e595266",
-		"dist/delegate.mjs": "e1937c6685f480a3d77c789153ec60086edc8af7ea6c64e17f750e4aea6f5724",
+		"dist/delegate.mjs": "e0b18dee5461901c1bfa054586207303e41f375d030d9c0464613ad1baab4907",
 		"dist/mesh/extension.mjs": "72606e840b669f3316fa663ff0eedaddc44fb5be5fe5d51aa6d3e787f0565407",
 		"dist/mesh/inbox.mjs": "a0fe7454b2269fed108cbdff9fe5d77c88ce36b6f0c49d1b52dccd754424a432",
 		"dist/web-react/.vite/manifest.json": "33ac8e52e18807ad244207e31de341b3d626cfd0eff59f7b6873ce53e002b89f",
@@ -45,10 +45,10 @@
 		"skills/delegate/workflows/ask.md": "b80fb3c1f127e39f7c5d9eff7496782512ae35d48dd120e7bfd502050664e3e3",
 		"skills/delegate/workflows/bootstrap.md": "c62d702d2ec7a026d6264a0c7f089eb7091995eb76dc76392dbe4ff28fc78eeb",
 		"skills/delegate/workflows/execute.md": "1246b8148c55d6932ceaae7b3efd77ad237715979bb066dfb2edab5930127f15",
-		"skills/delegate/workflows/job.md": "3e170400b8ac05ada7dad8fa804fbc397c0b4c5c17a2d18bcf2d67ad41d068dd",
+		"skills/delegate/workflows/job.md": "f14428c14d984d7a298a674168934cd2deac96e7476bb41ff4e72f458e19d993",
 		"skills/delegate/workflows/learn.md": "cc02ea628c1952c8bd45a97dc31b850289cc0f4ad4a4e7d1d092bc4e6ebc4907",
 		"skills/delegate/workflows/promise.md": "0e829c11f7f99d1bc4befb541af87112a3d269018a341315f13a6ddaf5a28982",
-		"skills/delegate/workflows/reply.md": "c348256089d3ccad1a879078bb8691c1e2f61d7b7abc9c4ee99dc65193cb2d3b",
+		"skills/delegate/workflows/reply.md": "b5712b35791d1b4aa59846bb9f5729650925c69a1fe723297dfe1f528efaf451",
 		"skills/delegate/workflows/tracker.md": "129eb164d08787829af8966114561a9089d2d180d7fe1b26cf41c65095cb19ca",
 		"skills/delegate/workflows/validate.md": "f8c0b67bd9b6beac1781b99101dd8c1502688f508885a8ce99f2ae8190ec0acd"
 	}

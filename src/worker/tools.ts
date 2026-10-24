@@ -1,18 +1,58 @@
 // Delegate's own worker tools, one implementation for both ways a run reaches them (#19 step 2): the per-run worker MCP server
-// (one process per run) and the resident host's in-process tools. After #21 only these remain: the report, and an image kept at intake.
+// (one process per run) and the resident host's in-process tools.
 import { intents } from '../core/intents.ts'
 import { z } from 'zod'
 import { ReportSchema } from '../core/report.ts'
 import type { Report } from '../core/types.ts'
-import { imagesFor } from '../adapters/registry.ts'
+import { docsFor, imagesFor } from '../adapters/registry.ts'
+import { documentPages, type DocumentRef } from '../adapters/docs.ts'
 import type { Store } from '../store/state.ts'
 
 export const SUBMIT_DESCRIPTION = 'Submit your one report for this workflow. Call exactly once, then finish.'
 export const IMAGE_DESCRIPTION = 'Look at an image pasted into a message. Pass the link from its [image ...] line. Use it whenever the ask may depend on what the image shows; never describe an image you did not open.'
 export const IMAGE_LINK = 'The link from the [image ...] line: https://graph.microsoft.com/... or inline:<key>'
+export const DOCUMENT_DESCRIPTION = 'Read a Word, PowerPoint or Excel file by its sharing/web URL or both driveId and itemId. No name search. Fetches and decodes on the server; no binary reaches you. Page 1 starts with an outline and page count; request each page you need. Pages are at most 30,000 characters; downloads at most 25 MB. Use this instead of binary readers for Office files.'
+export const DOCUMENT_INPUT = {
+	url: z.string().url().regex(/^https?:\/\//i).optional().describe('The attachment sharing link or web URL'),
+	driveId: z.string().min(1).optional(), itemId: z.string().min(1).optional(),
+	page: z.number().int().min(1).optional(),
+}
+export const DOCUMENT = z.object(DOCUMENT_INPUT).strict().refine(v => !!v.url && !v.driveId && !v.itemId || !v.url && !!v.driveId && !!v.itemId, { message: 'Use a URL, or both driveId and itemId' })
 
 export const REPORT = z.object(ReportSchema)
 export type ToolOut = { text: string; error?: boolean; image?: { data: string; mimeType: string } }
+
+// Cache one decoded document within a run so paging never downloads its binary again.
+export function documentReader(store: Store): (raw: unknown) => Promise<ToolOut> {
+	let cached: { key: string; doc: Promise<{ name: string; pages: string[] } | string> } | undefined
+	return async raw => {
+		const p = DOCUMENT.safeParse(raw)
+		if (!p.success) return { text: 'Use a document URL, or both driveId and itemId, and a positive page number. File names are not supported.', error: true }
+		const { page = 1, ...v } = p.data
+		const ref: DocumentRef = v.url ? { url: v.url } : { driveId: v.driveId!, itemId: v.itemId! }
+		const key = JSON.stringify(ref)
+		if (cached?.key !== key) {
+			cached = { key, doc: (async () => {
+				const docs = docsFor(store.config())
+				const doc = docs ? await docs.read(ref).finally(() => docs.close()) : "Couldn't open this document: no document server is configured"
+				if (typeof doc === 'string') {
+					store.log({ event: 'document-read-failed', reason: doc })
+					return doc
+				}
+				const pages = documentPages(doc)
+				store.documentAlias(doc.ref, v.url ?? doc.url)
+				store.log({ event: 'document-read', tool: doc.tool, size: doc.size, pages: pages.length })
+				return { name: doc.name, pages }
+			})() }
+		}
+		const doc = await cached.doc
+		if (typeof doc === 'string') {
+			return { text: doc, error: true }
+		}
+		const text = doc.pages[page - 1]
+		return text === undefined ? { text: `No such page. ${doc.name} has ${doc.pages.length} pages.`, error: true } : { text }
+	}
+}
 
 // One report per run, for this workflow only; in a Continue window the owner may refine, and the last report wins.
 export function reportTaker(store: Store, wfId: string, runId: string, interactive = false): (raw: unknown) => ToolOut {

@@ -26,7 +26,7 @@ import { prTarget } from './probe.ts'
 import { askRelation, freshAsk } from './same-ask.ts'
 
 const toMsg = (r: RawMsg, from: { id: string; name: string }, text: string, byOwner: boolean): Msg =>
-	({ id: r.id, at: r.at, editedAt: r.editedAt, contentKey: contentKey(text), from, text, byOwner })
+	({ id: r.id, at: r.at, editedAt: r.editedAt, contentKey: contentKey(text), from, text, byOwner, ...(r.attachments?.length ? { attachments: r.attachments } : {}) })
 
 // Owner commands in the self-chat (R-HIL-15, R-HIL-16).
 export async function readOwnerCommands(store: Store, src: Source, cursors: Record<string, string>): Promise<number> {

@@ -1,7 +1,15 @@
 import type { Person } from './types.ts'
 import { MARK } from './render.ts'
 
-export type Attachment = { name: string; type: string; url?: string }
+export type Attachment = { name: string; type: string; url?: string; driveId?: string; itemId?: string }
+export function documentKeys(ref: { url?: string; driveId?: string; itemId?: string }): string[] {
+	const keys: string[] = []
+	if (ref.url) { try { keys.push(`url:${new URL(ref.url.replace(/&amp;/g, '&')).href}`) } catch { /* An invalid attachment URL cannot establish provenance. */ } }
+	if (ref.driveId && ref.itemId) keys.push(`ids:${JSON.stringify([ref.driveId, ref.itemId])}`)
+	return keys
+}
+export const messageDocuments = (m: { text: string; attachments?: Attachment[] }) =>
+	[...(m.attachments ?? []), ...[...m.text.matchAll(/\[attachment:[^\n]*?\s(https?:\/\/[^\s\]]+)\]/g)].map(x => ({ url: x[1] }))]
 export type RawMsg = { id: string; at: string; editedAt?: string; from: Person | null; html: boolean; body: string; deleted?: boolean; attachments?: Attachment[]; replyToId?: string }
 export const replyTarget = (raw: RawMsg): string | undefined => raw.replyToId || (raw.html ?
 	/<blockquote[^>]*itemtype="http:\/\/schema\.skype\.com\/Reply"[^>]*itemid="([^"]+)"/i.exec(raw.body)?.[1] ??
@@ -90,7 +98,7 @@ export function classify(m: RawMsg, c: Ctx): Classified {
 	if (c.sentIds.has(m.id)) return { kind: 'skip', why: 'sent by us' }
 	if (!m.from) return { kind: 'skip', why: 'system message' }
 	// Attachments, images, and cards reach the worker as data lines it can open or name as a gap (R-ING-11).
-	const att = (m.attachments ?? []).map(a => `[attachment: ${a.name || 'unnamed'} (${a.type})${a.url ? ` ${a.url}` : ''}]`)
+	const att = (m.attachments ?? []).map(a => `[attachment: ${a.name || 'unnamed'} (${a.type})${a.driveId && a.itemId ? ` driveId=${JSON.stringify(a.driveId)} itemId=${JSON.stringify(a.itemId)}` : ''}${a.url ? ` ${a.url}` : ''}]`)
 	let text = [m.html ? htmlToText(m.body.replace(/<attachment[^>]*><\/attachment>/gi, '')) : m.body.trim(), ...att].filter(Boolean).join('\n')
 	if (!text) return { kind: 'skip', why: 'empty' }
 	if (text.startsWith(MARK) || DISCLOSURE.test(text)) return { kind: 'skip', why: 'assistant marker' }

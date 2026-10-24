@@ -1,4 +1,5 @@
 import type { Section } from './whose.ts'
+import type { Attachment } from './intake.ts'
 export type Id = string
 export type Code = string
 // open: the reply is out and the work it started goes on; nothing needs the owner now (dev-spec/work.md).
@@ -26,7 +27,7 @@ export type Rule = {
 	style?: string
 }
 
-export type Msg = { id: string; at: string; editedAt?: string; contentKey?: string; from: Person; text: string; byOwner: boolean; ownerReply?: { askId: string; answered?: boolean; text?: string } }
+export type Msg = { id: string; at: string; editedAt?: string; contentKey?: string; from: Person; text: string; byOwner: boolean; attachments?: Attachment[]; ownerReply?: { askId: string; answered?: boolean; text?: string } }
 
 // stale: set by the runner when a card citation does not resolve or has expired; it then counts as no card (R-ANS-02).
 // label: the sensitivity label of a file or page the draft quotes, such as Confidential (R-SEC-08).

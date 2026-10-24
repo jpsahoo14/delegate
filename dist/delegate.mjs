@@ -21863,6 +21863,292 @@ var init_ids = __esm({
   }
 });
 
+// src/core/render.ts
+function age(fromIso, now) {
+  const m = Math.max(0, Math.round((now.getTime() - Date.parse(fromIso)) / 6e4));
+  if (m < 60) return `${m}m`;
+  if (m < 60 * 48) return `${Math.round(m / 60)}h`;
+  return `${Math.round(m / 1440)}d`;
+}
+function statusLine(wf, now = /* @__PURE__ */ new Date()) {
+  if (wf.state === "done") {
+    const left = wf.sent?.undoUntil ? Math.round((Date.parse(wf.sent.undoUntil) - now.getTime()) / 6e4) : 0;
+    return (wf.status || "Done") + (left > 0 ? ` \xB7 undo for ${left} min: "undo ${wf.code}"` : "");
+  }
+  if (wf.state === "open") return `${wf.status}. Nothing needs you now`;
+  if (wf.openOn) return `Open in a window on ${wf.openOn}. I won't touch it until you close the window`;
+  if (wf.state === "running") return "Running: drafting a reply";
+  if (wf.state === "waiting_on_task") return `${wf.status} (${Math.max(0, Math.round((now.getTime() - Date.parse(wf.waitingSince ?? wf.updatedAt)) / 6e4))} min)`;
+  if (wf.state === "scheduled") return wf.status.startsWith("Held") ? wf.status : `Sending at ${hhmm2(wf.sendAt)} unless you act (${wf.decision?.reason ?? "rule"})`;
+  if (wf.draft?.preview) return `Preview: reply "ok ${wf.code}" to send`;
+  if (wf.job && !wf.question) return `Ready: ${wf.status}`;
+  if (wf.decision?.ruleId && !wf.question) return `Not sent automatically (${wf.decision.reason}). Reply "ok ${wf.code}" to send`;
+  if (!wf.question) return wf.decision ? { high: "Ready \xB7 based on your notes and a live source", medium: "Ready \xB7 based on your notes", low: "Draft \xB7 little evidence, check it" }[wf.decision.confidence] : "Draft ready";
+  return `Needs you: ${wf.question}`;
+}
+function renderItem(wf, mode, now, bold = true) {
+  const code = bold ? `**${wf.code}**` : wf.code;
+  const who2 = wf.asker?.name ?? "Someone";
+  const head = `${code} \xB7 ${who2} \xB7 ${wf.chat.name} \xB7 ${age(wf.createdAt, now)}`;
+  const fresh = wf.newCount > 0 ? ` \xB7 ${wf.newCount} new message${wf.newCount > 1 ? "s" : ""}` : "";
+  if (mode === "line") return `${head} \xB7 ${clip(oneLine(statusLine(wf, now)), 110)}`;
+  const lines = [head + fresh];
+  if (wf.lastAsk) lines.push(`> ${clip(oneLine(wf.lastAsk), 140)}`);
+  lines.push(statusLine(wf, now));
+  lines.push(...cardLines(wf));
+  const left = pendingEffects(wf.effects);
+  if (wf.state === "needs_human" && left.length) lines.push(okWill(wf), ...left.map((e) => `- ${clip(oneLine(changeSays(e)), 140)}`));
+  return lines.join("\n");
+}
+function cardLines(wf) {
+  const out = [];
+  if (wf.meeting) out.push(`Meeting: ${wf.meeting.subject} \xB7 ${new Date(wf.meeting.start).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" })} \xB7 ${wf.meeting.minutes} min`);
+  for (const f of wf.context ?? []) out.push(`${f.tone === "warn" ? "\u26A0 " : ""}${f.text}`);
+  const real = wf.draft?.text && !/^_{3,}\.?$/.test(wf.draft.text.trim());
+  if (wf.choices && !wf.draft?.preview) {
+    out.push(...wf.choices.options.map((o, i) => `${i + 1}. ${o.label}${o.note ? ` (${o.note})` : ""}`));
+    out.push(`Reply "${wf.code}: 1"${wf.choices.multi ? `, or several: "${wf.code}: 1, 3"` : ""}${wf.choices.other ? `, or "${wf.code}: your own answer"` : ""}.`);
+  } else if (real) out.push(`Draft: "${clip(wf.draft.text.split("\n").slice(0, 2).join(" "), 220)}"`);
+  return out;
+}
+function effectLine(effects) {
+  const groups2 = /* @__PURE__ */ new Map();
+  for (const e of effects) {
+    const m = meaningOf(e), k = `${shown(e).line}${m ? ` (${m})` : ""}`;
+    groups2.set(k, (groups2.get(k) ?? 0) + 1);
+  }
+  return [...groups2].map(([k, n]) => n > 1 ? `${n}\xD7 ${k}` : k).join(", ");
+}
+function groups(wfs, since2) {
+  const needs = wfs.filter((w) => w.state === "needs_human").sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const watching = wfs.filter((w) => w.kind === "tracker" && w.state === "waiting_on_task");
+  const running2 = wfs.filter((w) => w.kind !== "tracker" && (w.state === "running" || w.state === "waiting_on_task" || w.state === "scheduled"));
+  const done2 = [...wfs.filter((w) => w.state === "done" && w.code && (!since2 || w.updatedAt > since2) && w.intent !== "none"), ...watching.filter((w) => w.changedAt && (!since2 || w.changedAt > since2) && (!w.ackAt || w.changedAt > w.ackAt))];
+  return { needs, watching, running: running2, done: done2 };
+}
+function renderList(wfs, now, since2, health = {}, extra = {}) {
+  const kp = (extra.proposals ?? []).filter((p) => p.state === "needs_human").sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const bg = extra.background ?? [];
+  const { needs, watching, running: running2, done: done2 } = groups(wfs, since2);
+  const head = [`${needs.length} need you`, `${done2.length} done`, `${running2.length + bg.length} running`, ...kp.length ? [`${kp.length} to learn`] : []].join(" \xB7 ");
+  const out = [head];
+  const problems = Object.values(health);
+  if (problems.length) out.push("", "### Health", ...problems.map((p) => `- ${p.text} (since ${age(p.since, now)} ago)`));
+  if (needs.length) out.push("", "### Needs you", ...needs.map((w) => renderItem(w, "full", now) + "\n"));
+  if (done2.length) out.push("", "### Done while you were away", ...done2.map((w) => w.kind === "tracker" ? `- Update \xB7 **${w.code}** \xB7 ${w.lastAsk?.replace(/^Watch /, "").replace(/ until .*$/, "") ?? ""}: ${clip(oneLine(w.status), 110)}` : `- ${renderItem(w, "line", now)}`));
+  if (kp.length) out.push(
+    "",
+    "### Knowledge to review",
+    ...kp.slice(0, 5).map((p) => `- **${p.code}** \xB7 ${p.title} \xB7 ${p.status}`),
+    ...kp.length > 5 ? [`- and ${kp.length - 5} more`] : [],
+    kp.length > 1 && kp.length <= 20 ? `Say "review knowledge" to go through them one by one, or "ok ${kp[0].code}-${kp.at(-1).code}" to save all.` : `Reply "ok ${kp[0].code}", "more ${kp[0].code}", or "skip ${kp[0].code}".`
+  );
+  const wait2 = extra.waiting ?? [];
+  if (wait2.length) out.push("", "### Waiting on others", ...wait2.map((w) => `- **${w.code}** \xB7 you asked ${w.to} ${age(w.at, now)} ago: "${clip(oneLine(w.text), 90)}"`), `Say "nudge ${wait2[0].code}" to draft a follow-up, or "skip ${wait2[0].code}".`);
+  const autos = extra.automations ?? [];
+  if (autos.length) out.push("", "### Automations", ...autos.map((a) => `- ${a.line} \xB7 ${a.state === "proposed" ? `say "ok ${a.code}" to start` : a.state === "paused" ? "paused" : `next ${new Date(a.next).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" })}`}`));
+  const progress2 = wfs.filter((w) => w.state === "open" && w.work);
+  if (progress2.length) out.push("", "### In progress", ...progress2.map((w) => `- **${w.code}** \xB7 ${clip(oneLine(w.work.goal), 80)} \xB7 ${w.status}`), `Say "more ${progress2[0].code}" for its steps, or "close ${progress2[0].code}: why" when it is finished.`);
+  if (watching.length) out.push("", "### Watching", ...watching.map((w) => `- **${w.code}** \xB7 ${w.lastAsk?.replace(/^Watch /, "") ?? ""} \xB7 ${w.status}`));
+  if (running2.length || bg.length) out.push("", "### Running", ...running2.map((w) => `- ${renderItem(w, "line", now)}`), ...bg.map((b) => `- ${b.what} (${Math.max(0, Math.round((now.getTime() - Date.parse(b.since)) / 6e4))} min)`));
+  if (!needs.length && !done2.length && !running2.length && !kp.length && !bg.length && !progress2.length) out.push("", "Nothing needs you.");
+  return out.join("\n");
+}
+function renderNudge(needs, undoable = [], now = /* @__PURE__ */ new Date(), kp = []) {
+  const lines = needs.slice(0, 6).map((w) => `${w.code} ${w.asker?.name ?? "Someone"}: ${clip(oneLine(w.lastAsk ?? w.status), 70)}${cardLines(w).slice(0, 4).map((l) => `
+   ${clip(oneLine(l), 100)}`).join("")}${okWill(w) ? `
+   ${okWill(w)}` : ""}`);
+  const more = needs.length > 6 ? [`and ${needs.length - 6} more`] : [];
+  const eg = needs[0] ? `"ok ${needs[0].code}"` : '"ok A1"';
+  const sent = undoable.map((w) => `Sent ${w.code} to ${w.asker?.name ?? "them"} by rule: "${clip(oneLine(w.draft?.text ?? ""), 90)}". Undo for ${Math.max(1, Math.round((Date.parse(w.sent.undoUntil) - now.getTime()) / 6e4))} more min: reply "undo ${w.code}".`);
+  const head = needs.length ? `${MARK} ${needs.length} need you` : undoable.length ? `${MARK} ${undoable.length} sent for you` : `${MARK} ${kp.length} topic${kp.length > 1 ? "s" : ""} to learn`;
+  const learn = kp.length ? `${kp.length} topic${kp.length > 1 ? "s" : ""} to learn (${kp.slice(0, 4).map((p) => p.title).join(", ")}${kp.length > 4 ? ", \u2026" : ""}): "more ${kp[0].code}" or "ok ${kp[0].code}${kp.length > 1 ? `-${kp.at(-1).code}` : ""}".` : "";
+  return [head, ...lines, ...more, ...sent, needs.length && learn ? learn : "", needs.length ? `Reply here, for example ${eg}, or ask in your AI chat.` : !undoable.length ? learn : ""].filter(Boolean).join("\n");
+}
+function okWill(wf) {
+  const left = pendingEffects(wf.effects);
+  return left.length ? `ok will: ${effectLine(left)}${wf.draft?.text ? ", then send the reply" : ""}` : "";
+}
+function renderPhone(wfs, kp = [], health = {}, since2) {
+  const { needs, watching, running: running2, done: done2 } = groups(wfs, since2);
+  const line2 = (w) => {
+    const left = pendingEffects(w.effects);
+    const what = w.choices && !w.draft?.preview ? `pick one: ${w.choices.options.map((o, i) => `${i + 1} ${clip(o.label, 24)}`).join(" \xB7 ")}` : w.question ? `needs your answer: ${clip(oneLine(w.question), 60)}` : left.length ? `${effectLine(left)}, then reply` : `reply ready: "${clip(oneLine(w.draft?.text ?? ""), 50)}"`;
+    return `${w.code} ${w.asker?.name ?? "Someone"} \xB7 ${what}`;
+  };
+  const problems = Object.values(health).map((p) => `\u26A0 ${p.text}`);
+  const open2 = kp.filter((p) => p.state === "needs_human");
+  const learn = open2.length ? `${open2.length} topic${open2.length > 1 ? "s" : ""} to learn: "review knowledge"` : "";
+  const also = [running2.length && `${running2.length} running`, watching.length && `${watching.length} watching`, done2.length && `${done2.length} done since you last looked`].filter(Boolean).join(" \xB7 ");
+  const more = also ? `Also: ${also}. Say "more <code>" for any item.` : "";
+  if (!needs.length) return [`${MARK} Nothing needs you.`, ...problems, learn, more].filter(Boolean).join("\n");
+  const eg = needs.find((w) => !w.question) ?? needs[0];
+  return [`${MARK} ${needs.length} need${needs.length > 1 ? "" : "s"} you`, ...problems, ...needs.slice(0, 6).map(line2), ...needs.length > 6 ? [`and ${needs.length - 6} more`] : [], learn, more, `Say "ok ${eg.code}", "more ${needs[0].code}", or "later ${needs[0].code}".`].filter(Boolean).join("\n");
+}
+function renderPreview(wf) {
+  return [`${MARK} ${wf.code} \u2192 "${wf.draft?.text ?? ""}"`, okWill(wf), `Reply "ok ${wf.code}" to send, or "edit ${wf.code}: ..." to change it.`].filter(Boolean).join("\n");
+}
+function renderMore(wf, thread2, now) {
+  const t2 = thread2.slice(-10).map((m) => `- ${m.from.name}: ${clip(oneLine(m.text), 200)}`);
+  const src = (wf.draft?.sources ?? []).map((s3) => `- ${s3.ref} (${s3.tier}, ${s3.origin})`);
+  const changes = pendingEffects(wf.effects).map((e) => `- ${clip(oneLine(changeSays(e)), 400)}`);
+  const head = `${wf.code} \xB7 ${wf.asker?.name ?? "Someone"} \xB7 ${wf.chat.name}
+${statusLine(wf, now)}`;
+  const card2 = cardLines(wf);
+  const notes = (wf.notes ?? []).map((n) => `- ${clip(oneLine(n.q), 120)}: ${n.a ? clip(oneLine(n.a), 300) : "asking\u2026"}`);
+  const work2 = wf.work ? ["", `This work: ${wf.work.goal}. Done when ${wf.work.doneWhen}.`, ...(wf.work.plan ?? []).map((p) => `${p.done ? "[x]" : "[ ]"} ${p.what} (${p.who}${p.in ? `, ${p.in}` : ""}${p.probe ? `, build ${p.probe.build}${p.seen ? ` ${p.seen}` : ""}` : ""})`), ...wf.work.steps.slice(-8).map((x) => `- ${x.at.slice(5, 16).replace("T", " ")} ${clip(oneLine(x.what), 160)}`)] : [];
+  return [head, ...work2, "", ...card2.length ? card2 : ["Draft: none"], ...notes.length ? ["", "You asked:", ...notes] : [], ...changes.length ? ["", okWill(wf), ...changes] : [], "", "Sources:", ...src.length ? src : ["- none"], ...wf.looked?.length ? ["", "Looked up:", ...wf.looked.map((x) => `- ${lookLine(x)}`)] : [], "", "Thread:", ...t2].join("\n");
+}
+function plain(md3) {
+  return md3.replace(/\*\*/g, "").replace(/^### /gm, "");
+}
+var MARK, clip, oneLine, hhmm2, hitCount, lookLine;
+var init_render = __esm({
+  "src/core/render.ts"() {
+    "use strict";
+    init_effects();
+    MARK = "Assistant \xB7";
+    clip = (s3, n) => s3.length > n ? `${s3.slice(0, n - 1)}\u2026` : s3;
+    oneLine = (s3) => s3.replace(/\s+/g, " ").trim();
+    hhmm2 = (iso) => iso ? new Date(iso).toTimeString().slice(0, 5) : "";
+    hitCount = (n) => n === 1 ? "1 hit" : `${n} hits`;
+    lookLine = (x) => x.tool === "read" ? `Read ${x.q}${x.n ? "" : " (not found)"}` : `${x.tool === "knowledge" ? "Your knowledge" : "Teams"}: "${x.q}" (${hitCount(x.n)})`;
+  }
+});
+
+// src/core/intake.ts
+function documentKeys(ref) {
+  const keys2 = [];
+  if (ref.url) {
+    try {
+      keys2.push(`url:${new URL(ref.url.replace(/&amp;/g, "&")).href}`);
+    } catch {
+    }
+  }
+  if (ref.driveId && ref.itemId) keys2.push(`ids:${JSON.stringify([ref.driveId, ref.itemId])}`);
+  return keys2;
+}
+function inlineImages(html) {
+  return [...html.matchAll(/<img\b([^>]*)>/gi)].flatMap(([, attrs]) => {
+    const m = DATA_IMG.exec(attrs);
+    if (!m) return [];
+    const data = m[2].replace(/\s+/g, "");
+    return [{ key: keyOf(data), type: m[1].toLowerCase(), data }];
+  });
+}
+function htmlToText(html) {
+  return html.replace(/<a\b([^>]*)>([\s\S]*?)<\/a\s*>/gi, (_, attrs, inner) => {
+    const href = /\bhref\s*=\s*(?:"(https?:\/\/[^"]+)"|'(https?:\/\/[^']+)')/i.exec(attrs);
+    const url2 = href?.[1] ?? href?.[2];
+    if (!url2) return inner;
+    const plain4 = (s3) => s3.replace(/<[^>]*>/g, "").replace(/&amp;/gi, "&").replace(/&nbsp;/gi, " ").trim().replace(/\/+$/, "").toLowerCase();
+    const text3 = plain4(inner);
+    if (!text3) return url2;
+    return text3 === plain4(url2) || plain4(url2).endsWith(`//${text3}`) ? inner : `${inner} (${url2})`;
+  }).replace(/<br\s*\/?>/gi, "\n").replace(/<\/(p|div|li)>/gi, "\n").replace(/<img\b([^>]*)>/gi, (_, attrs) => {
+    const alt = /\balt="([^"]*)"/i.exec(attrs)?.[1], src = /\bsrc="(https:\/\/graph\.microsoft\.com\/[^"]+\/hostedContents\/[^"]+)"/i.exec(attrs)?.[1], data = DATA_IMG.exec(attrs);
+    const link2 = src ?? (data ? `inline:${keyOf(data[2].replace(/\s+/g, ""))}` : void 0);
+    return `[image${alt ? `: ${alt}` : ""}${link2 ? ` ${link2}` : " (it cannot be opened here)"}]`;
+  }).replace(/<!--[\s\S]*?-->|<![^>]*>|<\/?[A-Za-z][^>"']*(?:(?:"[^"]*"|'[^']*')[^>"']*)*>/g, "").replace(/&(?:#(?:[xX][\da-fA-F]+|\d+)|[A-Za-z]+);/g, (entity) => {
+    if (entity[1] !== "#") return ENT[entity] ?? entity;
+    const hex3 = entity[2].toLowerCase() === "x";
+    const point = Number.parseInt(entity.slice(hex3 ? 3 : 2, -1), hex3 ? 16 : 10);
+    return point <= 1114111 && !(point >= 55296 && point <= 57343) ? String.fromCodePoint(point) : entity;
+  }).replace(/\n{3,}/g, "\n\n").trim();
+}
+function cosmeticEdit(before, after) {
+  const a = contentKey(before).split(" ").filter(Boolean), b = contentKey(after).split(" ").filter(Boolean);
+  const small = (i, j, left) => {
+    while (i < a.length && j < b.length && a[i] === b[j]) {
+      i++;
+      j++;
+    }
+    if (i === a.length && j === b.length) return true;
+    if (!left || Math.abs(a.length - i - (b.length - j)) > left) return false;
+    const x = i < a.length && !MEANING_WORD.test(a[i]), y = j < b.length && !MEANING_WORD.test(b[j]);
+    return !!(x && y && small(i + 1, j + 1, left - 1) || x && small(i + 1, j, left - 1) || y && small(i, j + 1, left - 1));
+  };
+  return small(0, 0, 2);
+}
+function asSpeaker(text3, test) {
+  const as = test ? text3.match(AS) : null;
+  if (!as) return void 0;
+  const name = as[1].trim();
+  return { from: { id: `test:${name.toLowerCase()}`, name }, text: text3.slice(as[0].length) };
+}
+function classify(m, c) {
+  if (c.sentIds.has(m.id)) return { kind: "skip", why: "sent by us" };
+  if (!m.from) return { kind: "skip", why: "system message" };
+  const att = (m.attachments ?? []).map((a) => `[attachment: ${a.name || "unnamed"} (${a.type})${a.driveId && a.itemId ? ` driveId=${JSON.stringify(a.driveId)} itemId=${JSON.stringify(a.itemId)}` : ""}${a.url ? ` ${a.url}` : ""}]`);
+  let text3 = [m.html ? htmlToText(m.body.replace(/<attachment[^>]*><\/attachment>/gi, "")) : m.body.trim(), ...att].filter(Boolean).join("\n");
+  if (!text3) return { kind: "skip", why: "empty" };
+  if (text3.startsWith(MARK) || DISCLOSURE.test(text3)) return { kind: "skip", why: "assistant marker" };
+  let from = m.from;
+  if (from.id === c.ownerId) {
+    const as = asSpeaker(text3, !!c.test);
+    if (!as) return { kind: "owner", text: text3 };
+    from = as.from;
+    text3 = as.text;
+  }
+  if (!c.group) return { kind: "ask", from, text: text3 };
+  return { kind: mentionsOwner(m, text3, [c.ownerName.split(/\s+/)[0], ...c.aliases ?? []]) ? "ask" : "context", from, text: text3 };
+}
+function mentionsOwner(m, text3, names) {
+  return names.filter(Boolean).some((n) => m.html && new RegExp(`<at[^>]*>[^<]*\\b${escape2(n)}\\b`, "i").test(m.body) || new RegExp(`\\b${escape2(n)}\\b`, "i").test(text3));
+}
+function continuesOwner(t2, from, at3) {
+  const o = t2?.owner;
+  if (!o || Date.parse(at3) - Date.parse(o.at) > TURN_HOURS * 36e5) return false;
+  const first3 = from.name.split(/[\s,(]+/)[0];
+  return o.to.includes(from.id) || first3.length > 1 && new RegExp(`\\b${escape2(first3)}\\b`, "i").test(o.text);
+}
+function nextTurn(t2, by) {
+  if (by.owner) return { last: t2?.last, owner: { at: by.at, to: by.to ?? (t2?.last ? [t2.last.id] : []), text: by.text.slice(0, 600) } };
+  return { last: { id: by.from.id, at: by.at }, owner: continuesOwner(t2, by.from, by.at) ? t2.owner : void 0 };
+}
+var messageDocuments, replyTarget, ENT, DATA_IMG, keyOf, contentKey, MEANING_WORD, DISCLOSURE, AS, isPersona, TURN_HOURS, escape2;
+var init_intake = __esm({
+  "src/core/intake.ts"() {
+    "use strict";
+    init_render();
+    messageDocuments = (m) => [...m.attachments ?? [], ...[...m.text.matchAll(/\[attachment:[^\n]*?\s(https?:\/\/[^\s\]]+)\]/g)].map((x) => ({ url: x[1] }))];
+    replyTarget = (raw) => raw.replyToId || (raw.html ? /<blockquote[^>]*itemtype="http:\/\/schema\.skype\.com\/Reply"[^>]*itemid="([^"]+)"/i.exec(raw.body)?.[1] ?? /<blockquote[^>]*itemid="([^"]+)"[^>]*itemtype="http:\/\/schema\.skype\.com\/Reply"/i.exec(raw.body)?.[1] : void 0);
+    ENT = {
+      "&nbsp;": " ",
+      "&amp;": "&",
+      "&lt;": "<",
+      "&gt;": ">",
+      "&quot;": '"',
+      "&apos;": "'",
+      "&mdash;": "\u2014",
+      "&ndash;": "\u2013",
+      "&hellip;": "\u2026",
+      "&lsquo;": "\u2018",
+      "&rsquo;": "\u2019",
+      "&ldquo;": "\u201C",
+      "&rdquo;": "\u201D",
+      "&copy;": "\xA9",
+      "&reg;": "\xAE",
+      "&trade;": "\u2122",
+      "&bull;": "\u2022",
+      "&middot;": "\xB7"
+    };
+    DATA_IMG = /\bsrc="data:(image\/(?:png|jpe?g|gif|webp));base64,([A-Za-z0-9+/=\s]+)"/i;
+    keyOf = (data) => {
+      let h = 0xcbf29ce484222325n;
+      for (let i = 0; i < data.length; i++) h = BigInt.asUintN(64, (h ^ BigInt(data.charCodeAt(i))) * 0x100000001b3n);
+      return `${h.toString(16).padStart(16, "0")}${data.length.toString(16)}`;
+    };
+    contentKey = (text3) => htmlToText(text3.replace(/<img\b[^>]*>/gi, "").replace(/<at\b[^>]*>[\s\S]*?<\/at>/gi, "")).replace(/\[image[^\]\n]*\]|\[attachment:[^\]\n]*\]/gi, "").replace(/https?:\/\/[^\s<>)\]]+|inline:[\da-f]+|@[\p{L}\p{N}_]+/giu, "").normalize("NFKC").toLowerCase().replace(/[\u2018\u2019]/g, "'").replace(/[^\p{L}\p{N}']+/gu, " ").trim();
+    MEANING_WORD = /\d|^(?:not|no|never|don'?t|can'?t|cannot|won'?t|isn'?t|aren'?t|wasn'?t|weren'?t|shouldn'?t|wouldn'?t|couldn'?t|mustn'?t|without|monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|wed|thu|fri|sat|sun|january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec|today|tomorrow|yesterday)$/i;
+    DISCLOSURE = /\(sent by [^)]*assistant\)\s*$/i;
+    AS = /^\[as ([^\]]{1,60})\]\s*/i;
+    isPersona = (id) => id.startsWith("test:");
+    TURN_HOURS = 7 * 24;
+    escape2 = (s3) => s3.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+});
+
 // src/adapters/channels.ts
 function parseThread(id) {
   const [, teamId, channelId, rootId] = id.split("|");
@@ -22266,11 +22552,12 @@ function tryLock(path, token) {
     throw e;
   }
 }
-var localDay, portable, here2, LOCAL_DIR, experienceOf, Store, submissionRank, receiptLocks, busyReceiptLock, BUSY;
+var localDay, documentKey, portable, here2, LOCAL_DIR, experienceOf, Store, submissionRank, receiptLocks, busyReceiptLock, BUSY;
 var init_state = __esm({
   "src/store/state.ts"() {
     "use strict";
     init_ids();
+    init_intake();
     init_channels();
     init_fs();
     init_process();
@@ -22279,6 +22566,7 @@ var init_state = __esm({
     init_brand();
     init_secrets();
     localDay = (d = /* @__PURE__ */ new Date()) => d.toLocaleDateString("sv");
+    documentKey = (key) => createHash2("sha256").update(key).digest("hex");
     portable = (root, p) => {
       const r = relative(dirname5(root), p);
       return r && !r.startsWith("..") && !isAbsolute2(r) ? relative(root, p) : p;
@@ -22459,6 +22747,41 @@ var init_state = __esm({
       }
       saveThread(id, msgs) {
         this.w(this.p("state", "threads", `${id}.json`), msgs.slice(-40));
+        const refs = msgs.flatMap(messageDocuments).flatMap(documentKeys).map(documentKey);
+        if (!refs.length) return;
+        const chat2 = this.workflow(id)?.chat.id;
+        if (!chat2) return;
+        const shares = this.documentShares();
+        let changed = false;
+        for (const key of refs) if (!shares[key]?.includes(chat2)) {
+          shares[key] = [...shares[key] ?? [], chat2];
+          changed = true;
+        }
+        if (changed) this.w(this.p("state", "document-shares.json"), shares);
+      }
+      // Seed old attachment lines once, then maintain this index with thread writes. No whole-store scan per document or tick.
+      documentShares() {
+        const file4 = this.p("state", "document-shares.json");
+        if (existsSync6(file4)) return readJson(file4, {});
+        const shares = {};
+        for (const w of this.workflows()) for (const key of this.thread(w.id).flatMap(messageDocuments).flatMap(documentKeys).map(documentKey)) {
+          shares[key] = [.../* @__PURE__ */ new Set([...shares[key] ?? [], w.chat.id])];
+        }
+        this.w(file4, shares);
+        return shares;
+      }
+      documentChats(ref) {
+        const shares = this.documentShares();
+        return [...new Set(documentKeys(ref).map(documentKey).flatMap((k) => shares[k] ?? []))];
+      }
+      documentAlias(ref, url2) {
+        if (!url2) return;
+        const shares = this.documentShares(), chats = documentKeys({ url: url2 }).map(documentKey).flatMap((k) => shares[k] ?? []);
+        if (!chats.length) return;
+        const keys2 = documentKeys(ref).map(documentKey);
+        if (keys2.every((key) => chats.every((chat2) => shares[key]?.includes(chat2)))) return;
+        for (const key of keys2) shares[key] = [.../* @__PURE__ */ new Set([...shares[key] ?? [], ...chats])];
+        this.w(this.p("state", "document-shares.json"), shares);
       }
       threadCache() {
         return readJson(this.p("state", "threads.json"), emptyThreadCache());
@@ -40301,6 +40624,7 @@ function blockerOf(b) {
   return b.kind === "access" && new Set(b.tried).size < 2 ? { ...b, kind: "tool" } : b;
 }
 function planRetry(prev, raw, now = Date.now()) {
+  if (raw && /^couldn't open .+: (?:no access|too large to open|too much content to open|not a Word, PowerPoint or Excel file)/i.test(raw.why)) return { stop: `Blocked: ${raw.why}` };
   const b = blockerOf(raw);
   const tried = [.../* @__PURE__ */ new Set([...prev?.tried ?? [], ...b.tried])];
   const said2 = `${b.why}${tried.length ? `. Tried: ${tried.join("; ")}` : ""}`;
@@ -40360,159 +40684,6 @@ var init_owner_send = __esm({
     init_page_approval();
     reviewDigest = (wf, messages) => pageDigest([wf.draft, wf.effects?.map((e) => [pageChangeId(e), e.summary, e.off, e.maybe]), messages]);
     reasonMessages = (reason) => reason.kind === "no-reply-needed" ? [] : [{ id: reason.msgId, text: reason.text, at: reason.at }];
-  }
-});
-
-// src/core/render.ts
-function age(fromIso, now) {
-  const m = Math.max(0, Math.round((now.getTime() - Date.parse(fromIso)) / 6e4));
-  if (m < 60) return `${m}m`;
-  if (m < 60 * 48) return `${Math.round(m / 60)}h`;
-  return `${Math.round(m / 1440)}d`;
-}
-function statusLine(wf, now = /* @__PURE__ */ new Date()) {
-  if (wf.state === "done") {
-    const left = wf.sent?.undoUntil ? Math.round((Date.parse(wf.sent.undoUntil) - now.getTime()) / 6e4) : 0;
-    return (wf.status || "Done") + (left > 0 ? ` \xB7 undo for ${left} min: "undo ${wf.code}"` : "");
-  }
-  if (wf.state === "open") return `${wf.status}. Nothing needs you now`;
-  if (wf.openOn) return `Open in a window on ${wf.openOn}. I won't touch it until you close the window`;
-  if (wf.state === "running") return "Running: drafting a reply";
-  if (wf.state === "waiting_on_task") return `${wf.status} (${Math.max(0, Math.round((now.getTime() - Date.parse(wf.waitingSince ?? wf.updatedAt)) / 6e4))} min)`;
-  if (wf.state === "scheduled") return wf.status.startsWith("Held") ? wf.status : `Sending at ${hhmm2(wf.sendAt)} unless you act (${wf.decision?.reason ?? "rule"})`;
-  if (wf.draft?.preview) return `Preview: reply "ok ${wf.code}" to send`;
-  if (wf.job && !wf.question) return `Ready: ${wf.status}`;
-  if (wf.decision?.ruleId && !wf.question) return `Not sent automatically (${wf.decision.reason}). Reply "ok ${wf.code}" to send`;
-  if (!wf.question) return wf.decision ? { high: "Ready \xB7 based on your notes and a live source", medium: "Ready \xB7 based on your notes", low: "Draft \xB7 little evidence, check it" }[wf.decision.confidence] : "Draft ready";
-  return `Needs you: ${wf.question}`;
-}
-function renderItem(wf, mode, now, bold = true) {
-  const code = bold ? `**${wf.code}**` : wf.code;
-  const who2 = wf.asker?.name ?? "Someone";
-  const head = `${code} \xB7 ${who2} \xB7 ${wf.chat.name} \xB7 ${age(wf.createdAt, now)}`;
-  const fresh = wf.newCount > 0 ? ` \xB7 ${wf.newCount} new message${wf.newCount > 1 ? "s" : ""}` : "";
-  if (mode === "line") return `${head} \xB7 ${clip(oneLine(statusLine(wf, now)), 110)}`;
-  const lines = [head + fresh];
-  if (wf.lastAsk) lines.push(`> ${clip(oneLine(wf.lastAsk), 140)}`);
-  lines.push(statusLine(wf, now));
-  lines.push(...cardLines(wf));
-  const left = pendingEffects(wf.effects);
-  if (wf.state === "needs_human" && left.length) lines.push(okWill(wf), ...left.map((e) => `- ${clip(oneLine(changeSays(e)), 140)}`));
-  return lines.join("\n");
-}
-function cardLines(wf) {
-  const out = [];
-  if (wf.meeting) out.push(`Meeting: ${wf.meeting.subject} \xB7 ${new Date(wf.meeting.start).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" })} \xB7 ${wf.meeting.minutes} min`);
-  for (const f of wf.context ?? []) out.push(`${f.tone === "warn" ? "\u26A0 " : ""}${f.text}`);
-  const real = wf.draft?.text && !/^_{3,}\.?$/.test(wf.draft.text.trim());
-  if (wf.choices && !wf.draft?.preview) {
-    out.push(...wf.choices.options.map((o, i) => `${i + 1}. ${o.label}${o.note ? ` (${o.note})` : ""}`));
-    out.push(`Reply "${wf.code}: 1"${wf.choices.multi ? `, or several: "${wf.code}: 1, 3"` : ""}${wf.choices.other ? `, or "${wf.code}: your own answer"` : ""}.`);
-  } else if (real) out.push(`Draft: "${clip(wf.draft.text.split("\n").slice(0, 2).join(" "), 220)}"`);
-  return out;
-}
-function effectLine(effects) {
-  const groups2 = /* @__PURE__ */ new Map();
-  for (const e of effects) {
-    const m = meaningOf(e), k = `${shown(e).line}${m ? ` (${m})` : ""}`;
-    groups2.set(k, (groups2.get(k) ?? 0) + 1);
-  }
-  return [...groups2].map(([k, n]) => n > 1 ? `${n}\xD7 ${k}` : k).join(", ");
-}
-function groups(wfs, since2) {
-  const needs = wfs.filter((w) => w.state === "needs_human").sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-  const watching = wfs.filter((w) => w.kind === "tracker" && w.state === "waiting_on_task");
-  const running2 = wfs.filter((w) => w.kind !== "tracker" && (w.state === "running" || w.state === "waiting_on_task" || w.state === "scheduled"));
-  const done2 = [...wfs.filter((w) => w.state === "done" && w.code && (!since2 || w.updatedAt > since2) && w.intent !== "none"), ...watching.filter((w) => w.changedAt && (!since2 || w.changedAt > since2) && (!w.ackAt || w.changedAt > w.ackAt))];
-  return { needs, watching, running: running2, done: done2 };
-}
-function renderList(wfs, now, since2, health = {}, extra = {}) {
-  const kp = (extra.proposals ?? []).filter((p) => p.state === "needs_human").sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-  const bg = extra.background ?? [];
-  const { needs, watching, running: running2, done: done2 } = groups(wfs, since2);
-  const head = [`${needs.length} need you`, `${done2.length} done`, `${running2.length + bg.length} running`, ...kp.length ? [`${kp.length} to learn`] : []].join(" \xB7 ");
-  const out = [head];
-  const problems = Object.values(health);
-  if (problems.length) out.push("", "### Health", ...problems.map((p) => `- ${p.text} (since ${age(p.since, now)} ago)`));
-  if (needs.length) out.push("", "### Needs you", ...needs.map((w) => renderItem(w, "full", now) + "\n"));
-  if (done2.length) out.push("", "### Done while you were away", ...done2.map((w) => w.kind === "tracker" ? `- Update \xB7 **${w.code}** \xB7 ${w.lastAsk?.replace(/^Watch /, "").replace(/ until .*$/, "") ?? ""}: ${clip(oneLine(w.status), 110)}` : `- ${renderItem(w, "line", now)}`));
-  if (kp.length) out.push(
-    "",
-    "### Knowledge to review",
-    ...kp.slice(0, 5).map((p) => `- **${p.code}** \xB7 ${p.title} \xB7 ${p.status}`),
-    ...kp.length > 5 ? [`- and ${kp.length - 5} more`] : [],
-    kp.length > 1 && kp.length <= 20 ? `Say "review knowledge" to go through them one by one, or "ok ${kp[0].code}-${kp.at(-1).code}" to save all.` : `Reply "ok ${kp[0].code}", "more ${kp[0].code}", or "skip ${kp[0].code}".`
-  );
-  const wait2 = extra.waiting ?? [];
-  if (wait2.length) out.push("", "### Waiting on others", ...wait2.map((w) => `- **${w.code}** \xB7 you asked ${w.to} ${age(w.at, now)} ago: "${clip(oneLine(w.text), 90)}"`), `Say "nudge ${wait2[0].code}" to draft a follow-up, or "skip ${wait2[0].code}".`);
-  const autos = extra.automations ?? [];
-  if (autos.length) out.push("", "### Automations", ...autos.map((a) => `- ${a.line} \xB7 ${a.state === "proposed" ? `say "ok ${a.code}" to start` : a.state === "paused" ? "paused" : `next ${new Date(a.next).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" })}`}`));
-  const progress2 = wfs.filter((w) => w.state === "open" && w.work);
-  if (progress2.length) out.push("", "### In progress", ...progress2.map((w) => `- **${w.code}** \xB7 ${clip(oneLine(w.work.goal), 80)} \xB7 ${w.status}`), `Say "more ${progress2[0].code}" for its steps, or "close ${progress2[0].code}: why" when it is finished.`);
-  if (watching.length) out.push("", "### Watching", ...watching.map((w) => `- **${w.code}** \xB7 ${w.lastAsk?.replace(/^Watch /, "") ?? ""} \xB7 ${w.status}`));
-  if (running2.length || bg.length) out.push("", "### Running", ...running2.map((w) => `- ${renderItem(w, "line", now)}`), ...bg.map((b) => `- ${b.what} (${Math.max(0, Math.round((now.getTime() - Date.parse(b.since)) / 6e4))} min)`));
-  if (!needs.length && !done2.length && !running2.length && !kp.length && !bg.length && !progress2.length) out.push("", "Nothing needs you.");
-  return out.join("\n");
-}
-function renderNudge(needs, undoable = [], now = /* @__PURE__ */ new Date(), kp = []) {
-  const lines = needs.slice(0, 6).map((w) => `${w.code} ${w.asker?.name ?? "Someone"}: ${clip(oneLine(w.lastAsk ?? w.status), 70)}${cardLines(w).slice(0, 4).map((l) => `
-   ${clip(oneLine(l), 100)}`).join("")}${okWill(w) ? `
-   ${okWill(w)}` : ""}`);
-  const more = needs.length > 6 ? [`and ${needs.length - 6} more`] : [];
-  const eg = needs[0] ? `"ok ${needs[0].code}"` : '"ok A1"';
-  const sent = undoable.map((w) => `Sent ${w.code} to ${w.asker?.name ?? "them"} by rule: "${clip(oneLine(w.draft?.text ?? ""), 90)}". Undo for ${Math.max(1, Math.round((Date.parse(w.sent.undoUntil) - now.getTime()) / 6e4))} more min: reply "undo ${w.code}".`);
-  const head = needs.length ? `${MARK} ${needs.length} need you` : undoable.length ? `${MARK} ${undoable.length} sent for you` : `${MARK} ${kp.length} topic${kp.length > 1 ? "s" : ""} to learn`;
-  const learn = kp.length ? `${kp.length} topic${kp.length > 1 ? "s" : ""} to learn (${kp.slice(0, 4).map((p) => p.title).join(", ")}${kp.length > 4 ? ", \u2026" : ""}): "more ${kp[0].code}" or "ok ${kp[0].code}${kp.length > 1 ? `-${kp.at(-1).code}` : ""}".` : "";
-  return [head, ...lines, ...more, ...sent, needs.length && learn ? learn : "", needs.length ? `Reply here, for example ${eg}, or ask in your AI chat.` : !undoable.length ? learn : ""].filter(Boolean).join("\n");
-}
-function okWill(wf) {
-  const left = pendingEffects(wf.effects);
-  return left.length ? `ok will: ${effectLine(left)}${wf.draft?.text ? ", then send the reply" : ""}` : "";
-}
-function renderPhone(wfs, kp = [], health = {}, since2) {
-  const { needs, watching, running: running2, done: done2 } = groups(wfs, since2);
-  const line2 = (w) => {
-    const left = pendingEffects(w.effects);
-    const what = w.choices && !w.draft?.preview ? `pick one: ${w.choices.options.map((o, i) => `${i + 1} ${clip(o.label, 24)}`).join(" \xB7 ")}` : w.question ? `needs your answer: ${clip(oneLine(w.question), 60)}` : left.length ? `${effectLine(left)}, then reply` : `reply ready: "${clip(oneLine(w.draft?.text ?? ""), 50)}"`;
-    return `${w.code} ${w.asker?.name ?? "Someone"} \xB7 ${what}`;
-  };
-  const problems = Object.values(health).map((p) => `\u26A0 ${p.text}`);
-  const open2 = kp.filter((p) => p.state === "needs_human");
-  const learn = open2.length ? `${open2.length} topic${open2.length > 1 ? "s" : ""} to learn: "review knowledge"` : "";
-  const also = [running2.length && `${running2.length} running`, watching.length && `${watching.length} watching`, done2.length && `${done2.length} done since you last looked`].filter(Boolean).join(" \xB7 ");
-  const more = also ? `Also: ${also}. Say "more <code>" for any item.` : "";
-  if (!needs.length) return [`${MARK} Nothing needs you.`, ...problems, learn, more].filter(Boolean).join("\n");
-  const eg = needs.find((w) => !w.question) ?? needs[0];
-  return [`${MARK} ${needs.length} need${needs.length > 1 ? "" : "s"} you`, ...problems, ...needs.slice(0, 6).map(line2), ...needs.length > 6 ? [`and ${needs.length - 6} more`] : [], learn, more, `Say "ok ${eg.code}", "more ${needs[0].code}", or "later ${needs[0].code}".`].filter(Boolean).join("\n");
-}
-function renderPreview(wf) {
-  return [`${MARK} ${wf.code} \u2192 "${wf.draft?.text ?? ""}"`, okWill(wf), `Reply "ok ${wf.code}" to send, or "edit ${wf.code}: ..." to change it.`].filter(Boolean).join("\n");
-}
-function renderMore(wf, thread2, now) {
-  const t2 = thread2.slice(-10).map((m) => `- ${m.from.name}: ${clip(oneLine(m.text), 200)}`);
-  const src = (wf.draft?.sources ?? []).map((s3) => `- ${s3.ref} (${s3.tier}, ${s3.origin})`);
-  const changes = pendingEffects(wf.effects).map((e) => `- ${clip(oneLine(changeSays(e)), 400)}`);
-  const head = `${wf.code} \xB7 ${wf.asker?.name ?? "Someone"} \xB7 ${wf.chat.name}
-${statusLine(wf, now)}`;
-  const card2 = cardLines(wf);
-  const notes = (wf.notes ?? []).map((n) => `- ${clip(oneLine(n.q), 120)}: ${n.a ? clip(oneLine(n.a), 300) : "asking\u2026"}`);
-  const work2 = wf.work ? ["", `This work: ${wf.work.goal}. Done when ${wf.work.doneWhen}.`, ...(wf.work.plan ?? []).map((p) => `${p.done ? "[x]" : "[ ]"} ${p.what} (${p.who}${p.in ? `, ${p.in}` : ""}${p.probe ? `, build ${p.probe.build}${p.seen ? ` ${p.seen}` : ""}` : ""})`), ...wf.work.steps.slice(-8).map((x) => `- ${x.at.slice(5, 16).replace("T", " ")} ${clip(oneLine(x.what), 160)}`)] : [];
-  return [head, ...work2, "", ...card2.length ? card2 : ["Draft: none"], ...notes.length ? ["", "You asked:", ...notes] : [], ...changes.length ? ["", okWill(wf), ...changes] : [], "", "Sources:", ...src.length ? src : ["- none"], ...wf.looked?.length ? ["", "Looked up:", ...wf.looked.map((x) => `- ${lookLine(x)}`)] : [], "", "Thread:", ...t2].join("\n");
-}
-function plain(md3) {
-  return md3.replace(/\*\*/g, "").replace(/^### /gm, "");
-}
-var MARK, clip, oneLine, hhmm2, hitCount, lookLine;
-var init_render = __esm({
-  "src/core/render.ts"() {
-    "use strict";
-    init_effects();
-    MARK = "Assistant \xB7";
-    clip = (s3, n) => s3.length > n ? `${s3.slice(0, n - 1)}\u2026` : s3;
-    oneLine = (s3) => s3.replace(/\s+/g, " ").trim();
-    hhmm2 = (iso) => iso ? new Date(iso).toTimeString().slice(0, 5) : "";
-    hitCount = (n) => n === 1 ? "1 hit" : `${n} hits`;
-    lookLine = (x) => x.tool === "read" ? `Read ${x.q}${x.n ? "" : " (not found)"}` : `${x.tool === "knowledge" ? "Your knowledge" : "Teams"}: "${x.q}" (${hitCount(x.n)})`;
   }
 });
 
@@ -40819,127 +40990,6 @@ var init_gate = __esm({
       { id: "private-stays-draft", line: "A reply that uses a private source is always a draft.", not: ["execute", "bootstrap", "learn", "promise"] },
       { id: "no-unfilled-reply", line: "A reply contains no unfilled blanks, placeholders or gap markers. If a fact is missing, ask a question or set goalMet false with the blocker; never invent the fact or leave a blank for sending.", not: ["execute"] }
     ];
-  }
-});
-
-// src/core/intake.ts
-function inlineImages(html) {
-  return [...html.matchAll(/<img\b([^>]*)>/gi)].flatMap(([, attrs]) => {
-    const m = DATA_IMG.exec(attrs);
-    if (!m) return [];
-    const data = m[2].replace(/\s+/g, "");
-    return [{ key: keyOf(data), type: m[1].toLowerCase(), data }];
-  });
-}
-function htmlToText(html) {
-  return html.replace(/<a\b([^>]*)>([\s\S]*?)<\/a\s*>/gi, (_, attrs, inner) => {
-    const href = /\bhref\s*=\s*(?:"(https?:\/\/[^"]+)"|'(https?:\/\/[^']+)')/i.exec(attrs);
-    const url2 = href?.[1] ?? href?.[2];
-    if (!url2) return inner;
-    const plain4 = (s3) => s3.replace(/<[^>]*>/g, "").replace(/&amp;/gi, "&").replace(/&nbsp;/gi, " ").trim().replace(/\/+$/, "").toLowerCase();
-    const text3 = plain4(inner);
-    if (!text3) return url2;
-    return text3 === plain4(url2) || plain4(url2).endsWith(`//${text3}`) ? inner : `${inner} (${url2})`;
-  }).replace(/<br\s*\/?>/gi, "\n").replace(/<\/(p|div|li)>/gi, "\n").replace(/<img\b([^>]*)>/gi, (_, attrs) => {
-    const alt = /\balt="([^"]*)"/i.exec(attrs)?.[1], src = /\bsrc="(https:\/\/graph\.microsoft\.com\/[^"]+\/hostedContents\/[^"]+)"/i.exec(attrs)?.[1], data = DATA_IMG.exec(attrs);
-    const link2 = src ?? (data ? `inline:${keyOf(data[2].replace(/\s+/g, ""))}` : void 0);
-    return `[image${alt ? `: ${alt}` : ""}${link2 ? ` ${link2}` : " (it cannot be opened here)"}]`;
-  }).replace(/<!--[\s\S]*?-->|<![^>]*>|<\/?[A-Za-z][^>"']*(?:(?:"[^"]*"|'[^']*')[^>"']*)*>/g, "").replace(/&(?:#(?:[xX][\da-fA-F]+|\d+)|[A-Za-z]+);/g, (entity) => {
-    if (entity[1] !== "#") return ENT[entity] ?? entity;
-    const hex3 = entity[2].toLowerCase() === "x";
-    const point = Number.parseInt(entity.slice(hex3 ? 3 : 2, -1), hex3 ? 16 : 10);
-    return point <= 1114111 && !(point >= 55296 && point <= 57343) ? String.fromCodePoint(point) : entity;
-  }).replace(/\n{3,}/g, "\n\n").trim();
-}
-function cosmeticEdit(before, after) {
-  const a = contentKey(before).split(" ").filter(Boolean), b = contentKey(after).split(" ").filter(Boolean);
-  const small = (i, j, left) => {
-    while (i < a.length && j < b.length && a[i] === b[j]) {
-      i++;
-      j++;
-    }
-    if (i === a.length && j === b.length) return true;
-    if (!left || Math.abs(a.length - i - (b.length - j)) > left) return false;
-    const x = i < a.length && !MEANING_WORD.test(a[i]), y = j < b.length && !MEANING_WORD.test(b[j]);
-    return !!(x && y && small(i + 1, j + 1, left - 1) || x && small(i + 1, j, left - 1) || y && small(i, j + 1, left - 1));
-  };
-  return small(0, 0, 2);
-}
-function asSpeaker(text3, test) {
-  const as = test ? text3.match(AS) : null;
-  if (!as) return void 0;
-  const name = as[1].trim();
-  return { from: { id: `test:${name.toLowerCase()}`, name }, text: text3.slice(as[0].length) };
-}
-function classify(m, c) {
-  if (c.sentIds.has(m.id)) return { kind: "skip", why: "sent by us" };
-  if (!m.from) return { kind: "skip", why: "system message" };
-  const att = (m.attachments ?? []).map((a) => `[attachment: ${a.name || "unnamed"} (${a.type})${a.url ? ` ${a.url}` : ""}]`);
-  let text3 = [m.html ? htmlToText(m.body.replace(/<attachment[^>]*><\/attachment>/gi, "")) : m.body.trim(), ...att].filter(Boolean).join("\n");
-  if (!text3) return { kind: "skip", why: "empty" };
-  if (text3.startsWith(MARK) || DISCLOSURE.test(text3)) return { kind: "skip", why: "assistant marker" };
-  let from = m.from;
-  if (from.id === c.ownerId) {
-    const as = asSpeaker(text3, !!c.test);
-    if (!as) return { kind: "owner", text: text3 };
-    from = as.from;
-    text3 = as.text;
-  }
-  if (!c.group) return { kind: "ask", from, text: text3 };
-  return { kind: mentionsOwner(m, text3, [c.ownerName.split(/\s+/)[0], ...c.aliases ?? []]) ? "ask" : "context", from, text: text3 };
-}
-function mentionsOwner(m, text3, names) {
-  return names.filter(Boolean).some((n) => m.html && new RegExp(`<at[^>]*>[^<]*\\b${escape2(n)}\\b`, "i").test(m.body) || new RegExp(`\\b${escape2(n)}\\b`, "i").test(text3));
-}
-function continuesOwner(t2, from, at3) {
-  const o = t2?.owner;
-  if (!o || Date.parse(at3) - Date.parse(o.at) > TURN_HOURS * 36e5) return false;
-  const first3 = from.name.split(/[\s,(]+/)[0];
-  return o.to.includes(from.id) || first3.length > 1 && new RegExp(`\\b${escape2(first3)}\\b`, "i").test(o.text);
-}
-function nextTurn(t2, by) {
-  if (by.owner) return { last: t2?.last, owner: { at: by.at, to: by.to ?? (t2?.last ? [t2.last.id] : []), text: by.text.slice(0, 600) } };
-  return { last: { id: by.from.id, at: by.at }, owner: continuesOwner(t2, by.from, by.at) ? t2.owner : void 0 };
-}
-var replyTarget, ENT, DATA_IMG, keyOf, contentKey, MEANING_WORD, DISCLOSURE, AS, isPersona, TURN_HOURS, escape2;
-var init_intake = __esm({
-  "src/core/intake.ts"() {
-    "use strict";
-    init_render();
-    replyTarget = (raw) => raw.replyToId || (raw.html ? /<blockquote[^>]*itemtype="http:\/\/schema\.skype\.com\/Reply"[^>]*itemid="([^"]+)"/i.exec(raw.body)?.[1] ?? /<blockquote[^>]*itemid="([^"]+)"[^>]*itemtype="http:\/\/schema\.skype\.com\/Reply"/i.exec(raw.body)?.[1] : void 0);
-    ENT = {
-      "&nbsp;": " ",
-      "&amp;": "&",
-      "&lt;": "<",
-      "&gt;": ">",
-      "&quot;": '"',
-      "&apos;": "'",
-      "&mdash;": "\u2014",
-      "&ndash;": "\u2013",
-      "&hellip;": "\u2026",
-      "&lsquo;": "\u2018",
-      "&rsquo;": "\u2019",
-      "&ldquo;": "\u201C",
-      "&rdquo;": "\u201D",
-      "&copy;": "\xA9",
-      "&reg;": "\xAE",
-      "&trade;": "\u2122",
-      "&bull;": "\u2022",
-      "&middot;": "\xB7"
-    };
-    DATA_IMG = /\bsrc="data:(image\/(?:png|jpe?g|gif|webp));base64,([A-Za-z0-9+/=\s]+)"/i;
-    keyOf = (data) => {
-      let h = 0xcbf29ce484222325n;
-      for (let i = 0; i < data.length; i++) h = BigInt.asUintN(64, (h ^ BigInt(data.charCodeAt(i))) * 0x100000001b3n);
-      return `${h.toString(16).padStart(16, "0")}${data.length.toString(16)}`;
-    };
-    contentKey = (text3) => htmlToText(text3.replace(/<img\b[^>]*>/gi, "").replace(/<at\b[^>]*>[\s\S]*?<\/at>/gi, "")).replace(/\[image[^\]\n]*\]|\[attachment:[^\]\n]*\]/gi, "").replace(/https?:\/\/[^\s<>)\]]+|inline:[\da-f]+|@[\p{L}\p{N}_]+/giu, "").normalize("NFKC").toLowerCase().replace(/[\u2018\u2019]/g, "'").replace(/[^\p{L}\p{N}']+/gu, " ").trim();
-    MEANING_WORD = /\d|^(?:not|no|never|don'?t|can'?t|cannot|won'?t|isn'?t|aren'?t|wasn'?t|weren'?t|shouldn'?t|wouldn'?t|couldn'?t|mustn'?t|without|monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|wed|thu|fri|sat|sun|january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec|today|tomorrow|yesterday)$/i;
-    DISCLOSURE = /\(sent by [^)]*assistant\)\s*$/i;
-    AS = /^\[as ([^\]]{1,60})\]\s*/i;
-    isPersona = (id) => id.startsWith("test:");
-    TURN_HOURS = 7 * 24;
-    escape2 = (s3) => s3.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }
 });
 
@@ -41992,7 +42042,7 @@ function resultText(d) {
   if (Array.isArray(c)) return c.map((x) => typeof x === "string" ? x : typeof x?.text === "string" ? x.text : "").join("\n");
   return void 0;
 }
-function readsOf(slice, k, knowledgeDirs, read3 = readSaved) {
+function readsOf(slice, k, knowledgeDirs, read3 = readSaved, documentChats = () => []) {
   const events = slice.split("\n").filter((l) => l.trim()).flatMap((l) => {
     try {
       return [JSON.parse(l)];
@@ -42002,6 +42052,7 @@ function readsOf(slice, k, knowledgeDirs, read3 = readSaved) {
   });
   if (!events.length) return { chats: [], searches: [], unknown: true, calls: [{ tool: "", from: "none", chats: 0, unknown: "empty log" }], knowledge: 0 };
   const starts = /* @__PURE__ */ new Map(), done2 = /* @__PURE__ */ new Set(), chats = /* @__PURE__ */ new Set(), searches = [], calls = [];
+  const documentAliases = /* @__PURE__ */ new Map();
   let knowledge2 = 0;
   const underKnowledge = (s3) => knowledgeDirs.some((d) => s3.toLowerCase().includes(d.replace(/\\/g, "/").toLowerCase()) || s3.toLowerCase().includes(d.toLowerCase().replace(/\\/g, "\\\\")) || s3.toLowerCase().includes(d.toLowerCase()));
   const cardsIn = (s3) => [...s3.matchAll(CARD)].map((m) => `${m[1]}/${m[2]}`);
@@ -42017,6 +42068,28 @@ function readsOf(slice, k, knowledgeDirs, read3 = readSaved) {
     const start = starts.get(String(d.toolCallId)) ?? {};
     const args2 = start.arguments ?? {}, argText = JSON.stringify(args2), name = String(start.mcpToolName ?? start.toolName ?? "");
     const q2 = QUERY_KEYS.map((key) => args2[key]).find((v) => typeof v === "string");
+    if (/(?:^|-)getFile(?:OrFolder)?MetadataByUrl$/.test(name) && d.success !== false) {
+      const url2 = [args2.fileOrFolderUrl, args2.fileUrl, args2.url].find((value) => typeof value === "string");
+      const shared = url2 ? documentChats({ url: url2 }) : [];
+      const shown2 = resultText(d), saved = shown2 && SAVED.exec(shown2)?.[1], full = saved ? read3(saved) : shown2;
+      if (shared.length && full) {
+        try {
+          const hit = JSON.parse(full.slice(full.indexOf("{"), full.lastIndexOf("}") + 1));
+          if (typeof hit.id === "string" && typeof hit.parentReference?.driveId === "string") {
+            for (const key of documentKeys({ driveId: hit.parentReference.driveId, itemId: hit.id })) documentAliases.set(key, [.../* @__PURE__ */ new Set([...documentAliases.get(key) ?? [], ...shared])]);
+          }
+        } catch {
+        }
+      }
+    }
+    if (docTool(start)) {
+      if (d.success === false) continue;
+      const ref = { ...typeof args2.url === "string" ? { url: args2.url } : {}, ...typeof args2.driveId === "string" ? { driveId: args2.driveId } : {}, ...typeof args2.itemId === "string" ? { itemId: args2.itemId } : {} };
+      const shared = [.../* @__PURE__ */ new Set([...documentChats(ref), ...documentKeys(ref).flatMap((key) => documentAliases.get(key) ?? [])])];
+      for (const c of shared) chats.add(c);
+      calls.push({ tool: name, from: shared.length ? "args" : "none", chats: shared.length, ...!shared.length ? { unknown: "unshared document" } : {} });
+      continue;
+    }
     if (chatTool(start)) {
       if (d.success === false) continue;
       const named2 = [...chatsIn(argText), ...typeof args2.chatId === "string" ? [args2.chatId] : [], ...typeof args2.teamId === "string" && typeof args2.channelId === "string" ? [args2.channelId] : []];
@@ -42047,18 +42120,21 @@ ${text3 ?? ""}`)) {
     }
     calls.push({ tool: String(s3.mcpToolName ?? s3.toolName ?? ""), from: "none", chats: 0, unknown: "unfinished" });
   }
+  for (const [id, s3] of starts) if (docTool(s3) && !done2.has(id)) calls.push({ tool: String(s3.mcpToolName ?? s3.toolName ?? ""), from: "none", chats: 0, unknown: "unfinished" });
   return { chats: [...chats], searches: searches.slice(-20), unknown: calls.some((c) => c.unknown), calls, knowledge: knowledge2 };
 }
-var CHAT_ID, LINK, CARD, SAVED, chatTool, QUERY_KEYS, chatsIn, readSaved;
+var CHAT_ID, LINK, CARD, SAVED, chatTool, docTool, QUERY_KEYS, chatsIn, readSaved;
 var init_provenance = __esm({
   "src/runner/provenance.ts"() {
     "use strict";
     init_channels();
+    init_intake();
     CHAT_ID = /19:[\w.\-=:]+@(?:thread\.(?:v2|tacv2|skype)|unq\.gbl\.spaces)/g;
     LINK = /https:\/\/teams\.microsoft\.com\/l\/message\/[^\s"'<>)\]\\]+|https:\/\/teams\.cloud\.microsoft\/l\/message\/[^\s"'<>)\]\\]+/g;
     CARD = /topics[\\/]+([^\\/\s"'`]+)[\\/]+(architecture|decisions|faq|status)\.md/g;
     SAVED = /Output too large[^\n]*?Saved to:\s*(\S+)/i;
     chatTool = (d) => /^teams$/i.test(String(d.mcpServerName ?? "")) || /^teams-/i.test(String(d.toolName ?? ""));
+    docTool = (d) => /^(?:delegate(?:_worker)?[-_])?doc_read$/.test(String(d.mcpToolName ?? d.toolName ?? ""));
     QUERY_KEYS = ["query", "queryString", "q", "searchText", "search", "message", "pattern"];
     chatsIn = (text3) => {
       const plain4 = text3.replace(/%3a/gi, ":").replace(/%40/gi, "@").replace(/\\u003a/gi, ":").replace(/\\u0040/gi, "@");
@@ -42141,8 +42217,8 @@ function scheduleOf(i, now = /* @__PURE__ */ new Date()) {
   return { every: i.every, at: first3, ...rest2.length ? { times: rest2 } : {}, ...i.every === "week" ? { day: i.day ?? 1 } : {} };
 }
 function propose(store2, i) {
-  const texts2 = (i.texts?.length ? i.texts : [i.text ?? ""]).map((t2) => t2.trim()).filter(Boolean);
-  if (!texts2.length) return "What should the reminder say?";
+  const texts3 = (i.texts?.length ? i.texts : [i.text ?? ""]).map((t2) => t2.trim()).filter(Boolean);
+  if (!texts3.length) return "What should the reminder say?";
   if (i.every === "hours" && !i.until && !i.maxSends) return "When should it stop? Say a date, or how many times.";
   if (i.until !== void 0 && (!/^\d{4}-\d{2}-\d{2}$/.test(i.until) || localDay3(/* @__PURE__ */ new Date(`${i.until}T12:00`)) !== i.until)) return `"${i.until}" is not a date. Use YYYY-MM-DD, such as 2026-11-30.`;
   const schedule = scheduleOf(i);
@@ -42153,7 +42229,7 @@ function propose(store2, i) {
   const to = i.chatId ? { chatId: i.chatId, name: i.to } : findChat(store2, i.to);
   if (typeof to === "string") return to;
   const now = (/* @__PURE__ */ new Date()).toISOString();
-  const a = { schema: 1, id: ulid3(), code: store2.nextCode("R"), kind: "remind", to, text: texts2[0], ...texts2.length > 1 ? { texts: texts2, rotation: i.rotation ?? "cycle" } : {}, schedule, until: i.until, maxSends: i.maxSends, stopOnReply: i.stopOnReply ?? true, state: "proposed", count: 0, createdAt: now, updatedAt: now };
+  const a = { schema: 1, id: ulid3(), code: store2.nextCode("R"), kind: "remind", to, text: texts3[0], ...texts3.length > 1 ? { texts: texts3, rotation: i.rotation ?? "cycle" } : {}, schedule, until: i.until, maxSends: i.maxSends, stopOnReply: i.stopOnReply ?? true, state: "proposed", count: 0, createdAt: now, updatedAt: now };
   store2.saveAutomation(a);
   return `${describe3(a)}. It goes out with your assistant's marker. Say "ok ${a.code}" to start it.`;
 }
@@ -43028,7 +43104,7 @@ ${res.summary ?? ""}`));
 }
 function runReads(store2, cfg, session, logStart) {
   if (cfg.agent.flavor !== "copilot") return { chats: [], searches: [], unknown: false, calls: [], knowledge: 0 };
-  return readsOf(sessionLog(cfg.agent.flavor, session).slice(logStart), knowledgeOf(store2, cfg), readDirs(store2, cfg));
+  return readsOf(sessionLog(cfg.agent.flavor, session).slice(logStart), knowledgeOf(store2, cfg), readDirs(store2, cfg), void 0, (ref) => store2.documentChats(ref));
 }
 function workerMcp(store2, targetId, runId, interactive = false) {
   const cwd = join15(LOCAL_DIR, "sessions");
@@ -43439,7 +43515,7 @@ var init_dispatch = __esm({
     };
     readDirs = (store2, cfg) => [.../* @__PURE__ */ new Set([...(cfg.knowledge ?? []).map((f) => here2(store2.root, f)), cfg.cards?.root ?? join15(store2.root, "knowledge"), ...cfg.cards?.team ? [cfg.cards.team] : []])].filter((d) => existsSync15(d));
     WORKER_SERVER = "delegate_worker";
-    WORKER_TOOLS = ["submit_report", "image_read"].map((t2) => `${WORKER_SERVER}-${t2}`);
+    WORKER_TOOLS = ["submit_report", "image_read", "doc_read"].map((t2) => `${WORKER_SERVER}-${t2}`);
     lessonFits = (cfg, chat2, here3) => {
       const l = levelOf(cfg, chat2);
       return !l || l === "private" && chat2 === here3;
@@ -44791,7 +44867,7 @@ var init_intake2 = __esm({
     init_probe();
     init_same_ask();
     isControl = (v) => CONTROL_VERBS.includes(v);
-    toMsg = (r, from, text3, byOwner) => ({ id: r.id, at: r.at, editedAt: r.editedAt, contentKey: contentKey(text3), from, text: text3, byOwner });
+    toMsg = (r, from, text3, byOwner) => ({ id: r.id, at: r.at, editedAt: r.editedAt, contentKey: contentKey(text3), from, text: text3, byOwner, ...r.attachments?.length ? { attachments: r.attachments } : {} });
     COMMIT = /\b(I(?:'|’)ll|I will|I(?:'|’)d be|I would be|I can take|I(?:'|’)m on it|let me (?:check|take|look|handle|test|try|do))\b/i;
     closedBy = (store2, chatId, senderId) => store2.workflows().filter((w) => w.state === "done" && !w.redacted && w.chat.id === chatId && w.asker?.id === senderId).sort((a, b) => a.updatedAt.localeCompare(b.updatedAt));
     MISSED = /^missed\s+(https?:\/\/\S+)\s*(?::\s*([\s\S]*))?$/i;
@@ -46188,8 +46264,8 @@ function prOf(store2, w) {
 function prRefFor(store2, w, target2) {
   const job = w.job ? store2.job(w.job) : void 0;
   const sources = [...w.draft?.sources ?? [], ...job?.result?.reply?.sources ?? []].map((s3) => s3.ref);
-  const texts2 = [w.lastAsk, job?.goal, ...job?.asks ?? [], ...w.work?.links ?? [], ...store2.thread(w.id).map((m) => m.text), ...sources];
-  for (const t2 of texts2) for (const m of (t2 ?? "").matchAll(new RegExp(PR_LINK.source, "gi"))) if (Number(m[3]) === target2) return { project: decodeURIComponent(m[1]), repo: decodeURIComponent(m[2]), id: target2, remote: remoteOf(m[0]), url: m[0] };
+  const texts3 = [w.lastAsk, job?.goal, ...job?.asks ?? [], ...w.work?.links ?? [], ...store2.thread(w.id).map((m) => m.text), ...sources];
+  for (const t2 of texts3) for (const m of (t2 ?? "").matchAll(new RegExp(PR_LINK.source, "gi"))) if (Number(m[3]) === target2) return { project: decodeURIComponent(m[1]), repo: decodeURIComponent(m[2]), id: target2, remote: remoteOf(m[0]), url: m[0] };
   const c = (w.effects ?? []).find((e) => isVote(e.call) && prIdOf(e.call) === target2)?.call;
   return c?.args.project && c.args.repositoryId ? { project: String(c.args.project), repo: String(c.args.repositoryId), id: target2 } : void 0;
 }
@@ -49183,7 +49259,7 @@ var init_knowledge = __esm({
         const touched = [...new Set(p.ops.map((o) => o.card))];
         for (const card2 of touched) if (this.cardHash(p.topic, card2) !== (p.base[card2] ?? "")) throw new StaleCard(`${p.topic}/${card2} changed since ${p.code} was proposed`);
         const out = { ids: [], lines: [], prev: [] };
-        const texts2 = /* @__PURE__ */ new Map();
+        const texts3 = /* @__PURE__ */ new Map();
         for (const card2 of touched) {
           const path = this.path(p.topic, card2);
           let text3 = existsSync19(path) ? readFileSync17(path, "utf8") : newCard(p.topic, p.title, card2, "team");
@@ -49202,9 +49278,9 @@ var init_knowledge = __esm({
             out.lines[i] = o.op === "retire" ? "" : line2;
             out.prev[i] = old && formatLine(old);
           }
-          texts2.set(card2, text3);
+          texts3.set(card2, text3);
         }
-        for (const [card2, text3] of texts2) writeText(this.path(p.topic, card2), text3, this.machine);
+        for (const [card2, text3] of texts3) writeText(this.path(p.topic, card2), text3, this.machine);
         this.writeIndex();
         return out;
       }
@@ -49977,45 +50053,178 @@ var init_demo = __esm({
 });
 
 // src/adapters/docs.ts
-import { inflateRawSync } from "node:zlib";
+import { crc32, inflateRawSync } from "node:zlib";
+import { posix as posix2 } from "node:path";
 function unzip(buf) {
   const out = /* @__PURE__ */ new Map();
   let end = buf.length - 22;
-  while (end >= 0 && buf.readUInt32LE(end) !== 101010256) end--;
-  if (end < 0) throw new Error("Not a zip file");
-  let at3 = buf.readUInt32LE(end + 16);
-  for (let i = buf.readUInt16LE(end + 10); i > 0; i--) {
-    const method = buf.readUInt16LE(at3 + 10), size = buf.readUInt32LE(at3 + 20), n = buf.readUInt16LE(at3 + 28);
-    const name = buf.toString("utf8", at3 + 46, at3 + 46 + n), local2 = buf.readUInt32LE(at3 + 42);
+  while (end >= Math.max(0, buf.length - 65557) && buf.readUInt32LE(end) !== 101010256) end--;
+  if (end < 0 || buf.readUInt32LE(end) !== 101010256) throw new Error("Not an Office file");
+  let at3 = buf.readUInt32LE(end + 16), expanded = 0;
+  const count = buf.readUInt16LE(end + 10);
+  if (count > 1e4) throw new Error("Too much content to open");
+  for (let i = 0; i < count; i++) {
+    if (at3 + 46 > end || buf.readUInt32LE(at3) !== 33639248) throw new Error("Incomplete Office file");
+    const flags2 = buf.readUInt16LE(at3 + 8), method = buf.readUInt16LE(at3 + 10), size = buf.readUInt32LE(at3 + 20);
+    const length = buf.readUInt32LE(at3 + 24), n = buf.readUInt16LE(at3 + 28), local2 = buf.readUInt32LE(at3 + 42);
+    if (flags2 & 1 || ![0, 8].includes(method) || local2 + 30 > buf.length || buf.readUInt32LE(local2) !== 67324752) throw new Error("Unsupported Office file");
+    const next2 = at3 + 46 + n + buf.readUInt16LE(at3 + 30) + buf.readUInt16LE(at3 + 32);
+    if (next2 > end) throw new Error("Incomplete Office file");
+    const name = buf.toString("utf8", at3 + 46, at3 + 46 + n);
     const start = local2 + 30 + buf.readUInt16LE(local2 + 26) + buf.readUInt16LE(local2 + 28);
-    const data = buf.subarray(start, start + size);
-    out.set(name, method === 8 ? inflateRawSync(data) : data);
-    at3 += 46 + n + buf.readUInt16LE(at3 + 30) + buf.readUInt16LE(at3 + 32);
+    if (start + size > buf.length || expanded + length > EXPANDED_LIMIT) throw new Error("Too much content to open");
+    const data = method === 8 ? inflateRawSync(buf.subarray(start, start + size), { maxOutputLength: Math.max(1, EXPANDED_LIMIT - expanded) }) : buf.subarray(start, start + size);
+    if (data.length !== length || expanded + data.length > EXPANDED_LIMIT || crc32(data) !== buf.readUInt32LE(at3 + 16)) throw new Error("Incomplete Office file");
+    expanded += data.length;
+    out.set(name, data);
+    at3 = next2;
   }
   return out;
 }
-function docxText(buf) {
-  const xml2 = unzip(buf).get("word/document.xml")?.toString("utf8");
-  if (!xml2) throw new Error("No document text in this file");
-  return xml2.replace(/<w:tab\/>/g, "	").replace(/<\/w:p>/g, "\n").replace(/<[^>]+>/g, "").replace(/&(amp|lt|gt|quot|apos);/g, (_, e) => ENT2[e]).replace(/\n{3,}/g, "\n\n").trim();
+function officeText(files2) {
+  let text3 = "";
+  const headings = [];
+  const append = (s3, heading) => {
+    if (!s3) return;
+    if (heading) headings.push({ at: text3.length, text: heading });
+    text3 += `${s3}
+`;
+  };
+  const word = files2.get("word/document.xml")?.toString("utf8");
+  if (word !== void 0) {
+    for (const p of word.matchAll(/<w:p\b[^>]*(?<!\/)>[\s\S]*?<\/w:p>/g)) {
+      const s3 = wordText(p[0]);
+      append(s3, /<w:pStyle\b[^>]*w:val=["'](?:Heading\d*|Title)["']/i.test(p[0]) || /<w:outlineLvl\b/.test(p[0]) ? s3 : void 0);
+    }
+  } else if (files2.has("ppt/presentation.xml")) {
+    const rels = files2.get("ppt/_rels/presentation.xml.rels")?.toString("utf8") ?? "";
+    const targets = new Map([...rels.matchAll(/<Relationship\b[^>]*>/g)].map((m) => [attr(m[0], "Id"), attr(m[0], "Target")]));
+    const presentation = files2.get("ppt/presentation.xml").toString("utf8");
+    let slide = 0;
+    for (const m of presentation.matchAll(/<p:sldId\b[^>]*>/g)) {
+      const target2 = targets.get(attr(m[0], "r:id"));
+      const xml2 = target2 && files2.get(partName("ppt", target2))?.toString("utf8");
+      if (!xml2) throw new Error("Incomplete slide text");
+      append(`Slide ${++slide}`, `Slide ${slide}`);
+      for (const p of xml2.matchAll(/<a:p\b[^>]*(?<!\/)>[\s\S]*?<\/a:p>/g)) append(texts2(p[0], "a:t"));
+    }
+  } else if (files2.has("xl/workbook.xml")) {
+    const strings2 = [...(files2.get("xl/sharedStrings.xml")?.toString("utf8") ?? "").matchAll(/<si\b[^>]*?(?:\/>|>([\s\S]*?)<\/si>)/g)].map((m) => texts2(m[1] ?? "", "t"));
+    const rels = files2.get("xl/_rels/workbook.xml.rels")?.toString("utf8") ?? "";
+    const targets = new Map([...rels.matchAll(/<Relationship\b[^>]*>/g)].map((m) => [attr(m[0], "Id"), attr(m[0], "Target")]));
+    for (const m of files2.get("xl/workbook.xml").toString("utf8").matchAll(/<sheet\b[^>]*>/g)) {
+      const name = attr(m[0], "name"), target2 = targets.get(attr(m[0], "r:id"));
+      const xml2 = target2 && files2.get(partName("xl", target2))?.toString("utf8");
+      if (!xml2) throw new Error("Incomplete sheet text");
+      append(`Sheet: ${name}`, `Sheet: ${name}`);
+      let rows = 0;
+      for (const row of xml2.matchAll(/<row\b[^>]*(?<!\/)>[\s\S]*?<\/row>/g)) {
+        if (rows++ === 2e3) {
+          append("[Only the first 2,000 rows of this sheet are shown.]");
+          break;
+        }
+        const cells = [...row[0].matchAll(/<c\b[^>]*(?<!\/)>[\s\S]*?<\/c>/g)].map((c) => {
+          const value = texts2(c[0], "v"), type = attr(c[0].split(">")[0], "t");
+          if (type === "s" && (!/^\d+$/.test(value) || strings2[Number(value)] === void 0)) throw new Error("Incomplete sheet text");
+          return `${attr(c[0].split(">")[0], "r")}: ${type === "s" ? strings2[Number(value)] : type === "inlineStr" ? texts2(c[0], "t") : value}`;
+        });
+        append(cells.join("	"));
+      }
+    }
+  } else throw new Error("Not a Word, PowerPoint or Excel file");
+  return { text: text3.trimEnd(), headings };
 }
-var ENT2, SharePointDocs;
+function documentPages(doc) {
+  const outline = doc.headings.length ? doc.headings.map((h) => `- ${h.text}`).join("\n") : "- Document text";
+  const lead = `${doc.name}${doc.modified ? `; last changed ${doc.modified}` : ""}${doc.by ? ` by ${doc.by}` : ""}
+Outline:
+${outline.slice(0, 2200)}${outline.length > 2200 ? "\n[Outline shortened; headings remain in the text.]" : ""}
+`;
+  const pages = [];
+  let at3 = 0;
+  do {
+    const context2 = doc.headings.findLast((h) => h.at <= at3)?.text ?? "Document start";
+    const header = pages.length === 0 ? lead : `${doc.name}
+Heading: ${context2.slice(0, 400)}
+`;
+    const n = PAGE_LIMIT - header.length - 80;
+    if (n < 1) throw new Error("Document name is too long");
+    let end = Math.min(doc.text.length, at3 + n);
+    if (end < doc.text.length && /[\uD800-\uDBFF]/.test(doc.text[end - 1])) end--;
+    pages.push(`${header}page: ${pages.length + 1}; pages: COUNT
+
+${doc.text.slice(at3, end)}`);
+    at3 = end;
+  } while (at3 < doc.text.length);
+  return pages.map((text3) => text3.replace("pages: COUNT", `pages: ${pages.length}`));
+}
+var DOWNLOAD_LIMIT, PAGE_LIMIT, EXPANDED_LIMIT, ENT2, unescape2, attr, texts2, wordText, partName, tooLarge, SharePointDocs;
 var init_docs = __esm({
   "src/adapters/docs.ts"() {
     "use strict";
     init_mcp_client();
+    DOWNLOAD_LIMIT = 25 * 1024 * 1024;
+    PAGE_LIMIT = 3e4;
+    EXPANDED_LIMIT = 100 * 1024 * 1024;
     ENT2 = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" };
+    unescape2 = (s3) => s3.replace(/&(amp|lt|gt|quot|apos|#x[\da-f]+|#\d+);/gi, (all, e) => {
+      if (!e.startsWith("#")) return ENT2[e.toLowerCase()] ?? all;
+      const n = e[1].toLowerCase() === "x" ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10);
+      return n <= 1114111 && !(n >= 55296 && n <= 57343) ? String.fromCodePoint(n) : all;
+    });
+    attr = (xml2, name) => unescape2(new RegExp(`\\b${name}=(?:"([^"]*)"|'([^']*)')`).exec(xml2)?.slice(1).find((x) => x !== void 0) ?? "");
+    texts2 = (xml2, tag) => [...xml2.matchAll(new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)<\\/${tag}>`, "g"))].map((m) => unescape2(m[1])).join("");
+    wordText = (xml2) => unescape2(xml2.replace(/<w:tab\s*\/>/g, "	").replace(/<w:br\b[^>]*\/>/g, "\n").replace(/<[^>]+>/g, "")).trim();
+    partName = (folder, target2) => posix2.normalize(target2.startsWith("/") ? target2.slice(1) : `${folder}/${target2}`);
+    tooLarge = (size) => `too large to open (${Math.ceil(size / 1024 / 1024)} MB)`;
     SharePointDocs = class {
       mcp;
       constructor(command, mcp = new McpClient(command)) {
         this.mcp = mcp;
       }
-      async read(name) {
-        const found = await this.mcp.call("findFileOrFolder", { searchQuery: name.replace(/\.docx$/i, "") });
-        const hit = (found.value ?? []).filter((h) => /\.docx$/i.test(h.name)).sort((a, b) => (b.lastModifiedDateTime ?? "").localeCompare(a.lastModifiedDateTime ?? ""))[0];
-        if (!hit?.parentReference?.driveId) return `No Word document matches "${name}". Try the exact file name.`;
-        const [b64 = ""] = await this.mcp.texts("readSmallBinaryFile", { documentLibraryId: hit.parentReference.driveId, fileId: hit.id });
-        return { name: hit.name, modified: hit.lastModifiedDateTime ?? "", by: hit.lastModifiedBy?.user?.displayName ?? "", text: docxText(Buffer.from(b64.trim(), "base64")) };
+      async read(ref) {
+        let name = "this document";
+        try {
+          if (ref.url) {
+            const part = new URL(ref.url).pathname.split("/").at(-1) ?? "";
+            if (/\.(docx|pptx|xlsx|pdf)$/i.test(part)) name = decodeURIComponent(part);
+          }
+          const tools = (await this.mcp.listAll()).tools;
+          const names = ref.url ? ["getFileOrFolderMetadataByUrl", "getFileMetadataByUrl"] : ["getFileOrFolderMetadata", "getFileMetadata"];
+          const info = names.map((name2) => tools.find((t2) => t2.name === name2)).find((t2) => t2 !== void 0);
+          if (!info) return ref.url ? `Couldn't open ${name}: the document server cannot read its metadata` : "Couldn't open this document: the document server can't look it up by id";
+          const props = info.inputSchema?.properties ?? {};
+          const urlKey = ["fileOrFolderUrl", "fileUrl", "url"].find((key) => key in props) ?? "url";
+          const idKey = ["fileOrFolderId", "fileId"].find((key) => key in props) ?? "fileId";
+          const args2 = ref.url ? { [urlKey]: ref.url } : { documentLibraryId: ref.driveId, [idKey]: ref.itemId };
+          const hit = await this.mcp.call(info.name, args2);
+          name = hit.name ?? name;
+          if (typeof hit.size !== "number" || !Number.isFinite(hit.size) || hit.size < 0) return `Couldn't open ${name}: its download size could not be checked`;
+          if (hit.size > DOWNLOAD_LIMIT) return `Couldn't open ${name}: ${tooLarge(hit.size)}`;
+          if (!/\.(docx|pptx|xlsx)$/i.test(name)) return `Couldn't open ${name}: not a Word, PowerPoint or Excel file`;
+          const driveId = hit.parentReference?.driveId ?? ref.driveId, itemId = hit.id ?? ref.itemId;
+          if (!driveId || !itemId) return `Couldn't open ${name}: the document server did not identify the file`;
+          const parts2 = await this.mcp.texts("readSmallBinaryFile", { documentLibraryId: driveId, fileId: itemId });
+          let b64 = parts2.join("").trim();
+          if (b64.startsWith("{")) {
+            const value = JSON.parse(b64);
+            if (typeof value !== "object" || !value) throw new Error("No file bytes");
+            const data = value;
+            b64 = String(data.contentBytes ?? data.base64 ?? "");
+          }
+          if (b64.length > Math.ceil(DOWNLOAD_LIMIT / 3) * 4 + 1024) return `Couldn't open ${name}: too large to open (over 25 MB)`;
+          b64 = b64.replace(/\s/g, "");
+          if (!b64 || b64.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(b64)) throw new Error("No file bytes");
+          const bytes = Buffer.from(b64, "base64");
+          if (bytes.length > DOWNLOAD_LIMIT) return `Couldn't open ${name}: ${tooLarge(bytes.length)}`;
+          return { name, modified: hit.lastModifiedDateTime ?? "", by: hit.lastModifiedBy?.user?.displayName ?? "", ...officeText(unzip(bytes)), ref: { driveId, itemId }, url: hit.webUrl ?? ref.url, tool: info.name, size: bytes.length };
+        } catch (e) {
+          const why2 = String(e);
+          if (/\b40[13]\b|forbidden|access.?denied|unauthori[sz]ed/i.test(why2)) return `Couldn't open ${name}: no access`;
+          if (/Too much content|maxOutputLength|buffer larger/i.test(why2)) return `Couldn't open ${name}: too much content to open`;
+          if (/too large|\b413\b|exceeds? (?:the )?(?:maximum )?(?:binary |file )?size/i.test(why2)) return `Couldn't open ${name}: too large to open (document server limit)`;
+          return `Couldn't open ${name}: the document could not be downloaded or decoded`;
+        }
       }
       close() {
         return this.mcp.close();
@@ -50126,7 +50335,7 @@ function toRaw(m) {
     body: m.body?.content ?? "",
     deleted: !!m.deletedDateTime,
     replyToId,
-    attachments: (m.attachments ?? []).filter((a) => a.contentType !== "messageReference").map((a) => ({ name: a.name ?? "", type: a.contentType ?? "file", url: a.contentUrl ?? void 0 }))
+    attachments: (m.attachments ?? []).filter((a) => a.contentType !== "messageReference").map((a) => ({ name: a.name ?? "", type: a.contentType ?? "file", url: a.contentUrl ?? void 0, ...a.driveId && a.itemId ? { driveId: a.driveId, itemId: a.itemId } : {} }))
   };
 }
 function idOf(r) {
@@ -50345,6 +50554,7 @@ var init_registry = __esm({
     init_site();
     init_history();
     init_source_teams();
+    init_mcp_client();
     beside = (s3, server) => s3.command.at(-1) === "teams" ? [...s3.command.slice(0, -1), server] : void 0;
     docsCommand = (s3) => s3.docs ?? beside(s3, "sharepoint");
     ADAPTERS = {
@@ -50360,7 +50570,11 @@ var init_registry = __esm({
     kindOf2 = (s3) => s3.kind ?? (s3.command[0] === "demo" ? "demo" : "teams");
     sourceFor = (s3, owner2, root) => adapter(s3).source(s3, owner2, root);
     historyFor = (cfg) => adapter(cfg.source).history?.(cfg);
-    docsFor = (cfg) => adapter(cfg.source).docs?.(cfg);
+    docsFor = (cfg) => {
+      const spec = toolServers(cfg).sharepoint;
+      if (!cfg.source.docs && spec?.command) return new SharePointDocs([], clientFor({ ...spec, command: spec.command }, "sharepoint"));
+      return adapter(cfg.source).docs?.(cfg);
+    };
     imagesFor = (cfg) => adapter(cfg.source).images?.(cfg);
   }
 });
@@ -50431,6 +50645,36 @@ var init_locate = __esm({
 });
 
 // src/worker/tools.ts
+function documentReader(store2) {
+  let cached3;
+  return async (raw) => {
+    const p = DOCUMENT.safeParse(raw);
+    if (!p.success) return { text: "Use a document URL, or both driveId and itemId, and a positive page number. File names are not supported.", error: true };
+    const { page: page2 = 1, ...v } = p.data;
+    const ref = v.url ? { url: v.url } : { driveId: v.driveId, itemId: v.itemId };
+    const key = JSON.stringify(ref);
+    if (cached3?.key !== key) {
+      cached3 = { key, doc: (async () => {
+        const docs = docsFor(store2.config());
+        const doc2 = docs ? await docs.read(ref).finally(() => docs.close()) : "Couldn't open this document: no document server is configured";
+        if (typeof doc2 === "string") {
+          store2.log({ event: "document-read-failed", reason: doc2 });
+          return doc2;
+        }
+        const pages = documentPages(doc2);
+        store2.documentAlias(doc2.ref, v.url ?? doc2.url);
+        store2.log({ event: "document-read", tool: doc2.tool, size: doc2.size, pages: pages.length });
+        return { name: doc2.name, pages };
+      })() };
+    }
+    const doc = await cached3.doc;
+    if (typeof doc === "string") {
+      return { text: doc, error: true };
+    }
+    const text3 = doc.pages[page2 - 1];
+    return text3 === void 0 ? { text: `No such page. ${doc.name} has ${doc.pages.length} pages.`, error: true } : { text: text3 };
+  };
+}
 function reportTaker(store2, wfId, runId, interactive = false) {
   let submitted = false;
   return (raw) => {
@@ -50463,7 +50707,7 @@ async function readImage(store2, link2) {
     await m.close();
   }
 }
-var SUBMIT_DESCRIPTION, IMAGE_DESCRIPTION, IMAGE_LINK, REPORT2;
+var SUBMIT_DESCRIPTION, IMAGE_DESCRIPTION, IMAGE_LINK, DOCUMENT_DESCRIPTION, DOCUMENT_INPUT, DOCUMENT, REPORT2;
 var init_tools = __esm({
   "src/worker/tools.ts"() {
     "use strict";
@@ -50471,9 +50715,18 @@ var init_tools = __esm({
     init_zod();
     init_report();
     init_registry();
+    init_docs();
     SUBMIT_DESCRIPTION = "Submit your one report for this workflow. Call exactly once, then finish.";
     IMAGE_DESCRIPTION = "Look at an image pasted into a message. Pass the link from its [image ...] line. Use it whenever the ask may depend on what the image shows; never describe an image you did not open.";
     IMAGE_LINK = "The link from the [image ...] line: https://graph.microsoft.com/... or inline:<key>";
+    DOCUMENT_DESCRIPTION = "Read a Word, PowerPoint or Excel file by its sharing/web URL or both driveId and itemId. No name search. Fetches and decodes on the server; no binary reaches you. Page 1 starts with an outline and page count; request each page you need. Pages are at most 30,000 characters; downloads at most 25 MB. Use this instead of binary readers for Office files.";
+    DOCUMENT_INPUT = {
+      url: external_exports.string().url().regex(/^https?:\/\//i).optional().describe("The attachment sharing link or web URL"),
+      driveId: external_exports.string().min(1).optional(),
+      itemId: external_exports.string().min(1).optional(),
+      page: external_exports.number().int().min(1).optional()
+    };
+    DOCUMENT = external_exports.object(DOCUMENT_INPUT).strict().refine((v) => !!v.url && !v.driveId && !v.itemId || !v.url && !!v.driveId && !!v.itemId, { message: "Use a URL, or both driveId and itemId" });
     REPORT2 = external_exports.object(ReportSchema);
   }
 });
@@ -50558,10 +50811,12 @@ async function runHost() {
       registered.push(name);
     }
     const take = reportTaker(store2, input2.workflowId, input2.runId);
+    const readDocument = documentReader(store2);
     const out = (o) => o.image ? { textResultForLlm: o.text, binaryResultsForLlm: [{ data: o.image.data, mimeType: o.image.mimeType, type: "image" }], resultType: "success" } : o.error ? { textResultForLlm: o.text, resultType: "failure", error: o.text.slice(0, 300) } : o.text;
     const inProcess = {
       submit_report: () => sdk.defineTool(`${WORKER_SERVER2}-submit_report`, { description: SUBMIT_DESCRIPTION, parameters: REPORT_JSON, skipPermission: true, handler: async (args2) => out(take(args2)) }),
-      image_read: () => sdk.defineTool(`${WORKER_SERVER2}-image_read`, { description: IMAGE_DESCRIPTION, parameters: { type: "object", properties: { link: { type: "string", description: IMAGE_LINK } }, required: ["link"] }, skipPermission: true, handler: async (args2) => out(await readImage(store2, String(args2?.link ?? ""))) })
+      image_read: () => sdk.defineTool(`${WORKER_SERVER2}-image_read`, { description: IMAGE_DESCRIPTION, parameters: { type: "object", properties: { link: { type: "string", description: IMAGE_LINK } }, required: ["link"] }, skipPermission: true, handler: async (args2) => out(await readImage(store2, String(args2?.link ?? ""))) }),
+      doc_read: () => sdk.defineTool(`${WORKER_SERVER2}-doc_read`, { description: DOCUMENT_DESCRIPTION, parameters: external_exports.toJSONSchema(DOCUMENT), skipPermission: true, handler: async (args2) => out(await readDocument(args2)) })
     };
     const mine = names.filter((n) => n.startsWith(`${WORKER_SERVER2}-`)).map((n) => n.slice(WORKER_SERVER2.length + 1));
     for (const n of mine) if (inProcess[n]) tools.push(inProcess[n]());
@@ -53829,24 +54084,7 @@ function registerKnowledgeReads(server, get) {
     }
   });
   registerImageRead(server, get);
-  server.registerTool("doc_read", {
-    description: "Read a shared Word document in full, by its file name or title. Use it for a document review: one call returns the whole text.",
-    inputSchema: { name: external_exports.string().describe('The file name or title, such as "free-text-location-dev-spec-overview-v4.docx"') }
-  }, async ({ name }) => {
-    const d = docsFor(get().config());
-    if (!d) return text("This setup has no document source.");
-    try {
-      const r = await d.read(name);
-      trace([], name.split(/[\\/]/).pop().slice(0, 80), "read", typeof r === "string" ? 0 : 1);
-      return text(typeof r === "string" ? r : `${r.name}, last changed ${r.modified.slice(0, 10)} by ${r.by}.
-
-${r.text.slice(0, 8e4)}${r.text.length > 8e4 ? "\n\n(cut at 80,000 characters)" : ""}`);
-    } catch (e) {
-      return { ...text(`Could not read it: ${String(e).slice(0, 200)}`), isError: true };
-    } finally {
-      await d.close();
-    }
-  });
+  registerDocumentRead(server, get);
   const cite = (h) => `card:${h.topic}/${h.card}#${h.id}`;
   server.registerTool("knowledge_search", { description: "Search the owner's knowledge cards. Each hit has a citation to put in reply.sources, and source links you can open for more context.", inputSchema: { query: external_exports.string(), types: external_exports.array(external_exports.enum(["fact", "decision", "faq", "owner", "status", "open"])).optional() } }, async ({ query, types }) => {
     const cfg = get().config(), hits = k().search(query, { types }).filter((h) => !fromOffChat(cfg, h.src));
@@ -53873,6 +54111,7 @@ function registerImageRead(server, get) {
 }
 function registerWorker(server, store2) {
   registerImageRead(server, () => store2);
+  registerDocumentRead(server, () => store2);
   const wfId = process.env.DELEGATE_WORKFLOW, runId = process.env.DELEGATE_RUN;
   const take = reportTaker(store2, wfId, runId, !!process.env.DELEGATE_INTERACTIVE);
   server.registerTool("submit_report", { description: SUBMIT_DESCRIPTION, inputSchema: ReportSchema }, async (r) => {
@@ -53883,6 +54122,14 @@ function registerWorker(server, store2) {
     const probe = adoProbe(store2.config());
     const r = await makeChange(store2, wfId, runId, index, mcpCaller(store2.config()), probe).finally(() => probe?.close?.().catch(() => void 0));
     return r.error ? { ...text(r.error), isError: true } : text(`Made change ${index}: ${r.ref}`);
+  });
+}
+function registerDocumentRead(server, get) {
+  let read3;
+  server.registerTool("doc_read", { description: DOCUMENT_DESCRIPTION, inputSchema: DOCUMENT_INPUT, annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true } }, async (args2) => {
+    read3 ??= documentReader(get());
+    const o = await read3(args2);
+    return { ...text(o.text), ...o.error ? { isError: true } : {} };
   });
 }
 function registerOwner(server, get) {
@@ -56218,19 +56465,19 @@ function serveInbox(get, port = 0, token = randomBytes3(16).toString("hex"), pro
         return;
       }
       if (req.method === "POST" && u.pathname === "/api/v1/actions") {
-        let body = "", tooLarge = false;
+        let body = "", tooLarge2 = false;
         req.setEncoding("utf8");
         req.on("data", (chunk) => {
-          if (tooLarge) return;
+          if (tooLarge2) return;
           body += chunk;
           if (Buffer.byteLength(body) > 2e4) {
-            tooLarge = true;
+            tooLarge2 = true;
             body = "";
             json2(413, { text: "That action is too large." });
           }
         });
         req.on("end", async () => {
-          if (tooLarge) return;
+          if (tooLarge2) return;
           let raw;
           try {
             raw = JSON.parse(body);

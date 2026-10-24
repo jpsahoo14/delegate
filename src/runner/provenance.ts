@@ -8,9 +8,10 @@ import { existsSync, readFileSync } from 'node:fs'
 import { parseMessageLink } from '../adapters/channels.ts'
 import type { Knowledge } from '../knowledge/index.ts'
 import type { Look } from './sharing.ts'
+import { documentKeys } from '../core/intake.ts'
 
 // One Teams call: how its chats were known, or why they could not be.
-export type ReadCall = { tool: string; from: 'args' | 'result' | 'file' | 'none'; chats: number; unknown?: 'saved file gone' | 'no result' | 'unfinished' | 'empty log' }
+export type ReadCall = { tool: string; from: 'args' | 'result' | 'file' | 'none'; chats: number; unknown?: 'saved file gone' | 'no result' | 'unfinished' | 'empty log' | 'unshared document' }
 export type Reads = { chats: string[]; searches: Look[]; unknown: boolean; calls: ReadCall[]; knowledge: number }
 type Event = { type?: string; data?: Record<string, unknown> }
 
@@ -20,6 +21,7 @@ const CARD = /topics[\\/]+([^\\/\s"'`]+)[\\/]+(architecture|decisions|faq|status
 const SAVED = /Output too large[^\n]*?Saved to:\s*(\S+)/i
 // A Teams read tool: its server, or a name that reads chats, channels or messages. The source server is named "teams" by setup.
 const chatTool = (d: Record<string, unknown>) => /^teams$/i.test(String(d.mcpServerName ?? '')) || /^teams-/i.test(String(d.toolName ?? ''))
+const docTool = (d: Record<string, unknown>) => /^(?:delegate(?:_worker)?[-_])?doc_read$/.test(String(d.mcpToolName ?? d.toolName ?? ''))
 const QUERY_KEYS = ['query', 'queryString', 'q', 'searchText', 'search', 'message', 'pattern']
 
 // The text a result carries, whatever shape the CLI logged it in; undefined when there is none to read.
@@ -38,10 +40,11 @@ const chatsIn = (text: string) => {
 const readSaved = (path: string) => { try { return existsSync(path) ? readFileSync(path, 'utf8') : undefined } catch { return undefined } }
 
 // slice: the run's part of the session log (JSON lines). knowledgeDirs: the folders a card file path can be under.
-export function readsOf(slice: string, k: Knowledge, knowledgeDirs: string[], read = readSaved): Reads {
+export function readsOf(slice: string, k: Knowledge, knowledgeDirs: string[], read = readSaved, documentChats: (ref: { url?: string; driveId?: string; itemId?: string }) => string[] = () => []): Reads {
 	const events: Event[] = slice.split('\n').filter(l => l.trim()).flatMap(l => { try { return [JSON.parse(l) as Event] } catch { return [] } })
 	if (!events.length) return { chats: [], searches: [], unknown: true, calls: [{ tool: '', from: 'none', chats: 0, unknown: 'empty log' }], knowledge: 0 }
 	const starts = new Map<string, Record<string, unknown>>(), done = new Set<string>(), chats = new Set<string>(), searches: Look[] = [], calls: ReadCall[] = []
+	const documentAliases = new Map<string, string[]>()
 	let knowledge = 0
 	const underKnowledge = (s: string) => knowledgeDirs.some(d => s.toLowerCase().includes(d.replace(/\\/g, '/').toLowerCase()) || s.toLowerCase().includes(d.toLowerCase().replace(/\\/g, '\\\\')) || s.toLowerCase().includes(d.toLowerCase()))
 	const cardsIn = (s: string) => [...s.matchAll(CARD)].map(m => `${m[1]}/${m[2]}`)
@@ -54,6 +57,28 @@ export function readsOf(slice: string, k: Knowledge, knowledgeDirs: string[], re
 		const start = starts.get(String(d.toolCallId)) ?? {}
 		const args = (start.arguments ?? {}) as Record<string, unknown>, argText = JSON.stringify(args), name = String(start.mcpToolName ?? start.toolName ?? '')
 		const q = QUERY_KEYS.map(key => args[key]).find((v): v is string => typeof v === 'string')
+		// Native metadata can resolve a stored sharing URL to ids before doc_read is called by ids.
+		if (/(?:^|-)getFile(?:OrFolder)?MetadataByUrl$/.test(name) && d.success !== false) {
+			const url = [args.fileOrFolderUrl, args.fileUrl, args.url].find((value): value is string => typeof value === 'string')
+			const shared = url ? documentChats({ url }) : []
+			const shown = resultText(d), saved = shown && SAVED.exec(shown)?.[1], full = saved ? read(saved) : shown
+			if (shared.length && full) {
+				try {
+					const hit = JSON.parse(full.slice(full.indexOf('{'), full.lastIndexOf('}') + 1)) as { id?: string; parentReference?: { driveId?: string } }
+					if (typeof hit.id === 'string' && typeof hit.parentReference?.driveId === 'string') {
+						for (const key of documentKeys({ driveId: hit.parentReference.driveId, itemId: hit.id })) documentAliases.set(key, [...new Set([...(documentAliases.get(key) ?? []), ...shared])])
+					}
+				} catch { /* Unreadable metadata cannot establish a document's sharing chat. */ }
+			}
+		}
+		if (docTool(start)) {
+			if (d.success === false) continue
+			const ref = { ...(typeof args.url === 'string' ? { url: args.url } : {}), ...(typeof args.driveId === 'string' ? { driveId: args.driveId } : {}), ...(typeof args.itemId === 'string' ? { itemId: args.itemId } : {}) }
+			const shared = [...new Set([...documentChats(ref), ...documentKeys(ref).flatMap(key => documentAliases.get(key) ?? [])])]
+			for (const c of shared) chats.add(c)
+			calls.push({ tool: name, from: shared.length ? 'args' : 'none', chats: shared.length, ...(!shared.length ? { unknown: 'unshared document' as const } : {}) })
+			continue
+		}
 		if (chatTool(start)) {
 			if (d.success === false) continue
 			const named = [...chatsIn(argText), ...(typeof args.chatId === 'string' ? [args.chatId] : []), ...(typeof args.teamId === 'string' && typeof args.channelId === 'string' ? [args.channelId] : [])]
@@ -83,5 +108,6 @@ export function readsOf(slice: string, k: Knowledge, knowledgeDirs: string[], re
 		if (typeof args.chatId === 'string') { chats.add(args.chatId); continue }
 		calls.push({ tool: String(s.mcpToolName ?? s.toolName ?? ''), from: 'none', chats: 0, unknown: 'unfinished' })
 	}
+	for (const [id, s] of starts) if (docTool(s) && !done.has(id)) calls.push({ tool: String(s.mcpToolName ?? s.toolName ?? ''), from: 'none', chats: 0, unknown: 'unfinished' })
 	return { chats: [...chats], searches: searches.slice(-20), unknown: calls.some(c => c.unknown), calls, knowledge }
 }
