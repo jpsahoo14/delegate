@@ -1,9 +1,9 @@
 {
-	"version": "0.2.33",
+	"version": "0.2.34",
 	"files": {
-		".claude-plugin/plugin.json": "7b272c4bf86d37bb97ff03bd3d1c5a0744635c9219108ee0e39ba52e4ca3f59e",
+		".claude-plugin/plugin.json": "eaf43979c4b4d9e14bb1b86a06d66444ced90b7810cdc373bc0c7ccd3693d1b1",
 		".mcp.json": "777d2fb1bbc1dee696b6829465777cff3fbb526fd018cda0b9fc4bf06e595266",
-		"dist/delegate.mjs": "4005388cfddc79667645791dd99bce5cca05f014cd168a9c3e9706ecc60ee9dd",
+		"dist/delegate.mjs": "e1937c6685f480a3d77c789153ec60086edc8af7ea6c64e17f750e4aea6f5724",
 		"dist/mesh/extension.mjs": "72606e840b669f3316fa663ff0eedaddc44fb5be5fe5d51aa6d3e787f0565407",
 		"dist/mesh/inbox.mjs": "a0fe7454b2269fed108cbdff9fe5d77c88ce36b6f0c49d1b52dccd754424a432",
 		"dist/web-react/.vite/manifest.json": "33ac8e52e18807ad244207e31de341b3d626cfd0eff59f7b6873ce53e002b89f",

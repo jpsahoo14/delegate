@@ -11,6 +11,16 @@ Proof kinds:
 
 ## Engine crosscheck regressions
 
+Bug 10-24 #39 (manual script, not a unit test; committed resting-server regression:
+`node scripts/prove-host-tools.mjs`): on a fictional Temp root with isolated Copilot/local/config/cache/data and a stub
+model, delay two MCP servers by 25 s. A cold host must offer submit_report before any model request; a run ten virtual weekday
+minutes later must be warm. Keep a resting server's hyphenated tool in the requested list: log it missing, but stay warm without
+a strike. Remove a registered worker/owner/change tool: immediate spawn with no tool-less host prompt. Return "submit_report is
+unavailable" without a report: dispatch redrafts on spawn. A valid report, ordinary unavailable-docs prose and an ordinary model
+error must not retry. Two injected host faults open the breaker; the next request spawns without calling the host. Seed a failed
+host transcript and ordinary/spawn failures: upgrade only the eligible item, converge under replay, and read zero historical logs
+after the version marker. Confirm zero owner session additions and stop every proof process.
+
 | ID | Scenario | Proof |
 | --- | --- | --- |
 | SC-430 | A live owner approval withdraws a contradictory draft even when the vote was already seen or a legacy draft lacks a provenance stamp. PR workers, including re-reviews, receive live evidence before drafting; an old or newly observed approval cannot satisfy a fresh re-review. The common reply/job/scheduled send boundary checks approval claims in the reply as well as the original ask. Approval-sensitive wording must be a complete bounded positive/negative status or supported future promise, with no unchecked remainder; unknown/mixed wording redrafts conservatively, even after an executed vote. Status claims bind explicit PR numbers to their source; an outgoing claim cannot establish its own missing source identity. Other-PR future promises remain valid. Positive claims need approval; negative claims need a uniquely known non-approval, using only supported vote values. Neither an unchanged fingerprint, owner-written words, a second ok, a dropped vote nor any receipt exempts the claim from validation. A valid current owner vote wins over receipts. Only a successfully read completed PR with empty reviewers may use one successful, current-turn, fully scoped execution receipt for an unsent owed reply, with no known head conflict. Scope-less, stale, duplicate, failed, unknown and contrary receipts hold. Failed/unavailable/malformed/ambiguous reads never fall back to receipts; fresh evidence is cleared or marked unknown and historical facts are not current proof. Owed own-vote replies survive PR completion, and a multiple-PR follow-up never closes from only one vote. (R-HIL-21) | `engine crosscheck F1:`; `engine crosscheck safety:`; `engine review F1:`; `engine safety F1:`; `engine safety F4:`; `engine safety V1:`; `engine safety V2:` |

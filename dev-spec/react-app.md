@@ -55,6 +55,43 @@ Following `engineer-card-state-devspec.md`. Nothing uses these yet; step 3 wires
   - With the "newer draft beats an older failure" rule removed, G16 (A37) fails with exactly that regression, then passes again
     once the rule is back.
 
+## Verify the host's offered tools before a draft (#39)
+
+Before sending a prompt, initialize the session's tools and read actual SDK metadata. Require `delegate_worker-submit_report`,
+the requested worker tools (including a change run's process-backed `make_change`), and only owner proxies actually registered
+with `defineTool`. Resting, failed, stale-catalog and remote/CLI-only owner tools are not registration promises: log their absence
+without a host fault. `host-session-tools` records the offered count/names, all missing requested names and `missingRequired`.
+A missing required tool sends no prompt, logs `host-tools-missing`, and immediately runs the same item on spawn through #19b's
+existing breaker. A no-report answer explicitly naming an unavailable worker/extra tool also takes that path. Match full tool names,
+including hyphens, with bare aliases only for Delegate's worker tools. A saved or salvageable report prevents a duplicate run.
+The after-turn prose check considers only extra tools and Delegate's own worker tools, not owner tools. A no-report answer naming
+an intentionally resting owner server stays on the host, without a strike or cold fallback.
+
+Old data gets versioned upgrade `probeMark.hostToolsUpgrade: 1`: once, scan at most 14 days of worker logs and the corresponding
+failed-run transcript interval. Requeue only the latest host no-result failure whose answer explicitly names an unavailable tool,
+with no later sent reply or revised draft. Ordinary content/spawn failures stay untouched. `host-tools-requeued` keys the old
+workflow/run to prevent replay if the upgrade is interrupted. Completed upgrades never reread those historical logs.
+
+**Cause and limits.** Missing offered-tool verification and setup retry let an unavailable-tool answer become an owner-facing
+failure. Historical logs cannot prove actual SDK tool loss or a registration race. The persistent server list correctly excludes
+the in-process worker tools. The three cold starts investigated followed two app updates (the version is in the host hash) and a
+Saturday idle stop (20 minutes, not the weekday 540-minute setting). No per-run server restart was found; no warmth policy changed.
+Host start/replacement logs now include version/hash evidence.
+
+**Proof** (manual script, fictional Temp root, isolated Copilot/local/config/cache/data, real installed SDK/runtime and spawn CLI,
+stub model, two 25-second MCP servers). Cold initialization took 26.4 s and offered the report tool; ten virtual work-hours minutes
+later the same host replied in 1.4 s, warm, with both servers connected only once. A requested resting library server stayed
+optional: warm, no strike, absence logged. Removing registered report/owner/change tools fell back before a model request.
+An unavailable-report answer redrafted through real dispatch; a valid report and an ordinary model error did not retry.
+Two injected host faults opened #19b's breaker and the third request spawned without calling the host. Recovery requeued only
+eligible history, converged under replay and read no logs after its upgrade marker. No owner session directories were added;
+all proof host/MCP processes stopped. No unit tests or live-root writes.
+
+The committed focused regression is `node scripts/prove-host-tools.mjs`: it proves actual cold/warm report submission with a
+resting requested server, no strike, separate missing/required telemetry, full-name matching and cleanup on an isolated Temp root.
+The broader delayed-server/fallback/recovery script was also run for the measurements above; its injected breaker uses a fast
+stub spawn so the five-second backoff cannot expire while a real 25-second spawned server starts.
+
 ## Settings stays fast while an action waits for its saved result (#27 b, c, d)
 
 **The blocker, reproduced.** The test root was a fictional one in the OneDrive-synced folder with 400 items. A pending page action

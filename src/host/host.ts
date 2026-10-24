@@ -23,7 +23,7 @@ import { IMAGE_DESCRIPTION, IMAGE_LINK, readImage, REPORT, reportTaker, SUBMIT_D
 
 export type HostInfo = { pid: number; port: number; token: string; startedAt: string; cli: string; delegate: string; configHash: string }
 // hostFault: the run never reached the model through the host (#19b); the caller makes it on one process instead.
-export type HostResult = RunResult & { hostFault?: 'session' | 'no model turn'; warm?: boolean }
+export type HostResult = RunResult & { hostFault?: 'session' | 'no model turn' | 'tools'; warm?: boolean; requiredTools?: string[] }
 export type HostRun = { agent: Config['agent']; input: RunInput & { workflowId: string; runId: string } }
 export const hostFile = () => join(LOCAL_DIR, 'host.json')
 const WORKER_SERVER = 'delegate_worker'
@@ -88,6 +88,7 @@ export async function runHost(): Promise<void> {
 		// A proxy per owner tool the run may use, with the server's own schema; its only shared state is the warm connection. warm: every
 		// server it uses was connected before it began (#25), as the worker event reports.
 		const tools: unknown[] = []
+		const registered: string[] = []
 		let warm = true
 		for (const name of names) {
 			const server = serverOf(name), w = server ? warmOf(server) : undefined
@@ -100,6 +101,7 @@ export async function runHost(): Promise<void> {
 					try { const r = await w.client.callText(tool, args ?? {}); return r.error ? { textResultForLlm: r.text, resultType: 'failure', error: r.text.slice(0, 300) } : r.text }
 					catch (e) { return { textResultForLlm: `The ${server} tool server failed: ${String(e).slice(0, 300)}`, resultType: 'failure', error: String(e).slice(0, 300) } }
 				} }))
+			registered.push(name)
 		}
 		// Delegate's own worker tools run in-process, bound to this workflow and run (step 2): no worker server process per run.
 		const take = reportTaker(store, input.workflowId, input.runId)
@@ -110,6 +112,7 @@ export async function runHost(): Promise<void> {
 		}
 		const mine = names.filter(n => n.startsWith(`${WORKER_SERVER}-`)).map(n => n.slice(WORKER_SERVER.length + 1))
 		for (const n of mine) if (inProcess[n]) tools.push(inProcess[n]())
+		const requiredTools = [...new Set([`${WORKER_SERVER}-submit_report`, ...mine.map(n => `${WORKER_SERVER}-${n}`), ...registered])]
 		// Any other worker tool (a change run's make_change) still comes from the per-run worker server.
 		const own = mine.some(n => !inProcess[n]) ? (JSON.parse(readFileSync(input.mcpConfigPath, 'utf8')) as { mcpServers?: Record<string, Record<string, unknown>> }).mcpServers?.[WORKER_SERVER] : undefined
 		const dirs = [input.cwd, ...(input.dirs ?? [])]
@@ -120,23 +123,47 @@ export async function runHost(): Promise<void> {
 		const config = { model: agent.model ?? (provider ? process.env.COPILOT_PROVIDER_MODEL_ID : undefined), ...(provider ? { provider } : {}), tools, availableTools: names, workingDirectory: input.cwd, additionalDirectories: input.dirs ?? [],
 			...(own ? { mcpServers: { [WORKER_SERVER]: { type: 'local', command: own.command, args: own.args, env: { ...env(), ...(own.env as Record<string, string>) }, tools: ['*'] } } } : {}),
 			onPermissionRequest, enableConfigDiscovery: false, skipCustomInstructions: true, memory: { enabled: false } }
-		let session: { sendAndWait: (o: { prompt: string }, ms?: number) => Promise<{ data?: { content?: string } } | undefined>; disconnect: () => Promise<void> } | undefined
+		let session: {
+			sendAndWait: (o: { prompt: string }, ms?: number) => Promise<{ data?: { content?: string } } | undefined>
+			disconnect: () => Promise<void>
+			rpc: { tools: {
+				initializeAndValidate: () => Promise<unknown>
+				getCurrentMetadata: () => Promise<{ tools: { name: string; namespacedName?: string }[] | null }>
+			} }
+		} | undefined
 		// A host fault (#19b): the session could not be opened, or the prompt never reached a model turn. The run is then made on
 		// one process instead; a model or tool error after the turn started is the run's own failure, as on that path.
 		let opened = false
 		try {
 			session = existsSync(sessionFile(id)) ? await client.resumeSession(id, config) : await client.createSession({ sessionId: id, ...config })
 			opened = true
+			// Inspect the runtime's offered set, not the definitions we asked it to register. This also waits for session MCP tools.
+			const expected = requiredTools
+			try {
+				await session!.rpc.tools.initializeAndValidate()
+				const metadata = await session!.rpc.tools.getCurrentMetadata()
+				const offered = [...new Set((metadata.tools ?? []).flatMap(tool => [tool.name, ...(tool.namespacedName ? [tool.namespacedName] : [])]))].sort()
+				const missing = names.filter(name => name.includes('-') && !offered.includes(name)), missingRequired = expected.filter(name => !offered.includes(name))
+				store.log({ event: 'host-session-tools', sessionId: id, workflowId: input.workflowId, runId: input.runId, count: metadata.tools?.length ?? 0, tools: offered, missing, missingRequired })
+				if (missingRequired.length) {
+					store.log({ event: 'host-tools-missing', sessionId: id, workflowId: input.workflowId, runId: input.runId, missing: missingRequired })
+					return { exitCode: 1, ms: Date.now() - t, hostFault: 'tools', error: `The AI host did not offer required tools: ${missingRequired.join(', ')}` }
+				}
+			} catch (e) {
+				store.log({ event: 'host-session-tools', sessionId: id, workflowId: input.workflowId, runId: input.runId, count: 0, tools: [], missing: expected, missingRequired: expected, error: String(e).slice(0, 300) })
+				store.log({ event: 'host-tools-missing', sessionId: id, workflowId: input.workflowId, runId: input.runId, missing: expected, error: String(e).slice(0, 300) })
+				return { exitCode: 1, ms: Date.now() - t, hostFault: 'tools', error: `The AI host could not verify required tools: ${String(e).slice(0, 300)}` }
+			}
 			const r = await session!.sendAndWait({ prompt: input.prompt }, RUN_MS)
 			// The session log is complete once the session lets go of it.
 			await session!.disconnect().catch(() => undefined); session = undefined
 			const used = readRun('', t, process.env, sessionLog('copilot', id), Date.now()).use
-			return { exitCode: 0, ms: Date.now() - t, summary: r?.data?.content, used, warm }
+			return { exitCode: 0, ms: Date.now() - t, summary: r?.data?.content, used, warm, requiredTools }
 		} catch (e) {
 			await session?.disconnect().catch(() => undefined); session = undefined
 			const why = String(e).replace(/^Error: /, '').slice(0, 400)
 			const turned = opened && turnStarted(sessionLog('copilot', id), t)
-			return { exitCode: 1, ms: Date.now() - t, error: `The AI host could not finish the run: ${why}`, ...(turned ? {} : { hostFault: opened ? 'no model turn' : 'session' }) }
+			return { exitCode: 1, ms: Date.now() - t, error: `The AI host could not finish the run: ${why}`, requiredTools, ...(turned ? {} : { hostFault: opened ? 'no model turn' : 'session' }) }
 		} finally { await session?.disconnect().catch(() => undefined) }
 	}
 
@@ -213,7 +240,7 @@ export async function runHost(): Promise<void> {
 	await new Promise<void>(ok => server.listen(0, '127.0.0.1', () => ok()))
 	const info: HostInfo = { pid: process.pid, port: (server.address() as { port: number }).port, token, startedAt: new Date().toISOString(), cli: pkg.version, delegate: VERSION, configHash: hostHash(cfg, pkg.version) }
 	const tmp = `${hostFile()}.${process.pid}`; writeFileSync(tmp, JSON.stringify(info), { mode: 0o600 }); renameSync(tmp, hostFile())
-	store.log({ event: 'host-started', pid: process.pid, cli: pkg.version, startMs: Date.now() - t0, servers: [...warm.keys()] })
+	store.log({ event: 'host-started', pid: process.pid, cli: pkg.version, delegate: VERSION, configHash: info.configHash, startMs: Date.now() - t0, servers: [...warm.keys()], workerTools: ['submit_report', 'image_read'] })
 
 	let stopping = false
 	async function stop(why: string) {

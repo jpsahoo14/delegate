@@ -5,6 +5,15 @@ import { NAME } from '../brand.ts'
 export type AgentSetupFailure = { kind: 'quota' | 'model' | 'auth' | 'cli'; text: string; retryAt?: string }
 export type AgentHold = AgentSetupFailure & { config: string }
 
+// A missing run tool is setup trouble, not a question for the owner. Match a named tool, not an ordinary unavailable file.
+export function unavailableTools(text: string, tools: string[]): string[] {
+	const unavailable = "(?:unavailable|not (?:available|exposed|provided|registered|enabled)|(?:can(?:not|'t)|could(?: not|n't)) (?:access|use|call|find)|no access to)"
+	return [...new Set(tools)].filter(tool => {
+		const names = [...new Set([tool, tool.replace(/^delegate_worker-/, '')])].map(name => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+		return names.some(name => new RegExp(`(?<![\\w-])${name}(?![\\w-])[^\\n.!?]{0,80}\\b${unavailable}\\b|\\b${unavailable}\\b[^\\n.!?]{0,80}(?<![\\w-])${name}(?![\\w-])`, 'i').test(text))
+	})
+}
+
 export function activeAgentHold(hold: AgentHold | undefined, agent: Config['agent'], now = Date.now()): AgentHold | undefined {
 	return hold && hold.config === pageDigest(agent) && !(hold.retryAt && Date.parse(hold.retryAt) <= now) ? hold : undefined
 }

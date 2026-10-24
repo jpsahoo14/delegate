@@ -5,6 +5,7 @@ Scenario range reserved for this branch: SC-400 through SC-419.
 
 | Milestone | State | Evidence |
 | --- | --- | --- |
+| #39 host tool setup and recovery | Done in this fix commit; PE ok, no unit tests | dev-spec/react-app.md; docs/scenarios.md bug 10-24 #39; scripts/prove-host-tools.mjs and broader isolated real-runtime proof |
 | M1 architecture, schema, scaffold, version menu, served build | Done in this foundation commit; isolated installs verified | dev-spec/react-app.md; test/react-preview*.test.ts |
 | M2 typed data/actions, Now and open card | Done, rebased as fbda41f on c8815d3 | reviews/react-ui.md; dev-spec/react-app.md; test/react-app-browser.test.ts |
 | M3 Done, Numbers, Settings | Done, rebased as cfd6bf2 | pm-spec/react-app.md; test/react-app-browser.test.ts |

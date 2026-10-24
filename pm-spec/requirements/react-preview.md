@@ -1,5 +1,13 @@
 # React preview requirements
 
+Host draft setup (#39):
+- Never prompt a host session without its required registered worker/owner tools.
+- Missing optional catalog tools do not disable an otherwise healthy warm host.
+- A no-report answer explicitly naming an unavailable worker/extra tool retries immediately on spawn, not as an owner question.
+- Naming an unavailable owner tool alone causes neither a host strike nor a spawn retry.
+- Preserve valid reports and ordinary content failures; bound historical recovery with a versioned upgrade.
+- Keep the existing work-hours warmth policy and fault breaker; log actual offered tools and replacement reasons.
+
 R-REACT-01 through R-REACT-09 are defined in [the product spec](../react-app.md).
 
 M1 acceptance:

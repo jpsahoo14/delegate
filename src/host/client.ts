@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process'
 import { closeSync, openSync } from 'node:fs'
 import { request } from 'node:http'
 import { join } from 'node:path'
-import { runAgent, type RunResult } from '../adapters/agent.ts'
+import { runAgent } from '../adapters/agent.ts'
 import { LostResponse } from '../adapters/mcp-client.ts'
 import { mcpCaller, type Caller } from '../runner/change.ts'
 import { staleCatalog, type CliLister } from '../runner/catalog.ts'
@@ -12,12 +12,15 @@ import type { ToolInfo } from '../core/tool-class.ts'
 import { inQuietHours } from '../core/policy.ts'
 import { dayIn, isWorkHours } from '../core/schedule.ts'
 import type { Config } from '../core/types.ts'
-import { CLI } from '../paths.ts'
+import { CLI, VERSION } from '../paths.ts'
 import type { RunWorker } from '../runner/dispatch.ts'
 import { readJson, writeJson } from '../store/fs.ts'
 import { LOCAL_DIR, type Store } from '../store/state.ts'
-import { hostFile, hostHash, type HostInfo, type HostRun } from './host.ts'
+import { hostFile, hostHash, type HostInfo, type HostResult, type HostRun } from './host.ts'
 import { hostOff } from './locate.ts'
+import { unavailableTools } from '../core/agent-failure.ts'
+import { reportFromText } from '../core/report.ts'
+import { intents } from '../core/intents.ts'
 
 const READY_MS = 15_000, BACKOFF = [5_000, 30_000, 120_000]
 const markFile = () => join(LOCAL_DIR, 'host-start.json')
@@ -61,7 +64,7 @@ async function findOrStart(store: Store, cfg: Config): Promise<Found | undefined
 		if (h.configHash === want) return h
 		// The config or the CLI changed: the old host finishes its runs and goes; this run starts a new one.
 		await call(h, 'POST', '/drain').catch(() => undefined)
-		store.log({ event: 'host-replaced', why: 'config changed' })
+		store.log({ event: 'host-replaced', why: 'config changed', from: { hash: h.configHash, delegate: h.delegate, cli: h.cli }, to: { hash: want, delegate: VERSION } })
 	}
 	const mark = readMark()
 	if (mark.fails && Date.now() - Date.parse(mark.at) < BACKOFF[Math.min(mark.fails, BACKOFF.length) - 1]) return undefined
@@ -115,8 +118,8 @@ export const hostRunner = (store: Store, own: RunWorker = runAgent): RunWorker =
 	const fallback: RunWorker = async (a, i) => ({ ...(await own(a, i)), via: 'spawn' })
 	const cfg = store.config(), h = await ensureHost(store, cfg)
 	if (!h) return fallback(agent, input)
-	let r: { status: number; body: RunResult & { hostFault?: string } }
-	try { r = await call<RunResult & { hostFault?: string }>(h, 'POST', '/run', { agent, input } satisfies HostRun, 0) } catch (e) {
+	let r: { status: number; body: HostResult }
+	try { r = await call<HostResult>(h, 'POST', '/run', { agent, input } satisfies HostRun, 0) } catch (e) {
 		// It went away mid-run: the run did not finish, and is tried again on the next check like a run that could not start.
 		store.log({ event: 'host-lost', workflowId: input.workflowId, error: String(e).slice(0, 160) })
 		return { exitCode: 1, ms: 0, error: `Could not start: the AI host stopped during the run` }
@@ -125,6 +128,12 @@ export const hostRunner = (store: Store, own: RunWorker = runAgent): RunWorker =
 	// The host never got the run to the model: the same run is made on one process now, resuming the same session.
 	if (r.status === 502 && r.body.hostFault) { hostFault(store, cfg, h, `run ${r.body.hostFault}`, r.body.error); return fallback(agent, input) }
 	if (r.status !== 200) return { exitCode: 1, ms: 0, error: `The AI host refused the run (${r.status})` }
+	const missing = unavailableTools(`${r.body.error ?? ''}\n${r.body.summary ?? ''}`, [...input.extraTools, ...agent.tools.filter(name => name.startsWith('delegate_worker-'))])
+	if (missing.length && !store.peekReport(input.workflowId, input.runId) && !reportFromText(r.body.summary, input.workflowId, intents(store.root).map(i => i.id))) {
+		store.log({ event: 'host-tools-missing', workflowId: input.workflowId, runId: input.runId, sessionId: input.sessionId, missing, afterTurn: true })
+		hostFault(store, cfg, h, 'run tools', `The run ended without a report and said these worker tools were unavailable: ${missing.join(', ')}`)
+		return fallback(agent, input)
+	}
 	hostGood(store)
 	// Warm: the host was there before this run and every server it used was already connected (#25).
 	return { ...r.body, via: 'host', warm: !h.fresh && r.body.warm !== false }

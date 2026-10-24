@@ -1,5 +1,10 @@
 # Engine fixes
 
+2026-10-24 (#39): Verify actual host tools before a prompt and retry missing-tool setup failures on spawn. Only registered owner
+proxies and required worker tools fault; resting catalog entries remain optional. Match full hyphenated names. A versioned,
+log-keyed upgrade recovers eligible historical failures once. Fictional-root real-runtime proof covers delayed startup, warm
+reuse with a resting server, report recovery and the breaker; no unit tests or live-root writes.
+
 | Date | Fix | Expected behavior and proof |
 | --- | --- | --- |
 | 2026-10-22 | Approval truth | All PR workers receive live evidence before drafting. Approval-sensitive replies need bounded, complete wording and evidence for the exact claimed PR; mixed/unknown wording redrafts even after execution. Supported negative statuses and other-PR future promises remain valid. Dropped votes, repeated ok and vote receipts never bypass factual checks. A valid live owner vote wins; unsupported votes are unknown. Only completed PRs with empty reviewers may use one successful, current-turn, fully scoped receipt for an unsent owed reply, without a known head conflict. Scope-less legacy receipts hold instead of supplying missing evidence. Failed/unavailable/malformed/ambiguous reads never fall back to receipts. Re-reviews and broader asks remain open. SC-430. |

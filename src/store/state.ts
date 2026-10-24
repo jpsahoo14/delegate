@@ -240,8 +240,8 @@ export class Store {
 	saveHabits(h: Habit[]) { this.w(this.p('state', 'habits.json'), h) }
 	habit(code: string): Habit | undefined { return this.habits().find(h => h.code === code.toUpperCase()) }
 	// When build steps were last checked; only the runner writes it (R-WRK-13).
-	probeMark(): { checkedAt?: string; habitsAt?: string; prAt?: string; placedAt?: string; runFailRepairAt?: string; partsRepairAt?: string; noNewsRepairAt?: string; blockedRepairAt?: string } { return readJson(this.p('state', 'probe.json'), {}) }
-	saveProbeMark(m: { checkedAt?: string; habitsAt?: string; prAt?: string; placedAt?: string; runFailRepairAt?: string; partsRepairAt?: string; noNewsRepairAt?: string; blockedRepairAt?: string }) { this.w(this.p('state', 'probe.json'), m) }
+	probeMark(): { checkedAt?: string; habitsAt?: string; prAt?: string; placedAt?: string; runFailRepairAt?: string; partsRepairAt?: string; noNewsRepairAt?: string; blockedRepairAt?: string; hostToolsUpgrade?: number } { return readJson(this.p('state', 'probe.json'), {}) }
+	saveProbeMark(m: { checkedAt?: string; habitsAt?: string; prAt?: string; placedAt?: string; runFailRepairAt?: string; partsRepairAt?: string; noNewsRepairAt?: string; blockedRepairAt?: string; hostToolsUpgrade?: number }) { this.w(this.p('state', 'probe.json'), m) }
 	upgrades(): Record<string, string> { return readJson(this.p('state', 'upgrades.json'), {}) }
 	saveUpgrades(m: Record<string, string>) { this.w(this.p('state', 'upgrades.json'), m) }
 	missed(): (Missed & { file: string })[] {

@@ -11,7 +11,7 @@ import { saveLearned } from './proposals.ts'
 import type { History } from '../adapters/history.ts'
 import type { Store } from '../store/state.ts'
 import { applyAnswers } from './apply.ts'
-import { dispatch, nudge, repairBlocked, repairRunFailures, type RunWorker } from './dispatch.ts'
+import { dispatch, nudge, repairBlocked, repairRunFailures, retryHostToolFailures, type RunWorker } from './dispatch.ts'
 import { intake, readOwnerCommands, say, takeMissed } from './intake.ts'
 import { retryOwnerReplies } from './owner-reply.ts'
 import { planSweep, sweep, sweeping } from './sweep.ts'
@@ -104,6 +104,7 @@ export async function tick(store: Store, deps: { source?: Source; run?: RunWorke
 		legacyEffects(store)
 		// Once per store: items an older version left with the failed-run question (queue-new #11).
 		if (!store.probeMark().runFailRepairAt) { repairRunFailures(store); store.saveProbeMark({ ...store.probeMark(), runFailRepairAt: new Date().toISOString() }) }
+		retryHostToolFailures(store)
 		// Items a job left blocked before #17 get its failed-run card once (queue-new #26).
 		if (!store.probeMark().blockedRepairAt) { repairBlocked(store); store.saveProbeMark({ ...store.probeMark(), blockedRepairAt: new Date().toISOString() }) }
 		// Once per store: parts an unchecked join attached to work about something else (queue-new #9).

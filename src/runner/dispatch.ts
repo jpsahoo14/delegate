@@ -8,7 +8,7 @@ import { stopWatch } from './track.ts'
 import { sharingHold, sourceChats } from './sharing.ts'
 import { readsOf, type Reads } from './provenance.ts'
 import { catalogInfo, workerTools } from './catalog.ts'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { backupSession, restoreSession } from './own.ts'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -42,7 +42,7 @@ import { unsafeRead, SETUP_REFUSAL } from '../core/effects.ts'
 import { shellInClone, shellTool } from './validate.ts'
 import { toolServers } from '../adapters/mcp-client.ts'
 import { ran } from '../core/runinfo.ts'
-import { agentSetupFailure } from '../core/agent-failure.ts'
+import { agentSetupFailure, unavailableTools } from '../core/agent-failure.ts'
 import { blockedAgent, holdAgent, waitingForAgent } from './agent-health.ts'
 import { askRelation, freshAsk } from './same-ask.ts'
 
@@ -154,6 +154,42 @@ export function repairRunFailures(store: Store, days = 14): number {
 		} else Object.assign(w, { question: undefined, runFailed: { at: last?.at || w.updatedAt, kind: 'other', why: last?.error ? `the run failed (${last.error.split(/\r?\n/)[0].replace(/^Error: /, '').slice(0, 140)})` : 'the run stopped without a result' } })
 		store.save(w)
 	}
+	return n
+}
+
+// Versioned upgrade for preflight's first release. Only the latest failed host run is eligible; its log key prevents replay after
+// a crash, and the upgrade marker avoids scanning history on subsequent ticks. Ordinary content failures are never requeued.
+export function retryHostToolFailures(store: Store): number {
+	if (store.probeMark().hostToolsUpgrade === 1) return 0
+	const candidates = store.workflows().filter(w => w.state === 'needs_human' && !w.question && w.runFailed?.kind === 'other' && w.runFailed.why === 'the run stopped without a result')
+	const logs = candidates.length ? store.logs(14).sort((a, b) => String(a.at).localeCompare(String(b.at))) : []
+	const last = new Map(logs.filter(e => e.event === 'worker' && typeof e.workflowId === 'string').map(e => [e.workflowId, e]))
+	const retried = new Set(logs.filter(e => e.event === 'host-tools-requeued').map(e => `${e.workflowId}:${e.runId}`))
+	let n = 0
+	for (const w of candidates) {
+		const e = last.get(w.id), key = `${w.id}:${e?.runId}`
+		if (!e || e.via !== 'host' || e.intent || e.summary || typeof e.runId !== 'string' || typeof e.ms !== 'number' || retried.has(key)) continue
+		const ended = Date.parse(String(e.at)), started = ended - e.ms
+		if (w.sent && Date.parse(w.sent.at) >= started || w.revAt && Date.parse(w.revAt) > ended) continue
+		const file = join(store.root, 'sessions', w.session.id, 'events.jsonl')
+		let answer: string | undefined
+		try {
+			if (!existsSync(file)) continue
+			for (const line of readFileSync(file, 'utf8').split('\n').filter(l => /"type"\s*:\s*"assistant.message"/.test(l))) {
+				const event = JSON.parse(line) as { timestamp?: string; data?: { content?: string } }
+				const at = Date.parse(event.timestamp ?? '')
+				if (at >= started && at <= ended && typeof event.data?.content === 'string') answer = event.data.content
+			}
+		} catch (error) { store.log({ event: 'host-tools-history-unreadable', workflowId: w.id, runId: e.runId, error: String(error).slice(0, 200) }); continue }
+		const missing = unavailableTools(answer ?? '', [...WORKER_TOOLS, ...workerTools(store.config(), 'reply')])
+		if (!missing.length) continue
+		Object.assign(w, { state: 'running', question: undefined, runFailed: undefined, status: 'Running again: the earlier AI host did not provide its tools.', pending: w.pending.length ? w.pending : w.msgIds.slice(-1) })
+		store.save(w)
+		store.log({ event: 'host-tools-requeued', workflowId: w.id, code: w.code, runId: e.runId, missing })
+		n++
+	}
+	store.saveProbeMark({ ...store.probeMark(), hostToolsUpgrade: 1 })
+	store.log({ event: 'host-tools-upgraded', version: 1, requeued: n })
 	return n
 }
 

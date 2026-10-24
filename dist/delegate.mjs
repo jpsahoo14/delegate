@@ -1170,6 +1170,13 @@ var init_page_approval = __esm({
 });
 
 // src/core/agent-failure.ts
+function unavailableTools(text3, tools) {
+  const unavailable = "(?:unavailable|not (?:available|exposed|provided|registered|enabled)|(?:can(?:not|'t)|could(?: not|n't)) (?:access|use|call|find)|no access to)";
+  return [...new Set(tools)].filter((tool) => {
+    const names = [.../* @__PURE__ */ new Set([tool, tool.replace(/^delegate_worker-/, "")])].map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+    return names.some((name) => new RegExp(`(?<![\\w-])${name}(?![\\w-])[^\\n.!?]{0,80}\\b${unavailable}\\b|\\b${unavailable}\\b[^\\n.!?]{0,80}(?<![\\w-])${name}(?![\\w-])`, "i").test(text3));
+  });
+}
 function activeAgentHold(hold, agent, now = Date.now()) {
   return hold && hold.config === pageDigest(agent) && !(hold.retryAt && Date.parse(hold.retryAt) <= now) ? hold : void 0;
 }
@@ -42792,7 +42799,7 @@ var init_same_ask = __esm({
 });
 
 // src/runner/dispatch.ts
-import { existsSync as existsSync15 } from "node:fs";
+import { existsSync as existsSync15, readFileSync as readFileSync15 } from "node:fs";
 import { mkdirSync as mkdirSync7, writeFileSync as writeFileSync8 } from "node:fs";
 import { join as join15 } from "node:path";
 import { randomUUID as randomUUID4 } from "node:crypto";
@@ -42904,6 +42911,42 @@ function repairRunFailures(store2, days2 = 14) {
     } else Object.assign(w, { question: void 0, runFailed: { at: last2?.at || w.updatedAt, kind: "other", why: last2?.error ? `the run failed (${last2.error.split(/\r?\n/)[0].replace(/^Error: /, "").slice(0, 140)})` : "the run stopped without a result" } });
     store2.save(w);
   }
+  return n;
+}
+function retryHostToolFailures(store2) {
+  if (store2.probeMark().hostToolsUpgrade === 1) return 0;
+  const candidates2 = store2.workflows().filter((w) => w.state === "needs_human" && !w.question && w.runFailed?.kind === "other" && w.runFailed.why === "the run stopped without a result");
+  const logs = candidates2.length ? store2.logs(14).sort((a, b) => String(a.at).localeCompare(String(b.at))) : [];
+  const last2 = new Map(logs.filter((e) => e.event === "worker" && typeof e.workflowId === "string").map((e) => [e.workflowId, e]));
+  const retried = new Set(logs.filter((e) => e.event === "host-tools-requeued").map((e) => `${e.workflowId}:${e.runId}`));
+  let n = 0;
+  for (const w of candidates2) {
+    const e = last2.get(w.id), key = `${w.id}:${e?.runId}`;
+    if (!e || e.via !== "host" || e.intent || e.summary || typeof e.runId !== "string" || typeof e.ms !== "number" || retried.has(key)) continue;
+    const ended2 = Date.parse(String(e.at)), started2 = ended2 - e.ms;
+    if (w.sent && Date.parse(w.sent.at) >= started2 || w.revAt && Date.parse(w.revAt) > ended2) continue;
+    const file4 = join15(store2.root, "sessions", w.session.id, "events.jsonl");
+    let answer;
+    try {
+      if (!existsSync15(file4)) continue;
+      for (const line2 of readFileSync15(file4, "utf8").split("\n").filter((l) => /"type"\s*:\s*"assistant.message"/.test(l))) {
+        const event = JSON.parse(line2);
+        const at3 = Date.parse(event.timestamp ?? "");
+        if (at3 >= started2 && at3 <= ended2 && typeof event.data?.content === "string") answer = event.data.content;
+      }
+    } catch (error62) {
+      store2.log({ event: "host-tools-history-unreadable", workflowId: w.id, runId: e.runId, error: String(error62).slice(0, 200) });
+      continue;
+    }
+    const missing = unavailableTools(answer ?? "", [...WORKER_TOOLS, ...workerTools(store2.config(), "reply")]);
+    if (!missing.length) continue;
+    Object.assign(w, { state: "running", question: void 0, runFailed: void 0, status: "Running again: the earlier AI host did not provide its tools.", pending: w.pending.length ? w.pending : w.msgIds.slice(-1) });
+    store2.save(w);
+    store2.log({ event: "host-tools-requeued", workflowId: w.id, code: w.code, runId: e.runId, missing });
+    n++;
+  }
+  store2.saveProbeMark({ ...store2.probeMark(), hostToolsUpgrade: 1 });
+  store2.log({ event: "host-tools-upgraded", version: 1, requeued: n });
   return n;
 }
 function repairBlocked(store2, days2 = 30) {
@@ -46832,7 +46875,7 @@ var init_change = __esm({
 // src/runner/jobs.ts
 import { uptime as uptime3 } from "node:os";
 import { randomUUID as randomUUID10 } from "node:crypto";
-import { existsSync as existsSync18, readFileSync as readFileSync15 } from "node:fs";
+import { existsSync as existsSync18, readFileSync as readFileSync16 } from "node:fs";
 import { isAbsolute as isAbsolute4, join as join19 } from "node:path";
 function canonicalKey2(key) {
   const k = key.trim().toLowerCase().replace(/\s+/g, "");
@@ -47049,7 +47092,7 @@ async function checkJobs(store2, src, cfg, procs, probe, startedBefore) {
     ended.set(job.id, readUse(store2, job));
     try {
       const f = join19(LOCAL_DIR, "sessions", `${run2.id}.log`);
-      const account = !r && !live2 ? agentSetupFailure(`${existsSync18(f) ? readFileSync15(f, "utf8") : ""}
+      const account = !r && !live2 ? agentSetupFailure(`${existsSync18(f) ? readFileSync16(f, "utf8") : ""}
 ${agentProcessLog(job.session.agent, join19(LOCAL_DIR, "sessions", `mcp-${run2.id}.json`))}`) : void 0;
       if (account) holdJob(store2, cfg, job, account);
       else if (r) {
@@ -47101,7 +47144,7 @@ function readUse(store2, job) {
   if (!run2 || !f || !existsSync18(f)) return {};
   let text3;
   try {
-    text3 = readFileSync15(f, "utf8");
+    text3 = readFileSync16(f, "utf8");
   } catch {
     return {};
   }
@@ -47690,7 +47733,7 @@ function fail(store2, job, why2) {
 function scrubLog(store2, runId) {
   const f = join19(LOCAL_DIR, "sessions", `${runId}.log`);
   if (!existsSync18(f)) return;
-  const text3 = readFileSync15(f, "utf8"), clean3 = scrub(text3);
+  const text3 = readFileSync16(f, "utf8"), clean3 = scrub(text3);
   if (clean3 !== text3) writeText(f, clean3, store2.machine);
 }
 function parentsOf(store2, job) {
@@ -49002,7 +49045,7 @@ var init_view = __esm({
 });
 
 // src/knowledge/index.ts
-import { existsSync as existsSync19, mkdirSync as mkdirSync9, readdirSync as readdirSync7, readFileSync as readFileSync16 } from "node:fs";
+import { existsSync as existsSync19, mkdirSync as mkdirSync9, readdirSync as readdirSync7, readFileSync as readFileSync17 } from "node:fs";
 import { dirname as dirname9, join as join20, relative as relative2 } from "node:path";
 function newId2(text3) {
   for (; ; ) {
@@ -49083,7 +49126,7 @@ var init_knowledge = __esm({
       withdrawSource(link2) {
         let removed = 0;
         for (const card2 of this.cards()) {
-          let text3 = readFileSync16(card2.path, "utf8"), changed = false;
+          let text3 = readFileSync17(card2.path, "utf8"), changed = false;
           for (const entry of card2.entries) {
             const src = entry.src.filter((source3) => openLink(source3.link) !== openLink(link2));
             if (src.length === entry.src.length) continue;
@@ -49103,7 +49146,7 @@ var init_knowledge = __esm({
         for (const card2 of this.cards()) {
           const ids = new Set(card2.entries.filter(match).map((e) => e.id));
           if (!ids.size) continue;
-          const lines = readFileSync16(card2.path, "utf8").split("\n"), keep = [];
+          const lines = readFileSync17(card2.path, "utf8").split("\n"), keep = [];
           lines.forEach((l, at3) => {
             const id = /^- \[/.test(l) ? [...ids].find((i) => new RegExp(`\\s\\^${i}(?:\\s|$)`).test(l)) : void 0;
             if (id) out.push({ path: relative2(this.root, card2.path), line: l, at: at3 });
@@ -49117,7 +49160,7 @@ var init_knowledge = __esm({
       moveBack(items2) {
         let n = 0;
         for (const path of [...new Set(items2.map((i) => i.path))]) {
-          const file4 = join20(this.root, path), lines = existsSync19(file4) ? readFileSync16(file4, "utf8").split("\n") : [];
+          const file4 = join20(this.root, path), lines = existsSync19(file4) ? readFileSync17(file4, "utf8").split("\n") : [];
           for (const i of items2.filter((x) => x.path === path).sort((a, b) => a.at - b.at)) if (!lines.includes(i.line)) {
             lines.splice(Math.min(i.at, lines.length), 0, i.line);
             n++;
@@ -49133,7 +49176,7 @@ var init_knowledge = __esm({
       }
       cardHash(topic, card2) {
         const p = this.path(topic, card2);
-        return existsSync19(p) ? hashOf(readFileSync16(p, "utf8")) : "";
+        return existsSync19(p) ? hashOf(readFileSync17(p, "utf8")) : "";
       }
       // Writes only if every card is still the version the proposal was made against (R-BOOT-06, exact-revision ok).
       apply(p) {
@@ -49143,7 +49186,7 @@ var init_knowledge = __esm({
         const texts2 = /* @__PURE__ */ new Map();
         for (const card2 of touched) {
           const path = this.path(p.topic, card2);
-          let text3 = existsSync19(path) ? readFileSync16(path, "utf8") : newCard(p.topic, p.title, card2, "team");
+          let text3 = existsSync19(path) ? readFileSync17(path, "utf8") : newCard(p.topic, p.title, card2, "team");
           const before = parseCard(path, text3).entries;
           for (const [i, o] of p.ops.entries()) {
             if (o.card !== card2) continue;
@@ -49551,12 +49594,12 @@ var init_offrecord = __esm({
 });
 
 // src/runner/sharing.ts
-import { existsSync as existsSync21, mkdirSync as mkdirSync10, readFileSync as readFileSync17, rmSync as rmSync7, writeFileSync as writeFileSync11 } from "node:fs";
+import { existsSync as existsSync21, mkdirSync as mkdirSync10, readFileSync as readFileSync18, rmSync as rmSync7, writeFileSync as writeFileSync11 } from "node:fs";
 import { dirname as dirname10, join as join23 } from "node:path";
 function recordRead(root, runId, links, query, tool = "teams", n = links.length) {
   if (!runId) return;
   const f = provenanceFile(root, runId);
-  const had = existsSync21(f) ? normal(JSON.parse(readFileSync17(f, "utf8"))) : { chats: [], searches: [] };
+  const had = existsSync21(f) ? normal(JSON.parse(readFileSync18(f, "utf8"))) : { chats: [], searches: [] };
   const chats = links.map((l) => parseMessageLink(l)?.chatId).filter((c) => !!c);
   assertTestSafe(f);
   mkdirSync10(dirname10(f), { recursive: true });
@@ -49643,12 +49686,12 @@ var init_sharing = __esm({
 
 // src/runner/catalog.ts
 import { createHash as createHash7 } from "node:crypto";
-import { existsSync as existsSync22, mkdirSync as mkdirSync11, readdirSync as readdirSync8, readFileSync as readFileSync18, renameSync as renameSync4, statSync as statSync8, writeFileSync as writeFileSync12 } from "node:fs";
+import { existsSync as existsSync22, mkdirSync as mkdirSync11, readdirSync as readdirSync8, readFileSync as readFileSync19, renameSync as renameSync4, statSync as statSync8, writeFileSync as writeFileSync12 } from "node:fs";
 import { homedir as homedir8 } from "node:os";
 import { basename as basename5, join as join24 } from "node:path";
 function readCatalog(server) {
   try {
-    return JSON.parse(readFileSync18(file3(server), "utf8"));
+    return JSON.parse(readFileSync19(file3(server), "utf8"));
   } catch {
     return void 0;
   }
@@ -49795,7 +49838,7 @@ var init_catalog = __esm({
     ignoreFile = () => join24(LOCAL_DIR, "tool-servers.json");
     ignoredServers = () => {
       try {
-        return JSON.parse(readFileSync18(ignoreFile(), "utf8")).ignored ?? [];
+        return JSON.parse(readFileSync19(ignoreFile(), "utf8")).ignored ?? [];
       } catch {
         return [];
       }
@@ -49817,7 +49860,7 @@ var init_catalog = __esm({
 });
 
 // src/adapters/demo.ts
-import { existsSync as existsSync24, readFileSync as readFileSync19 } from "node:fs";
+import { existsSync as existsSync24, readFileSync as readFileSync20 } from "node:fs";
 import { join as join26 } from "node:path";
 var DemoSource, demoRun, demoProcs;
 var init_demo = __esm({
@@ -49831,7 +49874,7 @@ var init_demo = __esm({
         this.file = join26(root, "demo", "chats.json");
       }
       all() {
-        return existsSync24(this.file) ? JSON.parse(readFileSync19(this.file, "utf8")) : {};
+        return existsSync24(this.file) ? JSON.parse(readFileSync20(this.file, "utf8")) : {};
       }
       save(c) {
         writeJson(this.file, c, "demo");
@@ -50443,7 +50486,7 @@ __export(host_exports, {
   runHost: () => runHost
 });
 import { createHash as createHash8, randomUUID as randomUUID11 } from "node:crypto";
-import { existsSync as existsSync28, readFileSync as readFileSync22, renameSync as renameSync5, rmSync as rmSync9, writeFileSync as writeFileSync15 } from "node:fs";
+import { existsSync as existsSync28, readFileSync as readFileSync23, renameSync as renameSync5, rmSync as rmSync9, writeFileSync as writeFileSync15 } from "node:fs";
 import { createServer } from "node:http";
 import { homedir as homedir10, tmpdir as tmpdir3 } from "node:os";
 import { isAbsolute as isAbsolute6, join as join30, relative as relative4, resolve as resolve8 } from "node:path";
@@ -50491,6 +50534,7 @@ async function runHost() {
     const t2 = Date.now(), id = input2.sessionId;
     const names = [.../* @__PURE__ */ new Set([...agent.tools, ...input2.extraTools, "task_complete"])];
     const tools = [];
+    const registered = [];
     let warm2 = true;
     for (const name of names) {
       const server2 = serverOf2(name), w = server2 ? warmOf(server2) : void 0;
@@ -50511,6 +50555,7 @@ async function runHost() {
           }
         }
       }));
+      registered.push(name);
     }
     const take = reportTaker(store2, input2.workflowId, input2.runId);
     const out = (o) => o.image ? { textResultForLlm: o.text, binaryResultsForLlm: [{ data: o.image.data, mimeType: o.image.mimeType, type: "image" }], resultType: "success" } : o.error ? { textResultForLlm: o.text, resultType: "failure", error: o.text.slice(0, 300) } : o.text;
@@ -50520,7 +50565,8 @@ async function runHost() {
     };
     const mine = names.filter((n) => n.startsWith(`${WORKER_SERVER2}-`)).map((n) => n.slice(WORKER_SERVER2.length + 1));
     for (const n of mine) if (inProcess[n]) tools.push(inProcess[n]());
-    const own3 = mine.some((n) => !inProcess[n]) ? JSON.parse(readFileSync22(input2.mcpConfigPath, "utf8")).mcpServers?.[WORKER_SERVER2] : void 0;
+    const requiredTools = [.../* @__PURE__ */ new Set([`${WORKER_SERVER2}-submit_report`, ...mine.map((n) => `${WORKER_SERVER2}-${n}`), ...registered])];
+    const own3 = mine.some((n) => !inProcess[n]) ? JSON.parse(readFileSync23(input2.mcpConfigPath, "utf8")).mcpServers?.[WORKER_SERVER2] : void 0;
     const dirs2 = [input2.cwd, ...input2.dirs ?? []];
     const onPermissionRequest = async (r) => r.kind === "read" && r.path && under(r.path, dirs2) || r.kind === "mcp" && r.serverName === WORKER_SERVER2 || r.kind === "custom-tool" ? { kind: "approve-once" } : { kind: "reject", feedback: "Delegate runs may only read the folders they were given and use the tools they were offered." };
     const provider = envProvider();
@@ -50542,17 +50588,33 @@ async function runHost() {
     try {
       session = existsSync28(sessionFile(id)) ? await client.resumeSession(id, config2) : await client.createSession({ sessionId: id, ...config2 });
       opened = true;
+      const expected = requiredTools;
+      try {
+        await session.rpc.tools.initializeAndValidate();
+        const metadata = await session.rpc.tools.getCurrentMetadata();
+        const offered = [...new Set((metadata.tools ?? []).flatMap((tool) => [tool.name, ...tool.namespacedName ? [tool.namespacedName] : []]))].sort();
+        const missing = names.filter((name) => name.includes("-") && !offered.includes(name)), missingRequired = expected.filter((name) => !offered.includes(name));
+        store2.log({ event: "host-session-tools", sessionId: id, workflowId: input2.workflowId, runId: input2.runId, count: metadata.tools?.length ?? 0, tools: offered, missing, missingRequired });
+        if (missingRequired.length) {
+          store2.log({ event: "host-tools-missing", sessionId: id, workflowId: input2.workflowId, runId: input2.runId, missing: missingRequired });
+          return { exitCode: 1, ms: Date.now() - t2, hostFault: "tools", error: `The AI host did not offer required tools: ${missingRequired.join(", ")}` };
+        }
+      } catch (e) {
+        store2.log({ event: "host-session-tools", sessionId: id, workflowId: input2.workflowId, runId: input2.runId, count: 0, tools: [], missing: expected, missingRequired: expected, error: String(e).slice(0, 300) });
+        store2.log({ event: "host-tools-missing", sessionId: id, workflowId: input2.workflowId, runId: input2.runId, missing: expected, error: String(e).slice(0, 300) });
+        return { exitCode: 1, ms: Date.now() - t2, hostFault: "tools", error: `The AI host could not verify required tools: ${String(e).slice(0, 300)}` };
+      }
       const r = await session.sendAndWait({ prompt: input2.prompt }, RUN_MS);
       await session.disconnect().catch(() => void 0);
       session = void 0;
       const used = readRun("", t2, process.env, sessionLog("copilot", id), Date.now()).use;
-      return { exitCode: 0, ms: Date.now() - t2, summary: r?.data?.content, used, warm: warm2 };
+      return { exitCode: 0, ms: Date.now() - t2, summary: r?.data?.content, used, warm: warm2, requiredTools };
     } catch (e) {
       await session?.disconnect().catch(() => void 0);
       session = void 0;
       const why2 = String(e).replace(/^Error: /, "").slice(0, 400);
       const turned = opened && turnStarted(sessionLog("copilot", id), t2);
-      return { exitCode: 1, ms: Date.now() - t2, error: `The AI host could not finish the run: ${why2}`, ...turned ? {} : { hostFault: opened ? "no model turn" : "session" } };
+      return { exitCode: 1, ms: Date.now() - t2, error: `The AI host could not finish the run: ${why2}`, requiredTools, ...turned ? {} : { hostFault: opened ? "no model turn" : "session" } };
     } finally {
       await session?.disconnect().catch(() => void 0);
     }
@@ -50683,7 +50745,7 @@ async function runHost() {
   const tmp = `${hostFile()}.${process.pid}`;
   writeFileSync15(tmp, JSON.stringify(info), { mode: 384 });
   renameSync5(tmp, hostFile());
-  store2.log({ event: "host-started", pid: process.pid, cli: pkg.version, startMs: Date.now() - t0, servers: [...warm.keys()] });
+  store2.log({ event: "host-started", pid: process.pid, cli: pkg.version, delegate: VERSION, configHash: info.configHash, startMs: Date.now() - t0, servers: [...warm.keys()], workerTools: ["submit_report", "image_read"] });
   let stopping = false;
   async function stop(why2) {
     if (stopping) return;
@@ -50693,7 +50755,7 @@ async function runHost() {
     await Promise.all([...warm.values()].map((w) => w.client.close().catch(() => void 0)));
     await client.stop().catch(() => void 0);
     try {
-      const now = JSON.parse(readFileSync22(hostFile(), "utf8"));
+      const now = JSON.parse(readFileSync23(hostFile(), "utf8"));
       if (now.pid === process.pid) rmSync9(hostFile(), { force: true });
     } catch {
     }
@@ -50982,7 +51044,7 @@ init_fs();
 init_paths();
 init_state();
 import { execFile, execFileSync as execFileSync2 } from "node:child_process";
-import { existsSync as existsSync25, mkdirSync as mkdirSync12, readFileSync as readFileSync20, writeFileSync as writeFileSync13 } from "node:fs";
+import { existsSync as existsSync25, mkdirSync as mkdirSync12, readFileSync as readFileSync21, writeFileSync as writeFileSync13 } from "node:fs";
 import { join as join27 } from "node:path";
 var UPDATE_EVERY_MIN = 1440;
 function channelOf(setting, origin) {
@@ -51103,7 +51165,7 @@ async function versionInfoLater(setting, root = ROOT, local2 = LOCAL_DIR, everyM
 }
 function readMark(f) {
   try {
-    return JSON.parse(readFileSync20(f, "utf8"));
+    return JSON.parse(readFileSync21(f, "utf8"));
   } catch {
     return {};
   }
@@ -51126,7 +51188,7 @@ init_state();
 
 // src/store/retention.ts
 init_state();
-import { existsSync as existsSync26, readdirSync as readdirSync9, readFileSync as readFileSync21, rmSync as rmSync8, statSync as statSync9, writeFileSync as writeFileSync14 } from "node:fs";
+import { existsSync as existsSync26, readdirSync as readdirSync9, readFileSync as readFileSync22, rmSync as rmSync8, statSync as statSync9, writeFileSync as writeFileSync14 } from "node:fs";
 import { join as join28 } from "node:path";
 var CONTENT = ["text", "summary", "lastAsk", "sent", "answer", "ask", "draft", "note"];
 function sweep2(store2, days2 = 30, now = Date.now()) {
@@ -51174,7 +51236,7 @@ function sweep2(store2, days2 = 30, now = Date.now()) {
   const fbDir = join28(store2.root, "feedback");
   if (existsSync26(fbDir)) for (const f of readdirSync9(fbDir).filter((f2) => f2.endsWith(".jsonl"))) {
     const p = join28(fbDir, f);
-    const lines = readFileSync21(p, "utf8").split("\n").filter(Boolean).map((l) => {
+    const lines = readFileSync22(p, "utf8").split("\n").filter(Boolean).map((l) => {
       try {
         const e = JSON.parse(l);
         if (String(e.at) < cutoff && e.detail) for (const k of [...CONTENT, "fyi"]) delete e.detail[k];
@@ -51188,7 +51250,7 @@ function sweep2(store2, days2 = 30, now = Date.now()) {
   const logDir = join28(store2.root, "state", "log");
   if (existsSync26(logDir)) for (const f of readdirSync9(logDir).filter((f2) => f2.endsWith(".jsonl") && f2.slice(0, 10) < cutoff.slice(0, 10))) {
     const p = join28(logDir, f);
-    const lines = readFileSync21(p, "utf8").split("\n").filter(Boolean).map((l) => {
+    const lines = readFileSync22(p, "utf8").split("\n").filter(Boolean).map((l) => {
       try {
         const e = JSON.parse(l);
         for (const k of CONTENT) delete e[k];
@@ -51290,6 +51352,9 @@ init_fs();
 init_state();
 init_host();
 init_locate();
+init_agent_failure();
+init_report();
+init_intents();
 import { spawn as spawn4 } from "node:child_process";
 import { closeSync as closeSync5, openSync as openSync5 } from "node:fs";
 import { request } from "node:http";
@@ -51353,7 +51418,7 @@ async function findOrStart(store2, cfg) {
   if (h && answers2) {
     if (h.configHash === want) return h;
     await call(h, "POST", "/drain").catch(() => void 0);
-    store2.log({ event: "host-replaced", why: "config changed" });
+    store2.log({ event: "host-replaced", why: "config changed", from: { hash: h.configHash, delegate: h.delegate, cli: h.cli }, to: { hash: want, delegate: VERSION } });
   }
   const mark2 = readMark2();
   if (mark2.fails && Date.now() - Date.parse(mark2.at) < BACKOFF[Math.min(mark2.fails, BACKOFF.length) - 1]) return void 0;
@@ -51427,6 +51492,13 @@ var hostRunner = (store2, own3 = runAgent) => async (agent, input2) => {
     return fallback(agent, input2);
   }
   if (r.status !== 200) return { exitCode: 1, ms: 0, error: `The AI host refused the run (${r.status})` };
+  const missing = unavailableTools(`${r.body.error ?? ""}
+${r.body.summary ?? ""}`, [...input2.extraTools, ...agent.tools.filter((name) => name.startsWith("delegate_worker-"))]);
+  if (missing.length && !store2.peekReport(input2.workflowId, input2.runId) && !reportFromText(r.body.summary, input2.workflowId, intents(store2.root).map((i) => i.id))) {
+    store2.log({ event: "host-tools-missing", workflowId: input2.workflowId, runId: input2.runId, sessionId: input2.sessionId, missing, afterTurn: true });
+    hostFault(store2, cfg, h, "run tools", `The run ended without a report and said these worker tools were unavailable: ${missing.join(", ")}`);
+    return fallback(agent, input2);
+  }
   hostGood(store2);
   return { ...r.body, via: "host", warm: !h.fresh && r.body.warm !== false };
 };
@@ -53129,7 +53201,7 @@ init_deploy();
 init_repos();
 init_state();
 init_brand();
-import { existsSync as existsSync29, readFileSync as readFileSync23, statSync as statSync10, writeFileSync as writeFileSync16 } from "node:fs";
+import { existsSync as existsSync29, readFileSync as readFileSync24, statSync as statSync10, writeFileSync as writeFileSync16 } from "node:fs";
 import { join as join32 } from "node:path";
 init_runinfo();
 init_habits();
@@ -53160,7 +53232,7 @@ var SETTINGS = [
     help: `A few lines ${NAME} reads before every draft: what you do and how you write.`,
     kind: "text",
     section: "you",
-    read: (_c, s3) => existsSync29(join32(s3.root, "profile.md")) ? readFileSync23(join32(s3.root, "profile.md"), "utf8") : "",
+    read: (_c, s3) => existsSync29(join32(s3.root, "profile.md")) ? readFileSync24(join32(s3.root, "profile.md"), "utf8") : "",
     parse: (raw) => raw.trim().length < 20 ? { ok: false, why: "Write at least a sentence about yourself." } : { ok: true, save: (cfg, s3) => {
       writeFileSync16(join32(s3.root, "profile.md"), raw.trim() + "\n");
       return cfg;
@@ -53570,7 +53642,7 @@ function whoOf(r) {
 function aboutView(store2) {
   const habits = store2.habits(), held = store2.heldRules(), cfg = store2.config();
   return {
-    profile: existsSync29(join32(store2.root, "profile.md")) ? readFileSync23(join32(store2.root, "profile.md"), "utf8").trim() : "",
+    profile: existsSync29(join32(store2.root, "profile.md")) ? readFileSync24(join32(store2.root, "profile.md"), "utf8").trim() : "",
     rules: store2.rules().map((r) => {
       const h = r.learned ? habits.find((x) => x.key === r.learned.key) : void 0;
       return {
@@ -53611,7 +53683,7 @@ function hostLine(cfg, now = Date.now()) {
   if (until) return `Not used: the AI host failed ${((n) => n === 1 ? "once" : n === 2 ? "twice" : `${n} times`)(hostFaultLimit(cfg))}; using one process per run until ${new Date(until).toLocaleTimeString(void 0, { hour: "numeric", minute: "2-digit", ...cfg.tz && validTz(cfg.tz) ? { timeZone: cfg.tz } : {} })}.`;
   let h;
   try {
-    h = JSON.parse(readFileSync23(hostFile(), "utf8"));
+    h = JSON.parse(readFileSync24(hostFile(), "utf8"));
   } catch {
     h = void 0;
   }
@@ -54394,7 +54466,7 @@ init_next();
 
 // src/web/react-build.ts
 init_paths();
-import { readFileSync as readFileSync24, statSync as statSync11 } from "node:fs";
+import { readFileSync as readFileSync25, statSync as statSync11 } from "node:fs";
 import { join as join33, basename as basename6 } from "node:path";
 import { deflateRawSync } from "node:zlib";
 var directory = (root) => join33(root, "dist", "web-react");
@@ -54408,7 +54480,7 @@ var shell;
 function snapshotPage(snapshot2, root = ROOT) {
   const file4 = join33(root, SNAPSHOT_TEMPLATE), key = `${file4}:${statSync11(file4).mtimeMs}`;
   if (shell?.key !== key) {
-    const template = readFileSync24(file4, "utf8"), app = APP.exec(template), style = STYLE.exec(template), end = template.lastIndexOf("</body>");
+    const template = readFileSync25(file4, "utf8"), app = APP.exec(template), style = STYLE.exec(template), end = template.lastIndexOf("</body>");
     if (!app || !style || end < 0 || !template.includes(SNAPSHOT_DATA)) throw new Error(`${SNAPSHOT_TEMPLATE} is not a snapshot page template.`);
     const html = template.slice(0, end).replace(app[0], () => packed("delegate-snapshot-app", app[1])).replace(style[0], () => packed("delegate-snapshot-style", style[1]));
     shell = { key, html: `${html}${LOADER}${template.slice(end)}` };
@@ -54416,12 +54488,12 @@ function snapshotPage(snapshot2, root = ROOT) {
   return shell.html.replace(SNAPSHOT_DATA, () => packed("delegate-snapshot", JSON.stringify(snapshot2)));
 }
 function reactAssets(root = ROOT) {
-  const manifest = JSON.parse(readFileSync24(join33(directory(root), ".vite", "manifest.json"), "utf8"));
+  const manifest = JSON.parse(readFileSync25(join33(directory(root), ".vite", "manifest.json"), "utf8"));
   return new Set(Object.values(manifest).flatMap((e) => [e.file, ...e.css ?? [], ...e.assets ?? []]));
 }
 function reactPage(token, root = ROOT, experience = "new") {
   reactAssets(root);
-  return readFileSync24(join33(directory(root), "index.html"), "utf8").replaceAll("__PAGE_TOKEN__", encodeURIComponent(token)).replace(/<html\b/, `<html data-experience="${experience === "classic" ? "classic" : "new"}"`).replace(
+  return readFileSync25(join33(directory(root), "index.html"), "utf8").replaceAll("__PAGE_TOKEN__", encodeURIComponent(token)).replace(/<html\b/, `<html data-experience="${experience === "classic" ? "classic" : "new"}"`).replace(
     /(src|href)="\.\/([^"]+)"/g,
     (_, attribute, file4) => `${attribute}="/web-react/${file4}?t=${encodeURIComponent(token)}"`
   );
@@ -54431,7 +54503,7 @@ function reactAsset(path, token, root = ROOT) {
   if (!assets.has(path)) return void 0;
   const js = path.endsWith(".js"), css = path.endsWith(".css");
   if (!js && !css) return void 0;
-  let content = readFileSync24(join33(directory(root), path), "utf8");
+  let content = readFileSync25(join33(directory(root), path), "utf8");
   if (js) for (const file4 of assets) for (const value of [file4, `./${basename6(file4)}`, `../${file4}`]) {
     for (const quote of ['"', "'", "`"]) content = content.replaceAll(`${quote}${value}${quote}`, `${quote}${value}?t=${encodeURIComponent(token)}${quote}`);
   }
@@ -56435,6 +56507,7 @@ async function tick(store2, deps = {}) {
       repairRunFailures(store2);
       store2.saveProbeMark({ ...store2.probeMark(), runFailRepairAt: (/* @__PURE__ */ new Date()).toISOString() });
     }
+    retryHostToolFailures(store2);
     if (!store2.probeMark().blockedRepairAt) {
       repairBlocked(store2);
       store2.saveProbeMark({ ...store2.probeMark(), blockedRepairAt: (/* @__PURE__ */ new Date()).toISOString() });
@@ -56915,7 +56988,7 @@ init_fs();
 init_scheduler();
 import { execFileSync as execFileSync5, spawn as spawn7, spawnSync as spawnSync5 } from "node:child_process";
 import { createHash as createHash10 } from "node:crypto";
-import { cpSync as cpSync2, existsSync as existsSync32, lstatSync as lstatSync3, mkdirSync as mkdirSync14, readFileSync as readFileSync25, readlinkSync, rmSync as rmSync10, symlinkSync, writeFileSync as writeFileSync18 } from "node:fs";
+import { cpSync as cpSync2, existsSync as existsSync32, lstatSync as lstatSync3, mkdirSync as mkdirSync14, readFileSync as readFileSync26, readlinkSync, rmSync as rmSync10, symlinkSync, writeFileSync as writeFileSync18 } from "node:fs";
 import { homedir as homedir12 } from "node:os";
 import { basename as basename7, join as join36 } from "node:path";
 init_brand();
@@ -56975,7 +57048,7 @@ function launcherPath() {
 function launcher2() {
   const p = launcherPath();
   if (!p) return void 0;
-  if (existsSync32(p) && !readFileSync25(p, "utf8").includes(MARKER)) return `Left ${p} alone: it is not ${NAME}'s.`;
+  if (existsSync32(p) && !readFileSync26(p, "utf8").includes(MARKER)) return `Left ${p} alone: it is not ${NAME}'s.`;
   const body = process.platform === "win32" ? `@rem ${MARKER}\r
 @"${process.execPath}" "${CLI}" %*\r
 ` : `#!/bin/sh
@@ -56993,7 +57066,7 @@ var isLink = (p) => {
     return false;
   }
 };
-var ours3 = (p) => isLink(p) ? readlinkSync(p) === SKILL_DIR : existsSync32(join36(p, "workflows", "reply.md")) && /^name: delegate$/m.test(readFileSync25(join36(p, "SKILL.md"), "utf8"));
+var ours3 = (p) => isLink(p) ? readlinkSync(p) === SKILL_DIR : existsSync32(join36(p, "workflows", "reply.md")) && /^name: delegate$/m.test(readFileSync26(join36(p, "SKILL.md"), "utf8"));
 var dirname11 = (p) => join36(p, "..");
 function runnerSilent(o) {
   if (!o.installed || !o.lease || o.lease.machine !== o.machine || o.runner && o.runner !== o.machine) return 0;
@@ -57115,7 +57188,7 @@ function uninstall2(purge) {
   if (ext) out.push(ext);
   if (has("claude")) spawnSync5("claude", ["mcp", "remove", "--scope", "user", "delegate"], { stdio: "ignore" });
   const lp = launcherPath();
-  if (lp && existsSync32(lp) && readFileSync25(lp, "utf8").includes(MARKER)) {
+  if (lp && existsSync32(lp) && readFileSync26(lp, "utf8").includes(MARKER)) {
     if (process.platform === "win32") {
       const d = deleteAfterExit(lp);
       spawn7(d.command, d.options).unref();
@@ -57149,7 +57222,7 @@ function uninstall2(purge) {
   out.push(root ? `Your data is still in ${root}. Delete that folder yourself if you want it gone.` : "Done.");
   return out;
 }
-var fileHash = (f) => createHash10("sha256").update(readFileSync25(f, "utf8").replace(/\r\n/g, "\n")).digest("hex");
+var fileHash = (f) => createHash10("sha256").update(readFileSync26(f, "utf8").replace(/\r\n/g, "\n")).digest("hex");
 var pluginListed = (out = spawnSync5("copilot", ["plugin", "list"], { encoding: "utf8", windowsHide: true }).stdout ?? "") => /^\s*\W?\s*delegate(@\S+)?\s+\(v/m.test(out);
 var version2 = () => VERSION;
 
