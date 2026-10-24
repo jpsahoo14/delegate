@@ -1,5 +1,5 @@
 import type { ChatLevel, Config, Src, Workflow } from '../core/types.ts'
-import { assertTestSafe } from '../store/fs.ts'
+import { assertTestSafe, readJson, writeJson } from '../store/fs.ts'
 import type { Store } from '../store/state.ts'
 import type { Source } from '../adapters/source.ts'
 import type { Knowledge } from '../knowledge/index.ts'
@@ -42,15 +42,34 @@ export function takeRead(root: string, runId: string): Looked {
 // Teams read tools a reply run must not call directly, so every chat it reads is known.
 export const UNTRACKED = /^teams-(List|Get|Search)/i
 
+export function membershipUnknown(store: Store, chatId: string): boolean {
+	const members = store.members()[chatId]
+	return members?.guests !== false && members?.guests !== true && !members?.outside?.length
+}
+export function membershipWait(store: Store, chatId: string, waiting = true) {
+	const file = join(store.root, 'state', 'membership-waits.json'), before = readJson<string[]>(file, [])
+	const chats = waiting ? [...new Set([...before, chatId])] : before.filter(id => id !== chatId)
+	if (JSON.stringify(chats) !== JSON.stringify(before)) writeJson(file, chats, store.machine)
+	const text = chats.length ? `Automatic replies are waiting: Delegate couldn't verify who is in ${chats.length} chat${chats.length === 1 ? '' : 's'}.` : undefined
+	if (store.health()['membership-waiting']?.text !== text) store.setHealth('membership-waiting', text)
+}
+
 // Member ids per chat, cached for a day, with whether a guest or someone from another tenant is in it. Undefined when they cannot
 // be read. A read that finds a guest in a chat marked "Shareable within my org" clears the mark at once and tells the owner once (#36).
-export async function membersOf(store: Store, src: Source, chatId: string): Promise<string[] | undefined> {
+export async function membersOf(store: Store, src: Source, chatId: string, refresh = false): Promise<string[] | undefined> {
 	const cache = store.members(), hit = cache[chatId]
 	// An entry from before names (or guests) were kept is read again, so mentions can find people.
-	if (hit?.names && hit.guests !== undefined && Date.now() - Date.parse(hit.at) < 86_400_000) return hit.ids
-	const r = await src.members?.(chatId).catch(() => undefined)
-	if (!r?.ids?.length) return undefined
-	store.saveMembers({ ...store.members(), [chatId]: { ids: r.ids, names: r.names, guests: !!r.guests, at: new Date().toISOString() } })
+	if (!refresh && hit?.names && hit.guests !== undefined && hit.outside !== undefined && Date.now() - Date.parse(hit.at) < 86_400_000) {
+		membershipWait(store, chatId, false)
+		return hit.ids
+	}
+	const r = await src.members?.(chatId).catch(error => { store.log({ event: 'members-unreadable', chat: chatId, error: String(error).slice(0, 200) }); return undefined })
+	if (!r?.ids?.length) {
+		store.saveMembers({ ...store.members(), [chatId]: { ids: hit?.ids ?? [], names: hit?.names, outside: hit?.outside, at: new Date().toISOString() } })
+		return undefined
+	}
+	store.saveMembers({ ...store.members(), [chatId]: { ids: r.ids, names: r.names, guests: r.guests, outside: r.outside ?? [], at: new Date().toISOString() } })
+	if (!membershipUnknown(store, chatId)) membershipWait(store, chatId, false)
 	if (r.guests) await clearShareable(store, src, chatId)
 	return r.ids
 }

@@ -85,7 +85,7 @@ async function tickInPhases(store: Store, deps: Parameters<typeof tick>[1] = {})
 	if (!store.acquireLease()) return { skipped: 'another machine holds the lease', ...empty, ms: Date.now() - t0 }
 	// The demo swaps in a file chat, a canned worker, and instant jobs through the same interfaces.
 	const demo = kindOf(cfg.source) === 'demo'
-	const src = deps.source ?? sourceFor(cfg.source, cfg.owner.name, store.root)
+	const src = deps.source ?? sourceFor(cfg.source, cfg.owner.name, store.root, cfg.owner.id, entry => store.log(entry))
 	if (demo) deps = { ...deps, run: deps.run ?? demoRun(store), procs: deps.procs ?? demoProcs(store) }
 	// Loudly off (Bet 1): the first cycle after the reading machine ran none for a while notes it, to tell after the catch-up.
 	// Measured from the end of the last cycle, so a long cycle, a stop, or a Teams outage is never called asleep.

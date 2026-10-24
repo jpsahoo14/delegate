@@ -1,12 +1,48 @@
 # React preview requirements
 
+Acceptance Undo identity (U1):
+- Remember the proposal and the learned line as two separate text identities, captured only after successful acceptance.
+- Generated learned wording or an evidence suffix must not block immediate Undo of an unchanged Add it.
+- Changed proposal or stored-line text still refuses Undo; all other safety gates remain in force.
+
+Undo an unchanged Add it:
+- Within the existing undo window, remove the accepted learned line and restore the suggestion's previous state,
+  time, snooze expiry and told flag exactly. Do not count this as Not now or Never.
+- Refuse when the acceptance is no longer current or its words/ownership changed; a failed rules write changes no habit.
+- Stop-style offers, edited acceptance and old records lacking a prior-state snapshot have no acceptance Undo.
+
+Accepting edited suggestions:
+- Save the edited words as an unconfirmed learned line to be read, never turn on the original suggestion first.
+- Keep the suggestion and its dismissal Undo unchanged if saving is refused. Say it is being read, not already on.
+
+Rule reading (R12a-h):
+- Read a new or edited line in the next free drafting slot, ahead of queued drafts, without interrupting an active run.
+- Show Reading... with no promised time. Existing limits, pause/stop and AI-run budgets still apply.
+- A changed line is read again; an older result never applies to it. Failed reading keeps its text and reports the
+  problem in Health instead of pretending it was understood. Reading a line never sends, posts or confirms it.
+
+Habit suggestion lifecycle (R12a-h2):
+- Habit rule mutations use the central writer and show its refusal before changing acceptance/removal/edit state.
+- Add it unchanged records consent for exactly that trusted text; edited suggestions use normal compile/confirmation.
+- Show one open suggestion and a turned-down list with dismissal time/kind. Not now is 14 days, then 60 days with doubled
+  evidence; Never never returns automatically. Undo applies only to the latest dismissal; reconsider preserves history.
+- Preserve current owner/Settings lines, unrelated habits and learning/style metadata. No invented drift state before R14.
+
+Keep waiting instead (R11(3)):
+- An unsent drafted follow-up can be discarded as skipped while the original W entry returns to Waiting on others.
+- Send no follow-up or self acknowledgement and record no negative learning from the discarded draft.
+- Preserve the original ask/age and unrelated waits; never resurrect an answered or dismissed wait.
+- Refuse sent/busy/ambiguous items explicitly. Ordinary work wait/duration controls and ordinary skip learning stay unchanged.
+
 PR review owner-item lifecycle (R10c first slice):
 - Remember cleaned live PR reviewer-group labels; unavailable PR evidence must not retain an old group scope.
 - A finished review's owner item goes to Done only on a non-zero live vote changed from its known review-start baseline,
   or a PR closing after the ask. Old votes/closures are context; a missing baseline never gains vote-close authority.
 - Keep the posted-comment and sent-reply facts for Done; neither a cached receipt nor a group vote is the owner's live vote.
 - Preserve running reviews, new owner input and the existing generic/compound PR paths. Cast/send nothing while observing.
-- Head-change handling follows the separate SEND reviewBasis handoff; never treat a latest live read as a completed review.
+- A live head differing from the same PR's verified reviewBasis sets Review again, preserving every reviewed/sent fact.
+  Missing basis or unchanged head creates no marker; new commits alone never start a re-review. The marker must not block
+  normal vote/closure news, role gating or effect refresh; only the automatic stale-draft redraft is replaced.
 
 PR review revision evidence (R20 prerequisite):
 - Read and remember the exact PR/head before each review run; replace it on a restart and leave it unknown on read failure.

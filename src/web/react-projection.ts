@@ -16,6 +16,15 @@ import { cardContext, cardFacts } from '../core/card-facts.ts'
 import { normalizeReport } from '../core/normalize-report.ts'
 // #50 (SEND 7533bea1): the status an item gets when its comments were repaired and wait to be posted.
 const REPAIRED = 'The comment format was wrong and is fixed. Post them now?'
+// R12b: ways.ts's stubs throw exactly "not yet" until the engine lands; anything else is a real failure, logged by its shape (its error
+// class) at most once an hour, never its message.
+const notYet = (error: unknown) => error instanceof Error && error.message === 'not yet'
+let waysFailedAt = 0
+function waysFailed(store: Store, fn: string, error: unknown) {
+	if (Date.now() - waysFailedAt < 3_600_000) return
+	waysFailedAt = Date.now()
+	try { store.log({ event: 'ways-failed', fn, kind: error instanceof Error ? error.name : typeof error }) } catch { /* best effort */ }
+}
 // R10b (joint C2): Approve's meaning line, shown under the bar whichever role Approve has.
 const APPROVE_PR_MEANING = 'Approves as you. The PR is unchanged since the review.'
 // 0.2.43 (PE A R22): the words card-state builds its warn and strip from go through the same id net as the page's text, so no id or
@@ -37,7 +46,7 @@ function scrubFacts(f: CardFacts): CardFacts {
 		...(f.voteGap ? { voteGap: { ...f.voteGap, text: idNet(f.voteGap.text) } } : {}),
 	}
 }
-import { cardState, checkCard, type ActionKind, type CardFacts } from '../core/card-state.ts'
+import { cardState, checkCard, failLine, type ActionKind, type CardFacts } from '../core/card-state.ts'
 import { policyContext } from '../runner/autosend.ts'
 import { isPersona } from '../core/intake.ts'
 import { PAGE_REPLY_CHANGED, automationApprovalRev, pageChangeId, pageDigest, pageOptionId, proposalApprovalRev, workflowApprovalRev } from '../core/page-approval.ts'
@@ -54,12 +63,17 @@ import { BY, newReminder, peopleOf } from './model/forms.ts'
 import { approvedReplyText, currentDraft, reopenable, signatureOf } from '../core/policy.ts'
 import { madeBefore, maybeOf } from '../runner/ledger.ts'
 import { stillApproved } from '../runner/jobs.ts'
-import { prOf, prRefOf, prTarget } from '../runner/probe.ts'
+import { prOf, prTarget } from '../runner/probe.ts'
+import { aboutPr } from '../runner/apply.ts'
+import { findingFor } from '../runner/review-autonomy.ts'
+import { acceptSuggestion, addLine, answerLine, confirmLine, deleteLine, deleteNote, dismissSuggestion, editLine, limitsCard, linesToCheck, makeNoteLine, needsHim, reconsiderSuggestion, restoreLine, setLineOff, suggestions, undoAcceptSuggestion, undoDismiss, wayLines, wayNotes, type WayWriteResult } from '../core/ways.ts'
+import { voteMention } from '../core/vote-claims.ts'
 import { groupChoices } from '../runner/review-gate.ts'
 import { restoreOffRecord } from '../runner/offrecord.ts'
 import { chatIdNet, idNet, pageText, takePageTextLeaks } from './page-text.ts'
 import { pageManagementRev, workflowManagementRev } from '../store/page-revision.ts'
-import { active, linksIn, voteClaimGap } from '../runner/work.ts'
+import { active, isNonAdoPrLink, pendingParts, voteClaimGap, voteSentences } from '../runner/work.ts'
+import { heldBy } from '../runner/owner.ts'
 import { voteHold } from '../core/owner-send.ts'
 import { habitUndoable, undoMs } from '../runner/habits.ts'
 
@@ -261,6 +275,8 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 	// An item open in a terminal has one page step, Take it back (#43), whatever its state.
 	const editable = new Set([...workflows.filter(workflow => workflow.state === 'needs_human' || workflow.openOn && workflow.state !== 'done').map(workflow => workflow.code), ...stoppedCodes])
 	const ownerRules = store.rules()
+	// R11(3): the W entries a follow-up may return to, and the items by id (a shared job's other parents), read once.
+	const waitLinks = store.waiting(), byId = new Map(workflows.map(w => [w.id, w]))
 	// R10b: the row line of a review that waits for his approval, by item code (PM §2).
 	const reviewRows = new Map<string, string>()
 	for (const wf of workflows) {
@@ -353,11 +369,20 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 		// L1b: SEND's pure check on the draft before any Send (a held claim comes from the item itself, in cardFacts). The last-known
 		// vote is the runner's PR read [PR id, status, head, owner vote]; a recommendation is never evidence.
 		const lastKnownVote = (() => { try { const read: unknown = wf.prRead ? JSON.parse(wf.prRead) : undefined; return Array.isArray(read) && typeof read[0] === 'number' ? { pr: read[0], ...(typeof read[3] === 'number' ? { vote: read[3] } : {}), ...(typeof read[2] === 'string' ? { head: read[2] } : {}) } : undefined } catch { return undefined } })()
-		// L1b B1 (PE 23:22): only where the engine checks claims at all, its aboutPR (apply.ts:583, not exported, so the same expression
-		// from the same exported parts): a PR ref, a pr_review item, or a PR link in the draft, the ask or the asker's thread. A non-PR
-		// "Approved, enjoy your day off." is left alone, as the engine sends it.
-		const aboutPR = () => !!draft && (!!prRefOf(store, wf) || wf.intent === 'pr_review' || linksIn([draft.text, wf.lastAsk ?? '', ...store.thread(wf.id).filter(m => m.from.id === wf.asker?.id).map(m => m.text)].join('\n')).some(l => l.startsWith('pr:')))
-		const voteGap = draft && wf.state === 'needs_human' && !voteHold(wf) && aboutPR() ? voteClaimGap(draft.text, wf.effects ?? [], lastKnownVote) : undefined
+		// L1b B1 (PE 23:22): only where the engine checks claims at all, SEND's exported aboutPr (apply.ts): a PR ref, a pr_review item, or a
+		// PR link in the draft, the ask or the asker's thread. A non-PR "Approved, enjoy your day off." is left alone, as the engine sends it.
+		// The cheap voteMention check first (PE nit): voteClaimGap only reads sentences that mention a vote, so nothing else changes.
+		const voteGap = draft && wf.state === 'needs_human' && !voteHold(wf) && voteMention(draft.text) && aboutPr(store, wf, draft.text) ? voteClaimGap(draft.text, wf.effects ?? [], lastKnownVote) : undefined
+		// SEND fa4a5a1d (queue 06:10): his reply says he voted on a PR Delegate can't read votes on (a GitHub/GitLab-style link): a notice
+		// on the card, never a block. Only the owner's own claim sentences count, and only links in them; skipped when the vote-claim line shows.
+		// PE 09:16 B1: a link's trailing punctuation ("…/pull/12.") is not part of it. Nit: a claim that isn't an approval (vote < 5, e.g.
+		// "requested changes") says "voted"; an approval keeps "approved".
+		const unverifiable = draft && wf.state === 'needs_human' && !voteGap && voteMention(draft.text) ? voteSentences(draft.text, cfg.owner.name ?? '')
+			.find(said => said.kind === 'owner' && (said.sentence.match(/https?:\/\/[^\s<>()"']+/g) ?? []).some(link => isNonAdoPrLink(link.replace(/[.,;:!?'")\]]+$/, '')))) : undefined
+		if (unverifiable) warns.push(unverifiable.vote === 'approval' || unverifiable.vote >= 5
+			? `Your reply says you approved, but ${NAME} can't check votes on that PR. Check it before sending.`
+			: `Your reply says you voted on that PR, but ${NAME} can't check votes there. Check it before sending.`)
+
 		const recommended = job?.result?.voteRecommendation?.vote
 		const voteRecommended = !!recommended && recommended !== 'none' && !pending.some(effect => isVote(effect.call))
 		// L2b (#7, PE 23:56): the reviewer-group question is a multi-choice in place of its question text, only while the item has no
@@ -455,6 +480,22 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 			if (cs.mode === 'working' && wf.state === 'running') actionIds.push(offer(id, rev, 'write-own', 'Write the reply yourself', input => ({ code: id, verb: 'send', text: requiredText(input) }), { effect: 'sends', staleness: 'exact', expect, input: 'text' }))
 			actionIds.push(offer(id, rev, 'dismiss', 'Dismiss', () => ({ code: id, verb: 'skip' }), { staleness: 'exact', expect }))
 		}
+		// R11(3) (HOST e4e224a7): after he drafts a follow-up to someone he waits on, "Keep waiting instead" closes it unsent and the
+		// original W entry returns to Waiting on others: the existing verb "wait" on this item with no text, on this exact revision.
+		// Offered only where the engine accepts it: an unsent resting or scheduled follow-up reply with exactly one W entry linked to it
+		// in its own chat, not held by a terminal, not part of other work, not busy and not shared.
+		const keepWaiting = (() => {
+			if (!wf.followUp || wf.kind !== 'reply' || wf.sent || (wf.state !== 'needs_human' && wf.state !== 'scheduled') || wf.partOf) return undefined
+			if (heldBy(store, wf) === 'window' || pendingParts(store, wf)) return undefined
+			const busy = [wf.job, wf.work?.watch].some(jobId => {
+				const job = jobId ? facts.jobs.get(jobId) : undefined
+				return job?.state === 'queued' || job?.state === 'running' || !!job?.parents.some(parent => { const other = byId.get(parent); return other && other.id !== wf.id && other.state !== 'done' })
+			})
+			const linked = waitLinks.filter(w => w.item === wf.code)
+			return !busy && linked.length === 1 && linked[0].chat.id === wf.chat.id && wf.msgIds.includes(linked[0].msgId) ? linked[0] : undefined
+		})()
+		if (keepWaiting) actionIds.push(offer(id, rev, 'keep-waiting', 'Keep waiting instead', () => ({ code: id, verb: 'wait' }), { staleness: 'exact', expect,
+			meaning: `Closes this follow-up without sending it. ${keepWaiting.to.map(name => name.trim().split(/[\s,]+/)[0]).filter(Boolean).join(', ') || 'They'} ${keepWaiting.to.length > 1 ? 'go' : 'goes'} back to Waiting on others.` }))
 		actionIds.push(offer(id, rev, 'ask', `Ask ${NAME}`, input => ({ code: id, verb: 'ask', text: requiredText(input) }), { input: 'text' }))
 		if (reopenable(wf, 'answer')) actionIds.push(offer(id, rev, 'reopen', 'Reopen and draft reply', input => ({ code: id, verb: 'answer', text: requiredText(input) }), { input: 'text', staleness: 'exact', expect }))
 		const noteIds = notes(id, id, cardNotes)
@@ -498,9 +539,16 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 			...(fx.voteGap ? { voteGap: { text: pageText(fx.voteGap.text), held: fx.voteGap.held } } : {}),
 			attentionKind: replyChanged ? 'reply-changed' : cs.mode === 'agent-wait' ? 'agent-setup' : cs.mode === 'failed' || cs.mode === 'not-sent' || notSent ? 'run-failed' : attention && attention === shownWarn && cs.warnKind === 'reason' ? 'reason' : undefined,
 			// The current failure, whatever recorded it, with the routes it tried, the PR to review by hand, and whether some read tools are off (#17 b).
-			runFailed: cs.mode === 'failed' && fx.failure ? { at: fx.failure.at, why: pageText(fx.failure.why), ...(fx.failure.tried.length ? { tried: fx.failure.tried.map(pageText) } : {}), ...(fx.failure.review ? (u => (u ? { review: u } : {}))(safeLink(prOf(store, wf)?.url)) : {}), ...(fx.failure.job && (cfg.agent.toolsTrimmed || cfg.agent.deny?.length) ? { toolsOff: true } : {}) } : undefined,
+			// PE A R31: line is the failure words from structured fields only (the PM fallback otherwise); why and tried stay for Details.
+			runFailed: cs.mode === 'failed' && fx.failure ? { at: fx.failure.at, line: pageText(failLine(fx.failure)), why: pageText(fx.failure.why), ...(fx.failure.tried.length ? { tried: fx.failure.tried.map(pageText) } : {}), ...(fx.failure.review ? (u => (u ? { review: u } : {}))(safeLink(prOf(store, wf)?.url)) : {}), ...(fx.failure.job && (cfg.agent.toolsTrimmed || cfg.agent.deny?.length) ? { toolsOff: true } : {}) } : undefined,
 			mode: cs.mode, editor: cs.editor, block3: cs.block3,
-			...(cs.strip ? { working: { doing: pageText(cs.strip.doing).replace(/^Working:\s*/i, ''), ...(cs.strip.since ? { since: cs.strip.since } : {}) } } : {}),
+			...(cs.strip ? { working: { doing: pageText(cs.strip.doing).replace(/^Working:\s*/i, ''), ...(cs.strip.since ? { since: cs.strip.since } : {}),
+				// #48b (PM A R21): a redraft says so, shows his answer ("The owner picked: ..." reads as his pick) from when it started, and the
+				// draft it replaces (the stored one: the page's copy drops a draft its latest run no longer offers), for "Previous draft" and to
+				// prefill Write the reply yourself.
+				...(cs.strip.kind ? { kind: cs.strip.kind } : {}),
+				...(cs.strip.kind === 'redraft' && wf.ownerAnswer ? { answer: { text: pageText(wf.ownerAnswer.replace(/^The owner picked:\s*/, 'You picked: ')), ...(wf.workingSince ? { at: wf.workingSince } : {}) } } : {}),
+				...((text => (text ? { previous: text } : {}))(stored.workflows.find(w => w.id === wf.id)?.draft?.text)) } } : {}),
 			prLabel,
 			// #50 + refused[] (PE 01:00): to-dos he keeps stay in block 3; a change Delegate won't make (normalizeReport's refused[], from
 			// the to-dos and the report's facts) and a comment it couldn't prepare are "Left for you" lines, each with its reason.
@@ -508,7 +556,7 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 				const raw = c.todos ?? [], PREPARE = /^Couldn't prepare (comment \d+|change \d+|question for the author)(?: \(option \d+\))?:\s*(.+)$/
 				const normal = normalizeReport({ todos: raw.filter(t => !PREPARE.test(t)), context: c.context ?? [], intent: wf.intent })
 				const left = [
-					...normal.refused.map(r => ({ text: `${r.what.replace(/[.\s]+$/, '')}.`, why: r.reason.replace(/[.\s]+$/, '') })),
+					...normal.refused.map(r => ({ text: `${pageText(r.what).replace(/[.\s]+$/, '')}.`, why: pageText(r.reason).replace(/[.\s]+$/, '') })),
 					...raw.flatMap(t => (m => m ? [{ text: `Couldn't prepare ${m[1]}.`, why: pageText(m[2]).replace(/[.\s]+$/, '') }] : [])(PREPARE.exec(t))),
 				]
 				return { todos: normal.todos, left }
@@ -534,6 +582,10 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 			// recommended, so the card can say what Send does on the PR. The PR meaning comes from here, not from effectLine (PE 19:12).
 			...((pr => pr && job?.result?.findings ? { prReview: { pr, voteRecommended: !!job.result.voteRecommendation && !['none', 'NoVote'].includes(job.result.voteRecommendation.vote),
 				findings: job.result.findings.map(finding => ({ text: pageText(finding.text), ...(finding.file ? { file: finding.file } : {}), ...(finding.line ? { line: finding.line } : {}),
+					// findingFor move (PE 01:22): the pending comment change Send would post for this finding, by SEND's own findingFor (R25): same
+					// file, same line, same text once the [High] tag and spacing are cleaned. posts: that change exists and isn't refused; the card
+					// adds only whether he left it ticked.
+					...((k => (k >= 0 ? { posts: !entities.changes[changeIds[k]]?.error, changeId: changeIds[k] } : {}))(pending.findIndex(effect => !isVote(effect.call) && findingFor(effect, [finding]) === finding))),
 					...(finding.thread ? { thread: { author: finding.thread.author, at: finding.thread.at, ...((url => (url ? { url } : {}))(safeLink(finding.thread.url))) } } : {}) })) } } : {})(Number(/^PR (\d+)/.exec(prLabel ?? '')?.[1]) || undefined)),
 			question: c.question === undefined ? undefined : (failedJobDirections(wf) ? forPage(c.question) : pageText(c.question)) || undefined,
 			choices: choices && { ...choices, prompt: forPage(choices.prompt), options: choices.options.map(option => ({ ...option, id: pageOptionId(option) })), ...(groupPick ? { group: true } : {}) },
@@ -837,6 +889,90 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 		}
 		settingsActions[key] = server.actionIds.filter(id => entities.actions[id])
 	}
+	// R12b (PE A R28): Settings › Your way of working, exactly as SEND's ways.ts returns it: the page adds no status, grouping or read-back.
+	// Step 3 (SEND a58444d8): the lines, needsHim and linesToCheck are real; the suggestion facade may still say "not yet", which means
+	// only "no suggestions from the engine yet" (suggestionsReady false: the old habit-suggestion list stays). "not yet" from the lines
+	// means no section; any other error is a real failure: logged by shape only, and the section says so (PE 05:06/05:24).
+	const ways: Snapshot['ways'] = (() => {
+		const cfg = store.config(), limits = limitsCard(cfg).map(limit => ({ id: limit.id, page: limit.page }))
+		let fn = 'wayLines'
+		try {
+			const lines = wayLines(store, cfg)
+			fn = 'linesToCheck'; const toCheck = linesToCheck(store, cfg)
+			fn = 'needsHim'; const count = needsHim(store, cfg)
+			// PE S3 (b): his old prose paragraphs as notes (SEND 94fac6a9); never in wayLines or needsHim.
+			fn = 'wayNotes'; const notes = wayNotes(store)
+			fn = 'suggestions'
+			const open = (() => { try { return suggestions(store) } catch (error) { if (notYet(error)) return undefined; throw error } })()
+			return { lines, ...(open?.open ? { open: open.open } : {}), turnedDown: open?.turnedDown ?? [], limits, needsHim: count, toCheck, ...(open ? { suggestionsReady: true } : {}),
+				...(notes.length ? { notes: notes.map(note => ({ id: note.id, text: note.text, textHash: note.textHash, ...(note.review ? { review: true } : {}) })) } : {}) }
+		} catch (error) {
+			if (notYet(error)) return undefined
+			waysFailed(store, fn, error)
+			return { lines: [], turnedDown: [], limits, needsHim: 0, toCheck: 0, failed: true }
+		}
+	})()	// R12b slice 2 (PE A R28): each control maps 1:1 to its ways.ts verb, on the line's textHash (exact staleness, and the engine compares
+	// it again). The page says what the engine answers; while SEND's bodies throw "not yet", that refusal is shown as it is.
+	if (ways && !ways.failed) {
+		const said = (fn: string, run: () => WayWriteResult, done: string): Immediate => {
+			try {
+				const result = run()
+				return result.ok ? { accepted: true, text: done } : { accepted: false, text: pageText(result.why) }
+			} catch (error) {
+				if (notYet(error)) return { accepted: false, text: `Not saved: ${NAME} can't save this here yet.` }
+				waysFailed(store, fn, error)
+				return { accepted: false, text: 'Not saved: something went wrong. Your text is kept.' }
+			}
+		}
+		const text = (input: Intent['input']) => requiredText(input).trim()
+		const verb = (key: string, kind: string, label: string, rev: string, run: (input: Intent['input']) => Immediate, input?: Action['input']) => {
+			const id = tool(key, kind, label, run, input, key, rev)
+			entities.actions[id].effect = 'changes-system'
+			;(settingsActions[key] ??= []).push(id)
+		}
+		verb('ways', 'way-add', 'Add', 'ways', input => said('addLine', () => addLine(store, text(input)), `Added. ${NAME} is reading it.`), 'text')
+		// Undo after Delete (6 s, client-held): the deleted line's id and textHash travel in the text, as "<id>\n<hash>".
+		verb('ways', 'way-restore', 'Undo', 'ways', input => { const [id, hash] = requiredText(input).split('\n'); return said('restoreLine', () => restoreLine(store, id, hash ?? ''), 'Back.') }, 'text')
+		for (const line of ways.lines) {
+			const key = `way:${line.id}`, rev = line.textHash
+			verb(key, 'way-edit', 'Save', rev, input => said('editLine', () => editLine(store, line.id, text(input), rev), `Saved. ${NAME} is reading it again.`), 'text')
+			if (line.status !== 'reading') verb(key, line.group === 'off' || line.status === 'off' ? 'way-on' : 'way-off', line.group === 'off' || line.status === 'off' ? 'Turn on' : 'Turn off', rev,
+				() => { const off = !(line.group === 'off' || line.status === 'off'); return said('setLineOff', () => setLineOff(store, line.id, off, rev), off ? 'Off · kept so you can turn it on again.' : 'On.') })
+			if (line.status === 'waiting') {
+				verb(key, 'way-confirm', 'Turn on', rev, () => said('confirmLine', () => confirmLine(store, line.id, rev), 'Turned on.'))
+				verb(key, 'way-not-now', 'Not now', rev, () => said('setLineOff', () => setLineOff(store, line.id, true, rev), 'Not now. The line stays off.'))
+			}
+			if (line.status === 'unclear') verb(key, 'way-answer', 'Save', rev, input => said('answerLine', () => answerLine(store, line.id, text(input), rev), `Saved. ${NAME} is reading the line again.`), 'text')
+			verb(key, 'way-delete', 'Delete', rev, () => said('deleteLine', () => deleteLine(store, line.id, rev), 'Deleted.'))
+			// PM A R32 / PE A R33 (SEND 89fcb3c1): Undo on the "Added to your way of working." line takes back an unchanged Add it on this exact
+			// line (its id and textHash); the engine refuses anything else and restores the suggestion card exactly.
+			if (line.source === 'learned') verb(key, 'way-undo-accept', 'Undo', rev, () => said('undoAcceptSuggestion', () => undoAcceptSuggestion(store, line.id, rev), 'Taken back. The suggestion is back.'))
+		}
+		if (ways.open) {
+			const open = ways.open, key = `way-suggestion:${open.id}`, rev = open.textHash
+			// Until HOST's edit branch lands, an edited Add it is refused with the contract's "not yet" (PE 07:46): say so in the PM's words.
+			verb(key, 'suggestion-accept', 'Add it', rev, input => {
+				// SEND 0c7273b8: an edited Add it is saved as a learned line that is read before it can be turned on (no Undo, A R33 is for unchanged).
+				const edited = text(input) !== open.text.trim()
+				const done = said('acceptSuggestion', () => acceptSuggestion(store, open.id, text(input), rev), edited ? `Saved your edited line. ${NAME} is reading it; it won't be on until you turn it on.` : 'Added to your way of working.')
+				return !done.accepted && done.text === 'not yet' ? { accepted: false, text: "Not saved: an edited suggestion can't be added yet. Add it as written, or write your own line." } : done
+			}, 'text')
+			verb(key, 'suggestion-not-now', 'Not now', rev, () => said('dismissSuggestion', () => dismissSuggestion(store, open.id, 'not-now', rev), 'Not now.'))
+			verb(key, 'suggestion-never', 'Never', rev, () => said('dismissSuggestion', () => dismissSuggestion(store, open.id, 'never', rev), "Won't suggest this again."))
+		}
+		// PE S3 (b): "Make it a line" is the normal Add a line path (compile, then confirmation for anything widening) and the note goes;
+		// "Remove" drops the note. Both on the note's textHash.
+		for (const note of ways.notes ?? []) {
+			const key = `way-note:${note.id}`, rev = note.textHash
+			verb(key, 'note-to-line', 'Make it a line', rev, () => said('makeNoteLine', () => makeNoteLine(store, note.id, rev), `Made it a line. ${NAME} is reading it.`))
+			verb(key, 'note-remove', 'Remove', rev, () => said('deleteNote', () => deleteNote(store, note.id, rev), 'Removed.'))
+		}
+		for (const { suggestion } of ways.turnedDown) {
+			const key = `way-suggestion:${suggestion.id}`, rev = suggestion.textHash
+			verb(key, 'suggestion-undo', 'Undo', rev, () => said('undoDismiss', () => undoDismiss(store, suggestion.id), 'Back.'))
+			verb(key, 'suggestion-reconsider', 'Reconsider', rev, () => said('reconsiderSuggestion', () => reconsiderSuggestion(store, suggestion.id), 'Back as a suggestion.'))
+		}
+	}
 	if (base.status.state !== 'on') for (const action of Object.values(entities.actions)) {
 		if (action.effect === 'sends' || action.effect === 'changes-system' && ['approve', 'approve-again'].includes(action.kind)) {
 			action.unavailable = { label: base.status.state === 'paused' ? 'Paused' : 'Stopped', reason: `${base.status.state === 'paused' ? 'Paused' : 'Stopped'}: nothing is sent. Resume before approving this action.` }
@@ -869,8 +1005,13 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 		needsIds: [...new Set([...base.needs.map(item => item.code), ...stoppedCodes, ...workflows.filter(workflow => workflow.openOn && workflow.state !== 'done').map(workflow => workflow.code), ...workflows.filter(workflow => workflow.partOf && workflow.state === 'needs_human').map(workflow => workflow.code)])].sort((a, b) => byCode.get(a)!.createdAt.localeCompare(byCode.get(b)!.createdAt)), tiles: base.tiles,
 		also: [...base.also.map(tile => tile.key === 'running' ? { ...tile, count: busyNow + busyQueued + scheduledSends.length } : tile), ...(base.also.some(tile => tile.key === 'running') ? [] : [{ key: 'running', count: 0, label: 'running' }])],
 		catchupIds: base.catchUp.top.map(row => Object.values(entities.doneEntries).find(entry => entry.code === row.code && entry.kind === row.kind && entry.at === row.at)?.id).filter((id): id is string => !!id),
-		// Sends going out by themselves first (R11(1b): with their Undo/Stop), then the working ones, then the queued (R11(1)).
-		running: classicRunning.map((row, n) => ({ row, kind: kinds[n] })).sort((a, b) => (a.kind === undefined ? 0 : a.kind === 'working' ? 1 : 2) - (b.kind === undefined ? 0 : b.kind === 'working' ? 1 : 2)).map(({ row, kind }) => ({
+		// Sends going out by themselves first (R11(1b): with their Undo/Stop), soonest first, then the working ones, then the queued (R11(1)).
+		// A row with no kind that isn't a scheduled send (its item can't be found) goes last, not first (PE 00:02 nit).
+		running: classicRunning.map((row, n) => ({ row, kind: kinds[n], send: (w => w?.state === 'scheduled' && w.sendAt ? w.sendAt : undefined)(byCode.get(row.code)) }))
+			.sort((a, b) => {
+				const rank = (r: { kind?: string; send?: string }) => r.send ? 0 : r.kind === 'working' ? 1 : r.kind === 'queued' ? 2 : 3
+				return rank(a) - rank(b) || (a.send && b.send ? a.send.localeCompare(b.send) : 0)
+			}).map(({ row, kind }) => ({
 			...row, ...(kind === 'queued' ? { queued: true } : {}), what: pageText(Object.values(entities.placements).find(placement => placement.act === row.code && placement.kind === 'scheduled')?.headline ?? row.what),
 			sendAt: byCode.get(row.code)?.state === 'scheduled' ? byCode.get(row.code)?.sendAt : undefined,
 			detail: entities.items[row.code]?.attentionKind === 'agent-setup' ? `Held: ${entities.items[row.code].attention}` : row.code && (byCode.get(row.code)?.state !== 'scheduled' || /^Held: /.test(byCode.get(row.code)?.status ?? '')) ? pageText(byCode.get(row.code)?.status) : undefined,
@@ -919,7 +1060,7 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 		pageActionIds, reminderDefaults: newReminder(''), recipients: peopleOf(base).map(person => ({ id: hashOf(person.chat), name: person.name, group: person.group })),
 		// An empty list says why, so the owner knows to type a name (reminder recipients, 10-23).
 		...(base.people.length ? {} : { recipientsNote: `No one to choose yet: reminders go to people and group chats ${NAME} has seen asks from.${workflows.some(w => w.chat.test && !w.chat.group && w.asker && isPersona(w.asker.id)) ? ' People played with "[as Name]" in test chats are not real, so they are not listed.' : ''} They appear here once they write to you.` }),
-		settingsActions, doneNew: newCount(base), sinceLine: sinceOf({ ...base, since: base.since ?? visit?.fallbackSince, next }),
+		settingsActions, ...(ways ? { ways } : {}), doneNew: newCount(base), sinceLine: sinceOf({ ...base, since: base.since ?? visit?.fallbackSince, next }),
 		summary: { minute: next.minute, handled: next.handled, catchup: { count: next.catchup.count, worth: next.catchup.worth }, off: next.off, paused: next.paused },
 		showExperienceNote: !store.ui().noted,
 		search: found ? {

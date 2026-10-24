@@ -101,6 +101,7 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 	// The projection names the primary from the card state; the card never picks one (#34). A mode switch only chooses which box it acts on.
 	const primary = report ?? (boxMode === 'answer' ? answerAction : boxMode === 'reply' ? replyPrimary : declared)
 	const fold = (key: string, open: boolean) => { if (ui.folds?.[key] !== open) edit({ folds: { ...ui.folds, [key]: open } }) }
+	const redraftingNow = item.mode === 'working' && item.working?.kind === 'redraft'
 	const editable = !!draft && actions.some(action => action.kind === 'send-edit')
 	// L7b: the configured marker is a fixed, muted suffix under the box ("Teams will show: …"), not text he can delete or move. The box
 	// holds the reply without it, and Send your version adds it back once, as the box with the marker used to send.
@@ -151,16 +152,26 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 
 	// A run that gave no result (queue-new #11): the reason and its time, never a question; Try again is the primary, or write it yourself.
 	const writeOwn = actions.find(action => action.kind === 'write-own')
-	const writeBox = writeOwn && !readOnly && ui.editing && <><Field code={code} rev={item.rev} field="answer" label={`Your reply to ${first}, ${replyWhere}`} value={ui.answer ?? ''} edit={edit} rows={4} />
+	const writeBox = writeOwn && !readOnly && ui.editing && <><Field code={code} rev={item.rev} field="answer" label={`Your reply to ${first}, ${replyWhere}`} value={ui.answer ?? ''} edit={edit} rows={4} placeholder={`Write your reply to ${first}`} />
 		<div className="action-bar"><ActionButton action={writeOwn} label="Send your reply" input={{ text: ui.answer ?? '' }} disabled={!ui.answer?.trim()} disabledReason="Write your reply first." />
 			<Button variant="outline" onClick={() => edit({ editing: false })}>Cancel</Button></div></>
 	const reopen = actions.find(action => action.kind === 'reopen')
 	const failed = item.runFailed && <section className="card-block card-failed">
-		<p role="status" className="warnline"><Icon name="warn" /> {item.runFailed.review && item.prLabel ? `Couldn't finish the review of ${item.prLabel.replace(/ · .*$/, '')}` : `${NAME} couldn't draft this`} at {when(item.runFailed.at)}: {item.runFailed.why}.</p>
+		{/* PE A R31: the failure words from structured fields (the PM fallback otherwise); the free-text why and what it tried are in Details. */}
+		<p role="status" className="warnline"><Icon name="warn" /> {item.runFailed.line ?? "Couldn't finish this. What it tried is in Details."} <span className="muted">· {when(item.runFailed.at)}</span></p>
 		{item.runFailed.review && <p><a href={item.runFailed.review} target="_blank" rel="noreferrer">Review it yourself</a> <span className="muted">opens the PR</span></p>}
 		{item.runFailed.toolsOff && !readOnly && <ToolsOff />}
-		{item.runFailed.tried?.length ? <details className="card-tried"><summary>What it tried ({item.runFailed.tried.length})</summary><ul>{item.runFailed.tried.map((route, n) => <li key={n}>{route}</li>)}</ul></details> : null}
+		<details className="card-tried"><summary>Details</summary><p>{item.runFailed.why.replace(/[.\s]+$/, '')}.</p>
+			{item.runFailed.tried?.length ? <><p className="muted">What it tried ({item.runFailed.tried.length}):</p><ul>{item.runFailed.tried.map((route, n) => <li key={n}>{route}</li>)}</ul></> : null}</details>
 		{writeBox}
+	</section>
+
+	// #48b state 4 (PM A R21): while Delegate redrafts from his answer, the answer is his own right-aligned bubble, and the draft it
+	// replaces is folded under it, read-only. No editable box until 3 minutes (then Write the reply yourself).
+	const answered = redraftingNow && item.working?.answer && <section className="card-block card-answered" aria-label="Your answer">
+		<div className="my-bubble"><p className="muted">You answered {NAME}{item.working.answer.at && <> · {when(item.working.answer.at)}</>}</p><p>{item.working.answer.text}</p></div>
+		{item.working.previous && <details className="previous-draft" open={ui.folds?.previous ?? false} onToggle={event => fold('previous', event.currentTarget.open)}>
+			<summary>Previous draft (will be replaced)</summary><p className="review-reply">{item.working.previous}</p></details>}
 	</section>
 
 	// What the work found (info facts), named by its PR when it comes from a PR job (queue-new #8, #10 c); warnings stay in block 1.
@@ -194,10 +205,9 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 	const included = (change: Entities['changes'][string]) => !(ui.excluded ?? []).includes(change.n)
 	// #28 B1 (PE 01:10): what Send does on the PR is read from the changes it will make: included (ticked), pending and not refused.
 	const posting = prChanges.filter(change => included(change) && !change.error && change.state !== 'made' && change.state !== 'left-out')
-	const postsComment = (finding: NonNullable<Item['prReview']>['findings'][number]) => posting.filter(change => !isVote(change)).some(change => {
-		const hay = `${change.target} ${change.summary} ${change.detail ?? ''}`, file = finding.file?.split(/[\\/]/).pop()
-		return file ? hay.includes(file) && (!finding.line || new RegExp(`\\b${finding.line}\\b`).test(hay)) : !!finding.text && hay.toLowerCase().includes(finding.text.slice(0, 40).toLowerCase())
-	})
+	// findingFor move (PE 01:22): the projection matched each finding to its pending comment change as SEND does (posts, changeId); the
+	// card adds only whether that change is still ticked and postable.
+	const postsComment = (finding: NonNullable<Item['prReview']>['findings'][number]) => !!finding.posts && posting.some(change => change.id === finding.changeId)
 	const review = item.mode !== 'review-done' && !item.reviewDone?.closed && (prChanges.length > 0 && (item.job || findings.length > 0) || !!item.prReview?.findings.length) && <section className="card-block card-review"><h3>{NAME}'s review{prNumber ?? item.prReview?.pr ? ` of PR ${prNumber ?? item.prReview?.pr}` : ''}</h3>
 		<p className="verdict"><span className={`verdict-chip ${vote && /approve/i.test(vote.action) ? 'ready' : 'not-ready'}`}>{vote && /approve/i.test(vote.action) ? 'Ready to approve' : 'Not ready'}</span> <span>{item.job ?? item.why.reason}</span></p>
 		{vote?.meaning?.filter(part => !part.warn).map((part, n) => <p key={n} className="muted pr-line">{part.text}</p>)}
@@ -369,11 +379,15 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 	const primaryLabel = report && primary?.id === report.id ? `Draft my update to ${first}` : reviewLabel ?? (draft?.holding && primary?.kind === 'approve' && !item.changeIds.length ? 'Send holding reply' : decision && primary?.kind === 'answer' ? 'Send decision'
 		: primary?.kind === 'answer' && answerBox ? draft ? 'Answer and redraft' : 'Answer and draft reply' : undefined)
 	// Write the reply yourself opens an empty box first; the box's own button sends it (designer failure pattern, check 4).
-	const writeButton = writeOwn && !ui.editing && !readOnly && <Button variant={primary?.id === writeOwn.id ? 'default' : 'outline'} data-primary={primary?.id === writeOwn.id || undefined} disabled={newer}
-		onClick={() => { edit({ editing: true, answer: '' }); focusField('answer') }}>{writeOwn.label}</Button>
+	// #48b (PM A R21): during a redraft it appears at 3 minutes (a retry after a failure shows it throughout); it opens the editor with the
+	// previous draft, cancels nothing until he sends, and his send wins over the redraft.
+	const redrafting = item.working?.kind === 'redraft'
+	const writeButton = writeOwn && !ui.editing && !readOnly && !(redrafting && !long(item.working?.since)) && <Button variant={primary?.id === writeOwn.id ? 'default' : 'outline'} data-primary={primary?.id === writeOwn.id || undefined} disabled={newer}
+		onClick={() => { edit({ editing: true, answer: item.working?.previous ?? '' }); focusField('answer') }}>{writeOwn.label}</Button>
 	const block4 = <div className="card-block action-bar card-actions">
 		{/* Delegate is working on it (#48): one status strip in the bar's place; it is never a blank card. */}
-		{item.working && <div className="card-working" role="status"><Icon name="clock" />{long(item.working.since)
+		{item.working && <div className="card-working" role="status"><Icon name="clock" />{redrafting ? <span>{long(item.working.since)
+			? <><strong>Still redrafting</strong> · taking longer than usual</> : <strong>{NAME} is redrafting from your answer</strong>}{item.working.since && <> · started {when(item.working.since)}</>}</span> : long(item.working.since)
 			? <span><strong>Still working</strong> · taking longer than usual{item.working.since && <> · started {when(item.working.since)}</>}<small className="card-working-what">{item.working.doing}</small></span>
 			: <span><strong>{NAME} is working on it</strong> · back to you when there's something to send
 				<small className="card-working-what">{[item.working.doing, item.working.since && `started ${when(item.working.since)}`].filter(Boolean).join(' · ')}</small></span>}</div>}
@@ -387,7 +401,7 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 		{report && primary?.id !== report.id && <ActionButton primary action={report} label={`Draft my update to ${first}`} input={{ result: ui.resultKind, text: ui.report }} disabled={!ui.resultKind} disabledReason="Pick how it went first." />}
 		{/* An offered send is never hidden: when another action leads, it sits next to it (#33). */}
 		{actions.filter(action => ['approve', 'approve-again'].includes(action.kind) && action.id !== primary?.id).map(action => action.kind === 'approve' && editedAside ? <ActionButton key={editedAside.id} action={editedAside} label="Send your edited reply" input={{ text: signed(replyText), excluded: ui.excluded }} disabled={newer || !replyText.trim()} disabledReason={newer ? 'stale' : 'Type your reply first.'} /> : <ActionButton key={action.id} action={action} label={draft?.holding && action.kind === 'approve' && !item.changeIds.length ? 'Send holding reply' : undefined} input={{ excluded: ui.excluded }} disabled={newer || action.kind === 'approve' && !!item.voteGap} disabledReason={newer ? 'stale' : item.voteGap?.text ?? 'stale'} />)}
-		{actions.filter(action => ['try-again', 'review-again', 'send-anyway', 'redraft', 'add-vote'].includes(action.kind) && action.id !== primary?.id && !(item.voteGap && action.kind === 'send-anyway') && !(reviewed && action.kind === 'review-again')).map(action => <ActionButton key={action.id} action={action} disabled={newer && action.staleness === 'exact'} disabledReason="stale" />)}
+		{actions.filter(action => ['try-again', 'review-again', 'send-anyway', 'redraft', 'add-vote', 'keep-waiting'].includes(action.kind) && action.id !== primary?.id && !(item.voteGap && action.kind === 'send-anyway') && !(reviewed && action.kind === 'review-again')).map(action => <ActionButton key={action.id} action={action} disabled={newer && action.staleness === 'exact'} disabledReason="stale" />)}
 		{primary?.kind !== 'write-own' && writeButton}
 		{item.mode === 'held' && actions.filter(action => action.kind === 'dismiss' && action.label === 'Skip').map(action => <ActionButton key={action.id} action={action} disabled={newer && action.staleness === 'exact'} disabledReason="stale" />)}
 		{actions.filter(action => action.kind === 'later').map(action => <ActionButton key={action.id} action={action} />)}
@@ -404,7 +418,7 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 			{item.debug && <><pre>{item.debug.join('\n')}</pre><Button variant="outline" onClick={() => void detailsCopy.copy(item.debug!.join('\n'))}>Copy details</Button>{detailsCopy.message && <p role="status">{detailsCopy.message}</p>}</>}
 		</div></details>
 	</div>
-	const others = actions.filter(action => action.id !== primary?.id && action.id !== report?.id && !(report && action.id === declared?.id) && !['approve', 'approve-again', 'send-edit', 'answer', 'pick', 'ask', 'later', 'dismiss', 'continue', 'todo-done', 'reply-only', 'review-again', 'try-again', 'write-own', 'send-anyway', 'redraft', 'add-vote', 'approve-pr', 'post-waiting'].includes(action.kind) && !(item.ownReply && action.kind === 'reopen'))
+	const others = actions.filter(action => action.id !== primary?.id && action.id !== report?.id && !(report && action.id === declared?.id) && !['approve', 'approve-again', 'send-edit', 'answer', 'pick', 'ask', 'later', 'dismiss', 'continue', 'todo-done', 'reply-only', 'review-again', 'try-again', 'write-own', 'send-anyway', 'redraft', 'add-vote', 'approve-pr', 'post-waiting', 'keep-waiting'].includes(action.kind) && !(item.ownReply && action.kind === 'reopen'))
 	// Every action the projection offers is drawn somewhere (engineer-card-state-devspec.md §4, invariant 4); one that isn't is marked.
 	const drawn = (kind: string) => ({ answer: !!answerBox || !!decision || both || primary?.kind === 'answer', pick: !!item.choices, 'send-edit': !!draft && editable, 'todo-done': todoIds.length > 0 } as Record<string, boolean>)[kind] ?? true
 	const undrawn = readOnly ? [] : actions.filter(action => !drawn(action.kind)).map(action => action.kind)
@@ -475,7 +489,7 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 			}
 		}}>
 		{asks ? <AsksList codes={asks.codes} current={code} entities={entities} onOpen={asks.onOpen} /> : placement && placement.subjects.length >= 2 && <AsksList codes={placement.subjects} current={code} entities={entities} />}
-		{block1}{failed}{found}{item.mode === 'working' && writeBox && <section className="card-block card-write-own">{writeBox}</section>}<fieldset className="card-readonly" disabled={readOnly}>{block2}{reviewBlock}{block3}</fieldset>{earlierTodos}{doneSoFar}{!readOnly && block4}
+		{block1}{answered}{failed}{found}{item.mode === 'working' && writeBox && <section className="card-block card-write-own">{writeBox}</section>}<fieldset className="card-readonly" disabled={readOnly}>{block2}{reviewBlock}{block3}</fieldset>{earlierTodos}{doneSoFar}{!readOnly && block4}
 		{/* R10b (joint C2): Approve's meaning line, always visible directly under the bar, whichever role Approve has. */}
 		{!readOnly && approvePr?.meaning && <p className="muted approve-meaning">{approvePr.meaning}</p>}
 		{chatEdit.message && <p role="status">{chatEdit.message}</p>}

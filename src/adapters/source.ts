@@ -26,7 +26,7 @@ export interface Source {
 	presence(): Promise<{ availability: string; oof?: string }>
 	// guests: someone outside the organization can read this chat (R-SEC-08). Optional: unknown means no guests seen.
 	around?(chatId: string, msgId: string): Promise<{ msg?: RawMsg; after: RawMsg[] }>
-	members?(chatId: string): Promise<{ guests: boolean; ids?: string[]; names?: Record<string, string> }>
+	members?(chatId: string): Promise<{ guests?: boolean; outside?: string[]; ids?: string[]; names?: Record<string, string> }>
 	// Channel threads to watch, with a cache kept between ticks. Optional: sources without channels leave it out.
 	channelThreads?(cache: ThreadCache, sinceIso: string, channels?: WatchedChannel[]): Promise<{ list: { id: string; name: string; lastAt: string; mine: boolean }[]; cache: ThreadCache }>
 	chatName?(chatId: string): Promise<string>

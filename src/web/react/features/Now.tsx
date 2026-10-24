@@ -14,6 +14,7 @@ import { ViewportList } from '../components/ViewportList.tsx'
 import { messageText, sentAt, whereOf } from './ItemCard.tsx'
 import { SentTime } from './SentTime.tsx'
 import { busyWords } from '../data/busy.ts'
+import { WaysLink, waysLinkShown } from './Ways.tsx'
 import { isolateRowControls } from './row-navigation.ts'
 import './rows.css'
 
@@ -100,7 +101,9 @@ export const NowRow = memo(function NowRow({ id, day }: { id: string; day?: stri
 	const since = item?.mode === 'working' ? item.working?.since : undefined, [now, setNow] = useState(Date.now)
 	useEffect(() => { if (!since) return; const timer = setInterval(() => setNow(Date.now()), 15_000); return () => clearInterval(timer) }, [since])
 	if (!row) return null
-	const trying: [string, string] | undefined = item?.mode === 'working' ? [since && now - Date.parse(since) >= 3 * 60_000 ? 'Still trying' : 'Trying again', since ? `started ${when(since)}` : ''] : undefined
+	// #48b (PM A R21): a redraft says it redrafts from his answer; a retry (and any other run) says Trying again; both after 3 minutes say Still.
+	const stale = !!since && now - Date.parse(since) >= 3 * 60_000, redraft = item?.working?.kind === 'redraft'
+	const trying: [string, string] | undefined = item?.mode === 'working' ? [redraft ? stale ? 'Still redrafting' : 'Redrafting from your answer' : stale ? 'Still trying' : 'Trying again', since ? `started ${when(since)}` : ''] : undefined
 	const open = route === `now/${id}` || route.startsWith(`now/${id}/`)
 	const requested = route.split('/')[2], shown = requested && row.subjects.includes(requested) ? requested : row.act
 	const icons: Partial<Record<string, ComponentProps<typeof Icon>['name']>> = { working: 'bolt', scheduled: 'clock', watch: 'eye', 'waiting-delegate': 'clock', reminder: 'clock', 'reminder-new': 'clock', catchup: 'eye', stopped: 'warn' }
@@ -236,6 +239,12 @@ export default function Now() {
 				{section.id === 'catchup' && (section.total ?? 0) > 0 && snapshot.pageActionIds?.filter(id => entities.actions[id].kind === 'mark-all-read').map(id => <ActionButton key={id} action={entities.actions[id]} input={{ seenAt: snapshot.now }} />)}
 			</section>
 		})}
-		{snapshot.summary.minute.facts + snapshot.summary.minute.suggestions > 0 && <p>When you have a minute: {snapshot.summary.minute.suggestions > 0 && <a href="#settings/learned">{snapshot.summary.minute.suggestions} {snapshot.summary.minute.suggestions === 1 ? 'suggestion' : 'suggestions'}</a>}{snapshot.summary.minute.facts > 0 && snapshot.summary.minute.suggestions > 0 ? ' - ' : ''}{snapshot.summary.minute.facts > 0 && <a href="#knowledge">{snapshot.summary.minute.facts} {snapshot.summary.minute.facts === 1 ? 'fact' : 'facts'} to check</a>}</p>}
+		{/* R12c (C1): Your way of working's link leads; the old habit-suggestion count goes once the engine's suggestions are ready. */}
+		{(() => {
+			const minute = snapshot.summary.minute, ways = snapshot.ways, old = ways?.suggestionsReady ? 0 : minute.suggestions
+			const parts = [waysLinkShown(ways) && <WaysLink key="ways" />, old > 0 && <a key="learned" href="#settings/learned">{old} {old === 1 ? 'suggestion' : 'suggestions'}</a>,
+				minute.facts > 0 && <a key="facts" href="#knowledge">{minute.facts} {minute.facts === 1 ? 'fact' : 'facts'} to check</a>].filter(Boolean)
+			return parts.length > 0 && <p>When you have a minute: {parts.map((part, n) => <Fragment key={n}>{n > 0 && ' - '}{part}</Fragment>)}</p>
+		})()}
 	</>
 }

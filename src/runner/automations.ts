@@ -2,6 +2,10 @@ import type { Answer, Automation, Config, Rotation, Schedule } from '../core/typ
 import { isPersona } from '../core/intake.ts'
 import { ulid } from '../core/ids.ts'
 import { DEFAULT_POLICY, REPLY_BLANK, replyGap, signatureOf, withMarker } from '../core/policy.ts'
+import { authorize, hourlyCap } from '../core/limits.ts'
+import { membersOf, membershipUnknown, membershipWait } from './sharing.ts'
+import { voteMention } from '../core/vote-claims.ts'
+import { freshRead } from '../store/fs.ts'
 import type { Source } from '../adapters/source.ts'
 import type { Store } from '../store/state.ts'
 import { isThread } from '../adapters/channels.ts'
@@ -155,11 +159,11 @@ export function answerAutomation(store: Store, a: Automation, ans: Answer): stri
 // Each due time is handled once. A time skipped by pause or policy moves on without using up a send.
 // A real send reserves its count and the hourly ledger before the network call, so a lost confirmation never sends past the limit.
 export async function dueAutomations(store: Store, src: Source, cfg: Config, now = new Date()): Promise<number> {
-	const p = { ...DEFAULT_POLICY, ...cfg.policy }
 	let n = 0
 	// A reply waiting for a decision holds the next send (B4).
 	for (const a of store.automations().filter(a => a.state === 'active' && !a.heard && a.next && Date.parse(a.next) <= now.getTime())) {
-		const text = textFor(a), out = withMarker(text, signatureOf(cfg), cfg.owner.name)
+		const text = textFor(a), raw = withMarker(text, signatureOf(cfg), cfg.owner.name)
+		const out = authorize({ automatic: false, text: raw }).text!
 		if (replyGap(out)) {
 			Object.assign(a, { state: 'paused', next: undefined, why: REPLY_BLANK })
 			store.saveAutomation(a)
@@ -173,16 +177,26 @@ export async function dueAutomations(store: Store, src: Source, cfg: Config, now
 		if (a.until && localDay(now) > a.until) { end('its end date passed'); continue }
 		if (isThread(a.to.chatId)) { end('a channel thread is not a person'); store.setHealth(`auto:${a.code}`, `${a.code} was ended: reminders go to a person or a group chat, never a channel.`); continue }
 		// A time missed by more than an hour (the machine was asleep or off) is skipped, never sent late.
-		const skip = now.getTime() - due.getTime() > 3_600_000 ? 'too late'
-			: cfg.paused || store.control().paused || store.control().stopped ? 'paused'
-			: (p.never ?? []).some(x => x.name.toLowerCase() === a.to.name.toLowerCase()) ? 'they are on your never list'
-			: (await src.members?.(a.to.chatId).then(m => m.guests, () => undefined)) !== false ? 'that chat has guests, or its members could not be checked'
-			: store.autoLedger().filter(e => e.chat === a.to.chatId && Date.parse(e.at) > now.getTime() - 3_600_000).length >= p.maxAutoPerChatHour ? `already ${p.maxAutoPerChatHour} automatic messages in that chat this hour` : ''
+		await membersOf(store, src, a.to.chatId, true)
+		const auth = freshRead(() => {
+			const currentCfg = store.config(), p = { ...DEFAULT_POLICY, ...currentCfg.policy }, cap = hourlyCap(p.maxAutoPerChatHour)
+			const members = store.members()[a.to.chatId]
+			return authorize({
+				automatic: true, text: out, paused: !!currentCfg.paused || store.control().paused || store.control().stopped,
+				never: (p.never ?? []).some(x => x.name.toLowerCase() === a.to.name.toLowerCase() || members?.ids.includes(x.id)),
+				voteClaim: voteMention(out), guests: members?.guests, outside: !!members?.outside?.length,
+				autoSendsThisHour: store.autoLedger().filter(e => e.chat === a.to.chatId && Date.parse(e.at) > now.getTime() - 3_600_000).length,
+				maxPerHour: cap, gap: replyGap(out),
+			})
+		})
+		const skip = now.getTime() - due.getTime() > 3_600_000 ? 'too late' : !auth.allowed ? auth.blockedBy === 'paused' ? 'paused' : auth.reason : ''
 		if (skip) {
+			const unknown = skip !== 'too late' && !auth.allowed && auth.blockedBy === 'sharing' && membershipUnknown(store, a.to.chatId)
+			if (unknown) membershipWait(store, a.to.chatId)
 			Object.assign(a, { next: after(next) ? undefined : next!.toISOString(), state: after(next) ? 'ended' : 'active' })
 			store.saveAutomation(a)
-			if (skip !== 'paused' && skip !== 'too late') store.setHealth(`auto:${a.code}`, `${a.code} did not send to ${a.to.name}: ${skip}.`)
-			store.log({ event: 'automation-skipped', code: a.code, why: skip })
+			if (!unknown && skip !== 'paused' && skip !== 'too late') store.setHealth(`auto:${a.code}`, `${a.code} did not send to ${a.to.name}: ${skip}.`)
+			store.log({ event: 'automation-skipped', code: a.code, why: skip, ...(!auth.allowed ? { blockedBy: auth.blockedBy } : {}) })
 			continue
 		}
 		const count = a.count + 1

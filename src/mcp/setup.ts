@@ -188,7 +188,11 @@ async function apply(step: Step, v: never, deps: Deps): Promise<string> {
 		}
 		case 'rules': {
 			const r0 = v as z.infer<typeof VALUES.rules>
-			if (r0.text === undefined && r0.compiled === undefined) return existsSync(join(store.root, 'rules.compiled.json')) ? 'rules kept' : (writeJson(join(store.root, 'rules.compiled.json'), { schema: 1, rules: [], confirmedAt: new Date().toISOString() }, machine()), writeFileSync(join(store.root, 'rules.md'), 'None.\n'), 'no rules: every reply waits for your ok')
+			if (r0.text === undefined && r0.compiled === undefined) {
+				if (existsSync(join(store.root, 'rules.compiled.json'))) return 'rules kept'
+				writeRules(store, 'None.', [])
+				return 'no rules: every reply waits for your ok'
+			}
 			const r = { text: r0.text ?? '', compiled: r0.compiled ?? [] }
 			return writeRules(store, r.text, r.compiled)
 		}

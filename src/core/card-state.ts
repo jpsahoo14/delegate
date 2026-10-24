@@ -3,13 +3,17 @@
 // The first rule whose `when` holds decides, as core/whose.ts places rows.
 
 import { shareHoldText, type ShareHold } from './share.ts'
+import type { FailureCause } from './normalize-report.ts'
 
 export type ActionKind = 'take-back' | 'approve' | 'send-anyway' | 'redraft' | 'send-edit' | 'answer' | 'pick' | 'later' | 'dismiss' | 'try-again' | 'write-own' | 'review-again' | 'reply-only' | 'reopen' | 'report' | 'todo-done' | 'add-vote'
 	| 'approve-pr' | 'post-waiting'
 export type Mode = 'in-terminal' | 'agent-wait' | 'own-reply' | 'review-again' | 'review-done' | 'failed' | 'working' | 'declined' | 'held' | 'your-step' | 'choices' | 'answer' | 'answer-with-holding'
 	| 'reply-with-question' | 'changes' | 'reply' | 'holding' | 'not-sent' | 'todo' | 'unknown'
 export type HeldReason = { kind: 'ask-edited' | 'asker-wrote-again' | 'no-reply-needed'; changed?: string; why?: string; count?: number; at?: string }
-export type Failure = { kind: 'setup' | 'other' | 'content' | 'tool' | 'stopped'; at: string; why: string; tried: string[]; repeats: number; systemChanged: boolean; job?: string; review?: boolean }
+// PE A R31: SEND's ReportFailure.cause (core/normalize-report.ts), structured; target is page-safe.
+export type { FailureCause } from './normalize-report.ts'
+
+export type Failure = { kind: 'setup' | 'other' | 'content' | 'tool' | 'stopped'; at: string; why: string; tried: string[]; repeats: number; systemChanged: boolean; job?: string; review?: boolean; cause?: FailureCause }
 // Everything a card may depend on, computed once per item (card-facts.ts). draft.at: when Delegate (or the owner's edit) wrote it.
 export type CardFacts = {
 	state: 'running' | 'needs_human' | 'waiting_on_task' | 'waiting_on_sender' | 'scheduled' | 'open' | 'done'
@@ -24,7 +28,8 @@ export type CardFacts = {
 	notSent?: { why: string }
 	// Delegate is working on it (#48, PE 19:40): running, or a job queued or running for it (Try again, an answer's redraft, approved
 	// changes being made). what: the item's own status; since: when it started.
-	working?: { what: string; since?: string }
+	// #48b (PM A R21): kind redraft (running on his answer) or retry (Trying again); the card and row word each its own way.
+	working?: { what: string; since?: string; kind?: 'redraft' | 'retry' }
 	// The owner's Send was held by the engine (SEND, #45): every current reason at once, under one digest (wf.holdDigest).
 	// changed: the engine's line for a real change in what is asked of him; count: the asker's new messages; at: when, for the order.
 	held?: { digest: string; who: string; reasons: HeldReason[] }
@@ -63,7 +68,7 @@ export type CardState = {
 	// warning, the promise). A click's result line names only a reason.
 	warnKind?: 'reason' | 'notice'
 	// Delegate is working on it (#48): the status strip in the bar's place, what it is doing and since when.
-	strip?: { doing: string; since?: string }
+	strip?: { doing: string; since?: string; kind?: 'redraft' | 'retry' }
 	// The "Why it waited" line a need-to-know hold gives the card (#36, PE 17:05 point 6).
 	waited?: string
 	// R10b: "Open PR to approve" is a link, not an action; where it sits in the bar.
@@ -83,7 +88,40 @@ export function currentFailure(candidates: (Failure | undefined)[], draftAt?: st
 	return f && draftAt && Date.parse(draftAt) > Date.parse(f.at) ? undefined : f
 }
 
-const failLine = (f: Failure) => `${f.kind === 'content' ? "Couldn't finish" : "Couldn't draft this"}: ${f.why.replace(/[.\s]+$/, '')}.${f.repeats > 0 ? ` It failed the same way ${f.repeats + 1} times.` : ''}`
+// The failure words (PM A R30 (2), PE A R31): "Couldn't <what>: <why>." from STRUCTURED fields only, never from the free-text why
+// (which stays in Details with what it tried). Each step needs its target; each reason has its words. Today only kind 'stopped' is
+// structured; the rest light up as SEND fills cause. Anything else is the PM fallback.
+export const FAILURE_FALLBACK = "Couldn't finish this. What it tried is in Details."
+const clock = (at?: string) => at && Number.isFinite(Date.parse(at)) ? new Date(at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }) : undefined
+// A title or subject is quoted once, whether or not the producer's target already carries the quotes.
+const quoted = (target: string) => `"${target.replace(/^["“](.*)["”]$/, '$1')}"`
+const WHAT: Record<Exclude<FailureCause['step'], 'run-stopped'>, (target: string) => string> = {
+	'pr-read': target => `read PR ${target}`,
+	'doc-read': target => `read ${quoted(target)}`,
+	'teams-read': target => `read the messages in ${target}`,
+	post: target => `post the comment on PR ${target}`,
+	send: target => `send your reply to ${target}`,
+	calendar: target => `create ${quoted(target)}`,
+	'work-item': target => `update work item ${target}`,
+}
+const WHY: Record<NonNullable<FailureCause['reason']>, (c: FailureCause) => string | undefined> = {
+	unreachable: c => c.system && `${c.system} wasn't reachable`,
+	'no-access': () => 'Delegate has no access to it',
+	'not-found': () => "it wasn't found (it may have been moved or deleted)",
+	timeout: c => c.system && `${c.system} didn't answer in time`,
+	busy: c => c.system && clock(c.retryAt) && `${c.system} is busy; Delegate tries again at ${clock(c.retryAt)}`,
+	'too-large': c => c.size ? `it's too large to open (${c.size})` : "it's too large to open",
+	unsupported: () => "Delegate can't open this kind of file yet",
+}
+export function failureLine(f: Pick<Failure, 'kind' | 'cause'>): string {
+	const c = f.cause
+	if (c?.step === 'run-stopped' || !c && f.kind === 'stopped') return "Couldn't finish the reply: Delegate stopped before it had an answer."
+	const target = c?.target?.trim()
+	if (!c || !target) return FAILURE_FALLBACK
+	const what = WHAT[c.step](target), why = c.reason ? WHY[c.reason](c) : undefined
+	return why ? `Couldn't ${what}: ${why}.` : `Couldn't ${what}. What it tried is in Details.`
+}
+export const failLine = (f: Failure) => `${failureLine(f)}${f.repeats > 0 ? ` It failed the same way ${f.repeats + 1} times.` : ''}`
 
 // The held warn line (#45, PM final 19:20 and 19:40): one sentence per reason, at most two: the asker's change first (one with a
 // `changed` line before one without, so the line says why Redraft leads, PE 19:16; then the newest), then "no reply is needed now".
@@ -130,7 +168,7 @@ export const RULES: Rule[] = [
 	} },
 	// Delegate is working on it (#48, PE 19:40): no button leads, a status strip says what it is doing; Dismiss stays in ⋯. Write the
 	// reply yourself stays visible the whole time (PM 19:50). A terminal hold, an AI-limit wait, his own reply and a failure decide first.
-	{ mode: 'working', when: f => !!f.working, build: f => ({ secondary: ['write-own'], more: ['dismiss'], editor: 'none', strip: { doing: f.working!.what, ...(f.working!.since ? { since: f.working!.since } : {}) } }) },
+	{ mode: 'working', when: f => !!f.working, build: f => ({ secondary: ['write-own'], more: ['dismiss'], editor: 'none', strip: { doing: f.working!.what, ...(f.working!.since ? { since: f.working!.since } : {}), ...(f.working!.kind ? { kind: f.working!.kind } : {}) } }) },
 	{ mode: 'review-again', when: f => !!f.question?.reviewAgain || !!f.reviewAgain && !f.reviewDone, build: f => ({ primary: 'review-again', secondary: [...(f.draft ? [f.changes ? 'reply-only' as const : 'approve' as const] : []), 'later'], more: ['dismiss'], editor: 'none' }) },
 	// R10b (joint C2, A5.4/A5.5): the bar is chosen by the findings. Any High: Open PR to approve leads, Approve PR <n> beside it; else
 	// Approve leads. Approve only while it is his proposed vote on the reviewed head; on new changes Review again leads, Open PR beside it.

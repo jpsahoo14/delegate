@@ -20,6 +20,7 @@ import { useScreenNavigation } from './navigation.tsx'
 import { messageText, sentAt } from '../features/ItemCard.tsx'
 import { SentTime } from '../features/SentTime.tsx'
 import { busyWords } from '../data/busy.ts'
+import { WaysLink, waysLinkShown } from '../features/Ways.tsx'
 
 const destinations: Record<string, string> = {
 	replies: 'done/replies', reviews: 'done/reviews', tasks: 'done/changes', prs: 'done/changes', invites: 'done/changes',
@@ -73,6 +74,8 @@ export default function Home({ readOnly = false }: { readOnly?: boolean }) {
 	const updateStatus = version && (version.failed ? `Could not check: ${version.failed}` : version.last?.rolledBack && version.last.to !== version.code ? `${version.last.to} did not start, so this stays on ${version.code}` : version.checkedAt ? `Up to date, checked ${when(version.checkedAt)}` : 'Not checked yet')
 	return <>
 		<section className="classic-hello"><h1>Since you were away</h1><p>{snapshot.since ? `You left ${when(snapshot.since)}` : 'In the last day'}{handled ? ` · ${NAME} handled ${handled} thing${handled === 1 ? '' : 's'} for you` : ''}</p></section>
+		{/* R12c (C1): When you have a minute, the lines and the suggestion in Settings › Your way of working. */}
+		{waysLinkShown(snapshot.ways) && <p className="classic-minute">When you have a minute: <WaysLink /></p>}
 		<div className="classic-tiles"><section className="classic-tile classic-needs" role="group" aria-labelledby="classic-needs-title">
 			{needs.length ? <><h2 className="classic-needs-head" id="classic-needs-title"><span className="classic-needs-number">{needs.length}</span><span>{needs.length === 1 ? 'needs you' : 'need you'}</span></h2>
 				<ul>{needs.slice(0, 4).map(item => {

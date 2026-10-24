@@ -1,4 +1,5 @@
 import { DEFAULT_POLICY, signatureOf, signsApproved } from '../core/policy.ts'
+import { checkHourlyCap, hourlyCap, MAX_AUTO_PER_CHAT_HOUR } from '../core/limits.ts'
 import { DEFAULT_POLL, validTz } from '../core/schedule.ts'
 import { LEVEL_SAYS } from '../core/levels.ts'
 import { WRITE_DEFAULTS, changeLine, changeName, offerable, toolOf } from '../core/effects.ts'
@@ -119,7 +120,7 @@ export const SETTINGS: Spec[] = [
 	{ key: 'undoMin', label: 'Undo window after an automatic reply', help: 'Minutes.', kind: 'number', section: 'replies',
 		read: c => String(pol(c).undoMin), parse: raw => numTo(raw, 1, 60, (c, n) => ({ ...c, policy: { ...pol(c), undoMin: n } })) },
 	{ key: 'maxAutoPerChatHour', label: 'Automatic replies per chat per hour, at most', help: 'More wait for you.', kind: 'number', section: 'replies',
-		read: c => String(pol(c).maxAutoPerChatHour), parse: raw => numTo(raw, 1, 20, (c, n) => ({ ...c, policy: { ...pol(c), maxAutoPerChatHour: n } })) },
+		read: c => String(hourlyCap(pol(c).maxAutoPerChatHour)), parse: raw => numTo(raw, 0, MAX_AUTO_PER_CHAT_HOUR, (c, n) => ({ ...c, policy: { ...pol(c), maxAutoPerChatHour: checkHourlyCap(n) } })) },
 	{ key: 'quiet', label: 'No reminders between', help: `${NAME} does not post reminders to your self-chat in these hours. Such as 20:00-08:00.`, kind: 'line', section: 'timing',
 		read: c => `${c.quiet?.from ?? '20:00'}-${c.quiet?.to ?? '08:00'}`,
 		parse: raw => { const [from, to] = raw.trim().split(/\s*-\s*/); return HHMM.test(from ?? '') && HHMM.test(to ?? '') ? set({ quiet: { from, to } }) : { ok: false, why: 'Give two times, such as 20:00-08:00.' } } },

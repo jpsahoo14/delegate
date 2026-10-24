@@ -28,7 +28,7 @@ const rows: Golden[] = [
 	{ id: 'refusal-error-is-not-failure', stored: { state: 'failed', error: 'Post the comment. Not made for you: You have not allowed this change.' }, expected: { ...empty(), refused: [{ what: 'Post the comment', target: '', reason: 'You have not allowed this change.' }] } },
 	{ id: 'refusal-failure-is-not-warning', stored: { failure: { kind: 'other', why: 'Post the comment. Not made for you: You have not allowed this change.', tried: [] } }, expected: { ...empty(), refused: [{ what: 'Post the comment', target: '', reason: 'You have not allowed this change.' }] } },
 	{ id: 'setup', stored: { runFailed: { kind: 'setup', at: '2026-10-24T08:00:00Z', why: 'The selected AI model is unavailable.' } }, expected: { ...empty(), failure: { kind: 'setup', at: '2026-10-24T08:00:00Z', why: 'The selected AI model is unavailable.', tried: [] } } },
-	{ id: 'stopped', stored: { failure: { kind: 'stopped', why: 'The work stopped before it finished.', tried: [] } }, expected: { ...empty(), failure: { kind: 'stopped', why: 'The work stopped before it finished.', tried: [] } } },
+	{ id: 'stopped', stored: { failure: { kind: 'stopped', why: 'The work stopped before it finished.', tried: [] } }, expected: { ...empty(), failure: { kind: 'stopped', why: 'The work stopped before it finished.', tried: [], cause: { step: 'run-stopped' } } } },
 	{ id: 'failed-job-no-error', stored: { state: 'failed', updatedAt: '2026-10-24T08:00:00Z' }, expected: { ...empty(), failure: { kind: 'other', at: '2026-10-24T08:00:00Z', why: 'The work stopped before it finished.', tried: [] } } },
 	{ id: 'successful-report-has-no-failure', stored: { goalMet: true, blocker: { kind: 'tool', why: 'Old failure', tried: [] } }, expected: empty() },
 	{ id: 'hash-copy', stored: { context: [{ label: 'Result deadbeef', text: 'Error: job:aurora deadbeef approval unverified', tone: 'warn' }] }, expected: { ...empty(), context: [{ label: 'Result deadbeef', text: 'deadbeef approval unverified', tone: 'warn' }] } },
@@ -95,7 +95,7 @@ for (const [kind, expected] of [['tool', 'tool'], ['transient', 'other'], ['budg
 })
 rows.push({
 	id: 'trusted-document-failure', stored: { goalMet: false, blocker: { kind: 'tool', why: "Couldn't open the design: too large to open", tried: [], documentFailure: true } },
-	expected: { ...empty(), failure: { kind: 'content', why: "Couldn't open the design: too large to open", tried: [] } },
+	expected: { ...empty(), failure: { kind: 'content', why: "Couldn't open the design: too large to open", tried: [], cause: { step: 'doc-read', target: 'the design', reason: 'too-large' } } },
 }, {
 	id: 'retry-history-plain-deduplicated', stored: { state: 'failed', retry: { last: { kind: 'tool', why: 'Error: connection timed out', tried: ['ado-get_file: route timed out'] }, tried: ['ado-get_file: route timed out', 'Opened the shared document.'] } },
 	expected: { ...empty(), failure: { kind: 'tool', why: "The source couldn't be reached.", tried: ["The source couldn't be reached.", 'Opened the shared document.'] } },

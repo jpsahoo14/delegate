@@ -11,10 +11,10 @@ import { ownRunFiles, promptFolder, pruneRunFiles, removeRunFiles } from './run-
 import { agentSetupFailure, type AgentSetupFailure } from '../core/agent-failure.ts'
 import { scrub } from '../core/secrets.ts'
 
-export type RunInput = { sessionId: string; prompt: string; cwd: string; mcpConfigPath: string; extraTools: string[]; dirs?: string[] }
+export type RunInput = { sessionId: string; prompt: string; cwd: string; mcpConfigPath: string; extraTools: string[]; dirs?: string[]; purpose?: 'rule-compile' }
 // used: what the run used and where its time went, when the AI CLI said so (R-SET-14).
 // via: the resident AI host or one process per run, and on the host whether it was already warm (#25), as the worker event reports.
-export type RunResult = { exitCode: number; ms: number; summary?: string; error?: string; used?: RunUse; setup?: AgentSetupFailure; via?: 'host' | 'spawn'; warm?: boolean }
+export type RunResult = { exitCode: number; ms: number; summary?: string; error?: string; used?: RunUse; setup?: AgentSetupFailure; via?: 'host' | 'spawn'; warm?: boolean; sessionId?: string }
 
 const ALWAYS = ['task_complete']
 
@@ -195,7 +195,7 @@ export function runAgent(cfg: Config['agent'], i: RunInput, timeoutMs = 10 * 60_
 				return
 			}
 			const setup = agentSetupFailure(`${out}\n${err}\n${log}`)
-			finish({ exitCode: code ?? -1, ms: Date.now() - t0, summary: summaryOf(out), error: code !== 0 ? err.slice(-500) || setup?.text || `${cmd} stopped` : undefined, ...(Object.keys(used).length ? { used } : {}), ...(setup ? { setup } : {}) })
+			finish({ exitCode: code ?? -1, ms: Date.now() - t0, summary: summaryOf(out, i.purpose), error: code !== 0 ? err.slice(-500) || setup?.text || `${cmd} stopped` : undefined, ...(Object.keys(used).length ? { used } : {}), ...(setup ? { setup } : {}) })
 		})
 		if (p.pid) {
 			try { ownRunFiles(i.mcpConfigPath, p.pid) } catch (error) {
@@ -206,11 +206,12 @@ export function runAgent(cfg: Config['agent'], i: RunInput, timeoutMs = 10 * 60_
 	})
 }
 
-function summaryOf(jsonl: string): string | undefined {
+function summaryOf(jsonl: string, purpose?: RunInput['purpose']): string | undefined {
 	for (const line of jsonl.split('\n').reverse()) {
 		try {
 			const e = JSON.parse(line)
 			if (e.type === 'session.task_complete') return e.data?.summary
+			if (purpose === 'rule-compile' && e.type === 'result' && typeof e.result === 'string') return e.result
 		} catch { /* not JSON */ }
 	}
 	return undefined

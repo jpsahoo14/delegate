@@ -10,6 +10,7 @@ import { isDeploy } from '../core/deploy.ts'
 import { callKey, ledgerRec, madeBefore } from './ledger.ts'
 import { staleCatalog } from './catalog.ts'
 import { reviewPostCheck } from './review-autonomy.ts'
+import { scrubDeep } from '../core/secrets.ts'
 export { madeBefore }
 
 // Calls one tool on one of the owner's tool servers.
@@ -85,7 +86,7 @@ export async function makeChange(store: Store, jobId: string, runId: string, ind
 	const ledger = (r: Omit<CallRec, 'call' | 'head' | 'vote' | 'at'>) => store.saveCallRec(ledgerRec(e, r))
 	store.saveChange(jobId, runId, index, { call: key, state: 'calling', at: at() }); ledger({ state: 'calling' })
 	try {
-		const r = await call(to![0], to![1], toolShape(e.call)!.args) as { id?: unknown } | undefined
+		const r = await call(to![0], to![1], scrubDeep(toolShape(e.call)!.args)) as { id?: unknown } | undefined
 		const pr = job.byRule ? prOf(store, owner) : undefined
 		const ref = pr?.url && r?.id !== undefined ? `${pr.url}?discussionId=${encodeURIComponent(String(r.id))}` : String(r?.id ?? 'done')
 		store.saveChange(jobId, runId, index, { call: key, state: 'done', ref, at: at(), ...(job.byRule ? { byRule: job.byRule, severity: e.severity } : {}) }); ledger({ state: 'done', ref })

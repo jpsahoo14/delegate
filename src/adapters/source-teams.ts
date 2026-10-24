@@ -7,6 +7,7 @@ import { mdToHtml } from '../core/format.ts'
 import type { ReadOpts, SendOpts, Source } from './source.ts'
 import { isThread, parseThread, Threads, type ThreadCache, type WatchedChannel } from './channels.ts'
 import { NAME } from '../brand.ts'
+import { telemetryEvent } from '../core/telemetry.ts'
 
 export type TeamsMsg = { id: string; createdDateTime: string; lastModifiedDateTime?: string; lastEditedDateTime?: string | null; deletedDateTime?: string | null; replyToId?: string | null; from?: { id: string; displayName: string } | null; body?: { contentType: string; content: string }; attachments?: { name?: string | null; contentType?: string; contentUrl?: string | null; content?: string | null; driveId?: string; itemId?: string }[] }
 type Page = { messages?: TeamsMsg[]; nextLink?: string; '@odata.nextLink'?: string }
@@ -16,7 +17,8 @@ const newer = (a: string, b: string) => BigInt(a) > BigInt(b)
 
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 
-type Member = { roles?: string[]; userId?: string; displayName?: string }
+type Member = { roles?: string[]; userId?: string; displayName?: string; tenantId?: string }
+let membersShapeLogged = false
 
 export class TeamsSource implements Source {
 	private mcp: McpClient
@@ -24,10 +26,15 @@ export class TeamsSource implements Source {
 	readonly selfChatId: string
 	private threads: Threads
 	private owner: string
-	constructor(cfg: Config['source'], mcp = new McpClient(cfg.command), owner = '') {
+	private ownerId: string
+	private readonly log: (entry: Record<string, unknown>) => void
+	constructor(cfg: Config['source'], mcp = new McpClient(cfg.command), owner = '', ownerId = '',
+		log: (entry: Record<string, unknown>) => void = entry => console.warn(JSON.stringify(entry))) {
 		this.mcp = mcp
 		this.threads = new Threads(mcp, owner)
 		this.owner = owner
+		this.ownerId = ownerId
+		this.log = log
 		this.tools = { ...DEFAULT_TOOLS, ...cfg.tools }
 		this.selfChatId = cfg.selfChatId
 	}
@@ -156,11 +163,30 @@ export class TeamsSource implements Source {
 		return { availability: r.availability ?? 'Unknown', oof: o?.isOutOfOffice ? (o.message ?? '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() || 'out of office' : undefined }
 	}
 
-	async members(chatId: string): Promise<{ guests: boolean; ids?: string[]; names?: Record<string, string> }> {
+	async members(chatId: string): Promise<{ guests?: boolean; outside?: string[]; ids?: string[]; names?: Record<string, string> }> {
 		const t = isThread(chatId) ? parseThread(chatId) : undefined
 		const r = await this.mcp.call<{ members?: Member[] }>(t ? 'ListChannelMembers' : this.tools.members, t ? { teamId: t.teamId, channelId: t.channelId } : { chatId })
 		const ms = r.members ?? []
-		return { guests: ms.some(m => (m.roles ?? []).includes('guest')), ids: ms.map(m => m.userId).filter((u): u is string => !!u), names: Object.fromEntries(ms.flatMap(m => (m.userId && m.displayName ? [[m.userId, m.displayName]] : []))) }
+		if (!membersShapeLogged) {
+			const roles = { array: 0, undefined: 0, other: 0 }
+			for (const member of ms) roles[Array.isArray(member?.roles) ? 'array' : member?.roles === undefined ? 'undefined' : 'other']++
+			this.log(telemetryEvent('members-shape', {
+				memberKeys: [...new Set(ms.flatMap(member => Object.keys(member ?? {})))].sort(),
+				roles,
+				roleValues: [...new Set(ms.flatMap(member => Array.isArray(member?.roles) ? member.roles.filter(role =>
+					typeof role === 'string' && /^(owner|member|guest|external)$/i.test(role)).map(role => role.toLowerCase()) : []))].sort(),
+				tenantIdPresent: ms.filter(member => typeof member?.tenantId === 'string' && !!member.tenantId.trim()).length,
+			}))
+			membersShapeLogged = true
+		}
+		const tenant = ms.find(m => !!this.ownerId && m.userId?.toLowerCase() === this.ownerId.toLowerCase())?.tenantId?.toLowerCase()
+		const external = ms.filter(m => m.roles?.some(role => /^(guest|external)$/i.test(role)) ||
+			!!tenant && !!m.tenantId && m.tenantId.toLowerCase() !== tenant)
+		const known = ms.length > 0 && ms.every(m => Array.isArray(m.roles) && (!m.tenantId || !!tenant))
+		return { guests: external.length ? true : known ? false : undefined,
+			outside: external.flatMap(m => m.userId ? [m.userId] : []),
+			ids: ms.map(m => m.userId).filter((u): u is string => !!u),
+			names: Object.fromEntries(ms.flatMap(m => (m.userId && m.displayName ? [[m.userId, m.displayName]] : []))) }
 	}
 
 	async chatName(chatId: string): Promise<string> {

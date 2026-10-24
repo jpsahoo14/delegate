@@ -37,6 +37,8 @@ export function Header({ current, move, snapshot, offline }: { current: string; 
 			<nav aria-label="Views">{views.map(([id, label]) => <a href={`#${id}`} aria-current={current === id ? 'page' : undefined} key={id} onClick={() => setMenu(false)}>{label}
 				{id === 'now' && move > 0 && <span className="count">{move}</span>}
 				{id === 'done' && !!snapshot?.doneNew && <span className="count count-muted" aria-label={`${snapshot.doneNew} new`}>{snapshot.doneNew}</span>}
+				{/* R12b (C1): lines that need him, from SEND's needsHim. */}
+				{id === 'settings' && !!snapshot?.ways?.needsHim && <span className="count" aria-label={`${snapshot.ways.needsHim} to check`}>{snapshot.ways.needsHim}</span>}
 			</a>)}</nav>
 			<div className="desktop-status">{pill}</div>
 			<div className="version-controls"><ExperienceToggle />

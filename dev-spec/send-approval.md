@@ -5,7 +5,159 @@ Owner intent checks may use only the warm host's optional one-shot `quick` API,
 never a cold CLI or the item's session. Rule sends retain their stricter checks
 and never use the relaxed intent check.
 
+## Unknown membership (R34)
+
+The first successful Teams members response per process records `members-shape`
+as metadata: the union of member key names, counts of roles arrays/undefined/other,
+only the known role enum words, and the number of nonempty tenant ids. No member
+ids, names, emails or tenant-id values are captured. The source factory routes
+the engine capture through `Store.log`; standalone adapters use stderr.
+This probe does not relax the existing membership checks.
+
+Automatic reply/ack decisions and standing sends record a membership wait only
+when the audience is unknown and no guest/outside member was found. Organization
+rules that cannot match an unknown audience also record that wait if a verified
+internal audience would permit sending; this comparison never grants permission.
+`state/membership-waits.json` deduplicates the held chat ids across restarts.
+One `membership-waiting` health line shows the count without names or ids:
+"Automatic replies are waiting: Delegate couldn't verify who is in 2 chats."
+A clean membership read removes just that chat, including a read that positively
+finds a guest; the last removal clears the line. Cached verified reads also clear
+stale waits. Owner-approved sends and fail-closed authorization are unchanged.
+
+## Structured failures (R31)
+
+`normalizeReport` exposes optional structured `failure.cause` for the page's
+failure-word table. An engine-stamped document failure, or an existing stored
+content failure on the failed-card path, is classified only by the shared
+canonical document-failure parser; stopped failures name
+`run-stopped`. A known step can carry a structured retry time. Other free-text
+errors do not acquire a guessed step, target, HTTP status or reason. Existing
+structured causes survive normalization; Details keep the existing why/tried.
+
+## Rule-line lifecycle (R12a)
+
+`Store.rules()` reads `activeRuleGrants(root)`, a read-only reconciliation of
+the current markdown and compiled line records. A changed or missing source
+line cannot keep an old grant alive after it has a bound source. Every new source line appears as Reading;
+the read does not repair files or infer approval. Legacy recorded approvals
+are kept only for capabilities already supported by those rules, not newly
+supported organization sends. Trusted learned/style metadata and grant ids
+survive page edits and compilation.
+Legacy bindings trim and collapse whitespace, while hashes retain the exact
+source text. In a legacy file without line records, a confirmed, non-off grant
+that passes the existing legacy predicate (non-widening, named accounts, or an
+organization review grant) is also kept when its generated text does not match
+the prose. Each such grant has its own confirmed `carried` line, with its
+original id, action and scope, never unbound and never sent for compilation.
+No historical edit check is invented: the old file has no reliable source hash.
+Unsupported widening and other unbound compiled rules remain inert Waiting lines;
+the reconciliation writer logs `rule-migration-unbound` with each rule id once.
+Read-only views do not write logs or repair files. An actual edit to an existing
+line still clears its compile and confirmation, including whitespace-only edits.
+
+Unmatched legacy prose is kept as notes, not rule lines. It grants nothing,
+does not enter the compile lane and does not duplicate the carried grants.
+Migration and compile reconciliation write only the compiled record, its notes
+and the source hash; the original markdown bytes are unchanged. The first
+owner-initiated write keeps each note's text verbatim under a marked notes
+heading that `ruleSourceLines` skips, and materializes the carried source lines.
+After that, those lines follow ordinary source-edit/deletion checks.
+
+New's notes contract is `wayNotes(store): WayNote[]`, with `id`, exact `text`,
+`textHash` and a boolean `review` for the PR-review-specific not-on notice.
+Show the notes once in a collapsed "Your notes from before (N)" block, outside
+the normal line list. The list is what Delegate does; notes change nothing.
+For review notes: "Not on. Make it a line to have Delegate review PRs this way."
+`makeNoteLine(store,id,expectHash)` atomically removes the note and returns a new
+Reading line through the normal compile/confirmation lifecycle.
+`deleteNote(store,id,expectHash)` removes only the note. Both use the central
+writer and refuse stale ids/hashes without granting anything.
+
+All page mutations use the central non-spinning writer and compare the exact
+current line text hash inside its fresh-read lock. An unrelated hand edit is
+preserved rather than making every page write fail forever. Page add/edit and
+inline answers never call setup's explicitly confirmed `writeRules` path.
+Widening grants wait for `confirmLine`; narrowing applies when read. Off keeps
+the confirmation, so the same confirmed words resume without another approval.
+Delete retains a hash-checked Undo record; restoring it preserves its previous
+approval and holds, rather than silently granting new authority.
+
+HOST's compile-priority lane calls `rulesToCompile(store)` and then
+`finishRuleCompile(store, id, expectedTextHash, rawOutput)`. The first reconciles
+source drift through the same writer, including heading-only edits; the second
+fresh-checks identity and text, validates structured output and refuses stale
+or invalid completion. Both return no guessed permissions. Can't-yet/Partly
+lines are read again after a catalog change. Previously supported narrowing
+constraints stay active during that re-read; widening stays inert, and changed
+compiled permissions clear approval. Identical compiled meaning can keep the
+same recorded approval across a catalog update.
+
+`ways.ts` builds each three-line read-back and status from this data. Its
+`readBackLabel`, `readBackValue` and `statusText` are separate fields; the page
+never needs to parse copy. `setting` is the bound Settings key for both actual
+rules and redirects; only `redirect: true` means the latter. `ruleIds` supports
+the Done filter and seven-day `byRule` counts, cached with the snapshot.
+Conflicts describe overlap on both lines independently of the winning grant;
+the existing strictest-wins policy still decides the action.
+`linesToCheck` counts Waiting and Unclear without scanning usage logs, separately from the one open habit
+suggestion in `needsHim`. Suggestions and their dismissal history now come from
+HOST's `habitSuggestions`; dismiss, Undo and Reconsider call HOST's transitions,
+without duplicating its timers or evidence rules. The displayed suggestion hash
+is checked before Add it or dismissal. An unchanged Add it calls HOST's
+`answerHabitResult` and retains the actual consent time and trusted metadata.
+
+`addSuggestedRuleLine(store, text, {learned, style?, ruleId})` is the trusted
+writer handoff for edited suggestions. It preserves the original grant id and
+provenance, but creates only an unconfirmed Reading line. It does not accept the
+habit or turn on the original rule. Edited `acceptSuggestion` checks the displayed
+suggestion id and text hash, refuses blank words or edits to an already accepted
+suggestion, then passes the edited text to HOST's `answerHabitResult`. HOST owns
+the transition: writer refusals leave the habit unchanged; success accepts the
+edited suggestion and returns its unconfirmed Reading line without activating
+the original grant. Unchanged acceptance keeps its existing consent path,
+including suggestions to remove a drafting style.
+`undoAcceptSuggestion(store, id, expectHash)` takes the added line's id and
+`textHash`, not the suggestion's H code. It checks the current learned line under
+the shared rules-writer lock, then calls HOST's `undoAcceptHabit` with its trusted
+habit key. HOST restores the exact saved pre-acceptance state and removes the
+whole learned line atomically. Its refusals (including expired, edited, repeated
+or stop-style acceptance) are returned unchanged; a stale line/hash or busy
+writer is refused without changing anything. This Undo is not a dismissal and
+does not advance the Not now/Never history.
+Learned records are grouped by their habit key, so a multi-grant compiled line
+survives unrelated habit writes without duplicate line ids or lost grants.
+Legacy removal of one of its grants removes that habit's whole line.
+UI wiring and the compile lane remain separate New/HOST handoffs.
+
+Review-context labels starting with CI and coverage (also CI and test/code
+coverage) are live status, alongside Live votes and Newest builds. A Coverage
+label alone remains eligible to describe a code finding. Read-time normalization
+omits them only from PR-review context facts; findings, trackers, non-review
+items and the review gate's Not reviewing fact remain unchanged.
+
 ## PR vote claims (L1)
+
+`changeSays` supplies only the action, location and text for lists and statuses.
+Unused call arguments remain in `shown().detail` for Details, never appended to
+the one-line form (R34). Previously stored statuses are not rewritten.
+
+In self-chat, a bare `ok <code>` leaves every pending PR vote out of both the
+item and its job before approving the remaining changes. Numeric selections
+alone do not name a vote. The existing `ok <code>: vote` explicitly consents
+to the shown vote; `ok <code>: Approved` (and the other named vote values)
+consents only to that exact value. Negated, conditional, numeric or other
+free-text bodies do not consent. No new command aliases are introduced.
+The page's exact-revision actions are unchanged.
+
+The omitted vote is retained as an unchecked effect with
+`offReason: 'self-chat-ok'`, never marked made. Both effect lists retain that
+reason, so editing a held reply cannot lose its omission notice.
+An owner-send check survives delayed execution and is copied to sent checks,
+history, status and the final receipt: "Your vote on PR 123 wasn't cast:
+a plain ok never votes. Vote on the PR." Sending a reply does not create a
+new vote-only action or promise a later self-chat approval command. Existing vote-claim checks
+still hold a reply that falsely says the omitted vote was cast.
 
 PR-review replies wait unless an explicit review rule covers them and the reply
 is built from comment receipts. Replies mentioning approvals or votes always
@@ -18,6 +170,13 @@ from `runner/apply.ts` (R18): an engine PR reference, PR-review intent, or a PR
 link in the reply, last ask or asker's stored thread. New can import it instead
 of maintaining a separate projection copy.
 
+`isNonAdoPrLink(url)`, exported beside `voteSentences` in `runner/work.ts`,
+recognizes HTTP(S) PR paths using `pull`, `pull-requests` or `merge_requests`,
+including non-Azure enterprise hosts and PR subpages. Azure DevOps cloud hosts,
+non-PR links and invalid URLs return false. It is a pure URL test, not a vote
+claim or permission check. New combines it with `voteSentences` for the
+uncheckable-vote warning; it never blocks an owner send or grants an auto-send.
+
 ## Rule-authorized PR comments and replies (R10a)
 
 `reviewRuleFor()` is the shared matcher for policy, waiting reasons and the
@@ -26,6 +185,24 @@ reviewer groups; live eligibility still comes from `review-gate.ts`, never
 from the rule. Settings writes the standard English line through `writeRules`,
 marks it `source: 'settings'` with a text hash, and preserves its text on Off.
 Multiple review rules are toggled together and shown as Custom.
+
+Setup and Settings rule writes use the central `store/rules.ts` writer. It takes the
+non-spinning `withRecordWriteNow` lock on `rules.compiled.json`, then starts
+a fresh read of that file and `rules.md`. Existing-line edits compare the
+exact text hash inside the lock; a changed source or line returns
+"This line changed; your text is kept". Contention returns
+"Delegate is saving another change; your text is kept. Try again."
+Neither refusal writes a file or waits for the other writer on the page thread.
+Both source and compiled writes are atomic file replacements under that lock.
+
+`writeHabitRules(store, rules)` is the trusted habit-writer handoff. It changes
+only learned rules, preserves current owner/Settings rules and pending line
+records, keeps style/learning metadata, and refuses a changed source instead
+of rebuilding over the owner's newer words. HOST must check its `{ok, why}`
+result before recording acceptance or dismissal; until HOST switches its
+`setRules` entry to this helper, the habits integration is not complete.
+Per-line compilation, confirmation and the Settings facade are a later step;
+the lock/writer foundation alone does not activate that interface.
 
 The hook retains the current ask IDs before attaching the review job, captures
 read provenance, and creates an isolated

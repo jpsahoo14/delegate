@@ -46,6 +46,7 @@ type EventFields = {
 	}
 	'run-tools-invalid': { class: 'invalid-json' | 'inspection-error'; lines?: number }
 	'vote-claim-override': { code: string; pr?: number; claim: number | 'approval' | 'others'; vote?: number }
+	'members-shape': { memberKeys: string[]; roles: { array: number; undefined: number; other: number }; roleValues: string[]; tenantIdPresent: number }
 }
 const metadataEvents = {
 	build: { privacy: 'metadata', fields: ['release', 'commit', 'error'] },
@@ -57,6 +58,7 @@ const metadataEvents = {
 	'run-tools': { privacy: 'metadata', fields: ['call', 'tool', 'ok', 'class', 'ms', 'bytes', 'contentTypes', 'keys', 'keysTruncated', 'offloaded'] },
 	'run-tools-invalid': { privacy: 'metadata', fields: ['class', 'lines'] },
 	'vote-claim-override': { privacy: 'metadata', fields: ['code', 'pr', 'claim', 'vote'] },
+	'members-shape': { privacy: 'metadata', fields: ['memberKeys', 'roles', 'roleValues', 'tenantIdPresent'] },
 } as const satisfies { [K in keyof EventFields]: { privacy: 'metadata'; fields: readonly (keyof EventFields[K])[] } }
 
 export const TELEMETRY_CATALOG = {

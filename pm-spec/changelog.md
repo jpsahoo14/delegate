@@ -1,5 +1,37 @@
 # Engine fixes
 
+2026-10-25 (U1): Acceptance Undo keeps separate proposal and stored-line hashes. Read the actual learned line after
+a successful write so generated wording/evidence does not fail immediate Undo, without dropping either identity check.
+
+2026-10-25 (A R33 compatibility): A newly accepted habit in an older rules file can still Undo across line-record
+migration. Its fresh learned consent time is authoritative; an old file-wide confirmation is not mistaken for that action.
+
+2026-10-25 (A R33): Undo after unchanged Add it restores the exact pre-acceptance suggestion state, not a fresh suggestion.
+The shared writer lock protects latest/hash/window checks through rule removal and restore; refusals preserve habit state.
+Stop-style, edited and legacy-without-snapshot cases use their normal line controls instead of an unsafe acceptance Undo.
+
+2026-10-24 (edited suggestion acceptance): Changed suggestion text goes directly to the central learned Reading-line
+writer with trusted provenance. Habit acceptance and dismissal-Undo invalidation follow only a successful write;
+the original grant is never accepted first and the edited line is never silently confirmed.
+
+2026-10-24 (R12a-h): New and edited rule lines take the next free drafting slot before queued drafts. Fresh, restricted
+AI runs pass raw output and the original text hash to the central writer; edits, invalid output and refusals cannot
+apply stale meaning or grant consent. Reading has no promised time; failures report in Health and remain retryable.
+
+2026-10-24 (R12a-h2 / R29): Habits delegate learned-rule writes to the locked central writer and propagate refusals before
+success. Plain suggestion/dismiss/Undo/reconsider APIs preserve decline history, cooldowns and doubled-evidence thresholds;
+unchanged acceptance uses its actual consent time. The ways facade and drift work remain separately owned.
+
+2026-10-24 (R11(3)): Empty-text wait on an unsent follow-up is Keep waiting instead: close it as skipped, restore the
+original waiting row immediately and record only a local result, with no message, model run or negative learning.
+
+2026-10-24 (R10c slice 2 PE B1): Review again now falls through the existing probe checks instead of short-circuiting them.
+Preserve vote/closure news and role/effect refresh; suppress only the automatic stale-draft redraft for verified new heads.
+
+2026-10-24 (R10c slice 2 / R24): After fixed SEND integration, probePRs marks later commits against the verified reviewBasis
+without clearing the draft, receipts, sent reply or failure facts, or starting a new model run. Repeated probes keep the
+marker time stable; further pushes refresh it and invalidate old page actions.
+
 2026-10-24 (R10c PE news correction): Capture the owner's vote at review start and retain it as the comparison baseline.
 Only a changed non-zero vote or a PR closing after the ask completes the review item; old votes and closures stay context.
 Failed reads clear unknown baselines; normal probes and report-only continuations do not fabricate or reset them.

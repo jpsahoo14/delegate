@@ -4,12 +4,22 @@ import type { Rule } from './types.ts'
 const scope = { who: ['accounts', 'team', 'org', 'outside'], chat: true, minConfidence: true } as const
 const people = (r: Rule) => r.who.accounts?.map(p => p.name).join(', ') || (r.who.group === 'org' ? 'someone in your org' : r.who.group === 'team' ? 'someone in your team' : 'someone outside your org')
 const empty = z.object({}).strict()
+export const CAPABILITY_VERSION = 2
+const conditions = (r: Rule) => [
+	r.when.intent && `about ${r.when.intent.replace(/_/g, ' ')}`,
+	r.when.chat && (r.when.chat === 'direct' ? 'in a one-to-one chat' : 'in the specified chat'),
+	r.when.minConfidence && (r.when.minConfidence === 'high' ? 'with a card and a live source' : 'with a supporting card'),
+].filter(Boolean).join(', ')
+const scopedPeople = (r: Rule) => `${people(r)}${conditions(r) ? ` ${conditions(r)}` : ''}`
+const GRANT_RANK: Record<Rule['then'], number> = { draft: 4, shortcut: 4, ignore: 3, review: 2, ack: 1, send: 0 }
+export const compareGrants = (a: Rule, b: Rule) => GRANT_RANK[b.then] - GRANT_RANK[a.then] ||
+	Number(!!b.who.accounts?.length) - Number(!!a.who.accounts?.length)
 export const CAPABILITIES = {
-	send: { scope, params: empty, readBack: (r: Rule) => `Send replies to ${people(r)} when this rule matches.` },
-	ack: { scope, params: empty, readBack: (r: Rule) => `Acknowledge requests from ${people(r)} when this rule matches.` },
-	draft: { scope, params: empty, readBack: (r: Rule) => `Keep replies to ${people(r)} as drafts for you.` },
-	ignore: { scope, params: empty, readBack: (r: Rule) => `Ignore matching requests from ${people(r)}.` },
-	shortcut: { scope, params: z.object({ goal: z.string() }).strict(), readBack: (r: Rule) => `Propose this shortcut for ${people(r)}: ${r.shortcut?.goal ?? 'not specified'}.` },
+	send: { scope, params: empty, readBack: (r: Rule) => `Send replies to ${scopedPeople(r)} without asking you.` },
+	ack: { scope, params: empty, readBack: (r: Rule) => `Acknowledge requests from ${scopedPeople(r)} without asking you.` },
+	draft: { scope, params: empty, readBack: (r: Rule) => `Keep replies to ${scopedPeople(r)} as drafts for you.` },
+	ignore: { scope, params: empty, readBack: (r: Rule) => `Ignore requests from ${scopedPeople(r)} without asking you.` },
+	shortcut: { scope, params: z.object({ goal: z.string() }).strict(), readBack: (r: Rule) => `Propose this shortcut for ${scopedPeople(r)}: ${r.shortcut?.goal ?? 'not specified'}. It waits for your OK.` },
 	review: {
 		active: true,
 		scope: { ...scope, intent: 'pr_review', minConfidence: false },

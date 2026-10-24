@@ -10,11 +10,12 @@ import { NAME } from '../brand.ts'
 import { CheckNow } from './CheckNow.tsx'
 import { NEW_LOOK, ToolsSettings } from './ToolsSettings.tsx'
 import { CodeFolders } from './CodeFolders.tsx'
+import { BoundLine, WaysSection } from './Ways.tsx'
 
 function Setting({ row }: { row: SettingsData['rows'][number] }) {
 	const state = useSetting(row), id = `set-${row.key}`
 	const options = row.options ?? (row.kind === 'bool' || row.kind === 'switch' ? [{ value: 'false', label: 'Off' }, { value: 'true', label: 'On' }] : undefined)
-	if (row.kind === 'switch') return <div className="setting-row setting-switch" id={`setting-${row.key}`}><div><h3 id={`${id}-label`}>{row.label}</h3><p id={`${id}-help`} className="muted">{row.help}</p></div>
+	if (row.kind === 'switch') return <div className="setting-row setting-switch" id={`setting-${row.key}`}><div><h3 id={`${id}-label`}>{row.label}</h3><p id={`${id}-help`} className="muted">{row.help}</p><BoundLine settingKey={row.key} /></div>
 		<Button variant="ghost" role="switch" aria-checked={state.value === 'true'} aria-labelledby={`${id}-label`} aria-describedby={`${id}-help`} disabled={state.busy} onClick={state.toggle}><span>{state.busy ? 'Saving...' : state.value === 'true' ? 'On' : 'Off'}</span><span className="setting-switch-track" aria-hidden="true"><i /></span></Button>
 		{state.text && <p role={state.error ? 'alert' : 'status'}>{state.text}</p>}
 	</div>
@@ -45,26 +46,32 @@ export default function Settings() {
 	}, [route, !!data])
 	if (query.error && !data) return <><h1>Settings</h1><p role="alert">{query.error.message}</p><Button onClick={() => void query.refetch()}>Try again</Button></>
 	if (!data) return <><h1>Settings</h1><p role="status">Loading settings...</p></>
-	const sections = [['learned', 'What it knows'], ['you', 'You and your replies'], ['replies', 'Automatic replies'], ['timing', 'Reminders and summary'], ['system', 'Updates and system']]
+	// R12b (C1): Your way of working is the first section, when the engine (or the dev fixture) gives it; its count is SEND's needsHim.
+	// Its lines replace the old standing-instructions list; the old habit suggestions stay until the engine's suggestions are ready.
+	const ways = snapshot?.ways, suggestionsReplaced = !!ways?.suggestionsReady
+	// Step 3: a standing instruction the engine now shows as a line is retired here; any other (a drafting style with its editor) stays.
+	const rules = ways ? data.about.rules.filter(rule => !ways.lines.some(line => line.text.trim() === rule.text.trim())) : data.about.rules
+	const sections = [...(ways ? [['ways', 'Your way of working']] : []), ['learned', 'What it knows'], ['you', 'You and your replies'], ['replies', 'Automatic replies'], ['timing', 'Reminders and summary'], ['system', 'Updates and system']]
 	const sub = route.split('/')[1], here = data.rows.find(row => row.key === sub)?.section ?? (sub === 'tools' ? 'you' : sub)
 	const switches = data.rows.filter(row => row.kind === 'switch' && !row.group && row.key !== 'reviewRule')
 	const unsaved = new Set<string>(data.rows.filter(row => drafts[row.key] !== undefined && drafts[row.key] !== row.value).map(row => row.advanced ? 'system' : row.section))
 	const marker = (id: string) => unsaved.has(id) && <span className="unsaved-marker" role="img" aria-label="Unsaved changes" />
-	return <div className="new-settings"><h1>Settings</h1><p className="settings-intro">Saved to the config in your storage folder, so every machine uses them from the next cycle.</p>{query.error && <div role="alert"><p>Could not refresh Settings. Your current fields and edits are kept: {query.error.message}</p><Button variant="outline" onClick={() => void query.refetch()}>Try again</Button></div>}<nav className="settings-index" aria-label="Settings sections">{sections.map(([id, label]) => <a key={id} aria-current={here === id ? 'location' : undefined} href={href(`settings/${id}`)}>{label}{id === 'learned' && data.about.suggestions.length > 0 && <span className="count">{data.about.suggestions.length}</span>}{marker(id)}</a>)}</nav>
+	return <div className="new-settings"><h1>Settings</h1><p className="settings-intro">Saved to the config in your storage folder, so every machine uses them from the next cycle.</p>{query.error && <div role="alert"><p>Could not refresh Settings. Your current fields and edits are kept: {query.error.message}</p><Button variant="outline" onClick={() => void query.refetch()}>Try again</Button></div>}<nav className="settings-index" aria-label="Settings sections">{sections.map(([id, label]) => <a key={id} aria-current={here === id ? 'location' : undefined} href={href(`settings/${id}`)}>{label}{id === 'ways' && !!ways?.needsHim && <span className="count">{ways.needsHim}</span>}{id === 'learned' && !suggestionsReplaced && data.about.suggestions.length > 0 && <span className="count">{data.about.suggestions.length}</span>}{marker(id)}</a>)}</nav>
 		{sections.map(([id, label]) => <section className="settings-section" id={`setting-${id}`} key={id}><h2>{id === 'learned' ? `What ${NAME} knows about you` : label}{marker(id)}</h2>
+			{id === 'ways' && <WaysSection />}
 			{id === 'learned' && <>
 				<p className="muted">Ask your AI chat &quot;what do you know about me?&quot; for the same list. To change a rule you wrote, say &quot;change my rules&quot; there.</p>
-				{data.about.suggestions.length > 0 && <><h3>Suggestions</h3><div className="settings-rows">{data.about.suggestions.map(suggestion => {
+				{!suggestionsReplaced && data.about.suggestions.length > 0 && <><h3>Suggestions</h3><div className="settings-rows">{data.about.suggestions.map(suggestion => {
 					const actions = snapshot?.settingsActions?.[suggestion.code]?.map(id => entities.actions[id]).filter(Boolean) ?? []
 					return <div className="setting-row" data-code={suggestion.code} key={suggestion.code}><strong>{suggestion.text}</strong><small>{suggestion.does}</small><small>Evidence: {suggestion.evidence}</small>{suggestion.links?.length ? <small className="evidence-links">{suggestion.links.map((link, i) => <span key={link}>{i > 0 && ' · '}<a href={link} target="_blank" rel="noreferrer">{`Reply ${i + 1}`}</a></span>)}</small> : null}<div className="action-bar">{actions.map(action => <ActionButton key={action.id} action={action} primary={action.kind === 'accept-habit'} />)}</div>{actions[0] && <ActionState item={actions[0].item} rev={actions[0].rev} />}</div>
 				})}</div></>}
-				<h3>Standing instructions</h3><div className="settings-rows">{data.about.rules.length ? data.about.rules.map((rule, n) => {
+				{(!ways || rules.length > 0) && <><h3>Standing instructions</h3><div className="settings-rows">{rules.length ? rules.map((rule, n) => {
 					const actions = rule.code ? snapshot?.settingsActions?.[rule.code]?.map(id => entities.actions[id]).filter(Boolean) ?? [] : []
 					const edit = actions.find(action => action.kind === 'edit-style')
 					return <div className="setting-row" key={n}><strong>{rule.text}</strong>{rule.who && <small>For: {rule.who}</small>}<small>{rule.learned ?? 'You said this.'}{rule.held ? ' · On hold' : ''}</small>
 						{edit && rule.style !== undefined && <StyleEditor action={edit} style={rule.style} />}
 						<div className="action-bar">{actions.filter(action => action !== edit).map(action => <ActionButton key={action.id} action={action} />)}</div>{actions[0] && <ActionState item={actions[0].item} rev={actions[0].rev} />}</div>
-				}) : <p className="setting-row muted">None: every reply waits for your ok.</p>}</div>
+				}) : <p className="setting-row muted">None: every reply waits for your ok.</p>}</div></>}
 				{data.about.chats.length > 0 && <><h3>Chats you marked</h3><div className="settings-rows">{data.about.chats.map((chat, n) => <div className="setting-row" key={n}><strong>{chat.name}</strong><small>{chat.says}</small><div className="action-bar">{chat.actionIds?.filter(id => entities.actions[id]).map(id => <ActionButton key={id} action={entities.actions[id]} />)}</div>{chat.actionIds?.[0] && entities.actions[chat.actionIds[0]] && <ActionState item={entities.actions[chat.actionIds[0]].item} rev={entities.actions[chat.actionIds[0]].rev} />}</div>)}</div></>}
 				<h3>Learning</h3>
 			</>}

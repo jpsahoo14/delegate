@@ -1,6 +1,16 @@
 import type { Blocker, Fact, Job, Report, Workflow } from './types.ts'
+import { documentFailureCause } from './document-failure.ts'
+import { scrub } from './secrets.ts'
 
-export type ReportFailure = { kind: 'setup' | 'other' | 'content' | 'tool' | 'stopped'; why: string; tried: string[]; at?: string }
+export type FailureCause = {
+	step: 'pr-read' | 'doc-read' | 'teams-read' | 'post' | 'send' | 'calendar' | 'work-item' | 'run-stopped'
+	target?: string
+	reason?: 'unreachable' | 'no-access' | 'not-found' | 'timeout' | 'busy' | 'too-large' | 'unsupported'
+	system?: string
+	retryAt?: string
+	size?: string
+}
+export type ReportFailure = { kind: 'setup' | 'other' | 'content' | 'tool' | 'stopped'; why: string; tried: string[]; at?: string; cause?: FailureCause }
 export type ReportRefusal = { what: string; target: string; reason: string }
 type ReportData = Partial<Pick<Report, 'intent' | 'context' | 'summary' | 'goalMet' | 'blocker' | 'todos'>>
 export type StoredReport = ReportData & {
@@ -10,7 +20,7 @@ export type StoredReport = ReportData & {
 	error?: string
 	updatedAt?: string
 	result?: ReportData
-	retry?: Pick<NonNullable<Job['retry']>, 'last' | 'tried'>
+	retry?: Pick<NonNullable<Job['retry']>, 'last' | 'tried'> & { nextAt?: string }
 	runFailed?: Workflow['runFailed']
 	failure?: ReportFailure
 	refused?: ReportRefusal[]
@@ -26,7 +36,7 @@ export type NormalizedReport = {
 const CI = /\b(?:builds?|CI|pipelines?|checks?|validation)\s+(?:(?:is|are|has|have)\s+)?(?:failed|failing|passed|green|red|pending|running|succeeded|queued)\b|\bcoverage\s+(?:dropped|is below|fell)\b/i
 const VOTE_STATUS = /\b(?:your|my|our|(?:the )?owner's)\s+(?:reviewer\s+)?groups?\b|\bowner\s+(?:has\s+)?(?:approved|voted|is waiting)\b|\b(?:votes?|reviewer status)\s+(?:is|are)\s+(?:(?:still|already)\s+)?(?:present|recorded|approved|pending|waiting)\b/i
 const REVIEWER_STATUS = /^(?:[A-Z][\w'-]*\s+){1,3}(?:has\s+)?(?:approved|voted|(?:is\s+)?waiting)(?=$|[.!;,]|\s+(?:on|for|with|this|the|PR)\b)/
-const REVIEW_STATUS_LABEL = /^(?:live votes?|newest builds?)\b|\bdependency\b.*\bvotes?\b/i
+const REVIEW_STATUS_LABEL = /^(?:live votes?|newest builds?|ci and (?:test |code )?coverage)\b|\bdependency\b.*\bvotes?\b/i
 const PLUMBING = /\b(?:tool discovery|execution calls?|tool schema)\b/i
 const INTERNAL = /[0-9a-f]{8,}|job:|Error:|Not made for you|\bworker\b|\b(?:ado|teams|sharepoint|delegate_worker)[-_][\w-]+/i
 const REFUSAL = /(?:\.\s*)?Not made for you:\s*/i
@@ -64,6 +74,15 @@ function failureKind(blocker: Blocker): ReportFailure['kind'] {
 	if (blocker.documentFailure) return 'content'
 	if (blocker.kind === 'tool') return 'tool'
 	return blocker.kind === 'transient' || blocker.kind === 'budget' ? 'other' : 'content'
+}
+
+const causeText = (text: string | undefined) => text && !/[\\/]|(?:https?|file):/i.test(text)
+	? plain(scrub(text), '').slice(0, 200) || undefined : undefined
+function cleanCause(cause: FailureCause): FailureCause {
+	const target = causeText(cause.target), system = causeText(cause.system), size = causeText(cause.size)
+	return { step: cause.step, ...(cause.reason ? { reason: cause.reason } : {}),
+		...(target ? { target } : {}), ...(system ? { system } : {}), ...(size ? { size } : {}),
+		...(cause.retryAt && Number.isFinite(Date.parse(cause.retryAt)) ? { retryAt: cause.retryAt } : {}) }
 }
 
 function refusalReason(reason: string): string {
@@ -129,10 +148,19 @@ export function normalizeReport(stored: StoredReport): NormalizedReport {
 				? { kind: 'other', why: stored.error ?? 'The work stopped before it finished.', tried: stored.retry?.tried ?? [], ...(stored.updatedAt ? { at: stored.updatedAt } : {}) }
 				: undefined
 	if (failed) {
+		const doc = explicit
+			? explicit.kind === 'content' ? documentFailureCause(explicit.why) : undefined
+			: blocker?.documentFailure ? documentFailureCause(blocker.why) : undefined
+		const cause: FailureCause | undefined = explicit && 'cause' in explicit && explicit.cause
+			? cleanCause(explicit.cause)
+			: failed.kind === 'stopped' ? { step: 'run-stopped' }
+			: doc ? { ...doc, target: causeText(doc.target) ?? 'the document' } : undefined
+		if (cause && stored.retry?.nextAt && Number.isFinite(Date.parse(stored.retry.nextAt))) cause.retryAt = stored.retry.nextAt
 		const whyRefusal = refusal(failed.why)
 		if (whyRefusal) addRefusal(whyRefusal)
 		else normalized.failure = {
 			...failed,
+			...(cause ? { cause } : {}),
 			why: plain(failed.why, "The work couldn't be completed."),
 			tried: [...new Set(failed.tried.flatMap(text => {
 				const r = refusal(text)

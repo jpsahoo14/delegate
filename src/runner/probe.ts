@@ -236,6 +236,21 @@ export async function probePRs(store: Store, cfg: Config, probe: BuildProbe | un
 			n++
 			continue
 		}
+		w.prRead = JSON.stringify([ref.id, st.status, st.head, mine])
+		w.prReadAt = new Date(now).toISOString()
+		w.prUnknown = mine === undefined ? true : undefined
+		const basis = w.reviewBasis, liveHead = st.head
+		const reviewHeadMoved = w.intent === 'pr_review' && basis?.pr === ref.id && !!basis.head?.trim() && !!liveHead?.trim() && !sameHead(liveHead, basis.head)
+		let reviewMarked = false
+		if (reviewHeadMoved && liveHead) {
+			const marked = w.reviewAgain?.pr === ref.id && sameHead(w.reviewAgain.head, liveHead)
+			if (!marked) {
+				w.reviewAgain = { pr: ref.id, head: liveHead, at: new Date(now).toISOString() }
+				w.revAt = new Date(Math.max(now, (Date.parse(w.revAt ?? w.updatedAt) || 0) + 1)).toISOString()
+				store.log({ event: 'pr-moved', code: w.code, pr: ref.id, reason: `PR ${ref.id} changed since your review` })
+				reviewMarked = true
+			}
+		}
 		regateVotes(store, cfg, w, ref, st)
 		// A review declined by the gate starts by itself once the owner is a reviewer (added in Azure DevOps, or by Add me), within
 		// a week of the ask; a PR that could not be read is decided again now that it can be (review gate G6, G13).
@@ -248,9 +263,6 @@ export async function probePRs(store: Store, cfg: Config, probe: BuildProbe | un
 			n++
 			continue
 		}
-		w.prRead = JSON.stringify([ref.id, st.status, st.head, mine])
-		w.prReadAt = new Date(now).toISOString()
-		w.prUnknown = mine === undefined ? true : undefined
 		clearResetVotes(store, w, ref.id, st, mine)
 		describe(store, w, st)
 		const changed = mine !== undefined && w.prVote !== undefined && mine !== w.prVote && mine !== 0
@@ -258,7 +270,7 @@ export async function probePRs(store: Store, cfg: Config, probe: BuildProbe | un
 		const receipt = (w.effects ?? []).find(e => e.done && isVote(e.call) && prIdOf(e.call) === ref.id)
 		const madeHere = !!receipt && sameVote(mine ?? 0, voteValue(receipt.call))
 		const approvedNow = mine !== undefined && mine >= 5 && !madeHere && (changed || approvalAsk(w.lastAsk ?? ''))
-		const stale = !!w.draft && w.prDraft !== w.prRead && (!!w.prDraft || !receipt && mine !== undefined && mine >= 5 && approvalMention(w.draft.text))
+		const stale = !reviewHeadMoved && !!w.draft && w.prDraft !== w.prRead && (!!w.prDraft || !receipt && mine !== undefined && mine >= 5 && approvalMention(w.draft.text))
 		const ownerWriting = w.draft?.byOwner && mine !== undefined && mine < 5 && !closedNow && (!approvalMention(w.draft.text) || approvalReplyMatches(w.draft.text, mine, ref.id))
 		const reason = receipt && !w.sent || w.draft && w.prDraft === w.prRead || ownerWriting ? undefined
 			: closedNow ? `PR ${ref.id} was ${/completed/i.test(st.status) ? 'completed' : 'abandoned'}`
@@ -266,7 +278,7 @@ export async function probePRs(store: Store, cfg: Config, probe: BuildProbe | un
 			: stale ? `PR ${ref.id} changed since this draft` : undefined
 		if (!standaloneReview && mine !== undefined && mine !== w.prVote) w.prVote = mine
 		w.prStatus = st.status
-		if (!reason) { commitFor(w)(false); continue }
+		if (!reason) { commitFor(w)(reviewMarked); if (reviewMarked) n++; continue }
 		const home = homeOf(store, w)
 		newTurn(w, !!w.sent)
 		if (active(home)) {

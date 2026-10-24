@@ -1,5 +1,149 @@
 # React preview
 
+## Acceptance Undo identity fix (U1)
+
+- Keep acceptedTextHash as the proposal's h.rule.text hash. After unchanged acceptance's writer succeeds, read back
+  exactly one learned line by its trusted habit key and record its actual text hash as acceptedLineTextHash.
+  Legacy learned-source wording can differ from the proposal, including its evidence suffix; never guess that stored hash.
+- Undo compares h.rule.text with acceptedTextHash and line.text with acceptedLineTextHash. All other latest-change,
+  confirmation/consent, original-grant, ownership, window, on/off and shared-lock gates stay unchanged.
+  Clear both hashes wherever acceptance Undo is invalidated. A missing/ambiguous read-back reports an explicit error
+  after the rules write rather than saving invented identity metadata or claiming success.
+- Old acceptances without the stored-line hash refuse exact Undo at read time; normal line controls remain available.
+  No repair, migration or grant change. #54 instrumentation is parked outside this fix; no new tests/proof cases.
+
+## Undo an unchanged habit acceptance (A R33)
+
+- Unchanged ok records acceptedBefore `{state, at, until, told}` and acceptedTextHash only after the rule writer succeeds.
+  Repeated ok does not reset that snapshot/window. Edited acceptance and later accepted-style editing do not arm it;
+  other habit changes clear it. Stop-style/removes offers have no acceptance Undo.
+- Export `undoAcceptHabit(store, id): HabitTransitionResult` for SEND (stable key or H code). The habit must still be
+  accepted, inside the existing undo window, with its snapshot and one matching confirmed learned line: same accepted
+  words, original grant ID, consent timestamp and on/off state. Missing, replaced, edited, ambiguous or expired records refuse.
+  Its confirmation time must also match, except an older stamp equal to the file-wide legacy confirmation: legacyLine
+  can carry that old stamp into a newly persisted record. Fresh learned/habit consent times still match the acceptance;
+  newer or unrelated confirmation stamps refuse. This is a read-time rule, not a migration or timestamp rewrite.
+- Reuse the central writer's existing reentrant non-spinning record lock across the fresh gate, setRules and habit restore.
+  No new writer implementation or lock file. Remove all grants of that learned line first; BUSY/changed-source/writer
+  refusals return before habit changes or a success log. Restore the four fields exactly, including absent until/told.
+  No dismissal, cooldown extension or negative-learning event is recorded; repeat Undo refuses.
+- The existing answerHabitResult undo verb delegates to this function. Legacy style-Undo eligibility uses the same guard;
+  SEND owns undoAcceptSuggestion and the page's six-second status action. Older accepted records without a snapshot
+  cannot be restored exactly: hide/refuse acceptance Undo at read time and leave normal line controls available, no repair.
+- No new tests/proof cases. The allowed build/types/existing goldens/publication gates and PE diff review apply.
+
+## Edited suggestion acceptance (R12a-h follow-up)
+
+- Integrate PE-approved SEND `3fad10e3`. For a suggested habit accepted with changed text, answerHabitResult calls
+  addSuggestedRuleLine with the original trusted rule ID, habit key/evidence and actual edit-consent time.
+  Only a real drafting style carries the edited words as style metadata; a stop-style offer never inherits its target's style.
+- A refusal returns before acceptance, dismissal-Undo invalidation or success logging. Success stores the edited text
+  on the habit and clears dismissal Undo; it does not first accept the original grant or confirm the edited one.
+  The central writer returns an unconfirmed learned Reading row for the existing compile lane. Unchanged acceptance,
+  normal stop-style acceptance and accepted-style editing retain their existing paths. No migration or repair is needed.
+- SEND owns the facade hookup. Existing build/types/goldens/publication checks apply; no new proof cases.
+
+## Rule compile priority lane (R12a-h)
+
+- Integrate PE-approved SEND `ee88b4ad` (including `a58444d8`) by exact parent. Every free slot in the existing draft pool checks `rulesToCompile` first,
+  with fresh reads, before taking another queued draft. Compiles share `maxParallel` and the daily AI-run allowance;
+  they do not preempt a running draft or occupy a second pool. Pause/stop and an AI setup hold leave them pending.
+- Claim a line once per text hash per dispatch pass, and at most one version of an ID in flight. Recheck the queue
+  whenever a slot frees: a line edited during its compile is read again, never overwritten by the old result.
+  `finishRuleCompile(store, id, expectedTextHash, rawOutput)` owns the fresh locked compare and schema validation.
+  An already-read/deleted/changed line is not an error for the new text; invalid output or a busy writer stays pending,
+  logs its refusal and raises Health. Failures cannot starve normal drafts in that pass.
+- Fresh host sessions use the compile schema and a verified empty tool set, with no worker report requirement.
+  Their IDs are separate from a possible CLI fallback, so late SDK cleanup cannot delete that fallback's session.
+  The normal worker preflight and the warm-only five-second quick-check route are unchanged. Compiles have the normal
+  run deadline and cold-spawn fallback; a tool-less compile is not a worker-tools-missing incident.
+- Spawn uses an empty MCP config and no owner tools, with only the existing prompt-file read and completion tools.
+  Copilot returns task_complete JSON; Claude returns final-result JSON. Neither path writes a workflow or a report.
+  Temporary run files are cleaned in finally, including on malformed output or writer refusal.
+- Code supplies the capability/limit catalogs and known account identities; unknown IDs or mismatched names are refused,
+  so a read-back cannot name someone other than the grant's target.
+  Raw model output never grants consent. SEND's code-built row still says Reading... until compilation lands, with
+  no promised time; widening/confirmation, Can't yet/Partly and Settings redirects remain its existing lifecycle.
+- Old pending lines are picked up by SEND's source reconciliation, not a new repair or marker. No new proof cases
+  or tests: build, both app types, existing goldens and publication scan; the PE's diff review is the regression gate.
+
+## Habits handoff to the central rules writer (R12a-h2 / R29)
+
+- Integrate released `180307f5` and SEND writer `0c68eeb6`. `habits.setRules` now returns `writeHabitRules`'s discriminated
+  result; it never writes rules.md/compiled itself. Acceptance, accepted-style edits, style removal, Undo and Never all
+  check `ok` before changing habit state or logging success. BUSY/changed-source refusals return verbatim. Mutation lists
+  come from the writer's full rulesSnapshot, not the active-only Store.rules policy reader, retaining inactive learned lines.
+- Only trusted current habit rules reach that writer. Unchanged Add it stamps `learned.at` at acceptance, not at evidence
+  discovery; explicit accepted-style edits keep the existing draft-only grant/scope and use the edit-consent time. Changed suggestion text is not confirmed through the habit
+  path: SEND's facade compiles it normally. Other owner/Settings rules are neither edited nor deleted by habit decisions.
+- Four exported plain functions for SEND (IDs accept a habit's stable `key` or its H `code`):
+  - `habitSuggestions(store): HabitSuggestions` returns `{open?: Habit, turnedDown: [{habit, at, how}]}`. Open is the latest
+    currently suggested record, at most one; turnedDown contains currently snoozed/declined records, newest first. Read-only.
+  - `dismissHabit(store, id, how: 'not-now'|'never'): HabitTransitionResult`;
+  - `undoDismiss(store, id): HabitTransitionResult`;
+  - `reconsiderHabit(store, id): HabitTransitionResult`.
+  Mutation results are `{ok:true, habit}` or `{ok:false, why}`; the facade must propagate refusals. Accepted lines use their
+  line controls, not suggestion-dismissal APIs. `answerHabitResult` provides `{ok:true,text}|{ok:false,why}` for acceptance
+  and legacy controls; applyAnswers forwards the refusal bit to page receipts. Existing `answerHabit` remains a string adapter.
+- `Habit.dismissals` persists id/at/how/evidence-count plus the previous suggestion state. First Not now waits 14 days;
+  second and later wait 60 days and require at least twice the last dismissed evidence count before automatic re-offer.
+  Send, style and style-removal generation enforce that floor alongside their existing evidence rules. Never has no expiry.
+- Undo restores the prior state only for the latest still-undoable dismissal. It marks that event undone (no double Undo)
+  and does not count it toward later cooldowns. Acceptance/edit/re-offer/reconsider invalidates dismissal Undo.
+  Reconsider opens immediately without erasing the history; it is an explicit override, not an automatic Never expiry.
+  The page's six-second Undo display window is not an engine timeout.
+- Old records need no repair/migration: a legacy snooze retains its stored expiry and implies one prior Not now; its date
+  can be derived from the original 14-day expiry. A legacy permanent decline has only its existing habit date, not a claimed
+  recovered action timestamp; no fabricated prior-state snapshot means no historical Undo. New actions record exact times.
+- Fresh synchronous habit-list updates preserve unrelated records; rule writes retain the central writer's one lock.
+  Existing manual fixtures that create owner rules now call `store/rules.writeRules`, not the learned-only helper, with no
+  new cases/assertions or proof execution. No test/ edits. Drift remains R14; build/both types/existing goldens/publish only.
+
+## Keep waiting instead (R11(3), runner contract)
+
+- Reuse the existing `wait` verb: New's link under an unsent follow-up submits `{code: followUpItem.code, verb: 'wait'}`
+  with no text, on the exact workflow revision. Target the A item, not its W entry; do not use `skip`, which learns.
+  Ordinary non-follow-up work waits and explicit wait-duration text keep their existing handling.
+- The runner requires a normal follow-up reply, a uniquely linked W entry in the same chat whose original message is
+  still in the item, no sent reply, and a resting/scheduled draft (or an already-skipped retry). Window-owned, linked
+  unfinished work, shared jobs and queued/running jobs refuse without changing anything.
+- Close the draft as `done` / `closedBy: 'skipped'`, cancel its approval/scheduled send, clear edit-learning/promise state,
+  and stop its own idle watch/work without touching another item's work. Keep the unsent draft for history.
+  Bypass the normal skip branch: no skipped/outcome learning event, learning hook, source call or model is used.
+- A fresh synchronous waiting-list read removes only this follow-up's `item` link, retaining the original ask, people,
+  chat, message, age and current state. A waiting entry returns immediately instead of waiting for the closed-item cooldown.
+  Already answered/dismissed entries remain so; they are never resurrected. Other and concurrently added rows are retained.
+- Confirmation/refusal uses only stored outcomes, page submissions and local receipts, including the self surface; it never
+  posts a follow-up or an acknowledgement to Teams. Duplicate already-closed/unlinked actions do not send or learn.
+  `recordAnswerResult` is the unchanged local-result portion extracted from reply; existing reply transport behavior stays.
+- Existing linked follow-up records use the same handler without a migration. This commit is runner-only; New owns the
+  link, its eligibility and projection. No new tests/proofs/golden rows; only allowed fast checks and PE diff review.
+
+## Trusted owner identity in the tick source (R12a / R26 handoff)
+
+- After merging SEND `ae2bbf03`, the tick passes `cfg.owner.id` as `sourceFor`'s fourth argument. Teams member tenant
+  provenance is anchored to the matching trusted user ID, never the owner's display name. Injected sources and the demo
+  adapter keep their existing behavior. No owner config, policy, membership parser or cache is changed by this call site.
+
+## PR review head-change producer (R10c slice 2 / R24)
+
+- On the exact fixed SEND handoff (`ebd81a69`, merged as `177df412`), `probePRs` compares a review item's live PR head only
+  with its same-PR, code-verified `wf.reviewBasis.head`. Missing basis/head, another PR or `sameHead` equality sets no marker.
+  It never adopts the latest read, a vote effect or worker prose as the reviewed revision.
+- A mismatch sets `reviewAgain {pr, head: live, at}`. Subsequent pushes replace the marker; repeated reads of the same new
+  head retain its first-seen time. New marker revisions invalidate old page actions. Normal PR read metadata remains fresh.
+- The producer clears nothing and falls through to the normal role/effect/vote/closure checks. It never writes prStatus
+  before those checks, so closedNow's missing-date fallback still sees the prior state. Only the stale-draft automatic
+  redraft is suppressed for a verified-basis head mismatch; approval/closure news and other existing transitions still run.
+  With no other news, reviewed results remain and re-review still needs an explicit ask/action.
+- Repeated probes do not refresh the marker time. A new marker is saved through the existing commit path and counted
+  once even when the same probe also handles ordinary PR news.
+- The corrected live-vote/closed-after-ask completion runs first. SEND keeps its during-review completion check; no second
+  after-completion producer is added to its posting hook or finishReview. New reads the existing reviewAgain shape and the
+  fresh prRead head for its Review again / exact-head Approve state.
+- No migration or repair: old items without a verified reviewBasis remain unmarked; verified items converge on the next
+  normal probe. Only build, both typechecks, existing goldens and clean publish run; official PE diff/regression review pending.
+
 ## PR review owner-item lifecycle, first slice (R10c)
 
 - Successful PR reads populate `wf.prGroups` using `reviewerGroups` from the review gate: cleaned L2 labels, deduplicated
@@ -26,8 +170,8 @@
   `prRead`/`prReadAt` and `prStatus` come from that read; `prVote` is the start baseline while waiting, the live value on Done.
   The item retains its sent reply, draft, effects/receipts,
   sources and job result for Done; it does not start a new turn, rerun a review, send a reply or cast a vote.
-- This slice deliberately does not compare heads with `reviewBasis`: SEND owns that completion-time evidence. The later
-  reviewAgain slice waits for its commit, never guesses a reviewed head from the latest live PR. Only the existing fast
+- SEND owns the completion-time `reviewBasis` evidence; the separate head-change slice above consumes it without guessing
+  a reviewed head from the latest live PR. Only the existing fast
   checks run; no new test/proof/golden cases or browser/engine proofs. Official PE diff/regression review is pending.
 
 ## PR review start stamp (R20 prerequisite)
@@ -3646,6 +3790,58 @@ not just a threshold assertion. No real-owner data is needed or accessed.
   but a suffix already present in their text is normalized the same way. The
   correction ledger stores the exact normalized text sent. New owns the editor's
   separate muted suffix preview; no browser or projection change is needed here.
+
+- R12a foundation (slice 2, not the full authorization rollout): `core/limits.ts`
+  is the ordered A10 catalog for the limits card, including guests/outside people
+  and the assertion that no capability names a complete/merge/abandon/delete,
+  reviewer/branch-change, deploy or release action. `productLimits` supplies the
+  page copy with the effective hourly cap. The product ceiling is three automatic
+  messages per chat per hour; configuration may lower it, including to zero,
+  never raise it. Invalid stored values read as zero, without throwing in the
+  runner or a page build, and emit one shape-only warning per process. Settings
+  rejects writes outside the whole-number range zero to three; code-owned writers
+  use the strict `checkHourlyCap` validator, not the tolerant read helper. Reply
+  decisions, their runner policy context and scheduled automations share the cap.
+  R12a 2/3 routes automatic replies, acknowledgments, standing sends and final
+  engine-comment permission through `authorize`; reasons include `blockedBy`
+  only for automatic actions. Owner-approved sends retain the earlier guards,
+  with no new never-list, guest/outside or cap hold. Outgoing text and tool
+  arguments use the shared secret scrubbers. `approvedReplyText` scrubs before
+  page approval hashes are built, so removing a secret does not make an
+  otherwise unchanged owner Send fail its approved-text digest check.
+  The strictest matching grant wins: draft = shortcut > ignore > ack > send.
+  Review is its own PR lane: send/ack never match a PR review, and matching
+  draft/shortcut/ignore beats review. Named people beat a group on equal kinds;
+  read-back conflict detection remains separate from this runtime winner.
+  Newly supported widening group grants stay inert until 3/3 gives them the
+  per-line confirmation lifecycle; existing review groups and narrowing
+  draft/shortcut groups can use verified internal membership.
+  Trusted guest/external roles or a differing member tenant identify outside
+  IDs in the optional cached `outside` field. Neither names nor domains count.
+  Existing caches without that field are re-read; a failed read clears their
+  old safe-guest result. The Teams factory accepts owner ID as a fourth argument,
+  required from HOST's `sourceFor` call to compare tenant IDs; absent owner
+  tenant evidence stays unknown and automatic sends wait.
+  Compile lifecycle and usage counts follow in R12a 3/3; the catalog is not yet
+  a new UI.
+
+- R28 contract: `src/core/ways.ts` is the SEND-owned boundary for the rule page.
+  `wayLines(store, cfg)` and `suggestions(store)` are read-only; readBack is an
+  exact three-string tuple built in code, never composed in React. Writers take
+  Store first; all existing-line/suggestion mutations require the snapshot's
+  textHash, including Off, Delete, Undo and answering an unclear line. A stale
+  hash returns `This line changed; your text is kept`. Confirm is the sole
+  widening-grant activation action. These functions currently throw `not yet`;
+  no runtime route calls them until the engine implementation is complete.
+  PE's contract correction adds the Reading status (switch disabled, no timing
+  promise, empty third read-back line), returned immediately by add/edit and
+  an on-switch awaiting compilation, plus owner/learned/setting source chips.
+  Suggestions expose at most one open card and the dated not-now/never history;
+  accepting carries the owner's edited text. Dismiss, six-second Undo and
+  Reconsider remain engine verbs; HOST owns the 14/60-day timers. `needsHim`
+  owns the nav count: waiting confirmations, unclear lines, drift prompts and
+  an open suggestion. `limitsCard(cfg)` owns effective-policy lookup for the
+  limits card, including safe handling of an invalid stored cap.
 
 - bug 10-22 E13.classic.real-answer-preview-send (R3): the server already
   supplies a question type, answer action and optional placeholder draft.

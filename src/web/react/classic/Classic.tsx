@@ -54,7 +54,7 @@ export default function Classic() {
 		resultItem?.type === 'question' && resultItem.rev !== result.rev && snapshot?.classic?.needsIds.includes(resultItem.id)
 	const retainedKnowledge = useData(state => Object.entries(state.pinned).some(([code, pin]) => !!pin.snapshot.entities.knowledgeProposals[code]))
 	const updates = Object.values(entities.watches).filter(watch => watch.update).length
-	const tabs: [string, string, number][] = [['home', 'Home', 0], ['focus', 'Needs you', needs], ['done', 'Done', snapshot?.doneNew ?? 0], ['ongoing', 'Ongoing', updates], ...(knowledge || retainedKnowledge || screen === 'knowledge' ? [['knowledge', 'To learn', knowledge] as [string, string, number]] : []), ...(!readOnly ? [['numbers', 'Numbers', 0] as [string, string, number], ['settings', 'Settings', 0] as [string, string, number]] : [])]
+	const tabs: [string, string, number][] = [['home', 'Home', 0], ['focus', 'Needs you', needs], ['done', 'Done', snapshot?.doneNew ?? 0], ['ongoing', 'Ongoing', updates], ...(knowledge || retainedKnowledge || screen === 'knowledge' ? [['knowledge', 'To learn', knowledge] as [string, string, number]] : []), ...(!readOnly ? [['numbers', 'Numbers', 0] as [string, string, number], ['settings', 'Settings', snapshot?.ways?.needsHim ?? 0] as [string, string, number]] : [])]
 	useEffect(() => {
 		document.title = `${NAME} - ${tabs.find(([id]) => id === screen)?.[1] ?? 'Home'}`
 		const before = previousScreen.current

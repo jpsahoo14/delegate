@@ -112,11 +112,13 @@ export default function Done() {
 	const requested = route.split('/')[1] ?? 'all'
 	const keys: Record<string, string[]> = { all: ['reply', 'review', 'change', 'reminder', 'learned', 'catchup'], replies: ['reply', 'review'], reviews: ['review'], changes: ['change'], reminders: ['reminder'], learned: ['learned'], catchup: ['catchup'] }
 	const filter = requested === 'closed' ? 'catchup' : Object.hasOwn(keys, requested) ? requested : 'all'
-	const rows = Object.values(entries).filter(row => keys[filter].includes(row.kind)).sort((a, b) => Number(fresh.has(b.id)) - Number(fresh.has(a.id)) || b.at.localeCompare(a.at))
+	// R12b step 3: done/rule/<ids> lists only what a line's grants sent (Settings › Your way of working links here with the line's ruleIds).
+	const ruleIds = requested === 'rule' ? (route.split('/')[2] ?? '').split(',').map(decodeURIComponent).filter(Boolean) : undefined
+	const rows = Object.values(entries).filter(row => ruleIds ? !!row.rule && ruleIds.includes(row.rule) : keys[filter].includes(row.kind)).sort((a, b) => Number(fresh.has(b.id)) - Number(fresh.has(a.id)) || b.at.localeCompare(a.at))
 	const newRows = rows.filter(row => fresh.has(row.id)), earlierRows = rows.filter(row => !fresh.has(row.id))
 	const groups = [{ title: earlierRows.length ? 'New' : '', rows: newRows }, { title: newRows.length ? 'Earlier this week' : '', rows: earlierRows }]
 	const closed = Object.values(entries).filter(row => row.kind === 'closed')
-	return <div className="new-done"><header className="done-heading"><h1>Done</h1><p className="muted">{filter === 'catchup' ? `What ${NAME} read for you and closed with no reply. Click a row to open it in Teams.` : 'The last 7 days. Open a reply to see what was sent and why.'}</p></header>
+	return <div className="new-done"><header className="done-heading"><h1>Done</h1><p className="muted">{filter === 'catchup' ? `What ${NAME} read for you and closed with no reply. Click a row to open it in Teams.` : 'The last 7 days. Open a reply to see what was sent and why.'}</p>{ruleIds && <p className="muted">Only what one of your lines did, the last 7 days · <a href="#done">Show all</a></p>}</header>
 		<nav aria-label="Done filters" className="filter-bar">{Object.entries({ all: 'All', replies: 'Replies', reviews: 'Reviews', changes: 'Changes', reminders: 'Reminders', learned: 'Learned', catchup: 'Catch up' }).map(([key, label]) => {
 			const count = Object.values(entities.doneEntries).filter(row => keys[key].includes(row.kind)).length
 			const unseen = Object.values(entities.doneEntries).filter(row => keys[key].includes(row.kind) && fresh.has(row.id)).length

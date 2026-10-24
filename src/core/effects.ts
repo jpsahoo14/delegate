@@ -260,10 +260,9 @@ export function shown(e: Effect): Shown {
 // "approve PR 4200001", and "You said you'd approve PR 4200001": the owner's own promise, from the calls that will run (Slice 3).
 export const doLine = (effects: Effect[]) => effects.map(e => { const l = shown(e).line; return l[0].toLowerCase() + l.slice(1) }).join(' and ')
 export const saidLine = (effects: Effect[]) => `You said you'd ${doLine(effects)}`
-// One line for lists and statuses: what, where when it adds to the line, what it says, and every other argument.
+// Lists and statuses use words; the exact remaining arguments stay in Details.
 export function changeSays(e: Effect): string {
 	const x = shown(e), where = x.loc.split(', ').filter(p => p && !x.line.toLowerCase().includes(p.toLowerCase())).join(', ')
 	const says = !x.line.toLowerCase().includes(x.text.toLowerCase()) ? `: ${x.text}` : ''
-	const rest = x.detail.replace(/\n/g, '; ')
-	return `${x.line}${where ? ` at ${where}` : ''}${says}${rest ? (says ? ` (${rest})` : `: ${rest}`) : ''}`
+	return `${x.line}${where ? ` at ${where}` : ''}${says}`
 }

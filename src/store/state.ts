@@ -20,6 +20,7 @@ import { visibleCloneKept, visibleCloneTodos } from '../runner/repos.ts'
 import type { AgentHold } from '../core/agent-failure.ts'
 import { telemetryBase } from '../core/telemetry.ts'
 import { upgrade } from '../core/upgrades.ts'
+import { activeRuleGrants } from './rules.ts'
 
 export const localDay = (d = new Date()) => d.toLocaleDateString('sv')
 const documentKey = (key: string) => createHash('sha256').update(key).digest('hex')
@@ -332,7 +333,7 @@ export class Store {
 	// Rules the owner put on hold by saying one of their replies was not needed; saving rules again clears them.
 	heldRules(): Record<string, { code: string; at: string }> { return readJson(this.p('state', 'held-rules.json'), {}) }
 	saveHeldRules(h: Record<string, { code: string; at: string }>) { this.w(this.p('state', 'held-rules.json'), h) }
-	rules(): Rule[] { return readJson<{ rules?: Rule[] }>(this.p('rules.compiled.json'), {}).rules ?? [] }
+	rules(): Rule[] { return activeRuleGrants(this.root) }
 	autoLedger(): { chat: string; at: string; kind: string }[] { return readJson(this.p('state', 'auto-ledger.json'), []) }
 	addAuto(chat: string, kind: 'send' | 'ack') {
 		const keep = this.autoLedger().filter(e => Date.now() - Date.parse(e.at) < 2 * 3_600_000)
@@ -342,8 +343,8 @@ export class Store {
 	// Messages the owner said were missed, waiting for the next tick (B21).
 	// One file per missed link, written by whichever machine heard it, like answers: no shared file to race on (review 10-19 #6).
 	// guests: a guest or someone from another tenant was in the chat at that read (#36).
-	members(): Record<string, { ids: string[]; names?: Record<string, string>; guests?: boolean; at: string }> { return readJson(this.p('state', 'members.json'), {}) }
-	saveMembers(m: Record<string, { ids: string[]; names?: Record<string, string>; guests?: boolean; at: string }>) { this.w(this.p('state', 'members.json'), m) }
+	members(): Record<string, { ids: string[]; names?: Record<string, string>; guests?: boolean; outside?: string[]; at: string }> { return readJson(this.p('state', 'members.json'), {}) }
+	saveMembers(m: Record<string, { ids: string[]; names?: Record<string, string>; guests?: boolean; outside?: string[]; at: string }>) { this.w(this.p('state', 'members.json'), m) }
 	habits(): Habit[] { return readJson(this.p('state', 'habits.json'), []) }
 	saveHabits(h: Habit[]) { this.w(this.p('state', 'habits.json'), h) }
 	habit(code: string): Habit | undefined { return this.habits().find(h => h.code === code.toUpperCase()) }
@@ -670,6 +671,7 @@ function withReceiptLockNow<T>(path: string, action: () => T): T | typeof BUSY {
 		releaseReceiptLock(lock, token)
 	}
 }
+export const withRecordWriteNow = withReceiptLockNow
 function withReceiptLock<T>(path: string, action: () => T): T {
 	assertTestSafe(path)
 	if (receiptLocks.has(path)) return action()

@@ -293,6 +293,12 @@ export function voteSentences(text: string, owner = '') {
 			return { sentence, vote, kind: VOTE_CLASSES.find(row => row.matches(clause, owner))!.kind, others }
 		}))
 }
+export function isNonAdoPrLink(url: string): boolean {
+	if (!URL.canParse(url)) return false
+	const link = new URL(url), host = link.hostname.toLowerCase()
+	return /^https?:$/.test(link.protocol) && host !== 'dev.azure.com' && !host.endsWith('.visualstudio.com') &&
+		/\/(?:pull|pull-requests|merge_requests)\/[1-9]\d*(?:\/|$)/i.test(link.pathname)
+}
 export function claimedVote(text: string): number | 'approval' | undefined {
 	return voteSentences(text).find(s => s.kind === 'owner')?.vote
 }

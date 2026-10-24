@@ -82,3 +82,6 @@ a.todo-source:hover{text-decoration:underline}
 /* R10b (joint C2): severity is a text chip with its own outline, never colour alone; Approve's meaning line sits under the bar. */
 .severity-chip{border:1px solid currentColor;background:transparent;margin-right:4px}.severity-high{border-width:2px;font-weight:600}.severity-medium{border-style:dashed}.severity-low{border-style:dotted}
 .review-posted,.review-waiting ul{margin:4px 0;padding-left:18px}.review-reply{white-space:pre-wrap;margin:4px 0}.approve-meaning{margin:4px 0 0;font-size:12px}
+
+/* #48b: his answer as his own bubble while Delegate redrafts from it; the draft it replaces folded under it. */
+.card-answered .my-bubble{margin-left:auto;max-width:80%;padding:8px 12px;border-radius:12px;background:var(--surface-2,rgba(127,127,127,.12))}.card-answered .my-bubble p{margin:2px 0}.card-answered .previous-draft{margin:6px 0 0 auto;max-width:80%}

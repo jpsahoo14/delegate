@@ -24,6 +24,10 @@ export type Rule = {
 	review?: { comments: 'post'; reply: 'send' }
 	source?: 'settings'
 	textHash?: string
+	// Code-owned confirmation for compiled lines; the model's grant schema does not accept these fields.
+	catalogVersion?: number
+	confirmedAt?: string
+	confirmedHash?: string
 	// A rule accepted from a habit, with what it was learned from (dev-spec/habits.md).
 	learned?: { key: string; at: string; evidence: string }
 	shortcut?: { goal: string }
@@ -110,7 +114,7 @@ export type WorkReport = {
 // ring: the ring as Azure DevOps showed it before the ok; a late ok compares it with the ring as it is then (owned work).
 // turns: server-owned proposal provenance, separate from the operation's write-ledger identity.
 export type ReviewSeverity = 'High' | 'Medium' | 'Low'
-export type Effect = { system: string; action: string; target: string; summary: string; payload?: unknown; call?: Call; head?: string; pr?: PrFacts; deploy?: { ring: string; pr: number }; ring?: RingFacts; build?: BuildFacts; turns?: string[]; byRule?: string; severity?: ReviewSeverity; held?: 'sharing'; done?: { ref?: string; at: string; byRule?: string; severity?: ReviewSeverity }; error?: string; off?: boolean; maybe?: true }
+export type Effect = { system: string; action: string; target: string; summary: string; payload?: unknown; call?: Call; head?: string; pr?: PrFacts; deploy?: { ring: string; pr: number }; ring?: RingFacts; build?: BuildFacts; turns?: string[]; byRule?: string; severity?: ReviewSeverity; held?: 'sharing'; done?: { ref?: string; at: string; byRule?: string; severity?: ReviewSeverity }; error?: string; off?: boolean; offReason?: 'self-chat-ok'; maybe?: true }
 // A pipeline run as Azure DevOps lists it: who started it, when, and how it stands.
 export type RunFact = { id: number; by: string; at: string; status: string; result?: string }
 export type RingFacts = { last?: RunFact; running: RunFact[]; readAt: string }
@@ -254,7 +258,7 @@ export type Workflow = {
 	sent?: { msgId: string; at: string; byRule?: string; undoUntil?: string; text?: string; sendText?: string; askMsgId?: string; holding?: true; checks?: string[] }
 	sendAt?: string
 	acked?: boolean
-	decision?: { action: string; ruleId?: string; reason: string; confidence: Confidence }
+	decision?: { action: string; ruleId?: string; reason: string; confidence: Confidence; blockedBy?: import('./limits.ts').LimitId }
 	job?: Id
 	effects?: Effect[]
 	waitingSince?: string

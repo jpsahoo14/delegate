@@ -20,6 +20,7 @@ import { LOCAL_DIR, loadLocal, Store } from '../store/state.ts'
 import { cliPackage, hostIdleMin } from './locate.ts'
 import { z } from 'zod'
 import { DOCUMENT, DOCUMENT_DESCRIPTION, documentReader, IMAGE_DESCRIPTION, IMAGE_LINK, readImage, REPORT, reportTaker, SUBMIT_DESCRIPTION, type ToolOut } from '../worker/tools.ts'
+import { RULE_COMPILE_JSON } from '../worker/rule-prompt.ts'
 
 export type HostInfo = { pid: number; port: number; token: string; startedAt: string; cli: string; delegate: string; configHash: string }
 // hostFault: the run never reached the model through the host (#19b); the caller makes it on one process instead.
@@ -94,6 +95,20 @@ export async function runHost(): Promise<void> {
 
 	async function run({ agent, input }: HostRun): Promise<HostResult> {
 		const t = Date.now(), id = input.sessionId
+		if (input.purpose === 'rule-compile') {
+			const controller = new AbortController(), warm = modelReady, sessionId = `rule-${randomUUID()}`
+			let submitted = false
+			const timer = setTimeout(() => controller.abort(new Error('Reading this rule timed out')), RUN_MS)
+			try {
+				const output = await structured({ prompt: input.prompt, jsonSchema: RULE_COMPILE_JSON, timeoutMs: RUN_MS }, controller.signal,
+					{ kind: 'compile', id: sessionId, onSubmit: () => { submitted = true } })
+				modelReady = true
+				return { exitCode: 0, ms: Date.now() - t, summary: JSON.stringify(output), warm, sessionId }
+			} catch (error) {
+				return { exitCode: 1, ms: Date.now() - t, sessionId, error: `The AI host could not read this rule: ${String(error).slice(0, 300)}`,
+					...(submitted ? {} : { hostFault: 'session' as const }) }
+			} finally { clearTimeout(timer) }
+		}
 		const names = [...new Set([...agent.tools, ...input.extraTools, 'task_complete'])]
 		// A proxy per owner tool the run may use, with the server's own schema; its only shared state is the warm connection. warm: every
 		// server it uses was connected before it began (#25), as the worker event reports.
@@ -173,8 +188,8 @@ export async function runHost(): Promise<void> {
 		} finally { await session?.disconnect().catch(() => undefined) }
 	}
 
-	async function quick(input: HostQuick, signal: AbortSignal): Promise<unknown> {
-		const id = randomUUID(), provider = envProvider()
+	async function structured(input: HostQuick, signal: AbortSignal, options: { kind?: 'compile'; id?: string; onSubmit?: () => void } = {}): Promise<unknown> {
+		const provider = envProvider(), kind = options.kind ?? 'quick', id = options.id ?? randomUUID()
 		const opening: Promise<HostSession> = client.createSession({
 			sessionId: id, model: cfg.agent.model ?? process.env.COPILOT_PROVIDER_MODEL_ID,
 			...(provider ? { provider } : {}), tools: [], availableTools: [], mcpServers: {},
@@ -191,19 +206,20 @@ export async function runHost(): Promise<void> {
 			signal.throwIfAborted()
 			await session.rpc.tools.initializeAndValidate()
 			const offered = await session.rpc.tools.getCurrentMetadata()
-			if (!offered.tools || offered.tools.length) throw new Error('The quick session did not verify an empty tool set')
+			if (!offered.tools || offered.tools.length) throw new Error(`The ${kind} session did not verify an empty tool set`)
 			signal.throwIfAborted()
+			options.onSubmit?.()
 			const result = await session.sendAndWait({ prompt: input.prompt, responseSchema: input.jsonSchema }, input.timeoutMs)
 			return z.fromJSONSchema(input.jsonSchema).parse(JSON.parse(result?.data?.content ?? ''))
 		})()
 		try { return await Promise.race([work, interrupted]) }
 		finally {
 			signal.removeEventListener('abort', fail)
-			// A late create must still be disconnected. Cleanup cannot extend the caller's five-second budget.
+			// A late create must still be disconnected. Cleanup cannot extend the caller's deadline.
 			void opening.then(async session => {
 				try { if (signal.aborted) await session.abort() }
 				finally { try { await session.disconnect() } finally { await client.deleteSession(id) } }
-			}, () => undefined).catch(error => store.log({ event: 'host-quick-cleanup-failed', sessionId: id, error: String(error).slice(0, 160) }))
+			}, () => undefined).catch(error => store.log({ event: `host-${kind}-cleanup-failed`, sessionId: id, error: String(error).slice(0, 160) }))
 		}
 	}
 
@@ -251,7 +267,7 @@ export async function runHost(): Promise<void> {
 			try {
 				const input = z.object({ prompt: z.string().min(1), jsonSchema: z.record(z.string(), z.unknown()), timeoutMs: z.number().positive().max(5000) }).parse(JSON.parse(await body(req)))
 				timer = setTimeout(() => controller.abort(new Error('the quick check timed out')), input.timeoutMs)
-				const result = await quick(input, controller.signal)
+				const result = await structured(input, controller.signal)
 				store.log({ event: 'host-quick', side: 'host', result: 'ok', ms: Date.now() - t })
 				if (!res.destroyed) reply(res, 200, { result })
 			} catch (error) {

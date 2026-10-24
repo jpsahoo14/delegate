@@ -5,7 +5,13 @@ Scenario range reserved for this branch: SC-400 through SC-419.
 
 | Milestone | State | Evidence |
 | --- | --- | --- |
-| R10c live groups and owner-item completion | a2cca7df plus PE news correction in this commit; fix review pending | Review-start vote baseline, changed non-zero live vote/close-after-ask only; old context retained, receipts kept; head-change slice follows SEND merge |
+| U1 acceptance Undo hashes | Fixed in this commit on 319b2c06; PE fix review pending | Original proposal hash retained; actual stored learned-line hash read back after success; each compares like with like, all other gates unchanged |
+| A R33 undoAcceptHabit | Built in this commit; PE diff review pending, SEND facade follows | Exact prior-state snapshot, latest/hash/window gates under the existing writer lock, rules-first restore, no dismissal; stop-style/edited/unsnapshotted legacy refuse |
+| Edited suggestion acceptance | Built in this commit on exact SEND 3fad10e3; PE diff review pending | Trusted provenance, unconfirmed Reading line, refusal before habit state/Undo, no original-first grant; SEND facade follows |
+| R12a-h compile priority lane | Built in this commit with exact PE-approved SEND ee88b4ad parent (includes a58444d8); lane PE diff review pending | Same draft slots/budget, next-slot priority, fresh hash-checked completion/recompile, no tool effects or consent, explicit failures; allowed fast checks only |
+| R12a-h2 habits handoff | Built in this commit after central writer merge; PE review pending; SEND 3/3 facade follows | One locked rule writer, refusal-first state changes, four typed suggestion APIs and persistent cooldown/Undo history |
+| R11(3) Keep waiting instead | Built in this commit; New link/projection separately owned; PE review pending | Existing wait verb on the follow-up item, no text; closes without send/learning and detaches only the original W link |
+| R10c lifecycle and head-change producer | a2cca7df + 7689c787 + 177df412; e77ff67d with fallthrough correction in this commit, fix review pending | Verified new heads mark reviewAgain; normal vote/closure/role/effect checks keep running; only stale redraft suppressed |
 | R20 review type/start-stamp prerequisite | Built in this commit; SEND completion verification and R10c lifecycle follow; PE review pending | Optional data only, code-read start head, failed-read clearing, awaited starts and fresh post-read guards; no new proofs |
 | L2a reviewer-group answer engine | 56dde322 plus PE B1/B2 correction in this commit; fix review pending; L2b card separately owned | Text questions list cleaned groups; worker picks/card verbs preserved; shared groupChoices, one config write and PR re-read |
 | Step-6 PE blocker B1 | Fixed in this commit; PE fix-only re-review pending | Real constructor reproduction and no-op proof; 40 upgrade journeys and schema-literal AST guard |

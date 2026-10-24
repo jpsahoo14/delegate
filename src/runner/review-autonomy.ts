@@ -3,7 +3,8 @@ import type { Source as ChatSource } from '../adapters/source.ts'
 import { messageLink } from '../adapters/channels.ts'
 import { pendingEffects, isVote, sameChange, sameHead, refusal } from '../core/effects.ts'
 import { pageChangeId } from '../core/page-approval.ts'
-import { commits, decide, labeledToGuests, reviewRuleFor } from '../core/policy.ts'
+import { commits, decide, labeledToGuests, replyGap, reviewRuleFor } from '../core/policy.ts'
+import { authorize } from '../core/limits.ts'
 import { reviewDoneFacts, reviewFrame } from '../core/review.ts'
 import { scrubDeep } from '../core/secrets.ts'
 import type { Config, Effect, Job, ReviewFinding, Workflow } from '../core/types.ts'
@@ -52,7 +53,7 @@ export async function checkReviewCompletion(store: Store, job: Job, probe?: Buil
 	}
 }
 
-function findingFor(e: Effect, findings: ReviewFinding[] = []) {
+export function findingFor(e: Effect, findings: ReviewFinding[] = []) {
 	const p = e.payload
 	return object(p) && typeof p.text === 'string' ? findings.find(f =>
 		f.file === p.file && f.line === p.line && clean(f.text) === clean(String(p.text))) : undefined
@@ -121,6 +122,7 @@ async function live(store: Store, cfg: Config, wf: Workflow, probe?: BuildProbe)
 function safety(store: Store, cfg: Config, wf: Workflow) {
 	const check = { ...wf, draft: { text: 'Review comments.', commitment: false, sources: [] } }
 	const decision = decide(check, store.rules(), policyContext(store, cfg, wf), 'review-comments')
+	wf.decision = decision
 	return decision.action === 'send' ? undefined : decision.reason
 }
 
@@ -145,7 +147,19 @@ export async function reviewPostCheck(store: Store, job: Job, e: Effect, call: C
 			if (!latest.reviewBasis || latest.reviewBasis.pr !== ref.id || !sameHead(latest.reviewBasis.head, head)) return { error: 'The reviewed revision is no longer verified; comments stay proposed' }
 			const now = { ...latest, prGroups: wf.prGroups }
 			if (JSON.stringify(cfg.owner) !== JSON.stringify(currentCfg.owner)) return { error: 'Reviewer settings changed while checking; comments stay proposed' }
-			if (reviewRuleFor(now, store.rules())?.id !== job.byRule) return { error: 'The review rule is off or no longer covers this PR; comments stay proposed' }
+			const rule = reviewRuleFor(now, store.rules())
+			if (!rule || rule.id !== job.byRule) return { error: 'The review rule is off or no longer covers this PR; comments stay proposed' }
+			const ctx = policyContext(store, currentCfg, now)
+			const auth = authorize({
+				...ctx, automatic: true, never: ctx.never?.some(person => person.id === now.asker?.id),
+				vote: isVote(e.call), sharing: !!now.shareHold, outside: !!ctx.outsideAsker || rule.who.group === 'outside',
+				gap: object(e.payload) && typeof e.payload.text === 'string' && replyGap(e.payload.text),
+				capabilityAllowed: !!commentCall(currentCfg, e, ref),
+			})
+			if (!auth.allowed) {
+				store.log({ event: 'review-comment-held', code: latest.code, byRule: job.byRule, blockedBy: auth.blockedBy, reason: auth.reason })
+				return { error: auth.reason }
+			}
 			const currentCarrier = store.job(latest.reviewRun!.carrier)
 			const currentFinding = findingFor(e, currentCarrier?.result?.findings)
 			if (!currentFinding || !shareable(latest, currentFinding, ref, currentCarrier?.result?.reviewSources) ||

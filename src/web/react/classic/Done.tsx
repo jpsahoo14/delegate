@@ -101,11 +101,13 @@ export function ActivityRow({ supplied, first = false, last = false }: { supplie
 export default function Done() {
 	const entities = useEntities(), entries = useDoneEntries(), fresh = useDoneLook(), { route } = useScreenNavigation()
 	const requested = route.split('/')[1] ?? 'all', filter = requested === 'closed' ? 'catchup' : Object.hasOwn(filters, requested) ? requested : 'all'
-	const rows = Object.values(entries).filter(row => filters[filter].kinds.includes(row.kind))
+	// R12b step 3: done/rule/<ids> lists only what a line's grants sent (Settings › Your way of working links here with the line's ruleIds).
+	const ruleIds = requested === 'rule' ? (route.split('/')[2] ?? '').split(',').map(decodeURIComponent).filter(Boolean) : undefined
+	const rows = Object.values(entries).filter(row => ruleIds ? !!row.rule && ruleIds.includes(row.rule) : filters[filter].kinds.includes(row.kind))
 	const newer = rows.filter(row => fresh.has(row.id)), earlier = rows.filter(row => !fresh.has(row.id))
 	const groups = [{ title: newer.length && earlier.length ? 'New' : '', rows: newer }, { title: newer.length && earlier.length ? 'Earlier this week' : '', rows: earlier }]
 	const closed = Object.values(entries).filter(row => row.kind === 'closed')
-	return <section className="classic-done"><header className="classic-list-head"><div><h1>Done</h1><p>{filter === 'catchup' ? 'What Delegate read for you and closed with no reply. Click a row to open it in Teams.' : 'The last 7 days. Open a reply to see what was sent and why.'}</p></div></header>
+	return <section className="classic-done"><header className="classic-list-head"><div><h1>Done</h1><p>{filter === 'catchup' ? 'What Delegate read for you and closed with no reply. Click a row to open it in Teams.' : 'The last 7 days. Open a reply to see what was sent and why.'}</p>{ruleIds && <p>Only what one of your lines did, the last 7 days · <a href="#classic/done">Show all</a></p>}</div></header>
 		<nav className="classic-done-filters" aria-label="Done filters">{Object.entries(filters).map(([key, value]) => {
 			const live = Object.values(entities.doneEntries).filter(row => value.kinds.includes(row.kind)), count = live.length, countNew = live.filter(row => fresh.has(row.id)).length
 			return count || key === filter && rows.length ? <a key={key} href={`#classic/done/${key}`} aria-current={filter === key ? 'page' : undefined} aria-pressed={filter === key}>{value.label} <span>{count}</span>{countNew > 0 && <small>{countNew} new</small>}</a> : null

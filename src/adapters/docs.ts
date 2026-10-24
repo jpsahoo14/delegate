@@ -12,7 +12,7 @@ export interface Documents {
 export type DocumentDiagnostic = { step: 'metadata' | 'download' | 'decode-base64' | 'unzip' | 'office-parse'; class: string; contentTypes: string[]; bytes: number; via: 'tool' | 'downloadUrl' }
 export const DOWNLOAD_LIMIT = MCP_BYTE_LIMIT, PAGE_LIMIT = 30_000
 const EXPANDED_LIMIT = 100 * 1024 * 1024
-export const hardDocumentFailure = (reason: string) => /^Couldn't open .+?: (?:no access|too much content to open|not a Word, PowerPoint or Excel file|too large to open(?: \([^)\r\n]*\))?)$/i.test(reason)
+export { hardDocumentFailure } from '../core/document-failure.ts'
 
 // Bound both the downloaded archive and its expansion; an Office file is an untrusted ZIP.
 export function unzip(buf: Buffer): Map<string, Buffer> {

@@ -85,7 +85,7 @@ if (mode === '--sharepoint') {
 	const { toRaw } = await import('../src/adapters/source-teams.ts')
 	const { readsOf } = await import('../src/runner/provenance.ts')
 	const { knowledgeOf } = await import('../src/runner/proposals.ts')
-	const { setRules } = await import('../src/runner/habits.ts')
+	const { writeRules } = await import('../src/store/rules.ts')
 	const { dueSends } = await import('../src/runner/autosend.ts')
 	const { applyAnswers } = await import('../src/runner/apply.ts')
 	const { hostFile } = await import('../src/host/host.ts')
@@ -388,7 +388,7 @@ if (mode === '--sharepoint') {
 		proof('session arguments map URL/ids to sharing chat; unknown/unfinished reads hold; legacy stored attachment lines survive restart')
 
 		store.saveControl({ ...store.control(), autoSend: true })
-		setRules(store, [{ id: 'R1', text: 'Reply to Kim', who: { accounts: [{ id: 'kim', name: 'Kim' }] }, when: { intent: 'other' }, then: 'send' }])
+		writeRules(store, '- Reply to Kim\n', [{ id: 'R1', text: 'Reply to Kim', who: { accounts: [{ id: 'kim', name: 'Kim' }] }, when: { intent: 'other' }, then: 'send' }])
 		for (const [chat, link] of [['narrow', url], ['broad', url], ['broad', 'https://acme.example/unshared.docx']]) {
 			w = seed(chat)
 			await dispatch(store, source, cfg, async (_agent, i) => {

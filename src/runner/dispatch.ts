@@ -49,6 +49,9 @@ import { agentSetupFailure, unavailableTools } from '../core/agent-failure.ts'
 import { blockedAgent, holdAgent, waitingForAgent } from './agent-health.ts'
 import { askRelation, freshAsk } from './same-ask.ts'
 import { prepareReportCalls } from './effect-preparation.ts'
+import { compileRule } from './rule-compile.ts'
+import { lineNeedsCompile, ruleTextHash } from '../core/rule-lines.ts'
+import { ruleLines, rulesToCompile } from '../store/rules.ts'
 
 export type RunWorker = (cfg: Config['agent'], input: RunInput & { workflowId: string; runId: string }) => Promise<RunResult>
 
@@ -70,11 +73,15 @@ export async function dispatch(store: Store, src: Source, cfg: Config, run: RunW
 	// The week before setup is drafted behind live asks, a few per check, within half of the day's runs (first-sweep.md).
 	const paced = running.filter(w => w.paced).sort((a, b) => Number(!!a.startedBy) - Number(!!b.startedBy)).slice(0, store.runsToday() < cap / 2 ? cfg.maxParallel : 0)
 	const queue = [...running.filter(w => !w.paced), ...paced].slice(0, Math.max(0, room))
-	for (const w of running.filter(w => !queue.includes(w) && !w.intakeDeferred)) {
-		for (const msgId of w.pending) auditSkip(store, w.chat.id, msgId, 'budget-deferred', w.id)
-		w.intakeDeferred = true; store.save(w, false)
+	const defer = (items: Workflow[]) => {
+		for (const item of items) {
+			const w = freshRead(() => store.workflow(item.id))
+			if (!w || w.state !== 'running' || w.intakeDeferred) continue
+			for (const msgId of w.pending) auditSkip(store, w.chat.id, msgId, 'budget-deferred', w.id)
+			w.intakeDeferred = true; store.save(w, false)
+		}
 	}
-	for (const w of queue) if (w.paced || w.intakeDeferred) { w.paced = undefined; w.intakeDeferred = undefined; store.save(w, false) }
+	defer(running.filter(w => !queue.includes(w)))
 	let done = 0
 	// The owner's questions about an item run after drafting, in the item's session, and never change it (design-spec S12).
 	const asks = only ? [] : store.workflows().filter(w => w.notes?.some(n => n.a === undefined) && w.state !== 'running' && heldBy(store, w) !== 'window' && !(w.job && store.job(w.job)?.state === 'running'))
@@ -82,11 +89,48 @@ export async function dispatch(store: Store, src: Source, cfg: Config, run: RunW
 	// A pool, not batches: a queued run starts as soon as any slot frees, so one slow draft never holds the others back (latency b).
 	// Once the AI CLI is blocked (such as a 402), no further run starts; the waiting items stay queued.
 	const slots = Math.max(1, cfg.maxParallel ?? 3)
+	const attempted = new Set<string>(), compiling = new Set<string>(), compileFailures = new Map<string, string>()
+	let compileBlocked = false, checkedCompiles = false
 	let next = 0
-	await Promise.all(Array.from({ length: Math.min(slots, queue.length) }, async () => {
-		while (next < queue.length) {
-			if (blockedAgent(store, cfg)) break
+	await Promise.all(Array.from({ length: Math.min(slots, Math.max(0, room)) }, async () => {
+		for (;;) {
+			if (blockedAgent(store, cfg) || store.runsToday() >= cap) break
+			let line: ReturnType<typeof rulesToCompile>[number] | undefined
+			const control = store.control()
+			if (!compileBlocked && !control.paused && !control.stopped) {
+				try {
+					line = freshRead(() => rulesToCompile(store)).find(l => !compiling.has(l.id) && !attempted.has(`${l.id}:${ruleTextHash(l.text)}`))
+					checkedCompiles = true
+				} catch (error) {
+					compileBlocked = true
+					const why = `Could not queue rule reading: ${String(error).slice(0, 200)}`
+					compileFailures.set('queue', why)
+					store.setHealth('rule-compile', why)
+					store.log({ event: 'rule-compile-failed', stage: 'queue', error: why })
+				}
+			}
+			if (line) {
+				const current = line, textHash = ruleTextHash(current.text)
+				attempted.add(`${current.id}:${textHash}`); compiling.add(current.id)
+				try {
+					const result = await readPhase(`rule-compile:${current.id}`, () => compileRule(store, cfg, current, run))
+					const pending = !result.ok && freshRead(() => ruleLines(store)).some(l => l.id === current.id && ruleTextHash(l.text) === textHash && lineNeedsCompile(l))
+					if (!result.ok && pending) { compileFailures.set(current.id, result.why); store.setHealth('rule-compile', result.why) }
+					else compileFailures.delete(current.id)
+					store.log({ event: 'rule-compile-finished', id: current.id, textHash, ok: result.ok, ...(!result.ok ? { why: result.why } : {}) })
+				} catch (error) {
+					const why = `Could not read this rule; your text is kept. ${String(error).slice(0, 200)}`
+					compileFailures.set(current.id, why)
+					store.setHealth('rule-compile', why)
+					store.log({ event: 'rule-compile-failed', id: current.id, textHash, error: why })
+				} finally { compiling.delete(current.id) }
+				done++
+				continue
+			}
+			if (next >= queue.length) break
 			const wf = queue[next++]
+			const queued = freshRead(() => store.workflow(wf.id))
+			if (queued?.paced || queued?.intakeDeferred) { queued.paced = undefined; queued.intakeDeferred = undefined; store.save(queued, false) }
 			// One run that cannot start fails only its own item; sends, reminders, and the other drafts go on (review 10-20 R3).
 			try { await readPhase(`draft:${wf.id}`, () => runOne(store, src, cfg, wf, run, probe)) } catch (e) { startFailed(store, wf, e); continue }
 			const ran = freshRead(() => store.workflow(wf.id))
@@ -94,6 +138,8 @@ export async function dispatch(store: Store, src: Source, cfg: Config, run: RunW
 			done++
 		}
 	}))
+	if (checkedCompiles || compileBlocked) store.setHealth('rule-compile', compileFailures.values().next().value)
+	defer(queue.slice(next))
 	pruneReplySessions(store)
 	// The owner's own words that went out on a PR item: one short run each maps what they promise to changes held for ok (Slice 3).
 	for (const w of (only ? [] : promisesDue(store, cfg)).slice(0, Math.max(0, room - done))) {

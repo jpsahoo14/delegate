@@ -1,6 +1,6 @@
 import type { Config, Workflow } from '../core/types.ts'
-import { markedHold } from './sharing.ts'
-import { DEFAULT_POLICY, decide, REPLY_BLANK, replyGap, signatureOf, withMarker, type PolicyContext } from '../core/policy.ts'
+import { markedHold, membersOf, membershipUnknown, membershipWait } from './sharing.ts'
+import { authorizeReply, DEFAULT_POLICY, decide, REPLY_BLANK, replyGap, ruleFor, signatureOf, withMarker, type PolicyContext } from '../core/policy.ts'
 import type { Source } from '../adapters/source.ts'
 import type { Store } from '../store/state.ts'
 import { send } from './apply.ts'
@@ -10,17 +10,34 @@ import { holdReplyGap } from './reply-gap.ts'
 import { freshRead } from '../store/fs.ts'
 import { recordCommit } from './commit.ts'
 import { stateFields, statusFields } from '../core/upgrades.ts'
+import { hourlyCap } from '../core/limits.ts'
 
 const policy = (cfg: Config) => ({ ...DEFAULT_POLICY, ...cfg.policy })
 // What the owner's rules are judged with for this item: the page's "why it waited" uses the same (#33).
-export const policyContext = (store: Store, cfg: Config, wf: Workflow): PolicyContext => ({ autoSend: !!store.control().autoSend, autoSendsThisHour: autoCount(store, wf), maxPerHour: policy(cfg).maxAutoPerChatHour, never: policy(cfg).never, held: Object.keys(store.heldRules()), paused: !!cfg.paused || store.control().paused || store.control().stopped })
+export const policyContext = (store: Store, cfg: Config, wf: Workflow): PolicyContext => {
+	const members = store.members()[wf.chat.id]
+	return { autoSend: !!store.control().autoSend, autoSendsThisHour: autoCount(store, wf), maxPerHour: hourlyCap(policy(cfg).maxAutoPerChatHour),
+		never: policy(cfg).never, held: Object.keys(store.heldRules()), paused: !!cfg.paused || store.control().paused || store.control().stopped,
+		guests: members?.outside !== undefined ? members.guests : undefined, outsideAsker: !!wf.asker && !!members?.outside?.some(id => id.toLowerCase() === wf.asker!.id.toLowerCase()) }
+}
+
+export function automaticDecision(store: Store, cfg: Config, wf: Workflow, ctx = policyContext(store, cfg, wf)) {
+	const rules = store.rules(), decision = decide(wf, rules, ctx)
+	if (membershipUnknown(store, wf.chat.id) && ctx.autoSend) {
+		// Organization rules cannot match an unknown audience; this comparison records a wait, never permission.
+		const known = decision.blockedBy === 'sharing' ? undefined : decide(wf, rules, { ...ctx, guests: false })
+		if (decision.blockedBy === 'sharing' || known?.action === 'send' || known?.action === 'ack') membershipWait(store, wf.chat.id)
+	}
+	return decision
+}
 
 // After a worker drafts, the owner's rules decide: send later, acknowledge now, keep as a draft, or ignore (R-POL-01).
 export async function afterDraft(store: Store, src: Source, cfg: Config, wf: Workflow): Promise<void> {
 	if (wf.state !== 'needs_human' || !wf.draft || wf.draft.preview) return
 	if (holdReplyGap(store, wf, wf.draft.text, true)) return
+	await membersOf(store, src, wf.chat.id)
 	const p = policy(cfg)
-	const d = decide(wf, store.rules(), policyContext(store, cfg, wf))
+	const d = automaticDecision(store, cfg, wf)
 	if (d.action === 'ack') recordCommit(wf, () => store.workflow(wf.id), store.save.bind(store))
 	wf.decision = d
 	wf.held = undefined
@@ -38,7 +55,8 @@ export async function afterDraft(store: Store, src: Source, cfg: Config, wf: Wor
 
 // A job item gets the same acknowledgement a rule allows for a draft (scenario 04 step 1, tester P2-16).
 export async function ackJob(store: Store, src: Source, cfg: Config, wf: Workflow): Promise<void> {
-	const d = decide(wf, store.rules(), policyContext(store, cfg, wf))
+	await membersOf(store, src, wf.chat.id)
+	const d = automaticDecision(store, cfg, wf)
 	if (d.action === 'ack') await ack(store, src, cfg, wf, d.ruleId)
 }
 
@@ -48,7 +66,27 @@ async function ack(store: Store, src: Source, cfg: Config, wf: Workflow, ruleId?
 	if (!wf.sent && !wf.acked && !store.control().paused && !(await ownerActive(store, src))) {
 		const first = cfg.owner.name.split(/\s+/)[0]
 		const oof = await src.presence().then(r => r.oof, () => undefined)
-		const text = withMarker([p.ackText.replace('{first}', first), oof && awayLine(first, oof)].filter(Boolean).join(' '), signatureOf(cfg), cfg.owner.name)
+		const raw = withMarker([p.ackText.replace('{first}', first), oof && awayLine(first, oof)].filter(Boolean).join(' '), signatureOf(cfg), cfg.owner.name)
+		await membersOf(store, src, wf.chat.id, true)
+		const auth = freshRead(() => {
+			commit.refresh()
+			const currentCfg = store.config(), current = store.workflow(wf.id)
+			if (!current || current.ownerSend || current.sent || current.acked || current.lastMsgId !== wf.lastMsgId) {
+				wf.decision = { action: 'draft', ruleId, reason: 'The item changed; the acknowledgment waits for you', confidence: 'low' }
+				return undefined
+			}
+			const ctx = policyContext(store, currentCfg, wf)
+			const decision = automaticDecision(store, currentCfg, wf, ctx)
+			if (decision.action !== 'ack' || decision.ruleId !== ruleId) { wf.decision = decision; return undefined }
+			return authorizeReply(wf, ctx, raw, true, ruleFor(wf, store.rules())?.who.group === 'outside')
+		})
+		if (!auth?.allowed) {
+			if (auth) wf.decision = { action: 'draft', ruleId, reason: auth.reason, blockedBy: auth.blockedBy, confidence: wf.decision?.confidence ?? 'low' }
+			store.log({ event: 'ack-held', code: wf.code, byRule: ruleId, blockedBy: wf.decision?.blockedBy, reason: wf.decision?.reason })
+			commit()
+			return
+		}
+		const text = auth.text!
 		if (replyGap(text)) { holdReplyGap(store, wf, text, true); store.setHealth(`ack:${wf.code}`, REPLY_BLANK); return }
 		// Marked and saved before posting: an acknowledgement goes out at most once, even if the result is lost.
 		wf.acked = true
@@ -102,7 +140,8 @@ export async function dueSends(store: Store, src: Source, cfg: Config, probe?: B
 		const commit = recordCommit(wf, () => store.workflow(wf.id), store.save.bind(store))
 		// Rules, auto-send, limits, and chat levels are checked again at send time, so a change during the delay wins.
 		wf.shareHold = markedHold(cfg, wf.drewOn) ?? wf.shareHold
-		const d = decide(wf, store.rules(), policyContext(store, cfg, wf))
+		await membersOf(store, src, wf.chat.id)
+		const d = automaticDecision(store, cfg, wf)
 		if (d.action !== 'send') { Object.assign(wf, { ...stateFields(wf, 'needs_human'), sendAt: undefined, decision: d, ...statusFields('not-sent', `Not sent: ${d.reason}`) }); commit(); continue }
 		try {
 			if (await send(store, src, cfg, wf, wf.draft?.text, { ruleId: d.ruleId }, probe)) { n++; store.addAuto(wf.chat.id, 'send') }

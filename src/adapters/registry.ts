@@ -9,14 +9,14 @@ import { TeamsSource } from './source-teams.ts'
 import { clientFor, toolServers } from './mcp-client.ts'
 
 // One entry per chat system. A new one (Slack) is a Source and a History class plus a line here (docs/adapters.md).
-type Adapter = { source(cfg: Config['source'], owner: string, root: string): Source; history?(cfg: Config): History; docs?(cfg: Config): Documents | undefined; images?(cfg: Config): Images | undefined }
+type Adapter = { source(cfg: Config['source'], owner: string, root: string, ownerId?: string, log?: (entry: Record<string, unknown>) => void): Source; history?(cfg: Config): History; docs?(cfg: Config): Documents | undefined; images?(cfg: Config): Images | undefined }
 
 // Documents come from the SharePoint server beside the Teams one, unless setup names another.
 const beside = (s: Config['source'], server: string) => (s.command.at(-1) === 'teams' ? [...s.command.slice(0, -1), server] : undefined)
 const docsCommand = (s: Config['source']) => s.docs ?? beside(s, 'sharepoint')
 
 const ADAPTERS: Record<string, Adapter> = {
-	teams: { source: (c, owner) => new TeamsSource(c, undefined, owner), history: cfg => new TeamsHistory(cfg), docs: cfg => { const c = docsCommand(cfg.source); return c && new SharePointDocs(c) }, images: cfg => { const im = site().images, c = im && beside(cfg.source, im.server); return c && new HostedImages(c, im!.tool) } },
+	teams: { source: (c, owner, _root, ownerId, log) => new TeamsSource(c, undefined, owner, ownerId, log), history: cfg => new TeamsHistory(cfg), docs: cfg => { const c = docsCommand(cfg.source); return c && new SharePointDocs(c) }, images: cfg => { const im = site().images, c = im && beside(cfg.source, im.server); return c && new HostedImages(c, im!.tool) } },
 	demo: { source: (_c, _o, root) => new DemoSource(root) },
 }
 
@@ -28,7 +28,7 @@ function adapter(s: Config['source']): Adapter {
 	return a
 }
 
-export const sourceFor = (s: Config['source'], owner: string, root: string): Source => adapter(s).source(s, owner, root)
+export const sourceFor = (s: Config['source'], owner: string, root: string, ownerId?: string, log?: (entry: Record<string, unknown>) => void): Source => adapter(s).source(s, owner, root, ownerId, log)
 export const historyFor = (cfg: Config): History | undefined => adapter(cfg.source).history?.(cfg)
 export const docsFor = (cfg: Config): Documents | undefined => {
 	const spec = toolServers(cfg).sharepoint

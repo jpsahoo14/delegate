@@ -15,14 +15,14 @@ const { Store } = await import('../src/store/state.ts')
 const { dispatch } = await import('../src/runner/dispatch.ts')
 const { applyAnswers } = await import('../src/runner/apply.ts')
 const { dueSends } = await import('../src/runner/autosend.ts')
-const { setRules } = await import('../src/runner/habits.ts')
+const { writeRules } = await import('../src/store/rules.ts')
 const store = new Store({ root: join(root, 'fictional'), machine: 'fictional' })
 const knowledge = join(root, 'cards'), card = join(knowledge, 'aurora.md')
 mkdirSync(knowledge); writeFileSync(card, 'Aurora status: monitoring continues.')
 const cfg: Config = { schema: 1, owner: { id: 'robin', name: 'Robin' }, source: { command: [], selfChatId: 'self' }, watch: [],
 	agent: { flavor: 'copilot', command: ['fictional-worker-never-launched'], tools: [], host: false }, knowledge: [knowledge], maxParallel: 3, nudgeEveryMin: 10, dailyRuns: 100 }
 store.saveConfig(cfg)
-setRules(store, [{ id: 'R1', text: 'Reply to Kim', who: { accounts: [{ id: 'kim', name: 'Kim' }] }, when: {}, then: 'send' }])
+writeRules(store, '- Reply to Kim\n', [{ id: 'R1', text: 'Reply to Kim', who: { accounts: [{ id: 'kim', name: 'Kim' }] }, when: {}, then: 'send' }])
 const live = new Map<string, RawMsg[]>(), posted: string[] = []
 const source: Source = {
 	selfChatId: 'self', recent: async chat => live.get(chat) ?? [],
