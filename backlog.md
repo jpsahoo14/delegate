@@ -5,6 +5,10 @@ Scenario range reserved for this branch: SC-400 through SC-419.
 
 | Milestone | State | Evidence |
 | --- | --- | --- |
+| #51 chat effect wording | Built in this commit; official PE diff review pending | 21 copy variants plus real approval receipt; send 26 and sharing 12 preserved |
+| #27 tick phases and commit audit | Built/proven in this wiring commit; official PE diff review pending | API 29, retention 15, 20 ticks max 1,593 ms, real HTTP <=248 ms, cross-process send/job/PR/window safety |
+| #27 async scope API | e5629416; PE approved API-only | scripts/prove-read-phases.mjs, now 29 invariants and separate I/O counters |
+| #45 warm-only quick checks | Implemented in this commit; official PE diff review pending | scripts/prove-host-quick.mjs; eight-second local provider capped at 5,009 ms; normal worker unchanged |
 | #29 reply-history retention | Implemented in this follow-up; official PE diff review pending | scripts/prove-reply-retention.mjs; five runs retain two local/synced histories, jobs unchanged |
 | #29 compact redraft runner | Done in this fix commit; PE ok; card display separately owned | scripts/prove-redraft-latency.mjs; delayed-stub warm p50 5,711 ms; dev-spec/react-app.md; docs/scenarios.md bug 10-24 #29 |
 | #39 host tool setup and recovery | Done in this fix commit; PE ok, no unit tests | dev-spec/react-app.md; docs/scenarios.md bug 10-24 #39; scripts/prove-host-tools.mjs and broader isolated real-runtime proof |

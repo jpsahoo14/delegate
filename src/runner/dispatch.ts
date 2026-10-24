@@ -1,7 +1,8 @@
 import { CMD, NAME } from '../brand.ts'
 import { blockerOf } from './retry.ts'
 import { active, addPart, canCloseReport, hasDecisions, homeOf, joinWhy, mergeReportWork, settle, step } from './work.ts'
-import { assertTestSafe } from '../store/fs.ts'
+import { assertTestSafe, freshRead, readPhase } from '../store/fs.ts'
+import { recordCommit } from './commit.ts'
 import { closeFamily } from './apply.ts'
 import { realProcs } from './jobs.ts'
 import { stopWatch } from './track.ts'
@@ -14,7 +15,8 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Automation, Config, Report, Workflow } from '../core/types.ts'
 import { randomUUID } from 'node:crypto'
-import { keepApprovedDraft } from '../core/owner-send.ts'
+import { clearHold, keepApprovedDraft } from '../core/owner-send.ts'
+import { checkPreservedHold, refreshApprovedHolds } from './send-holds.ts'
 import { describe } from './automations.ts'
 import { ulid } from '../core/ids.ts'
 import { MARK, plain, renderNudge, renderPreview } from '../core/render.ts'
@@ -56,6 +58,7 @@ const UNKNOWN_READ_HOLD = "It searched your chats and I couldn't tell which ones
 export async function dispatch(store: Store, src: Source, cfg: Config, run: RunWorker = runAgent, probe?: BuildProbe, only?: readonly string[]): Promise<number> {
 	if (!store.upgrades()['reply-sessions-1']) pruneReplySessions(store)
 	restoreApprovedDrafts(store)
+	await refreshApprovedHolds(store, src)
 	const held = blockedAgent(store, cfg)
 	if (held) { waitingForAgent(store, held); return 0 }
 	// An item open in a Continue window belongs to the owner until it closes (R-WF-07).
@@ -83,8 +86,8 @@ export async function dispatch(store: Store, src: Source, cfg: Config, run: RunW
 			if (blockedAgent(store, cfg)) break
 			const wf = queue[next++]
 			// One run that cannot start fails only its own item; sends, reminders, and the other drafts go on (review 10-20 R3).
-			try { await runOne(store, src, cfg, wf, run, probe) } catch (e) { startFailed(store, wf, e); continue }
-			const ran = store.workflow(wf.id)
+			try { await readPhase(`draft:${wf.id}`, () => runOne(store, src, cfg, wf, run, probe)) } catch (e) { startFailed(store, wf, e); continue }
+			const ran = freshRead(() => store.workflow(wf.id))
 			if (ran?.startFails) { ran.startFails = undefined; store.save(ran, false) }
 			done++
 		}
@@ -284,7 +287,7 @@ export async function judgeReply(store: Store, cfg: Config, a: Automation, run: 
 		store.saveAutomation({ ...(store.automations().find(item => item.id === a.id) ?? a), why: account.text, updatedAt: now.toISOString() })
 		return
 	}
-	const fresh = store.automations().find(x => x.id === a.id) ?? a, first = heard.from.split(/\s+/)[0]
+	const fresh = freshRead(() => store.automations().find(x => x.id === a.id)) ?? a, first = heard.from.split(/\s+/)[0]
 	const later = /^later\s+(\S+)/i.exec(said), at = later ? new Date(later[1]) : undefined
 	const change: Partial<Automation> =
 		/^done\b/i.test(said) ? { state: 'ended', next: undefined, why: `${first} said it is done` }
@@ -347,6 +350,10 @@ function refuseStart(cfg: Config, tools: string[], folder?: string) {
 
 async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run: RunWorker, probe?: BuildProbe, catalogRetried = false, separate = false, retrySession?: string): Promise<void> {
 	if (blockedAgent(store, cfg)) return
+	const current = freshRead(() => store.workflow(wf.id))
+	if (!current) throw new Error('The queued item disappeared before its run')
+	if (wf.state === 'running' && current.state !== 'running') { store.log({ event: 'worker-skipped', code: wf.code, reason: 'state changed before start' }); return }
+	wf = current
 	const tools = workerTools(cfg, 'reply')
 	refuseStart(cfg, tools)
 	if (wf.state !== 'running') return runAsk(store, src, cfg, wf, run)
@@ -393,16 +400,17 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 	const salvaged = raw && scrubDeep(raw)
 	const report = store.peekReport(wf.id, runId) ?? salvaged
 	store.log({ event: 'worker', ...(salvaged ? { salvaged: true } : {}), workflowId: wf.id, code: wf.code, runId, sessionId, fresh: true, inputTokens: res.used?.tokensIn, calls: res.used?.modelCalls, exitCode: res.exitCode, ms: res.ms, ...(res.via ? { via: res.via } : {}), ...(res.via === 'host' ? { warm: !!res.warm } : {}), intent: report?.intent, summary: report?.summary, sources: report?.reply?.sources, commitment: report?.reply?.commitment, error: res.error, ...ran('draft', res.used) })
-	const fresh = store.workflow(wf.id) ?? wf
+	const fresh = freshRead(() => store.workflow(wf.id)) ?? wf
+	const commit = recordCommit(fresh, () => store.workflow(fresh.id), store.save.bind(store))
 	const oldSession = fresh.session
 	fresh.session = { ...oldSession, id: sessionId, at: startedAt,
 		previous: oldSession.at ? oldSession.id : oldSession.previous,
 		retired: [...new Set([...(oldSession.retired ?? []), ...(oldSession.at && oldSession.previous ? [oldSession.previous] : [])])] }
-	store.save(fresh, false)
+	commit(false)
 	const account = !report && (res.setup ?? agentSetupFailure(`${res.error ?? ''}\n${res.summary ?? ''}`))
 	if (account) {
 		holdAgent(store, cfg, account)
-		if (fresh.state === 'running') { Object.assign(fresh, { status: account.text, startFails: undefined }); store.save(fresh) }
+		if (fresh.state === 'running') { Object.assign(fresh, { status: account.text, startFails: undefined }); commit() }
 		store.archiveReport(wf.id, runId)
 		return
 	}
@@ -420,14 +428,15 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 		const newer = fresh.pending.some(id => !wf.pending.includes(id))
 		Object.assign(fresh, { state: newer ? 'running' : 'needs_human', approved: undefined, status: newer ? 'New asks arrived during this run. Checking them next.' : 'Earlier changes are still unverified. Review them before closing this work.' })
 		store.log({ event: 'report-held', workflowId: fresh.id, reason: newer ? 'newer-ask' : 'unverified-effects' })
-		store.save(fresh)
+		commit()
 		store.archiveReport(wf.id, runId)
 		return
 	}
 	if (report && !report.reply && fresh.ownerSend && (!fresh.sent || fresh.sent.at < fresh.ownerSend.at)) {
 		keepApprovedDraft(fresh, report.summary || 'No reply needed')
 		fresh.pending = []
-		store.save(fresh)
+		await checkPreservedHold(store, src, fresh)
+		commit()
 		store.log({ event: 'approved-draft-kept', code: fresh.code, why: report.summary })
 		store.archiveReport(wf.id, runId)
 		return
@@ -439,7 +448,7 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 		store.log({ event: 'report-join-refused', code: fresh.code, target: report.same, reason: 'no eligible same-ask target' })
 		if (!separate && store.runsToday() < (cfg.dailyRuns ?? 200)) return runOne(store, src, cfg, fresh, run, probe, catalogRetried, true)
 		Object.assign(fresh, { state: 'needs_human', status: 'This is a separate ask. The AI did not draft its own answer.', question: 'What would you like to reply to this ask?' })
-		store.save(fresh)
+		commit()
 		return
 	}
 	const auth = !report && AUTH.test(res.error ?? '')
@@ -472,6 +481,7 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 		const h = family(store, fresh, report)
 		applyReport(fresh, checked(store, cfg, report), h, canCloseReport(store, h, fresh))
 		if (completedJob?.state === 'done') fresh.context = replyFacts(jobContext, fresh.context)
+		if (fresh.holdCheckPending) await checkPreservedHold(store, src, fresh)
 		if (fresh.draft) fresh.prDraft = wf.prRead
 		if (report.goalMet === false) store.log({ event: 'short-of-goal', workflowId: fresh.id, code: fresh.code, kind: blockerOf(report.blocker).kind, why: blockerOf(report.blocker).why, tried: blockerOf(report.blocker).tried })
 		// Closed with a last reply: the family closes when that reply is sent; without one, now.
@@ -487,6 +497,7 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 		// A vote is read against its PR now, so the card shows what it means and the owner's first ok casts it (bug 10-21 A12).
 		// Anything the read would change (a closed PR, new commits) is left to the check at ok, which says why.
 		const read = v.effects.some(e => isVote(e.call)) ? await voteNow(store, cfg, fresh, v.effects, probe) : undefined
+		commit.refresh()
 		const effects = proposalEffects(read && !read.why && !read.again && read.effects.length === v.effects.length ? read.effects : v.effects, [fresh])
 		if (v.todos.length) Object.assign(fresh, { todos: [...new Set([...(fresh.todos ?? []), ...v.todos])],
 			// "Are you in <group>?" stays the question while it is open: its answer can bring the vote back (queue-new #7C).
@@ -541,6 +552,7 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 	const readsBefore = previousShareHold === UNKNOWN_READ_HOLD || (typeof previousShareHold === 'object' && previousShareHold.kind === 'reads')
 	const kept = previousShareHold && (!previousDrewOn.length || typeof previousShareHold === 'object' && previousShareHold.kind === 'customer') ? (typeof previousShareHold === 'string' ? { kind: 'reads' as const } : previousShareHold) : undefined
 	fresh.shareHold = use && (read.unknown || readsBefore) ? { kind: 'reads' } : use ? (await sharingHold(store, src, fresh, use)) ?? kept : undefined
+	commit.refresh()
 	if (report && !job) await afterDraft(store, src, cfg, fresh)
 	// A person answering the owner (in a 1:1, or right after his own message) is never silent noise: with no reply needed it is a
 	// Catch up line with their words (queue-new #18). Bots and group chatter not addressed to him stay silent.
@@ -552,8 +564,14 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 	}
 	if (report && !job && fresh.state === 'done' && fresh.closedBy === 'nothing') for (const msgId of wf.pending) auditSkip(store, wf.chat.id, msgId, fresh.fyi ? 'ai-fyi' : 'ai-noise', wf.id)
 	if (job && !declined) await ackJob(store, src, cfg, fresh)
+	const arrived = freshRead(() => store.workflow(fresh.id))?.pending.filter(id => !wf.pending.includes(id)) ?? []
+	if (arrived.length) {
+		fresh.pending = [...new Set([...fresh.pending, ...arrived])]
+		Object.assign(fresh, { state: 'running', approved: undefined, sendAt: undefined, status: 'New asks arrived during this run. Checking them next.' })
+		store.log({ event: 'report-held', workflowId: fresh.id, reason: 'newer-ask' })
+	}
 	fresh.session.at = new Date().toISOString()
-	store.save(fresh)
+	commit()
 	store.archiveReport(wf.id, runId)
 	// A missed link the owner asked about always gets an answer, even when there is nothing to track.
 	if (report && fresh.missed && fresh.startedBy === 'owner' && fresh.state === 'done') await say(store, src, `${MARK} ${fresh.code}: ${fresh.status}`)
@@ -579,7 +597,9 @@ async function runAsk(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 	const res = await run({ ...cfg.agent, tools }, { workflowId: wf.id, runId, sessionId: session, prompt: buildAskPrompt(wf, store.thread(wf.id), cfg, store.root), cwd: job?.repo ?? cwd, mcpConfigPath, extraTools: WORKER_TOOLS, dirs: readDirs(store, cfg) })
 	backupSession(store, session)
 	const report = store.peekReport(wf.id, runId)
-	const fresh = store.workflow(wf.id)!
+	const fresh = freshRead(() => store.workflow(wf.id))
+	if (!fresh) throw new Error('The item disappeared before its question could be answered')
+	const commit = recordCommit(fresh, () => store.workflow(fresh.id), store.save.bind(store))
 	const account = !report && (res.setup ?? agentSetupFailure(`${res.error ?? ''}\n${res.summary ?? ''}`))
 	if (account) holdAgent(store, cfg, account)
 	if (!report && !account && !retrySession && cfg.agent.flavor === 'copilot' && CATALOG_CHANGED.test(sessionLog(cfg.agent.flavor, session).slice(logStart))) {
@@ -593,7 +613,7 @@ async function runAsk(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 	}
 	const note = fresh.notes?.find(n => n.a === undefined)
 	if (note) Object.assign(note, report?.answer ? { a: report.answer, sources: report.reply ? checked(store, cfg, report).reply!.sources : undefined } : { a: account ? account.text : `I could not answer that${res.error ? ` (${res.error.slice(0, 80)})` : ''}. Ask again, or open ${fresh.code} on your computer.` })
-	store.save(fresh)
+	commit()
 	store.archiveReport(wf.id, runId)
 	store.log({ event: 'ask', workflowId: wf.id, code: wf.code, runId, ms: res.ms, ...ran('ask', res.used) })
 	if (note && fresh.answerSurface === 'self') await say(store, src, plain(`${MARK} ${fresh.code} · ${note.q}\n${note.a}`).slice(0, 1800))
@@ -608,7 +628,7 @@ export function checked(store: Store, cfg: Config, r: Report): Report {
 }
 
 export function applyReport(wf: Workflow, r: Report, home = wf, allowClose = true) {
-	if (r.reply) { wf.ownerSend = undefined; wf.reason = undefined; wf.approved = undefined }
+	if (r.reply) { wf.ownerSend = undefined; clearHold(wf); wf.approved = undefined }
 	if (!r.reply && !wf.ownerSend && wf.approved?.text)
 		wf.ownerSend = { draft: wf.draft ?? { text: wf.approved.text, commitment: false, sources: [] }, at: wf.approved.at, askMsgId: wf.lastMsgId }
 	if (wf.ownerSend && !r.reply && (!wf.sent || wf.sent.at < wf.ownerSend.at)) {

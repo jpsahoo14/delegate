@@ -1,5 +1,120 @@
 # React preview
 
+## #46: app version before commit
+
+PM/design and PE approval: queue item #46, PE 19:30, "build as written".
+Data: nearest release tag, commits since that tag, full installed commit and
+update channel; without git, package.json, then saved state/version.json.
+The installed package version wins over stale saved state.
+Ranked scenarios: tagged release, commits after release, non-git install.
+Compared commit-only (opaque), version-only (ambiguous between updates), and
+version plus short commit (selected). New/Classic and Report a problem use
+"Version 0.2.37 (abc1234)" or "Version 0.2.37+3 (def5678)"; non-git installs
+show only the version. Hover exposes the full commit and channel.
+Resolve release tags matching v[0-9]* once at page-server startup and after an
+applied update, never from a request or polling timer. Existing process restart
+after updates made by another process resolves the new identity at startup.
+Fictional git/HTTP/browser proof covers each fallback, unrelated tags, update
+refresh and unchanged git trace across repeated page requests (including past
+the former 30-second cache expiry): `node scripts/prove-version.ts --browser`.
+
+## #51 chat effect wording
+
+- Effect lines group adjacent comments on the same PR without moving a vote past another operation. Counts read
+  "a comment" / "2 comments"; present, running and past forms come from exact calls, with the PR title capped at 40 characters.
+  A following vote uses "it" only for the most recently named PR. Unknown effects keep `shown().line`.
+- Chat preview/edit/approval lines use command codes only in the closing command. Completion names the person and group chat.
+  Existing result fields render partial, failed, uncertain and changes-only receipts without changing execution or retry gates.
+  Uncertain results never offer a retry; raw tool names, job IDs and commit hashes are not emitted as failure reasons.
+- Manual fictional proof: `node scripts/prove-effect-lines.mjs`, 21 copy variants and a real apply/approval receipt.
+  Existing send and sharing journeys remain green. No page, card, projection or store changes.
+
+## #27 runner wiring and commit-point audit
+
+- Tick preserves its operation order in isolated controls/answers, approved-change, answer-first, intake, sweep/probe,
+  dispatch, supervision/send, summary and finalization phases. Catalog work and individual workers/effects have child contexts.
+  The snapshot has an isolated `{ writes: false }` phase so its nested synchronous renderer keeps the page's copy semantics.
+- Flat record snapshots are shared only across async phases: validate the directory signature and process write version,
+  retain them for at most the original one-second deadline, and cap the cache at 5,000 records / 1,000 folders. A consumer's
+  epoch cannot outlive that snapshot. `freshRead` bypasses this reuse and validates files individually; synchronous requests
+  outside phases remain unchanged. Readonly consumers receive private parsed snapshots. No watcher or new worker project.
+- This removes repeated folder/file metadata work without changing the declared freshness bound. Bulk record copies clone
+  once, not once per record twice. Canonical dependency paths stay absolute; relative requests and listing result paths remain
+  correct after a working-directory change. A write never promotes an expired listing into a fresh epoch.
+- `recordCommit` starts from the acquired record before local mutations, including nested handlers on the same object. At a commit,
+  read fresh, merge changed owned fields with the latest unrelated fields, then save synchronously. It is not a transaction;
+  same-field contention still relies on the existing writer/lease rules. No external effect is automatically replayed.
+
+Named audit points:
+- [tick.ts](../src/runner/tick.ts): cursor commits after command/intake awaits.
+- [dispatch.ts](../src/runner/dispatch.ts): queued item re-read, post-model session/report commit, post-vote/sharing/ack draft
+  merge, question-answer commit and automation result re-read. A newer ask holds the result; a cancelled queued item never runs.
+- [apply.ts](../src/runner/apply.ts): answer handler, remembered owner draft, held-send/group answer/correction, send receipt
+  after the remote post, and the outer answer commit after Undo. Sent receipts still precede closure/learning.
+- [autosend.ts](../src/runner/autosend.ts): acknowledgement marker before posting, scheduled preview/hold metadata and the
+  post-send outer commit. Presence awaits cannot resurrect cancelled items; policy decisions and at-most-once markers survive.
+- [jobs.ts](../src/runner/jobs.ts): per-job supervisor/start/execution reads, detached-start metadata, execution-parent updates,
+  and final job merge retaining newly appended asks. Effect calls keep their existing ledger and have fresh child phases.
+- [probe.ts](../src/runner/probe.ts): live PR/role metadata merges, including caller-owned pending changes.
+- [continue.ts](../src/runner/continue.ts): open-on metadata after process inspection and terminal-return report commit.
+- [own.ts](../src/runner/own.ts): legacy retention metadata and post-removal retirement update, including the save's before-state read.
+
+Proof: `node scripts/prove-read-phases.mjs` (29 invariants), `node scripts/prove-tick-phases.mjs` (20 ticks plus real HTTP,
+two-process item/config changes, acquisition-to-commit tracking, send/Undo/acknowledgement, scheduled holds,
+execution/start/PR/window commits, invalid PR
+evidence clearing, cancellation, stopped/outage and no-replay cases).
+To compare the same rig with an older tick: `node scripts/prove-tick-phases.mjs --baseline-ref=<pre-wiring-ref>`.
+The baseline loads that tick with absolute production-module imports, not a second store implementation.
+
+400 fictional items / 55 jobs; fixed simulated open/stat/list costs 0.35 / 0.05 / 0.1 ms:
+
+| Measurement | Pre-wiring p50 / p90 / max | Scoped p50 / p90 / max |
+| --- | --- | --- |
+| Whole tick, including snapshot/finalization | 6,171 / 6,347 / 8,323 ms | 382 / 493 / 1,593 ms |
+| readText requests | 7,484 / 7,484 / 8,800 | 461 / 916 / 1,376 |
+| Physical readFile attempts | 6,634 / 6,634 / 8,807 | 40 / 40 / 913 |
+| Physical stat calls | 885 / 885 / 885 | 501 / 1,344 / 1,660 |
+
+Real HTTP page/settings during an awaiting tick: 248 / 242 ms. Phase counters distinguish reads, stats, opens, listings and
+hits; overlapping phase counters are not additive. The final tick event includes cleanup. These are simulated-storage results,
+not a VM or real-OneDrive performance claim. No State.save, React, card or projection changes.
+
+## #27 async scope API
+
+- `readPhase(name, asyncWork)` uses AsyncLocalStorage for a writing context spanning awaits. Each child phase owns its cache;
+  success/error closes it, and late callbacks read uncached. `freshRead(syncWork)` creates an independent fresh writing scope
+  for commit-point re-reads. Existing synchronous `readScope` inherits a phase, or preserves its old request lifetime outside one.
+- A phase epoch is at most 1,000 monotonic ms. Hits do not stat. The first use after expiry lazily validates file signatures,
+  including missing files, once per file/version/epoch. Listings validate their folder. Derived/record values rebuild after
+  expiry because a descendant edit need not alter the top folder's mtime; unchanged text is reused after signature validation.
+- Every process write, append, move and remove bumps path/ancestor-folder versions, including writes outside a scope.
+  Parallel contexts discard mismatched entries immediately. Own JSON/listing writes are write-through; other entries survive.
+  Writing contexts return copies, derived keys remain `<kind>:<folder>`, and the existing bounded text cache remains.
+- Counters distinguish readText requests (`reads`), signature calls (`stats`), readFile attempts (`opens`), directory reads
+  (`lists`) and cache hits (`hits`). No workflow migration or page/store-state change.
+- Manual proof: `node scripts/prove-read-phases.mjs` covers 29 invariants, including 100 JSON reads = one stat/open, parallel
+  same-epoch visibility, inherited sync scopes, external epoch/fresh reads, missing files, descendant facts, move/remove/append,
+  settled/error contexts, copy rules and invalid derived keys. Tick wiring and its 400-item measurements are recorded above.
+
+## #45: warm-only one-shot checks
+
+- `host/client.quick(prompt, jsonSchema, timeoutMs = 5000)` returns validated JSON, or `undefined` so the owner-send caller
+  fails open. It only contacts an existing matching warm host: no ensureHost, package discovery, CLI start or spawn fallback.
+  A host becomes model-ready after a successful normal turn; an older host without this readiness field is unavailable.
+- One wall-clock deadline, capped at five seconds, covers ping, session admission and inference. Streaming bytes never reset
+  it. The server rejects cold/draining/busy requests immediately and aborts an expired or disconnected check.
+- Every check creates a fresh SDK session with an empty available-tool set, no worker/MCP definitions, no memory/config
+  discovery and denied permissions. It verifies zero actual tools before prompting. The provider receives the response schema,
+  and the host validates the returned JSON against it. No item/job session is resumed or backed up.
+- Ephemeral sessions are aborted when needed, disconnected and deleted, including late session creation. Cleanup errors are
+  logged; they cannot extend the caller's deadline. Quick errors never count toward the worker host breaker.
+- Old data needs no migration: this API owns no workflow state. The configured model is unchanged; the send caller still owns
+  the semantic yes/no/unsure decision, its history note and all strict rule-send checks.
+- Manual proof: `node scripts/prove-host-quick.mjs`, real installed runtime and local stub model on isolated Temp homes.
+  Yes/no/unsure return schema-valid values; malformed, wrong-schema, provider error, absent/cold/busy/draining/down host and
+  timeout fail open. An eight-second provider returned unavailable after 5,009 ms and was aborted. Trickle-response deadline,
+  zero offered tools, fresh history, deleted ephemeral sessions, unchanged item history/start markers and a healthy subsequent
+  worker all pass. The existing host-tools proof also passes. These are local-stub numbers, not real-provider latency.
 ## Merge of #29 (HOST) with #36: a redraft keeps what the draft it replaces drew on
 
 - `drewOn` on a redraft is the previous draft's chats plus `draftUse`'s chats (HOST's union, on #36's `draftUse`).
@@ -199,6 +314,20 @@ PE 16:50 corrections, built as written.
 - Manual proof: `node scripts/prove-redraft-latency.mjs`, isolated Temp homes and actual installed runtime.
   Ten resumed-history and ten fresh redrafts use a local stub charging 1 s/10k estimated input tokens plus 1.5 s/call.
   Stub numbers are not real-provider latency or browser-render latency. Card wording/stale-job display remain card-owner work.
+- Allowed change-tool formats (#28) are compact proposal references: property names, type, required, enum and numeric/length/item
+  bounds only, no descriptions, and at most one nested field level (including local definition references). The shared
+  reply/job/promise/tracker formatter reads the cache without scanning servers or changing its full validation schemas.
+  The entire shape block ends with `(shapes truncated; propose only fields shown)`; missing required formats must be reported,
+  never invented. Required fields precede optional ones; truncation keeps complete fields/JSON and does not grant tools.
+  Its budget is 2,300 characters, deliberately below PE's 4k ceiling: a 4k block measured +16.6% input on the fictional redraft,
+  exceeding the +10% target. Old reports/data and approved execute prompts are unchanged; there is no migration or save-line change.
+  `node scripts/prove-review-report.ts` covers the reference boundaries and unchanged full-schema call validation.
+  `node scripts/prove-compact-shapes.mjs` runs three fresh real dispatch/submit/apply journeys on the installed runtime with
+  ten fictional cached write tools: no shapes, the former full schemas, and compact shapes. Its local stub uses the same
+  estimated-input formula as the #29 proof, not a provider tokenizer, and requires each compact call to stay within +10%
+  of the no-shapes control. All homes and writes stay in Temp; the proof drains its host and stops its model server.
+  Measured calls: no-shapes 6,911 / 7,046; full schemas 17,092 / 17,227 (38,850 schema characters);
+  compact 7,566 / 7,701 (+9.48% / +9.30% versus no-shapes). All three save the same fictional draft.
 
 Final manual measurement (ten each, actual runtime, delayed local stub):
 

@@ -4,6 +4,7 @@
 import type { CardFacts, Failure } from './card-state.ts'
 import { currentFailure } from './card-state.ts'
 import type { Job, Workflow } from './types.ts'
+import { holdReasons } from './owner-send.ts'
 
 export type FactsInput = {
 	wf: Workflow
@@ -40,9 +41,11 @@ export function cardFacts(i: FactsInput): CardFacts {
 		// A run that fell short with nothing to send and no question left only its status (dispatch.ts "Not finished: ", A90).
 		waiting && !wf.runFailed && !card.draft && card.question === undefined && /^Not finished: /.test(wf.status) ? own({ kind: 'content', at: wf.revAt ?? wf.updatedAt, why: wf.status.replace(/^Not finished: /, '').split(/(?<=[.!?])\s+/)[0], tried: [] }) : undefined,
 	], card.draft ? draftAt : undefined) : undefined
-	// The engine held the owner's Send (SEND's wf.reason): structured, so it outranks any status prose.
-	const r = waiting && card.draft ? wf.reason : undefined
-	const held = r ? { kind: r.kind, digest: r.digest, who: wf.asker?.name?.split(/\s+/)[0] || 'They', ...(r.kind === 'no-reply-needed' ? { why: r.why } : {}) } : undefined
+	// The engine held the owner's Send (SEND #45): every current reason, structured, so it outranks any status prose. An item from
+	// before #45 has only wf.reason, read through the same accessor.
+	const reasons = waiting && card.draft ? holdReasons(wf) : []
+	const held = reasons.length ? { digest: wf.holdDigest ?? reasons[0].digest, who: wf.asker?.name?.split(/\s+/)[0] || 'They', reasons: reasons.map(r => r.kind === 'no-reply-needed' ? { kind: r.kind, why: r.why }
+		: { kind: r.kind, at: r.at, ...(r.changed ? { changed: r.changed } : {}), ...(r.kind === 'asker-wrote-again' && (r.msgIds?.length ?? 0) > 1 ? { count: r.msgIds!.length } : {}) }) } : undefined
 	const notSent = !held && waiting && !!card.draft && NOT_SENT.test(wf.status) ? { why: wf.status.replace(NOT_SENT, '').replace(/\s*\((?:Error|error)\b[^)]*\)/g, '').trim() } : undefined
 	return {
 		state: wf.state,

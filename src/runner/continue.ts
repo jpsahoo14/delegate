@@ -17,6 +17,8 @@ import { finishWork, parentsOf, type Procs } from './jobs.ts'
 import { say } from './intake.ts'
 import { backupSession, restoreSession } from './own.ts'
 import { NAME } from '../brand.ts'
+import { freshRead } from '../store/fs.ts'
+import { recordCommit } from './commit.ts'
 import { alive, commandOf, ours } from '../os/process.ts'
 
 
@@ -104,19 +106,24 @@ export function checkOpen(store: Store, procs: Procs, bootMs = Date.now() - upti
 		// A window from before this machine last started is gone, even if its process ID now belongs to another program.
 		const here = !!o.pid && o.machine === store.machine && Date.parse(o.since) > bootMs && age < WINDOW_MS && isWindow(o.pid, o.since)
 		if (!o.closed && (reserved || remote || here)) {
-			for (const wf of items.filter(w => w.openOn !== o.machine)) { wf.openOn = o.machine; store.save(wf) }
+			for (const was of items.filter(w => w.openOn !== o.machine)) freshRead(() => {
+				const wf = store.workflow(was.id)
+				if (wf) { wf.openOn = o.machine; store.save(wf) }
+			})
 			continue
 		}
 		const r = store.peekReport(id, o.runId)
 		if (r && job) finishWork(store, job, r, job.asks.length)
 		for (const wf of job ? parentsOf(store, job) : items) {
-			const fresh = store.workflow(wf.id)!
+			const fresh = freshRead(() => store.workflow(wf.id))
+			if (!fresh) throw new Error('The terminal item disappeared before its return could be saved')
+			const commit = recordCommit(fresh, () => store.workflow(fresh.id), store.save.bind(store))
 			if (r && !job) applyReport(fresh, r)
 			// What the owner decided in the window comes back as a preview: nothing leaves without an ok outside it.
 			if (r && fresh.draft) fresh.draft.preview = true
 			fresh.openOn = undefined
 			if (!r && !fresh.status.startsWith('Back from')) fresh.status = `Back from your window, nothing decided. ${fresh.status}`.slice(0, 200)
-			store.save(fresh)
+			commit()
 		}
 		store.archiveReport(id, o.runId)
 		if (o.machine === store.machine && o.runId) removeRunFiles(join(LOCAL_DIR, 'sessions', `mcp-${o.runId}.json`))

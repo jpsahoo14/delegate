@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { createServer, type Server } from 'node:http'
 import { existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import type { Store } from '../store/state.ts'
 import { experienceOf } from '../store/state.ts'
 import { hashOf } from '../knowledge/format.ts'
@@ -10,7 +10,7 @@ import { actResult } from '../mcp/server.ts'
 import { SEEN_KEYS, view } from './view.ts'
 import { answerAutomation, propose as proposeAutomation, type AutomateInput } from '../runner/automations.ts'
 import { NAME, CMD } from '../brand.ts'
-import { versionInfo, versionInfoLater, type VersionInfo } from '../os/autoupdate.ts'
+import { onUpdateApplied, versionInfoLater, versionStatus } from '../os/autoupdate.ts'
 import { saveSetting, settingsView } from './settings.ts'
 import { adoProbe, type BuildProbe } from '../runner/probe.ts'
 import type { Config } from '../core/types.ts'
@@ -43,24 +43,6 @@ export function automateFromPage(store: Store, i: AutomateInput): { ok: boolean;
 	const a = store.automations().filter(a => a.state === 'proposed').sort((x, y) => y.createdAt.localeCompare(x.createdAt))[0]
 	if (!a || !r.startsWith(a.code)) return { ok: false, text: r }
 	return { ok: true, text: answerAutomation(store, a, { id: '', code: a.code, verb: 'ok', surface: 'chat', at: '' }), code: a.code }
-}
-
-// The running version: asked of git at most every 30 s, in the background, so no page request waits for git (bug 10-23 perf).
-// Only a request before the first answer reads it directly.
-let ver: { at: number; v: VersionInfo } | undefined, asking = false
-const withVersion = (s: Store, v: ReturnType<typeof view>) => {
-	return { ...v, version: versionFor(s), settings: settingsView(s) }
-}
-const askVersion = (s: Store) => {
-	if (asking) return
-	asking = true
-	const cfg = s.config()
-	versionInfoLater(cfg?.autoUpdate, undefined, undefined, cfg?.updateEveryMin).then(v => { ver = { at: Date.now(), v } }, () => undefined).finally(() => { asking = false })
-}
-const versionFor = (s: Store) => {
-	if (!ver) ver = { at: Date.now(), v: versionInfo(s.config()?.autoUpdate, undefined, undefined, s.config()?.updateEveryMin) }
-	else if (Date.now() - ver.at > 30_000) askVersion(s)
-	return ver.v
 }
 
 // The switch on this machine, and the new page's rows only when that page asks: classic never builds them (R-NEX-01).
@@ -97,9 +79,17 @@ export function saveUiFrom(s: Store, body: unknown): { ok: boolean; ui?: ReturnT
 
 // A local page with working buttons. Only this machine can reach it, and only with the token in its link (R-HIL-09).
 // probeFor: the owner's Azure DevOps read, for a setting checked there before it is saved.
-export function serveInbox(get: () => Store, port = 0, token = randomBytes(16).toString('hex'), probeFor: (cfg: Config) => BuildProbe | undefined = adoProbe, previewRoot = ROOT): Promise<{ url: string; server: Server }> {
+export async function serveInbox(get: () => Store, port = 0, token = randomBytes(16).toString('hex'), probeFor: (cfg: Config) => BuildProbe | undefined = adoProbe, previewRoot = ROOT): Promise<{ url: string; server: Server }> {
 	const initialSince = new Date(Date.now() - 86_400_000).toISOString()
-	if (!ver) try { askVersion(get()) } catch { /* the first request reads it */ }
+	let ver = await versionInfoLater(undefined, previewRoot, undefined, undefined, get().root)
+	const versionFor = (s: Store) => versionStatus(ver, s.config()?.autoUpdate, undefined, s.config()?.updateEveryMin)
+	const withVersion = (s: Store, v: ReturnType<typeof view>) => ({ ...v, version: versionFor(s), settings: settingsView(s) })
+	const stopVersion = onUpdateApplied(root => {
+		if (resolve(root) !== resolve(previewRoot)) return
+		void versionInfoLater(undefined, previewRoot, undefined, undefined, get().root).then(v => { ver = v }).catch(error => {
+			get().log({ event: 'version-read-failed', error: String(error) })
+		})
+	})
 	let reactVisit: { since?: string; fallbackSince: string } | undefined
 	const reactPages = new Map<string, ReturnType<typeof reactProjection>['snapshot']>()
 	// Clicks whose POST this server is handling now, by submission id: a receipt poll says "still working" for them, so the page never
@@ -279,7 +269,7 @@ export function serveInbox(get: () => Store, port = 0, token = randomBytes(16).t
 				try {
 					const { key, value } = JSON.parse(body) as { key: string; value: string }
 					if (key === 'deployTo') probe = probeFor(get().config())
-					const r = await saveSetting(get(), key, value, { probe }); if (r.ok) ver = undefined; res.writeHead(r.ok ? 200 : 422, { 'content-type': 'application/json' }).end(JSON.stringify(r))
+					const r = await saveSetting(get(), key, value, { probe }); res.writeHead(r.ok ? 200 : 422, { 'content-type': 'application/json' }).end(JSON.stringify(r))
 				} catch { res.writeHead(400).end('{"ok":false,"text":"Could not read that."}') } finally { void probe?.close?.().catch(() => undefined) }
 			})
 			return
@@ -318,7 +308,7 @@ export function serveInbox(get: () => Store, port = 0, token = randomBytes(16).t
 		beat = now
 		if (late >= SLOW_MS) try { get().log({ event: 'page-stall', ms: Math.round(late) }) } catch { /* best effort */ }
 	}, BEAT_MS).unref()
-	server.on('close', () => clearInterval(stall))
+	server.on('close', () => { clearInterval(stall); stopVersion() })
 	return new Promise(resolve => server.listen(port, '127.0.0.1', () => {
 		const a = server.address()
 		resolve({ url: `http://127.0.0.1:${typeof a === 'object' && a ? a.port : port}/?t=${token}`, server })

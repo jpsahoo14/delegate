@@ -405,7 +405,7 @@ export function workOfAsk(store: Store, open: Workflow[], raw: RawMsg, text: str
 
 // A close starts with no reason; the caller sets one when it has it, so an earlier close's never carries over.
 export function close(wf: Workflow, status: string) {
-	Object.assign(wf, { state: 'done', status, pending: [], closedBy: undefined, ownerSend: undefined, reason: undefined })
+	Object.assign(wf, { state: 'done', status, pending: [], closedBy: undefined, ownerSend: undefined, reason: undefined, reasons: undefined, holdDigest: undefined, holdCheckPending: undefined })
 }
 
 // Move messages the worker marked as another topic into a new item in the same chat, and queue it (D2).

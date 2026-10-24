@@ -3,6 +3,7 @@ import { adoProbe, describeDeploys, probeBuilds, probePRs, type BuildProbe } fro
 import { describeTargets } from './validate.ts'
 import { cliServers } from '../adapters/mcp-client.ts'
 import { noticeHabits } from './habits.ts'
+import { scanCodeFolders, visibleCloneTodos } from './repos.ts'
 import type { Source } from '../adapters/source.ts'
 import { demoProcs, demoRun } from '../adapters/demo.ts'
 import { historyFor, kindOf, sourceFor } from '../adapters/registry.ts'
@@ -30,7 +31,8 @@ import { refreshCatalogs } from './catalog.ts'
 import { finishTrim } from './tools-migrate.ts'
 import { hostCaller, hostLister, hostRunner, prewarmHost } from '../host/client.ts'
 import { hostOff } from '../host/locate.ts'
-import { fsTime } from '../store/fs.ts'
+import { freshRead, fsTime, readPhase } from '../store/fs.ts'
+import { recordCommit } from './commit.ts'
 import { serverBanners } from './server-needs.ts'
 import { stampPlaces } from './place.ts'
 import { writeSnapshot } from '../web/server.ts'
@@ -45,7 +47,19 @@ export type TickResult = { skipped?: string; commands: number; answers: number; 
 export const TAKEOVER_MIN = 30
 
 export async function tick(store: Store, deps: { source?: Source; run?: RunWorker; procs?: Procs; force?: boolean; history?: History; probe?: BuildProbe; mono?: () => number; call?: Caller } = {}): Promise<TickResult> {
+	return readPhase('tick-setup', () => tickInPhases(store, deps))
+}
+
+async function tickInPhases(store: Store, deps: Parameters<typeof tick>[1] = {}): Promise<TickResult> {
 	const t0 = Date.now(), fs0 = { ...fsTime }
+	const phase = <T>(name: string, work: () => T | Promise<T>, opts: { writes?: boolean } = {}) => readPhase(name, async () => {
+		const before = { ...fsTime }, started = performance.now()
+		try { return await work() } finally {
+			store.log({ event: 'tick-phase', name, ms: Math.round(performance.now() - started),
+				reads: fsTime.reads - before.reads, stats: fsTime.stats - before.stats, opens: fsTime.opens - before.opens,
+				lists: fsTime.lists - before.lists, hits: fsTime.hits - before.hits })
+		}
+	}, opts)
 	// A monotonic clock does not advance while the machine sleeps, so a sleep inside a cycle shows as the difference.
 	const mono = deps.mono ?? (() => performance.now()), p0 = mono()
 	const empty = { commands: 0, answers: 0, asks: 0, runs: 0, nudged: false }
@@ -79,8 +93,15 @@ export async function tick(store: Store, deps: { source?: Source; run?: RunWorke
 	const off = c0.notice ? undefined : offNotice(c0.endAt, new Date(), store.machine, cfg.tz)
 	if (off) store.saveChats({ ...c0, notice: off })
 	let earlyRuns = 0
+	let result: TickResult | undefined
 	try {
+		scanCodeFolders(Date.now(), true)
+		for (const wf of store.workflows().filter(w => w.todos?.length)) {
+			const todos = visibleCloneTodos(cfg, wf, wf.job ? store.job(wf.job) : undefined, store.machine)
+			if (todos?.length !== wf.todos?.length) { wf.todos = todos; store.save(wf) }
+		}
 		const cursors = store.cursors()
+		const commitCursors = recordCommit(cursors, () => store.cursors(), store.saveCursors.bind(store))
 		const procs = deps.procs ?? realProcs
 		// Any source failure, at any stage, backs off the same way and still supervises runs (R-ING-06, final review P1-3).
 		const down = async (e: unknown, answers: boolean) => {
@@ -96,40 +117,45 @@ export async function tick(store: Store, deps: { source?: Source; run?: RunWorke
 			await checkJobs(store, src, cfg, procs, deps.probe)
 			return { skipped: 'source unavailable', ...empty, ms: Date.now() - t0 }
 		}
-		let commands: number
-		try { commands = await readOwnerCommands(store, src, cursors) } catch (e) { return await down(e, true) }
-		// Saved at once: answers are queued, so a later failure must not re-read the same commands.
-		store.saveCursors(cursors)
-		// Finished reports land before the owner's answers, so an ok never acts on a turn that news already replaced (review P0.4).
-		const jobsEarly = await checkJobs(store, src, cfg, procs, deps.probe)
-		legacyEffects(store)
-		// Once per store: items an older version left with the failed-run question (queue-new #11).
-		if (!store.probeMark().runFailRepairAt) { repairRunFailures(store); store.saveProbeMark({ ...store.probeMark(), runFailRepairAt: new Date().toISOString() }) }
-		retryHostToolFailures(store)
-		// Items a job left blocked before #17 get its failed-run card once (queue-new #26).
-		if (!store.probeMark().blockedRepairAt) { repairBlocked(store); store.saveProbeMark({ ...store.probeMark(), blockedRepairAt: new Date().toISOString() }) }
-		// Once per store: parts an unchecked join attached to work about something else (queue-new #9).
-		if (!store.probeMark().partsRepairAt) { repairParts(store); store.saveProbeMark({ ...store.probeMark(), partsRepairAt: new Date().toISOString() }) }
-		// Once per store: a "No news" question asked right after activity (queue-new #13).
-		if (!store.probeMark().noNewsRepairAt) { repairNoNews(store); store.saveProbeMark({ ...store.probeMark(), noNewsRepairAt: new Date().toISOString() }) }
-		// A session history note no open item or job uses any more is cleared (queue-new #16 b).
-		pruneSessionNotes(store)
-		settleCompleted(store, procs)
-		// The owner's ok re-reads a pull request before voting on it, through the same read the PR checks use.
-		// The AI CLI's tool list is read for it; one that cannot be read is named in Health and never stops the cycle (review 10-21b P1).
-		const cli = cliServers(cfg.agent.flavor)
-		store.setHealth('cli-config', cli.error ? `${NAME} could not read your AI CLI's tool list, ${cli.path} (${cli.error}). Changes through tool servers listed only there wait until it can.` : undefined)
-		let probe: BuildProbe | undefined
-		try { probe = deps.probe ?? adoProbe(cfg) } catch (e) { store.log({ event: 'probe-failed', error: String(e).slice(0, 300) }) }
-		const answerItems = new Map(store.answers().map(({ answer }) => [answer.code, answer.at]))
-		const answers = await applyAnswers(store, src, cfg, procs, false, probe)
-		const answered = kicked && !store.control().stopped ? store.workflows().filter(w => w.state === 'running' && w.ownerAnswer && answerItems.has(w.code)) : []
+		const initial = await phase('controls-and-answers', async () => {
+			let commands: number
+			try { commands = await readOwnerCommands(store, src, cursors) } catch (e) { return { ok: false as const, result: await down(e, true) } }
+			// Saved at once: answers are queued, so a later failure must not re-read the same commands.
+			commitCursors()
+			// Finished reports land before the owner's answers, so an ok never acts on a turn that news already replaced (review P0.4).
+			const jobsEarly = await checkJobs(store, src, cfg, procs, deps.probe)
+			legacyEffects(store)
+			// Once per store: items an older version left with the failed-run question (queue-new #11).
+			if (!store.probeMark().runFailRepairAt) { repairRunFailures(store); store.saveProbeMark({ ...store.probeMark(), runFailRepairAt: new Date().toISOString() }) }
+			retryHostToolFailures(store)
+			// Items a job left blocked before #17 get its failed-run card once (queue-new #26).
+			if (!store.probeMark().blockedRepairAt) { repairBlocked(store); store.saveProbeMark({ ...store.probeMark(), blockedRepairAt: new Date().toISOString() }) }
+			// Once per store: parts an unchecked join attached to work about something else (queue-new #9).
+			if (!store.probeMark().partsRepairAt) { repairParts(store); store.saveProbeMark({ ...store.probeMark(), partsRepairAt: new Date().toISOString() }) }
+			// Once per store: a "No news" question asked right after activity (queue-new #13).
+			if (!store.probeMark().noNewsRepairAt) { repairNoNews(store); store.saveProbeMark({ ...store.probeMark(), noNewsRepairAt: new Date().toISOString() }) }
+			// A session history note no open item or job uses any more is cleared (queue-new #16 b).
+			pruneSessionNotes(store)
+			settleCompleted(store, procs)
+			// The owner's ok re-reads a pull request before voting on it, through the same read the PR checks use.
+			// The AI CLI's tool list is read for it; one that cannot be read is named in Health and never stops the cycle (review 10-21b P1).
+			const cli = cliServers(cfg.agent.flavor)
+			store.setHealth('cli-config', cli.error ? `${NAME} could not read your AI CLI's tool list, ${cli.path} (${cli.error}). Changes through tool servers listed only there wait until it can.` : undefined)
+			let probe: BuildProbe | undefined
+			try { probe = deps.probe ?? adoProbe(cfg) } catch (e) { store.log({ event: 'probe-failed', error: String(e).slice(0, 300) }) }
+			const answerItems = new Map(store.answers().map(({ answer }) => [answer.code, answer.at]))
+			const answers = await applyAnswers(store, src, cfg, procs, false, probe)
+			const answered = kicked && !store.control().stopped ? store.workflows().filter(w => w.state === 'running' && w.ownerAnswer && answerItems.has(w.code)) : []
+			return { ok: true as const, commands, jobsEarly, answers, answered, answerItems, probe }
+		})
+		if (!initial.ok) return initial.result
+		const { commands, jobsEarly, answers, answered, answerItems, probe } = initial
 		// An approval's change job starts in this pass, before any draft runs, never one pass later (latency a). Jobs run detached.
 		// Approved changes with their exact calls are made in this pass, with no AI run (queue-new #7E).
-		const jobsMark = Date.now(), jobsNow = answers ? await executeDirect(store, src, cfg, procs, probe, deps.call ?? hostCaller(store, cfg)) + startJobs(store, cfg, procs, ['bootstrap:chats']) : 0
+		const jobsMark = Date.now(), jobsNow = answers ? await phase('approved-changes', async () => await executeDirect(store, src, cfg, procs, probe, deps.call ?? hostCaller(store, cfg)) + startJobs(store, cfg, procs, ['bootstrap:chats'])) : 0
 		if (answered.length) {
 			for (const w of answered) store.log({ event: 'answer-dispatch', code: w.code, workflowId: w.id, ms: Date.now() - Date.parse(answerItems.get(w.code)!), tickMs: Date.now() - t0 })
-			earlyRuns = await dispatch(store, src, cfg, deps.run ?? hostRunner(store), probe, answered.map(w => w.id))
+			earlyRuns = await phase('answer-first', () => dispatch(store, src, cfg, deps.run ?? hostRunner(store), probe, answered.map(w => w.id)))
 		}
 		const closeProbe = () => { if (!deps.probe) void probe?.close?.().catch(() => undefined) }
 		// After the pass's PR reads are closed, a direct change batch opens its own reader for the PR read before a vote.
@@ -140,96 +166,113 @@ export async function tick(store: Store, deps: { source?: Source; run?: RunWorke
 		}
 		// Stopped means no reading or drafting, but runs already started are still watched and their budgets enforced (tester P1-10).
 		if (store.control().stopped) { closeProbe(); store.setHealth('source'); checkOpen(store, procs, procs.bootMs?.()); await checkJobs(store, src, cfg, procs, deps.probe); reschedule(store, cfg, false, t0); return { skipped: 'stopped', commands, answers, asks: 0, runs: 0, nudged: false, ms: Date.now() - t0 } }
-		planSweep(store)
-		// Each tool server's tools are listed while the chats are read, and are ready before any draft runs (#17). Tests list nothing.
-		const listing = process.env.NODE_TEST_CONTEXT ? Promise.resolve(0) : refreshCatalogs(store, cfg, Date.now(), false, hostOff(cfg) ? undefined : hostLister(store, cfg)).catch(e => { store.log({ event: 'catalog-failed', error: String(e).slice(0, 300) }); return 0 })
-		let found: Awaited<ReturnType<typeof discover>>, asks: number
-		const before = store.chats()
-		// Chat cursors are saved only after a whole read, so a failure resumes in order.
-		try { found = await discover(store, src, cfg); asks = await intake(store, src, cfg, cursors, found.chats) } catch (e) { closeProbe(); return await down(e, false) }
-		await retryOwnerReplies(store, cfg, t0)
-		store.setHealth('source')
-		if (store.schedule().backoff) store.saveSchedule({ ...store.schedule(), backoff: undefined })
-		store.saveCursors(cursors)
-		found.commit()
-		const after = store.chats()
-		// Told only once the read left no gap open, so "caught up" is true.
-		if (after.notice && after.readAt !== before.readAt) {
-			// Cleared only once told; a failed send tries again next cycle.
-			const told = await say(store, src, `${MARK} ${after.notice}`).then(() => true, e => { store.log({ event: 'notice-failed', error: String(e).slice(0, 200) }); return false })
-			if (told) store.saveChats({ ...store.chats(), notice: undefined })
-		}
-		const missed = await takeMissed(store, src, cfg).catch(e => { store.log({ event: 'missed-failed', error: String(e).slice(0, 300) }); return 0 })
-		await sweep(store, src, cfg).catch(e => store.log({ event: 'sweep-failed', error: String(e).slice(0, 300) }))
-		const probed = await probeBuilds(store, probe).catch(e => { store.log({ event: 'probe-failed', error: String(e).slice(0, 300) }); return 0 })
-		await describeDeploys(store, probe).catch(e => store.log({ event: 'probe-failed', error: String(e).slice(0, 300) }))
-		await describeTargets(store, probe).catch(e => store.log({ event: 'probe-failed', error: String(e).slice(0, 300) }))
-		await probePRs(store, cfg, probe, Date.now(), kicked).catch(e => store.log({ event: 'probe-failed', error: String(e).slice(0, 300) }))
-		const due = store.workflows().filter(w => dueWork(w, Date.now(), store))
-		for (const w of due) { askWhatNext(w, store); store.save(w) }
-		// The owner's own words may promise a vote: its PR is read through the same probe, then closed (Slice 3).
-		// A server whose part of an old, shorter tools list waited for a listing is settled before drafts get tools (#17).
+		const listing = process.env.NODE_TEST_CONTEXT ? Promise.resolve(0) : phase('catalog', () => refreshCatalogs(store, cfg, Date.now(), false, hostOff(cfg) ? undefined : hostLister(store, cfg))).catch(e => { store.log({ event: 'catalog-failed', error: String(e).slice(0, 300) }); return 0 })
+		const ingested = await phase('intake', async () => {
+			planSweep(store)
+			let found: Awaited<ReturnType<typeof discover>>, asks: number
+			const before = store.chats()
+			// Chat cursors are saved only after a whole read, so a failure resumes in order.
+			try { found = await discover(store, src, cfg); asks = await intake(store, src, cfg, cursors, found.chats) } catch (e) { closeProbe(); return { ok: false as const, result: await down(e, false) } }
+			await retryOwnerReplies(store, cfg, t0)
+			store.setHealth('source')
+			if (store.schedule().backoff) store.saveSchedule({ ...store.schedule(), backoff: undefined })
+			commitCursors()
+			found.commit()
+			const after = store.chats()
+			// Told only once the read left no gap open, so "caught up" is true.
+			if (after.notice && after.readAt !== before.readAt) {
+				// Cleared only once told; a failed send tries again next cycle.
+				const told = await say(store, src, `${MARK} ${after.notice}`).then(() => true, e => { store.log({ event: 'notice-failed', error: String(e).slice(0, 200) }); return false })
+				if (told) store.saveChats({ ...store.chats(), notice: undefined })
+			}
+			return { ok: true as const, asks }
+		})
+		if (!ingested.ok) return ingested.result
+		const { asks } = ingested
+		const { missed, probed, due } = await phase('sweep-and-probes', async () => {
+			const missed = await takeMissed(store, src, cfg).catch(e => { store.log({ event: 'missed-failed', error: String(e).slice(0, 300) }); return 0 })
+			await sweep(store, src, cfg).catch(e => store.log({ event: 'sweep-failed', error: String(e).slice(0, 300) }))
+			const probed = await probeBuilds(store, probe).catch(e => { store.log({ event: 'probe-failed', error: String(e).slice(0, 300) }); return 0 })
+			await describeDeploys(store, probe).catch(e => store.log({ event: 'probe-failed', error: String(e).slice(0, 300) }))
+			await describeTargets(store, probe).catch(e => store.log({ event: 'probe-failed', error: String(e).slice(0, 300) }))
+			await probePRs(store, cfg, probe, Date.now(), kicked).catch(e => store.log({ event: 'probe-failed', error: String(e).slice(0, 300) }))
+			const due = store.workflows().filter(w => dueWork(w, Date.now(), store))
+			for (const w of due) { askWhatNext(w, store); store.save(w) }
+			// The owner's own words may promise a vote: its PR is read through the same probe, then closed (Slice 3).
+			// A server whose part of an old, shorter tools list waited for a listing is settled before drafts get tools (#17).
+			return { missed, probed, due }
+		})
 		await listing
-		finishTrim(store)
+		freshRead(() => finishTrim(store))
 		// A server that won't start reaches the top of the page only when an open item needs it (#24).
 		serverBanners(store, cfg)
 		// The first check of a work day starts the AI host, so the first reply is warm too (#25).
 		await prewarmHost(store, cfg)
 		// Reply runs go to the resident AI host when there can be one; else one process per run, as before (#19).
-		const runs = earlyRuns + await dispatch(store, src, cfg, deps.run ?? hostRunner(store), probe).finally(closeProbe)
+		const runs = earlyRuns + await phase('dispatch', () => dispatch(store, src, cfg, deps.run ?? hostRunner(store), probe).finally(closeProbe))
 		// Jobs run detached: the tick starts and checks them, and never waits (R-LNG-02).
-		const handedBack = checkOpen(store, procs, procs.bootMs?.())
-		const jobsDone = await checkJobs(store, src, cfg, procs, deps.probe, jobsNow ? jobsMark : undefined)
-		saveLearned(store)
-		try { closeDead(store.root, store.machine) } catch (e) { store.log({ event: 'sessions-sweep-failed', error: String(e).slice(0, 200) }) }
-		const h = deps.history ?? historyFor(cfg)
-		try { if (!sweeping(store)) await planChats(store, h, new Date()) } catch (e) { store.log({ event: 'harvest-plan-failed', error: String(e).slice(0, 300) }) } finally { if (!deps.history) await h?.close() }
-		// A plan that could not run this time waits for the next cycle; it never falls back to one run over 50 chats.
-		const jobsStarted = await direct() + startJobs(store, cfg, procs, h?.conversations ? ['bootstrap:chats'] : [])
-		capHealth(store, cfg)
-		// A pause or stop typed while drafts were being written applies before anything goes out (review 10-20 R1d).
-		const now = Date.now()
-		if (store.workflows().some(w => w.state === 'scheduled' && w.sendAt && Date.parse(w.sendAt) <= now) || store.automations().some(a => a.state === 'active' && a.next && Date.parse(a.next) <= now)) {
-			try { await readOwnerCommands(store, src, cursors); store.saveCursors(cursors) } catch (e) { store.log({ event: 'controls-reread-failed', error: String(e).slice(0, 200) }) }
-		}
-		const lateAnswers = await applyAnswers(store, src, cfg, procs, true)
-		const jobsLate = lateAnswers ? await direct() + startJobs(store, cfg, procs, ['bootstrap:chats']) : 0
-		const autoSent = await dueSends(store, src, cfg, deps.probe) + await dueAutomations(store, src, cfg)
-		const nudged = await nudge(store, src, cfg)
-		// Habit suggestions wait until nothing needs a reply, and are told once (R-HAB-01, review: not a second inbox).
-		try {
-			const mark = store.probeMark()
-			if (!mark.habitsAt || Date.now() - Date.parse(mark.habitsAt) > 3_600_000) { noticeHabits(store, cfg); store.saveProbeMark({ ...store.probeMark(), habitsAt: new Date().toISOString() }) }
-			const h = store.habits().find(x => x.state === 'suggested' && !x.told)
-			if (h && !store.workflows().some(w => w.state === 'needs_human')) {
-				await say(store, src, `${MARK} Suggestion ${h.code}: ${h.text} Say "ok ${h.code}" to turn it on, "skip ${h.code}" for not now, "never ${h.code}", or "more ${h.code}" for the evidence.`)
-				store.saveHabits(store.habits().map(x => (x.code === h.code ? { ...x, told: true } : x)))
+		const { handedBack, jobsDone, jobsStarted, jobsLate, autoSent, nudged } = await phase('supervision-and-sends', async () => {
+			const handedBack = checkOpen(store, procs, procs.bootMs?.())
+			const jobsDone = await checkJobs(store, src, cfg, procs, deps.probe, jobsNow ? jobsMark : undefined)
+			saveLearned(store)
+			try { closeDead(store.root, store.machine) } catch (e) { store.log({ event: 'sessions-sweep-failed', error: String(e).slice(0, 200) }) }
+			const h = deps.history ?? historyFor(cfg)
+			try { if (!sweeping(store)) await planChats(store, h, new Date()) } catch (e) { store.log({ event: 'harvest-plan-failed', error: String(e).slice(0, 300) }) } finally { if (!deps.history) await h?.close() }
+			// A plan that could not run this time waits for the next cycle; it never falls back to one run over 50 chats.
+			const jobsStarted = await direct() + startJobs(store, cfg, procs, h?.conversations ? ['bootstrap:chats'] : [])
+			capHealth(store, cfg)
+			// A pause or stop typed while drafts were being written applies before anything goes out (review 10-20 R1d).
+			const now = Date.now()
+			if (store.workflows().some(w => w.state === 'scheduled' && w.sendAt && Date.parse(w.sendAt) <= now) || store.automations().some(a => a.state === 'active' && a.next && Date.parse(a.next) <= now)) {
+				try { await readOwnerCommands(store, src, cursors); commitCursors() } catch (e) { store.log({ event: 'controls-reread-failed', error: String(e).slice(0, 200) }) }
 			}
-		} catch (e) { store.log({ event: 'habits-failed', error: String(e).slice(0, 300) }) }
-		try { await daily(store, src, cfg) } catch (e) { store.log({ event: 'daily-failed', error: String(e).slice(0, 300) }) }
-		const up = untold()
-		if (up) {
-			store.log({ event: up.rolledBack ? 'update-rolled-back' : 'updated', ...up })
-			await say(store, src, up.rolledBack ? `${MARK} A new version (${up.to}: ${up.subject}) did not start on ${store.machine}, so it stayed on ${up.from}. ${up.rolledBack}` : `${MARK} Updated ${store.machine} to ${up.to}: ${up.subject}. Open the page again to see page changes.`)
-		}
-		const r = { commands, answers, asks, runs, nudged, ms: Date.now() - t0 }
-		const busy = store.workflows().some(w => w.state === 'scheduled') || store.jobs().some(j => j.state === 'running' || j.state === 'queued' && !(j.retry && (Date.parse(j.retry.at) > Date.now() || store.control().paused || store.control().stopped))) || store.openWindows().length > 0
-		reschedule(store, cfg, commands + answers + asks + missed + probed + due.length + runs + autoSent + handedBack + jobsEarly + jobsDone + jobsStarted + jobsNow + jobsLate > 0 || nudged || busy, t0)
-		// The read-only snapshot is best effort: it records its own health warning and never ends the tick.
-		try { writeSnapshot(store) } catch (error) { console.error('The read-only snapshot could not be written:', error) }
-		// Where an empty tick's time goes on a synced store (#27 d): store reads and writes, and sleeps while OneDrive held a file;
-		// allMs also counts the snapshot written after ms was taken.
-		const fsd = (k: keyof typeof fsTime) => Math.round(fsTime[k] - fs0[k])
-		store.log({ event: 'tick', ...r, allMs: Date.now() - t0, readMs: fsd('read'), reads: fsd('reads'), writeMs: fsd('write'), writes: fsd('writes'), waitMs: fsd('wait') })
-		return r
+			const lateAnswers = await applyAnswers(store, src, cfg, procs, true)
+			const jobsLate = lateAnswers ? await direct() + startJobs(store, cfg, procs, ['bootstrap:chats']) : 0
+			const autoSent = await dueSends(store, src, cfg, deps.probe) + await dueAutomations(store, src, cfg)
+			const nudged = await nudge(store, src, cfg)
+			return { handedBack, jobsDone, jobsStarted, jobsLate, autoSent, nudged }
+		})
+		result = await phase('summary-and-snapshot', async () => {
+			// Habit suggestions wait until nothing needs a reply, and are told once (R-HAB-01, review: not a second inbox).
+			try {
+				const mark = store.probeMark()
+				if (!mark.habitsAt || Date.now() - Date.parse(mark.habitsAt) > 3_600_000) { noticeHabits(store, cfg); store.saveProbeMark({ ...store.probeMark(), habitsAt: new Date().toISOString() }) }
+				const h = store.habits().find(x => x.state === 'suggested' && !x.told)
+				if (h && !store.workflows().some(w => w.state === 'needs_human')) {
+					await say(store, src, `${MARK} Suggestion ${h.code}: ${h.text} Say "ok ${h.code}" to turn it on, "skip ${h.code}" for not now, "never ${h.code}", or "more ${h.code}" for the evidence.`)
+					store.saveHabits(store.habits().map(x => (x.code === h.code ? { ...x, told: true } : x)))
+				}
+			} catch (e) { store.log({ event: 'habits-failed', error: String(e).slice(0, 300) }) }
+			try { await daily(store, src, cfg) } catch (e) { store.log({ event: 'daily-failed', error: String(e).slice(0, 300) }) }
+			const up = untold()
+			if (up) {
+				store.log({ event: up.rolledBack ? 'update-rolled-back' : 'updated', ...up })
+				await say(store, src, up.rolledBack ? `${MARK} A new version (${up.to}: ${up.subject}) did not start on ${store.machine}, so it stayed on ${up.from}. ${up.rolledBack}` : `${MARK} Updated ${store.machine} to ${up.to}: ${up.subject}. Open the page again to see page changes.`)
+			}
+			const r = { commands, answers, asks, runs, nudged, ms: Date.now() - t0 }
+			const busy = store.workflows().some(w => w.state === 'scheduled') || store.jobs().some(j => j.state === 'running' || j.state === 'queued' && !(j.retry && (Date.parse(j.retry.at) > Date.now() || store.control().paused || store.control().stopped))) || store.openWindows().length > 0
+			reschedule(store, cfg, commands + answers + asks + missed + probed + due.length + runs + autoSent + handedBack + jobsEarly + jobsDone + jobsStarted + jobsNow + jobsLate > 0 || nudged || busy, t0)
+			// The read-only snapshot is best effort: it records its own health warning and never ends the tick.
+			try { await phase('snapshot', () => writeSnapshot(store), { writes: false }) } catch (error) { console.error('The read-only snapshot could not be written:', error) }
+			// Where an empty tick's time goes on a synced store (#27 d): store reads and writes, and sleeps while OneDrive held a file;
+			// allMs also counts the snapshot written after ms was taken.
+			return r
+		})
+		return result
 	} finally {
-		// Every cycle that ran, even stopped or with Teams down, stamps where each item now stands for the new page (N1b).
-		try { stampPlaces(store) } catch (e) { store.log({ event: 'place-failed', error: String(e).slice(0, 300) }) }
-		// Any cycle that ran, even stopped or with Teams down, shows this machine was awake, unless it slept during the cycle.
-		const now = new Date(), awakeMs = mono() - p0, c = store.chats()
-		const slept = now.getTime() - t0 - awakeMs > 10 * 60_000 && !c.notice ? offNotice(new Date(t0 + awakeMs).toISOString(), now, store.machine, cfg.tz) : undefined
-		store.saveChats({ ...c, endAt: now.toISOString(), ...(slept ? { notice: slept } : {}) })
-		await src.close()
+		await phase('finalize', async () => {
+			// Every cycle that ran, even stopped or with Teams down, stamps where each item now stands for the new page (N1b).
+			try { stampPlaces(store) } catch (e) { store.log({ event: 'place-failed', error: String(e).slice(0, 300) }) }
+			// Any cycle that ran, even stopped or with Teams down, shows this machine was awake, unless it slept during the cycle.
+			const now = new Date(), awakeMs = mono() - p0, c = store.chats()
+			const slept = now.getTime() - t0 - awakeMs > 10 * 60_000 && !c.notice ? offNotice(new Date(t0 + awakeMs).toISOString(), now, store.machine, cfg.tz) : undefined
+			store.saveChats({ ...c, endAt: now.toISOString(), ...(slept ? { notice: slept } : {}) })
+			await src.close()
+		})
+		if (result) {
+			const fsd = (k: keyof typeof fsTime) => Math.round(fsTime[k] - fs0[k])
+			store.log({ event: 'tick', ...result, allMs: Date.now() - t0, readMs: fsd('read'), reads: fsd('reads'), stats: fsd('stats'), opens: fsd('opens'), lists: fsd('lists'), hits: fsd('hits'), writeMs: fsd('write'), writes: fsd('writes'), waitMs: fsd('wait') })
+		}
 	}
 }
 

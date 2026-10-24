@@ -3,7 +3,7 @@ import { preloadable } from './components/preloadable.ts'
 import { CLASSIC_VIEWS, NEW_VIEWS } from './data/views.ts'
 import { Button } from './components/ui/button.tsx'
 import { useInterface } from './data/interface.ts'
-import { useAction, useAppData, useCardUi, useLatestError, useLatestResult, useNowSections, usePendingCount, usePendingReceipts, useSnapshot } from './data/hooks.ts'
+import { useAction, useAppData, useCardUi, useLatestError, useLatestResult, useNowSections, usePendingReceipts, useSnapshot } from './data/hooks.ts'
 import { useHashNavigation, useNavigation } from './data/navigation.ts'
 import { NAME } from './brand.ts'
 import './foundation.css'
@@ -14,8 +14,9 @@ import { useSeen } from './data/seen.ts'
 import { useVersionUpdate } from './data/update.ts'
 import { Header } from './features/Header.tsx'
 import { ActionButton, ActionState } from './features/ActionButton.tsx'
-import { versionLabel } from './domain/version.ts'
+import { versionLabel, versionTitle } from './domain/version.ts'
 import { Problems } from './features/Problems.tsx'
+import { PageResult, PendingClicks } from './features/PageResult.tsx'
 
 const Now = preloadable(NEW_VIEWS.now)
 const Done = preloadable(NEW_VIEWS.done)
@@ -32,7 +33,7 @@ export function App() {
 function NewApp() {
 	const { error } = useInterface()
 	const { route, navigate, help, setHelp, menu, setMenu } = useNavigation()
-	const query = useAppData(), snapshot = useSnapshot(), pendingError = usePendingReceipts(), pending = usePendingCount(), result = useLatestResult()
+	const query = useAppData(), snapshot = useSnapshot(), pendingError = usePendingReceipts(), result = useLatestResult()
 	const pageUi = useCardUi('', ''), updateCheck = snapshot?.pageActionIds?.map(id => snapshot.entities.actions[id]).find(action => action.kind === 'check-update')
 	const updateResult = !!updateCheck && pageUi.lastAction === updateCheck.id && result?.submissionId === pageUi.result?.submissionId
 	const seenError = useSeen()
@@ -136,14 +137,14 @@ function NewApp() {
 			{actionError && <p role="alert" className="error">{actionError}</p>}
 			{update.available && <p role="status" className="warning">Updated to {update.available}. Your unsent edits stay here until you choose to reload. <Button variant="outline" onClick={update.reload}>Reload when ready</Button></p>}
 			{query.error && <div role="alert" className="warning"><p>Could not refresh your items: {query.error.message}. Your last view is kept.</p><Button variant="outline" onClick={() => void query.refetch()}>Try again</Button></div>}
-			{pending > 0 && <p role="status">{pending} action{pending === 1 ? '' : 's'} awaiting a saved result.</p>}
-			<div className="live-result" role={result?.refused || result?.uncertain ? 'alert' : 'status'} aria-live="polite">{!updateResult && result?.text}</div>
+			<PendingClicks experience="new" />
+			<PageResult result={updateResult ? undefined : result} experience="new" />
 			{current !== 'numbers' && <Problems />}
 			{!snapshot ? <p role="status">Loading your items...</p> : <Suspense fallback={<p role="status">Loading this view...</p>}>
 				{current === 'now' ? <Now /> : current === 'done' ? <Done /> : current === 'numbers' ? <Numbers /> : current === 'settings' ? <Settings /> : <Knowledge />}
 			</Suspense>}
 			{snapshot && current === 'now' && <footer><PageTools quiet showDetails={false} kinds={['remind-someone', 'report-problem']}>
-				{versionLabel(snapshot.version) && <span className="muted">{versionLabel(snapshot.version)}</span>}
+				{versionLabel(snapshot.version) && <span className="muted" title={versionTitle(snapshot.version)}>{versionLabel(snapshot.version)}</span>}
 				{updateCheck && <div className="update-check"><ActionButton action={updateCheck} />{pageUi.lastAction === updateCheck.id && <ActionState item={updateCheck.item} rev={updateCheck.rev} />}</div>}
 				</PageTools>{snapshot.version?.failed && <p role="alert">Update could not complete: {snapshot.version.failed}</p>}
 			</footer>}

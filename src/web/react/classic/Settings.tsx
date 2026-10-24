@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { Fragment, useEffect } from 'react'
 import { Button } from '../components/ui/button.tsx'
 import { useSetting, useSettings, useSettingsDrafts } from '../data/screens.ts'
 import { useEntities, useSnapshot } from '../data/hooks.ts'
@@ -10,6 +10,7 @@ import './tools.css'
 import { CheckNow } from '../features/CheckNow.tsx'
 import { StyleEditor } from '../features/StyleEditor.tsx'
 import { CLASSIC_LOOK, ToolsSettings } from '../features/ToolsSettings.tsx'
+import { CodeFolders } from '../features/CodeFolders.tsx'
 
 function Setting({ row }: { row: SettingsData['rows'][number] }) {
 	const state = useSetting(row), id = `ct-set-${row.key}`
@@ -42,7 +43,7 @@ export default function Settings() {
 	const sub = route.split('/')[1], current = data.rows.find(row => row.key === sub)?.section ?? (sub === 'tools' ? 'you' : sub)
 	const unsaved = new Set(data.rows.filter(row => drafts[row.key] !== undefined && drafts[row.key] !== row.value).map(row => row.advanced ? 'system' : row.section))
 	const marker = (id: SettingsData['rows'][number]['section']) => unsaved.has(id) && <span className="ct-unsaved" role="img" aria-label="Unsaved changes" />
-	const rows = (section: SettingsData['rows'][number]['section'], advanced = false) => data.rows.filter(row => row.section === section && !!row.advanced === advanced && row.kind !== 'switch').map(row => <Setting row={row} key={row.key} />)
+	const rows = (section: SettingsData['rows'][number]['section'], advanced = false) => data.rows.filter(row => row.section === section && !!row.advanced === advanced && row.kind !== 'switch').map(row => <Fragment key={row.key}><Setting row={row} />{row.key === 'repos' && data.code && <CodeFolders data={data.code} classic />}</Fragment>)
 	const switches = data.rows.filter(row => row.kind === 'switch' && !row.group)
 	const details = snapshot?.classic?.details
 	return <div className="ct-tools ct-settings"><header className="ct-tools-head"><div><h1>Settings</h1><p>Saved to the config in your storage folder, so every machine uses them from the next cycle.</p></div></header>

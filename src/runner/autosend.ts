@@ -7,6 +7,8 @@ import { send } from './apply.ts'
 import { close } from './intake.ts'
 import type { BuildProbe } from './probe.ts'
 import { holdReplyGap } from './reply-gap.ts'
+import { freshRead } from '../store/fs.ts'
+import { recordCommit } from './commit.ts'
 
 const policy = (cfg: Config) => ({ ...DEFAULT_POLICY, ...cfg.policy })
 // What the owner's rules are judged with for this item: the page's "why it waited" uses the same (#33).
@@ -18,6 +20,7 @@ export async function afterDraft(store: Store, src: Source, cfg: Config, wf: Wor
 	if (holdReplyGap(store, wf, wf.draft.text, true)) return
 	const p = policy(cfg)
 	const d = decide(wf, store.rules(), policyContext(store, cfg, wf))
+	if (d.action === 'ack') recordCommit(wf, () => store.workflow(wf.id), store.save.bind(store))
 	wf.decision = d
 	wf.held = undefined
 	if (d.action === 'ignore') return close(wf, d.reason)
@@ -39,6 +42,7 @@ export async function ackJob(store: Store, src: Source, cfg: Config, wf: Workflo
 }
 
 async function ack(store: Store, src: Source, cfg: Config, wf: Workflow, ruleId?: string) {
+	const commit = recordCommit(wf, () => store.workflow(wf.id), store.save.bind(store))
 	const p = policy(cfg)
 	if (!wf.sent && !wf.acked && !store.control().paused && !(await ownerActive(store, src))) {
 		const first = cfg.owner.name.split(/\s+/)[0]
@@ -47,7 +51,7 @@ async function ack(store: Store, src: Source, cfg: Config, wf: Workflow, ruleId?
 		if (replyGap(text)) { holdReplyGap(store, wf, text, true); store.setHealth(`ack:${wf.code}`, REPLY_BLANK); return }
 		// Marked and saved before posting: an acknowledgement goes out at most once, even if the result is lost.
 		wf.acked = true
-		store.save(wf)
+		commit()
 		const { msgId } = await src.send(wf.chat.id, text)
 		store.addSent(msgId, text)
 		store.addAuto(wf.chat.id, 'ack')
@@ -78,18 +82,27 @@ export async function ownerActive(store: Store, src: Source): Promise<boolean> {
 // Send every scheduled reply whose delay has passed, through the same pre-send checks as an owner send (R-POL-03).
 export async function dueSends(store: Store, src: Source, cfg: Config, probe?: BuildProbe): Promise<number> {
 	const due = store.workflows().filter(w => w.state === 'scheduled' && w.sendAt && Date.parse(w.sendAt) <= Date.now()).filter(w => !holdReplyGap(store, w, w.draft?.text, true))
-	for (const w of due.filter(w => w.draft?.preview)) { Object.assign(w, { state: 'needs_human', sendAt: undefined, status: 'Edited by you; waits for your ok' }); store.save(w) }
+	for (const w of due.filter(w => w.draft?.preview)) {
+		const commit = recordCommit(w, () => store.workflow(w.id), store.save.bind(store))
+		Object.assign(w, { state: 'needs_human', sendAt: undefined, status: 'Edited by you; waits for your ok' }); commit()
+	}
 	if (!due.length) return 0
 	if (await ownerActive(store, src)) {
-		for (const w of due) { w.status = 'Held: you are active in Teams'; store.save(w) }
+		for (const was of due) freshRead(() => {
+			const w = store.workflow(was.id)
+			if (w?.state === 'scheduled') { w.status = 'Held: you are active in Teams'; store.save(w) }
+		})
 		return 0
 	}
 	let n = 0
-	for (const wf of due.filter(w => w.state === 'scheduled')) {
+	for (const was of due.filter(w => w.state === 'scheduled')) {
+		const wf = freshRead(() => store.workflow(was.id))
+		if (!wf || wf.state !== 'scheduled') continue
+		const commit = recordCommit(wf, () => store.workflow(wf.id), store.save.bind(store))
 		// Rules, auto-send, limits, and chat levels are checked again at send time, so a change during the delay wins.
 		wf.shareHold = markedHold(cfg, wf.drewOn) ?? wf.shareHold
 		const d = decide(wf, store.rules(), policyContext(store, cfg, wf))
-		if (d.action !== 'send') { Object.assign(wf, { state: 'needs_human', sendAt: undefined, decision: d, status: `Not sent: ${d.reason}` }); store.save(wf); continue }
+		if (d.action !== 'send') { Object.assign(wf, { state: 'needs_human', sendAt: undefined, decision: d, status: `Not sent: ${d.reason}` }); commit(); continue }
 		try {
 			if (await send(store, src, cfg, wf, wf.draft?.text, { ruleId: d.ruleId }, probe)) { n++; store.addAuto(wf.chat.id, 'send') }
 		} catch (e) {
@@ -97,7 +110,7 @@ export async function dueSends(store: Store, src: Source, cfg: Config, probe?: B
 			Object.assign(wf, { state: 'needs_human', sendAt: undefined, status: `Not sent: ${String(e).slice(0, 120)}` })
 			store.log({ event: 'autosend-failed', workflowId: wf.id, code: wf.code, error: String(e).slice(0, 300) })
 		}
-		store.save(wf)
+		commit()
 	}
 	return n
 }

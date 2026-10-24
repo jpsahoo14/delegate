@@ -1,7 +1,7 @@
 import { Suspense, useEffect, useRef, useState } from 'react'
 import { preloadable } from '../components/preloadable.ts'
 import { CLASSIC_VIEWS } from '../data/views.ts'
-import { useAppData, useEntities, useLatestError, useLatestResult, usePendingCount, usePendingReceipts, useSnapshot } from '../data/hooks.ts'
+import { useAppData, useEntities, useLatestError, useLatestResult, usePendingReceipts, useSnapshot } from '../data/hooks.ts'
 import { useHashNavigation, useNavigation } from '../data/navigation.ts'
 import { THEME_LABEL, useInterface } from '../data/interface.ts'
 import { useData } from '../data/store.ts'
@@ -10,6 +10,7 @@ import { Button, Hint } from '../components/ui/button.tsx'
 import { chipHover } from '../domain/hover.ts'
 import { Icon } from '../components/ui/icon.tsx'
 import { ActionButton } from '../features/ActionButton.tsx'
+import { PageResult, PendingClicks } from '../features/PageResult.tsx'
 import { staticSnapshot } from '../services/api.ts'
 import { NAME } from '../brand.ts'
 import { nextCheck, when } from '../domain/time.ts'
@@ -37,7 +38,7 @@ function Snapshot() {
 
 export default function Classic() {
 	const query = useAppData(), snapshot = useSnapshot(), entities = useEntities()
-	const pendingError = usePendingReceipts(), pending = usePendingCount(), result = useLatestResult(), actionError = useLatestError()
+	const pendingError = usePendingReceipts(), result = useLatestResult(), actionError = useLatestError()
 	const { route, navigate } = useScreenNavigation(), { menu, setMenu, help, setHelp } = useNavigation()
 	const { themeChoice, error, setThemeChoice } = useInterface()
 	const seenError = useClassicSeen(), update = useVersionUpdate(), offline = useClassicOffline()
@@ -104,8 +105,8 @@ export default function Classic() {
 			{[error, pendingError, seenError, actionError].filter(Boolean).map((message, index) => <p role="alert" className="error" key={index}>{message}</p>)}
 			{query.error && <div role="alert" className="warning"><p>Offline or unable to refresh: {query.error.message}. Your last view is kept.</p><Button variant="outline" onClick={() => void query.refetch()}>Try again</Button></div>}
 			{first && screen !== 'numbers' && <section className="classic-health" aria-label="Source health"><Icon name="warn" className="classic-health-icon" /><p><strong>{first.text}</strong>{first.since && <span> Since {when(first.since)}.</span>}{health.length > 1 && <> <button className="classic-health-more" aria-expanded={healthOpen} aria-controls="classic-health-extra" onClick={() => setHealthOpen(!healthOpen)}>And {health.length - 1} more problem{health.length === 2 ? '' : 's'}.</button></>}</p>{!readOnly && first.actionIds.map(id => <ActionButton key={id} action={entities.actions[id]} />)}{health.length > 1 && <div id="classic-health-extra" className="classic-health-extra" hidden={!healthOpen}>{health.slice(1).map(row => <div key={row.id}><p><strong>{row.text}</strong>{row.since && <span> Since {when(row.since)}.</span>}</p>{!readOnly && row.actionIds.map(id => <ActionButton key={id} action={entities.actions[id]} />)}</div>)}</div>}</section>}
-			{pending > 0 && <p role="status">{pending} action{pending === 1 ? '' : 's'} awaiting a saved result.</p>}
-			<div className="live-result" role={result?.refused || result?.uncertain ? 'alert' : 'status'} aria-live="polite">{reopenedQuestion ? 'Nothing is sent yet. You will see the reply first.' : result?.text}</div>
+			<PendingClicks experience="classic" />
+			<PageResult result={result} experience="classic" override={reopenedQuestion ? 'Nothing is sent yet. You will see the reply first.' : undefined} />
 			{update.available && <p role="status" className="warning">Updated to {update.available}. Your unsent edits stay here until you choose to reload. <Button variant="outline" onClick={update.reload}>Reload when ready</Button></p>}
 			{!snapshot ? <p role="status">Loading your items...</p> : <Suspense fallback={<p role="status">Loading this view...</p>}>{screen === 'home' ? <Home /> : screen === 'focus' ? <Focus /> : screen === 'ongoing' ? <Ongoing /> : screen === 'done' ? <Done /> : screen === 'numbers' ? <Numbers /> : screen === 'settings' ? <Settings /> : screen === 'knowledge' ? <Knowledge /> : readOnly ? <Snapshot /> : <><h1>View not found</h1><Button onClick={() => navigate('home')}>Home</Button></>}</Suspense>}
 			</fieldset>

@@ -25,6 +25,16 @@ export type HostInfo = { pid: number; port: number; token: string; startedAt: st
 // hostFault: the run never reached the model through the host (#19b); the caller makes it on one process instead.
 export type HostResult = RunResult & { hostFault?: 'session' | 'no model turn' | 'tools'; warm?: boolean; requiredTools?: string[] }
 export type HostRun = { agent: Config['agent']; input: RunInput & { workflowId: string; runId: string } }
+export type HostQuick = { prompt: string; jsonSchema: Record<string, unknown>; timeoutMs: number }
+type HostSession = {
+	sendAndWait: (o: { prompt: string; responseSchema?: Record<string, unknown> }, ms?: number) => Promise<{ data?: { content?: string } } | undefined>
+	disconnect: () => Promise<void>
+	abort: () => Promise<void>
+	rpc: { tools: {
+		initializeAndValidate: () => Promise<unknown>
+		getCurrentMetadata: () => Promise<{ tools: { name: string; namespacedName?: string }[] | null }>
+	} }
+}
 export const hostFile = () => join(LOCAL_DIR, 'host.json')
 const WORKER_SERVER = 'delegate_worker'
 const REPORT_JSON = z.toJSONSchema(REPORT) as Record<string, unknown>
@@ -79,7 +89,7 @@ export async function runHost(): Promise<void> {
 	// A server skipped at start connects on first use once its retry time has passed (one the CLI serves stays with the CLI).
 	const warmOf = (name: string) => warm.get(name) ?? (hostSkips(readCatalog(name), specs.get(name)!) ? undefined : connect(name))
 	const limit = (cfg.maxParallel ?? 3) + (cfg.jobs?.parallel ?? 2)
-	let active = 0, draining = false, lastRun = Date.now(), runs = 0
+	let active = 0, draining = false, lastRun = Date.now(), runs = 0, modelReady = false
 	const serverOf = (tool: string) => [...specs.keys()].filter(n => tool.startsWith(`${n}-`)).sort((a, b) => b.length - a.length)[0]
 
 	async function run({ agent, input }: HostRun): Promise<HostResult> {
@@ -104,8 +114,8 @@ export async function runHost(): Promise<void> {
 			registered.push(name)
 		}
 		// Delegate's own worker tools run in-process, bound to this workflow and run (step 2): no worker server process per run.
-		const take = reportTaker(store, input.workflowId, input.runId)
 		const readDocument = documentReader(store)
+		const take = reportTaker(store, input.workflowId, input.runId, false, readDocument.failure)
 		const out = (o: ToolOut) => o.image ? { textResultForLlm: o.text, binaryResultsForLlm: [{ data: o.image.data, mimeType: o.image.mimeType, type: 'image' }], resultType: 'success' } : o.error ? { textResultForLlm: o.text, resultType: 'failure', error: o.text.slice(0, 300) } : o.text
 		const inProcess: Record<string, () => unknown> = {
 			submit_report: () => sdk.defineTool(`${WORKER_SERVER}-submit_report`, { description: SUBMIT_DESCRIPTION, parameters: REPORT_JSON, skipPermission: true, handler: async (args: unknown) => out(take(args)) }),
@@ -125,14 +135,7 @@ export async function runHost(): Promise<void> {
 		const config = { model: agent.model ?? (provider ? process.env.COPILOT_PROVIDER_MODEL_ID : undefined), ...(provider ? { provider } : {}), tools, availableTools: names, workingDirectory: input.cwd, additionalDirectories: input.dirs ?? [],
 			...(own ? { mcpServers: { [WORKER_SERVER]: { type: 'local', command: own.command, args: own.args, env: { ...env(), ...(own.env as Record<string, string>) }, tools: ['*'] } } } : {}),
 			onPermissionRequest, enableConfigDiscovery: false, skipCustomInstructions: true, memory: { enabled: false } }
-		let session: {
-			sendAndWait: (o: { prompt: string }, ms?: number) => Promise<{ data?: { content?: string } } | undefined>
-			disconnect: () => Promise<void>
-			rpc: { tools: {
-				initializeAndValidate: () => Promise<unknown>
-				getCurrentMetadata: () => Promise<{ tools: { name: string; namespacedName?: string }[] | null }>
-			} }
-		} | undefined
+		let session: HostSession | undefined
 		// A host fault (#19b): the session could not be opened, or the prompt never reached a model turn. The run is then made on
 		// one process instead; a model or tool error after the turn started is the run's own failure, as on that path.
 		let opened = false
@@ -157,6 +160,7 @@ export async function runHost(): Promise<void> {
 				return { exitCode: 1, ms: Date.now() - t, hostFault: 'tools', error: `The AI host could not verify required tools: ${String(e).slice(0, 300)}` }
 			}
 			const r = await session!.sendAndWait({ prompt: input.prompt }, RUN_MS)
+			modelReady = true
 			// The session log is complete once the session lets go of it.
 			await session!.disconnect().catch(() => undefined); session = undefined
 			const used = readRun('', t, process.env, sessionLog('copilot', id), Date.now()).use
@@ -167,6 +171,40 @@ export async function runHost(): Promise<void> {
 			const turned = opened && turnStarted(sessionLog('copilot', id), t)
 			return { exitCode: 1, ms: Date.now() - t, error: `The AI host could not finish the run: ${why}`, requiredTools, ...(turned ? {} : { hostFault: opened ? 'no model turn' : 'session' }) }
 		} finally { await session?.disconnect().catch(() => undefined) }
+	}
+
+	async function quick(input: HostQuick, signal: AbortSignal): Promise<unknown> {
+		const id = randomUUID(), provider = envProvider()
+		const opening: Promise<HostSession> = client.createSession({
+			sessionId: id, model: cfg.agent.model ?? process.env.COPILOT_PROVIDER_MODEL_ID,
+			...(provider ? { provider } : {}), tools: [], availableTools: [], mcpServers: {},
+			workingDirectory: tmpdir(), enableConfigDiscovery: false, skipCustomInstructions: true, memory: { enabled: false },
+			onPermissionRequest: async () => ({ kind: 'reject', feedback: 'This check has no tools or permissions.' }),
+		})
+		const fail = () => rejectAbort(signal.reason)
+		let rejectAbort: (reason: unknown) => void
+		const interrupted = new Promise<never>((_, no) => { rejectAbort = no })
+		if (signal.aborted) fail()
+		else signal.addEventListener('abort', fail, { once: true })
+		const work = (async () => {
+			const session = await opening
+			signal.throwIfAborted()
+			await session.rpc.tools.initializeAndValidate()
+			const offered = await session.rpc.tools.getCurrentMetadata()
+			if (!offered.tools || offered.tools.length) throw new Error('The quick session did not verify an empty tool set')
+			signal.throwIfAborted()
+			const result = await session.sendAndWait({ prompt: input.prompt, responseSchema: input.jsonSchema }, input.timeoutMs)
+			return z.fromJSONSchema(input.jsonSchema).parse(JSON.parse(result?.data?.content ?? ''))
+		})()
+		try { return await Promise.race([work, interrupted]) }
+		finally {
+			signal.removeEventListener('abort', fail)
+			// A late create must still be disconnected. Cleanup cannot extend the caller's five-second budget.
+			void opening.then(async session => {
+				try { if (signal.aborted) await session.abort() }
+				finally { try { await session.disconnect() } finally { await client.deleteSession(id) } }
+			}, () => undefined).catch(error => store.log({ event: 'host-quick-cleanup-failed', sessionId: id, error: String(error).slice(0, 160) }))
+		}
 	}
 
 	const token = randomUUID()
@@ -200,8 +238,32 @@ export async function runHost(): Promise<void> {
 	const body = (req: IncomingMessage) => new Promise<string>((ok, no) => { let s = ''; req.on('data', c => (s += c)); req.on('end', () => ok(s)); req.on('error', no) })
 	const server = createServer(async (req, res) => {
 		if (req.headers.authorization !== `Bearer ${token}`) return reply(res, 401, { error: 'no' })
-		if (req.method === 'GET' && req.url === '/ping') return reply(res, 200, { ok: true, pid: process.pid, active, runs, draining })
+		if (req.method === 'GET' && req.url === '/ping') return reply(res, 200, { ok: true, pid: process.pid, active, runs, draining, warm: modelReady })
 		if (req.method === 'POST' && req.url === '/drain') { draining = true; reply(res, 200, { ok: true }); return maybeExit() }
+		if (req.method === 'POST' && req.url === '/quick') {
+			if (draining || !modelReady) return reply(res, 503, { error: 'not warm' })
+			if (active >= limit) return reply(res, 429, { error: 'busy' })
+			const controller = new AbortController(), t = Date.now()
+			const disconnected = () => { if (!res.writableFinished) controller.abort(new Error('the quick caller disconnected')) }
+			res.once('close', disconnected)
+			let timer: ReturnType<typeof setTimeout> | undefined
+			active++; lastRun = t
+			try {
+				const input = z.object({ prompt: z.string().min(1), jsonSchema: z.record(z.string(), z.unknown()), timeoutMs: z.number().positive().max(5000) }).parse(JSON.parse(await body(req)))
+				timer = setTimeout(() => controller.abort(new Error('the quick check timed out')), input.timeoutMs)
+				const result = await quick(input, controller.signal)
+				store.log({ event: 'host-quick', side: 'host', result: 'ok', ms: Date.now() - t })
+				if (!res.destroyed) reply(res, 200, { result })
+			} catch (error) {
+				store.log({ event: 'host-quick', side: 'host', result: controller.signal.aborted ? 'timeout' : 'error', kind: error instanceof Error ? error.name : 'unknown', ms: Date.now() - t })
+				if (!res.destroyed) reply(res, 503, { error: 'the quick check was unavailable' })
+			} finally {
+				if (timer) clearTimeout(timer)
+				res.removeListener('close', disconnected)
+				active--; lastRun = Date.now(); maybeExit()
+			}
+			return
+		}
 		// An approved change made on the warm connection (#7E, design §6). Not known here: the caller uses its own client instead.
 		if (req.method === 'POST' && req.url === '/call') {
 			const { server: name, tool, args } = JSON.parse(await body(req)) as { server: string; tool: string; args: Record<string, unknown> }

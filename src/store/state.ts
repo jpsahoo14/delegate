@@ -16,6 +16,7 @@ import { VERSION } from '../paths.ts'
 import { lessonOf, type Lesson } from './feedback.ts'
 import { CMD } from '../brand.ts'
 import { scrubDeep } from '../core/secrets.ts'
+import { visibleCloneTodos } from '../runner/repos.ts'
 import type { AgentHold } from '../core/agent-failure.ts'
 
 export const localDay = (d = new Date()) => d.toLocaleDateString('sv')
@@ -50,6 +51,12 @@ type Lease = { machine: string; at: string }
 export type OpenWindow = { machine: string; pid: number; runId: string; since: string; closed?: boolean; takenBack?: boolean }
 export type Health = Record<string, { text: string; since: string; machine: string }>
 export type Experience = 'new' | 'classic'
+// What a page click came to, decided from the item when it completes (#47, PE 19:30): the page builds its line from this and the
+// projection, never from the chat wording in `text`. send: the click was a Send. action: the kind of action clicked ("dismiss",
+// "later"…), for its own past tense (PM 19:12); count: how many to-dos it marked; watch: what it now watches; stale: refused because
+// the item changed since the owner looked.
+export type ReceiptOutcome = { kind: 'sent' | 'held' | 'refused' | 'queued' | 'done' | 'failed'; reasons?: string[]; send?: true
+	action?: string; count?: number; watch?: { target: string; until?: string }; stale?: true }
 // experience: New or Classic inside the React page, kept beside ui so an older build still reads ui as before.
 export type UiChoice = { ui: 'new' | 'classic' | 'react'; experience?: Experience; at?: string; tried?: string; noted?: true }
 // The experience to open: the saved one, else Classic for a machine that chose the old Classic, else New.
@@ -61,6 +68,10 @@ export type PageSubmission = {
 	refused?: boolean
 	uncertain?: boolean
 	intent?: import('../web/react/domain/contracts.ts').Intent
+	// Captured at completion: what happened, the asker's first name and the chat's name, for an item that is gone by the time it shows.
+	outcome?: ReceiptOutcome
+	who?: string
+	chat?: string
 }
 export type Control = { paused: boolean; stopped: boolean; autoSend?: boolean; at?: string }
 type Notify = { lastNudgeAt?: string; previews?: Record<string, Preview | Preview[]>; snapshot?: string; summaryDay?: string; sweepDay?: string }
@@ -149,6 +160,12 @@ export class Store {
 	save(wf: Workflow, touch = true, also?: Record<string, unknown>) {
 		const before = this.workflow(wf.id)?.state
 		if (touch) wf.updatedAt = new Date().toISOString()
+		// A clone task that no longer applies (its clone is cached here, or the review reads the repo through Azure DevOps) goes with
+		// this save, through the one exact-template helper the runner and the card use (#44(1), 3e2). It never scans for clones.
+		if (wf.todos?.length) {
+			const todos = visibleCloneTodos(this.config(), wf, wf.job ? this.job(wf.job) : undefined, this.machine)
+			if (todos?.length !== wf.todos.length) wf.todos = todos
+		}
 		this.w(this.p('state', 'workflows', `${wf.id}.json`), wf)
 		this.noteCode(wf)
 		if (before !== wf.state) this.log({ event: 'state', workflowId: wf.id, code: wf.code, from: before ?? 'new', to: wf.state, status: wf.status?.slice(0, 120), ...(wf.state === 'done' && wf.closedBy ? { closedBy: wf.closedBy } : {}), ...also })
@@ -439,13 +456,18 @@ export class Store {
 	}
 	completePageSubmission(answer: Answer, text?: string, refused = false): void {
 		if (!answer.pageSubmissionId) return
+		const wf = answer.code ? this.byCode(answer.code) : undefined
 		this.updatePageSubmission(answer.pageSubmissionId, record => {
 			if (!record) { this.log({ event: 'page-receipt-missing', id: answer.id, code: answer.code }); return undefined }
 			const detail = text ? record.processed ? record.text === text || record.text.endsWith(` ${text}`) ? record.text : `${record.text} ${text}` : text :
 				record.processed ? record.text : 'No result detail was recorded. Open the item to verify what happened.'
-			return mergeSubmission(record, { ...record, phase: 'queued', accepted: true, ids: [answer.id], processed: true, text: detail, refused: !!record.refused || refused }, true)
+			const merged = mergeSubmission(record, { ...record, phase: 'queued', accepted: true, ids: [answer.id], processed: true, text: detail, refused: !!record.refused || refused }, true)
+			const count = answer.page?.todoIds?.length ?? answer.todos?.length
+			return withReceiptFacts(this, merged, { ...outcomeOf(wf, answer, !!merged.refused), ...(count ? { count } : {}) })
 		})
 	}
+	// The same facts for a click the page server decided at once (a stale click refused, a watch started, a terminal taken back).
+	receiptFacts(record: PageSubmission, outcome: ReceiptOutcome): PageSubmission { return withReceiptFacts(this, record, outcome) }
 	answers(): { file: string; answer: Answer }[] {
 		return listJson(this.p('state', 'answers')).map(file => ({ file, answer: readJson<Answer>(file, null as never) }))
 	}
@@ -567,6 +589,25 @@ export class Store {
 }
 
 const submissionRank = (r: PageSubmission) => r.uncertain ? 4 : r.refused || r.phase === 'refused' ? 3 : r.processed ? 2 : r.accepted || r.phase === 'queued' ? 1 : 0
+// From the item as the runner left it, never from the reply text. The runner completes a submission more than once (its reply,
+// then once more when the answer is done); each time is decided again, so the last, with the item saved, is the one kept.
+function outcomeOf(wf: Workflow | undefined, a: Answer, refused: boolean): ReceiptOutcome {
+	const send = a.verb === 'ok' || a.verb === 'send' || !!a.sendReview || a.verb === 'answer' && /^send anyway[.!]?$/i.test(a.text?.trim() ?? '')
+	if (send && wf?.sent && Date.parse(wf.sent.at) >= Date.parse(a.at)) return { kind: 'sent' }
+	const held = wf?.reasons ?? (wf?.reason ? [wf.reason] : [])
+	if (send && held.length && wf?.draft && wf.state === 'needs_human') return { kind: 'held', reasons: held.map(r => r.kind), send: true }
+	if (refused) return send ? { kind: 'refused', send: true } : { kind: 'refused' }
+	if (wf && (wf.state === 'running' || wf.state === 'waiting_on_task')) return { kind: 'queued' }
+	return { kind: 'done' }
+}
+// Who and where a receipt is about, captured when it completes, plus the kind of action clicked (the last part of its id) and, for a
+// watch, what it now watches. A 1:1 keeps no chat name: there the person is the chat.
+function withReceiptFacts(store: Store, record: PageSubmission, outcome: ReceiptOutcome): PageSubmission {
+	const wf = store.byCode(record.item), action = record.intent?.action.split('/').at(-1)
+	const watching = action === 'watch-fyi' && outcome.kind === 'done' ? (wf?.watchedAs ? store.byCode(wf.watchedAs) : undefined)?.follow ?? wf?.follow : undefined
+	return { ...record, outcome: { ...outcome, ...(action ? { action } : {}), ...(watching?.target ? { watch: { target: watching.target, ...(watching.until ? { until: watching.until } : {}) } } : {}) },
+		...(wf?.asker?.name ? { who: wf.asker.name.split(/\s+/)[0] } : {}), ...(wf?.chat.group && wf.chat.name ? { chat: wf.chat.name } : {}) }
+}
 function mergeSubmission(current: PageSubmission | undefined, next: PageSubmission, detail = false): PageSubmission {
 	if (!current) return next
 	if (current.fingerprint !== next.fingerprint || current.answerId !== next.answerId || current.item !== next.item || current.rev !== next.rev) throw new Error('That submission identity was already used for a different action.')

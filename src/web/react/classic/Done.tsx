@@ -69,6 +69,7 @@ export function ActivityRow({ supplied, first = false, last = false }: { supplie
 		{row.text && !inlineUndo && !undoFacts && !catchup ? <details className="classic-activity-expand" open={expanded} onToggle={event => { if (open !== event.currentTarget.open) setOpen(event.currentTarget.open) }}><summary className="classic-activity-row">{header}<Icon name="right" /></summary>
 			<MessageBubble text={row.text} teams={row.teams} open={!!ui.folds?.sentBody} onToggle={value => fold('sentBody', value)} />
 			<div className="classic-card classic-history">
+				{row.checks?.map((check, index) => <p key={index} className="classic-activity-meta classic-check">{check}</p>)}
 				{row.why && <section className="classic-card-section classic-why-section"><ClassicWhy why={row.why} sourceIds={row.sourceIds} entities={entities} name={person.name} open={!!ui.folds?.why} onToggle={value => fold('why', value)} /></section>}
 				{actions.some(action => marks.some(mark => mark.kind === action.kind)) && <section className="classic-card-section classic-feedback">
 					{!mark ? <Button variant="ghost" aria-label={person?.name ? `Tell ${NAME} the reply to ${person.name.split(' ')[0]} was not right` : 'Not right?'} disabled={blocked || busy} onClick={() => edit({ feedbackKind: 'wrong' })}>Not right?</Button> : <fieldset disabled={blocked || busy}><legend className="sr-only">What was not right</legend>
@@ -80,7 +81,7 @@ export function ActivityRow({ supplied, first = false, last = false }: { supplie
 				</section>}
 				{askActions.some(action => action.kind === 'ask') || notes.length ? <Conversation code={row.code} rev={rev} ui={ui} edit={edit} notes={notes} entities={noteEntities} actions={askActions} blocked={blocked || newer} sent allowUse={false} /> : null}
 			</div>
-		</details> : <div className="classic-activity-row">{header}</div>}
+		</details> : <><div className="classic-activity-row">{header}</div>{row.checks?.map((check, index) => <p key={index} className="classic-activity-meta classic-check">{check}</p>)}</>}
 		{(newer || blocked) && <div className="classic-activity-notice" role="status">This activity changed. Your text is kept. <Button variant="outline" disabled={busy} onClick={showLatest}>Review current version</Button></div>}
 		{watching && !row.watchedAs && <fieldset className="classic-watch-form" disabled={blocked || busy}><legend>Watch this</legend>
 			<Field code={row.code} rev={rev} field="watchText" label="Watch" value={target} edit={edit} singleLine />

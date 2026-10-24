@@ -1,16 +1,18 @@
 import { crc32, inflateRawSync } from 'node:zlib'
 import { posix } from 'node:path'
-import { McpClient } from './mcp-client.ts'
+import { McpBytesError, McpClient, MCP_BYTE_LIMIT } from './mcp-client.ts'
 
 export type DocumentRef = { url: string; driveId?: never; itemId?: never } | { driveId: string; itemId: string; url?: never }
 export type Doc = { name: string; modified: string; by: string; text: string; headings: { at: number; text: string }[]; ref: DocumentRef; url?: string; tool: string; size: number }
 export interface Documents {
-	read(ref: DocumentRef): Promise<Doc | string>
+	read(ref: DocumentRef, observe?: (diagnostic: DocumentDiagnostic) => void): Promise<Doc | string>
 	close(): Promise<void>
 }
 
-export const DOWNLOAD_LIMIT = 25 * 1024 * 1024, PAGE_LIMIT = 30_000
+export type DocumentDiagnostic = { step: 'metadata' | 'download' | 'decode-base64' | 'unzip' | 'office-parse'; class: string; contentTypes: string[]; bytes: number; via: 'tool' | 'downloadUrl' }
+export const DOWNLOAD_LIMIT = MCP_BYTE_LIMIT, PAGE_LIMIT = 30_000
 const EXPANDED_LIMIT = 100 * 1024 * 1024
+export const hardDocumentFailure = (reason: string) => /^Couldn't open .+?: (?:no access|too much content to open|not a Word, PowerPoint or Excel file|too large to open(?: \([^)\r\n]*\))?)$/i.test(reason)
 
 // Bound both the downloaded archive and its expansion; an Office file is an untrusted ZIP.
 export function unzip(buf: Buffer): Map<string, Buffer> {
@@ -127,14 +129,60 @@ export function documentPage(doc: Doc, page = 1): string {
 	return Number.isInteger(page) && page >= 1 && page <= pages.length ? pages[page - 1] : `No such page. ${doc.name} has ${pages.length} pages.`
 }
 
-type Metadata = { id?: string; name?: string; size?: number; webUrl?: string; lastModifiedDateTime?: string; lastModifiedBy?: { user?: { displayName?: string } }; parentReference?: { driveId?: string } }
+type Metadata = { id?: string; name?: string; size?: number; webUrl?: string; lastModifiedDateTime?: string; lastModifiedBy?: { user?: { displayName?: string } }; parentReference?: { driveId?: string }; '@content.downloadUrl'?: string; '@content.downloadUrlNoAuth'?: string }
 const tooLarge = (size: number) => `too large to open (${Math.ceil(size / 1024 / 1024)} MB)`
+
+const allowedDownload = (url: URL) => url.protocol === 'https:' && !url.username && !url.password && (!url.port || url.port === '443')
+	&& ['.sharepoint.com', '.sharepoint-df.com', '.svc.ms'].some(suffix => url.hostname.endsWith(suffix))
+function downloadTarget(link?: string): URL | undefined {
+	if (!link) return
+	try { const url = new URL(link); return allowedDownload(url) ? url : undefined } catch { return undefined }
+}
+async function downloadFile(url: URL): Promise<Buffer> {
+	const origin = url.origin, signal = AbortSignal.timeout(30_000)
+	for (let redirects = 0; redirects <= 3; redirects++) {
+		const response = await fetch(url, { redirect: 'manual', credentials: 'omit', signal })
+		if (response.status >= 300 && response.status < 400) {
+			await response.body?.cancel()
+			const location = response.headers.get('location')
+			if (!location) throw new McpBytesError('download', 'redirect', [])
+			url = new URL(location, url)
+			if (!allowedDownload(url) || url.origin !== origin) throw new McpBytesError('download', 'blocked-redirect', [])
+			continue
+		}
+		if (!response.ok || !response.body) {
+			await response.body?.cancel()
+			throw new McpBytesError('download', response.status === 401 || response.status === 403 ? 'no-access' : 'http', [])
+		}
+		if (Number(response.headers.get('content-length')) > DOWNLOAD_LIMIT) {
+			await response.body.cancel()
+			throw new McpBytesError('download', 'too-large', [])
+		}
+		const reader = response.body.getReader(), chunks: Uint8Array[] = []
+		let size = 0
+		try {
+			for (;;) {
+				const next = await reader.read()
+				if (next.done) return Buffer.concat(chunks, size)
+				size += next.value.byteLength
+				if (size > DOWNLOAD_LIMIT) { await reader.cancel(); throw new McpBytesError('download', 'too-large', [], size) }
+				chunks.push(next.value)
+			}
+		} finally { reader.releaseLock() }
+	}
+	throw new McpBytesError('download', 'redirect-limit', [])
+}
 
 export class SharePointDocs implements Documents {
 	private mcp: McpClient
 	constructor(command: string[], mcp = new McpClient(command)) { this.mcp = mcp }
-	async read(ref: DocumentRef): Promise<Doc | string> {
+	async read(ref: DocumentRef, observe?: (diagnostic: DocumentDiagnostic) => void): Promise<Doc | string> {
 		let name = 'this document'
+		const diagnostic: DocumentDiagnostic = { step: 'metadata', class: 'none', contentTypes: [], bytes: 0, via: 'tool' }
+		const fail = (reason: string, kind: string) => {
+			observe?.({ ...diagnostic, class: kind })
+			return `Couldn't open ${name}: ${reason}`
+		}
 		try {
 			if (ref.url) {
 				const part = new URL(ref.url).pathname.split('/').at(-1) ?? ''
@@ -143,38 +191,46 @@ export class SharePointDocs implements Documents {
 			const tools = (await this.mcp.listAll()).tools
 			const names = ref.url ? ['getFileOrFolderMetadataByUrl', 'getFileMetadataByUrl'] : ['getFileOrFolderMetadata', 'getFileMetadata']
 			const info = names.map(name => tools.find(t => t.name === name)).find(t => t !== undefined)
-			if (!info) return ref.url ? `Couldn't open ${name}: the document server cannot read its metadata` : "Couldn't open this document: the document server can't look it up by id"
+			if (!info) return fail(ref.url ? 'the document server cannot read its metadata' : "the document server can't look it up by id", 'metadata-unavailable')
 			const props = (info.inputSchema?.properties ?? {}) as Record<string, unknown>
 			const urlKey = ['fileOrFolderUrl', 'fileUrl', 'url'].find(key => key in props) ?? 'url'
 			const idKey = ['fileOrFolderId', 'fileId'].find(key => key in props) ?? 'fileId'
 			const args = ref.url ? { [urlKey]: ref.url } : { documentLibraryId: ref.driveId, [idKey]: ref.itemId }
 			const hit = await this.mcp.call<Metadata>(info.name, args)
 			name = hit.name ?? name
-			if (typeof hit.size !== 'number' || !Number.isFinite(hit.size) || hit.size < 0) return `Couldn't open ${name}: its download size could not be checked`
-			if (hit.size > DOWNLOAD_LIMIT) return `Couldn't open ${name}: ${tooLarge(hit.size)}`
-			if (!/\.(docx|pptx|xlsx)$/i.test(name)) return `Couldn't open ${name}: not a Word, PowerPoint or Excel file`
+			if (typeof hit.size !== 'number' || !Number.isFinite(hit.size) || hit.size < 0) return fail('its download size could not be checked', 'size-unavailable')
+			if (hit.size > DOWNLOAD_LIMIT) return fail(tooLarge(hit.size), 'too-large')
+			if (!/\.(docx|pptx|xlsx)$/i.test(name)) return fail('not a Word, PowerPoint or Excel file', 'unsupported-format')
 			const driveId = hit.parentReference?.driveId ?? ref.driveId, itemId = hit.id ?? ref.itemId
-			if (!driveId || !itemId) return `Couldn't open ${name}: the document server did not identify the file`
-			const parts = await this.mcp.texts('readSmallBinaryFile', { documentLibraryId: driveId, fileId: itemId })
-			let b64 = parts.join('').trim()
-			if (b64.startsWith('{')) {
-				const value: unknown = JSON.parse(b64)
-				if (typeof value !== 'object' || !value) throw new Error('No file bytes')
-				const data = value as Record<string, unknown>
-				b64 = String(data.contentBytes ?? data.base64 ?? '')
+			if (!driveId || !itemId) return fail('the document server did not identify the file', 'missing-id')
+			diagnostic.step = 'download'
+			let bytes: Buffer
+			try {
+				const result = await this.mcp.bytes('readSmallBinaryFile', { documentLibraryId: driveId, fileId: itemId })
+				bytes = result.bytes; diagnostic.contentTypes = result.contentTypes
+			} catch (error) {
+				if (error instanceof McpBytesError) diagnostic.contentTypes = error.contentTypes
+				const link = downloadTarget(hit['@content.downloadUrlNoAuth']) ?? downloadTarget(hit['@content.downloadUrl'])
+				if (!link || error instanceof McpBytesError && error.kind === 'ambiguous') throw error
+				diagnostic.via = 'downloadUrl'
+				bytes = await downloadFile(link)
 			}
-			if (b64.length > Math.ceil(DOWNLOAD_LIMIT / 3) * 4 + 1024) return `Couldn't open ${name}: too large to open (over 25 MB)`
-			b64 = b64.replace(/\s/g, '')
-			if (!b64 || b64.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(b64)) throw new Error('No file bytes')
-			const bytes = Buffer.from(b64, 'base64')
-			if (bytes.length > DOWNLOAD_LIMIT) return `Couldn't open ${name}: ${tooLarge(bytes.length)}`
-			return { name, modified: hit.lastModifiedDateTime ?? '', by: hit.lastModifiedBy?.user?.displayName ?? '', ...officeText(unzip(bytes)), ref: { driveId, itemId }, url: hit.webUrl ?? ref.url, tool: info.name, size: bytes.length }
+			diagnostic.bytes = bytes.length
+			diagnostic.step = 'unzip'
+			if (!bytes.subarray(0, 4).equals(Buffer.from([0x50, 0x4b, 0x03, 0x04]))) throw new Error('Not an Office file')
+			const files = unzip(bytes)
+			diagnostic.step = 'office-parse'
+			const contents = officeText(files)
+			observe?.({ ...diagnostic })
+			return { name, modified: hit.lastModifiedDateTime ?? '', by: hit.lastModifiedBy?.user?.displayName ?? '', ...contents, ref: { driveId, itemId }, url: hit.webUrl ?? ref.url, tool: info.name, size: bytes.length }
 		} catch (e) {
+			if (e instanceof McpBytesError) { diagnostic.step = e.step; diagnostic.bytes = e.bytes || diagnostic.bytes }
 			const why = String(e)
-			if (/\b40[13]\b|forbidden|access.?denied|unauthori[sz]ed/i.test(why)) return `Couldn't open ${name}: no access`
-			if (/Too much content|maxOutputLength|buffer larger/i.test(why)) return `Couldn't open ${name}: too much content to open`
-			if (/too large|\b413\b|exceeds? (?:the )?(?:maximum )?(?:binary |file )?size/i.test(why)) return `Couldn't open ${name}: too large to open (document server limit)`
-			return `Couldn't open ${name}: the document could not be downloaded or decoded`
+			const kind = e instanceof McpBytesError ? e.kind : e instanceof Error ? e.name : 'unknown'
+			if (kind === 'no-access' || /\b40[13]\b|forbidden|access.?denied|unauthori[sz]ed/i.test(why)) return fail('no access', 'no-access')
+			if (/Too much content|maxOutputLength|buffer larger/i.test(why)) return fail('too much content to open', 'expansion-limit')
+			if (kind === 'too-large' || /too large|\b413\b|exceeds? (?:the )?(?:maximum )?(?:binary |file )?size/i.test(why)) return fail('too large to open (document server limit)', 'too-large')
+			return fail(diagnostic.step === 'metadata' || diagnostic.step === 'download' ? "couldn't download it" : "couldn't read its contents", kind)
 		}
 	}
 	close() { return this.mcp.close() }

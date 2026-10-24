@@ -18,7 +18,7 @@ export function blockerOf(b: Blocker | undefined): Blocker {
 }
 
 export function planRetry(prev: Retry | undefined, raw: Blocker | undefined, now = Date.now()): Plan {
-	if (raw && /^couldn't open .+: (?:no access|too large to open|too much content to open|not a Word, PowerPoint or Excel file)/i.test(raw.why)) return { stop: `Blocked: ${raw.why}` }
+	if (raw?.documentFailure === true) return { stop: `Blocked: ${raw.why}` }
 	const b = blockerOf(raw)
 	const tried = [...new Set([...(prev?.tried ?? []), ...b.tried])]
 	const said = `${b.why}${tried.length ? `. Tried: ${tried.join('; ')}` : ''}`

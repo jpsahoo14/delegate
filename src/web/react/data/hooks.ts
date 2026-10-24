@@ -136,6 +136,7 @@ export function useShowLatest(code: string) {
 function complete(result: Receipt): void {
 	const state = useData.getState()
 	forgetSubmission(result.submissionId)
+	busyPolls.delete(result.submissionId)
 	if (state.byRevision[revisionKey(result.item, result.rev)]?.pending?.submissionId !== result.submissionId) return
 	const form = state.byRevision[revisionKey(result.item, result.rev)]?.submittedForm
 	const consumed = result.accepted && !result.refused && !result.uncertain && !!form && consumePageForm(form)
@@ -158,11 +159,16 @@ const NOT_SAVED = "Not saved. Your click didn't reach Delegate; try again."
 const UNREACHED = 'Your click may not have reached Delegate. Check saved result sends it once more; it is never done twice.'
 const WAITING = { waiting: true } as const
 const replays = new Map<string, { n: number; late?: boolean; forced?: boolean }>()
+// Polls in a row that found the server still working (202) or did not reach it: 2 s, 4 s, 8 s, then every 15 s; any answer
+// starts again at 2 s (#27 poll). A 404 is an answer, so #42's replay and its 10-minute release are never held back by this.
+const busyPolls = new Map<string, number>()
+const BACKOFF = [1, 2, 4, 7.5]
+const pollMs = (id: string) => (window.DELEGATE_POLL_MS ?? 2000) * BACKOFF[Math.min(busyPolls.get(id) ?? 0, BACKOFF.length - 1)]
 // When this page first saw each restored click: the age of one saved without its time is counted from then.
 const firstSeen = new Map<string, number>()
-function forceReplay(id: string) { replays.set(id, { ...(replays.get(id) ?? { n: 0 }), forced: true }) }
+function forceReplay(id: string) { replays.set(id, { ...(replays.get(id) ?? { n: 0 }), forced: true }); busyPolls.delete(id) }
 function release(saved: Pending, text: string) {
-	forgetSubmission(saved.submissionId); replays.delete(saved.submissionId); firstSeen.delete(saved.submissionId)
+	forgetSubmission(saved.submissionId); replays.delete(saved.submissionId); firstSeen.delete(saved.submissionId); busyPolls.delete(saved.submissionId)
 	const state = useData.getState()
 	if (state.byRevision[revisionKey(saved.item, saved.rev)]?.pending?.submissionId === saved.submissionId) state.edit(saved.item, saved.rev, { pending: undefined, error: text })
 }
@@ -212,11 +218,14 @@ export function usePendingReceipts() {
 	const results = useQueries({ queries: pending.map(entry => ({
 		queryKey: ['receipt', entry.submissionId],
 		queryFn: async (): Promise<Receipt | typeof WAITING> => {
-			const known = await receiptState(entry.submissionId)
-			const result = 'receipt' in known ? known.receipt : 'working' in known ? WAITING : await replay(entry.submissionId, entry.phase)
+			// A busy server (202) or a lost poll is not a failure: it is checked again later, slower each time (#27 poll, PE 19:30 #47).
+			const known = await receiptState(entry.submissionId).catch(error => { if (error instanceof ApiError) throw error; return undefined })
+			if (!known || 'working' in known) { busyPolls.set(entry.submissionId, (busyPolls.get(entry.submissionId) ?? 0) + 1); return WAITING }
+			busyPolls.delete(entry.submissionId)
+			const result = 'receipt' in known ? known.receipt : await replay(entry.submissionId, entry.phase)
 			if ('submissionId' in result && (result.submissionId !== entry.submissionId || revisionKey(result.item, result.rev) !== entry.key)) throw new Error('The saved result does not match this action. Nothing will be retried.')
 			return result
-		}, retry: false, refetchInterval: window.DELEGATE_POLL_MS ?? 2000,
+		}, retry: false, refetchInterval: () => pollMs(entry.submissionId),
 	})) })
 	useEffect(() => {
 		for (const result of results) if (result.data && 'submissionId' in result.data) {

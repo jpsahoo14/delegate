@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { isAbsolute, join, resolve } from 'node:path'
-import type { Config } from '../core/types.ts'
+import type { Config, Job, Workflow } from '../core/types.ts'
 import { LOCAL_DIR } from '../store/state.ts'
 import { assertTestSafe, readJson, writeJson } from '../store/fs.ts'
 
@@ -10,9 +10,9 @@ import { assertTestSafe, readJson, writeJson } from '../store/fs.ts'
 // "dev.azure.com/<org>/<project>/<repo>" or "github.com/<owner>/<repo>", in lower case.
 export function remoteOf(s?: string): string | undefined {
 	const t = (s ?? '').trim()
-	const ado = /^(?:https?:\/\/)?(?:[^@/\s]+@)?dev\.azure\.com\/([^/\s]+)\/([^/\s]+)\/_git\/([^/\s?#]+)/i.exec(t)
-		?? /^(?:https?:\/\/)?(?:[^@/\s]+@)?([\w-]+)\.visualstudio\.com\/(?:DefaultCollection\/)?([^/\s]+)\/_git\/([^/\s?#]+)/i.exec(t)
-		?? /^(?:[^@\s]+@)?(?:ssh\.dev\.azure\.com|vs-ssh\.visualstudio\.com):v3\/([^/\s]+)\/([^/\s]+)\/([^/\s?#]+)/i.exec(t)
+	const ado = /^(?:https?:\/\/)?(?:[^@/\s]+@)?dev\.azure\.com\/([^/\s]+)\/([^/\s]+)\/_git\/(?:_(?:full|optimized)\/)?([^/\s?#]+)/i.exec(t)
+		?? /^(?:https?:\/\/)?(?:[^@/\s]+@)?([\w-]+)\.visualstudio\.com\/(?:DefaultCollection\/)?([^/\s]+)\/_git\/(?:_(?:full|optimized)\/)?([^/\s?#]+)/i.exec(t)
+		?? /^(?:[^@\s]+@)?(?:ssh\.dev\.azure\.com|vs-ssh\.visualstudio\.com):v3\/([^/\s]+)\/([^/\s]+)\/(?:_(?:full|optimized)\/)?([^/\s?#]+)/i.exec(t)
 	if (ado) return `dev.azure.com/${ado.slice(1, 4).map(p => decodeURIComponent(p).replace(/\.git$/i, '')).join('/')}`.toLowerCase()
 	const gh = /^(?:https?:\/\/|git@)github\.com[/:]([^/\s]+)\/([^/\s?#]+)/i.exec(t)
 	return gh ? `github.com/${gh[1]}/${gh[2].replace(/\.git$/i, '')}`.toLowerCase() : undefined
@@ -44,9 +44,14 @@ export function gitInfo(dir: string): { remote?: string; branch?: string } | und
 	return { remote: remoteOf(url), branch }
 }
 
-type Clones = { code?: string[]; clones?: Record<string, string[]>; scannedAt?: string }
+export type Clones = { code?: string[]; clones?: Record<string, string[]>; scannedAt?: string }
 const LOCAL = () => join(LOCAL_DIR, 'local.json')
-export const localClones = (): Clones => readJson<Clones>(LOCAL(), {})
+export function localClones(): Clones {
+	const data = readJson<Clones>(LOCAL(), {})
+	const entries = Object.entries(data.clones ?? {})
+	const valid = entries.filter(([remote]) => !/\/_(?:full|optimized)$/i.test(remote))
+	return entries.length === valid.length ? data : { ...data, clones: Object.fromEntries(valid), scannedAt: undefined }
+}
 // Only these keys are written; the rest of local.json (the storage root, the machine) stays as it is.
 function saveClones(c: Clones) {
 	assertTestSafe(LOCAL_DIR)
@@ -54,12 +59,13 @@ function saveClones(c: Clones) {
 }
 
 // The owner names where this machine keeps code; the next lookup scans there.
-export const saveCodeFolders = (code: string[]) => saveClones({ code, scannedAt: undefined })
+export const saveCodeFolders = (code?: string[]) => saveClones({ code, scannedAt: undefined })
+export const requestCloneScan = () => saveClones({ scannedAt: undefined })
 
 // Where the owner keeps code on this machine: the folders in local.json, else the usual places that exist.
 export function codeFolders(home = homedir()): string[] {
 	const own = localClones().code
-	if (own?.length) return own
+	if (own) return own
 	// A test never scans the machine's own code folders.
 	if (process.env.NODE_TEST_CONTEXT) return []
 	const guesses = [['work', 'sourceCode'], ['source', 'repos'], ['src'], ['repos'], ['code'], ['dev'], ['git'], ['work']].map(p => join(home, ...p))
@@ -83,6 +89,12 @@ export function scanClones(folders: string[], depth = 2): Record<string, string[
 }
 
 const RESCAN_MS = 60 * 60_000
+export function scanCodeFolders(now = Date.now(), onlyRequested = false): boolean {
+	const was = localClones()
+	if (was.scannedAt && (onlyRequested || now - Date.parse(was.scannedAt) < RESCAN_MS)) return false
+	saveClones({ clones: scanClones(codeFolders()), scannedAt: new Date(now).toISOString() })
+	return true
+}
 // The clone of a remote on this machine. Several clones: the one on the PR's source branch wins. None: a rescan at most once an hour.
 export function cloneFor(remote: string, branch?: string, now = Date.now()): string | undefined {
 	const want = branch?.replace(/^refs\/heads\//, '')
@@ -92,13 +104,22 @@ export function cloneFor(remote: string, branch?: string, now = Date.now()): str
 	}
 	const was = localClones()
 	const hit = pick(was.clones?.[remote])
-	if (hit) return hit
+	if (hit && was.scannedAt) return hit
 	if (was.scannedAt && now - Date.parse(was.scannedAt) < RESCAN_MS) return undefined
-	const clones = scanClones(codeFolders())
-	saveClones({ clones, scannedAt: new Date(now).toISOString() })
-	return pick(clones[remote])
+	scanCodeFolders(now)
+	return pick(localClones().clones?.[remote])
 }
 
-// The to-do a missing clone becomes: the job still runs, reading the repo through Azure DevOps (eng-owned-work.md §d).
+// Only work that actually needs a local test/build checkout gets this task.
 export const cloneTodo = (cfg: Config, remote: string, machine: string) => `Clone ${repoName(cfg, remote)} on ${machine} (git clone ${cloneUrl(remote)}), so work on it can use a local copy`
 
+export function visibleCloneTodos(cfg: Config, wf: Workflow, job: Job | undefined, machine: string): string[] | undefined {
+	const remote = job?.remote
+	if (!remote || !wf.todos?.length) return wf.todos
+	const cachedCloneExists = !!localClones().clones?.[remote]?.length
+	const readsThroughADO = remote.startsWith('dev.azure.com/') && !job.needsCheckout &&
+		(job.intent === 'pr_review' || wf.intent === 'pr_review' || /^pr:/i.test(job.key))
+	if (!cachedCloneExists && !readsThroughADO) return wf.todos
+	const template = cloneTodo(cfg, remote, machine)
+	return wf.todos.filter(todo => todo !== template)
+}

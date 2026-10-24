@@ -10,6 +10,8 @@ import { active, approvalAsk, approvalMention, approvalReplyMatches, canCloseApp
 import { closeFamily } from './apply.ts'
 import { realProcs } from './jobs.ts'
 import { addMeEffect, isAddMe, MAY_REVIEW, groupQuestion, roleOn, roleWhy, unknownGroups } from './review-gate.ts'
+import { freshRead } from '../store/fs.ts'
+import { recordCommit } from './commit.ts'
 
 // Checklist steps that wait on a build are checked by the runner, not the AI (R-WRK-13).
 // branch, version, repo: where the build is from, for a deploy's build check (review 10-21 P1-3).
@@ -157,8 +159,16 @@ const VOTE: Record<string, (id: number) => string> = { '10': id => `approved PR 
 // Items waiting on the owner about a pull request are checked against Azure DevOps every 10 minutes, or at once on Check now:
 // a PR completed or abandoned, or the owner's own vote there, takes the item out of Needs you (dogfood 10-20: A12).
 export async function probePRs(store: Store, cfg: Config, probe: BuildProbe | undefined, now = Date.now(), force = false, subjects?: Workflow[]): Promise<number> {
+	const commits = new Map((subjects ?? []).map(w => [w, recordCommit(w, () => store.workflow(w.id), store.save.bind(store))]))
+	const commitFor = (w: Workflow) => {
+		const old = commits.get(w)
+		if (old) return old
+		const commit = recordCommit(w, () => store.workflow(w.id), store.save.bind(store))
+		commits.set(w, commit)
+		return commit
+	}
 	if (!probe?.pr) {
-		for (const w of (subjects ?? []).filter(w => w.prRead || prRefOf(store, w))) { w.prRead = undefined; w.prUnknown = true; store.save(w, false) }
+		for (const w of (subjects ?? []).filter(w => w.prRead || prRefOf(store, w))) { w.prRead = undefined; w.prUnknown = true; commitFor(w)(false) }
 		return 0
 	}
 	const mark = store.probeMark()
@@ -177,18 +187,21 @@ export async function probePRs(store: Store, cfg: Config, probe: BuildProbe | un
 	}))
 	const me = cfg.owner.name.trim().toLowerCase()
 	// An answer the owner gave while the PRs were read is applied next tick; the item is theirs until then.
-	const queued = new Set(store.answers().map(a => a.answer.code))
+	const queued = freshRead(() => new Set(store.answers().map(a => a.answer.code)))
 	let n = 0
 	for (const { w: was, ref } of items) {
-		const w = subjects ? was : store.workflow(was.id)
+		const w = subjects ? was : freshRead(() => store.workflow(was.id))
 		if (!w || !subjects && (w.state !== 'needs_human' || queued.has(w.code))) continue
+		const commit = commitFor(w)
 		const st = states.get(`${ref.project}/${ref.repo}/${ref.id}`)
 		// A reply without a status or reviewers says nothing; it never moves an item or its baseline.
 		if (!st || !/^(active|completed|abandoned)$/i.test(st.status) || !st.votes.length && !/completed|abandoned/i.test(st.status)) {
-			w.prRead = undefined; w.prUnknown = true; w.prRole = undefined; store.save(w, false)
+			w.prRead = undefined; w.prUnknown = true; w.prRole = undefined; commitFor(w)(false)
 			continue
 		}
-		w.prRole = await roleOn(cfg, probe, ref, st)
+		const role = await roleOn(cfg, probe, ref, st)
+		commit.refresh()
+		w.prRole = role
 		if (st.author) w.prAuthor = st.author
 		regateVotes(store, cfg, w, ref, st)
 		// A review declined by the gate starts by itself once the owner is a reviewer (added in Azure DevOps, or by Add me), within
@@ -198,7 +211,7 @@ export async function probePRs(store: Store, cfg: Config, probe: BuildProbe | un
 			Object.assign(w, { state: 'running', status: MAY_REVIEW.includes(w.prRole) ? `You're a reviewer on PR ${ref.id} now; starting the review` : `PR ${ref.id} can be read again; checking whether you are a reviewer`,
 				reviewDecline: undefined, question: undefined, context: w.context?.filter(c => c.label !== 'Not reviewing'), effects: (w.effects ?? []).filter(e => !isAddMe(e)), pending: w.pending.length ? w.pending : w.msgIds.slice(-1) })
 			store.log({ event: 'review-gate-reopened', code: w.code, pr: ref.id, role: w.prRole, was: declined.role })
-			store.save(w)
+			commitFor(w)()
 			n++
 			continue
 		}
@@ -226,7 +239,7 @@ export async function probePRs(store: Store, cfg: Config, probe: BuildProbe | un
 			: stale ? `PR ${ref.id} changed since this draft` : undefined
 		if (mine !== undefined && mine !== w.prVote) w.prVote = mine
 		w.prStatus = st.status
-		if (!reason) { store.save(w, false); continue }
+		if (!reason) { commitFor(w)(false); continue }
 		const home = homeOf(store, w)
 		newTurn(w, !!w.sent)
 		if (active(home)) {
@@ -237,7 +250,7 @@ export async function probePRs(store: Store, cfg: Config, probe: BuildProbe | un
 		} else if (stale && !approvedNow && !closedNow || reReviewAsk(w.lastAsk ?? '') || !approvalAsk(w.lastAsk ?? '') && !closedNow || /\b(?:and|then|also|after|before|plus)\b|[;&]/i.test(w.lastAsk ?? '')) Object.assign(w, { state: 'running', status: `PR checked: ${reason}; checking the remaining ask`, pending: w.pending.length ? w.pending : w.msgIds.slice(-1) })
 		else Object.assign(w, { state: 'done', status: `Nothing needed: ${reason}`, pending: [], closedBy: 'nothing' })
 		store.log({ event: 'pr-moved', code: w.code, pr: ref.id, reason })
-		store.save(w)
+		commitFor(w)()
 		n++
 	}
 	return n

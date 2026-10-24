@@ -187,6 +187,7 @@ What leaves your machine, and to whom:
 
 - **Your AI provider** (the service behind your AI CLI, such as GitHub Copilot or Anthropic) gets each ask and what is needed to answer it. That is the message and its thread, your profile and instructions, and what the AI reads from your notes and history while it works. Your provider's terms cover it.
 - **Microsoft 365** answers the reads, through the MCP servers you set up and under your own sign-in. That covers Teams chats and documents, and Azure DevOps if you added it, in setup or in your AI CLI's own MCP config. An `ado` server listed only in your AI CLI's config is used too: Delegate checks the pull requests and builds your items wait on about every 10 minutes, and makes the changes you approved through it.
+  For Word, PowerPoint and Excel reads, a confirmed access denial, size/content limit or unsupported format stops automatic retries of unfinished work. This uses the document reader's result, even if the AI describes the failure differently. Other tool failures keep their normal retry limits.
 - **Teams** gets each reply. A reply goes only after your `ok`, or when a rule you wrote or accepted allows it. You can undo those for a few minutes.
 - **OneDrive** gets your data folder, if you pick a synced folder. It syncs to your own account.
 

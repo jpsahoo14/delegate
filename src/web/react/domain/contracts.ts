@@ -71,6 +71,8 @@ const done = z.object({
 	work: optional, high: z.boolean().optional(), teams: optional, ask: optional, said: optional, text: optional, href: optional,
 	inTeams: z.boolean().optional(), gist: optional, watch: z.object({ target: text, until: text }).optional(), watchedAs: optional,
 	own: z.boolean().optional(), rule: optional, fresh: z.boolean().optional(), undoUntil: optional, why: why.optional(), msgs: strings.optional(),
+	// What Delegate checked before this reply went (#45 sent.checks), as history lines: "Sent. Kim posted again at 8:52 AM; …".
+	checks: strings.optional(),
 })
 const watch = z.object({ id: text, code: text, what: text, last: text, changedAt: optional, update: z.boolean(), rev: text, every: z.number().optional(), endsAt: optional, by: optional, nextAt: optional, from: optional, actionIds: strings })
 const automation = z.object({ id: text, code: text, sentence: text, to: text, text, when: text, state: text, why: optional, next: optional, count: z.number(), rev: text, actionIds: strings })
@@ -107,7 +109,7 @@ export const snapshotSchema = z.object({
 	doneNew: z.number().optional(),
 	showExperienceNote: z.boolean().optional(),
 	running: z.array(z.object({ what: text, since: text, progress: z.number().optional() })).optional(),
-	version: z.object({ code: optional, tag: optional, auto: z.boolean(), channel: text, everyMin: z.number(), checkedAt: optional, failed: optional, last: z.object({ to: text, rolledBack: optional }).optional() }).optional(),
+	version: z.object({ version: optional, code: optional, fullCode: optional, tag: optional, auto: z.boolean(), channel: text, everyMin: z.number(), checkedAt: optional, failed: optional, last: z.object({ to: text, rolledBack: optional }).optional() }).optional(),
 	sinceLine: z.object({ at: text, parts: z.array(z.object({ text, href: text })) }).optional(),
 	settingsActions: z.record(text, strings).optional(),
 	// The one reply the u key undoes: the newest send that can still be undone, by time, never by object order (bug 10-23 E97).
@@ -148,6 +150,10 @@ export const receiptSchema = z.object({
 	refused: z.boolean().optional(),
 	uncertain: z.boolean().optional(),
 	at: optional,
+	// What the click came to, saved when the runner completed it (#47): the page line is built from this, never from text.
+	outcome: z.object({ kind: z.enum(['sent', 'held', 'refused', 'queued', 'done', 'failed']), reasons: strings.optional(), send: z.literal(true).optional(),
+		action: optional, count: z.number().optional(), watch: z.object({ target: text, until: optional }).optional(), stale: z.literal(true).optional() }).optional(),
+	who: optional, chat: optional,
 })
 export type Snapshot = z.infer<typeof snapshotSchema>
 export type Entities = z.infer<typeof entitiesSchema>

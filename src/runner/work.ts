@@ -1,4 +1,5 @@
 import { site } from '../core/site.ts'
+import { clearHold } from '../core/owner-send.ts'
 import type { PlanStep, Report, Step, Workflow, WorkReport } from '../core/types.ts'
 import type { Store } from '../store/state.ts'
 import { canonicalKey } from './jobs.ts'
@@ -161,7 +162,7 @@ export function mergePlan(old: PlanStep[], next: NonNullable<WorkReport['plan']>
 // Ending a turn without new input (wait, skip, close, the owner's own message) keeps the last send for Done and "Not right?".
 // The turn's own to-dos go with it; the ones a sent reply promised (kept) stay until the owner marks them done (R-NEX-07).
 export function newTurn(wf: Workflow, keepSent = false) {
-	wf.ownerSend = undefined; wf.reason = undefined
+	wf.ownerSend = undefined; clearHold(wf)
 	Object.assign(wf, { draft: undefined, prDraft: undefined, learnAfter: undefined, closeWorkAfterSend: undefined, choices: undefined, question: undefined, effects: undefined, promised: undefined, decision: undefined, approved: undefined, picked: undefined, sendAt: undefined, correction: undefined, todos: undefined, newCount: 0, ...(keepSent ? {} : { sent: undefined }) })
 }
 
@@ -344,7 +345,7 @@ export function statusOf(wf: Workflow): string {
 
 export function closeWork(wf: Workflow, why: string) {
 	if (!wf.work) return
-	wf.ownerSend = undefined; wf.reason = undefined
+	wf.ownerSend = undefined; clearHold(wf)
 	wf.work.closed = { at: new Date().toISOString(), why }
 	wf.work.next = undefined
 	wf.work.waitingOn = undefined
@@ -420,7 +421,7 @@ export function ownerStep(wf: Workflow, text: string, msgId: string, home = wf) 
 	// The owner's own message is news: no "no news" check right after it (queue-new #13).
 	if (home.work && !home.work.closed) home.work.checkAt = new Date(Date.now() + CHECK_DAYS * DAY).toISOString()
 	if (wf.state === 'waiting_on_task') return
-	wf.ownerSend = undefined; wf.reason = undefined
+	wf.ownerSend = undefined; clearHold(wf)
 	newTurn(wf, !!wf.sent)
 	Object.assign(wf, { state: 'open', status: statusOf(home), pending: [] })
 }

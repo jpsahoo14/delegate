@@ -71,7 +71,7 @@ async function draftThroughDispatch(w: Workflow) {
 async function approve(w: Workflow, text?: string, page = false) {
 	store.writeAnswer({ code: w.code, verb: text ? 'answer' : 'ok', text, surface: 'panel',
 		...(page ? { page: { kind: 'send-reply' as const, expect: workflowApprovalRev(w) } } : {}) })
-	await applyAnswers(store, source, cfg)
+	await applyAnswers(store, source, cfg, undefined, false, undefined, async () => ({ stillAnswers: 'no', changed: 'The requested reply changed.' }))
 	return store.workflow(w.id)!
 }
 let proofCount = 0
@@ -230,7 +230,7 @@ try {
 	assert.equal(w.reason?.kind, 'asker-wrote-again'); assert.equal(w.draft?.text, draft); assert.equal(w.effects?.[0].done, undefined)
 	proof('send-with-changes checks newer asks before any effect, keeping draft and proposal')
 	w = await approve(w, 'send anyway')
-	assert.equal(w.state, 'waiting_on_task'); assert.equal(w.approved?.sendReview, w.reason?.digest)
+	assert.equal(w.state, 'waiting_on_task'); assert.equal(w.approved?.sendReview, w.holdDigest)
 	let writes = 0
 	const beforeEffects = posted.length
 	await executeDirect(store, source, cfg, {
@@ -348,7 +348,7 @@ try {
 
 	w = await draftThroughDispatch(seed(undefined, at))
 	store.saveThread(w.id, store.thread(w.id).map(m => ({ ...m, at: new Date(Date.now() - 1000).toISOString() })))
-	live.push({ id: String(Number(w.lastMsgId) + 1), at: new Date().toISOString(), from: w.asker!, body: 'Robin, what is the Aurora incident status now?', html: false })
+	live.push({ id: String(Number(w.lastMsgId) + 1), at: new Date().toISOString(), from: w.asker!, body: 'Robin, what is the Aurora incident status at 09:00?', html: false })
 	w = await approve(w); assert.equal(w.reason?.kind, 'asker-wrote-again')
 	await intake(store, source, cfg, { [w.chat.id]: w.lastMsgId }, [w.chat])
 	w = store.workflow(w.id)!

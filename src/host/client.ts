@@ -15,8 +15,8 @@ import type { Config } from '../core/types.ts'
 import { CLI, VERSION } from '../paths.ts'
 import type { RunWorker } from '../runner/dispatch.ts'
 import { readJson, writeJson } from '../store/fs.ts'
-import { LOCAL_DIR, type Store } from '../store/state.ts'
-import { hostFile, hostHash, type HostInfo, type HostResult, type HostRun } from './host.ts'
+import { LOCAL_DIR, loadLocal, Store } from '../store/state.ts'
+import { hostFile, hostHash, type HostInfo, type HostQuick, type HostResult, type HostRun } from './host.ts'
 import { hostOff } from './locate.ts'
 import { unavailableTools } from '../core/agent-failure.ts'
 import { reportFromText } from '../core/report.ts'
@@ -31,10 +31,10 @@ const readMark = () => readJson<Mark>(markFile(), { at: '', fails: 0 })
 // Until when runs skip the host after it failed again and again; undefined when they may use it.
 export function hostDisabledUntil(now = Date.now()): string | undefined { const u = readMark().disabledUntil; return u && Date.parse(u) > now ? u : undefined }
 
-function call<T>(h: HostInfo, method: string, path: string, body?: unknown, timeoutMs = 3_000): Promise<{ status: number; body: T }> {
+function call<T>(h: HostInfo, method: string, path: string, body?: unknown, timeoutMs = 3_000, signal?: AbortSignal): Promise<{ status: number; body: T }> {
 	return new Promise((ok, no) => {
 		const data = body === undefined ? undefined : JSON.stringify(body)
-		const req = request({ host: '127.0.0.1', port: h.port, method, path, headers: { authorization: `Bearer ${h.token}`, ...(data ? { 'content-type': 'application/json', 'content-length': Buffer.byteLength(data) } : {}) } }, res => {
+		const req = request({ host: '127.0.0.1', port: h.port, method, path, signal, headers: { authorization: `Bearer ${h.token}`, ...(data ? { 'content-type': 'application/json', 'content-length': Buffer.byteLength(data) } : {}) } }, res => {
 			let s = ''; res.setEncoding('utf8'); res.on('data', c => (s += c)); res.on('end', () => { try { ok({ status: res.statusCode ?? 0, body: JSON.parse(s || '{}') as T }) } catch (e) { no(e) } })
 		})
 		if (timeoutMs) req.setTimeout(timeoutMs, () => req.destroy(new Error('the AI host did not answer')))
@@ -44,6 +44,36 @@ function call<T>(h: HostInfo, method: string, path: string, body?: unknown, time
 }
 const pingOk = (h: HostInfo) => call<{ ok?: boolean }>(h, 'GET', '/ping').then(r => r.status === 200 && !!r.body.ok, () => false)
 const current = () => readJson<HostInfo | undefined>(hostFile(), undefined)
+
+// Owner-approved sends fail open: this never discovers/starts a runtime and never falls back to spawn.
+export async function quick(prompt: string, jsonSchema: object, timeoutMs = 5000): Promise<unknown> {
+	const started = Date.now(), controller = new AbortController()
+	let store: Store | undefined, timer: ReturnType<typeof setTimeout> | undefined
+	const note = (result: string, reason?: string) => store?.log({ event: 'host-quick', side: 'client', result, reason, ms: Date.now() - started })
+	try {
+		const budget = Number.isFinite(timeoutMs) && timeoutMs > 0 ? Math.min(timeoutMs, 5000) : 0
+		if (budget) timer = setTimeout(() => controller.abort(new Error('the quick check timed out')), budget)
+		store = new Store(loadLocal())
+		if (!budget) { note('unavailable', 'invalid timeout'); return undefined }
+		const h = current(), cfg = store.config()
+		if (!h || !cfg || cfg.agent.host === false || cfg.agent.flavor !== 'copilot' || hostDisabledUntil() ||
+			inQuietHours(new Date(), cfg.quiet) || typeof h.cli !== 'string' || h.configHash !== hostHash(cfg, h.cli)) {
+			note('unavailable', 'no matching warm host'); return undefined
+		}
+		const ping = await call<{ ok?: boolean; warm?: boolean; draining?: boolean }>(h, 'GET', '/ping', undefined, 0, controller.signal)
+		if (ping.status !== 200 || !ping.body.ok || !ping.body.warm || ping.body.draining) { note('unavailable', 'host not warm'); return undefined }
+		const remaining = budget - (Date.now() - started)
+		if (remaining <= 0) { note('timeout'); return undefined }
+		const result = await call<{ result?: unknown }>(h, 'POST', '/quick', { prompt, jsonSchema, timeoutMs: remaining } satisfies Omit<HostQuick, 'jsonSchema'> & { jsonSchema: object }, 0, controller.signal)
+		if (result.status !== 200 || !('result' in result.body)) { note('unavailable', `status ${result.status}`); return undefined }
+		note('ok')
+		return result.body.result
+	} catch (error) {
+		if (store) note(controller.signal.aborted ? 'timeout' : 'error', error instanceof Error ? error.name : 'unknown')
+		else console.error('The AI quick check was unavailable:', error)
+		return undefined
+	} finally { if (timer) clearTimeout(timer) }
+}
 
 // A live host started for this config, else a new one; undefined means "use one process per run" this time. Calls that come together
 // (the pool's first runs) share one look and one start, so one tick never starts two hosts.

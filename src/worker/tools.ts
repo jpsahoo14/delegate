@@ -5,7 +5,7 @@ import { z } from 'zod'
 import { ReportSchema } from '../core/report.ts'
 import type { Report } from '../core/types.ts'
 import { docsFor, imagesFor } from '../adapters/registry.ts'
-import { documentPages, type DocumentRef } from '../adapters/docs.ts'
+import { documentPages, hardDocumentFailure, type DocumentRef, type DocumentDiagnostic } from '../adapters/docs.ts'
 import type { Store } from '../store/state.ts'
 
 export const SUBMIT_DESCRIPTION = 'Submit your one report for this workflow. Call exactly once, then finish.'
@@ -23,9 +23,10 @@ export const REPORT = z.object(ReportSchema)
 export type ToolOut = { text: string; error?: boolean; image?: { data: string; mimeType: string } }
 
 // Cache one decoded document within a run so paging never downloads its binary again.
-export function documentReader(store: Store): (raw: unknown) => Promise<ToolOut> {
+export function documentReader(store: Store) {
+	const failures = new Map<string, string>()
 	let cached: { key: string; doc: Promise<{ name: string; pages: string[] } | string> } | undefined
-	return async raw => {
+	const read = async (raw: unknown): Promise<ToolOut> => {
 		const p = DOCUMENT.safeParse(raw)
 		if (!p.success) return { text: 'Use a document URL, or both driveId and itemId, and a positive page number. File names are not supported.', error: true }
 		const { page = 1, ...v } = p.data
@@ -34,14 +35,19 @@ export function documentReader(store: Store): (raw: unknown) => Promise<ToolOut>
 		if (cached?.key !== key) {
 			cached = { key, doc: (async () => {
 				const docs = docsFor(store.config())
-				const doc = docs ? await docs.read(ref).finally(() => docs.close()) : "Couldn't open this document: no document server is configured"
+				let diagnostic: DocumentDiagnostic = { step: 'metadata', class: 'not-configured', contentTypes: [], bytes: 0, via: 'tool' }
+				const doc = docs ? await docs.read(ref, value => { diagnostic = value }).finally(() => docs.close()) : "Couldn't open this document: no document server is configured"
 				if (typeof doc === 'string') {
-					store.log({ event: 'document-read-failed', reason: doc })
+					const hard = hardDocumentFailure(doc)
+					if (hard) failures.set(key, doc)
+					else failures.delete(key)
+					store.log({ event: 'document-read-failed', ...diagnostic, hard })
 					return doc
 				}
+				failures.delete(key)
 				const pages = documentPages(doc)
 				store.documentAlias(doc.ref, v.url ?? doc.url)
-				store.log({ event: 'document-read', tool: doc.tool, size: doc.size, pages: pages.length })
+				store.log({ event: 'document-read', tool: doc.tool, size: doc.size, pages: pages.length, ...diagnostic })
 				return { name: doc.name, pages }
 			})() }
 		}
@@ -52,10 +58,11 @@ export function documentReader(store: Store): (raw: unknown) => Promise<ToolOut>
 		const text = doc.pages[page - 1]
 		return text === undefined ? { text: `No such page. ${doc.name} has ${doc.pages.length} pages.`, error: true } : { text }
 	}
+	return Object.assign(read, { failure: () => [...failures.values()].at(-1) })
 }
 
 // One report per run, for this workflow only; in a Continue window the owner may refine, and the last report wins.
-export function reportTaker(store: Store, wfId: string, runId: string, interactive = false): (raw: unknown) => ToolOut {
+export function reportTaker(store: Store, wfId: string, runId: string, interactive = false, documentFailure?: () => string | undefined): (raw: unknown) => ToolOut {
 	let submitted = false
 	return raw => {
 		const p = REPORT.safeParse(raw)
@@ -70,6 +77,8 @@ export function reportTaker(store: Store, wfId: string, runId: string, interacti
 			const o = store.openWindow(wfId)
 			if (!o || o.runId !== runId || o.takenBack) { store.log({ event: 'continue-late-report', target: wfId, runId }); return { text: "Delegate took this item back; what you decide here isn't used. Tell Delegate in the page instead.", error: true } }
 		}
+		const why = r.goalMet === false ? documentFailure?.() : undefined
+		if (why) r.blocker = { kind: r.blocker?.kind ?? 'tool', why, tried: r.blocker?.tried ?? [], documentFailure: true }
 		store.writeReport(r, runId)
 		submitted = true
 		return { text: 'Report saved. Call task_complete now.' }

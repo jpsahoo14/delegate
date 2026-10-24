@@ -1,5 +1,5 @@
 import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { assertTestSafe } from '../store/fs.ts'
+import { assertTestSafe, freshRead } from '../store/fs.ts'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
@@ -97,24 +97,26 @@ export function pruneReplySessions(store: Store): number {
 			.sort((a, b) => String(a.at).localeCompare(String(b.at))) : []
 		for (const w of legacy) {
 			const ids = [...new Set(history.filter(e => e.workflowId === w.id).map(e => String(e.sessionId)))]
-			const current = store.workflow(w.id)
-			if (!current) continue
-			const i = ids.indexOf(current.session.id)
-			if (i < 0) continue
-			const previous = current.session.previous ?? ids[i - 1]
-			const retired = [...new Set([...(current.session.retired ?? []), ...ids])].filter(id => id !== current.session.id && id !== previous)
-			if (current.session.previous !== previous || !sameIds(current.session.retired, retired)) {
-				current.session.previous = previous
-				current.session.retired = retired.length ? retired : undefined
-				store.save(current, false)
-			}
+			freshRead(() => {
+				const current = store.workflow(w.id)
+				if (!current) return
+				const i = ids.indexOf(current.session.id)
+				if (i < 0) return
+				const previous = current.session.previous ?? ids[i - 1]
+				const retired = [...new Set([...(current.session.retired ?? []), ...ids])].filter(id => id !== current.session.id && id !== previous)
+				if (current.session.previous !== previous || !sameIds(current.session.retired, retired)) {
+					current.session.previous = previous
+					current.session.retired = retired.length ? retired : undefined
+					store.save(current, false)
+				}
+			})
 		}
 		store.saveUpgrades({ ...store.upgrades(), 'reply-sessions-1': new Date().toISOString() })
 		items = store.workflows()
 	}
 	const candidates = items.filter(w => w.session.agent === 'copilot' && w.session.retired?.length)
 	if (!candidates.length) return 0
-	const permanent = new Set([...store.jobs().map(j => j.session.id), ...store.owners().map(o => o.session)])
+	const permanent = freshRead(() => new Set([...store.jobs().map(j => j.session.id), ...store.owners().map(o => o.session)]))
 	const protectedIds = new Set([...permanent, ...items.flatMap(w => [w.session.id, w.session.previous ?? '',
 		...(store.openWindow(w.id) ? w.session.retired ?? [] : [])])])
 	let n = 0
@@ -144,13 +146,15 @@ export function pruneReplySessions(store: Store): number {
 			}
 		}
 		const removed = new Set(startingIds.filter(id => !pending.includes(id)))
-		const current = store.workflow(w.id)
-		if (!current) continue
-		const retired = [...new Set(current.session.retired ?? [])].filter(id => !removed.has(id))
-		if (!sameIds(current.session.retired, retired)) {
-			current.session.retired = retired.length ? retired : undefined
-			store.save(current, false)
-		}
+		freshRead(() => {
+			const current = store.workflow(w.id)
+			if (!current) return
+			const retired = [...new Set(current.session.retired ?? [])].filter(id => !removed.has(id))
+			if (!sameIds(current.session.retired, retired)) {
+				current.session.retired = retired.length ? retired : undefined
+				store.save(current, false)
+			}
+		})
 	}
 	return n
 }

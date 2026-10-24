@@ -11,6 +11,32 @@ Proof kinds:
 
 ## Engine crosscheck regressions
 
+Bug 10-24 #51 effect wording (manual): `node scripts/prove-effect-lines.mjs` proves singular/plural comments, edits, resolves,
+all five votes, two PRs/order, running/done/changes-only/held/partial/failed/unsure/reply-only, group and direct recipients,
+unknown effects and scrubbed failure reasons. A real apply/approval queues execution once and emits the expected chat receipt.
+
+Bug 10-24 #27 tick phases (manual): `node scripts/prove-tick-phases.mjs`; optional `--baseline-ref=<pre-wiring-ref>` compares
+the same production-module rig. Twenty empty ticks on 400 fictional items/55 jobs, fixed simulated I/O, each <=2 s including
+snapshot/cleanup. Real page/settings requests during a held tick stay <=1 s with independent scopes. External item/config
+changes survive model, send/Undo, job start/execution, PR and terminal commits, even when acquired before commit tracking starts.
+Invalid live PR data clears prior evidence. New asks hold old reports, cancelled queue
+entries do not run, completed effects/sends do not replay, and stopped/outage paths still supervise and apply controls.
+Acknowledgements retain their policy decision, save the at-most-once marker before posting, and preserve external fields.
+Scheduled presence holds preserve external fields and never reopen a cancelled item.
+The 29-case read-phase proof additionally covers flat record age, readonly/global copy isolation, fresh bypass, expired listing
+writes and relative-path/CWD changes. All fixtures are Temp; no unit runner, native model or real-OneDrive performance claim.
+
+Bug 10-24 #27 async scopes (manual): `node scripts/prove-read-phases.mjs`. A hundred cached JSON reads require one stat/open;
+awaited/nested sync scopes share the phase but return copies. Parallel contexts see own-process writes in the same epoch.
+External writes become visible on expiry or freshRead, including missing/new files and derived descendants. Moves, removals,
+appends, context closure/error and key validation preserve behavior. All writes are fictional Temp data; no unit runner.
+
+Bug 10-24 #45 HOST (manual): `node scripts/prove-host-quick.mjs`. With the real runtime and a loopback model, an absent/cold
+host starts nothing; warm checks return schema-valid yes/no/unsure in fresh sessions offering zero tools. Malformed/schema/error
+responses and busy/draining/down hosts fail open. An eight-second model stops at the five-second caller deadline; trickling
+HTTP bytes do not extend it. Abort the provider, delete ephemeral sessions, preserve worker transcripts/start markers and leave
+the normal host worker healthy. Drain all proof services and verify no proof-owned owner-home session additions.
+
 Bug 10-24 #29 retention (manual): `node scripts/prove-reply-retention.mjs`. Five fictional production dispatches leave only
 current and previous local/synced histories; job, owner, other-item and unmanaged histories survive. Releasing a temporary
 reference permits cleanup on the next pass. Invalid IDs are refused. A versioned legacy scan converges, never repeats in

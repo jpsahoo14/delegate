@@ -6,9 +6,9 @@ import { site } from '../core/site.ts'
 import { toolServers } from '../adapters/mcp-client.ts'
 import { NEVER_RING, parseTargets, targetsText } from '../core/deploy.ts'
 import type { BuildProbe } from '../runner/probe.ts'
-import { remoteOf } from '../runner/repos.ts'
+import { codeFolders, localClones, remoteOf, repoName, requestCloneScan, saveCodeFolders } from '../runner/repos.ts'
 import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { isAbsolute, join, resolve } from 'node:path'
 import type { Config, DeployTarget, Rule } from '../core/types.ts'
 import type { Store } from '../store/state.ts'
 import { experienceOf, here } from '../store/state.ts'
@@ -292,11 +292,19 @@ export function hostLine(cfg: Config, now = Date.now()): string {
 }
 const hours = (min: number) => min % 60 ? `${min} minutes` : min === 60 ? '1 hour' : `${min / 60} hours`
 
-export function settingsView(store: Store, experience?: 'classic' | 'new'): { rows: SettingRow[]; fixed: ReadOnlyRow[]; about: AboutView; models: ModelsView; tools?: ToolsView } {
+export type CodeFoldersView = { machine: string; example: string; folders: string[]; automatic: boolean; clones: { name: string; remote: string; paths: string[] }[]; scannedAt?: string }
+export function codeFoldersView(machine: string, cfg: Config): CodeFoldersView {
+	const saved = localClones()
+	return { machine, example: process.platform === 'win32' ? 'C:\\src' : '/Users/you/code', folders: codeFolders(), automatic: saved.code === undefined,
+		clones: Object.entries(saved.clones ?? {}).map(([remote, paths]) => ({ name: repoName(cfg, remote), remote, paths })), scannedAt: saved.scannedAt }
+}
+
+export function settingsView(store: Store, experience?: 'classic' | 'new'): { rows: SettingRow[]; fixed: ReadOnlyRow[]; about: AboutView; models: ModelsView; tools?: ToolsView; code: CodeFoldersView } {
 	const cfg = store.config()
 	// The new experience names its places differently: Waiting, and the foot of Now (PM review of N1a, 7).
 	const words = (t: string) => (experience ?? experienceOf(store.ui())) !== 'classic' ? t.replace('Waiting on others', 'Waiting').replace('Check for updates on Home', 'Check for updates at the foot of Now') : t
 	return {
+		code: codeFoldersView(store.machine, cfg),
 		rows: specsOf(cfg).map(s => ({ key: s.key, label: words(s.label), help: words(typeof s.help === 'function' ? s.help(cfg) : s.help), kind: s.kind, section: s.section, value: s.read(cfg, store), options: s.options, ...(s.advanced ? { advanced: true as const } : {}), ...(s.group ? { group: s.group } : {}) })),
 		...((t => (t ? { tools: t } : {}))(toolsView(cfg, { machine: store.machine, root: store.root }))),
 		about: aboutView(store),
@@ -338,6 +346,37 @@ export function modelsView(store: Store, now = Date.now()): ModelsView {
 }
 
 export async function saveSetting(store: Store, key: string, raw: string, deps: SaveDeps = {}): Promise<{ ok: boolean; text: string }> {
+	if (key === 'code-rescan') {
+		requestCloneScan()
+		store.log({ event: 'setting', key, machine: store.machine })
+		return { ok: true, text: `${NAME} will look for your clones on its next check. This list updates then.` }
+	}
+	if (key === 'code-found') {
+		saveCodeFolders()
+		store.log({ event: 'setting', key, machine: store.machine })
+		return { ok: true, text: `Using found folders again. ${NAME} will look for your clones on its next check. This list updates then.` }
+	}
+	if (key === 'code-add' || key === 'code-remove') {
+		const folder = String(raw ?? '').trim(), folders = codeFolders()
+		if (key === 'code-add') {
+			if (!isAbsolute(folder)) return { ok: false, text: 'Give an absolute folder path on this computer.' }
+			try { if (!statSync(folder).isDirectory()) return { ok: false, text: "That path isn't a folder." } }
+			catch (error) {
+				const code = error instanceof Error && 'code' in error ? error.code : undefined
+				if (code === 'ENOENT') return { ok: false, text: "That folder doesn't exist." }
+				if (code === 'ENOTDIR') return { ok: false, text: "That path isn't a folder." }
+				store.log({ event: 'code-folder-check-failed', reason: String(error) })
+				return { ok: false, text: "Couldn't check that folder. Check that you have permission to open it, or choose another folder." }
+			}
+			const path = resolve(folder), same = (other: string) => process.platform === 'win32' ? resolve(other).toLowerCase() === path.toLowerCase() : resolve(other) === path
+			saveCodeFolders(folders.some(same) ? folders : [...folders, path])
+		} else {
+			if (!folders.includes(folder)) return { ok: false, text: 'That folder is no longer in this computer\'s list. Refresh Settings.' }
+			saveCodeFolders(folders.filter(path => path !== folder))
+		}
+		store.log({ event: 'setting', key, machine: store.machine })
+		return { ok: true, text: `Saved code folders on this computer. Other computers keep their own list. ${NAME} will look for your clones on its next check. This list updates then.` }
+	}
 	const spec = specsOf(store.config()).find(s => s.key === key)
 	if (!spec) return { ok: false, text: 'That setting cannot be changed here.' }
 	const r = spec.check ? await spec.check(String(raw ?? ''), store, deps) : spec.parse(String(raw ?? ''), store)

@@ -109,9 +109,9 @@ function registerImageRead(server: McpServer, get: () => Store) {
 function registerWorker(server: McpServer, store: Store) {
 	// Native reads remain native; Office decoding is shared with the host (#40).
 	registerImageRead(server, () => store)
-	registerDocumentRead(server, () => store)
+	const documentFailure = registerDocumentRead(server, () => store)
 	const wfId = process.env.DELEGATE_WORKFLOW!, runId = process.env.DELEGATE_RUN!
-	const take = reportTaker(store, wfId, runId, !!process.env.DELEGATE_INTERACTIVE)
+	const take = reportTaker(store, wfId, runId, !!process.env.DELEGATE_INTERACTIVE, documentFailure)
 	server.registerTool('submit_report', { description: SUBMIT_DESCRIPTION, inputSchema: ReportSchema }, async r => { const o = take(r); return { ...text(o.text), ...(o.error ? { isError: true } : {}) } })
 	// A change run's only write: it runs exactly one approved call, and only while the owner's ok holds (next action).
 	server.registerTool('make_change', { description: 'Make one of the approved changes listed in the prompt, by its index, exactly as approved. Returns its reference, or why it was not made.', inputSchema: { index: z.number().int().min(0) } }, async ({ index }) => {
@@ -128,6 +128,7 @@ function registerDocumentRead(server: McpServer, get: () => Store) {
 		const o = await read(args)
 		return { ...text(o.text), ...(o.error ? { isError: true } : {}) }
 	})
+	return () => read?.failure()
 }
 
 function registerOwner(server: McpServer, get: () => Store) {

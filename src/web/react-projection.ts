@@ -300,7 +300,7 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 					actionIds.push(at)
 				},
 				later: () => actionIds.push(offer(id, rev, 'later', 'Later', () => ({ code: id, verb: 'later' }))),
-				dismiss: () => actionIds.push(offer(id, rev, 'dismiss', failed || c.promise || fx.held?.kind === 'no-reply-needed' ? 'Skip' : 'Dismiss', () => ({ code: id, verb: 'skip' }))),
+				dismiss: () => actionIds.push(offer(id, rev, 'dismiss', failed || c.promise || fx.held?.reasons.some(r => r.kind === 'no-reply-needed') ? 'Skip' : 'Dismiss', () => ({ code: id, verb: 'skip' }))),
 				// A run that gave no result (queue-new #11): Try again re-runs it as it was; a job that ran out of routes is queued again (#17 b).
 				'try-again': () => actionIds.push(offer(id, rev, 'try-again', 'Try again', () => ({ code: id, verb: 'answer', text: 'try again' }), { staleness: 'exact', expect })),
 				'write-own': () => actionIds.push(offer(id, rev, 'write-own', 'Write the reply yourself', input => ({ code: id, verb: 'send', text: requiredText(input) }), { effect: 'sends', staleness: 'exact', expect, input: 'text' })),
@@ -355,7 +355,7 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 			sourceIds: sources(id, id, why.sources), noteIds,
 			primaryActionId: (editable.has(id) ? [cs.primary ?? ''] : c.ownReply ? [] : ['reopen']).map(kind => `${id}/${kind}`).find(key => actionIds.includes(key)),
 			// A holding reply's reason is part of Why, not a warning (rule 13).
-			why: { reason: why.reason ?? (cs.mode === 'holding' ? pageText(wf.status) || undefined : undefined), confidence: why.confidence, gaps: why.gaps, searched: why.searched, ...(cs.waited ? { waited: pageText(cs.waited) } : waited.length ? { waited: `Why it waited: ${waited.join('; ')}.` } : {}) }, teams: safeLink(c.teams),
+			why: { reason: why.reason ?? (cs.mode === 'holding' ? pageText(wf.status) || undefined : undefined), confidence: why.confidence, gaps: why.gaps, searched: why.searched, ...(cs.waited ? { waited: cs.waited.split('\n').map(line => pageText(line)).filter(Boolean).join('\n') } : waited.length ? { waited: `Why it waited: ${waited.join('; ')}.` } : {}) }, teams: safeLink(c.teams),
 		}
 	}
 	// Spec S3: the sections say whose move it is, Delegate's queued rows say Delegate does them, and a group message is "Posted to everyone".
@@ -488,7 +488,8 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 				meaning: kind === 'unneeded' ? 'Marks this reply as unnecessary and removes it if its Undo window is still open. Changes already made are not reversed.' : 'Drafts a follow-up for your approval. Nothing is sent yet.',
 			}))
 		}
-		entities.doneEntries[id] = { ...rest, text: wf?.sent?.at === row.at && (row.kind === 'reply' || row.kind === 'review') ? wf.sent.sendText ?? rest.text : rest.text, fresh: isNew(row, seenIn(base), itemSeen(base)), id, personId: person(row.code, who), actionIds, sourceIds: sources(row.code, id, why?.sources ?? []), noteIds: notes(row.code, id, historyNotes ?? []), why: why && { reason: why.reason, confidence: why.confidence, gaps: why.gaps, searched: why.searched }, teams: safeLink(row.teams), href: safeLink(row.href) }
+		const current = wf?.sent?.at === row.at && (row.kind === 'reply' || row.kind === 'review'), checks = current ? wf!.sent!.checks?.map(check => pageText(`Sent. ${check}`)).filter(Boolean) : undefined
+		entities.doneEntries[id] = { ...rest, text: current ? wf!.sent!.sendText ?? rest.text : rest.text, ...(checks?.length ? { checks } : {}), fresh: isNew(row, seenIn(base), itemSeen(base)), id, personId: person(row.code, who), actionIds, sourceIds: sources(row.code, id, why?.sources ?? []), noteIds: notes(row.code, id, historyNotes ?? []), why: why && { reason: why.reason, confidence: why.confidence, gaps: why.gaps, searched: why.searched }, teams: safeLink(row.teams), href: safeLink(row.href) }
 	}
 	for (const w of base.watching) entities.watches[w.code] = {
 		...w, id: w.code, actionIds: [

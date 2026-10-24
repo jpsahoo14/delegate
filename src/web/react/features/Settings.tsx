@@ -1,7 +1,7 @@
 import { Button } from '../components/ui/button.tsx'
 import { useSetting, useSettings, useSettingsDrafts } from '../data/screens.ts'
 import type { Settings as SettingsData } from '../domain/screens.ts'
-import { useEffect } from 'react'
+import { Fragment, useEffect } from 'react'
 import { StyleEditor } from './StyleEditor.tsx'
 import { useScreenNavigation } from '../classic/navigation.tsx'
 import { useEntities, useSnapshot } from '../data/hooks.ts'
@@ -9,6 +9,7 @@ import { ActionButton, ActionState } from './ActionButton.tsx'
 import { NAME } from '../brand.ts'
 import { CheckNow } from './CheckNow.tsx'
 import { NEW_LOOK, ToolsSettings } from './ToolsSettings.tsx'
+import { CodeFolders } from './CodeFolders.tsx'
 
 function Setting({ row }: { row: SettingsData['rows'][number] }) {
 	const state = useSetting(row), id = `set-${row.key}`
@@ -68,7 +69,7 @@ export default function Settings() {
 				<h3>Learning</h3>
 			</>}
 			{id === 'replies' && <p className="muted">Replies go out by themselves only for your <a href={href('settings/learned')}>standing instructions</a>. These limits apply to every one.</p>}
-			<div className="settings-rows">{data.rows.filter(row => row.section === id && !row.advanced && row.kind !== 'switch').map(row => <Setting key={row.key} row={row} />)}</div>
+			<div className="settings-rows">{data.rows.filter(row => row.section === id && !row.advanced && row.kind !== 'switch').map(row => <Fragment key={row.key}><Setting row={row} />{row.key === 'repos' && data.code && <CodeFolders data={data.code} />}</Fragment>)}</div>
 			{id === 'you' && switches.length > 0 && <><h3>Changes {NAME} may propose</h3><p className="muted">Each one waits for your ok on its item. Turning one off edits only this list, never your items: an ok on a change it no longer allows is refused, even one approved but not made yet. Deploys follow "Where {NAME} may deploy" above.</p><div className="settings-rows">{switches.map(row => <Setting key={row.key} row={row} />)}</div></>}
 			{id === 'you' && <ToolsSettings data={data} Setting={Setting} look={NEW_LOOK} />}
 			{id === 'system' && <><h3>AI models</h3><section className="settings-rows"><div className="setting-row"><strong>{data.models.set}</strong>{data.models.lines.map((line, n) => <span key={n}>{line}</span>)}<small>From the last 7 days, on every machine. To choose a model, open More, then AI model.</small></div></section>

@@ -2,14 +2,15 @@ import { blockerOf, planRetry, retryStatus } from './retry.ts'
 import { NAME } from '../brand.ts'
 import { active, afterSend, canCloseApproval, canCloseReport, hasDecisions, homeOf, mergeReportWork, newTurn, pendingParts, reReviewAsk, step, watchEnded, watchNews } from './work.ts'
 import { confidence } from '../core/policy.ts'
-import { keepApprovedDraft } from '../core/owner-send.ts'
+import { clearHold, keepApprovedDraft } from '../core/owner-send.ts'
+import { refreshApprovedHolds } from './send-holds.ts'
 import { PAGE_REPLY_CHANGED } from '../core/page-approval.ts'
 import { uptime } from 'node:os'
 import { allows, changeName, changeSays, isVote, unsafeRead, pendingEffects, proposalEffects, refusal, refusedAsk, reviewAgain, carryMarks, shown, vet, voteValue, SETUP_REFUSAL, OLD_INVITE, OLD_INVITE_ASK } from '../core/effects.ts'
 import { prOf, prRefFor, prTarget, type BuildProbe } from './probe.ts'
 import { isAddMe, isReviewJob, voteGate } from './review-gate.ts'
 import { noticeHabits } from './habits.ts'
-import { cloneFor, cloneTodo, repoRef } from './repos.ts'
+import { cloneFor, cloneTodo, repoRef, visibleCloneTodos } from './repos.ts'
 import { deployed, deployRunning, findingNotBlocker, isValidate, proposeTargets, shellInClone, shellTool, telemetryNote, telemetryTools } from './validate.ts'
 import { toolServers } from '../adapters/mcp-client.ts'
 import { isDeploy } from '../core/deploy.ts'
@@ -17,7 +18,8 @@ import { intents } from '../core/intents.ts'
 import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { scrub } from '../core/secrets.ts'
-import { writeText } from '../store/fs.ts'
+import { freshRead, readPhase, writeText } from '../store/fs.ts'
+import { recordCommit } from './commit.ts'
 import { isAbsolute, join } from 'node:path'
 import type { Call, Config, Effect, Job, Report, Retry, Workflow } from '../core/types.ts'
 import { ulid } from '../core/ids.ts'
@@ -123,6 +125,7 @@ export function attachJob(store: Store, cfg: Config, wf: Workflow, raw: NonNulla
 	if (!job.every) Object.assign(job, { retry: undefined, nextAt: undefined })
 	if (!job.parents.includes(wf.id)) job.parents.push(wf.id)
 	job.asks.push(`${wf.asker?.name ?? 'Someone'}: ${wf.lastAsk ?? want.goal}`)
+	if (want.needsCheckout !== undefined) job.needsCheckout = want.needsCheckout
 	store.saveJob(job)
 	// A fresh review supersedes the old turn, not unresolved non-vote writes.
 	if (wf.intent === 'pr_review' && wf.pending.length && reReviewAsk(wf.lastAsk ?? '') && !executing(job)) {
@@ -170,12 +173,15 @@ export function startJobs(store: Store, cfg: Config, procs: Procs, hold: string[
 	// A cap on runs at once, so many due trackers or bootstrap sources cannot start together (tester 06-07 P2-4).
 	let room = Math.min((cfg.jobs?.parallel ?? 3) - store.jobs().filter(j => j.state === 'running' && !j.run?.relay).length, (cfg.dailyRuns ?? 200) - store.runsToday())
 	const control = store.control(), now = Date.now()
-	for (const job of store.jobs().filter(j => j.state === 'queued' && !store.openWindow(j.id) && !hold.includes(j.key) && (!j.retry || Date.parse(j.retry.at) <= now))) {
+	for (const was of store.jobs().filter(j => j.state === 'queued' && !store.openWindow(j.id) && !hold.includes(j.key) && (!j.retry || Date.parse(j.retry.at) <= now))) {
+		const job = freshRead(() => store.job(was.id))
+		if (!job || job.state !== 'queued') continue
+		const commit = recordCommit(job, () => store.job(job.id), store.saveJob.bind(store))
 		if (blockedAgent(store, cfg)) break
 		if (job.retry) {
 			// Retries wait while paused or stopped, and end when every item they were for has closed.
 			if (control.paused || control.stopped) continue
-			if (!parentsOf(store, job).length) { Object.assign(job, { state: 'done', retry: undefined, nextAt: undefined }); store.saveJob(job); store.log({ event: 'retry-stopped', job: job.id, why: 'its items closed' }); continue }
+			if (!parentsOf(store, job).length) { Object.assign(job, { state: 'done', retry: undefined, nextAt: undefined }); commit(); store.log({ event: 'retry-stopped', job: job.id, why: 'its items closed' }); continue }
 		}
 		if (job.relay && job.purpose === 'work') { if ((job.relay.ok ?? 0) >= job.asks.length) { relayJob(store, job); n++ } continue }
 		if (room <= 0) break
@@ -184,18 +190,22 @@ export function startJobs(store: Store, cfg: Config, procs: Procs, hold: string[
 			if (!parentsOf(store, job).some(p => stillApproved(p, job))) {
 				Object.assign(job, { state: 'done', purpose: 'work' })
 				adoptList(store, job)
-				store.saveJob(job)
+				commit()
 				store.log({ event: 'job-execute-dropped', job: job.id, why: 'no valid ok' })
 				continue
 			}
 		}
 		// A repo that is not a folder (a web link) is a remote, never a path: one job failed "It needs the repo https://…" (owned work).
-		if (job.repo && !isAbsolute(job.repo)) { Object.assign(job, { remote: job.remote ?? repoRef(cfg, job.repo), repo: undefined }); store.saveJob(job) }
+		if (job.repo && !isAbsolute(job.repo)) { Object.assign(job, { remote: job.remote ?? repoRef(cfg, job.repo), repo: undefined }); commit() }
 		if (job.repo && !existsSync(job.repo)) { fail(store, job, `It needs the repo ${job.repo} on ${store.machine}`); continue }
-		// The clone on this machine, preferring the PR's branch. None is the owner's to-do, and the run reads the repo through Azure DevOps.
+		// Reviews can read through Azure DevOps; only local test/build work needs a clone task.
 		const work = job.purpose === 'work' && !job.repo && !!job.remote
 		const clone = work ? cloneFor(job.remote!, job.branch) : undefined
-		if (work && !clone) for (const wf of parentsOf(store, job)) { const t = cloneTodo(cfg, job.remote!, store.machine); if (!wf.todos?.includes(t)) { wf.todos = [...(wf.todos ?? []), t]; store.save(wf) } }
+		for (const wf of parentsOf(store, job)) {
+			const todos = visibleCloneTodos(cfg, wf, job, store.machine)
+			if (todos?.length !== wf.todos?.length) { wf.todos = todos; store.save(wf) }
+			if (work && !clone && job.needsCheckout) { const t = cloneTodo(cfg, job.remote!, store.machine); if (!wf.todos?.includes(t)) { wf.todos = [...(wf.todos ?? []), t]; store.save(wf) } }
+		}
 		// The executor gets the read-only tools, so it can check a change was not already made (live Q3 run: it refused without one),
 		// and no write tool: it makes changes only through make_change, which runs exactly the approved call (next action).
 		// A validate job reads telemetry only when the owner has a telemetry server (owned work).
@@ -220,10 +230,10 @@ export function startJobs(store: Store, cfg: Config, procs: Procs, hold: string[
 			pid = procs.start(agent, { workflowId: job.id, runId, sessionId: job.session.id, prompt: job.wrapUp ? WRAP_UP(job.id) : buildJobPrompt(job, cfg, store.root, { clone, telemetry }), cwd: job.repo ?? clone ?? cwd, mcpConfigPath, extraTools: job.purpose === 'execute' ? [`${WORKER_SERVER}-submit_report`, `${WORKER_SERVER}-make_change`] : WORKER_TOOLS, dirs: readDirs(store, cfg) }).pid
 			const waiting = job.error
 			Object.assign(job, { state: 'running', error: undefined, run: { id: runId, pid, startedAt: new Date().toISOString(), machine: store.machine, purpose: job.purpose, asks: job.asks.length, ...(job.wrapUp ? { wrapUp: true } : {}) }, wrapUp: undefined })
-			store.saveJob(job)
+			commit()
 			for (const item of parentsOf(store, job)) if (waiting && item.status === waiting) { item.status = `Working on ${job.goal}`; store.save(item) }
 			store.addRun()
-			store.log({ event: 'job-start', job: job.id, key: job.key, purpose: job.purpose, runId, pid })
+			store.log({ event: 'job-start', job: job.id, key: job.key, purpose: job.purpose, runId, pid, ...(clone || job.repo ? { clone: job.repo ?? clone } : {}) })
 			n++
 			room--
 		} catch (e) {
@@ -248,7 +258,9 @@ export async function checkJobs(store: Store, src: Source, cfg: Config, procs: P
 	let n = 0
 	const minutes = cfg.jobs?.minutes ?? 30
 	// startedBefore: a pass leaves the runs it started itself to the next pass (the resident runner checks within a second).
-	for (const job of store.jobs().filter(j => j.state === 'running' && j.run && !(startedBefore !== undefined && Date.parse(j.run.startedAt) >= startedBefore))) {
+	for (const was of store.jobs().filter(j => j.state === 'running' && j.run && !(startedBefore !== undefined && Date.parse(j.run.startedAt) >= startedBefore))) {
+		const job = freshRead(() => store.job(was.id))
+		if (!job?.run || job.state !== 'running') continue
 		const run = job.run!
 		if (run.relay) { n += checkRelay(store, job) ? 1 : 0; continue }
 		const r = store.peekReport(job.id, run.id)
@@ -285,7 +297,7 @@ export async function checkJobs(store: Store, src: Source, cfg: Config, procs: P
 			if (account) holdJob(store, cfg, job, account)
 			else if (r) {
 				if (run.purpose === 'execute') await finishExecute(store, src, cfg, job, procs, probe)
-				else finishWork(store, job, r, run.asks)
+				else { finishWork(store, job, r, run.asks); await refreshApprovedHolds(store, src) }
 				store.archiveReport(job.id, run.id)
 				n++
 			} else if (over && run.purpose === 'work' && !run.wrapUp) {
@@ -413,7 +425,7 @@ export function finishWork(store: Store, job: Job, r: Report, asksAtStart: numbe
 			store.save(wf)
 			continue
 		}
-		if (r.reply) { wf.ownerSend = undefined; wf.reason = undefined }
+		if (r.reply) { wf.ownerSend = undefined; clearHold(wf) }
 		else if (wf.ownerSend && (!wf.sent || wf.sent.at < wf.ownerSend.at)) {
 			keepApprovedDraft(wf, r.summary || 'No reply needed')
 			wf.waitingSince = undefined
@@ -495,7 +507,9 @@ export function settleCompleted(store: Store, procs: Procs = realProcs) {
 export const directCall = (cfg: Config, e: Effect) => !!e.call?.tool && !!e.call.args && !!serverOf(cfg, e.call.tool)
 export async function executeDirect(store: Store, src: Source, cfg: Config, procs: Procs, probe?: BuildProbe, call: Caller = mcpCaller(cfg)): Promise<number> {
 	let n = 0
-	for (const job of store.jobs().filter(j => j.state === 'queued' && j.purpose === 'execute' && !store.openWindow(j.id))) {
+	for (const was of store.jobs().filter(j => j.state === 'queued' && j.purpose === 'execute' && !store.openWindow(j.id))) {
+		const job = freshRead(() => store.job(was.id))
+		if (!job || job.state !== 'queued' || job.purpose !== 'execute') continue
 		if (store.control().paused || store.control().stopped) break
 		if (!parentsOf(store, job).some(p => stillApproved(p, job))) continue
 		const effects = job.result?.effects ?? []
@@ -505,9 +519,11 @@ export async function executeDirect(store: Store, src: Source, cfg: Config, proc
 		Object.assign(job, { state: 'running', error: undefined, retry: undefined, run: { id: runId, pid: 0, startedAt: new Date().toISOString(), machine: store.machine, purpose: 'execute', asks: job.asks.length, direct: true } })
 		store.saveJob(job)
 		store.log({ event: 'job-start', job: job.id, key: job.key, purpose: 'execute', runId, direct: true })
-		for (const i of todo) await makeChange(store, job.id, runId, i, call, probe)
+		for (const i of todo) await readPhase(`change:${job.id}:${i}`, () => makeChange(store, job.id, runId, i, call, probe))
 		store.writeReport({ workflowId: job.id, intent: 'other', state: 'done', summary: 'Made the approved changes' }, runId)
-		await finishExecute(store, src, cfg, job, procs, probe)
+		const current = freshRead(() => store.job(job.id))
+		if (!current) throw new Error('The executed job disappeared before its result could be saved')
+		await finishExecute(store, src, cfg, current, procs, probe)
 		store.archiveReport(job.id, runId)
 		store.log({ event: 'job-direct', job: job.id, changes: todo.length, ms: Date.now() - t0 })
 		n++
@@ -516,6 +532,7 @@ export async function executeDirect(store: Store, src: Source, cfg: Config, proc
 }
 
 async function finishExecute(store: Store, src: Source, cfg: Config, job: Job, procs: Procs, probe?: BuildProbe) {
+	const commitJob = recordCommit(job, () => store.job(job.id), store.saveJob.bind(store))
 	// A change counts as made only when make_change recorded it, never because the run says so (next action).
 	const effects = foldChanges(store, job)
 	// A vote refused because the PR changed since the review: the owner reviews again; nothing is sent (review 10-21 P1-3).
@@ -526,7 +543,8 @@ async function finishExecute(store: Store, src: Source, cfg: Config, job: Job, p
 	// Asks that arrived during the change run get a work run next, in the same session (tester P1-8).
 	const again = job.asks.length > (job.run?.asks ?? job.asks.length)
 	const before = { ...job, result: { ...job.result!, effects: job.result?.effects ?? [] } }
-	const parents = parentsOf(store, job)
+	const parents = freshRead(() => parentsOf(store, job))
+	const commits = new Map(parents.map(wf => [wf, recordCommit(wf, () => store.workflow(wf.id), store.save.bind(store))]))
 	// Kept and removed say whether the changes went as proposed (removed: left out by the owner, or dropped as no longer needed).
 	// Logged before the replies go out, so the changes come first in the log, as they did in the chat (R-NEX-11).
 	store.log({ event: 'job-executed', job: job.id, items: parents.map(w => w.code), kept: effects.filter(e => !e.off).length, removed: effects.filter(e => e.off).length, done: effects.length - left.length, left: left.length, ...usedBy(job) })
@@ -543,6 +561,9 @@ async function finishExecute(store: Store, src: Source, cfg: Config, job: Job, p
 		else if (moved) for (const p of parents.filter(p => p.id === home.id)) p.work = home.work
 	}
 	for (const wf of parents) {
+		const commit = commits.get(wf)
+		if (!commit) throw new Error('The execution parent has no commit context')
+		commit.refresh()
 		const ok = stillApproved(wf, before)
 		const replyDigest = wf.approved?.replyDigest
 		const sendReview = wf.approved?.sendReview
@@ -552,12 +573,12 @@ async function finishExecute(store: Store, src: Source, cfg: Config, job: Job, p
 		wf.approved = undefined
 		if (!ok) {
 			if (wf.state === 'waiting_on_task' && !again) Object.assign(wf, { state: 'needs_human', waitingSince: undefined, status: `The reply changed after your ok, so it was not sent. Review ${wf.code} and ok again` })
-			store.save(wf)
+			commit()
 			continue
 		}
 		if (stale?.error) {
 			Object.assign(wf, { state: 'needs_human', waitingSince: undefined, question: reviewAgain(wf.code, stale.error), status: stale.error.replace(/\.$/, '') })
-			store.save(wf)
+			commit()
 			continue
 		}
 		// A deploy made is a plan step with a build check, and its ring is watched after it (owned work).
@@ -568,14 +589,14 @@ async function finishExecute(store: Store, src: Source, cfg: Config, job: Job, p
 			if (old) {
 				Object.assign(wf, { state: 'needs_human', waitingSince: undefined, status: `Not made: ${changeText(old)}. ${old.error!.replace(/^Change \d+ cannot be made: /, '').replace(/^./, c => c.toUpperCase())} Nothing was created, and the reply was not sent`,
 					question: OLD_INVITE_ASK })
-				store.save(wf)
+				commit()
 				continue
 			}
 			const how = left.some(e => e.maybe) ? `Check whether it was made, then reply "ok ${wf.code} again" to make it once more` : `Reply "ok ${wf.code}" to retry`
 			// The owner's own words already went, so there is no reply left to send on its own (Slice 3).
 			const or = wf.promise && wf.sent && !wf.draft?.text ? `, or "skip ${wf.code}"` : `, or "ok ${wf.code} except ${left.map((_, i) => i + 1).join(' ')}" to send only the reply`
 			Object.assign(wf, { state: 'needs_human', waitingSince: undefined, status: `Made ${effects.length - left.length} of ${effects.length} changes. Not done: ${left.map(e => `${changeText(e)}${e.error ? ` (${e.error.slice(0, 80)})` : ''}`).join('; ')}. ${how}${or}` })
-			store.save(wf)
+			commit()
 			continue
 		}
 		// Added as a reviewer by Add me: the declined review starts now, on the ask that asked for it (review gate).
@@ -583,26 +604,26 @@ async function finishExecute(store: Store, src: Source, cfg: Config, job: Job, p
 		if (added && wf.reviewDecline) {
 			Object.assign(wf, { state: 'running', waitingSince: undefined, question: undefined, reviewDecline: undefined, context: wf.context?.filter(c => c.label !== 'Not reviewing'), status: `Added you as an optional reviewer on PR ${wf.reviewDecline.pr}; starting the review`, pending: wf.msgIds.slice(-1) })
 			store.log({ event: 'review-gate-added', code: wf.code, pr: added.call?.args.pullRequestId })
-			store.save(wf)
+			commit()
 			continue
 		}
 		// A tracker goes back to watching once its changes are made, or closes if it already reported done; there is no chat reply to send.
 		if (wf.kind === 'tracker') {
 			if (job.every) Object.assign(wf, { state: 'waiting_on_task', waitingSince: new Date().toISOString(), status: `Made ${effects.length} change(s); watching again` })
 			else close(wf, `Made ${effects.length} change(s); stopped watching`)
-			store.save(wf)
+			commit()
 			continue
 		}
 		// A deploy with no reply to send: the work goes on, and the build check watches the run.
 		if (moving.length && !wf.draft?.text) {
 			Object.assign(wf, { state: 'open', status: moving.join('; '), waitingSince: undefined, pending: [] })
-			store.save(wf)
+			commit()
 			continue
 		}
 		// The owner's own words went out before the change they promised: once it is made, the item rests where the send left it (Slice 3).
 		if (wf.promise && wf.sent && !wf.draft?.text) {
 			rest(store, wf, `Made: ${effects.filter(e => e.done).map(changeText).join('; ')}`)
-			store.save(wf)
+			commit()
 			continue
 		}
 		if (!wf.draft?.text && !wf.question) {
@@ -610,22 +631,24 @@ async function finishExecute(store: Store, src: Source, cfg: Config, job: Job, p
 			wf.closeWorkAfterSend = undefined
 			if (closed && canCloseReport(store, home, wf)) closeFamily(store, procs, home, closed)
 			else rest(store, wf, `Made: ${effects.filter(e => e.done).map(changeText).join('; ')}`)
-			store.save(wf)
+			commit()
 			continue
 		}
 		Object.assign(wf, { state: 'needs_human', waitingSince: undefined })
-		store.save(wf)
+		commit()
 		try {
 			const sent = await send(store, src, cfg, wf, wf.draft?.text, { replyDigest, sendReview }, probe)
 			if (!sent && wf.state === 'needs_human' && wf.status !== PAGE_REPLY_CHANGED) wf.status = `Changes made. The reply was not sent. Reply "ok ${wf.code}" to send it`
 		} catch (e) {
 			wf.status = `Changes made. Could not send the reply: ${String(e).slice(0, 100)}. Reply "ok ${wf.code}" to retry`
 		}
-		store.save(wf)
+		commit()
 	}
-	Object.assign(job, { result: { ...job.result!, effects }, state: again ? 'queued' : 'done', purpose: 'work', run: undefined, nextAt: job.every ? new Date(Date.now() + job.every * 60_000).toISOString() : job.nextAt })
+	commitJob.refresh()
+	const pendingAsk = job.asks.length > (job.run?.asks ?? job.asks.length)
+	Object.assign(job, { result: { ...job.result!, effects }, state: pendingAsk ? 'queued' : 'done', purpose: 'work', run: undefined, nextAt: job.every ? new Date(Date.now() + job.every * 60_000).toISOString() : job.nextAt })
 	adoptList(store, job)
-	store.saveJob(job)
+	commitJob()
 }
 
 // What a change run recorded, folded into the job's list: a change counts as made only when make_change recorded it,
@@ -950,7 +973,7 @@ function shortOfGoal(store: Store, job: Job, r: Report) {
 	const now = new Date().toISOString()
 	const b = blockerOf(r.blocker), tried = [...new Set([...(job.retry?.tried ?? []), ...b.tried])]
 	for (const wf of parentsOf(store, job)) {
-		if (r.reply) { wf.ownerSend = undefined; wf.reason = undefined }
+		if (r.reply) { wf.ownerSend = undefined; clearHold(wf) }
 		else if (wf.ownerSend && (!wf.sent || wf.sent.at < wf.ownerSend.at)) {
 			keepApprovedDraft(wf, r.summary || 'No reply needed')
 			wf.waitingSince = undefined

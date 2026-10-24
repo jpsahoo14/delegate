@@ -1,4 +1,4 @@
-import { BUSY, type PageSubmission, type Store } from '../store/state.ts'
+import { BUSY, type PageSubmission, type ReceiptOutcome, type Store } from '../store/state.ts'
 import { enqueueParsed } from '../mcp/server.ts'
 import { forPage } from './model/format.ts'
 import { resolvePageIntent, IntentError } from './react-projection.ts'
@@ -14,7 +14,7 @@ function recover(store: Store, record: PageSubmission): PageSubmission {
 	if (!existing && outcome === undefined && !record.immediate && record.intent) {
 		try { resolvePageIntent(store, record.intent) } catch (error) {
 			if (!(error instanceof IntentError)) throw error
-			const refused: PageSubmission = { ...record, phase: 'refused', accepted: false, ids: [], processed: true, refused: true, status: error.status, text: `${error.message} Nothing was sent. Open the item again.` }
+			const refused: PageSubmission = store.receiptFacts({ ...record, phase: 'refused', accepted: false, ids: [], processed: true, refused: true, status: error.status, text: `${error.message} Nothing was sent. Open the item again.` }, refusedOutcome(error.status))
 			store.savePageSubmission(refused)
 			return refused
 		}
@@ -24,18 +24,21 @@ function recover(store: Store, record: PageSubmission): PageSubmission {
 		: { accepted: false, ids: [], text: record.immediate
 			? 'This action was interrupted. Its result cannot be confirmed. Check the existing item, watch or reminder before doing anything else. It will not be retried.'
 			: 'This submission was interrupted before it was queued. Nothing was sent. Open the item again.' }
-	const saved: PageSubmission = {
+	const saved: PageSubmission = store.receiptFacts({
 		...record, phase: result.accepted ? 'queued' : 'refused',
 		accepted: result.accepted, ids: result.ids, text: forPage(result.text),
 		status: result.accepted ? result.ids.length ? 202 : 200 : 422,
 		uncertain: !!record.immediate && !result.accepted,
-	}
+	}, { kind: result.accepted ? 'queued' : record.immediate ? 'failed' : 'refused' })
 	store.savePageSubmission(saved)
 	return saved
 }
 
 // The page server never waits on its thread for a receipt lock another process holds (#27 b): that process (the runner, saving the
 // result) is mid-write, so what is saved now is read without the lock and without writing; the next poll sees the rest.
+// A click refused by the page server: 409 means the item changed since the owner looked (the one plain reason it always has).
+const refusedOutcome = (status: number): ReceiptOutcome => ({ kind: 'refused', ...(status === 409 ? { stale: true as const } : {}) })
+
 export function submissionReceipt(store: Store, id: string): Receipt | undefined {
 	const r = store.withPageSubmissionNow(id, () => readSubmissionReceipt(store, id))
 	return r === BUSY ? readSubmissionReceipt(store, id, false) : r
@@ -56,7 +59,8 @@ function readSubmissionReceipt(store: Store, id: string, write = true): Receipt 
 	const refused = !!saved.refused || !saved.accepted || saved.ids.some(id => store.outcomeRefused(id))
 	const uncertain = !!saved.uncertain || !!lostDetails
 	if (write && applied && !saved.processed) store.savePageSubmission({ ...saved, processed: true, text, refused, uncertain })
-	return { submissionId: saved.id, item: saved.item, rev: saved.rev, ids: saved.ids, accepted: saved.accepted, applied: !!applied, text, refused, uncertain, at: saved.at }
+	return { submissionId: saved.id, item: saved.item, rev: saved.rev, ids: saved.ids, accepted: saved.accepted, applied: !!applied, text, refused, uncertain, at: saved.at,
+		...(saved.outcome ? { outcome: saved.outcome } : {}), ...(saved.who ? { who: saved.who } : {}), ...(saved.chat ? { chat: saved.chat } : {}) }
 }
 
 export function submitIntent(store: Store, intent: Intent): { status: number; receipt: Receipt } {
@@ -83,11 +87,11 @@ function submitLocked(store: Store, intent: Intent): { status: number; receipt: 
 	let resolved: ReturnType<typeof resolvePageIntent>
 	try { resolved = resolvePageIntent(store, intent) } catch (error) {
 		if (!(error instanceof IntentError)) throw error
-		const refused: PageSubmission = {
+		const refused: PageSubmission = store.receiptFacts({
 			id: intent.submissionId, answerId: ulid(), fingerprint, item: intent.item, rev: intent.rev, at: new Date().toISOString(),
 			phase: 'refused', accepted: false, ids: [],
-			text: error.message, processed: true, status: error.status,
-		}
+			text: error.message, processed: true, status: error.status, intent,
+		}, refusedOutcome(error.status))
 		store.savePageSubmission(refused)
 		return { status: error.status, receipt: submissionReceipt(store, refused.id)! }
 	}
@@ -99,21 +103,22 @@ function submitLocked(store: Store, intent: Intent): { status: number; receipt: 
 	if (resolved.execute) {
 		try {
 			const immediate = resolved.execute()
-			const saved: PageSubmission = { ...record, phase: immediate.accepted ? 'queued' : 'refused', accepted: immediate.accepted, text: immediate.text, processed: true, status: immediate.accepted ? 200 : 422 }
+			const saved: PageSubmission = store.receiptFacts({ ...record, phase: immediate.accepted ? 'queued' : 'refused', accepted: immediate.accepted, text: immediate.text, processed: true, status: immediate.accepted ? 200 : 422 }, { kind: immediate.accepted ? 'done' : 'refused' })
 			store.savePageSubmission(saved)
 			return { status: saved.status, receipt: submissionReceipt(store, saved.id)! }
 		} catch (error) {
 			if (!(error instanceof IntentError)) throw error
-			store.savePageSubmission({ ...record, phase: 'refused', text: error.message, processed: true, status: error.status })
+			store.savePageSubmission(store.receiptFacts({ ...record, phase: 'refused', text: error.message, processed: true, status: error.status }, refusedOutcome(error.status)))
 			return { status: error.status, receipt: submissionReceipt(store, record.id)! }
 		}
 	}
 	if (!resolved.parsed) throw new Error('The item action has no structured answer.')
 	const result = enqueueParsed(store, [resolved.parsed], resolved.shownAt, 'page', record.answerId, resolved.page, record.id)
 	const completed = store.pageSubmission(record.id)
-	const queued: PageSubmission = { ...record, phase: result.accepted ? 'queued' : 'refused', accepted: result.accepted, ids: result.ids, text: forPage(result.text), status: result.accepted ? result.ids.length ? 202 : 200 : 422,
-		...(completed?.processed ? { processed: true, text: completed.text, refused: completed.refused, uncertain: completed.uncertain } : {}),
-	}
+	const base: PageSubmission = { ...record, phase: result.accepted ? 'queued' : 'refused', accepted: result.accepted, ids: result.ids, text: forPage(result.text), status: result.accepted ? result.ids.length ? 202 : 200 : 422 }
+	// Already completed by the runner while this request ran: its outcome stands; otherwise it waits in the queue (or was refused).
+	const queued: PageSubmission = completed?.processed ? { ...base, processed: true, text: completed.text, refused: completed.refused, uncertain: completed.uncertain, outcome: completed.outcome, who: completed.who, chat: completed.chat }
+		: store.receiptFacts(base, { kind: result.accepted ? 'queued' : 'refused' })
 	store.savePageSubmission(queued)
 	return { status: queued.status, receipt: submissionReceipt(store, queued.id)! }
 }

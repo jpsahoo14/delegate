@@ -1,4 +1,4 @@
-import { changeSays, meaningOf, pendingEffects, shown } from './effects.ts'
+import { changeSays, isVote, pendingEffects, prIdOf, shown, voteValue } from './effects.ts'
 import type { Effect, Msg, Proposal, Workflow } from './types.ts'
 
 export const MARK = 'Assistant ·'
@@ -23,8 +23,14 @@ export function statusLine(wf: Workflow, now = new Date()): string {
 	if (wf.state === 'running') return 'Running: drafting a reply'
 	if (wf.state === 'waiting_on_task') return `${wf.status} (${Math.max(0, Math.round((now.getTime() - Date.parse(wf.waitingSince ?? wf.updatedAt)) / 60000))} min)`
 	if (wf.state === 'scheduled') return wf.status.startsWith('Held') ? wf.status : `Sending at ${hhmm(wf.sendAt)} unless you act (${wf.decision?.reason ?? 'rule'})`
+	if (wf.job && !wf.question) {
+		const effects = (wf.effects ?? []).filter(e => !e.off), error = effects.find(e => e.error)?.error
+		if (effects.some(e => e.maybe)) return effectResultLine(wf, 'unsure')
+		if (error) return effectResultLine(wf, effects.some(e => e.done) ? 'partial' : 'failed', error)
+		if (effects.length && effects.every(e => e.done) && !wf.draft?.text) return effectResultLine(wf, 'changes-only')
+		if (!wf.draft?.preview) return `Ready: ${wf.status}`
+	}
 	if (wf.draft?.preview) return `Preview: reply "ok ${wf.code}" to send`
-	if (wf.job && !wf.question) return `Ready: ${wf.status}`
 	if (wf.decision?.ruleId && !wf.question) return `Not sent automatically (${wf.decision.reason}). Reply "ok ${wf.code}" to send`
 	// A ready draft says how sure it is, from the evidence the runner checked (R-ANS-02).
 	// Plain words for how well the draft is backed, from the evidence the runner checked (persona test P2).
@@ -61,13 +67,69 @@ export function cardLines(wf: Workflow): string[] {
 	return out
 }
 
-// "2× comment on PR 1601234, approve on PR 1601234". Words come from the job, so no plural rules (R-HIL-21).
-export function effectLine(effects: Effect[]): string {
-	const groups = new Map<string, number>()
-	// A PR change says what the PR is, from Azure DevOps (next action).
-	// Built from each change's call, never the AI's words about it (review 10-21 P1-1).
-	for (const e of effects) { const m = meaningOf(e), k = `${shown(e).line}${m ? ` (${m})` : ''}`; groups.set(k, (groups.get(k) ?? 0) + 1) }
-	return [...groups].map(([k, n]) => (n > 1 ? `${n}× ${k}` : k)).join(', ')
+export function effectLine(effects: Effect[], tense: 'will' | 'doing' | 'done' = 'will', titles = tense !== 'done'): string {
+	const groups: { key: string; effects: Effect[] }[] = []
+	for (const e of effects) {
+		const c = e.call, id = prIdOf(c), action = String(c?.args.action ?? '')
+		const kind = id && /pull_request_thread/i.test(c?.tool ?? '') && /^(create|reply)$/.test(action) ? 'comment'
+			: id && /pull_request_thread/i.test(c?.tool ?? '') && action === 'update' ? 'edit'
+			: id && /pull_request_thread/i.test(c?.tool ?? '') && /status/i.test(action) ? 'resolve' : isVote(c) && id ? `vote:${voteValue(c)}` : ''
+		const key = kind ? `call:${id}:${kind}` : `line:${shown(e).line}`, last = groups.at(-1)
+		if (last?.key === key && kind && !kind.startsWith('vote:')) last.effects.push(e)
+		else groups.push({ key, effects: [e] })
+	}
+	const lines: string[] = []
+	let lastPR: number | undefined
+	const verb = (will: string, doing: string, done: string) => ({ will, doing, done })[tense]
+	for (const { effects: group } of groups) {
+		const e = group[0], c = e.call, id = prIdOf(c), action = String(c?.args.action ?? '')
+		const title = e.pr?.title?.replace(/\s+/g, ' ').trim()
+		const place = id ? `PR ${id}${title && titles ? ` (${clip(title, 40)})` : ''}` : ''
+		if (id && /pull_request_thread/i.test(c?.tool ?? '') && /^(create|reply|update)$/.test(action)) {
+			const edit = action === 'update', count = group.length === 1 ? 'a comment' : `${group.length} comments`
+			lines.push(`${edit ? verb('edit', 'editing', 'edited') : verb('post', 'posting', 'posted')} ${count} on ${place}`)
+		} else if (id && /pull_request_thread/i.test(c?.tool ?? '') && /status/i.test(action)) {
+			lines.push(`${verb('resolve', 'resolving', 'resolved')} ${group.length === 1 ? 'a thread' : `${group.length} threads`} on ${place}`)
+		} else if (id && isVote(c)) {
+			const target = lastPR === id ? 'it' : place, vote = voteValue(c)
+			lines.push(vote === 10 ? `${verb('approve', 'approving', 'approved')} ${target}`
+				: vote === 5 ? `${verb('approve', 'approving', 'approved')} ${target} with suggestions`
+				: vote === -5 ? `${verb('mark', 'marking', 'marked')} ${target} "wait for author"`
+				: vote === -10 ? `${verb('reject', 'rejecting', 'rejected')} ${target}`
+				: vote === 0 ? `${verb('reset', 'resetting', 'reset')} your vote on ${target}` : shown(e).line)
+		} else if (/work_?item/i.test(c?.tool ?? '') && /update/i.test(action)) lines.push(`${verb('update', 'updating', 'updated')} work item ${String(c?.args.id)}`)
+		else if (/createevent/i.test(c?.tool ?? '')) {
+			const a = c!.args, start = String(a.startDateTime ?? a.start ?? '').replace('T', ' '), end = String(a.endDateTime ?? a.end ?? '').replace('T', ' ')
+			lines.push(`${verb('create', 'creating', 'created')} "${String(a.subject ?? '')}"${start ? ` for ${start}${end ? ` to ${end}` : ''}${a.timeZone ? ` (${String(a.timeZone)})` : ''}` : ''}`)
+		} else lines.push(shown(e).line)
+		lastPR = id
+	}
+	return lines.join(' and ')
+}
+
+export type EffectResult = 'running' | 'done' | 'changes-only' | 'held' | 'partial' | 'failed' | 'unsure' | 'reply-only'
+export function effectResultLine(wf: Workflow, result: EffectResult, reason = ''): string {
+	const effects = wf.effects ?? [], first = wf.asker?.name?.split(/\s+/)[0] ?? 'them'
+	const person = `${first}${wf.chat.group ? ` in ${wf.chat.name}` : ''}`
+	const pr = effects.map(e => prIdOf(e.call)).find(id => id !== undefined), place = pr === undefined ? 'the changes' : `PR ${pr}`
+	const clean = reason.replace(/^Error:\s*/i, '').split(/(?<=[.!?])\s+/)[0].replace(/\b[A-Z]\d+\b/g, 'this item').replace(/[.\s]+$/, '')
+	const why = /not allowed|haven.t allowed|not enabled|not permitted/i.test(clean) ? "you haven't allowed Delegate to make this change"
+		: /changed|stale|\bhead\b/i.test(clean) ? `${place} changed since the review`
+		: /closed|completed|abandoned/i.test(clean) ? 'the PR is closed'
+		: /unreach|network|ECONN|timeout|timed out/i.test(clean) ? "Azure DevOps wasn't reachable"
+		: /[0-9a-f]{8,}|job:|Error:|[_-](?:write|read|request)|\btool\b|\bschema\b/i.test(clean) ? 'the change could not be verified'
+		: clean || 'the change could not be verified'
+	if (result === 'running') return `${effectLine(pendingEffects(effects), 'doing').replace(/^./, c => c.toUpperCase())}${wf.draft?.text ? `, then replying to ${person}` : ` for ${person}`}.`
+	if (result === 'done') return `Done: ${effectLine(effects.filter(e => e.done && !e.off), 'done')}, then replied to ${person}.`
+	if (result === 'changes-only') return `Done: ${effectLine(effects.filter(e => e.done && !e.off), 'done', true)}. No reply was needed.`
+	if (result === 'held') return `Nothing was posted or sent yet for ${person}: ${why}. Say ok ${wf.code} when ready.`
+	if (result === 'unsure') return `Not sure the comment reached ${place}: Azure DevOps didn't answer. Check the PR before trying again. Nothing was sent to ${first}.`
+	if (result === 'failed') return `Couldn't post on ${place}: ${why}. Nothing was sent to ${first}. Say ok ${wf.code} to try again.`
+	if (result === 'reply-only') return `Sent your reply to ${person}. Nothing was posted on ${place}.`
+	const comments = effects.filter(e => /pull_request_thread/i.test(e.call?.tool ?? '') && /^(create|reply)$/.test(String(e.call?.args.action ?? '')))
+	const total = comments.length || effects.filter(e => !e.off).length
+	const done = (comments.length ? comments : effects).filter(e => e.done && !e.off).length
+	return `Posted ${done} of ${total} ${comments.length ? 'comments' : 'changes'} on ${place}. The other${total - done === 1 ? '' : 's'} didn't post: ${why}. Your reply to ${first} wasn't sent; it waits for you. Say ok ${wf.code} to try again.`
 }
 
 export type Extra = { proposals?: Proposal[]; background?: { what: string; since: string }[]; automations?: { code: string; line: string; state: string; next?: string }[]; waiting?: { code: string; to: string; text: string; at: string }[] }

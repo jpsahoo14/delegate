@@ -141,6 +141,7 @@ export type Job = {
 	intent?: Intent
 	// The repo the work is in, by its remote ("dev.azure.com/org/project/repo"), and the PR's source branch when known (owned work).
 	remote?: string
+	needsCheckout?: boolean
 	branch?: string
 	redacted?: boolean
 	// A relay run is a message to the owner's open session on some machine (research/cross-session-opus.md): no process here, so no pid to watch.
@@ -149,7 +150,7 @@ export type Job = {
 	// sent: asks the session has; from: where the run in flight started; ok: asks the owner let through (review 10-19 #5, #12).
 	relay?: { machine: string; session: string; what: string; sent?: number; from?: number; ok?: number }
 	// at: when a tracker check gave this result, so the page says when the last check really ran.
-	result?: { summary: string; reply?: Draft; effects: Effect[]; context?: Fact[]; at?: string }
+	result?: { summary: string; reply?: Draft; effects: Effect[]; context?: Fact[]; at?: string; findings?: ReviewFinding[]; voteRecommendation?: VoteRecommendation }
 	error?: string
 	// Trackers (R-TRK-01): run again every N minutes until the condition in words holds.
 	every?: number
@@ -208,10 +209,13 @@ export type Workflow = {
 	completionSeen?: string
 	draft?: Draft
 	// Kept independently of worker reports until the owner sends, skips, or explicitly asks for a replacement.
-	ownerSend?: { draft: Draft; at: string; askMsgId: string }
-	reason?: { kind: 'ask-edited'; msgId: string; before: string; text: string; at: string; digest: string }
-		| { kind: 'asker-wrote-again'; msgId: string; text: string; at: string; digest: string }
+	ownerSend?: { draft: Draft; at: string; askMsgId: string; checks?: string[] }
+	reason?: { kind: 'ask-edited'; msgId: string; before: string; text: string; at: string; digest: string; changed?: string }
+		| { kind: 'asker-wrote-again'; msgId: string; text: string; at: string; digest: string; changed?: string; msgIds?: string[]; messages?: { id: string; text: string; at: string }[] }
 		| { kind: 'no-reply-needed'; why: string; digest: string }
+	reasons?: NonNullable<Workflow['reason']>[]
+	holdDigest?: string
+	holdCheckPending?: boolean
 	question?: string
 	// What the worker could not read, such as an image or a file it has no access to (R-ING-11).
 	gaps?: string[]
@@ -227,7 +231,7 @@ export type Workflow = {
 	answerSurface?: 'chat' | 'self' | 'panel'
 	status: string
 	// holding: the last send was a holding reply; the full answer is still owed and the item stays open (#41).
-	sent?: { msgId: string; at: string; byRule?: string; undoUntil?: string; text?: string; sendText?: string; askMsgId?: string; holding?: true }
+	sent?: { msgId: string; at: string; byRule?: string; undoUntil?: string; text?: string; sendText?: string; askMsgId?: string; holding?: true; checks?: string[] }
 	sendAt?: string
 	acked?: boolean
 	decision?: { action: string; ruleId?: string; reason: string; confidence: Confidence }
@@ -311,6 +315,10 @@ export type Workflow = {
 	updatedAt: string
 }
 
+export type ReviewFinding = { text: string; file?: string; line?: number; thread?: { author: string; url: string; at: string } }
+// A recommendation is evidence only; an approved effect remains the sole authority to cast a vote.
+export type VoteRecommendation = { vote: 'Approved' | 'ApprovedWithSuggestions' | 'NoVote' | 'WaitingForAuthor' | 'Rejected' | 'none'; why: string }
+
 export type Report = {
 	workflowId: Id
 	intent: Intent
@@ -320,6 +328,8 @@ export type Report = {
 	gaps?: string[]
 	choices?: Choices
 	context?: Fact[]
+	findings?: ReviewFinding[]
+	voteRecommendation?: VoteRecommendation
 	meeting?: Meeting
 	answer?: string
 	answeredItems?: string[]
@@ -327,7 +337,7 @@ export type Report = {
 	fyi?: Fyi
 	same?: string
 	summary: string
-	job?: { key: string; goal: string; repo?: string; branch?: string; owner?: string }
+	job?: { key: string; goal: string; repo?: string; branch?: string; owner?: string; needsCheckout?: boolean }
 	// Validate jobs: the test rings the repo's own config lists, proposed for the owner to confirm (owned work).
 	deployTargets?: ProposedTarget[]
 	done?: boolean
@@ -346,7 +356,8 @@ export type Report = {
 
 // Why a run fell short of its goal, so the runner can try again by another route (design-spec/goal-retry.md).
 export type BlockerKind = 'tool' | 'transient' | 'not_ready' | 'budget' | 'access' | 'asker'
-export type Blocker = { kind: BlockerKind; why: string; tried: string[]; retryAfterMin?: number; waitFor?: string }
+// documentFailure is stamped by doc_read at submission, never accepted from the model's report schema.
+export type Blocker = { kind: BlockerKind; why: string; tried: string[]; retryAfterMin?: number; waitFor?: string; documentFailure?: true }
 // The tries so far for one ask: when the next is due, and what each one met.
 export type Retry = { at: string; n: number; total?: number; firstAt: string; kindAt?: string; last: Blocker; tried: string[] }
 

@@ -3,6 +3,7 @@ import { z } from 'zod'
 const text = z.string(), strings = z.array(text), optional = text.optional()
 const link = z.object({ text, key: optional })
 export const settingsSchema = z.object({
+	code: z.object({ machine: text, example: text, folders: strings, automatic: z.boolean(), clones: z.array(z.object({ name: text, remote: text, paths: strings })), scannedAt: optional }).optional(),
 	rows: z.array(z.object({
 		key: text, label: text, help: text, kind: z.enum(['text', 'line', 'list', 'number', 'choice', 'bool', 'time', 'switch']),
 		section: z.enum(['learned', 'you', 'replies', 'timing', 'system']), value: text,

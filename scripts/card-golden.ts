@@ -2,7 +2,7 @@
 // run over cardState() only. No browser, no model, well under a second. A proof script, not a test: run it by hand with
 // `node scripts/card-golden.ts` and paste its last line into the report of every change that touches card state. Every new card bug
 // adds its row here before the fix. Item codes are the owner's; everything else is fictional.
-import { cardState, checkCard, currentFailure, type CardFacts, type Failure } from '../src/core/card-state.ts'
+import { cardState, checkCard, currentFailure, type CardFacts, type Failure, type HeldReason } from '../src/core/card-state.ts'
 import { cardFacts } from '../src/core/card-facts.ts'
 
 const DAY = 86_400_000, now = Date.parse('2026-10-24T12:00:00Z')
@@ -10,9 +10,12 @@ const at = (daysAgo: number) => new Date(now - daysAgo * DAY).toISOString()
 const fail = (f: Partial<Failure> = {}): Failure => ({ kind: 'other', at: at(1), why: 'the run stopped without a result', tried: [], repeats: 0, systemChanged: false, ...f })
 const draft = (d: Partial<NonNullable<CardFacts['draft']>> = {}) => ({ holding: false, preview: false, at: at(0), ...d })
 const facts = (f: Partial<CardFacts> = {}): CardFacts => ({ state: 'needs_human', changes: 0, ...f })
-type Row = { id: string; what: string; facts: CardFacts; expect: { mode: string; primary?: string | null; secondary?: string[]; more?: string[]; editor?: string; warn?: string | null; waited?: string }; broken?: string[] }
+const held = (...reasons: HeldReason[]): NonNullable<CardFacts['held']> => ({ digest: 'd1', who: 'Kim', reasons })
+type Row = { id: string; what: string; facts: CardFacts; expect: { mode: string; primary?: string | null; secondary?: string[]; more?: string[]; editor?: string; warn?: string | null; warnIs?: string; waited?: string | null }; broken?: string[] }
 // A failed document read as an item records it, through cardFacts (pure), so the cause mapping itself is checked (#40 handoff).
 const docFailure = (why: string, tried: string[], kind = 'content') => cardFacts({ wf: { state: 'needs_human', status: `Couldn't finish: ${why}`, runFailed: { at: at(1), kind, why, tried, job: 'j9' }, updatedAt: at(1) } as any, card: {}, changes: 0 })
+// A held item as the engine leaves it (#45), through cardFacts: its approved draft kept and its reasons.
+const heldItem = (hold: Record<string, unknown>) => cardFacts({ wf: { state: 'needs_human', status: 'Your approved draft is kept. Send anyway or Redraft.', asker: { id: 'kim', name: 'Kim Lane' }, revAt: at(0), updatedAt: at(0), ...hold } as any, card: { draft: {} }, changes: 0 })
 
 const rows: Row[] = [
 	// One per rule (§2), the least that selects it.
@@ -64,9 +67,9 @@ const rows: Row[] = [
 	{ id: 'G43', what: 'A57/A61: approval not verified; Send checks again', facts: facts({ draft: draft(), notSent: { why: 'the PR approval could not be verified' } }), expect: { mode: 'not-sent', primary: 'approve', editor: 'reply', warn: "Didn't send: the PR approval" } },
 	{ id: 'G44', what: 'A90: "Not finished" with nothing to send', facts: facts({ failure: fail({ kind: 'content', why: "The forwarded message's contents were not exposed" }) }), expect: { mode: 'failed', primary: 'write-own', secondary: ['try-again', 'later'] } },
 	// The owner's Send held by SEND's wf.reason (PE 14:28): Send anyway past exactly that reason, or Redraft / Skip.
-	{ id: 'G45', what: 'held: Kim edited the ask after the ok', facts: facts({ draft: draft(), held: { kind: 'ask-edited', digest: 'd1', who: 'Kim' } }), expect: { mode: 'held', primary: 'send-anyway', secondary: ['redraft', 'later'], editor: 'reply', warn: 'Kim edited the question after you approved.' } },
-	{ id: 'G46', what: 'held: Kim wrote again after the ok', facts: facts({ draft: draft(), held: { kind: 'asker-wrote-again', digest: 'd2', who: 'Kim' } }), expect: { mode: 'held', primary: 'send-anyway', secondary: ['redraft', 'later'], warn: 'Kim wrote again after you approved.' } },
-	{ id: 'G47', what: 'held: no reply looks needed', facts: facts({ draft: draft(), held: { kind: 'no-reply-needed', digest: 'd3', who: 'Kim', why: 'Kim said thanks, no question' } }), expect: { mode: 'held', primary: 'send-anyway', secondary: ['dismiss', 'later'], warn: 'Delegate thinks no reply is needed: Kim said thanks' } },
+	{ id: 'G45', what: 'held: Kim edited their message after the ok', facts: facts({ draft: draft(), held: held({ kind: 'ask-edited' }) }), expect: { mode: 'held', primary: 'send-anyway', secondary: ['redraft', 'later'], editor: 'reply', warn: 'Kim edited their message after you approved.' } },
+	{ id: 'G46', what: 'held: Kim wrote again after the ok', facts: facts({ draft: draft(), held: held({ kind: 'asker-wrote-again' }) }), expect: { mode: 'held', primary: 'send-anyway', secondary: ['redraft', 'later'], warn: 'Kim wrote again after you approved.' } },
+	{ id: 'G47', what: 'held: no reply looks needed', facts: facts({ draft: draft(), held: held({ kind: 'no-reply-needed', why: 'Kim said thanks, no question' }) }), expect: { mode: 'held', primary: 'send-anyway', secondary: ['dismiss', 'later'], warnIs: 'Delegate thinks no reply is needed now: Kim said thanks, no question.' } },
 	// #40 handoff (SEND 14:50): a missing decoder is a fixed cause; no access or too large can't be helped by trying again.
 	{ id: 'G49', what: 'A76 (#40): Office file only as encoded binary: fixed now, Try again leads', facts: docFailure('Available readers return only the opening of the spec', ['readSmallBinaryFile: the whole file as base64, no decoder']), expect: { mode: 'failed', primary: 'try-again', secondary: ['write-own', 'later'] } },
 	{ id: 'G50', what: '#40: no access to the document', facts: docFailure("Couldn't open Robin's v7 spec: no access", []), expect: { mode: 'failed', primary: 'write-own', secondary: ['try-again', 'later'], more: ['dismiss'] } },
@@ -95,9 +98,26 @@ const rows: Row[] = [
 	{ id: 'G53', what: 'more: holding', facts: facts({ draft: draft({ holding: true }) }), expect: { mode: 'holding', more: ['dismiss'] } },
 	{ id: 'G54', what: 'more: reply-with-question', facts: facts({ question: { text: 'Also ping the release channel?', reviewAgain: false }, draft: draft() }), expect: { mode: 'reply-with-question', more: ['answer', 'dismiss'] } },
 	{ id: 'G48', what: 'an edit cleared the hold: a plain Send', facts: facts({ draft: draft({ preview: true }) }), expect: { mode: 'reply', primary: 'approve', editor: 'reply' } },
-	{ id: 'G55', what: 'held with a preview draft still leads with Send anyway (PE B2)', facts: facts({ draft: draft({ preview: true }), held: { kind: 'ask-edited', digest: 'd1', who: 'Kim' } }), expect: { mode: 'held', primary: 'send-anyway', more: ['dismiss'] } },
-	{ id: 'G56', what: 'more: held, wrote again', facts: facts({ draft: draft(), held: { kind: 'asker-wrote-again', digest: 'd2', who: 'Kim' } }), expect: { mode: 'held', more: ['dismiss'] } },
-	{ id: 'G57', what: 'more: held, no reply needed (Skip is in the bar)', facts: facts({ draft: draft(), held: { kind: 'no-reply-needed', digest: 'd3', who: 'Kim', why: 'thanks' } }), expect: { mode: 'held', more: [] } },
+	{ id: 'G55', what: 'held with a preview draft still leads with Send anyway (PE B2)', facts: facts({ draft: draft({ preview: true }), held: held({ kind: 'ask-edited' }) }), expect: { mode: 'held', primary: 'send-anyway', more: ['dismiss'] } },
+	{ id: 'G56', what: 'more: held, wrote again', facts: facts({ draft: draft(), held: held({ kind: 'asker-wrote-again' }) }), expect: { mode: 'held', more: ['dismiss'] } },
+	{ id: 'G57', what: 'more: held, no reply needed (Skip is in the bar)', facts: facts({ draft: draft(), held: held({ kind: 'no-reply-needed', why: 'thanks' }) }), expect: { mode: 'held', more: [] } },
+	// #45 (PE 17:15): every reason in one line, newest first; Redraft leads on a real change (the engine's `changed` line).
+	{ id: 'G71', what: 'held: a real change leads with Redraft and names it', facts: facts({ draft: draft(), held: held({ kind: 'asker-wrote-again', at: at(0), changed: 'Incident 900001 is Active again, so she asks for a new ETA.' }) }), expect: { mode: 'held', primary: 'redraft', secondary: ['send-anyway', 'later'], more: ['dismiss'], warnIs: 'Kim wrote again after you approved: Incident 900001 is Active again, so she asks for a new ETA.', waited: null } },
+	{ id: 'G72', what: 'held: no reply needed alone leads with Send anyway', facts: facts({ draft: draft(), held: held({ kind: 'no-reply-needed', why: 'Kim only shared the incident list' }) }), expect: { mode: 'held', primary: 'send-anyway', secondary: ['dismiss', 'later'], more: [], warnIs: 'Delegate thinks no reply is needed now: Kim only shared the incident list.' } },
+	{ id: 'G73', what: 'held: two reasons, one sentence each, the asker first; a real change still leads with Redraft, Skip stays', facts: facts({ draft: draft(), held: held({ kind: 'no-reply-needed', why: 'it is a daily digest' }, { kind: 'asker-wrote-again', at: at(0), changed: 'She now asks you to own Incident 900002.' }) }), expect: { mode: 'held', primary: 'redraft', secondary: ['send-anyway', 'dismiss', 'later'], more: [], warnIs: 'Kim wrote again after you approved: She now asks you to own Incident 900002. Delegate thinks no reply is needed now: it is a daily digest.', waited: null } },
+	{ id: 'G74', what: 'held: three reasons, at most two sentences (newest ask, then no reply); the third is in Details', facts: facts({ draft: draft(), held: held({ kind: 'ask-edited', at: at(1) }, { kind: 'no-reply-needed', why: 'thanks' }, { kind: 'asker-wrote-again', at: at(0) }) }), expect: { mode: 'held', primary: 'send-anyway', secondary: ['redraft', 'dismiss', 'later'], warnIs: 'Kim wrote again after you approved. Delegate thinks no reply is needed now: thanks.', waited: 'Why it waited:\nKim wrote again after you approved.\nKim edited their message after you approved.\nDelegate thinks no reply is needed now: thanks.' } },
+	// Through cardFacts: an item from before #45 (wf.reason only) reads through holdReasons; every new message is summarised (2c3e3d2d).
+	{ id: 'G75', what: 'held: an old wf.reason-only item, through the accessor', facts: heldItem({ reason: { kind: 'asker-wrote-again', msgId: 'm2', text: 'Any news?', at: at(0), digest: 'r1' } }), expect: { mode: 'held', primary: 'send-anyway', secondary: ['redraft', 'later'], warn: 'Kim wrote again after you approved.' } },
+	{ id: 'G76', what: 'held: an earlier "also, can you…?" then an unchanged digest is held, and both messages count', facts: heldItem({ reasons: [{ kind: 'asker-wrote-again', msgId: 'm3', msgIds: ['m2', 'm3'], messages: [{ id: 'm2', text: 'Also, can you send the rollback plan?', at: at(0.1) }, { id: 'm3', text: 'Daily incident list (10)', at: at(0) }], text: '', at: at(0), digest: 'r2', changed: 'She also asks you for the rollback plan.' }], holdDigest: 'h2' }), expect: { mode: 'held', primary: 'redraft', secondary: ['send-anyway', 'later'], warnIs: 'Kim wrote 2 more messages after you approved: She also asks you for the rollback plan.' } },
+	{ id: 'G77', what: 'held through cardFacts: two engine reasons together, Redraft leads, Skip in the bar', facts: heldItem({ reasons: [{ kind: 'no-reply-needed', why: 'it is a daily digest', digest: 'r3' }, { kind: 'ask-edited', msgId: 'm1', before: 'Owners, update your incidents', text: 'Owners, update your incidents by noon', at: at(0), digest: 'r4', changed: 'She now wants it by noon.' }], holdDigest: 'h3' }), expect: { mode: 'held', primary: 'redraft', secondary: ['send-anyway', 'dismiss', 'later'], warnIs: 'Kim edited their message after you approved: She now wants it by noon. Delegate thinks no reply is needed now: it is a daily digest.' } },
+	// The leak invariant: a real incident number in a change line is not a leaked id; a hash still is.
+	{ id: 'G78', what: 'held: a 9-digit incident number in the change line is not a leak', facts: facts({ draft: draft(), held: held({ kind: 'ask-edited', at: at(0), changed: 'Incident 900000123 is Active again.' }) }), expect: { mode: 'held', primary: 'redraft', warn: 'Kim edited their message after you approved: Incident 900000123 is Active again.' } },
+	{ id: 'G79', what: 'held: a hash in the change line is still a leak', facts: facts({ draft: draft(), held: held({ kind: 'ask-edited', at: at(0), changed: 'see 3fa9c0d2b7 for details' }) }), expect: { mode: 'held', primary: 'redraft' }, broken: ['the warning leaks an id or an error'] },
+	// PM final 19:20/19:40: each sentence about 110 characters at most, cut with … at a word; Details: 'Why it waited:', one reason per line.
+	// PE 19:16: an ask with a change line comes before a newer one without, so the line says why Redraft leads.
+	{ id: 'G82', what: 'held: the ask with a change line leads even when an ask without one is newer', facts: facts({ draft: draft(), held: held({ kind: 'asker-wrote-again', at: at(0) }, { kind: 'ask-edited', at: at(1), changed: 'She now wants the risks by noon.' }) }), expect: { mode: 'held', primary: 'redraft', secondary: ['send-anyway', 'later'], warnIs: 'Kim edited their message after you approved: She now wants the risks by noon. Kim wrote again after you approved.', waited: null } },
+	{ id: 'G80', what: 'held: a long change line is cut at about 110 characters and kept in full in Details', facts: facts({ draft: draft(), held: held({ kind: 'asker-wrote-again', at: at(0), count: 3, changed: 'She now asks you to own Incident 900002 and Incident 900003, post the rollback plan in the channel, and confirm the Friday date with Robin.' }) }), expect: { mode: 'held', primary: 'redraft', warnIs: 'Kim wrote 3 more messages after you approved: She now asks you to own Incident 900002 and Incident 900003…', waited: 'Why it waited:\nKim wrote 3 more messages after you approved: She now asks you to own Incident 900002 and Incident 900003, post the rollback plan in the channel, and confirm the Friday date with Robin.' } },
+	{ id: 'G81', what: 'held: a long no-reply reason is cut too; the asker sentence stays whole', facts: facts({ draft: draft(), held: held({ kind: 'no-reply-needed', why: 'it is the daily status digest that the Events team posts every morning, and nothing in it asks you anything directly' }, { kind: 'asker-wrote-again', at: at(0), changed: 'She asks for a new ETA.' }) }), expect: { mode: 'held', primary: 'redraft', warnIs: 'Kim wrote again after you approved: She asks for a new ETA. Delegate thinks no reply is needed now: it is the daily status digest that the Events team posts every…', waited: 'Why it waited:\nKim wrote again after you approved: She asks for a new ETA.\nDelegate thinks no reply is needed now: it is the daily status digest that the Events team posts every morning, and nothing in it asks you anything directly.' } },
 ]
 
 const t0 = performance.now()
@@ -110,10 +130,22 @@ for (const r of rows) {
 	if (e.more && JSON.stringify(s.more) !== JSON.stringify(e.more)) why.push(`more ${s.more.join(',')}, expected ${e.more.join(',')}`)
 	if (e.editor && s.editor !== e.editor) why.push(`editor ${s.editor}, expected ${e.editor}`)
 	if (e.warn === null && s.warn) why.push(`warn "${s.warn}", expected none`)
+	if (e.warnIs && s.warn !== e.warnIs) why.push(`warn "${s.warn ?? ''}", expected exactly "${e.warnIs}"`)
+	if (e.waited === null && s.waited) why.push(`waited "${s.waited}", expected none`)
 	if (e.waited && s.waited !== e.waited) why.push(`waited "${s.waited ?? ''}", expected "${e.waited}"`)
 	if (e.warn && !s.warn?.startsWith(e.warn)) why.push(`warn "${s.warn ?? ''}", expected "${e.warn}…"`)
 	if (JSON.stringify(broken) !== JSON.stringify(r.broken ?? [])) why.push(`invariants [${broken.join('; ')}], expected [${(r.broken ?? []).join('; ')}]`)
 	if (why.length) { bad++; console.log(`FAIL ${r.id} ${r.what}: ${why.join(' · ')}`) }
+}
+// Every held sentence stays within about 110 characters (PM 19:20).
+for (const r of rows.filter(r => r.facts.held)) {
+	const long = (cardState(r.facts).warn ?? '').split(/(?<=[.…])\s+(?=[A-Z])/).find(s => s.length > 112)
+	if (long) { bad++; console.log(`FAIL ${r.id} a held sentence is ${long.length} characters: ${long}`) }
+}
+// The digest a held card passes is the engine's holdDigest, or the one reason's digest for an item from before #45 (G75-G77).
+for (const [id, want] of [['G75', 'r1'], ['G76', 'h2'], ['G77', 'h3']] as const) {
+	const got = rows.find(r => r.id === id)!.facts.held?.digest
+	if (got !== want) { bad++; console.log(`FAIL ${id} held digest ${got}, expected ${want}`) }
 }
 console.log(`card-golden: ${rows.length - bad}/${rows.length} pass in ${(performance.now() - t0).toFixed(1)} ms`)
 process.exitCode = bad ? 1 : 0

@@ -67,6 +67,7 @@ export function Entry({ row: supplied, fresh = false, grouped = false, compact =
 			</div>
 			{expanded && <div className="done-details">
 				{row.text && <div className="draft">{row.text}</div>}
+				{row.checks?.map((check, index) => <p key={index} className="muted done-check">{check}</p>)}
 				{reopen && <fieldset disabled={blocked}><legend>Reopen this item</legend><Field code={row.code} rev={rev} field="answer" label="What should the new draft say?" value={ui.answer ?? ''} edit={edit} /><ActionButton action={reopen} input={{ text: ui.answer }} disabled={!ui.answer?.trim() || newer || blocked} /></fieldset>}
 				{(row.why || searched.length > 0) && <details><summary>Why{row.why?.confidence ? ` - ${row.why.confidence} confidence` : ''}</summary>{row.why && <><p>{row.why.reason}</p><Sources ids={row.sourceIds} entities={entities} />{row.why.gaps.map((gap, index) => <p key={index}>{gap}</p>)}</>}{searched.length > 0 && <><p>Places checked for this item</p><ul>{searched.map((line, index) => <li key={index}>{line}</li>)}</ul></>}</details>}
 				{actions.some(action => ['wrong', 'incomplete', 'unneeded'].includes(action.kind)) && <Button variant="ghost" aria-label={feedbackLabel} disabled={blocked} onClick={() => edit({ feedbackKind: kind ? undefined : 'wrong' })}>Not right?</Button>}

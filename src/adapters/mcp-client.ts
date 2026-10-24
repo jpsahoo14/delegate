@@ -25,6 +25,23 @@ export class LostResponse extends Error {
 	constructor(tool: string, cause: unknown) { super(`${tool}: the tool server lost its session before answering, so it may or may not have been done (${String(cause).slice(0, 160)})`); this.tool = tool }
 }
 
+export const MCP_BYTE_LIMIT = 25 * 1024 * 1024
+export class McpBytesError extends Error {
+	readonly step: 'download' | 'decode-base64'
+	readonly kind: string
+	readonly contentTypes: string[]
+	readonly bytes: number
+	constructor(step: 'download' | 'decode-base64', kind: string, contentTypes: string[], bytes = 0) {
+		super(`File bytes: ${kind}`); this.name = 'McpBytesError'
+		this.step = step; this.kind = kind; this.contentTypes = contentTypes; this.bytes = bytes
+	}
+}
+const object = (value: unknown): Record<string, unknown> | undefined => typeof value === 'object' && value !== null ? value as Record<string, unknown> : undefined
+const byteFields = (value: unknown): string[] => {
+	const o = object(value)
+	return o ? ['contentBytes', 'base64', 'content', 'data'].flatMap(key => typeof o[key] === 'string' ? [o[key]] : []) : []
+}
+
 export class McpClient {
 	private client = new Client({ name: 'delegate', version: '0.1.0' })
 	private connecting?: Promise<void>
@@ -135,6 +152,46 @@ export class McpClient {
 		const parts = (r.content as { type: string; text?: string }[] | undefined)?.map(c => c.text ?? '') ?? []
 		if (r.isError) throw new Error(`${tool} failed: ${parts.join('').slice(0, 300)}`)
 		return parts
+	}
+
+	// Binary tools use several MCP envelopes. Never include their bytes or bearer links in errors.
+	async bytes(tool: string, args: Record<string, unknown>): Promise<{ bytes: Buffer; contentTypes: string[] }> {
+		let r: Awaited<ReturnType<Client['callTool']>>
+		try { r = await this.request(tool, args) } catch (error) { throw new McpBytesError('download', error instanceof Error ? error.name : 'transport', []) }
+		const items = Array.isArray(r.content) ? r.content.map(object).filter(o => o !== undefined) : []
+		const contentTypes = [...new Set([...(r.structuredContent ? ['structuredContent'] : []), ...items.map(o => typeof o.type === 'string' ? o.type : 'unknown')])]
+		if (r.isError) {
+			const text = items.map(o => typeof o.text === 'string' ? o.text : '').join('\n')
+			const kind = /\b40[13]\b|forbidden|access.?denied|unauthori[sz]ed/i.test(text) ? 'no-access'
+				: /too large|\b413\b|exceeds? (?:the )?(?:maximum )?(?:binary |file )?size/i.test(text) ? 'too-large' : 'tool'
+			throw new McpBytesError('download', kind, contentTypes)
+		}
+		const candidates = [
+			...byteFields(r.structuredContent),
+			...items.flatMap(o => {
+				const resource = object(o.resource)
+				return o.type === 'resource' && typeof resource?.blob === 'string' ? [resource.blob] : []
+			}),
+			...items.flatMap(o => (o.type === 'image' || o.type === 'audio') && typeof o.data === 'string' ? [o.data] : []),
+			...items.flatMap(o => o.type === 'text' && typeof o.text === 'string' && !o.text.trimStart().startsWith('{') ? [o.text] : []),
+			...items.flatMap(o => {
+				if (o.type !== 'text' || typeof o.text !== 'string' || !o.text.trimStart().startsWith('{')) return []
+				try { return byteFields(JSON.parse(o.text)) } catch { return [] }
+			}),
+		]
+		let found: Buffer | undefined
+		for (const candidate of candidates) {
+			const text = candidate.trim().replace(/^data:[^,]*;base64,/i, '').replace(/\s/g, '').replace(/-/g, '+').replace(/_/g, '/')
+			if (!text || text.length % 4 === 1 || text.includes('=') && text.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(text)) continue
+			if (text.length > Math.ceil(MCP_BYTE_LIMIT / 3) * 4) throw new McpBytesError('download', 'too-large', contentTypes)
+			const bytes = Buffer.from(text, 'base64')
+			if (bytes.toString('base64').replace(/=+$/, '') !== text.replace(/=+$/, '')) continue
+			if (bytes.length > MCP_BYTE_LIMIT) throw new McpBytesError('download', 'too-large', contentTypes, bytes.length)
+			if (found && !found.equals(bytes)) throw new McpBytesError('download', 'ambiguous', contentTypes, bytes.length)
+			found ??= bytes
+		}
+		if (!found) throw new McpBytesError('decode-base64', candidates.length ? 'invalid-base64' : 'missing-bytes', contentTypes)
+		return { bytes: found, contentTypes }
 	}
 
 	async close() {

@@ -24,8 +24,11 @@ if (mode === '--sharepoint') {
 	const result = (value: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(value) }] })
 	const metadata = (id: string) => {
 		if (id === 'denied') return { content: [{ type: 'text' as const, text: '403 Forbidden: no access' }], isError: true }
-		const name = id === 'deck' ? 'Aurora.pptx' : id === 'sheet' ? 'Aurora.xlsx' : id === 'pdf' ? 'Aurora.pdf' : 'Robin-v7.docx'
-		return result({ '@content.downloadUrlNoAuth': 'https://acme.example/download', id, name, size: id === 'large' ? 30 * 1024 * 1024 : readFileSync(join(fixtures, name)).length, parentReference: { driveId: 'acme-drive' }, webUrl: `https://acme.example/${name}`, lastModifiedDateTime: '2026-10-24T07:00:00Z' })
+		const name = id === 'deck' ? 'Aurora.pptx' : id === 'sheet' ? 'Aurora.xlsx' : id === 'pdf' ? 'Aurora.pdf' : id === 'expanded' ? 'Expanded.docx' : 'Robin-v7.docx'
+		const host = id === 'shape-url-df' ? 'acme.sharepoint-df.com' : id === 'shape-url-svc' ? 'acme.svc.ms' : id === 'shape-url-blocked' ? 'acme.sharepoint.com.evil.example' : 'acme.sharepoint.com'
+		const downloadKey = id === 'shape-url-auth' ? '@content.downloadUrl' : '@content.downloadUrlNoAuth'
+		const scheme = id === 'shape-url-http' ? 'http' : 'https'
+		return result({ [downloadKey]: id.startsWith('shape-url-') ? `${scheme}://${host}/${id}?token=fictional-bearer` : 'https://acme.example/download', id, name, size: id === 'large' ? 30 * 1024 * 1024 : readFileSync(join(fixtures, name)).length, parentReference: { driveId: 'acme-drive' }, webUrl: `https://acme.example/${name}`, lastModifiedDateTime: '2026-10-24T07:00:00Z' })
 	}
 	server.registerTool('findFileOrFolder', { inputSchema: { searchQuery: z.string() } }, async args => { trace('findFileOrFolder', args); return result({ value: [] }) })
 	if (!legacy) server.registerTool('getFileMetadataByUrl', { inputSchema: { fileUrl: z.string() } }, async args => { trace('getFileMetadataByUrl', args); return { content: [{ type: 'text' as const, text: 'Use the preferred metadata tool' }], isError: true } })
@@ -33,7 +36,8 @@ if (mode === '--sharepoint') {
 	server.registerTool(metadataTool, { inputSchema: { [urlKey]: z.string() } }, async args => {
 		trace(metadataTool, args)
 		const url = args[urlKey]
-		const id = url.includes('/denied/') ? 'denied' : url.includes('/large/') ? 'large' : url.includes('/server-limit/') ? 'server-limit' : url.endsWith('.pptx') ? 'deck' : url.endsWith('.xlsx') ? 'sheet' : url.endsWith('.pdf') ? 'pdf' : 'word'
+		const shape = /\/(shape-[\w-]+)\//.exec(url)?.[1]
+		const id = shape ?? (url.includes('/denied/') ? 'denied' : url.includes('/large/') ? 'large' : url.includes('/server-limit/') ? 'server-limit' : url.includes('/expanded/') ? 'expanded' : url.endsWith('.pptx') ? 'deck' : url.endsWith('.xlsx') ? 'sheet' : url.endsWith('.pdf') ? 'pdf' : 'word')
 		return metadata(id)
 	})
 	const idsTool = legacy ? 'getFileMetadata' : 'getFileOrFolderMetadata', idKey = legacy ? 'fileId' : 'fileOrFolderId'
@@ -41,8 +45,23 @@ if (mode === '--sharepoint') {
 	server.registerTool('readSmallBinaryFile', { inputSchema: { documentLibraryId: z.string(), fileId: z.string() } }, async args => {
 		trace('readSmallBinaryFile', args)
 		if (args.fileId === 'server-limit') return { content: [{ type: 'text' as const, text: 'File exceeds maximum binary size' }], isError: true }
-		const name = args.fileId === 'deck' ? 'Aurora.pptx' : args.fileId === 'sheet' ? 'Aurora.xlsx' : 'Robin-v7.docx'
+		const name = args.fileId === 'deck' ? 'Aurora.pptx' : args.fileId === 'sheet' ? 'Aurora.xlsx' : args.fileId === 'expanded' ? 'Expanded.docx' : 'Robin-v7.docx'
 		const base64 = readFileSync(join(fixtures, name)).toString('base64')
+		const shape = args.fileId.replace(/^shape-/, '')
+		if (shape === 'resource') return { content: [{ type: 'resource' as const, resource: { uri: 'urn:fictional:aurora', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', blob: base64 } }] }
+		if (shape === 'image') return { content: [{ type: 'image' as const, mimeType: 'image/png', data: base64 }] }
+		if (shape === 'audio') return { content: [{ type: 'audio' as const, mimeType: 'audio/wav', data: base64 }] }
+		if (shape === 'base64url') return { content: [{ type: 'text' as const, text: readFileSync(join(fixtures, name)).toString('base64url') }] }
+		if (shape === 'data-uri') return { content: [{ type: 'text' as const, text: `data:application/octet-stream;base64,${base64}` }] }
+		if (shape === 'data-uri-url') return { content: [{ type: 'text' as const, text: `data:application/octet-stream;base64,${readFileSync(join(fixtures, name)).toString('base64url')}` }] }
+		if (shape.startsWith('json-')) return result({ [shape.slice(5)]: base64 })
+		if (shape.startsWith('structured-')) return { structuredContent: { [shape.slice(11)]: base64 }, content: [] }
+		if (shape === 'matching') return { structuredContent: { data: base64 }, content: [{ type: 'text' as const, text: base64 }] }
+		if (shape === 'ambiguous' || shape === 'url-ambiguous') return { structuredContent: { data: base64 }, content: [{ type: 'text' as const, text: Buffer.from('different bytes').toString('base64') }] }
+		if (shape === 'invalid-base64') return { content: [{ type: 'text' as const, text: '%%% not file bytes %%%' }] }
+		if (shape === 'unzip') return { content: [{ type: 'text' as const, text: Buffer.from('PK\x03\x04broken').toString('base64') }] }
+		if (shape === 'office-parse') return { content: [{ type: 'text' as const, text: readFileSync(join(fixtures, 'Unknown.docx')).toString('base64') }] }
+		if (shape.startsWith('url-') && shape !== 'url-tool-valid') return { content: [{ type: 'text' as const, text: shape === 'url-size' ? 'File exceeds maximum binary size' : 'Reader unavailable: fictional-bearer' }], isError: true }
 		return legacy ? result({ contentBytes: base64 }) : { content: [{ type: 'text' as const, text: base64 }] }
 	})
 	await server.connect(new StdioServerTransport())
@@ -92,11 +111,11 @@ if (mode === '--sharepoint') {
 		end.writeUInt32LE(0x06054b50); end.writeUInt16LE(Object.keys(files).length, 8); end.writeUInt16LE(Object.keys(files).length, 10); end.writeUInt32LE(central.length, 12); end.writeUInt32LE(offset, 16)
 		return Buffer.concat([...entries, central, end])
 	}
-	// A valid, noisy PNG keeps the real Office archive over 1 MB without making its extracted text enormous.
-	const pixels = Buffer.alloc((800 * 3 + 1) * 600)
-	for (let y = 0; y < 600; y++) randomBytes(2400).copy(pixels, y * 2401 + 1)
+	// A valid, noisy PNG keeps the real Office archive over 2 MB without making its extracted text enormous.
+	const pixels = Buffer.alloc((1000 * 3 + 1) * 800)
+	for (let y = 0; y < 800; y++) randomBytes(3000).copy(pixels, y * 3001 + 1)
 	const pngChunk = (type: string, data: Buffer) => { const b = Buffer.alloc(data.length + 12); b.writeUInt32BE(data.length); b.write(type, 4); data.copy(b, 8); b.writeUInt32BE(crc(b.subarray(4, -4)), b.length - 4); return b }
-	const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(800); ihdr.writeUInt32BE(600, 4); ihdr[8] = 8; ihdr[9] = 2
+	const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(1000); ihdr.writeUInt32BE(800, 4); ihdr[8] = 8; ihdr[9] = 2
 	const png = Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), pngChunk('IHDR', ihdr), pngChunk('IDAT', deflateSync(pixels)), pngChunk('IEND', Buffer.alloc(0))])
 	const paragraph = (s: string, heading = false) => `<w:p>${heading ? '<w:pPr><w:pStyle w:val="Heading1"/></w:pPr>' : ''}<w:r><w:t>${s}</w:t></w:r></w:p>`
 	const text = paragraph('1. Overview', true) + paragraph('Aurora accepts typed locations. '.repeat(450)) + paragraph('2. Boundaries', true) + paragraph('Keep existing saved locations unchanged. '.repeat(450)) + paragraph('3. Final decision', true) + paragraph('LAST SECTION: keep the Aurora fallback until migration is complete.')
@@ -104,7 +123,11 @@ if (mode === '--sharepoint') {
 		'_rels/.rels': '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="r1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>',
 		'word/document.xml': `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${text}</w:body></w:document>`, 'word/media/image1.png': png })
 	writeFileSync(join(fixture, 'Robin-v7.docx'), docx)
-	assert.ok(docx.length > 1024 * 1024)
+	const expanded = Buffer.from(docx)
+	expanded.writeUInt32LE(100 * 1024 * 1024 + 1, expanded.readUInt32LE(expanded.length - 6) + 24)
+	writeFileSync(join(fixture, 'Expanded.docx'), expanded)
+	assert.ok(docx.length > 2 * 1024 * 1024)
+	writeFileSync(join(fixture, 'Unknown.docx'), zip({ 'unknown.xml': '<fictional />' }))
 	writeFileSync(join(fixture, 'Aurora.pptx'), zip({ 'ppt/presentation.xml': '<p:presentation><p:sldIdLst><p:sldId r:id="second"/><p:sldId r:id="first"/></p:sldIdLst></p:presentation>', 'ppt/_rels/presentation.xml.rels': '<Relationships><Relationship Id="first" Target="slides/slide1.xml"/><Relationship Id="second" Target="slides/slide2.xml"/></Relationships>',
 		'ppt/slides/slide1.xml': '<p:sld><a:p><a:r><a:t>Closing slide</a:t></a:r></a:p></p:sld>', 'ppt/slides/slide2.xml': '<p:sld><a:p><a:r><a:t>Opening &amp; plan</a:t></a:r></a:p></p:sld>' }))
 	writeFileSync(join(fixture, 'Aurora.xlsx'), zip({ 'xl/workbook.xml': '<workbook><sheets><sheet name="Aurora &amp; scope" r:id="sheet"/></sheets></workbook>', 'xl/_rels/workbook.xml.rels': '<Relationships><Relationship Id="sheet" Target="worksheets/sheet1.xml"/></Relationships>', 'xl/sharedStrings.xml': '<sst><si><t>Shared &amp; safe</t></si></sst>',
@@ -180,7 +203,7 @@ if (mode === '--sharepoint') {
 		w = store.workflow(w.id)!; assert.match(w.draft!.text, /Section 3/); assert.equal(store.job(w.job!)?.state, 'done')
 		const log = readFileSync(join(process.env.COPILOT_HOME!, 'session-state', input.sessionId, 'events.jsonl'), 'utf8')
 		assert.ok(!log.includes(docx.toString('base64').slice(0, 120))); assert.ok(!calls().some(c => c.tool === 'findFileOrFolder'))
-		proof('real job start, worker MCP, paged >1 MB Word review, submit_report and checkJobs finish; no base64 in session log; one download')
+		proof('real job start, worker MCP, paged >2 MB Word review, submit_report and checkJobs finish; no base64 in session log; one download')
 
 		const options = workerMcp(store, 'formats', 'formats')
 		const extra = await connectWorker({ ...options, workflowId: 'formats', runId: 'formats', sessionId: randomUUID(), prompt: '', extraTools: WORKER_TOOLS })
@@ -222,27 +245,124 @@ if (mode === '--sharepoint') {
 		}
 		proof('live URL metadata name/argument and raw base64; legacy name/fileUrl and JSON bytes; missing id metadata refuses without downloading')
 
+		w = seed(); attachJob(store, cfg, w, { key: 'doc:shapes', goal: 'Read the Aurora specification' }); store.save(w); startJobs(store, cfg, procs)
+		const shapeRead = await connectWorker(input!)
+		for (const shape of ['text', 'resource', 'image', 'audio', 'base64url', 'data-uri', 'data-uri-url', 'matching', ...['contentBytes', 'base64', 'content', 'data'].flatMap(key => [`json-${key}`, `structured-${key}`])]) {
+			const result = await shapeRead({ url: `https://acme.example/shape-${shape}/Robin-v7.docx`, page: 1 })
+			assert.equal(result.error, false, shape); assert.match(result.text, /Outline:[\s\S]*3\. Final decision[\s\S]*page: 1; pages: 2/)
+			assert.equal(store.logs().findLast(e => e.event === 'document-read')?.via, 'tool')
+		}
+		for (const [shape, step, kind] of [['ambiguous', 'download', 'ambiguous'], ['invalid-base64', 'decode-base64', 'invalid-base64'], ['unzip', 'unzip', 'Error'], ['office-parse', 'office-parse', 'Error']]) {
+			const result = await shapeRead({ url: `https://acme.example/shape-${shape}/Robin-v7.docx` })
+			assert.equal(result.error, true)
+			assert.match(result.text, step === 'download' ? /couldn't download it/ : /couldn't read its contents/)
+			const event = store.logs().findLast(e => e.event === 'document-read-failed')!
+			assert.equal(event.step, step); assert.equal(event.class, kind); assert.ok(Array.isArray(event.contentTypes)); assert.equal(typeof event.bytes, 'number')
+			assert.doesNotMatch(JSON.stringify(event), /fictional-bearer|https:|Robin|LAST SECTION|different bytes/)
+		}
+		await worker!.close(); worker = undefined
+		store.saveJob({ ...store.job(w.job!)!, state: 'done' })
+		proof('real worker doc_read opens the same >2 MB multi-section DOCX from all 16 MCP envelopes, pages text only; ambiguity/decode/unzip/parse failures have safe step/class diagnostics')
+
+		const { documentReader } = await import('../src/worker/tools.ts')
+		const originalFetch = globalThis.fetch, originalTimeout = AbortSignal.timeout
+		let downloads = 0, cancelled = false, timeoutCalls = 0
+		AbortSignal.timeout = milliseconds => { assert.equal(milliseconds, 30_000); timeoutCalls++; return originalTimeout(milliseconds) }
+		globalThis.fetch = async (input, init) => {
+			downloads++
+			assert.equal(init?.redirect, 'manual'); assert.equal(init?.credentials, 'omit'); assert.equal(init?.headers, undefined); assert.ok(init?.signal instanceof AbortSignal)
+			const target = new URL(String(input)), shape = target.pathname.slice(1)
+			if (shape === 'shape-url-timeout') throw new DOMException('fictional-bearer must not be logged', 'TimeoutError')
+			if (shape === 'shape-url-cross-host') return new Response(null, { status: 302, headers: { location: 'https://other.sharepoint.com/file?token=fictional-bearer' } })
+			if (shape === 'shape-url-redirect') return new Response(null, { status: 302, headers: { location: '/shape-url-final?token=fictional-bearer' } })
+			if (shape === 'shape-url-stream-limit' || shape === 'shape-url-length-limit') {
+				let chunks = 0
+				return new Response(new ReadableStream<Uint8Array>({ pull(controller) { controller.enqueue(Buffer.alloc(chunks++ === 0 ? 25 * 1024 * 1024 : 1)) }, cancel() { cancelled = true } }),
+					shape === 'shape-url-length-limit' ? { headers: { 'content-length': String(26 * 1024 * 1024) } } : {})
+			}
+			return new Response(new Uint8Array(docx))
+		}
+		try {
+			const toolResult = await documentReader(store)({ url: 'https://acme.example/shape-url-tool-valid/Robin-v7.docx' })
+			assert.equal(toolResult.error, undefined); assert.equal(downloads, 0)
+			assert.equal(store.logs().findLast(e => e.event === 'document-read')?.via, 'tool')
+			for (const shape of ['ok', 'auth', 'size', 'df', 'svc', 'redirect']) {
+				const result = await documentReader(store)({ url: `https://acme.example/shape-url-${shape}/Robin-v7.docx` })
+				assert.equal(result.error, undefined); assert.match(result.text, /Outline:[\s\S]*3\. Final decision/)
+				assert.equal(store.logs().findLast(e => e.event === 'document-read')?.via, 'downloadUrl')
+			}
+			for (const [shape, kind] of [['cross-host', 'blocked-redirect'], ['timeout', 'TimeoutError'], ['stream-limit', 'too-large'], ['length-limit', 'too-large'], ['blocked', 'tool'], ['http', 'tool'], ['ambiguous', 'ambiguous']]) {
+				const before: number = downloads; cancelled = false
+				const result = await documentReader(store)({ url: `https://acme.example/shape-url-${shape}/Robin-v7.docx` })
+				assert.equal(result.error, true)
+				const event = store.logs().findLast(e => e.event === 'document-read-failed')!
+				assert.equal(event.step, 'download'); assert.equal(event.class, kind)
+				assert.doesNotMatch(JSON.stringify(event), /fictional-bearer|https:|Robin/)
+				if (shape === 'blocked' || shape === 'http' || shape === 'ambiguous') assert.equal(downloads, before)
+				if (shape.endsWith('limit')) assert.equal(cancelled, true)
+				if (shape === 'cross-host') assert.equal(downloads - before, 1)
+			}
+			assert.ok(timeoutCalls > 0)
+			assert.doesNotMatch(JSON.stringify(store.logs().filter(e => e.event === 'document-read' || e.event === 'document-read-failed')), /fictional-bearer|https:|Robin|LAST SECTION/)
+		} finally { globalThis.fetch = originalFetch; AbortSignal.timeout = originalTimeout }
+		proof('real doc_read URL fallback accepts only issued HTTPS hosts, same-origin redirects, no headers/credentials, 30-second signal, streamed/header 25 MB caps; safe logs never contain bearer links')
+
 		w = seed(); attachJob(store, cfg, w, { key: 'doc:denied', goal: 'Review the spec' }); store.save(w); startJobs(store, cfg, procs)
 		const deniedRead = await connectWorker(input!)
 		const refusal = await deniedRead({ url: 'https://acme.example/denied/Robin-v7.docx' })
-		await worker!.call('submit_report', { workflowId: input!.workflowId, intent: 'other', state: 'needs_human', summary: refusal.text, goalMet: false, blocker: { kind: 'access', why: refusal.text, tried: ['doc_read by URL: no access'] } })
+		await worker!.call('submit_report', { workflowId: input!.workflowId, intent: 'other', state: 'needs_human', summary: 'The service did not let me inspect the specification', goalMet: false, blocker: { kind: 'transient', why: 'The document service did not answer my request', tried: ['doc_read by URL'] } })
+		assert.equal(store.peekReport(input!.workflowId, input!.runId)?.blocker?.documentFailure, true)
 		await worker!.close(); worker = undefined
 		await checkJobs(store, source, cfg, procs)
 		assert.equal(store.workflow(w.id)?.runFailed?.kind, 'content'); assert.equal(store.workflow(w.id)?.runFailed?.why, refusal.text)
 		assert.equal(store.job(w.job!)?.state, 'done'); assert.equal(startJobs(store, cfg, procs), 0)
-		proof('permission failure uses real report/apply content-failure data and never auto-retries')
+		proof('stub 403 with a paraphrased transient blocker retains the reader reason as a hard content failure and never auto-retries')
+
+		w = seed(); attachJob(store, cfg, w, { key: 'doc:retryable', goal: 'Review the spec' }); store.save(w); startJobs(store, cfg, procs)
+		store.saveConfig({ ...cfg, source: { ...cfg.source, docs: [...cfg.source.docs!, '--url-only'] } })
+		const retryableRead = await connectWorker(input!)
+		const missingMetadata = await retryableRead({ driveId: 'acme-drive', itemId: 'word' })
+		assert.equal(missingMetadata.error, true); assert.match(missingMetadata.text, /can't look it up by id/)
+		await worker!.call('submit_report', { workflowId: input!.workflowId, intent: 'other', state: 'needs_human', summary: 'Try another route', goalMet: false,
+			blocker: { kind: 'tool', why: "Couldn't open Robin-v7.docx: no access", tried: ['Metadata lookup by id'], documentFailure: true } })
+		assert.equal(store.peekReport(input!.workflowId, input!.runId)?.blocker?.documentFailure, undefined)
+		await worker!.close(); worker = undefined
+		store.saveConfig(cfg)
+		await checkJobs(store, source, cfg, procs)
+		assert.equal(store.job(w.job!)?.state, 'queued'); assert.ok(store.job(w.job!)?.retry)
+		assert.equal(store.workflow(w.id)?.runFailed, undefined)
+		const retryableJob = store.job(w.job!)!; retryableJob.state = 'done'; retryableJob.retry = undefined; retryableJob.nextAt = undefined; store.saveJob(retryableJob)
+		proof('retryable metadata failure ignores a previous 403 and forged model marker/canonical wording; normal retry remains queued')
 
 		w = seed(); attachJob(store, cfg, w, { key: 'doc:server-limit', goal: 'Review the spec' }); store.save(w); startJobs(store, cfg, procs)
 		const limitedRead = await connectWorker(input!)
 		const limited = await limitedRead({ url: 'https://acme.example/server-limit/Robin-v7.docx' })
 		assert.equal(limited.error, true); assert.equal(limited.text, "Couldn't open Robin-v7.docx: too large to open (document server limit)")
-		assert.equal(store.logs().findLast(e => e.event === 'document-read-failed')?.reason, limited.text)
-		await worker!.call('submit_report', { workflowId: input!.workflowId, intent: 'other', state: 'needs_human', summary: limited.text, goalMet: false, blocker: { kind: 'tool', why: limited.text, tried: ['doc_read by URL'] } })
+		assert.equal(store.logs().findLast(e => e.event === 'document-read-failed')?.class, 'too-large')
+		await worker!.call('submit_report', { workflowId: input!.workflowId, intent: 'other', state: 'needs_human', summary: 'Could not inspect the specification', goalMet: false, blocker: { kind: 'tool', why: 'The binary reader refused the request', tried: ['doc_read by URL'] } })
 		await worker!.close(); worker = undefined
 		await checkJobs(store, source, cfg, procs)
-		assert.equal(store.workflow(w.id)?.runFailed?.kind, 'content'); assert.equal(store.job(w.job!)?.state, 'done')
+		assert.equal(store.workflow(w.id)?.runFailed?.kind, 'content'); assert.equal(store.workflow(w.id)?.runFailed?.why, limited.text); assert.equal(store.job(w.job!)?.state, 'done')
 		assert.equal(startJobs(store, cfg, procs), 0)
 		proof('server cap below local limit becomes a hard size failure through real worker/report/apply and never auto-retries')
+
+		for (const [key, docUrl, reason] of [
+			['large', 'https://acme.example/large/Robin-v7.docx', /too large to open/],
+			['pdf', 'https://acme.example/Aurora.pdf', /not a Word, PowerPoint or Excel file/],
+			['expanded', 'https://acme.example/expanded/Expanded.docx', /too much content to open/],
+		] as const) {
+			w = seed(); attachJob(store, cfg, w, { key: `doc:${key}`, goal: 'Review the spec' }); store.save(w); startJobs(store, cfg, procs)
+			const readBlocked = await connectWorker(input!), blocked = await readBlocked({ url: docUrl })
+			assert.equal(blocked.error, true); assert.match(blocked.text, reason)
+			await worker!.call('submit_report', { workflowId: input!.workflowId, intent: 'other', state: 'needs_human', summary: 'Could not inspect the document', goalMet: false,
+				blocker: { kind: 'transient', why: 'The reader did not return the requested content', tried: ['doc_read'] } })
+			assert.equal(store.peekReport(input!.workflowId, input!.runId)?.blocker?.documentFailure, true)
+			await worker!.close(); worker = undefined
+			await checkJobs(store, source, cfg, procs)
+			assert.equal(store.workflow(w.id)?.runFailed?.why, blocked.text); assert.equal(store.job(w.job!)?.state, 'done')
+			assert.equal(startJobs(store, cfg, procs), 0)
+		}
+		proof('download cap, unsupported format and expanded-content cap all stop with canonical content reasons despite paraphrased transient reports')
 
 		const sharedReads = runReads(store, cfg, input!.sessionId, 0)
 		assert.equal(sharedReads.unknown, true) // The denied URL was not shared.
@@ -310,6 +430,12 @@ export class CopilotClient {
   return { rpc: {tools: {initializeAndValidate: async()=>{}, getCurrentMetadata: async()=>({tools:config.tools.filter(t=>!config.sessionId.startsWith('missing-doc-') || t.name!=='delegate_worker-doc_read').map(t=>({name:t.name}))})}}, disconnect: async()=>{}, sendAndWait: async({prompt})=>{
    const params=JSON.parse(prompt), doc=config.tools.find(t=>t.name==='delegate_worker-doc_read'), report=config.tools.find(t=>t.name==='delegate_worker-submit_report');
    if(!doc || !report || config.mcpServers?.delegate_worker) throw Error('Document tools are not in-process');
+   if(params.denied) {
+    const r=await doc.handler({url:params.url});
+    if(r?.resultType!=='failure') throw Error('Expected document failure');
+    await report.handler({workflowId:params.workflowId,intent:'other',state:'needs_human',summary:'Could not inspect the specification',goalMet:false,blocker:{kind:'transient',why:'The server did not complete the read',tried:['doc_read']}});
+    return {data:{content:'Report saved'}};
+   }
    for(const page of [1,2]) { const args={url:params.url,page}; log({type:'tool.execution_start',data:{toolCallId:String(page),toolName:doc.name,arguments:args}}); const r=await doc.handler(args); if(typeof r!=='string') throw Error(JSON.stringify(r)); log({type:'tool.execution_complete',data:{toolCallId:String(page),success:true,result:{content:r}}}); if(page===2 && !r.includes('LAST SECTION')) throw Error('Last section not read'); }
    await report.handler({workflowId:params.workflowId,intent:'other',state:'needs_human',summary:'Read all sections',reply:{text:'Section 3 keeps the Aurora fallback until migration is complete.',commitment:false,sources:[]}});
    return {data:{content:'Report saved'}};
@@ -335,6 +461,15 @@ export class CopilotClient {
 		const hostLog = readFileSync(join(process.env.COPILOT_HOME!, 'session-state', hostId, 'events.jsonl'), 'utf8')
 		assert.ok(!hostLog.includes(docx.toString('base64').slice(0, 120)))
 		proof('real responsive host registers doc_read in-process, verifies it is offered, reads page 2 and submits text-only report (stub SDK/model)')
+		w = seed(); attachJob(store, cfg, w, { key: 'doc:host-denied', goal: 'Review the spec' }); store.save(w); startJobs(store, cfg, procs)
+		const deniedInput = { ...input!, prompt: JSON.stringify({ workflowId: input!.workflowId, url: 'https://acme.example/denied/Robin-v7.docx', denied: true }) }
+		const deniedResult = await fetch(`http://127.0.0.1:${info.port}/run`, { method: 'POST', headers, body: JSON.stringify({ agent: cfg.agent, input: deniedInput }) })
+		assert.equal(deniedResult.status, 200); assert.equal((await deniedResult.json() as { exitCode: number }).exitCode, 0)
+		assert.equal(store.peekReport(input!.workflowId, input!.runId)?.blocker?.documentFailure, true)
+		await checkJobs(store, source, cfg, procs)
+		assert.equal(store.workflow(w.id)?.runFailed?.why, "Couldn't open Robin-v7.docx: no access")
+		assert.equal(store.job(w.job!)?.state, 'done'); assert.equal(startJobs(store, cfg, procs), 0)
+		proof('warm host in-process doc_read stamps the same run-scoped failure; paraphrased 403 report stops through real checkJobs')
 		const missingInput = { ...hostInput, workflowId: 'missing-doc', runId: 'missing-doc', sessionId: `missing-doc-${randomUUID()}` }
 		const missing = await fetch(`http://127.0.0.1:${info.port}/run`, { method: 'POST', headers, body: JSON.stringify({ agent: cfg.agent, input: missingInput }) })
 		const missingData = await missing.json() as { exitCode: number; hostFault?: string; error?: string }

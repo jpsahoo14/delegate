@@ -5,7 +5,8 @@ import { join, resolve } from 'node:path'
 import type { Config, Fact, Job, Msg, Owner, Workflow } from '../core/types.ts'
 import { gateBlock } from '../core/gate.ts'
 import { intentPlaybook, intents } from '../core/intents.ts'
-import { changeLine } from '../core/effects.ts'
+import { changeLine, toolOf } from '../core/effects.ts'
+import { cachedCatalogs } from '../runner/catalog.ts'
 import { DEPLOY } from '../core/deploy.ts'
 import { scrub } from '../core/secrets.ts'
 import type { Rule } from '../core/types.ts'
@@ -185,12 +186,60 @@ function playbook(root: string, kind: string): string {
 	return readFileSync(existsSync(own) ? own : join(SKILL_DIR, 'workflows', `${kind}.md`), 'utf8')
 }
 
+const shapeObject = (value: unknown): Record<string, unknown> =>
+	value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+function argumentShape(value: unknown, root: Record<string, unknown>, cut: () => void, depth = 0): Record<string, unknown> {
+	const original = shapeObject(value)
+	const ref = typeof original.$ref === 'string' && /^#\/\$defs\/[^/]+$/.test(original.$ref)
+		? shapeObject(shapeObject(root.$defs)[original.$ref.slice(8)]) : {}
+	const schema = { ...ref, ...original }
+	const out: Record<string, unknown> = {}
+	for (const key of ['type', 'enum', 'minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'minLength', 'maxLength', 'minItems', 'maxItems', 'minProperties', 'maxProperties'])
+		if (schema[key] !== undefined) out[key] = schema[key]
+	if (depth < 1) {
+		const properties = Object.entries(shapeObject(schema.properties))
+		if (properties.length) {
+			out.properties = Object.fromEntries(properties.map(([name, field]) => [name, argumentShape(field, root, cut, depth + 1)]))
+			if (Array.isArray(schema.required)) out.required = schema.required
+		}
+		if (schema.items) out.items = argumentShape(schema.items, root, cut, depth + 1)
+	} else if (Object.keys(shapeObject(schema.properties)).length || schema.items) cut()
+	return out
+}
+
 // The changes a separate run may make after the owner's ok, each with what it does; anything else is not proposed (next action).
 // A deploy is listed only with the pipelines the owner confirmed, by ID (owned work).
 function allowed(cfg: Config, none: string): string[] {
 	const e = cfg.agent.effectTools ?? [], d = cfg.deploy?.allowed ?? []
 	const lines = [...e.map(x => `- ${changeLine(x)}`), ...(d.length ? [`- ${changeLine(DEPLOY)}. Only these pipelines, by ID: ${d.map(t => `${t.ring} ${t.pipelineId}${t.project ? ` (${t.project})` : ''}`).join(', ')}`] : [])]
-	return lines.length ? ['Changes a separate run may make after the owner\'s ok, for `effects` (tool, or tool:action). For tool:action, call.tool is only the tool name and call.args.action is the action:', ...lines] : [`No changes are allowed, so ${none}.`]
+	if (!lines.length) return [`No changes are allowed, so ${none}.`]
+	const tools = Object.entries(cachedCatalogs(cfg)).flatMap(([server, c]) => c.tools.map(t => ({ name: `${server}-${t.name}`, schema: t.info.inputSchema })))
+	const heading = 'Argument shapes are reference data for proposals, not tools you may call. Only the listed tools/actions are allowed; other actions in a schema are not permission. Required fields may be omitted here; report missing formats rather than invent a call:'
+	const suffix = '(shapes truncated; propose only fields shown)'
+	let truncated = false
+	const cut = () => { truncated = true }
+	const shapes: string[] = [heading]
+	let remaining = 2300 - heading.length - suffix.length - 2
+	for (const name of new Set([...e, ...(d.length ? [DEPLOY] : [])].map(toolOf))) {
+		const schema = tools.find(t => t.name === name)?.schema
+		let line = `- ${name}: argument shape unavailable in the cached catalog. Do not invent a call; if this prevents the goal, report the missing format in your blocker.`
+		if (schema?.properties && Object.keys(schema.properties).length) {
+			const properties: Record<string, unknown> = {}
+			const required = schema.required ?? []
+			const render = () => `- ${name} arguments (compact): ${JSON.stringify({ properties, required: required.filter(key => Object.hasOwn(properties, key)) })}`
+			line = render()
+			for (const [key, field] of Object.entries(schema.properties).sort(([a], [b]) => Number(required.includes(b)) - Number(required.includes(a)))) {
+				properties[key] = argumentShape(field, schema, cut)
+				if (render().length + 1 > remaining) { delete properties[key]; cut() }
+			}
+			if (!Object.keys(properties).length) continue
+			line = render()
+		}
+		if (line.length + 1 > remaining) { cut(); break }
+		shapes.push(line)
+		remaining -= line.length + 1
+	}
+	return ['Changes a separate run may make after the owner\'s ok, for `effects` (tool, or tool:action). For tool:action, call.tool is only the tool name and call.args.action is the action:', ...lines, ...shapes, ...(truncated ? [suffix] : [])]
 }
 
 // What a validate job is told that code decides: where it may deploy, and whether it can read telemetry. Its repo and clone are on the Repo line.

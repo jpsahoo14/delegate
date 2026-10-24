@@ -1,5 +1,6 @@
 import { recordOfLink, shareHoldText, type SourceRecord } from '../core/share.ts'
 import { homeOf, openTodos } from '../runner/work.ts'
+import { visibleCloneTodos } from '../runner/repos.ts'
 import type { Automation, Choices, Fact, Meeting, Note, Proposal, Workflow } from '../core/types.ts'
 import { asksReviewAgain, isVote, meaningParts, pendingEffects, reviewAgainCmd, shown, type Meaning } from '../core/effects.ts'
 import { voteDropped } from '../runner/probe.ts'
@@ -202,7 +203,7 @@ export function card(store: Store, w: Workflow, k = knowledgeOf(store, store.con
 		...(store.config().showDetails ? { debug: debugLines(w) } : {}),
 		why: { reason: w.decision?.reason, confidence: w.decision?.confidence, sources: (w.draft?.sources ?? []).map(s => source(s.ref, s.tier, s.stale, s.label, k, w.records)), gaps: w.gaps ?? [], searched: (w.looked ?? []).map(lookLine) },
 		...(w.promise?.state === 'offered' || w.promise?.state === 'failed' ? { promise: { said: w.promise.text, ...(w.promise.state === 'failed' ? { failed: w.promise.why ?? 'its run ended without a result' } : {}) } } : {}),
-		work: workView(w, homeOf(store, w)), notes: (w.notes ?? []).map(n => n.sources ? { ...n, sources: n.sources.map(s => ({ ...s, ref: openLink(s.ref) })) } : n), status: htmlToText(w.status), openOn: w.openOn, todos: w.todos?.map(htmlToText), follow: w.follow && { target: w.follow.target, until: w.follow.until, everyHours: w.follow.everyHours ?? 4 },
+		work: workView(w, homeOf(store, w)), notes: (w.notes ?? []).map(n => n.sources ? { ...n, sources: n.sources.map(s => ({ ...s, ref: openLink(s.ref) })) } : n), status: htmlToText(w.status), openOn: w.openOn, todos: visibleCloneTodos(store.config(), w, job, store.machine)?.map(htmlToText), follow: w.follow && { target: w.follow.target, until: w.follow.until, everyHours: w.follow.everyHours ?? 4 },
 		teams: teamsOf(w),
 	}
 }

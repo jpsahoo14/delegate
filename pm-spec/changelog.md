@@ -1,5 +1,20 @@
 # Engine fixes
 
+2026-10-24 (#51): Chat effect previews, approvals and completion lines use natural comment counts, PR titles, person/chat
+and closing command handles. Partial, failed, uncertain and reply-only wording comes from existing results, without gate changes.
+
+2026-10-24 (#27 runner): Wire tick phases and audit cursor, draft, owner-send/Undo, job, PR, terminal and retention commits.
+Bounded directory/version-validated record snapshots and readonly rendering retain freshness without repeated metadata work.
+Fictional 400-item / 20-tick proof: p50 382 ms, max 1,593 ms, real HTTP <=248 ms; cross-process safety and no-replay cases pass.
+Simulated storage only; no State.save, React or projection edits, no unit tests.
+
+2026-10-24 (#27 scope API): AsyncLocalStorage phases, one-second lazy freshness, process-wide write versions and explicit
+fresh commit reads. Synchronous page scopes retain their API/copy rules. Manual two-process scope proof passes; tick wiring next.
+
+2026-10-24 (#45 HOST): Export a warm-only quick JSON call for owner-approved send checks. Fresh verified tool-less sessions,
+provider/host schema validation, five-second wall deadline, abort/delete cleanup and no cold-start/spawn fallback.
+Actual-runtime isolated stub proof passes; no unit tests or real-provider performance claim.
+
 2026-10-24 (#29 retention): Keep two managed reply-run histories per item, local and synced. Protect job, owner and live
 item/window references; use one versioned log pass for legacy reply IDs. Manual five-run Temp-root proof passes; no unit tests.
 Follow-up: unchanged/protected/failed retirement lists do not rewrite workflows; cleanup merges into the latest item, preserving

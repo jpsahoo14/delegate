@@ -10,6 +10,7 @@ import { NAME } from '../brand.ts'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { moveOffRecord, restoreOffRecord } from './offrecord.ts'
+import { telemetryEvent } from '../core/telemetry.ts'
 
 // Need to know, first slice: a reply may go by itself only when everyone in its chat could already see every other
 // conversation it drew on (dev-spec/sharing.md). Owner-approved sends are not held; the owner sees the sources.
@@ -136,10 +137,13 @@ export async function sharingHold(store: Store, src: Source, wf: Workflow, use: 
 	// 4: customer details from a record (ids, emails and its own name fields) that this chat hasn't seen.
 	if (use.records.length) {
 		const seen = new Set(customerDetails(thread))
-		if (customerDetails(wf.draft?.text ?? '').some(d => !seen.has(d))) return { kind: 'customer', record: use.records[0].label }
+		if (customerDetails(wf.draft?.text ?? '').some(d => !seen.has(d))) {
+			store.log(telemetryEvent('share-hold', { kind: 'customer', field: 'ids' }))
+			return { kind: 'customer', record: use.records[0].label }
+		}
 	}
 	if (customer) {
-		store.log({ event: 'share-hold', kind: 'customer', field: customer.field })
+		store.log(telemetryEvent('share-hold', { kind: 'customer', field: customer.field }))
 		return { kind: 'customer', record: customer.record }
 	}
 	return undefined

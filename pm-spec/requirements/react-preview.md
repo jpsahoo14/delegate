@@ -1,5 +1,25 @@
 # React preview requirements
 
+Chat effect receipts (#51):
+- Count comments naturally, name the PR and person/chat, and put a command code only in the closing Say command.
+- Keep execution order, distinguish present/running/done wording, and never offer a retry for an uncertain result.
+- Reuse exact effect calls for wording; do not change approval, execution, retry or send behavior. requirements
+
+Runner read scopes (#27):
+- Keep caches across phase awaits without sharing request snapshots or mutable returned records.
+- Cache hits make no stat within a one-second epoch; own-process writes are visible immediately across parallel contexts.
+- Revalidate lazily after expiry; fresh commit reads bypass snapshots. Preserve synchronous page scope behavior.
+- On the fixed fictional 400-item rig, every one of 20 empty ticks is <=2 s, including cleanup, and real page/settings requests
+  during a held tick stay <=1 s. Report read requests, actual opens and stats separately.
+- Fresh synchronous commits preserve unrelated cross-process fields and new job asks; original send/effect receipts are not replayed.
+- Acknowledgement markers remain before the post and at-most-once; scheduled presence holds never reopen cancelled items.
+
+Warm owner-send checks (#45):
+- Never delay an approved send for a cold CLI start. Use only an existing warm host, with a five-second total deadline.
+- Every check has a fresh tool-less session and validates the requested JSON shape. Errors, bad output or unavailability
+  return no verdict; the send caller fails open. Rule sends keep their strict checks.
+- Do not alter item/job history, create backups, reset breaker state or leave ephemeral sessions behind.
+
 Reply history retention (#29 follow-up):
 - Keep the current and previous managed reply histories, locally and in synced backups, without deleting job/owner histories.
 - Never infer ownership from age alone. Retry failed cleanup visibly; recover known legacy reply IDs once through an upgrade.

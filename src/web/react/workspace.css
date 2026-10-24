@@ -75,7 +75,16 @@ a{color:var(--accent)}
 .health-since{margin:4px 0 0}
 footer{display:flex;gap:16px;flex-wrap:wrap;align-items:center;margin-top:32px;border-top:1px solid var(--border);padding-top:16px}
 .live-result:empty{display:none}
-.live-result{padding:10px;background:var(--surface-2);border-radius:8px;margin-bottom:12px}
+.card-why-waited{white-space:pre-line}
+.live-result{padding:10px;background:var(--surface-2);border-radius:8px;margin-bottom:12px;display:flex;gap:10px;align-items:center}
+.live-result>span{flex:1;min-width:0}
+.live-result[data-tone=muted]{color:var(--text-2)}
+.live-result[data-tone=warn]{background:var(--warn-soft);color:var(--warn)}
+.live-result-open,.live-result-close{flex:none}
+.live-result-close svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round}
+.pending-clicks{color:var(--text-2);margin-bottom:8px}
+.pending-clicks-toggle{background:none;border:0;padding:0;font:inherit;color:inherit;text-decoration:underline dotted;cursor:pointer}
+.pending-clicks ul{margin:6px 0 0;padding-left:18px}
 @media(max-width:559px){
 	main h1{font-size:22px;margin-bottom:10px}
 	.now-title{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
