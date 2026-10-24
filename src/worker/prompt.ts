@@ -2,7 +2,7 @@ import { retryNote } from '../runner/retry.ts'
 import { NAME } from '../brand.ts'
 import { existsSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
-import type { Config, Job, Msg, Owner, Workflow } from '../core/types.ts'
+import type { Config, Fact, Job, Msg, Owner, Workflow } from '../core/types.ts'
 import { gateBlock } from '../core/gate.ts'
 import { intentPlaybook, intents } from '../core/intents.ts'
 import { changeLine } from '../core/effects.ts'
@@ -16,7 +16,9 @@ const compiledRules = (root: string): Rule[] => { try { return (JSON.parse(readF
 export { SKILL_DIR } from '../paths.ts'
 import { SKILL_DIR } from '../paths.ts'
 
-export type WorkContext = { home?: Workflow; works?: Workflow[]; parts?: Workflow[] }
+export type WorkContext = { home?: Workflow; works?: Workflow[]; parts?: Workflow[]; job?: Job }
+export const replyFacts = (job: Fact[] = [], latest: Fact[] = []): Fact[] =>
+	[...new Map([...job, ...latest].map(f => [f.label, f])).values()].slice(0, 12)
 function inlineFile(root: string, path: string): string {
 	const file = join(root, path)
 	if (!existsSync(file)) return 'none'
@@ -95,7 +97,12 @@ export function buildPrompt(wf: Workflow, thread: Msg[], cfg: Config, root: stri
 	if (ctx.works?.length) parts.push('', 'Open work that started in other chats. If this ask belongs to one of them, set `partOf` to its code and report `work` with this run\'s step:', ...ctx.works.map(w => `- ${w.code}: ${w.work!.goal}${w.work!.links.length ? ` (${w.work!.links.join(', ')})` : ''} · last: ${w.work!.steps.at(-1)?.what.slice(0, 120) ?? ''}`))
 	if (wf.followUp) parts.push('', `This is a follow-up. The message marked >> is the owner's own ask to ${wf.followUp}, still unanswered. Draft a short, polite follow-up from the owner that says what is still needed. Add no new facts.`)
 	if (wf.correction) parts.push('', `Your earlier reply in this chat was already sent: "${wf.correction.sent}"`, `The owner says it was ${wf.correction.kind}${wf.correction.note ? `: "${wf.correction.note}"` : '.'}`, 'Draft a short follow-up message for the same chat that fixes it. Say only what changes or was missing. Do not repeat what was right, and do not apologize at length.')
-	if (wf.ownerAnswer) parts.push('', `The owner answered your question: "${wf.ownerAnswer}"`, `Your previous draft: "${wf.draft?.text ?? ''}"`)
+	if (ctx.job?.state === 'done') parts.push('', [
+		`Last result of ${ctx.job.key}: ${ctx.job.result?.summary.slice(0, 800) ?? 'Completed'}`,
+		...replyFacts(ctx.job.result?.context, wf.context).map(f => `${f.label}: ${f.text}`),
+	].join('\n').slice(0, 2000))
+	if (wf.ownerAnswer) parts.push('', `The owner answered your question: "${wf.ownerAnswer}"`, `Your previous draft: "${wf.draft?.text ?? ''}"`,
+		"Your previous draft, the thread and the owner's answer are enough; call tools only for what the answer asks you to check.")
 	parts.push('', `Finish by calling submit_report with workflowId "${wf.id}".`)
 	return scrub(parts.join('\n'))
 }

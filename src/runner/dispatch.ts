@@ -9,7 +9,7 @@ import { sharingHold, sourceChats } from './sharing.ts'
 import { readsOf, type Reads } from './provenance.ts'
 import { catalogInfo, workerTools } from './catalog.ts'
 import { existsSync, readFileSync } from 'node:fs'
-import { backupSession, restoreSession } from './own.ts'
+import { backupSession, pruneReplySessions, restoreSession } from './own.ts'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Automation, Config, Report, Workflow } from '../core/types.ts'
@@ -21,7 +21,7 @@ import { MARK, plain, renderNudge, renderPreview } from '../core/render.ts'
 import { runAgent, sessionLog, checkAgentTools, type RunInput, type RunResult } from '../adapters/agent.ts'
 import type { Source } from '../adapters/source.ts'
 import { here, LOCAL_DIR, type Store } from '../store/state.ts'
-import { buildAskPrompt, buildPrompt } from '../worker/prompt.ts'
+import { buildAskPrompt, buildPrompt, replyFacts } from '../worker/prompt.ts'
 import { corrections } from '../store/feedback.ts'
 import { levelOf } from '../core/levels.ts'
 import { CLI } from '../paths.ts'
@@ -50,16 +50,18 @@ export type RunWorker = (cfg: Config['agent'], input: RunInput & { workflowId: s
 
 const AUTH = /bad credentials|not logged in|please run \/login|authenticat|unauthori[sz]ed|sign[ -]?in/i
 const CATALOG_CHANGED = /MCP tool catalog changed/i
+const UNKNOWN_READ_HOLD = "It searched your chats and I couldn't tell which ones it read"
 
 // Each queued workflow runs once, with all of its new messages together (R-WF-02, R-WF-06).
-export async function dispatch(store: Store, src: Source, cfg: Config, run: RunWorker = runAgent, probe?: BuildProbe): Promise<number> {
+export async function dispatch(store: Store, src: Source, cfg: Config, run: RunWorker = runAgent, probe?: BuildProbe, only?: readonly string[]): Promise<number> {
+	if (!store.upgrades()['reply-sessions-1']) pruneReplySessions(store)
 	restoreApprovedDrafts(store)
 	const held = blockedAgent(store, cfg)
 	if (held) { waitingForAgent(store, held); return 0 }
 	// An item open in a Continue window belongs to the owner until it closes (R-WF-07).
 	const cap = cfg.dailyRuns ?? 200
 	const room = cap - store.runsToday()
-	const running = store.workflows().filter(w => w.state === 'running' && heldBy(store, w) !== 'window').sort((a, b) => a.updatedAt.localeCompare(b.updatedAt))
+	const running = store.workflows().filter(w => (!only || only.includes(w.id)) && w.state === 'running' && heldBy(store, w) !== 'window').sort((a, b) => a.updatedAt.localeCompare(b.updatedAt))
 	// The week before setup is drafted behind live asks, a few per check, within half of the day's runs (first-sweep.md).
 	const paced = running.filter(w => w.paced).sort((a, b) => Number(!!a.startedBy) - Number(!!b.startedBy)).slice(0, store.runsToday() < cap / 2 ? cfg.maxParallel : 0)
 	const queue = [...running.filter(w => !w.paced), ...paced].slice(0, Math.max(0, room))
@@ -70,7 +72,7 @@ export async function dispatch(store: Store, src: Source, cfg: Config, run: RunW
 	for (const w of queue) if (w.paced || w.intakeDeferred) { w.paced = undefined; w.intakeDeferred = undefined; store.save(w, false) }
 	let done = 0
 	// The owner's questions about an item run after drafting, in the item's session, and never change it (design-spec S12).
-	const asks = store.workflows().filter(w => w.notes?.some(n => n.a === undefined) && w.state !== 'running' && heldBy(store, w) !== 'window' && !(w.job && store.job(w.job)?.state === 'running'))
+	const asks = only ? [] : store.workflows().filter(w => w.notes?.some(n => n.a === undefined) && w.state !== 'running' && heldBy(store, w) !== 'window' && !(w.job && store.job(w.job)?.state === 'running'))
 	queue.push(...asks.slice(0, Math.max(0, room - queue.length)))
 	// A pool, not batches: a queued run starts as soon as any slot frees, so one slow draft never holds the others back (latency b).
 	// Once the AI CLI is blocked (such as a 402), no further run starts; the waiting items stay queued.
@@ -87,14 +89,15 @@ export async function dispatch(store: Store, src: Source, cfg: Config, run: RunW
 			done++
 		}
 	}))
+	pruneReplySessions(store)
 	// The owner's own words that went out on a PR item: one short run each maps what they promise to changes held for ok (Slice 3).
-	for (const w of promisesDue(store, cfg).slice(0, Math.max(0, room - done))) {
+	for (const w of (only ? [] : promisesDue(store, cfg)).slice(0, Math.max(0, room - done))) {
 		if (blockedAgent(store, cfg)) break
 		// Anything that breaks after the run started leaves the item where the owner can check again, never stuck checking.
 		try { await checkPromise(store, src, cfg, w, run, probe) } catch (e) { const f = store.workflow(w.id); if (f?.promise?.state === 'checking') failPromise(store, f, String(e).replace(/^Error: /, '')) }
 		done++
 	}
-	for (const a of store.automations().filter(a => a.heard && a.state === 'active').slice(0, Math.max(0, room - done))) { if (blockedAgent(store, cfg)) break; await judgeReply(store, cfg, a, run); done++ }
+	for (const a of (only ? [] : store.automations()).filter(a => a.heard && a.state === 'active').slice(0, Math.max(0, room - done))) { if (blockedAgent(store, cfg)) break; await judgeReply(store, cfg, a, run); done++ }
 	return done
 }
 
@@ -342,7 +345,7 @@ function refuseStart(cfg: Config, tools: string[], folder?: string) {
 	if (shell) throw new Error(shellInClone(shell))
 }
 
-async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run: RunWorker, probe?: BuildProbe, catalogRetried = false, separate = false): Promise<void> {
+async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run: RunWorker, probe?: BuildProbe, catalogRetried = false, separate = false, retrySession?: string): Promise<void> {
 	if (blockedAgent(store, cfg)) return
 	const tools = workerTools(cfg, 'reply')
 	refuseStart(cfg, tools)
@@ -355,31 +358,46 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 			store.save(wf, false)
 		}
 	}
-	await probePRs(store, cfg, probe, Date.now(), true, [wf])
+	const age = Date.now() - Date.parse(wf.prReadAt ?? '')
+	if (!(wf.ownerAnswer && wf.prRead && !wf.prUnknown && age >= 0 && age < 10 * 60_000))
+		await probePRs(store, cfg, probe, Date.now(), true, [wf])
 	if (wf.state !== 'running' || blockedAgent(store, cfg)) return
-	const runId = ulid()
+	const runId = ulid(), sessionId = retrySession ?? randomUUID(), startedAt = new Date().toISOString()
+	const previousDrewOn = wf.draft ? wf.drewOn ?? [] : []
+	const previousShareHold = wf.draft ? wf.shareHold : undefined
+	const completedJob = wf.job ? store.job(wf.job) : undefined
+	const jobContext = completedJob?.state === 'done' ? replyFacts(completedJob.result?.context ?? wf.context) : []
+	// Legacy completed jobs kept their findings only on the item. Snapshot once on read, without rerunning the job.
+	if (completedJob?.state === 'done' && completedJob.result && completedJob.result.context === undefined) {
+		completedJob.result.context = jobContext
+		store.saveJob(completedJob)
+	}
 	const { cwd, mcpConfigPath } = workerMcp(store, wf.id, runId)
 	const others = wf.code && !separate ? store.openInChat(wf.chat.id).filter(o => o.id !== wf.id && o.code && !o.followUp && !o.sent && freshAsk(store, o) && askRelation(store, o, wf.lastAsk ?? '') !== 'different') : []
 	const home = homeOf(store, wf)
 	// A new item may belong to work that started in another chat; the worker sees the open work to say so (R-WRK-10).
 	const works = !wf.work && !wf.partOf ? store.workflows().filter(w => active(w) && !w.partOf && w.chat.id !== wf.chat.id && !levelOf(cfg, w.chat.id)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 8) : []
-	const prompt = buildPrompt(wf, store.thread(wf.id), cfg, store.root, store.owners(), others, corrections(store.lessons().filter(l => lessonFits(cfg, (l.detail as { chat?: string } | undefined)?.chat, wf.chat.id)), wf), { home: home === wf ? undefined : home, works, parts: home.work?.parts?.map(id => store.workflow(id)).filter((p): p is Workflow => !!p) ?? [] })
+	const prompt = buildPrompt(wf, store.thread(wf.id), cfg, store.root, store.owners(), others, corrections(store.lessons().filter(l => lessonFits(cfg, (l.detail as { chat?: string } | undefined)?.chat, wf.chat.id)), wf), { home: home === wf ? undefined : home, works, parts: home.work?.parts?.map(id => store.workflow(id)).filter((p): p is Workflow => !!p) ?? [], job: completedJob })
 	store.addRun()
-	restoreSession(store, wf.session.id)
-	const logStart = sessionLog(cfg.agent.flavor, wf.session.id).length
+	const logStart = 0
 	// What the run read is taken from the AI CLI's own session log (#21), so a reply may read Teams with Teams' own tools.
-	const res = await run({ ...cfg.agent, tools }, { workflowId: wf.id, runId, sessionId: wf.session.id, prompt, cwd, mcpConfigPath, extraTools: WORKER_TOOLS, dirs: readDirs(store, cfg) })
+	const res = await run({ ...cfg.agent, tools }, { workflowId: wf.id, runId, sessionId, prompt, cwd, mcpConfigPath, extraTools: WORKER_TOOLS, dirs: readDirs(store, cfg) })
 	// The CLI never started: no session to keep and no report to read; it counts toward the start tries.
 	if (res.error?.startsWith('Could not start')) throw new Error(res.error)
-	const read = runReads(store, cfg, wf.session.id, logStart)
+	const read = runReads(store, cfg, sessionId, logStart)
 	if (read.unknown) store.log({ event: 'reads-unknown', code: wf.code, why: [...new Set(read.calls.map(c => c.unknown).filter(Boolean))] })
-	backupSession(store, wf.session.id)
+	backupSession(store, sessionId)
 	// A report salvaged from the run's last words is scrubbed as one written by submit_report is (review 10-21 P2-6).
 	const raw = store.peekReport(wf.id, runId) ? undefined : reportFromText(res.summary, wf.id, intents(store.root).map(i => i.id))
 	const salvaged = raw && scrubDeep(raw)
 	const report = store.peekReport(wf.id, runId) ?? salvaged
-	store.log({ event: 'worker', ...(salvaged ? { salvaged: true } : {}), workflowId: wf.id, code: wf.code, runId, exitCode: res.exitCode, ms: res.ms, ...(res.via ? { via: res.via } : {}), ...(res.via === 'host' ? { warm: !!res.warm } : {}), intent: report?.intent, summary: report?.summary, sources: report?.reply?.sources, commitment: report?.reply?.commitment, error: res.error, ...ran('draft', res.used) })
+	store.log({ event: 'worker', ...(salvaged ? { salvaged: true } : {}), workflowId: wf.id, code: wf.code, runId, sessionId, fresh: true, inputTokens: res.used?.tokensIn, calls: res.used?.modelCalls, exitCode: res.exitCode, ms: res.ms, ...(res.via ? { via: res.via } : {}), ...(res.via === 'host' ? { warm: !!res.warm } : {}), intent: report?.intent, summary: report?.summary, sources: report?.reply?.sources, commitment: report?.reply?.commitment, error: res.error, ...ran('draft', res.used) })
 	const fresh = store.workflow(wf.id) ?? wf
+	const oldSession = fresh.session
+	fresh.session = { ...oldSession, id: sessionId, at: startedAt,
+		previous: oldSession.at ? oldSession.id : oldSession.previous,
+		retired: [...new Set([...(oldSession.retired ?? []), ...(oldSession.at && oldSession.previous ? [oldSession.previous] : [])])] }
+	store.save(fresh, false)
 	const account = !report && (res.setup ?? agentSetupFailure(`${res.error ?? ''}\n${res.summary ?? ''}`))
 	if (account) {
 		holdAgent(store, cfg, account)
@@ -387,14 +405,12 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 		store.archiveReport(wf.id, runId)
 		return
 	}
-	if (!report && !catalogRetried && cfg.agent.flavor === 'copilot' && CATALOG_CHANGED.test(sessionLog(cfg.agent.flavor, wf.session.id).slice(logStart))) {
+	if (!report && !catalogRetried && cfg.agent.flavor === 'copilot' && CATALOG_CHANGED.test(sessionLog(cfg.agent.flavor, sessionId).slice(logStart))) {
 		if (fresh.state !== 'running' || heldBy(store, fresh) === 'window') return
 		if (store.runsToday() < (cfg.dailyRuns ?? 200)) {
-			const sessionId = randomUUID()
-			store.log({ event: 'worker-catalog-retry', kind: 'draft', workflowId: wf.id, code: wf.code, runId, sessionId: wf.session.id, nextSessionId: sessionId })
-			fresh.session = { ...fresh.session, id: sessionId }
-			store.save(fresh, false)
-			return runOne(store, src, cfg, fresh, run, probe, true, separate)
+			const nextSessionId = randomUUID()
+			store.log({ event: 'worker-catalog-retry', kind: 'draft', workflowId: wf.id, code: wf.code, runId, sessionId, nextSessionId })
+			return runOne(store, src, cfg, fresh, run, probe, true, separate, nextSessionId)
 		}
 		store.log({ event: 'worker-catalog-retry-blocked', kind: 'draft', workflowId: wf.id, code: wf.code, runId, reason: 'daily-run-limit' })
 	}
@@ -454,6 +470,7 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 		// The home is read and written in one synchronous step, so a part's run and the home's run never overwrite each other (review part 2 #4).
 		const h = family(store, fresh, report)
 		applyReport(fresh, checked(store, cfg, report), h, canCloseReport(store, h, fresh))
+		if (completedJob?.state === 'done') fresh.context = replyFacts(jobContext, fresh.context)
 		if (fresh.draft) fresh.prDraft = wf.prRead
 		if (report.goalMet === false) store.log({ event: 'short-of-goal', workflowId: fresh.id, code: fresh.code, kind: blockerOf(report.blocker).kind, why: blockerOf(report.blocker).why, tried: blockerOf(report.blocker).tried })
 		// Closed with a last reply: the family closes when that reply is sent; without one, now.
@@ -512,9 +529,9 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 	// A draft that drew on another conversation not everyone here is in waits for the owner (R-SHR-01).
 	// What the run searched stays on the item for Why (queries and counts, never results).
 	fresh.looked = read.searches.length ? read.searches : undefined
-	const drewOn = report && !job && fresh.draft ? sourceChats(fresh, knowledgeOf(store, cfg), read.chats) : []
+	const drewOn = report && !job && fresh.draft ? [...new Set([...previousDrewOn, ...sourceChats(fresh, knowledgeOf(store, cfg), read.chats)])] : []
 	fresh.drewOn = drewOn.length ? drewOn : undefined
-	fresh.shareHold = report && !job && fresh.draft && read.unknown ? "It searched your chats and I couldn't tell which ones it read" : drewOn.length ? await sharingHold(store, src, fresh, drewOn) : undefined
+	fresh.shareHold = report && !job && fresh.draft && (read.unknown || previousShareHold === UNKNOWN_READ_HOLD || previousShareHold && !previousDrewOn.length) ? UNKNOWN_READ_HOLD : drewOn.length ? await sharingHold(store, src, fresh, drewOn) : undefined
 	if (report && !job) await afterDraft(store, src, cfg, fresh)
 	// A person answering the owner (in a 1:1, or right after his own message) is never silent noise: with no reply needed it is a
 	// Catch up line with their words (queue-new #18). Bots and group chatter not addressed to him stay silent.
@@ -526,6 +543,7 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 	}
 	if (report && !job && fresh.state === 'done' && fresh.closedBy === 'nothing') for (const msgId of wf.pending) auditSkip(store, wf.chat.id, msgId, fresh.fyi ? 'ai-fyi' : 'ai-noise', wf.id)
 	if (job && !declined) await ackJob(store, src, cfg, fresh)
+	fresh.session.at = new Date().toISOString()
 	store.save(fresh)
 	store.archiveReport(wf.id, runId)
 	// A missed link the owner asked about always gets an answer, even when there is nothing to track.

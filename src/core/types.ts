@@ -149,7 +149,7 @@ export type Job = {
 	// sent: asks the session has; from: where the run in flight started; ok: asks the owner let through (review 10-19 #5, #12).
 	relay?: { machine: string; session: string; what: string; sent?: number; from?: number; ok?: number }
 	// at: when a tracker check gave this result, so the page says when the last check really ran.
-	result?: { summary: string; reply?: Draft; effects: Effect[]; at?: string }
+	result?: { summary: string; reply?: Draft; effects: Effect[]; context?: Fact[]; at?: string }
 	error?: string
 	// Trackers (R-TRK-01): run again every N minutes until the condition in words holds.
 	every?: number
@@ -181,7 +181,7 @@ export type Workflow = {
 	asker?: Person
 	// Others in the same chat who asked the same thing; one reply answers and tags them all (dogfood: two askers in one chat).
 	askers?: Person[]
-	session: { agent: string; id: string; repo?: string }
+	session: { agent: string; id: string; repo?: string; at?: string; previous?: string; retired?: string[] }
 	lastMsgId: string
 	seenMsgId?: string
 	pending: string[]
@@ -190,6 +190,7 @@ export type Workflow = {
 	intent?: Intent
 	// PR identity, status, head and owner vote read before drafting; the reply keeps that basis until the next turn.
 	prRead?: string
+	prReadAt?: string
 	prUnknown?: true
 	// The owner's place on the item's PR at the last read, and why a review was not started (PR review gate, owner rule 10-23).
 	prRole?: PrRole

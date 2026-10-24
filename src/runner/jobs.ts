@@ -443,7 +443,7 @@ export function finishWork(store: Store, job: Job, r: Report, asksAtStart: numbe
 		store.save(wf)
 	}
 	// Asks that arrived during the run get one more run in the same session.
-	Object.assign(job, { result: { summary: r.summary, reply: r.reply ? { ...r.reply } : undefined, effects, at: new Date().toISOString() }, state: again ? 'queued' : 'done', purpose: 'work', run: undefined })
+	Object.assign(job, { result: { summary: r.summary, reply: r.reply ? { ...r.reply } : undefined, effects, context: (r.context ?? []).slice(0, 12), at: new Date().toISOString() }, state: again ? 'queued' : 'done', purpose: 'work', run: undefined })
 	store.saveJob(job)
 	if (!again) store.log({ event: 'job-done', job: job.id, key: job.key, summary: r.summary, effects: effects.length, ...usedBy(job) })
 }

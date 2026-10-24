@@ -78,6 +78,7 @@ export async function tick(store: Store, deps: { source?: Source; run?: RunWorke
 	const c0 = store.chats()
 	const off = c0.notice ? undefined : offNotice(c0.endAt, new Date(), store.machine, cfg.tz)
 	if (off) store.saveChats({ ...c0, notice: off })
+	let earlyRuns = 0
 	try {
 		const cursors = store.cursors()
 		const procs = deps.procs ?? realProcs
@@ -120,10 +121,16 @@ export async function tick(store: Store, deps: { source?: Source; run?: RunWorke
 		store.setHealth('cli-config', cli.error ? `${NAME} could not read your AI CLI's tool list, ${cli.path} (${cli.error}). Changes through tool servers listed only there wait until it can.` : undefined)
 		let probe: BuildProbe | undefined
 		try { probe = deps.probe ?? adoProbe(cfg) } catch (e) { store.log({ event: 'probe-failed', error: String(e).slice(0, 300) }) }
+		const answerItems = new Map(store.answers().map(({ answer }) => [answer.code, answer.at]))
 		const answers = await applyAnswers(store, src, cfg, procs, false, probe)
+		const answered = kicked && !store.control().stopped ? store.workflows().filter(w => w.state === 'running' && w.ownerAnswer && answerItems.has(w.code)) : []
 		// An approval's change job starts in this pass, before any draft runs, never one pass later (latency a). Jobs run detached.
 		// Approved changes with their exact calls are made in this pass, with no AI run (queue-new #7E).
 		const jobsMark = Date.now(), jobsNow = answers ? await executeDirect(store, src, cfg, procs, probe, deps.call ?? hostCaller(store, cfg)) + startJobs(store, cfg, procs, ['bootstrap:chats']) : 0
+		if (answered.length) {
+			for (const w of answered) store.log({ event: 'answer-dispatch', code: w.code, workflowId: w.id, ms: Date.now() - Date.parse(answerItems.get(w.code)!), tickMs: Date.now() - t0 })
+			earlyRuns = await dispatch(store, src, cfg, deps.run ?? hostRunner(store), probe, answered.map(w => w.id))
+		}
 		const closeProbe = () => { if (!deps.probe) void probe?.close?.().catch(() => undefined) }
 		// After the pass's PR reads are closed, a direct change batch opens its own reader for the PR read before a vote.
 		const direct = async () => {
@@ -169,7 +176,7 @@ export async function tick(store: Store, deps: { source?: Source; run?: RunWorke
 		// The first check of a work day starts the AI host, so the first reply is warm too (#25).
 		await prewarmHost(store, cfg)
 		// Reply runs go to the resident AI host when there can be one; else one process per run, as before (#19).
-		const runs = await dispatch(store, src, cfg, deps.run ?? hostRunner(store), probe).finally(closeProbe)
+		const runs = earlyRuns + await dispatch(store, src, cfg, deps.run ?? hostRunner(store), probe).finally(closeProbe)
 		// Jobs run detached: the tick starts and checks them, and never waits (R-LNG-02).
 		const handedBack = checkOpen(store, procs, procs.bootMs?.())
 		const jobsDone = await checkJobs(store, src, cfg, procs, deps.probe, jobsNow ? jobsMark : undefined)

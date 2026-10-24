@@ -1,5 +1,18 @@
 # React preview requirements
 
+Reply history retention (#29 follow-up):
+- Keep the current and previous managed reply histories, locally and in synced backups, without deleting job/owner histories.
+- Never infer ownership from age alone. Retry failed cleanup visibly; recover known legacy reply IDs once through an upgrade.
+- Five runs leave two backups per item; unrelated histories and bytes retained for Continue remain unchanged.
+
+Answer redrafts (#29, runner):
+- Start answered items before routine intake/sweep; still read same-tick news and reject outdated reports.
+- Keep reply input compact without losing review findings or private-source holds. Reviews retain their job histories.
+- Acknowledge accepted answers immediately with "Redrafting with your answer"; never claim the draft is already finished.
+- Keep Continue on the latest completed run. Never rewrite an older session or reuse an undated PR read as fresh evidence.
+- Measure ten warm redrafts, input per call and p50/p90. The delayed-stub worker target is <=15 s p50 and <12k input per call;
+  real-provider and on-card latency need their own measurement.
+
 Host draft setup (#39):
 - Never prompt a host session without its required registered worker/owner tools.
 - Missing optional catalog tools do not disable an otherwise healthy warm host.

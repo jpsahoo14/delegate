@@ -251,7 +251,9 @@ async function applyOne(store: Store, src: Source, cfg: Config, wf: Workflow, a:
 				Object.assign(wf, { state: 'waiting_on_task', question: undefined, status: 'Reading the results of your test and drafting the report', waitingSince: new Date().toISOString() })
 				break
 			}
-			Object.assign(wf, { ownerAnswer: a.text, state: 'running', status: 'Rewriting with your answer' })
+			Object.assign(wf, { ownerAnswer: a.text, state: 'running', status: 'Redrafting with your answer' })
+			store.addOutcome(a.id, 'Redrafting with your answer')
+			store.completePageSubmission(a, 'Redrafting with your answer')
 			break
 		case 'edit': {
 			// edit changes the draft and shows it; only ok or send makes it go out (persona test P0).

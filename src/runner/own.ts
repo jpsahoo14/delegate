@@ -1,4 +1,4 @@
-import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { assertTestSafe } from '../store/fs.ts'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -82,6 +82,75 @@ export function pruneSessionNotes(store: Store): number {
 		store.setHealth(key)
 		store.log({ event: 'session-note-pruned', session: id.slice(0, 8) })
 		n++
+	}
+	return n
+}
+
+// Only explicitly recorded reply runs are retired; unknown histories and every job/owner session stay untouched.
+export function pruneReplySessions(store: Store): number {
+	let items = store.workflows()
+	const upgrades = store.upgrades()
+	const sameIds = (a: string[] = [], b: string[] = []) => a.length === b.length && a.every((id, i) => id === b[i])
+	if (!upgrades['reply-sessions-1']) {
+		const legacy = items.filter(w => w.session.agent === 'copilot' && w.session.at && !w.session.previous && !w.session.retired)
+		const history = legacy.length ? store.logs(30).filter(e => e.event === 'worker' && e.fresh === true && typeof e.sessionId === 'string')
+			.sort((a, b) => String(a.at).localeCompare(String(b.at))) : []
+		for (const w of legacy) {
+			const ids = [...new Set(history.filter(e => e.workflowId === w.id).map(e => String(e.sessionId)))]
+			const current = store.workflow(w.id)
+			if (!current) continue
+			const i = ids.indexOf(current.session.id)
+			if (i < 0) continue
+			const previous = current.session.previous ?? ids[i - 1]
+			const retired = [...new Set([...(current.session.retired ?? []), ...ids])].filter(id => id !== current.session.id && id !== previous)
+			if (current.session.previous !== previous || !sameIds(current.session.retired, retired)) {
+				current.session.previous = previous
+				current.session.retired = retired.length ? retired : undefined
+				store.save(current, false)
+			}
+		}
+		store.saveUpgrades({ ...store.upgrades(), 'reply-sessions-1': new Date().toISOString() })
+		items = store.workflows()
+	}
+	const candidates = items.filter(w => w.session.agent === 'copilot' && w.session.retired?.length)
+	if (!candidates.length) return 0
+	const permanent = new Set([...store.jobs().map(j => j.session.id), ...store.owners().map(o => o.session)])
+	const protectedIds = new Set([...permanent, ...items.flatMap(w => [w.session.id, w.session.previous ?? '',
+		...(store.openWindow(w.id) ? w.session.retired ?? [] : [])])])
+	let n = 0
+	for (const w of candidates) {
+		const pending: string[] = []
+		const startingIds = [...new Set(w.session.retired)]
+		for (const id of startingIds) {
+			if (permanent.has(id)) continue
+			if (protectedIds.has(id)) { pending.push(id); continue }
+			if (!/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(id)) {
+				store.log({ event: 'reply-session-prune-refused', code: w.code, why: 'invalid session id' })
+				continue
+			}
+			try {
+				for (const folder of [join(sessions(), id), join(store.root, 'sessions', id)]) {
+					if (!existsSync(folder)) continue
+					if (lstatSync(folder).isSymbolicLink()) throw new Error('the session folder is a symbolic link')
+					assertTestSafe(folder)
+					rmSync(folder, { recursive: true })
+				}
+				n++
+				store.setHealth(`session:${id}`)
+				store.log({ event: 'reply-session-pruned', code: w.code, session: id })
+			} catch (error) {
+				pending.push(id)
+				store.log({ event: 'reply-session-prune-failed', code: w.code, session: id, error: String(error).slice(0, 200) })
+			}
+		}
+		const removed = new Set(startingIds.filter(id => !pending.includes(id)))
+		const current = store.workflow(w.id)
+		if (!current) continue
+		const retired = [...new Set(current.session.retired ?? [])].filter(id => !removed.has(id))
+		if (!sameIds(current.session.retired, retired)) {
+			current.session.retired = retired.length ? retired : undefined
+			store.save(current, false)
+		}
 	}
 	return n
 }

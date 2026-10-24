@@ -1,5 +1,15 @@
 # Engine fixes
 
+2026-10-24 (#29 retention): Keep two managed reply-run histories per item, local and synced. Protect job, owner and live
+item/window references; use one versioned log pass for legacy reply IDs. Manual five-run Temp-root proof passes; no unit tests.
+Follow-up: unchanged/protected/failed retirement lists do not rewrite workflows; cleanup merges into the latest item, preserving
+concurrent answers and newly retired IDs. Both official PE save blockers have focused manual proof.
+
+2026-10-24 (#29 runner): Fresh item reply sessions retain completed-review findings and prior private-source holds.
+Kicked answers draft before intake/sweep, with item-specific bounded PR evidence and immediate submission acknowledgment.
+Job sessions, budgets, terminal holds and send-time safety checks stay unchanged. Manual actual-runtime latency proof uses
+fictional Temp roots and a delayed local model, not live provider timings. Card display remains separately owned.
+
 2026-10-24 (#39): Verify actual host tools before a prompt and retry missing-tool setup failures on spawn. Only registered owner
 proxies and required worker tools fault; resting catalog entries remain optional. Match full hyphenated names. A versioned,
 log-keyed upgrade recovers eligible historical failures once. Fictional-root real-runtime proof covers delayed startup, warm

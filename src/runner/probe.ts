@@ -206,6 +206,7 @@ export async function probePRs(store: Store, cfg: Config, probe: BuildProbe | un
 		const named = me ? st.votes.filter(v => v.name.trim().toLowerCase() === me) : []
 		const mine = named.length === 1 && Object.values(VOTES).includes(named[0].vote) ? named[0].vote : undefined
 		w.prRead = JSON.stringify([ref.id, st.status, st.head, mine])
+		w.prReadAt = new Date(now).toISOString()
 		w.prUnknown = mine === undefined ? true : undefined
 		clearResetVotes(store, w, ref.id, st, mine)
 		describe(store, w, st)

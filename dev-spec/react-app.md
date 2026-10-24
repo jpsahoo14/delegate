@@ -1,5 +1,60 @@
 # React preview
 
+## #29 follow-up: retain two reply-run histories
+
+- After a reply run, its session records the previous managed reply ID and any retired IDs still awaiting cleanup.
+  After the dispatch pool finishes, cleanup keeps current/previous histories and deletes older managed reply directories
+  from both the local Copilot home and synced backups. It never rewrites a retained transcript.
+- Every job session (including done jobs), owner session, other item's current/previous session and open terminal is protected.
+  Unmanaged histories are not inferred from folder age or names. Only UUIDs recorded as reply sessions can be removed;
+  links and invalid IDs are refused explicitly. Failed deletion is logged and retried on a later pass.
+- Protected or failed cleanup writes no workflow when its retirement list is unchanged. After recursive deletion, metadata is
+  merged into a fresh item read: concurrent answers/status and newly retired IDs survive. The legacy pass also re-reads before
+  saving only retirement metadata. With no retired IDs, cleanup never reads jobs or owners.
+- Old #29 data uses the versioned `reply-sessions-1` upgrade: scan at most 30 days of worker logs once, taking only `fresh`
+  reply-session IDs for their exact item. Unknown histories and the existing privacy-retention policy remain unchanged.
+- Manual proof: `node scripts/prove-reply-retention.mjs`. Five production dispatches on a fictional Temp root leave exactly
+  two local and synced histories. Job/owner/other-item references survive, released references converge, invalid IDs are refused,
+  legacy logs converge once, subsequent cleanup scans zero logs, and retained history is byte-identical.
+- Early answer runs are sequential with intake. A message arriving during the turn is read afterward and causes the normal
+  rerun; the early redraft is a preview, and send-time checks (including the separately shipped owner-send hold check) still apply.
+
+## #29: compact reply sessions and answer-first dispatch
+
+- Every item reply run uses a fresh UUID; the self-contained prompt carries the thread, owner answer, prior draft,
+  work, and up to 2k characters of completed-job summary/findings. Job runs and private questions about jobs keep their sessions.
+- The latest reply session is saved and backed up without changing old histories. Continue uses it when newer than the job;
+  active jobs/relays still own their sessions. Legacy items without a reply-session timestamp retain the old target.
+- Rewrites retain prior draft source-chat provenance, including unknown-read holds, and completed-job findings.
+  Findings are snapshotted on the job result (at most 12); legacy completed jobs snapshot the item's old findings on read,
+  without rerunning. Reply facts merge by label, newest wording wins, and unrelated reply facts never become job facts.
+  No approval, owner-send, send-time PR check or sharing gate is weakened.
+- Answer runs on a kicked tick start before intake/sweep, restricted to the answered IDs. Intake follows those runs, avoiding
+  stale probe/intake writes. Same-tick news still queues a new turn for normal dispatch; news received during a model turn
+  still uses report-held. Normal budgets and terminal holds apply.
+- A redraft can reuse item-specific PR evidence for under ten minutes. Missing/invalid/old timestamps force the normal read;
+  send-time evidence and explicit review jobs are unchanged.
+- Applying an answer completes its page submission with "Redrafting with your answer" before the worker starts.
+  Same-batch approved direct changes still start first, preserving the approval fast path.
+- Worker logs include fresh/session ID, inputTokens/calls aliases and existing usage/tool/warm fields. Answer-dispatch logs
+  include answer-to-dispatch and tick-to-dispatch milliseconds.
+- Manual proof: `node scripts/prove-redraft-latency.mjs`, isolated Temp homes and actual installed runtime.
+  Ten resumed-history and ten fresh redrafts use a local stub charging 1 s/10k estimated input tokens plus 1.5 s/call.
+  Stub numbers are not real-provider latency or browser-render latency. Card wording/stale-job display remain card-owner work.
+
+Final manual measurement (ten each, actual runtime, delayed local stub):
+
+| Measurement | Resumed history p50 / p90 | Fresh reply p50 / p90 |
+| --- | --- | --- |
+| Worker wall time | 13,215 / 13,604 ms | 5,711 / 5,806 ms |
+| Estimated input per model call | 44,138 / 45,016 tokens | 6,838 / 6,978 tokens |
+
+All ten fresh runs were warm, with one report-tool call each. Reworded findings replace their old label, reply-only facts
+expire, and unknown-read holds survive a known shared audience. The real tick reads same-tick news and redrafts it, records
+answer dispatch within 1.5 s, acknowledges before the model turn, and writes the production page snapshot without errors.
+An actual resumed job question and a captured Continue command select their expected sessions. The proof host drains;
+no proof session is written in the owner's home. The existing host-tools proof also passes. PE diff review: ok.
+
 ## #27 step 2 fix: an item's thread survives a join or detach after the page loaded (PE review of 52ce1bd4)
 
 - **The bug.** The code index assumed `partOf` never changes, but intake's `addPart`, the worker's join and `repairParts` change it.

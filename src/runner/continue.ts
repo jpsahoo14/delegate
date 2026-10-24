@@ -19,9 +19,11 @@ import { backupSession, restoreSession } from './own.ts'
 import { NAME } from '../brand.ts'
 
 
-// The session behind an item: its job's session when it has one, else its own.
+// Old items keep their job target; a newer reply run becomes the continuation target.
 function target(store: Store, wf: Workflow) {
 	const job = wf.job ? store.job(wf.job) : undefined
+	if (wf.session.at && (!job || (job.state === 'done' || job.state === 'failed') && !job.relay && wf.session.at >= job.updatedAt))
+		return { id: wf.id, session: wf.session.id, repo: wf.session.repo, job: undefined }
 	return { id: job?.id ?? wf.id, session: job?.session.id ?? wf.session.id, repo: job?.repo, job }
 }
 

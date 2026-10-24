@@ -11,6 +11,21 @@ Proof kinds:
 
 ## Engine crosscheck regressions
 
+Bug 10-24 #29 retention (manual): `node scripts/prove-reply-retention.mjs`. Five fictional production dispatches leave only
+current and previous local/synced histories; job, owner, other-item and unmanaged histories survive. Releasing a temporary
+reference permits cleanup on the next pass. Invalid IDs are refused. A versioned legacy scan converges, never repeats in
+normal cleanup, and retained transcripts remain byte-identical. Normal privacy retention is unchanged.
+Repeat with protected and failed deletion IDs: zero workflow writes. Interleave a second writer during recursive removal and
+legacy scanning: its answer/status and new retirement IDs survive. With no retired IDs, read no job/owner records.
+
+Bug 10-24 #29 (manual, not a unit test): `node scripts/prove-redraft-latency.mjs`.
+Seed a real isolated host session with thirty fictional turns; measure ten resumed and ten fresh redrafts against a delayed
+local model. Fresh calls stay below 12k estimated input tokens and warm worker p50 below 15 s. Preserve findings and private
+source holds without new citations, back up the newest session and leave old history untouched. A kicked answer starts before
+intake; same-tick news holds its first report. Recent item-specific PR evidence may be reused, expired evidence must be read.
+Private questions about a job retain its session; Continue selects the latest reply. Acknowledge the submission before the
+model turn. No unit suite, live effects or owner-home writes; drain the host at the end.
+
 Bug 10-24 #39 (manual script, not a unit test; committed resting-server regression:
 `node scripts/prove-host-tools.mjs`): on a fictional Temp root with isolated Copilot/local/config/cache/data and a stub
 model, delay two MCP servers by 25 s. A cold host must offer submit_report before any model request; a run ten virtual weekday

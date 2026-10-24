@@ -41219,7 +41219,16 @@ function buildPrompt(wf, thread2, cfg, root, owners = [], others = [], corrected
   if (ctx.works?.length) parts2.push("", "Open work that started in other chats. If this ask belongs to one of them, set `partOf` to its code and report `work` with this run's step:", ...ctx.works.map((w) => `- ${w.code}: ${w.work.goal}${w.work.links.length ? ` (${w.work.links.join(", ")})` : ""} \xB7 last: ${w.work.steps.at(-1)?.what.slice(0, 120) ?? ""}`));
   if (wf.followUp) parts2.push("", `This is a follow-up. The message marked >> is the owner's own ask to ${wf.followUp}, still unanswered. Draft a short, polite follow-up from the owner that says what is still needed. Add no new facts.`);
   if (wf.correction) parts2.push("", `Your earlier reply in this chat was already sent: "${wf.correction.sent}"`, `The owner says it was ${wf.correction.kind}${wf.correction.note ? `: "${wf.correction.note}"` : "."}`, "Draft a short follow-up message for the same chat that fixes it. Say only what changes or was missing. Do not repeat what was right, and do not apologize at length.");
-  if (wf.ownerAnswer) parts2.push("", `The owner answered your question: "${wf.ownerAnswer}"`, `Your previous draft: "${wf.draft?.text ?? ""}"`);
+  if (ctx.job?.state === "done") parts2.push("", [
+    `Last result of ${ctx.job.key}: ${ctx.job.result?.summary.slice(0, 800) ?? "Completed"}`,
+    ...replyFacts(ctx.job.result?.context, wf.context).map((f) => `${f.label}: ${f.text}`)
+  ].join("\n").slice(0, 2e3));
+  if (wf.ownerAnswer) parts2.push(
+    "",
+    `The owner answered your question: "${wf.ownerAnswer}"`,
+    `Your previous draft: "${wf.draft?.text ?? ""}"`,
+    "Your previous draft, the thread and the owner's answer are enough; call tools only for what the answer asks you to check."
+  );
   parts2.push("", `Finish by calling submit_report with workflowId "${wf.id}".`);
   return scrub(parts2.join("\n"));
 }
@@ -41323,7 +41332,7 @@ function validateLines(cfg, telemetry = []) {
     telemetry.length ? `Telemetry: read it with ${telemetry.join(", ")}.` : "Telemetry: no telemetry tool server is set up, so you cannot read it. Say in the report that telemetry was not read."
   ];
 }
-var compiledRules;
+var compiledRules, replyFacts;
 var init_prompt = __esm({
   "src/worker/prompt.ts"() {
     "use strict";
@@ -41344,6 +41353,7 @@ var init_prompt = __esm({
         return [];
       }
     };
+    replyFacts = (job = [], latest2 = []) => [...new Map([...job, ...latest2].map((f) => [f.label, f])).values()].slice(0, 12);
   }
 });
 
@@ -41662,7 +41672,7 @@ var init_route = __esm({
 });
 
 // src/runner/own.ts
-import { cpSync, existsSync as existsSync13, lstatSync as lstatSync2, mkdirSync as mkdirSync6, readFileSync as readFileSync13, renameSync as renameSync3, statSync as statSync6, writeFileSync as writeFileSync7 } from "node:fs";
+import { cpSync, existsSync as existsSync13, lstatSync as lstatSync2, mkdirSync as mkdirSync6, readFileSync as readFileSync13, renameSync as renameSync3, rmSync as rmSync6, statSync as statSync6, writeFileSync as writeFileSync7 } from "node:fs";
 import { homedir as homedir6 } from "node:os";
 import { dirname as dirname7, join as join14 } from "node:path";
 import { createHash as createHash6, randomUUID as randomUUID2 } from "node:crypto";
@@ -41716,6 +41726,78 @@ function pruneSessionNotes(store2) {
     store2.setHealth(key);
     store2.log({ event: "session-note-pruned", session: id.slice(0, 8) });
     n++;
+  }
+  return n;
+}
+function pruneReplySessions(store2) {
+  let items2 = store2.workflows();
+  const upgrades = store2.upgrades();
+  const sameIds = (a = [], b = []) => a.length === b.length && a.every((id, i) => id === b[i]);
+  if (!upgrades["reply-sessions-1"]) {
+    const legacy = items2.filter((w) => w.session.agent === "copilot" && w.session.at && !w.session.previous && !w.session.retired);
+    const history = legacy.length ? store2.logs(30).filter((e) => e.event === "worker" && e.fresh === true && typeof e.sessionId === "string").sort((a, b) => String(a.at).localeCompare(String(b.at))) : [];
+    for (const w of legacy) {
+      const ids = [...new Set(history.filter((e) => e.workflowId === w.id).map((e) => String(e.sessionId)))];
+      const current2 = store2.workflow(w.id);
+      if (!current2) continue;
+      const i = ids.indexOf(current2.session.id);
+      if (i < 0) continue;
+      const previous = current2.session.previous ?? ids[i - 1];
+      const retired = [.../* @__PURE__ */ new Set([...current2.session.retired ?? [], ...ids])].filter((id) => id !== current2.session.id && id !== previous);
+      if (current2.session.previous !== previous || !sameIds(current2.session.retired, retired)) {
+        current2.session.previous = previous;
+        current2.session.retired = retired.length ? retired : void 0;
+        store2.save(current2, false);
+      }
+    }
+    store2.saveUpgrades({ ...store2.upgrades(), "reply-sessions-1": (/* @__PURE__ */ new Date()).toISOString() });
+    items2 = store2.workflows();
+  }
+  const candidates2 = items2.filter((w) => w.session.agent === "copilot" && w.session.retired?.length);
+  if (!candidates2.length) return 0;
+  const permanent = /* @__PURE__ */ new Set([...store2.jobs().map((j) => j.session.id), ...store2.owners().map((o) => o.session)]);
+  const protectedIds = /* @__PURE__ */ new Set([...permanent, ...items2.flatMap((w) => [
+    w.session.id,
+    w.session.previous ?? "",
+    ...store2.openWindow(w.id) ? w.session.retired ?? [] : []
+  ])]);
+  let n = 0;
+  for (const w of candidates2) {
+    const pending = [];
+    const startingIds = [...new Set(w.session.retired)];
+    for (const id of startingIds) {
+      if (permanent.has(id)) continue;
+      if (protectedIds.has(id)) {
+        pending.push(id);
+        continue;
+      }
+      if (!/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(id)) {
+        store2.log({ event: "reply-session-prune-refused", code: w.code, why: "invalid session id" });
+        continue;
+      }
+      try {
+        for (const folder of [join14(sessions(), id), join14(store2.root, "sessions", id)]) {
+          if (!existsSync13(folder)) continue;
+          if (lstatSync2(folder).isSymbolicLink()) throw new Error("the session folder is a symbolic link");
+          assertTestSafe(folder);
+          rmSync6(folder, { recursive: true });
+        }
+        n++;
+        store2.setHealth(`session:${id}`);
+        store2.log({ event: "reply-session-pruned", code: w.code, session: id });
+      } catch (error62) {
+        pending.push(id);
+        store2.log({ event: "reply-session-prune-failed", code: w.code, session: id, error: String(error62).slice(0, 200) });
+      }
+    }
+    const removed = new Set(startingIds.filter((id) => !pending.includes(id)));
+    const current2 = store2.workflow(w.id);
+    if (!current2) continue;
+    const retired = [...new Set(current2.session.retired ?? [])].filter((id) => !removed.has(id));
+    if (!sameIds(current2.session.retired, retired)) {
+      current2.session.retired = retired.length ? retired : void 0;
+      store2.save(current2, false);
+    }
   }
   return n;
 }
@@ -42962,7 +43044,8 @@ import { existsSync as existsSync15, readFileSync as readFileSync15 } from "node
 import { mkdirSync as mkdirSync7, writeFileSync as writeFileSync8 } from "node:fs";
 import { join as join15 } from "node:path";
 import { randomUUID as randomUUID4 } from "node:crypto";
-async function dispatch(store2, src, cfg, run2 = runAgent, probe) {
+async function dispatch(store2, src, cfg, run2 = runAgent, probe, only2) {
+  if (!store2.upgrades()["reply-sessions-1"]) pruneReplySessions(store2);
   restoreApprovedDrafts(store2);
   const held = blockedAgent(store2, cfg);
   if (held) {
@@ -42971,7 +43054,7 @@ async function dispatch(store2, src, cfg, run2 = runAgent, probe) {
   }
   const cap2 = cfg.dailyRuns ?? 200;
   const room = cap2 - store2.runsToday();
-  const running2 = store2.workflows().filter((w) => w.state === "running" && heldBy(store2, w) !== "window").sort((a, b) => a.updatedAt.localeCompare(b.updatedAt));
+  const running2 = store2.workflows().filter((w) => (!only2 || only2.includes(w.id)) && w.state === "running" && heldBy(store2, w) !== "window").sort((a, b) => a.updatedAt.localeCompare(b.updatedAt));
   const paced = running2.filter((w) => w.paced).sort((a, b) => Number(!!a.startedBy) - Number(!!b.startedBy)).slice(0, store2.runsToday() < cap2 / 2 ? cfg.maxParallel : 0);
   const queue = [...running2.filter((w) => !w.paced), ...paced].slice(0, Math.max(0, room));
   for (const w of running2.filter((w2) => !queue.includes(w2) && !w2.intakeDeferred)) {
@@ -42985,7 +43068,7 @@ async function dispatch(store2, src, cfg, run2 = runAgent, probe) {
     store2.save(w, false);
   }
   let done2 = 0;
-  const asks = store2.workflows().filter((w) => w.notes?.some((n) => n.a === void 0) && w.state !== "running" && heldBy(store2, w) !== "window" && !(w.job && store2.job(w.job)?.state === "running"));
+  const asks = only2 ? [] : store2.workflows().filter((w) => w.notes?.some((n) => n.a === void 0) && w.state !== "running" && heldBy(store2, w) !== "window" && !(w.job && store2.job(w.job)?.state === "running"));
   queue.push(...asks.slice(0, Math.max(0, room - queue.length)));
   const slots = Math.max(1, cfg.maxParallel ?? 3);
   let next2 = 0;
@@ -43007,7 +43090,8 @@ async function dispatch(store2, src, cfg, run2 = runAgent, probe) {
       done2++;
     }
   }));
-  for (const w of promisesDue(store2, cfg).slice(0, Math.max(0, room - done2))) {
+  pruneReplySessions(store2);
+  for (const w of (only2 ? [] : promisesDue(store2, cfg)).slice(0, Math.max(0, room - done2))) {
     if (blockedAgent(store2, cfg)) break;
     try {
       await checkPromise(store2, src, cfg, w, run2, probe);
@@ -43017,7 +43101,7 @@ async function dispatch(store2, src, cfg, run2 = runAgent, probe) {
     }
     done2++;
   }
-  for (const a of store2.automations().filter((a2) => a2.heard && a2.state === "active").slice(0, Math.max(0, room - done2))) {
+  for (const a of (only2 ? [] : store2.automations()).filter((a2) => a2.heard && a2.state === "active").slice(0, Math.max(0, room - done2))) {
     if (blockedAgent(store2, cfg)) break;
     await judgeReply(store2, cfg, a, run2);
     done2++;
@@ -43215,7 +43299,7 @@ function refuseStart(cfg, tools, folder) {
   const shell2 = folder && shellTool(tools);
   if (shell2) throw new Error(shellInClone(shell2));
 }
-async function runOne(store2, src, cfg, wf, run2, probe, catalogRetried = false, separate = false) {
+async function runOne(store2, src, cfg, wf, run2, probe, catalogRetried = false, separate = false, retrySession) {
   if (blockedAgent(store2, cfg)) return;
   const tools = workerTools(cfg, "reply");
   refuseStart(cfg, tools);
@@ -43228,27 +43312,45 @@ async function runOne(store2, src, cfg, wf, run2, probe, catalogRetried = false,
       store2.save(wf, false);
     }
   }
-  await probePRs(store2, cfg, probe, Date.now(), true, [wf]);
+  const age2 = Date.now() - Date.parse(wf.prReadAt ?? "");
+  if (!(wf.ownerAnswer && wf.prRead && !wf.prUnknown && age2 >= 0 && age2 < 10 * 6e4))
+    await probePRs(store2, cfg, probe, Date.now(), true, [wf]);
   if (wf.state !== "running" || blockedAgent(store2, cfg)) return;
-  const runId = ulid3();
+  const runId = ulid3(), sessionId = retrySession ?? randomUUID4(), startedAt = (/* @__PURE__ */ new Date()).toISOString();
+  const previousDrewOn = wf.draft ? wf.drewOn ?? [] : [];
+  const previousShareHold = wf.draft ? wf.shareHold : void 0;
+  const completedJob = wf.job ? store2.job(wf.job) : void 0;
+  const jobContext = completedJob?.state === "done" ? replyFacts(completedJob.result?.context ?? wf.context) : [];
+  if (completedJob?.state === "done" && completedJob.result && completedJob.result.context === void 0) {
+    completedJob.result.context = jobContext;
+    store2.saveJob(completedJob);
+  }
   const { cwd, mcpConfigPath } = workerMcp(store2, wf.id, runId);
   const others = wf.code && !separate ? store2.openInChat(wf.chat.id).filter((o) => o.id !== wf.id && o.code && !o.followUp && !o.sent && freshAsk(store2, o) && askRelation(store2, o, wf.lastAsk ?? "") !== "different") : [];
   const home = homeOf(store2, wf);
   const works = !wf.work && !wf.partOf ? store2.workflows().filter((w) => active(w) && !w.partOf && w.chat.id !== wf.chat.id && !levelOf(cfg, w.chat.id)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 8) : [];
-  const prompt = buildPrompt(wf, store2.thread(wf.id), cfg, store2.root, store2.owners(), others, corrections(store2.lessons().filter((l) => lessonFits(cfg, l.detail?.chat, wf.chat.id)), wf), { home: home === wf ? void 0 : home, works, parts: home.work?.parts?.map((id) => store2.workflow(id)).filter((p) => !!p) ?? [] });
+  const prompt = buildPrompt(wf, store2.thread(wf.id), cfg, store2.root, store2.owners(), others, corrections(store2.lessons().filter((l) => lessonFits(cfg, l.detail?.chat, wf.chat.id)), wf), { home: home === wf ? void 0 : home, works, parts: home.work?.parts?.map((id) => store2.workflow(id)).filter((p) => !!p) ?? [], job: completedJob });
   store2.addRun();
-  restoreSession(store2, wf.session.id);
-  const logStart = sessionLog(cfg.agent.flavor, wf.session.id).length;
-  const res = await run2({ ...cfg.agent, tools }, { workflowId: wf.id, runId, sessionId: wf.session.id, prompt, cwd, mcpConfigPath, extraTools: WORKER_TOOLS, dirs: readDirs(store2, cfg) });
+  const logStart = 0;
+  const res = await run2({ ...cfg.agent, tools }, { workflowId: wf.id, runId, sessionId, prompt, cwd, mcpConfigPath, extraTools: WORKER_TOOLS, dirs: readDirs(store2, cfg) });
   if (res.error?.startsWith("Could not start")) throw new Error(res.error);
-  const read3 = runReads(store2, cfg, wf.session.id, logStart);
+  const read3 = runReads(store2, cfg, sessionId, logStart);
   if (read3.unknown) store2.log({ event: "reads-unknown", code: wf.code, why: [...new Set(read3.calls.map((c) => c.unknown).filter(Boolean))] });
-  backupSession(store2, wf.session.id);
+  backupSession(store2, sessionId);
   const raw = store2.peekReport(wf.id, runId) ? void 0 : reportFromText(res.summary, wf.id, intents(store2.root).map((i) => i.id));
   const salvaged = raw && scrubDeep(raw);
   const report2 = store2.peekReport(wf.id, runId) ?? salvaged;
-  store2.log({ event: "worker", ...salvaged ? { salvaged: true } : {}, workflowId: wf.id, code: wf.code, runId, exitCode: res.exitCode, ms: res.ms, ...res.via ? { via: res.via } : {}, ...res.via === "host" ? { warm: !!res.warm } : {}, intent: report2?.intent, summary: report2?.summary, sources: report2?.reply?.sources, commitment: report2?.reply?.commitment, error: res.error, ...ran("draft", res.used) });
+  store2.log({ event: "worker", ...salvaged ? { salvaged: true } : {}, workflowId: wf.id, code: wf.code, runId, sessionId, fresh: true, inputTokens: res.used?.tokensIn, calls: res.used?.modelCalls, exitCode: res.exitCode, ms: res.ms, ...res.via ? { via: res.via } : {}, ...res.via === "host" ? { warm: !!res.warm } : {}, intent: report2?.intent, summary: report2?.summary, sources: report2?.reply?.sources, commitment: report2?.reply?.commitment, error: res.error, ...ran("draft", res.used) });
   const fresh2 = store2.workflow(wf.id) ?? wf;
+  const oldSession = fresh2.session;
+  fresh2.session = {
+    ...oldSession,
+    id: sessionId,
+    at: startedAt,
+    previous: oldSession.at ? oldSession.id : oldSession.previous,
+    retired: [.../* @__PURE__ */ new Set([...oldSession.retired ?? [], ...oldSession.at && oldSession.previous ? [oldSession.previous] : []])]
+  };
+  store2.save(fresh2, false);
   const account = !report2 && (res.setup ?? agentSetupFailure(`${res.error ?? ""}
 ${res.summary ?? ""}`));
   if (account) {
@@ -43260,14 +43362,12 @@ ${res.summary ?? ""}`));
     store2.archiveReport(wf.id, runId);
     return;
   }
-  if (!report2 && !catalogRetried && cfg.agent.flavor === "copilot" && CATALOG_CHANGED.test(sessionLog(cfg.agent.flavor, wf.session.id).slice(logStart))) {
+  if (!report2 && !catalogRetried && cfg.agent.flavor === "copilot" && CATALOG_CHANGED.test(sessionLog(cfg.agent.flavor, sessionId).slice(logStart))) {
     if (fresh2.state !== "running" || heldBy(store2, fresh2) === "window") return;
     if (store2.runsToday() < (cfg.dailyRuns ?? 200)) {
-      const sessionId = randomUUID4();
-      store2.log({ event: "worker-catalog-retry", kind: "draft", workflowId: wf.id, code: wf.code, runId, sessionId: wf.session.id, nextSessionId: sessionId });
-      fresh2.session = { ...fresh2.session, id: sessionId };
-      store2.save(fresh2, false);
-      return runOne(store2, src, cfg, fresh2, run2, probe, true, separate);
+      const nextSessionId = randomUUID4();
+      store2.log({ event: "worker-catalog-retry", kind: "draft", workflowId: wf.id, code: wf.code, runId, sessionId, nextSessionId });
+      return runOne(store2, src, cfg, fresh2, run2, probe, true, separate, nextSessionId);
     }
     store2.log({ event: "worker-catalog-retry-blocked", kind: "draft", workflowId: wf.id, code: wf.code, runId, reason: "daily-run-limit" });
   }
@@ -43335,6 +43435,7 @@ ${res.summary ?? ""}`));
   } else {
     const h = family(store2, fresh2, report2);
     applyReport(fresh2, checked(store2, cfg, report2), h, canCloseReport(store2, h, fresh2));
+    if (completedJob?.state === "done") fresh2.context = replyFacts(jobContext, fresh2.context);
     if (fresh2.draft) fresh2.prDraft = wf.prRead;
     if (report2.goalMet === false) store2.log({ event: "short-of-goal", workflowId: fresh2.id, code: fresh2.code, kind: blockerOf(report2.blocker).kind, why: blockerOf(report2.blocker).why, tried: blockerOf(report2.blocker).tried });
     if (h.work?.closed) {
@@ -43377,9 +43478,9 @@ ${res.summary ?? ""}`));
   }
   if (report2?.split?.length) splitOff(store2, cfg, fresh2, report2.split);
   fresh2.looked = read3.searches.length ? read3.searches : void 0;
-  const drewOn = report2 && !job && fresh2.draft ? sourceChats(fresh2, knowledgeOf(store2, cfg), read3.chats) : [];
+  const drewOn = report2 && !job && fresh2.draft ? [.../* @__PURE__ */ new Set([...previousDrewOn, ...sourceChats(fresh2, knowledgeOf(store2, cfg), read3.chats)])] : [];
   fresh2.drewOn = drewOn.length ? drewOn : void 0;
-  fresh2.shareHold = report2 && !job && fresh2.draft && read3.unknown ? "It searched your chats and I couldn't tell which ones it read" : drewOn.length ? await sharingHold(store2, src, fresh2, drewOn) : void 0;
+  fresh2.shareHold = report2 && !job && fresh2.draft && (read3.unknown || previousShareHold === UNKNOWN_READ_HOLD || previousShareHold && !previousDrewOn.length) ? UNKNOWN_READ_HOLD : drewOn.length ? await sharingHold(store2, src, fresh2, drewOn) : void 0;
   if (report2 && !job) await afterDraft(store2, src, cfg, fresh2);
   if (report2 && !job && fresh2.state === "done" && fresh2.closedBy === "nothing" && !fresh2.fyi && answersOwner(store2, fresh2)) {
     const said2 = (fresh2.lastAsk ?? "").replace(/^\[as [^\]]+\]\s*/i, "").replace(/\s+/g, " ").trim();
@@ -43389,6 +43490,7 @@ ${res.summary ?? ""}`));
   }
   if (report2 && !job && fresh2.state === "done" && fresh2.closedBy === "nothing") for (const msgId of wf.pending) auditSkip(store2, wf.chat.id, msgId, fresh2.fyi ? "ai-fyi" : "ai-noise", wf.id);
   if (job && !declined) await ackJob(store2, src, cfg, fresh2);
+  fresh2.session.at = (/* @__PURE__ */ new Date()).toISOString();
   store2.save(fresh2);
   store2.archiveReport(wf.id, runId);
   if (report2 && fresh2.missed && fresh2.startedBy === "owner" && fresh2.state === "done") await say(store2, src, `${MARK} ${fresh2.code}: ${fresh2.status}`);
@@ -43542,7 +43644,7 @@ function greetBack(wf, text3) {
   const body = OPENERS.test(text3) ? text3[0].toLowerCase() + text3.slice(1) : text3;
   return `Hi ${first3}, ${body}`;
 }
-var AUTH, CATALOG_CHANGED, OLD_FALLBACK, STOP2, BOT, failWhy, readDirs, WORKER_SERVER, WORKER_TOOLS, lessonFits, NO_QUESTION, GREETING2, OPENERS;
+var AUTH, CATALOG_CHANGED, UNKNOWN_READ_HOLD, OLD_FALLBACK, STOP2, BOT, failWhy, readDirs, WORKER_SERVER, WORKER_TOOLS, lessonFits, NO_QUESTION, GREETING2, OPENERS;
 var init_dispatch = __esm({
   "src/runner/dispatch.ts"() {
     "use strict";
@@ -43589,6 +43691,7 @@ var init_dispatch = __esm({
     init_same_ask();
     AUTH = /bad credentials|not logged in|please run \/login|authenticat|unauthori[sz]ed|sign[ -]?in/i;
     CATALOG_CHANGED = /MCP tool catalog changed/i;
+    UNKNOWN_READ_HOLD = "It searched your chats and I couldn't tell which ones it read";
     OLD_FALLBACK = /^(?:Check this item, then answer or skip it|Sign in, then answer or skip this item)$/;
     STOP2 = /^(?:Tried \d+ times; |Blocked: |Needs the asker: |Still not ready after \d+ hours; )/;
     BOT = /\b(?:bot|app|notifications?|alerts?|no-?reply|azure devops|github|jira|pipelines?)\b/i;
@@ -44241,7 +44344,7 @@ var init_owner_reply = __esm({
 
 // src/os/scheduler.ts
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync as existsSync16, mkdirSync as mkdirSync8, rmSync as rmSync6, writeFileSync as writeFileSync9 } from "node:fs";
+import { chmodSync, existsSync as existsSync16, mkdirSync as mkdirSync8, rmSync as rmSync7, writeFileSync as writeFileSync9 } from "node:fs";
 import { homedir as homedir7 } from "node:os";
 import { dirname as dirname8, join as join16, posix, win32 } from "node:path";
 function launcher(p, win) {
@@ -44330,10 +44433,10 @@ function uninstall(p, platform = process.platform) {
       execFileSync("launchctl", ["bootout", `gui/${process.getuid?.()}/${LABEL2}`], { stdio: "pipe" });
     } catch {
     }
-    rmSync6(join16(homedir7(), "Library", "LaunchAgents", `${LABEL2}.plist`), { force: true });
+    rmSync7(join16(homedir7(), "Library", "LaunchAgents", `${LABEL2}.plist`), { force: true });
   }
   assertTestSafe(p.local);
-  for (const f of ["delegate-tick", "delegate-tick.cmd", "delegate-tick.vbs"]) rmSync6(join16(p.local, "bin", f), { force: true });
+  for (const f of ["delegate-tick", "delegate-tick.cmd", "delegate-tick.vbs"]) rmSync7(join16(p.local, "bin", f), { force: true });
   return "Removed the background runner. Your data is kept.";
 }
 function status(platform = process.platform) {
@@ -44965,6 +45068,8 @@ import { existsSync as existsSync17 } from "node:fs";
 import { join as join17 } from "node:path";
 function target(store2, wf) {
   const job = wf.job ? store2.job(wf.job) : void 0;
+  if (wf.session.at && (!job || (job.state === "done" || job.state === "failed") && !job.relay && wf.session.at >= job.updatedAt))
+    return { id: wf.id, session: wf.session.id, repo: wf.session.repo, job: void 0 };
   return { id: job?.id ?? wf.id, session: job?.session.id ?? wf.session.id, repo: job?.repo, job };
 }
 async function openContinue(store2, src, wf, a, procs) {
@@ -45425,7 +45530,9 @@ async function applyOne(store2, src, cfg, wf, a, procs, probe) {
         Object.assign(wf, { state: "waiting_on_task", question: void 0, status: "Reading the results of your test and drafting the report", waitingSince: (/* @__PURE__ */ new Date()).toISOString() });
         break;
       }
-      Object.assign(wf, { ownerAnswer: a.text, state: "running", status: "Rewriting with your answer" });
+      Object.assign(wf, { ownerAnswer: a.text, state: "running", status: "Redrafting with your answer" });
+      store2.addOutcome(a.id, "Redrafting with your answer");
+      store2.completePageSubmission(a, "Redrafting with your answer");
       break;
     case "edit": {
       if (wf.state === "waiting_on_task" || wf.state === "running") return reply(store2, src, a, `${MARK} ${wf.code} is still working. I'll show the draft first.`);
@@ -46423,6 +46530,7 @@ async function probePRs(store2, cfg, probe, now = Date.now(), force = false, sub
     const named2 = me ? st.votes.filter((v) => v.name.trim().toLowerCase() === me) : [];
     const mine = named2.length === 1 && Object.values(VOTES).includes(named2[0].vote) ? named2[0].vote : void 0;
     w.prRead = JSON.stringify([ref.id, st.status, st.head, mine]);
+    w.prReadAt = new Date(now).toISOString();
     w.prUnknown = mine === void 0 ? true : void 0;
     clearResetVotes(store2, w, ref.id, st, mine);
     describe4(store2, w, st);
@@ -47405,7 +47513,7 @@ function finishWork(store2, job, r, asksAtStart) {
     if (home.work && step(home, `${home === wf ? "" : `${wf.code}: `}Found: ${r.summary}`, { ref: `job:${job.id}:${hashOf(r.summary)}` }) && home !== wf) store2.save(home);
     store2.save(wf);
   }
-  Object.assign(job, { result: { summary: r.summary, reply: r.reply ? { ...r.reply } : void 0, effects, at: (/* @__PURE__ */ new Date()).toISOString() }, state: again ? "queued" : "done", purpose: "work", run: void 0 });
+  Object.assign(job, { result: { summary: r.summary, reply: r.reply ? { ...r.reply } : void 0, effects, context: (r.context ?? []).slice(0, 12), at: (/* @__PURE__ */ new Date()).toISOString() }, state: again ? "queued" : "done", purpose: "work", run: void 0 });
   store2.saveJob(job);
   if (!again) store2.log({ event: "job-done", job: job.id, key: job.key, summary: r.summary, effects: effects.length, ...usedBy(job) });
 }
@@ -49764,7 +49872,7 @@ var init_offrecord = __esm({
 });
 
 // src/runner/sharing.ts
-import { existsSync as existsSync21, mkdirSync as mkdirSync10, readFileSync as readFileSync18, rmSync as rmSync7, writeFileSync as writeFileSync11 } from "node:fs";
+import { existsSync as existsSync21, mkdirSync as mkdirSync10, readFileSync as readFileSync18, rmSync as rmSync8, writeFileSync as writeFileSync11 } from "node:fs";
 import { dirname as dirname10, join as join23 } from "node:path";
 function recordRead(root, runId, links, query, tool = "teams", n = links.length) {
   if (!runId) return;
@@ -50833,7 +50941,7 @@ __export(host_exports, {
   runHost: () => runHost
 });
 import { createHash as createHash8, randomUUID as randomUUID11 } from "node:crypto";
-import { existsSync as existsSync28, readFileSync as readFileSync23, renameSync as renameSync5, rmSync as rmSync9, writeFileSync as writeFileSync15 } from "node:fs";
+import { existsSync as existsSync28, readFileSync as readFileSync23, renameSync as renameSync5, rmSync as rmSync10, writeFileSync as writeFileSync15 } from "node:fs";
 import { createServer } from "node:http";
 import { homedir as homedir10, tmpdir as tmpdir3 } from "node:os";
 import { isAbsolute as isAbsolute6, join as join30, relative as relative4, resolve as resolve8 } from "node:path";
@@ -51105,7 +51213,7 @@ async function runHost() {
     await client.stop().catch(() => void 0);
     try {
       const now = JSON.parse(readFileSync23(hostFile(), "utf8"));
-      if (now.pid === process.pid) rmSync9(hostFile(), { force: true });
+      if (now.pid === process.pid) rmSync10(hostFile(), { force: true });
     } catch {
     }
     process.exit(0);
@@ -51537,14 +51645,14 @@ init_state();
 
 // src/store/retention.ts
 init_state();
-import { existsSync as existsSync26, readdirSync as readdirSync9, readFileSync as readFileSync22, rmSync as rmSync8, statSync as statSync9, writeFileSync as writeFileSync14 } from "node:fs";
+import { existsSync as existsSync26, readdirSync as readdirSync9, readFileSync as readFileSync22, rmSync as rmSync9, statSync as statSync9, writeFileSync as writeFileSync14 } from "node:fs";
 import { join as join28 } from "node:path";
 var CONTENT = ["text", "summary", "lastAsk", "sent", "answer", "ask", "draft", "note"];
 function sweep2(store2, days2 = 30, now = Date.now()) {
   const cutoff = new Date(now - days2 * 864e5).toISOString();
   let n = 0;
   for (const wf of store2.workflows().filter((w) => w.state === "done" && w.updatedAt < cutoff && !w.redacted)) {
-    rmSync8(join28(store2.root, "state", "threads", `${wf.id}.json`), { force: true });
+    rmSync9(join28(store2.root, "state", "threads", `${wf.id}.json`), { force: true });
     Object.assign(wf, {
       redacted: true,
       fyi: void 0,
@@ -51574,7 +51682,7 @@ function sweep2(store2, days2 = 30, now = Date.now()) {
   if (existsSync26(sessions2)) for (const id of readdirSync9(sessions2)) {
     const p = join28(sessions2, id);
     if (!live2.has(id) && statSync9(p).mtimeMs < now - days2 * 864e5) {
-      rmSync8(p, { recursive: true, force: true });
+      rmSync9(p, { recursive: true, force: true });
       n++;
     }
   }
@@ -51618,7 +51726,7 @@ function removeOlder(dir2, beforeMs) {
   for (const f of readdirSync9(dir2)) {
     const p = join28(dir2, f);
     if (statSync9(p).mtimeMs < beforeMs) {
-      rmSync8(p, { recursive: true, force: true });
+      rmSync9(p, { recursive: true, force: true });
       n++;
     }
   }
@@ -56840,6 +56948,7 @@ async function tick(store2, deps = {}) {
   const c0 = store2.chats();
   const off = c0.notice ? void 0 : offNotice(c0.endAt, /* @__PURE__ */ new Date(), store2.machine, cfg.tz);
   if (off) store2.saveChats({ ...c0, notice: off });
+  let earlyRuns = 0;
   try {
     const cursors = store2.cursors();
     const procs = deps.procs ?? realProcs;
@@ -56890,8 +56999,14 @@ async function tick(store2, deps = {}) {
     } catch (e) {
       store2.log({ event: "probe-failed", error: String(e).slice(0, 300) });
     }
+    const answerItems = new Map(store2.answers().map(({ answer }) => [answer.code, answer.at]));
     const answers2 = await applyAnswers(store2, src, cfg, procs, false, probe);
+    const answered = kicked && !store2.control().stopped ? store2.workflows().filter((w) => w.state === "running" && w.ownerAnswer && answerItems.has(w.code)) : [];
     const jobsMark = Date.now(), jobsNow = answers2 ? await executeDirect(store2, src, cfg, procs, probe, deps.call ?? hostCaller(store2, cfg)) + startJobs(store2, cfg, procs, ["bootstrap:chats"]) : 0;
+    if (answered.length) {
+      for (const w of answered) store2.log({ event: "answer-dispatch", code: w.code, workflowId: w.id, ms: Date.now() - Date.parse(answerItems.get(w.code)), tickMs: Date.now() - t0 });
+      earlyRuns = await dispatch(store2, src, cfg, deps.run ?? hostRunner(store2), probe, answered.map((w) => w.id));
+    }
     const closeProbe = () => {
       if (!deps.probe) void probe?.close?.().catch(() => void 0);
     };
@@ -56964,7 +57079,7 @@ async function tick(store2, deps = {}) {
     finishTrim(store2);
     serverBanners(store2, cfg);
     await prewarmHost(store2, cfg);
-    const runs = await dispatch(store2, src, cfg, deps.run ?? hostRunner(store2), probe).finally(closeProbe);
+    const runs = earlyRuns + await dispatch(store2, src, cfg, deps.run ?? hostRunner(store2), probe).finally(closeProbe);
     const handedBack = checkOpen(store2, procs, procs.bootMs?.());
     const jobsDone = await checkJobs(store2, src, cfg, procs, deps.probe, jobsNow ? jobsMark : void 0);
     saveLearned(store2);
@@ -57348,7 +57463,7 @@ init_fs();
 init_scheduler();
 import { execFileSync as execFileSync5, spawn as spawn7, spawnSync as spawnSync5 } from "node:child_process";
 import { createHash as createHash10 } from "node:crypto";
-import { cpSync as cpSync2, existsSync as existsSync32, lstatSync as lstatSync3, mkdirSync as mkdirSync14, readFileSync as readFileSync26, readlinkSync, rmSync as rmSync10, symlinkSync, writeFileSync as writeFileSync18 } from "node:fs";
+import { cpSync as cpSync2, existsSync as existsSync32, lstatSync as lstatSync3, mkdirSync as mkdirSync14, readFileSync as readFileSync26, readlinkSync, rmSync as rmSync11, symlinkSync, writeFileSync as writeFileSync18 } from "node:fs";
 import { homedir as homedir12 } from "node:os";
 import { basename as basename7, join as join36 } from "node:path";
 init_brand();
@@ -57382,7 +57497,7 @@ function install2() {
       out.push(`Left ${link2} alone: it is not ${NAME}'s. Rename it to use ${NAME} there.`);
       continue;
     }
-    if (existsSync32(link2) || isLink(link2)) rmSync10(link2, { recursive: true, force: true });
+    if (existsSync32(link2) || isLink(link2)) rmSync11(link2, { recursive: true, force: true });
     try {
       symlinkSync(SKILL_DIR, link2, "junction");
     } catch {
@@ -57555,13 +57670,13 @@ function uninstall2(purge) {
       out.push(`Removing ${lp} as soon as this command ends.`);
     } else {
       assertTestSafe(lp);
-      rmSync10(lp, { force: true });
+      rmSync11(lp, { force: true });
       out.push(`Removed ${lp}.`);
     }
   }
   for (const link2 of [join36(COPILOT, "skills", "delegate"), join36(homedir12(), ".claude", "skills", "delegate")]) if ((existsSync32(link2) || isLink(link2)) && ours3(link2)) {
     assertTestSafe(link2);
-    rmSync10(link2, { recursive: true, force: true });
+    rmSync11(link2, { recursive: true, force: true });
     out.push(`Removed ${link2}.`);
   }
   if (has("copilot") && pluginListed()) {
@@ -57576,7 +57691,7 @@ function uninstall2(purge) {
   }
   if (purge) {
     assertTestSafe(LOCAL_DIR);
-    rmSync10(LOCAL_DIR, { recursive: true, force: true });
+    rmSync11(LOCAL_DIR, { recursive: true, force: true });
     out.push(`Removed ${LOCAL_DIR}.`);
   }
   out.push(root ? `Your data is still in ${root}. Delete that folder yourself if you want it gone.` : "Done.");
@@ -57594,7 +57709,7 @@ init_proposals();
 init_track();
 init_automations();
 import { spawnSync as spawnSync6 } from "node:child_process";
-import { existsSync as existsSync33, mkdirSync as mkdirSync15, rmSync as rmSync11, writeFileSync as writeFileSync19 } from "node:fs";
+import { existsSync as existsSync33, mkdirSync as mkdirSync15, rmSync as rmSync12, writeFileSync as writeFileSync19 } from "node:fs";
 import { homedir as homedir13 } from "node:os";
 import { join as join37 } from "node:path";
 init_brand();
@@ -57663,7 +57778,7 @@ function demo(args2) {
   run(["inbox"]);
 }
 async function seed() {
-  rmSync11(HOME, { recursive: true, force: true });
+  rmSync12(HOME, { recursive: true, force: true });
   mkdirSync15(LOCAL2, { recursive: true });
   writeFileSync19(join37(LOCAL2, "local.json"), JSON.stringify({ root: ROOT2, machine: "demo" }));
   const store2 = new Store({ root: ROOT2, machine: "demo" });
