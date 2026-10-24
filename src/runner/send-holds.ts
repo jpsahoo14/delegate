@@ -6,6 +6,7 @@ import type { Source } from '../adapters/source.ts'
 import type { Store } from '../store/state.ts'
 import * as host from '../host/client.ts'
 import { close } from './intake.ts'
+import { recordCommit } from './commit.ts'
 
 type Message = { id: string; text: string; at: string }
 export type Quick = (prompt: string, jsonSchema: object, timeoutMs: number) => Promise<unknown>
@@ -123,8 +124,9 @@ export async function holdCheck(store: Store, src: Source, wf: Workflow, options
 
 export async function refreshApprovedHolds(store: Store, src: Source) {
 	for (const wf of store.workflows().filter(w => w.holdCheckPending && w.ownerSend)) {
+		const commit = recordCommit(wf, () => store.workflow(wf.id), store.save.bind(store))
 		await checkPreservedHold(store, src, wf)
-		store.save(wf)
+		commit()
 	}
 }
 

@@ -13,6 +13,7 @@ import { Icon } from '../components/ui/icon.tsx'
 import { ViewportList } from '../components/ViewportList.tsx'
 import { messageText, sentAt, whereOf } from './ItemCard.tsx'
 import { SentTime } from './SentTime.tsx'
+import { busyWords } from '../data/busy.ts'
 import { isolateRowControls } from './row-navigation.ts'
 import './rows.css'
 
@@ -94,7 +95,11 @@ export const NowRow = memo(function NowRow({ id, day }: { id: string; day?: stri
 	const hasItem = !!item, person = entities?.people[row?.personId ?? item?.personId ?? '']
 	const hasReport = !!entities?.work[row?.workId ?? '']?.reportActionId
 	const route = useNavigation(state => state.route), navigate = useNavigation(state => state.navigate)
+	// While Delegate works on it, line 3 says so and turns to "Still trying" after 3 minutes (PM 19:50), so the row reads the clock.
+	const since = item?.mode === 'working' ? item.working?.since : undefined, [now, setNow] = useState(Date.now)
+	useEffect(() => { if (!since) return; const timer = setInterval(() => setNow(Date.now()), 15_000); return () => clearInterval(timer) }, [since])
 	if (!row) return null
+	const trying: [string, string] | undefined = item?.mode === 'working' ? [since && now - Date.parse(since) >= 3 * 60_000 ? 'Still trying' : 'Trying again', since ? `started ${when(since)}` : ''] : undefined
 	const open = route === `now/${id}` || route.startsWith(`now/${id}/`)
 	const requested = route.split('/')[2], shown = requested && row.subjects.includes(requested) ? requested : row.act
 	const icons: Partial<Record<string, ComponentProps<typeof Icon>['name']>> = { working: 'bolt', scheduled: 'clock', watch: 'eye', 'waiting-delegate': 'clock', reminder: 'clock', 'reminder-new': 'clock', catchup: 'eye', stopped: 'warn' }
@@ -111,7 +116,8 @@ export const NowRow = memo(function NowRow({ id, day }: { id: string; day?: stri
 	const mine: [string, string] | undefined = row.section !== 'move' ? undefined
 		: row.kind === 'your-step' ? ['Your step', work?.yours?.what ?? row.headline]
 			: draft && ['reply', 'holding', 'review'].includes(row.kind) ? [draft.holding ? 'Holding reply' : 'Your reply', `${draft.sendText ?? draft.text}${item?.changeIds.length ? ` · plus ${item.changeIds.length} ${item.changeIds.length === 1 ? 'change' : 'changes'}` : ''}`]
-				: item?.question && row.kind === 'question' ? [`${NAME} needs to know`, item.question] : undefined
+				: item?.question && row.kind === 'question' ? [`${NAME} needs to know`, item.question]
+					: row.kind === 'todo' && item?.todoIds.length && entities?.todos[item.todoIds[0]] ? ['Left for you', `${entities.todos[item.todoIds[0]].text}${item.todoIds.length > 1 ? ` (+${item.todoIds.length - 1} more)` : ''}`] : undefined
 	const who = person?.name ?? row.facts.who
 	return <article className={`now-row${open ? ' row-open' : ''}`} data-code={row.code} data-row-kind={row.kind} title={codeHover(row.act)} onClick={row.kind === 'catchup' ? isolateRowControls : undefined}>
 		<div className="row-content">
@@ -122,8 +128,8 @@ export const NowRow = memo(function NowRow({ id, day }: { id: string; day?: stri
 					{row.teams && <a className="row-teams" href={row.teams} target="_blank" rel="noopener noreferrer" aria-label="Open in Teams" title="Open this message in Teams, in a new tab."><Icon name="ext" /></a>}
 					{row.chips.map((chip, n) => <span key={`${chip.kind}-${n}`} className={`chip chip-${chip.kind}`} title={chipHover(chip.kind)}>{chip.text}</span>)}</div>
 				{message && <p className="row-message">{message}</p>}
-				<h3 className="row-line3"><button className="row-title" aria-label={`${open ? 'Hide' : 'Open'} ${mine ? `${mine[0]}: ${mine[1]}` : row.headline}`} onClick={toggle} aria-expanded={open}>
-					{mine ? <><b>{mine[0]}:</b> {mine[1]}</> : row.headline}</button></h3>
+				<h3 className="row-line3"><button className="row-title" aria-label={`${open ? 'Hide' : 'Open'} ${trying ? trying.filter(Boolean).join(' · ') : mine ? `${mine[0]}: ${mine[1]}` : row.headline}`} onClick={toggle} aria-expanded={open}>
+					{trying ? <><b>{trying[0]}</b>{trying[1] && <> · {trying[1]}</>}</> : mine ? <><b>{mine[0]}:</b> {mine[1]}</> : row.headline}</button></h3>
 				<RowFacts row={row} day={day ?? calendarKey()} />
 				{row.gist && <p>{row.gist}</p>}
 				{row.warn && <p className="row-warning"><Icon name="warn" /><span>{row.warn}</span></p>}
@@ -196,8 +202,8 @@ export default function Now() {
 				// Spec S3: "N need you · Delegate: A now, B in line · C waiting on others", then Catch up; each part opens its section.
 				const count = (id: string) => sections.find(section => section.id === id)
 				const move = count('move'), working = count('working'), waiting = count('waiting'), catchup = count('catchup')
-				const busy = workingCounts(working?.ids ?? [], entities, running.length)
-				const parts: [string, string][] = [['move', `${move?.total ?? move?.ids.length ?? 0} need you`], ['working', `${NAME}: ${busy.now} now, ${busy.line} in line`], ['waiting', `${waiting?.total ?? waiting?.ids.length ?? 0} waiting on others`]]
+				const busy = snapshot.busy ? busyWords(snapshot.busy).line : (b => `${b.now} now, ${b.line} in line`)(workingCounts(working?.ids ?? [], entities, running.length))
+				const parts: [string, string][] = [['move', `${move?.total ?? move?.ids.length ?? 0} need you`], ['working', `${NAME}: ${busy}`], ['waiting', `${waiting?.total ?? waiting?.ids.length ?? 0} waiting on others`]]
 				if (catchup && (catchup.total ?? catchup.ids.length)) parts.push(['catchup', `${catchup.total ?? catchup.ids.length} to catch up${snapshot.summary.catchup.worth ? `, ${snapshot.summary.catchup.worth} worth a look` : ''}`])
 				return parts.map(([id, label], index) => <Fragment key={id}>{index > 0 && <span className="summary-separator"> · </span>}<a className="summary-part" href={`#now/${id}`} aria-current={selected === id ? 'location' : undefined}>{label}</a></Fragment>)
 			})()}
@@ -214,8 +220,11 @@ export default function Now() {
 			const runs = section.id === 'working' ? running : []
 			if (section.id !== 'move' && section.id !== 'working' && !ids.length && !runs.length) return null
 			const busy = section.id === 'working' ? workingCounts(section.ids, entities, running.length) : undefined
+			// R11(1): "Delegate is on it · 3 working now · 15 queued", the reason under it; the same words as Classic's tile.
+			const words = section.id === 'working' && snapshot.busy ? busyWords(snapshot.busy) : undefined
 			return <section key={section.id} className="now-section" data-selected={find || selected === section.id ? 'true' : 'false'} aria-labelledby={`section-${section.id}`}>
-				<h2 id={`section-${section.id}`}>{section.label}<span className="section-count"> · {busy ? `${busy.now} now · ${busy.line} in line` : search ? matches : section.total ?? ids.length}{retained > 0 && ` + ${retained} kept`}</span></h2>
+				<h2 id={`section-${section.id}`} title={words?.title}>{section.label}<span className="section-count"> · {words ? words.line : busy ? `${busy.now} now · ${busy.line} in line` : search ? matches : section.total ?? ids.length}{retained > 0 && ` + ${retained} kept`}</span></h2>
+				{words?.sub && <p className="muted section-reason">{words.sub}</p>}
 				{section.id === 'working' && snapshot.summary.paused && <p className="warning">Paused: drafts go on, nothing is sent.</p>}
 				{section.id === 'working' && !snapshot.summary.paused && snapshot.summary.off && !ids.length && !runs.length && <p className="muted">{snapshot.summary.off.text}{snapshot.summary.off.since ? ` since ${when(snapshot.summary.off.since)}` : ''}</p>}
 				{ids.length ? <ViewportList className="rows" ids={ids} estimate={112} retained={Object.keys(pinnedPlacements({ pinned: activePins }))} target={ids.includes(sub) ? sub : undefined}

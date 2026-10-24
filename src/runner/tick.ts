@@ -1,4 +1,4 @@
-import { askWhatNext, due as dueWork, repairNoNews, repairParts } from './work.ts'
+import { askWhatNext, due as dueWork } from './work.ts'
 import { adoProbe, describeDeploys, probeBuilds, probePRs, type BuildProbe } from './probe.ts'
 import { describeTargets } from './validate.ts'
 import { cliServers } from '../adapters/mcp-client.ts'
@@ -12,7 +12,8 @@ import { saveLearned } from './proposals.ts'
 import type { History } from '../adapters/history.ts'
 import type { Store } from '../store/state.ts'
 import { applyAnswers } from './apply.ts'
-import { dispatch, nudge, repairBlocked, repairRunFailures, retryHostToolFailures, type RunWorker } from './dispatch.ts'
+import { dispatch, nudge, retryHostToolFailures, type RunWorker } from './dispatch.ts'
+import { migrateWorkflows } from './upgrades.ts'
 import { intake, readOwnerCommands, say, takeMissed } from './intake.ts'
 import { retryOwnerReplies } from './owner-reply.ts'
 import { planSweep, sweep, sweeping } from './sweep.ts'
@@ -125,15 +126,8 @@ async function tickInPhases(store: Store, deps: Parameters<typeof tick>[1] = {})
 			// Finished reports land before the owner's answers, so an ok never acts on a turn that news already replaced (review P0.4).
 			const jobsEarly = await checkJobs(store, src, cfg, procs, deps.probe)
 			legacyEffects(store)
-			// Once per store: items an older version left with the failed-run question (queue-new #11).
-			if (!store.probeMark().runFailRepairAt) { repairRunFailures(store); store.saveProbeMark({ ...store.probeMark(), runFailRepairAt: new Date().toISOString() }) }
+			migrateWorkflows(store)
 			retryHostToolFailures(store)
-			// Items a job left blocked before #17 get its failed-run card once (queue-new #26).
-			if (!store.probeMark().blockedRepairAt) { repairBlocked(store); store.saveProbeMark({ ...store.probeMark(), blockedRepairAt: new Date().toISOString() }) }
-			// Once per store: parts an unchecked join attached to work about something else (queue-new #9).
-			if (!store.probeMark().partsRepairAt) { repairParts(store); store.saveProbeMark({ ...store.probeMark(), partsRepairAt: new Date().toISOString() }) }
-			// Once per store: a "No news" question asked right after activity (queue-new #13).
-			if (!store.probeMark().noNewsRepairAt) { repairNoNews(store); store.saveProbeMark({ ...store.probeMark(), noNewsRepairAt: new Date().toISOString() }) }
 			// A session history note no open item or job uses any more is cleared (queue-new #16 b).
 			pruneSessionNotes(store)
 			settleCompleted(store, procs)

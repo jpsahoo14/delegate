@@ -26,6 +26,16 @@ For a rule about people's one-to-one chats, use `when.chat: "direct"`: it matche
 
 ## Confirm layout
 
+Compile PR-review autonomy only as `then: "review"`, `when.intent: "pr_review"`,
+`review: {comments: "post", reply: "send"}`. No rule grants a vote or approval.
+Leave that part out and tell the owner "Delegate never votes or approves for you;
+that part was left out." An `off: true` rule retains its text but does not run.
+For review rules, call the rules step with `{text, compiled, preview: true}` first.
+Show its code-built read-back unchanged, wait for the owner's OK, then save
+the same text and grants without `preview`. Never invent the confirmation words.
+PR-review autonomy is not active in this version. Its read-back says so; keep
+that warning unchanged and do not promise automatic comments or replies.
+
 Show each compiled rule like this, and wait for `ok` or an edit:
 
 ```

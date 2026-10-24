@@ -1,6 +1,8 @@
 import { z } from 'zod'
 
 export const text = z.string()
+// An image in a message reaches the page as this token (L3c); the bubble draws it as a chip that opens the message in Teams.
+export const IMAGE_TOKEN = '🖼 Image'
 const strings = z.array(text)
 const optional = text.optional()
 const person = z.object({ id: text, name: text, initials: text, hue: z.number() })
@@ -17,7 +19,7 @@ const change = z.object({
 	error: optional,
 	state: z.enum(['proposed', 'approved', 'made', 'uncertain', 'left-out']),
 })
-const draft = z.object({ id: text, itemId: text, rev: text, text, sendText: optional, commitment: z.boolean(), preview: z.boolean(), holding: z.boolean().optional() })
+const draft = z.object({ id: text, itemId: text, rev: text, text, sendText: optional, marker: optional, commitment: z.boolean(), preview: z.boolean(), holding: z.boolean().optional() })
 const choice = z.object({ id: optional, label: text, note: optional, reply: optional })
 const choices = z.object({ prompt: text, multi: z.boolean().optional(), options: z.array(choice), other: z.boolean().optional() })
 const context = z.object({ label: text, text, tone: z.enum(['info', 'warn']).optional() })
@@ -28,11 +30,13 @@ const item = z.object({
 	question: optional, draftId: optional, choices: choices.optional(), picked: z.array(z.number()).optional(), context: z.array(context).optional(),
 	meeting: z.object({ subject: text, start: text, minutes: z.number(), attendees: strings }).optional(),
 	changeIds: strings, effectIds: strings.optional(), sourceIds: strings, noteIds: strings, todoIds: strings, actionIds: strings, primaryActionId: optional, workId: optional,
-	job: optional, why, status: text, attention: optional, attentionKind: z.enum(['reply-changed', 'run-failed', 'agent-setup']).optional(), mode: optional, editor: z.enum(['reply', 'answer', 'none']).optional(), block3: z.enum(['when-you-send', 'none']).optional(), openOn: optional, teams: optional, debug: strings.optional(),
+	job: optional, why, status: text, attention: optional, attentionKind: z.enum(['reply-changed', 'run-failed', 'agent-setup', 'reason']).optional(), voteGap: z.object({ text, held: z.boolean() }).optional(), mode: optional, editor: z.enum(['reply', 'answer', 'none']).optional(), block3: z.enum(['when-you-send', 'none']).optional(), openOn: optional, teams: optional, debug: strings.optional(),
 	promise: z.object({ said: text, failed: optional }).optional(), todos: strings.optional(),
 	runFailed: z.object({ at: text, why: text, tried: strings.optional(), review: optional, toolsOff: z.boolean().optional() }).optional(), prLabel: optional,
 	ownReply: z.object({ text, at: text, teams: optional }).optional(), unsent: optional,
 	follow: z.object({ target: text, until: text, everyHours: z.number() }).optional(),
+	// Delegate is working on it (#48): what it is doing, in plain words, and since when.
+	working: z.object({ doing: text, since: optional }).optional(),
 })
 const action = z.object({
 	id: text, item: text, rev: text, kind: text, label: text,
@@ -83,7 +87,8 @@ export const entitiesSchema = z.object({
 	work: table(work),
 	planSteps: table(z.object({ id: text, workId: text, position: z.number(), what: text, owner, done: z.boolean(), now: z.boolean(), where: optional, build: z.union([text, z.number()]).optional() })),
 	workSteps: table(z.object({ id: text, workId: text, at: text, what: text, news: z.boolean() })),
-	todos: table(z.object({ id: text, itemId: text, code: text, text, at: text, done: z.boolean() })),
+	// from: the reply that left it (to whom, where, when, and that message in Teams); why: the reason a change Delegate couldn't make.
+	todos: table(z.object({ id: text, itemId: text, code: text, text, at: text, done: z.boolean(), why: optional, from: z.object({ at: text, who: optional, chat: optional, teams: optional }).optional() })),
 	placements: table(placement), actions: table(action), doneEntries: table(done), watches: table(watch), automations: table(automation),
 	knowledgeProposals: table(z.object({ id: text, code: text, rev: text, topic: text, home: text, state: optional, factIds: strings, actionIds: strings })),
 	facts: table(z.object({ id: text, proposalId: text, type: text, text, who: optional, date: text, href: optional, private: z.boolean(), replaces: optional })),
@@ -109,6 +114,8 @@ export const snapshotSchema = z.object({
 	doneNew: z.number().optional(),
 	showExperienceNote: z.boolean().optional(),
 	running: z.array(z.object({ what: text, since: text, progress: z.number().optional() })).optional(),
+	// R11(1): what Delegate is on: working now (runs actually going), queued, how many at a time, and why the rest wait.
+	busy: z.object({ now: z.number(), queued: z.number(), max: z.number(), reason: z.object({ kind: z.enum(['ai', 'paused', 'off', 'slots']), at: optional, text: optional }).optional() }).optional(),
 	version: z.object({ version: optional, code: optional, fullCode: optional, tag: optional, auto: z.boolean(), channel: text, everyMin: z.number(), checkedAt: optional, failed: optional, last: z.object({ to: text, rolledBack: optional }).optional() }).optional(),
 	sinceLine: z.object({ at: text, parts: z.array(z.object({ text, href: text })) }).optional(),
 	settingsActions: z.record(text, strings).optional(),
@@ -119,7 +126,7 @@ export const snapshotSchema = z.object({
 		tiles: z.array(z.object({ key: text, count: z.number(), label: text, sub: optional })),
 		also: z.array(z.object({ key: text, count: z.number(), label: text, sub: optional })),
 		catchupIds: strings,
-		running: z.array(z.object({ code: text, what: text, who: optional, since: text, sendAt: optional, progress: z.number().optional(), detail: optional, retry: z.object({ at: text, attempt: z.number(), reason: text, tried: strings }).optional(), actionIds: strings })),
+		running: z.array(z.object({ code: text, what: text, who: optional, since: text, sendAt: optional, progress: z.number().optional(), detail: optional, retry: z.object({ at: text, attempt: z.number(), reason: text, tried: strings }).optional(), queued: z.boolean().optional(), actionIds: strings })),
 		progress: z.array(z.object({
 			code: text, who: text, chat: text, goal: text, status: text,
 			last: z.object({ at: text, what: text }).optional(), next: optional, checkAt: optional,

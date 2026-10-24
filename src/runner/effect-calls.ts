@@ -14,6 +14,8 @@ const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v ===
 const text = (v: unknown): v is string => typeof v === 'string' && !!v.trim()
 const line = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v > 0
 const threadTool = (name: string) => /(?:^|[-_])(?:repo_)?pull_request_thread_write(?::create)?$/i.test(name)
+export const isInlineComment = (effect: Effect) => threadTool(effect.call?.tool ?? '') && /^(?:create|comment|post_comment)$/i.test(effect.action) ||
+	/^(?:post[_ -]?)?(?:pr[_ -]?)?comment$/i.test(effect.action) && /\bPR(?:\b|\d)|pull[\s_-]?requests?/i.test(effect.target)
 
 export function effectCallProblem(call: Call, info: ToolInfo): string | undefined {
 	const schema = info.inputSchema
@@ -50,7 +52,7 @@ export function buildCommentCall(payload: unknown, ref: CommentRef | undefined, 
 		[['rightFileStartLine', 'startLine', 'line'], payload.line],
 		[['rightFileStartOffset', 'startOffset'], 1],
 		[['rightFileEndLine', 'endLine'], payload.endLine ?? payload.line],
-		[['rightFileEndOffset', 'endOffset'], 1],
+		[['rightFileEndOffset', 'endOffset'], line(payload.endLineLength) ? payload.endLineLength : 1],
 		[['content', 'text', 'body'], payload.text],
 	]
 	for (const [names, value] of fields) {
@@ -67,6 +69,7 @@ export function buildCommentCall(payload: unknown, ref: CommentRef | undefined, 
 export function prepareEffectCalls(
 	effects: Effect[], ref: CommentRef | undefined, catalogs: Record<string, Pick<Catalog, 'tools'>>,
 	log: (repair: EffectCallRepair) => void,
+	defer: (effect: Effect) => boolean = () => false,
 ): EffectCallPreparation {
 	const tools: ListedTool[] = Object.entries(catalogs).flatMap(([server, catalog]) =>
 		catalog.tools.map(t => ({ server, name: `${server}-${t.name}`, info: t.info })))
@@ -74,9 +77,9 @@ export function prepareEffectCalls(
 	const result: EffectCallPreparation = { effects: [], problems: [], repaired: [] }
 	let n = 0
 	for (const [index, effect] of effects.entries()) {
+		if (defer(effect)) { result.effects.push(effect); continue }
 		const name = effect.call?.tool ?? ''
-		const isComment = threadTool(name) && /^(?:create|comment|post_comment)$/i.test(effect.action) ||
-			/^(?:post[_ -]?)?(?:pr[_ -]?)?comment$/i.test(effect.action) && /\bPR(?:\b|\d)|pull[\s_-]?requests?/i.test(effect.target)
+		const isComment = isInlineComment(effect)
 		if (!isComment) {
 			const tool = tools.find(t => t.name === name)
 			const problem = !effect.call ? 'no exact call was provided' : !tool ? 'the tool is not in the cached catalog' : effectCallProblem(effect.call, tool.info)
@@ -86,6 +89,7 @@ export function prepareEffectCalls(
 			} else result.effects.push(effect)
 			continue
 		}
+
 		n++
 		const exact = comments.find(t => t.name === name || `${t.name}:create` === name)
 		const candidates = comments.filter(t => t.server === effect.system)

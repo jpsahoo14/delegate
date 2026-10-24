@@ -2,13 +2,14 @@ import type { Config } from '../core/types.ts'
 import { activeAgentHold, type AgentHold, type AgentSetupFailure } from '../core/agent-failure.ts'
 import { pageDigest } from '../core/page-approval.ts'
 import type { Store } from '../store/state.ts'
+import { statusFields } from '../core/upgrades.ts'
 
 export function waitingForAgent(store: Store, hold: AgentHold) {
 	const queued = store.jobs().filter(job => job.state === 'queued')
 	for (const job of queued) if (job.error !== hold.text) { job.error = hold.text; store.saveJob(job) }
 	for (const item of store.workflows()) {
 		if (item.state !== 'running' && !(item.state === 'waiting_on_task' && queued.some(job => job.id === item.job))) continue
-		if (item.status !== hold.text) { item.status = hold.text; store.save(item) }
+		if (item.statusReason?.kind !== 'could-not-start' || item.statusReason.text !== hold.text) { Object.assign(item, statusFields('could-not-start', hold.text)); store.save(item) }
 	}
 }
 

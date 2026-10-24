@@ -13,7 +13,7 @@ for (const folder of ['local', 'copilot', 'config', 'cache', 'data', 'code', 'mo
 Object.assign(process.env, { DELEGATE_LOCAL: join(root, 'local'), DELEGATE_ROOT: join(root, 'fictional'),
 	COPILOT_HOME: join(root, 'copilot'), XDG_CONFIG_HOME: join(root, 'config'), XDG_CACHE_HOME: join(root, 'cache'), XDG_DATA_HOME: join(root, 'data'), NODE_TEST_CONTEXT: 'fictional-proof' })
 const { Store } = await import('../src/store/state.ts')
-const { remoteOf, cloneUrl, cloneFor, cloneTodo, localClones, codeFolders, saveCodeFolders, scanCodeFolders, requestCloneScan, visibleCloneTodos } = await import('../src/runner/repos.ts')
+const { remoteOf, cloneUrl, cloneFor, cloneTodo, localClones, codeFolders, saveCodeFolders, scanCodeFolders, requestCloneScan, visibleCloneTodos, visibleCloneKept } = await import('../src/runner/repos.ts')
 const { dispatch } = await import('../src/runner/dispatch.ts')
 const { startJobs, checkJobs } = await import('../src/runner/jobs.ts')
 const { tick } = await import('../src/runner/tick.ts')
@@ -154,6 +154,26 @@ try {
 	const absent = 'dev.azure.com/acme/web/no-checkout', remoteReview = job('178', absent)
 	wf = seed('A178', remoteReview, [cloneTodo(cfg, absent, store.machine), 'Check the clone instructions with Kim.'])
 	assert.deepEqual(visibleCloneTodos(cfg, wf, remoteReview, store.machine), ['Check the clone instructions with Kim.'])
+	const template = cloneTodo(cfg, absent, store.machine)
+	wf.kept = [
+		{ id: 'clone-open', text: template, at: now },
+		{ id: 'clone-done', text: template, at: now, done: now },
+		{ id: 'owner-task', text: 'Check the clone instructions with Kim.', at: now },
+		{ id: 'near-match', text: `${template}.`, at: now },
+		{ id: 'other-machine', text: cloneTodo(cfg, absent, 'another-fictional-machine'), at: now },
+		{ id: 'other-repo', text: cloneTodo(cfg, remote, store.machine), at: now },
+	]
+	const keptBefore = structuredClone(wf), localBeforeKept = readFileSync(localFile, 'utf8')
+	assert.deepEqual(visibleCloneKept(cfg, wf, remoteReview, store.machine), wf.kept.slice(1))
+	assert.deepEqual(visibleCloneKept(cfg, wf, { ...remoteReview, needsCheckout: true }, store.machine), wf.kept)
+	assert.deepEqual(visibleCloneKept(cfg, wf, undefined, store.machine), wf.kept)
+	assert.equal(visibleCloneKept(cfg, { ...wf, kept: undefined }, remoteReview, store.machine), undefined)
+	assert.deepEqual(visibleCloneKept(cfg, { ...wf, kept: [] }, remoteReview, store.machine), [])
+	const cachedKept = { ...wf, kept: [{ id: 'cached-clone', text: cloneTodo(cfg, remote, store.machine), at: now }, wf.kept[1]] }
+	assert.deepEqual(visibleCloneKept(cfg, cachedKept, { ...remoteReview, remote, needsCheckout: true }, store.machine), [wf.kept[1]])
+	assert.deepEqual(wf, keptBefore)
+	assert.equal(readFileSync(localFile, 'utf8'), localBeforeKept)
+	proof('Left for you removes only the exact undone obsolete clone template, retaining completed history, required checkouts, near matches, other machines/repos and owner tasks without mutation or scan')
 	remoteReview.intent = 'other'; remoteReview.needsCheckout = true; store.saveJob(remoteReview)
 	assert.deepEqual(visibleCloneTodos(cfg, wf, remoteReview, store.machine), wf.todos)
 	const nonAdo = job('179'); nonAdo.intent = 'other'; nonAdo.key = 'build:cached-aurora'; nonAdo.needsCheckout = true

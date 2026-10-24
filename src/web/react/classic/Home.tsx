@@ -19,6 +19,7 @@ import { useClassicMarkSeen } from './data.ts'
 import { useScreenNavigation } from './navigation.tsx'
 import { messageText, sentAt } from '../features/ItemCard.tsx'
 import { SentTime } from '../features/SentTime.tsx'
+import { busyWords } from '../data/busy.ts'
 
 const destinations: Record<string, string> = {
 	replies: 'done/replies', reviews: 'done/reviews', tasks: 'done/changes', prs: 'done/changes', invites: 'done/changes',
@@ -90,7 +91,12 @@ export default function Home({ readOnly = false }: { readOnly?: boolean }) {
 			{seen.error && <p role="alert" className="error">{seen.error}</p>}
 			<a className="classic-more" href="#classic/done/catchup">{snapshot.summary.catchup.count > classic.catchupIds.length ? `${snapshot.summary.catchup.count - classic.catchupIds.length} more · ` : ''}See all</a>
 		</section>}
-		{classic.also.length > 0 && <section className="classic-also"><h2>Also for you</h2><div className="classic-also-tiles">{classic.also.map(tile => <a className="classic-mini" key={tile.key} href={`#classic/${destinations[tile.key] ?? 'done'}`}><span className="classic-tile-icon"><Icon name={icons[tile.key] ?? 'check'} /></span><div><b>{tile.count || !tile.sub ? `${tile.count} ${tile.label}` : tile.sub}</b>{!!tile.count && tile.sub && <span>{tile.sub}</span>}</div></a>)}</div></section>}
+		{classic.also.length > 0 && <section className="classic-also"><h2>Also for you</h2><div className="classic-also-tiles">{classic.also.map(tile => {
+			// R11(1): "<N> working now" over "<M> queued · <reason>", never "N running" for queued work; muted "Nothing running" at 0 and 0.
+			const busy = tile.key === 'running' && snapshot.busy ? busyWords(snapshot.busy) : undefined
+			return <a className={`classic-mini${busy?.idle ? ' classic-mini-idle' : ''}`} key={tile.key} href={`#classic/${destinations[tile.key] ?? 'done'}`} title={busy?.title}><span className="classic-tile-icon"><Icon name={icons[tile.key] ?? 'check'} /></span>
+				{busy ? <div><b>{busy.head}</b>{busy.sub && <span>{busy.sub}</span>}</div> : <div><b>{tile.count || !tile.sub ? `${tile.count} ${tile.label}` : tile.sub}</b>{!!tile.count && tile.sub && <span>{tile.sub}</span>}</div>}</a>
+		})}</div></section>}
 		{!readOnly && <>{missed && <MissedMessage action={missed} />}<div className="classic-home-tools">{versionLabel(version) && <><span title={versionTitle(version)}>{versionLabel(version)}</span><span>{updateTiming}</span><span role={version?.failed || version?.last?.rolledBack ? 'alert' : undefined}>{updateStatus}</span></>}<PageTools kinds={['check-update', 'report-problem']} showDetails={false} title="" /></div></>}
 	</>
 }

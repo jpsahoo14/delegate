@@ -1,5 +1,5 @@
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, writeSync } from 'node:fs'
-import { homedir, hostname, uptime } from 'node:os'
+import { hostname, uptime } from 'node:os'
 import { createHash } from 'node:crypto'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import type { Answer, Automation, CallRec, Change, Config, Job, Local, Msg, Owner, Proposal, Report, Rule, Workflow } from '../core/types.ts'
@@ -12,12 +12,14 @@ import type { Schedule } from '../core/schedule.ts'
 import type { Habit } from '../runner/habits.ts'
 import { appendLine, assertTestSafe, fsTime, listJson, moveTo, readJson, records, removeFile, strays, writeJson } from './fs.ts'
 import { alive, aliveAs } from '../os/process.ts'
-import { VERSION } from '../paths.ts'
+import { LOCAL_DIR, VERSION } from '../paths.ts'
 import { lessonOf, type Lesson } from './feedback.ts'
 import { CMD } from '../brand.ts'
 import { scrubDeep } from '../core/secrets.ts'
 import { visibleCloneTodos } from '../runner/repos.ts'
 import type { AgentHold } from '../core/agent-failure.ts'
+import { telemetryBase } from '../core/telemetry.ts'
+import { upgrade } from '../core/upgrades.ts'
 
 export const localDay = (d = new Date()) => d.toLocaleDateString('sv')
 const documentKey = (key: string) => createHash('sha256').update(key).digest('hex')
@@ -29,7 +31,8 @@ const codeIndex = new Map<string, Map<string, { code: string; partOf?: string }>
 export const portable = (root: string, p: string): string => { const r = relative(dirname(root), p); return r && !r.startsWith('..') && !isAbsolute(r) ? relative(root, p) : p }
 export const here = (root: string, p: string): string => resolve(root, p)
 
-export const LOCAL_DIR = process.env.DELEGATE_LOCAL ?? join(homedir(), '.delegate')
+// This machine's own folder lives in paths.ts, the leaf module, so the runner's helpers that state.ts uses need not import this file.
+export { LOCAL_DIR }
 
 export function loadLocal(): Local {
 	const p = join(LOCAL_DIR, 'local.json')
@@ -75,15 +78,6 @@ export type PageSubmission = {
 }
 export type Control = { paused: boolean; stopped: boolean; autoSend?: boolean; at?: string }
 type Notify = { lastNudgeAt?: string; previews?: Record<string, Preview | Preview[]>; snapshot?: string; summaryDay?: string; sweepDay?: string }
-
-// Fill fields added after a file was written, so older files keep loading (R-DST-04).
-function upgrade(w: Workflow): Workflow {
-	w.msgIds ??= [...w.pending]
-	// Before N2 a sent reply's to-dos were plain text that the next turn dropped: they become kept to-dos, dated by the send (R-NEX-07).
-	// Only on a sent item that is done or open; a later turn's draft has its own to-dos, not yet promised.
-	if (!w.kept && w.todos?.length && w.sent && (w.state === 'done' || w.state === 'open')) w.kept = [...new Set(w.todos)].map((text, i) => ({ id: `t${i + 1}`, text, at: w.sent!.at }))
-	return w
-}
 
 export type Missed = { link: string; note?: string; at: string }
 
@@ -564,7 +558,8 @@ export class Store {
 
 	log(entry: Record<string, unknown>) {
 		const at = new Date().toISOString()
-		appendLine(this.p('state', 'log', `${at.slice(0, 10)}-${this.machine}.jsonl`), scrubDeep({ at, ...entry }))
+		// Every line carries the release, machine, process and, inside a traced run, its trace and runId (#53, SEND 9b2390a6).
+		appendLine(this.p('state', 'log', `${at.slice(0, 10)}-${this.machine}.jsonl`), scrubDeep({ ...telemetryBase(this.machine), at, ...entry }))
 		const l = lessonOf(entry)
 		if (l) appendLine(this.p('feedback', `${this.machine}.jsonl`), { at, machine: this.machine, version: VERSION, event: entry.event, ...l })
 	}

@@ -1,3 +1,4 @@
+import { stateFields, WORKFLOW_SCHEMA } from '../core/upgrades.ts'
 import { active, addPart, homeNamed, homeOf, inWork, linksIn, newTurn, ownerStep, ownLinks, statusOf, step } from './work.ts'
 import { reopenPromise } from './promise.ts'
 import { watchCommand } from './track.ts'
@@ -142,7 +143,7 @@ export async function intake(store: Store, src: Source, cfg: Config, cursors: Re
 					if (!store.thread(part.id).some(m => m.id === raw.id)) appendThread(store, part, toMsg(raw, cfg.owner, c.text, true))
 					addPart(home, part)
 					step(home, `You wrote in ${chat.group ? chat.name : `the 1:1 with ${chat.name}`} (${part.code}): ${c.text}`, { ref: `owner:${raw.id}` })
-					Object.assign(part, { state: 'open', status: statusOf(home), lastMsgId: raw.id, lastAsk: c.text, pending: [] })
+					Object.assign(part, { ...stateFields(part, 'open'), status: statusOf(home), lastMsgId: raw.id, lastAsk: c.text, pending: [] })
 					store.save(home); store.save(part)
 					continue
 				}
@@ -150,7 +151,7 @@ export async function intake(store: Store, src: Source, cfg: Config, cursors: Re
 				if (!home && COMMIT.test(c.text) && !open.some(o => inWork(store, o))) {
 					const cand = await create(store, src, cfg, chat)
 					if (!store.thread(cand.id).some(m => m.id === raw.id)) appendThread(store, cand, toMsg(raw, cfg.owner, c.text, true))
-					Object.assign(cand, { startedBy: 'owner', state: 'running', paced: true, ...(backlog ? { before: true } : {}), lastAsk: c.text, lastMsgId: raw.id, pending: [raw.id], msgIds: [raw.id], status: 'Checking whether you took something on' })
+					Object.assign(cand, { startedBy: 'owner', ...stateFields(cand, 'running'), paced: true, ...(backlog ? { before: true } : {}), lastAsk: c.text, lastMsgId: raw.id, pending: [raw.id], msgIds: [raw.id], status: 'Checking whether you took something on' })
 					store.save(cand)
 				} else auditSkip(store, chat.id, raw.id, 'context-absorbed')
 				continue
@@ -201,7 +202,7 @@ export async function intake(store: Store, src: Source, cfg: Config, cursors: Re
 			wf.pending.push(raw.id)
 			wf.msgIds.push(raw.id)
 			// A new ask withdraws any ok given before it (tester P0).
-			Object.assign(wf, { asker: c.from, lastAsk: c.text, state: 'running', lastMsgId: raw.id, approved: undefined, needsMe: undefined, intakeDeferred: undefined })
+			Object.assign(wf, { asker: c.from, lastAsk: c.text, ...stateFields(wf, 'running'), lastMsgId: raw.id, approved: undefined, needsMe: undefined, intakeDeferred: undefined })
 			// The hold stays once set; only a draft that answers nothing but old messages waits its turn.
 			if (backlog) Object.assign(wf, { before: true, paced: true })
 			else wf.paced = undefined
@@ -268,7 +269,7 @@ async function hasGuests(src: Source, chatId: string): Promise<boolean | undefin
 async function create(store: Store, src: Source, cfg: Config, chat: WatchedChat, earlier?: string): Promise<Workflow> {
 	const now = new Date().toISOString()
 	const wf: Workflow = {
-		schema: 1, id: ulid(), code: store.nextCode(), kind: 'reply', state: 'running',
+		schema: WORKFLOW_SCHEMA, id: ulid(), code: store.nextCode(), kind: 'reply', ...stateFields(undefined, 'running'),
 		key: { type: 'thread', id: chat.id }, chat: { id: chat.id, name: chat.name, test: !!chat.test, group: !!chat.group, guests: await hasGuests(src, chat.id) },
 		session: { agent: cfg.agent.flavor, id: randomUUID() },
 		lastMsgId: '', pending: [], msgIds: [], status: 'Drafting a reply', newCount: 0, earlier, createdAt: now, updatedAt: now,
@@ -329,7 +330,7 @@ async function takeOne(store: Store, src: Source, cfg: Config, q: Missed): Promi
 		const wf = await create(store, src, cfg, { id: at.chatId, name, group })
 		if (after) store.saveThread(wf.id, [toMsg(raw, cfg.owner, c.text, true), ...threadOf(after, cfg).slice(-39)])
 		else if (!store.thread(wf.id).some(m => m.id === raw.id)) appendThread(store, wf, toMsg(raw, cfg.owner, c.text, true))
-		Object.assign(wf, { startedBy: 'owner', missed: { at: raw.at }, lastAsk: c.text, state: 'running', lastMsgId: raw.id, pending: [raw.id], msgIds: [raw.id], status: 'Checking whether you took something on' })
+		Object.assign(wf, { startedBy: 'owner', missed: { at: raw.at }, lastAsk: c.text, ...stateFields(wf, 'running'), lastMsgId: raw.id, pending: [raw.id], msgIds: [raw.id], status: 'Checking whether you took something on' })
 		store.save(wf)
 		await say(store, src, `${MARK} Checking whether your message from ${raw.at.slice(0, 10)} started work you still own (${wf.code}). Nothing is sent.`)
 		return true
@@ -338,7 +339,7 @@ async function takeOne(store: Store, src: Source, cfg: Config, q: Missed): Promi
 	const wf = await create(store, src, cfg, { id: at.chatId, name, group })
 	if (after) store.saveThread(wf.id, [toMsg(raw, c.from, c.text, false), ...threadOf(after, cfg).slice(-39)])
 	else if (!store.thread(wf.id).some(m => m.id === raw.id)) appendThread(store, wf, toMsg(raw, c.from, c.text, false))
-	Object.assign(wf, { asker: c.from, lastAsk: c.text, state: 'running', lastMsgId: raw.id, pending: [raw.id], msgIds: [raw.id], status: 'Drafting a reply to a message you said was missed' })
+	Object.assign(wf, { asker: c.from, lastAsk: c.text, ...stateFields(wf, 'running'), lastMsgId: raw.id, pending: [raw.id], msgIds: [raw.id], status: 'Drafting a reply to a message you said was missed' })
 	store.save(wf)
 	await say(store, src, `${MARK} Made ${wf.code} for ${c.from.name}'s message. It was missed because ${why}; that is logged so it can be fixed. A draft follows, and nothing is sent.`)
 	return true
@@ -405,7 +406,7 @@ export function workOfAsk(store: Store, open: Workflow[], raw: RawMsg, text: str
 
 // A close starts with no reason; the caller sets one when it has it, so an earlier close's never carries over.
 export function close(wf: Workflow, status: string) {
-	Object.assign(wf, { state: 'done', status, pending: [], closedBy: undefined, ownerSend: undefined, reason: undefined, reasons: undefined, holdDigest: undefined, holdCheckPending: undefined })
+	Object.assign(wf, { ...stateFields(wf, 'done'), status, pending: [], closedBy: undefined, ownerSend: undefined, reason: undefined, reasons: undefined, holdDigest: undefined, holdCheckPending: undefined })
 }
 
 // Move messages the worker marked as another topic into a new item in the same chat, and queue it (D2).
@@ -419,7 +420,7 @@ export function splitOff(store: Store, cfg: Config, from: Workflow, ids: string[
 	const last = msgs.at(-1)!
 	const now = new Date().toISOString()
 	const wf: Workflow = {
-		schema: 1, id: ulid(), code: store.nextCode(), kind: from.kind, state: 'running', key: from.key, chat: from.chat,
+		schema: WORKFLOW_SCHEMA, id: ulid(), code: store.nextCode(), kind: from.kind, ...stateFields(undefined, 'running'), key: from.key, chat: from.chat,
 		asker: msgs[0].from, session: { agent: cfg.agent.flavor, id: randomUUID() }, lastMsgId: last.id, lastAsk: last.text,
 		pending: [...moving], msgIds: [...moving], status: 'Drafting a reply', newCount: 0, createdAt: now, updatedAt: now,
 		// A topic split from the week before keeps its hold.
@@ -456,7 +457,7 @@ export function joinInto(store: Store, from: Workflow, to: Workflow, judged = fa
 	const latest = [...byId.values()].filter(message => !message.byOwner && to.msgIds.includes(message.id)).sort((a, b) => b.at.localeCompare(a.at))[0]
 	if (latest) Object.assign(to, { asker: latest.from, lastAsk: latest.text, lastMsgId: latest.id })
 	to.askers = all.filter(p => p.id !== to.asker?.id)
-	if (to.state !== 'waiting_on_task') Object.assign(to, { state: 'running', status: `Redrafting to answer ${from.asker?.name ?? 'them'} too`, approved: undefined, sendAt: undefined })
+	if (to.state !== 'waiting_on_task') Object.assign(to, { ...stateFields(to, 'running'), status: `Redrafting to answer ${from.asker?.name ?? 'them'} too`, approved: undefined, sendAt: undefined })
 	close(from, `Joined ${to.code}: the same ask`)
 	store.save(to)
 	store.save(from)

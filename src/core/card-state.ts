@@ -4,9 +4,9 @@
 
 import { shareHoldText, type ShareHold } from './share.ts'
 
-export type ActionKind = 'take-back' | 'approve' | 'send-anyway' | 'redraft' | 'send-edit' | 'answer' | 'pick' | 'later' | 'dismiss' | 'try-again' | 'write-own' | 'review-again' | 'reply-only' | 'reopen' | 'report'
-export type Mode = 'in-terminal' | 'agent-wait' | 'own-reply' | 'review-again' | 'failed' | 'declined' | 'held' | 'your-step' | 'choices' | 'answer' | 'answer-with-holding'
-	| 'reply-with-question' | 'changes' | 'reply' | 'holding' | 'not-sent' | 'unknown'
+export type ActionKind = 'take-back' | 'approve' | 'send-anyway' | 'redraft' | 'send-edit' | 'answer' | 'pick' | 'later' | 'dismiss' | 'try-again' | 'write-own' | 'review-again' | 'reply-only' | 'reopen' | 'report' | 'todo-done' | 'add-vote'
+export type Mode = 'in-terminal' | 'agent-wait' | 'own-reply' | 'review-again' | 'failed' | 'working' | 'declined' | 'held' | 'your-step' | 'choices' | 'answer' | 'answer-with-holding'
+	| 'reply-with-question' | 'changes' | 'reply' | 'holding' | 'not-sent' | 'todo' | 'unknown'
 export type HeldReason = { kind: 'ask-edited' | 'asker-wrote-again' | 'no-reply-needed'; changed?: string; why?: string; count?: number; at?: string }
 export type Failure = { kind: 'setup' | 'other' | 'content' | 'tool' | 'stopped'; at: string; why: string; tried: string[]; repeats: number; systemChanged: boolean; job?: string; review?: boolean }
 // Everything a card may depend on, computed once per item (card-facts.ts). draft.at: when Delegate (or the owner's edit) wrote it.
@@ -21,6 +21,9 @@ export type CardFacts = {
 	// window: the item is open in a terminal (the runner sets wf.openOn each tick; since is from its open record, #43).
 	hold?: { kind: 'agent' | 'paused' | 'active' | 'window'; until?: string; text: string; machine?: string; since?: string }
 	notSent?: { why: string }
+	// Delegate is working on it (#48, PE 19:40): running, or a job queued or running for it (Try again, an answer's redraft, approved
+	// changes being made). what: the item's own status; since: when it started.
+	working?: { what: string; since?: string }
 	// The owner's Send was held by the engine (SEND, #45): every current reason at once, under one digest (wf.holdDigest).
 	// changed: the engine's line for a real change in what is asked of him; count: the asker's new messages; at: when, for the order.
 	held?: { digest: string; who: string; reasons: HeldReason[] }
@@ -28,13 +31,30 @@ export type CardFacts = {
 	declined?: { pr: number; addMe: boolean }
 	yourStep?: { kind: 'decision' | 'report'; what: string }
 	promiseFailed?: string
+	// Open kept to-dos only the owner can do (#44(2), PE 18:15): how many, so a card with nothing else open is a to-do card.
+	todos?: number
 	// Why the draft waits for the owner on need to know (#36): structured, worded by shareHoldText (PM wording).
 	shareHold?: ShareHold | string
+	// The draft commits him (L4): the promise it makes, from its first promise to-do, when there is one.
+	commitment?: { promise?: string }
+	// The asker wrote again after this draft (block 1 used to say so on its own line).
+	newMessages?: { who: string; n: number }
+	// Other warnings, already worded: report facts that warn, and what a proposed change warns about.
+	warns?: string[]
+	// L1b (SEND's vote-claim guard): his reply claims a vote Delegate won't make. text: the PM's sentence; held: the engine already held
+	// a Send on it (statusReason 'vote-claim'); override: ⋯ Send anyway is allowed (never for an automatic hold or canOverride false);
+	// addVote: the review recommended a vote that isn't proposed, so Add the vote can propose it.
+	voteGap?: { text: string; held: boolean; override: boolean; addVote: boolean }
 }
 export type CardState = {
 	mode: Mode; primary?: ActionKind; secondary: ActionKind[]; more: ActionKind[]
 	editor: 'reply' | 'answer' | 'none'
 	warn?: string
+	// What the warn is (L4, PE 22:12): a reason (why it waited, or why a Send can't go as it is) or a notice (a report or change
+	// warning, the promise). A click's result line names only a reason.
+	warnKind?: 'reason' | 'notice'
+	// Delegate is working on it (#48): the status strip in the bar's place, what it is doing and since when.
+	strip?: { doing: string; since?: string }
 	// The "Why it waited" line a need-to-know hold gives the card (#36, PE 17:05 point 6).
 	waited?: string
 	block3: 'when-you-send' | 'none'
@@ -96,6 +116,9 @@ export const RULES: Rule[] = [
 		const [primary, ...rest] = retry ? ['try-again' as ActionKind, ...write] : [...write, 'try-again' as ActionKind]
 		return { primary, secondary: [...rest, 'later'], more: ['dismiss'], editor: 'none', warn: failLine(fl) }
 	} },
+	// Delegate is working on it (#48, PE 19:40): no button leads, a status strip says what it is doing; Dismiss stays in ⋯. Write the
+	// reply yourself stays visible the whole time (PM 19:50). A terminal hold, an AI-limit wait, his own reply and a failure decide first.
+	{ mode: 'working', when: f => !!f.working, build: f => ({ secondary: ['write-own'], more: ['dismiss'], editor: 'none', strip: { doing: f.working!.what, ...(f.working!.since ? { since: f.working!.since } : {}) } }) },
 	{ mode: 'review-again', when: f => !!f.question?.reviewAgain, build: f => ({ primary: 'review-again', secondary: [...(f.draft ? [f.changes ? 'reply-only' as const : 'approve' as const] : []), 'later'], more: ['dismiss'], editor: 'none' }) },
 	{ mode: 'declined', when: f => !!f.declined, build: f => ({ primary: f.declined!.addMe && f.changes ? 'approve' : undefined, secondary: ['later'], more: ['dismiss'], editor: 'none' }) },
 	// A held Send (#45, PE 17:15): every current reason in one line, newest first; Send anyway passes exactly those (holdDigest).
@@ -120,16 +143,57 @@ export const RULES: Rule[] = [
 	{ mode: 'changes', when: f => f.changes > 0, build: f => ({ primary: 'approve', secondary: [...(f.draft ? ['reply-only' as const] : []), 'later'], more: ['dismiss'], editor: f.draft ? 'reply' : 'none' }) },
 	{ mode: 'holding', when: f => !!f.draft?.holding, build: () => ({ primary: 'approve', secondary: ['later'], more: ['dismiss'], editor: 'reply' }) },
 	{ mode: 'reply', when: f => !!f.draft, build: () => ({ primary: 'approve', secondary: ['later'], more: ['dismiss'], editor: 'reply' }) },
+	// Kept to-dos are the only open thing (#44(2), PE 18:15): "I've done these" leads. With a draft or a question open, that mode wins and
+	// the to-dos stay as "Left for you" in block 3.
+	{ mode: 'todo', when: f => !!f.todos, build: () => ({ primary: 'todo-done', secondary: ['later'], more: ['dismiss'], editor: 'none' }) },
 	{ mode: 'unknown', when: () => true, build: () => ({ primary: 'write-own', secondary: ['later'], more: ['dismiss'], editor: 'none' }) },
 ]
+
+// The promise line (L4, PM R9 #6): what he'd be promising, cut to about 80 characters at a word; without the words, a general line.
+const PROMISE_MAX = 80
+export function promiseLine(promise?: string): string {
+	const p = promise && bare(promise.trim())
+	if (!p) return "You'd be promising something in this reply. Check it before sending."
+	const said = /^[A-Z][a-z]/.test(p) ? p[0].toLowerCase() + p.slice(1) : p
+	return said.length <= PROMISE_MAX ? `You'd be promising: ${said}.` : `You'd be promising: ${said.slice(0, PROMISE_MAX).replace(/\s+\S*$/, '').replace(/[\s,;:]+$/, '')}…`
+}
 
 export function cardState(f: CardFacts): CardState {
 	const rule = RULES.find(r => r.when(f))!
 	const s = rule.build(f)
-	// "Your reply mentions something Delegate won't do": the reply is changed first, so the editor's version is what goes.
-	const warn = s.warn ?? (f.replyCountsOnRefused && s.editor === 'reply' ? "Your reply mentions something Delegate won't do. Change the reply first." : undefined)
-	const shared = f.draft ? shareHoldText(f.shareHold) : undefined, waited = [s.waited, shared].filter(Boolean).join('\n') || undefined
-	return { mode: rule.mode, ...s, ...(warn ? { warn } : {}), ...(waited ? { waited } : {}), block3: s.editor === 'reply' ? 'when-you-send' : 'none' }
+	// L4 (PE split; R8 1.2, 1.3, 3.3; R9 #6): block 1 has at most one warn line, the first of these, highest first: a false claim, then
+	// why it waited (the mode's own line: a terminal, an AI wait, a failure, a held or refused Send; need to know; new messages), then
+	// other warnings, then the promise. Every other one is a line in Details › Why it waited, and the warn is not repeated there.
+	// A holding reply is a promise by definition, so it never gets the promise line. L1b's voteGap goes first when it lands.
+	const shared = f.draft ? shareHoldText(f.shareHold) : undefined
+	// Each line is a reason (why it waited or why a Send can't go as it is) or a notice; a click's result line names only a reason.
+	const candidates = ([
+		// L1b: a reply that claims a vote Delegate won't make leads, above everything (PE split L4 1.).
+		[f.voteGap && f.draft ? f.voteGap.text : undefined, 'reason'],
+		// "Your reply mentions something Delegate won't do": the reply is changed first, so the editor's version is what goes.
+		[f.replyCountsOnRefused && s.editor === 'reply' ? "Your reply mentions something Delegate won't do. Change the reply first." : undefined, 'reason'],
+		[s.warn, 'reason'],
+		[shared && `Need to know: ${shared.replace(/^Waiting for you:\s*/, '')}`, 'reason'],
+		[f.newMessages && f.draft && !f.held ? `${f.newMessages.who} wrote again after this draft${f.newMessages.n > 1 ? ` (${f.newMessages.n} new messages)` : ''}.` : undefined, 'reason'],
+		...(f.warns ?? []).map(line => [line, 'notice']),
+		[f.commitment && f.draft && !f.draft.holding && rule.mode !== 'holding' ? promiseLine(f.commitment.promise) : undefined, 'notice'],
+	] as [string | undefined, 'reason' | 'notice'][]).filter((c, n, all): c is [string, 'reason' | 'notice'] => !!c[0] && all.findIndex(o => o[0] === c[0]) === n)
+	const [chosen, ...rest] = candidates
+	// The mode's own full text (a held Send's every reason) comes first in Why it waited, then the lines that did not lead.
+	const lines = [...(s.waited ? s.waited.replace(/^Why it waited:\n/, '').split('\n') : []), ...rest.map(([line]) => line)]
+	const { warn: _own, waited: _full, ...base } = s
+	// L1b: Send stays (the card keeps it disabled until the reply changes); ⋯ Send anyway only where the engine lets the owner override,
+	// and Add the vote when the review recommended one.
+	if (f.voteGap && f.draft && s.editor === 'reply') {
+		const offered = new Set([base.primary, ...base.secondary, ...base.more])
+		if (f.voteGap.addVote && !offered.has('add-vote')) base.secondary = [...base.secondary.filter(k => k !== 'later'), 'add-vote', ...base.secondary.filter(k => k === 'later')]
+		if (f.voteGap.override && !offered.has('send-anyway')) base.more = ['send-anyway', ...base.more]
+		if (!f.voteGap.override) {
+			if (base.primary === 'send-anyway') base.primary = 'redraft'
+			base.secondary = base.secondary.filter(k => k !== 'send-anyway' && k !== base.primary); base.more = base.more.filter(k => k !== 'send-anyway')
+		}
+	}
+	return { mode: rule.mode, ...base, ...(chosen ? { warn: chosen[0], warnKind: chosen[1] } : {}), ...(lines.length ? { waited: `Why it waited:\n${lines.join('\n')}` } : {}), block3: s.editor === 'reply' ? 'when-you-send' : 'none' }
 }
 
 // The invariants every card keeps (§4); a list of the broken ones, empty when the card is sound. Logged, never thrown.
@@ -141,10 +205,13 @@ export function checkCard(f: CardFacts, s: CardState): string[] {
 	if (new Set(all).size !== all.length) out.push('an action is offered twice')
 	// The engine refuses everything but Take it back while a terminal holds the item (PE on c094cdc4), so the card offers nothing else.
 	if (s.mode === 'in-terminal' && all.some(k => k !== 'take-back')) out.push('a card held by a terminal offers what the engine refuses')
-	if (f.draft && !['in-terminal', 'not-sent', 'failed', 'own-reply', 'agent-wait', 'review-again', 'declined', 'your-step', 'choices'].includes(s.mode) && !all.includes('approve') && !all.includes('send-anyway') && !all.includes('send-edit')) out.push('a draft cannot be sent')
-	if (f.held && f.draft && !all.includes('send-anyway')) out.push('a held Send offers no Send anyway')
+	if (f.draft && !['in-terminal', 'working', 'not-sent', 'failed', 'own-reply', 'agent-wait', 'review-again', 'declined', 'your-step', 'choices'].includes(s.mode) && !all.includes('approve') && !all.includes('send-anyway') && !all.includes('send-edit')) out.push('a draft cannot be sent')
+	if (f.held && f.draft && !all.includes('send-anyway') && f.voteGap?.override !== false) out.push('a held Send offers no Send anyway')
+	if (f.voteGap && !f.voteGap.override && all.includes('send-anyway')) out.push('a vote claim the engine will not override offers Send anyway')
 	if (f.failure && f.draft && Date.parse(f.draft.at) > Date.parse(f.failure.at) && s.mode === 'failed') out.push('a failure older than the draft decided the card')
 	if (s.mode === 'unknown') out.push('no mode fits')
+	if (f.todos && s.mode === 'unknown') out.push('open to-dos have no card')
+	if (f.working && !['in-terminal', 'agent-wait', 'own-reply', 'failed', 'working'].includes(s.mode)) out.push('a working item has no working card')
 	if (s.warn && LEAK.test(s.warn)) out.push('the warning leaks an id or an error')
 	if (s.editor === 'answer' && s.primary !== 'answer') out.push('an answer box without Answer')
 	return out

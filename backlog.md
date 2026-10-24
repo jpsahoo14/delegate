@@ -5,6 +5,8 @@ Scenario range reserved for this branch: SC-400 through SC-419.
 
 | Milestone | State | Evidence |
 | --- | --- | --- |
+| Step-6 PE blocker B1 | Fixed in this commit; PE fix-only re-review pending | Real constructor reproduction and no-op proof; 40 upgrade journeys and schema-literal AST guard |
+| Card-state step 6 | Built in this commit per PE A1/A2; official diff review pending | Pure compatibility + 50-item schema chain, stable workingSince; 35 legacy/lifecycle/concurrency journeys; no card/projection edit |
 | #51 chat effect wording | Built in this commit; official PE diff review pending | 21 copy variants plus real approval receipt; send 26 and sharing 12 preserved |
 | #27 tick phases and commit audit | Built/proven in this wiring commit; official PE diff review pending | API 29, retention 15, 20 ticks max 1,593 ms, real HTTP <=248 ms, cross-process send/job/PR/window safety |
 | #27 async scope API | e5629416; PE approved API-only | scripts/prove-read-phases.mjs, now 29 invariants and separate I/O counters |

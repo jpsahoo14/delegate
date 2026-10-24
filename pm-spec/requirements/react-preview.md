@@ -1,5 +1,14 @@
 # React preview requirements
 
+Workflow upgrades (card-state step 6):
+- Every new Workflow is born at WORKFLOW_SCHEMA; the legacy chain never processes a newly constructed item.
+- Pure compatibility reads preserve old msgIds/kept fields and provide structured legacy reasons without writes or log scans.
+- Context-dependent upgrades are ordered, limited to 50 items per tick, saved with per-item schema markers, and idempotent.
+- Preserve unrelated concurrent fields, skip unrecoverable data explicitly, and never execute a recovered proposal.
+- Old items arriving after a completed migration still upgrade. Already-current items are never rewritten.
+- Runner decisions use statusReason/reviewAgain/returnedFrom, not display prose; owner-send reason remains separate. requirements
+- Working cards get a stable workingSince: stamp on entry to a working state, preserve on unrelated saves, clear on exit. requirements
+
 Chat effect receipts (#51):
 - Count comments naturally, name the PR and person/chat, and put a command code only in the closing Say command.
 - Keep execution order, distinguish present/running/done wording, and never offer a retry for an uncertain result.

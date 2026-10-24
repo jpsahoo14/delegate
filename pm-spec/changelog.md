@@ -1,5 +1,13 @@
 # Engine fixes
 
+2026-10-24 (step-6 B1): Stamp current workflow schema in the four real constructors, so new data cannot trigger legacy
+rewrites. Actual intake/split/follow-up/track proofs show no migration, upgrade log, item-byte change or marker churn.
+
+2026-10-24 (card-state step 6): Extract pure workflow compatibility; replace four probeMark repairs with an ordered,
+50-item schema migration pass. Add structured status/review/window metadata and convert runner readers, preserving owner-send
+holds. Stamp stable workingSince on state transitions. Manual legacy-equivalence, idempotency, recovery/skip and two-process
+proofs pass; current-schema ticks stay within target.
+
 2026-10-24 (#51): Chat effect previews, approvals and completion lines use natural comment counts, PR titles, person/chat
 and closing command handles. Partial, failed, uncertain and reply-only wording comes from existing results, without gate changes.
 

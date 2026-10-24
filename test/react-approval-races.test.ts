@@ -120,18 +120,15 @@ function todoWork() {
 	return store
 }
 
-test('bug 10-22 E45: row marks only its named task, preserves work and timestamps, and shows the next task', async () => {
+test('bug 10-22 E45 + PM 20:00: the row marks nothing; the card marks only the ticked task, preserves work and timestamps, and shows the next task', async () => {
 	const store = todoWork(), snapshot = reactProjection(store).snapshot
 	const row = snapshot.entities.placements.A501
 	assert.equal(row.headline, 'To do: Update the checklist')
-	const action = snapshot.entities.actions[row.actionIds[0]], request = intent(store, action.id)
-	assert.notEqual(action.id, 'A501/todo-done')
+	assert.ok(row.actionIds.every(id => !snapshot.entities.actions[id]?.todoIds), 'the row offers no mark action')
+	const request = intent(store, 'A501/todo-done', { picks: [1] })
 	const before = store.byCode('A501')!
-	before.kept!.push({ id: 't3', text: 'Kept after drawing', at: before.kept![0].at })
-	store.save(before, false)
 	assert.equal(submitIntent(store, request).status, 202)
 	assert.deepEqual(store.answers()[0].answer.todos, ['t1'])
-	assert.match(store.pageSubmission(request.submissionId)!.text, /will mark its to-do done/)
 	let sends = 0
 	await applyAnswers(store, { ...source, send: async () => ({ msgId: `unexpected-${++sends}` }) }, store.config(), processes as never)
 	const after = store.byCode('A501')!
@@ -141,7 +138,7 @@ test('bug 10-22 E45: row marks only its named task, preserves work and timestamp
 	assert.equal(sends, 0)
 	assert.match(submissionReceipt(store, request.submissionId)!.text, /Update the checklist\. A501 stays open\. Nothing was sent\./)
 	assert.equal(reactProjection(store).snapshot.entities.placements.A501.headline, 'To do: Newer independent task')
-	assert.equal(submitIntent(store, { ...request, submissionId: randomUUID() }).status, 409)
+	assert.notEqual(submitIntent(store, { ...request, submissionId: randomUUID() }).status, 202)
 })
 
 test('bug 10-22 E45: card binds its counted list and refuses equal/older-time additions before submission', async () => {
@@ -178,20 +175,21 @@ test('bug 10-22 E45: a task finished elsewhere refuses the drawn list without ma
 	assert.match(submissionReceipt(store, request.submissionId)!.text, /These to-dos changed\. Nothing was marked\./)
 })
 
-test('bug 10-22 E45: Classic lists exactly what completion means, and a later task invalidates an offered Close', () => {
-	const store = todoWork(), action = reactProjection(store).snapshot.entities.actions['A501/classic-close']
-	assert.equal(action.staleness, 'exact')
-	assert.equal(action.label, 'Mark 2 to-dos done')
-	assert.equal(action.needsConfirm, true)
-	assert.match(action.meaning!, /Update the checklist\n- Newer independent task/)
-	assert.deepEqual(action.todoIds, ['t1', 't2'])
+test('bug 10-22 E45 + PM 20:15: Classic offers no row to-do mark; its card ticks them, and a later task invalidates an offered Close', () => {
+	const store = todoWork(), snapshot = reactProjection(store).snapshot
+	assert.equal(snapshot.entities.actions['A501/classic-close'], undefined, 'no "Mark N to-dos done" on the Classic row')
+	assert.ok(!snapshot.classic!.progress.find(row => row.code === 'A501')?.actionIds.some(id => snapshot.entities.actions[id]?.todoIds), 'the row offers nothing that marks to-dos')
+	assert.deepEqual(snapshot.entities.actions['A501/todo-done'].todoIds, ['t1', 't2'], 'the card section is the one way to mark them')
 	const workflow = store.byCode('A501')!
 	workflow.kept = []
 	store.save(workflow, false)
-	const request = intent(store, action.id)
+	const close = reactProjection(store).snapshot.entities.actions['A501/classic-close']
+	assert.equal([close.label, close.staleness, close.needsConfirm].join('|'), 'Close|exact|')
+	const request = intent(store, close.id)
 	workflow.kept.push({ id: 't3', text: 'Kept later', at: workflow.createdAt })
 	store.save(workflow, false)
-	assert.equal(submitIntent(store, request).status, 409)
+	// The row stopped offering Close once a to-do appeared, so the stale Close is refused as no longer offered; nothing is queued.
+	assert.equal(submitIntent(store, request).status, 410)
 	assert.equal(store.answers().length, 0)
 })
 

@@ -20,6 +20,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { scrub } from '../core/secrets.ts'
 import { freshRead, readPhase, writeText } from '../store/fs.ts'
 import { recordCommit } from './commit.ts'
+import { stateFields, statusFields } from '../core/upgrades.ts'
 import { isAbsolute, join } from 'node:path'
 import type { Call, Config, Effect, Job, Report, Retry, Workflow } from '../core/types.ts'
 import { ulid } from '../core/ids.ts'
@@ -48,6 +49,7 @@ import { removeRunFiles } from '../adapters/run-files.ts'
 import { agentSetupFailure, type AgentSetupFailure } from '../core/agent-failure.ts'
 import { blockedAgent, holdAgent, waitingForAgent } from './agent-health.ts'
 import { makeChange, mcpCaller, serverOf, type Caller } from './change.ts'
+import { builtEffectProblem, prepareReportCalls, repairPendingEffectCalls } from './effect-preparation.ts'
 
 export type Procs = {
 	start: (cfg: Config['agent'], i: RunInput & { workflowId: string; runId: string }) => { pid: number }
@@ -133,15 +135,15 @@ export function attachJob(store: Store, cfg: Config, wf: Workflow, raw: NonNulla
 		newTurn(wf)
 		wf.effects = effects
 	}
-	Object.assign(wf, { job: job.id, state: 'waiting_on_task', status: `Working: ${want.goal}${job.label ? ` (${job.label})` : ''}`, waitingSince: now, pending: [], question: undefined, draft: undefined, learnAfter: undefined, approved: undefined })
+	Object.assign(wf, { job: job.id, ...stateFields(wf, 'waiting_on_task'), status: `Working: ${want.goal}${job.label ? ` (${job.label})` : ''}`, waitingSince: now, pending: [], question: undefined, draft: undefined, learnAfter: undefined, approved: undefined })
 	// Other people's words reach the owner's own session, which has the owner's tools, only after the owner's ok (review 10-19 #5).
 	// People the owner already lets the assistant answer by itself are trusted to reach the owner's own session too,
 	// unless the chat has guests; anyone else waits for ok (owner, 10-20: relay should be automatic where it can be).
 	// A sign-off ask always waits: the owner's session could vote or approve with the owner's own tools (next action).
 	// So does a validate ask: the owner's session could run a pipeline with none of the deploy gates (review 10-21 P1-4).
-	const trusted = !!wf.asker && !wf.chat.guests && !NEVER_RELAY.includes(wf.intent ?? '') && store.rules().some(r => r.then === 'send' && r.who.accounts?.some(a => a.id === wf.asker!.id))
+	const trusted = !!wf.asker && !wf.chat.guests && !NEVER_RELAY.includes(wf.intent ?? '') && store.rules().some(r => !r.off && r.then === 'send' && r.who.accounts?.some(a => a.id === wf.asker!.id))
 	if (job.relay && trusted) { job.relay = { ...job.relay, ok: job.asks.length }; store.saveJob(job) }
-	if (job.relay && (job.relay.ok ?? 0) < job.asks.length) Object.assign(wf, { state: 'needs_human', status: `Waiting for your ok to send it to your open session for ${job.relay.what} on ${job.relay.machine}`, question: `This goes to your open session for ${job.relay.what} on ${job.relay.machine}, which works with your own tools. Say "ok ${wf.code}" to send it there, or "skip ${wf.code}".` })
+	if (job.relay && (job.relay.ok ?? 0) < job.asks.length) Object.assign(wf, { ...stateFields(wf, 'needs_human'), status: `Waiting for your ok to send it to your open session for ${job.relay.what} on ${job.relay.machine}`, question: `This goes to your open session for ${job.relay.what} on ${job.relay.machine}, which works with your own tools. Say "ok ${wf.code}" to send it there, or "skip ${wf.code}".` })
 }
 
 // Intents whose asks reach the owner's own session only after the owner's ok, whoever asks.
@@ -153,7 +155,7 @@ export function okRelay(store: Store, wf: Workflow): string | undefined {
 	if (!job?.relay || (job.relay.ok ?? 0) >= job.asks.length || wf.state !== 'needs_human') return undefined
 	job.relay = { ...job.relay, ok: job.asks.length }
 	store.saveJob(job)
-	Object.assign(wf, { state: 'waiting_on_task', question: undefined, status: `Working in your open session for ${job.relay.what} on ${job.relay.machine}`, waitingSince: new Date().toISOString() })
+	Object.assign(wf, { ...stateFields(wf, 'waiting_on_task'), question: undefined, status: `Working in your open session for ${job.relay.what} on ${job.relay.machine}`, waitingSince: new Date().toISOString() })
 	return `Sending ${wf.code} to your open session for ${job.relay.what} on ${job.relay.machine}. Its answer comes back here.`
 }
 
@@ -231,7 +233,7 @@ export function startJobs(store: Store, cfg: Config, procs: Procs, hold: string[
 			const waiting = job.error
 			Object.assign(job, { state: 'running', error: undefined, run: { id: runId, pid, startedAt: new Date().toISOString(), machine: store.machine, purpose: job.purpose, asks: job.asks.length, ...(job.wrapUp ? { wrapUp: true } : {}) }, wrapUp: undefined })
 			commit()
-			for (const item of parentsOf(store, job)) if (waiting && item.status === waiting) { item.status = `Working on ${job.goal}`; store.save(item) }
+			for (const item of parentsOf(store, job)) if (waiting && item.statusReason?.kind === 'could-not-start') { item.status = `Working on ${job.goal}`; item.statusReason = undefined; store.save(item) }
 			store.addRun()
 			store.log({ event: 'job-start', job: job.id, key: job.key, purpose: job.purpose, runId, pid, ...(clone || job.repo ? { clone: job.repo ?? clone } : {}) })
 			n++
@@ -360,7 +362,7 @@ export const reviewNoise = (text: string) => /\b(?:builds?|pipelines?|CI|checks?
 // A choice between options that is not the owner's own (no "approve", "vote", "you"): a spec or product question (queue-new #10).
 export const specChoice = (q: string) => /\?/.test(q) && /\b(?:or|versus|vs\.?)\b/i.test(q) && !/\b(?:you|your|approv\w*|vote|review it|sign[ -]?off|merge)\b/i.test(q)
 // The question as a comment to the PR's author, on the review's PR; undefined when the PR cannot be placed.
-function authorAsk(store: Store, parents: Workflow[], job: Job, question: string): Effect | undefined {
+export function authorAsk(store: Store, parents: Workflow[], job: Job, question: string): Effect | undefined {
 	const id = Number(/(\d+)\s*$/.exec(canonicalKey(job.key))?.[1] ?? 0) || parents.map(w => prTarget(store, w)).find(Boolean)
 	const owner = parents.find(w => id && prRefFor(store, w, id))
 	const ref = owner && id ? prRefFor(store, owner, id) : undefined
@@ -383,11 +385,24 @@ export function finishWork(store: Store, job: Job, r: Report, asksAtStart: numbe
 	if (r.reply) r = checked(store, cfg, r)
 	// Each proposed change must be one the owner allows, on this item's PR; any other becomes a to-do with the reason (owner, 2026-10-20).
 	const parents = parentsOf(store, job)
+	const prepared = prepareReportCalls(store, cfg, parents, r)
+	r = prepared.report
 	// In a PR review, a product or spec choice belongs to the PR's author: it becomes a proposed comment to them, never the owner's
 	// question (queue-new #10). A question for the owner alone (approve with a thread open, review at all) stays one.
 	if (r.question && isReviewJob(job.key, r.intent) && specChoice(r.question)) {
 		const ask = authorAsk(store, parents, job, r.question)
-		if (ask) { r = { ...r, question: undefined, effects: [...(r.effects ?? []), ask] }; store.log({ event: 'question-to-author', job: job.id, key: job.key, pr: ask.call?.args.pullRequestId }) }
+		if (ask) {
+			const problem = builtEffectProblem(cfg, ask)
+			if (problem) {
+				const why = `Couldn't prepare question for the author: ${problem}`
+				prepared.problems.push(why)
+				r = { ...r, question: why }
+				store.log({ event: 'effect-call-repaired', from: 'rebuilt', ok: false })
+			} else {
+				r = { ...r, question: undefined, effects: [...(r.effects ?? []), ask] }
+				store.log({ event: 'question-to-author', job: job.id, key: job.key, pr: ask.call?.args.pullRequestId })
+			}
+		}
 	}
 	// A review of someone else's PR shows the code facts only, never as warnings: no builds, checks or CI, and no vote of the owner
 	// or his reviewer group, which is what he is about to decide (queue-new #8). A watch on his own PR keeps them.
@@ -397,6 +412,7 @@ export function finishWork(store: Store, job: Job, r: Report, asksAtStart: numbe
 		r = { ...r, context: kept.length ? kept : undefined }
 	}
 	const v = vet(cfg, r.effects, parents.map(w => prTarget(store, w)).find(Boolean))
+	v.todos.push(...prepared.problems)
 	// A review's vote only while the owner may review the PR, at its last read (review gate G7).
 	const reader = parents.find(w => w.prRole)
 	if (reader) v.effects = voteGate(store, cfg, reader, v.effects, v.todos, false)
@@ -413,19 +429,20 @@ export function finishWork(store: Store, job: Job, r: Report, asksAtStart: numbe
 	// A tracker keeps its next check; a work job's wait for a retry is over.
 	Object.assign(job, job.every ? { retry: undefined, missed: undefined } : { retry: undefined, nextAt: undefined })
 	// The job found nothing for the owner (a PR already merged, or approved by others): no card, a Done row, and a step on open work (dogfood 10-20).
-	const nothing = r.state === 'done' && !r.reply && !r.question && !effects.length
+	const nothing = r.state === 'done' && !r.reply && !r.question && !effects.length && !prepared.problems.length
 	if (!again) for (const wf of parentsOf(store, job)) {
 		if (wf.pending.length) {
-			Object.assign(wf, { state: 'running', waitingSince: undefined, status: 'New asks arrived after this job started. Checking them next.' })
+			Object.assign(wf, { ...stateFields(wf, 'running'), waitingSince: undefined, status: 'New asks arrived after this job started. Checking them next.' })
 			store.save(wf)
 			continue
 		}
 		if (wf.effects?.some(e => !e.off && !e.done && (r.work?.closed || e.maybe || e.error))) {
-			Object.assign(wf, { state: 'needs_human', waitingSince: undefined, approved: undefined, status: 'Earlier changes are still failed or unverified. Review them before closing this work.' })
+			Object.assign(wf, { ...stateFields(wf, 'needs_human'), waitingSince: undefined, approved: undefined, status: 'Earlier changes are still failed or unverified. Review them before closing this work.' })
 			store.save(wf)
 			continue
 		}
-		if (r.reply) { wf.ownerSend = undefined; clearHold(wf) }
+		wf.statusReason = undefined; wf.reviewAgain = undefined; wf.runFailed = undefined
+		if (r.reply) { wf.ownerSend = undefined; clearHold(wf); wf.returnedFrom = undefined }
 		else if (wf.ownerSend && (!wf.sent || wf.sent.at < wf.ownerSend.at)) {
 			keepApprovedDraft(wf, r.summary || 'No reply needed')
 			wf.waitingSince = undefined
@@ -438,7 +455,7 @@ export function finishWork(store: Store, job: Job, r: Report, asksAtStart: numbe
 		if (wf.sent) reopenPromise(store, wf)
 		// Rules never send a review's or an investigation's result; the card says so, so the owner is not left guessing (dogfood 10-20, A34).
 		const decision = r.reply ? { action: 'draft', reason: 'A review or investigation result always waits for you', confidence: confidence(r.reply.sources ?? []) } : wf.decision
-		Object.assign(wf, { state: nothing ? (wf.work || wf.partOf ? 'open' : 'done') : 'needs_human', closedBy: nothing && !(wf.work || wf.partOf) ? 'job' : undefined, learnAfter: undefined, status: nothing ? `Nothing needed: ${r.summary}` : r.summary, question: r.question, draft: r.reply ? { ...r.reply } : undefined, effects, decision, waitingSince: undefined, approved: undefined, newCount: 0, revAt: new Date().toISOString(), ...(r.context ? { context: r.context } : {}) })
+		Object.assign(wf, { ...stateFields(wf, nothing ? (wf.work || wf.partOf ? 'open' : 'done') : 'needs_human'), closedBy: nothing && !(wf.work || wf.partOf) ? 'job' : undefined, learnAfter: undefined, status: nothing ? `Nothing needed: ${r.summary}` : r.summary, question: r.question, draft: r.reply ? { ...r.reply } : undefined, effects, decision, waitingSince: undefined, approved: undefined, newCount: 0, revAt: new Date().toISOString(), ...(r.context ? { context: r.context } : {}) })
 		// A change refused before and allowed now loses its old refusal (dry run 10-21: the deploy list was confirmed in between).
 		const allowedNow = (t: string) => effects.some(e => t.startsWith(`${e.summary.replace(/[.\s]+$/, '')}. Not made for you: `))
 		if (wf.todos?.some(allowedNow)) wf.todos = wf.todos.filter(t => !allowedNow(t))
@@ -451,13 +468,13 @@ export function finishWork(store: Store, job: Job, r: Report, asksAtStart: numbe
 			closeFamily(store, realProcs, home, home.work?.closed?.why ?? r.summary)
 			wf.closedBy = 'job'
 		} else if (nothing && home !== wf) {
-			Object.assign(wf, { state: 'done', closedBy: 'job' })
+			Object.assign(wf, { ...stateFields(wf, 'done'), closedBy: 'job' })
 		}
 		if (home.work && step(home, `${home === wf ? '' : `${wf.code}: `}Found: ${r.summary}`, { ref: `job:${job.id}:${hashOf(r.summary)}` }) && home !== wf) store.save(home)
 		store.save(wf)
 	}
 	// Asks that arrived during the run get one more run in the same session.
-	Object.assign(job, { result: { summary: r.summary, reply: r.reply ? { ...r.reply } : undefined, effects, context: (r.context ?? []).slice(0, 12), at: new Date().toISOString() }, state: again ? 'queued' : 'done', purpose: 'work', run: undefined })
+	Object.assign(job, { result: { summary: r.summary, reply: r.reply ? { ...r.reply } : undefined, effects, context: (r.context ?? []).slice(0, 12), findings: r.findings, voteRecommendation: r.voteRecommendation, at: new Date().toISOString() }, state: again ? 'queued' : 'done', purpose: 'work', run: undefined })
 	store.saveJob(job)
 	if (!again) store.log({ event: 'job-done', job: job.id, key: job.key, summary: r.summary, effects: effects.length, ...usedBy(job) })
 }
@@ -486,7 +503,7 @@ export function settleCompleted(store: Store, procs: Procs = realProcs) {
 			const receipt = wf.sent && effects.length && effects.every(e => e.done) ? `sent:${wf.sent.msgId}` : !wf.draft && !wf.question && job?.state === 'done' && job.result && !job.result.reply && !job.result.effects.length ? `job:${job.id}:${hashOf(job.result.summary)}` : undefined
 			if (wf.state === 'open' && receipt && wf.completionSeen !== receipt && step(wf, 'Completed step recorded; checking what remains of the original ask', { ref: `completion:${receipt}` })) {
 				wf.completionSeen = receipt
-				Object.assign(wf, { state: 'running', status: 'Checking remaining work after a completed step' })
+				Object.assign(wf, { ...stateFields(wf, 'running'), status: 'Checking remaining work after a completed step' })
 				store.save(wf)
 			}
 			continue
@@ -572,12 +589,14 @@ async function finishExecute(store: Store, src: Source, cfg: Config, job: Job, p
 		if (vote !== undefined) wf.prVote = vote
 		wf.approved = undefined
 		if (!ok) {
-			if (wf.state === 'waiting_on_task' && !again) Object.assign(wf, { state: 'needs_human', waitingSince: undefined, status: `The reply changed after your ok, so it was not sent. Review ${wf.code} and ok again` })
+			if (wf.state === 'waiting_on_task' && !again) Object.assign(wf, { ...stateFields(wf, 'needs_human'), waitingSince: undefined, status: `The reply changed after your ok, so it was not sent. Review ${wf.code} and ok again` })
 			commit()
 			continue
 		}
 		if (stale?.error) {
-			Object.assign(wf, { state: 'needs_human', waitingSince: undefined, question: reviewAgain(wf.code, stale.error), status: stale.error.replace(/\.$/, '') })
+			const changed = effects.find(e => isVote(e.call) && e.head), pr = changed && prTarget(store, wf)
+			if (changed?.head && pr) wf.reviewAgain = { pr, head: changed.head, at: new Date().toISOString() }
+			Object.assign(wf, { ...stateFields(wf, 'needs_human'), waitingSince: undefined, question: reviewAgain(wf.code, stale.error), status: stale.error.replace(/\.$/, '') })
 			commit()
 			continue
 		}
@@ -587,7 +606,7 @@ async function finishExecute(store: Store, src: Source, cfg: Config, job: Job, p
 			// An old invite that cannot be made: a retry cannot work, so the owner is offered a new draft (legacy E16).
 			const old = left.find(e => e.error?.includes(OLD_INVITE))
 			if (old) {
-				Object.assign(wf, { state: 'needs_human', waitingSince: undefined, status: `Not made: ${changeText(old)}. ${old.error!.replace(/^Change \d+ cannot be made: /, '').replace(/^./, c => c.toUpperCase())} Nothing was created, and the reply was not sent`,
+				Object.assign(wf, { ...stateFields(wf, 'needs_human'), waitingSince: undefined, status: `Not made: ${changeText(old)}. ${old.error!.replace(/^Change \d+ cannot be made: /, '').replace(/^./, c => c.toUpperCase())} Nothing was created, and the reply was not sent`,
 					question: OLD_INVITE_ASK })
 				commit()
 				continue
@@ -595,28 +614,28 @@ async function finishExecute(store: Store, src: Source, cfg: Config, job: Job, p
 			const how = left.some(e => e.maybe) ? `Check whether it was made, then reply "ok ${wf.code} again" to make it once more` : `Reply "ok ${wf.code}" to retry`
 			// The owner's own words already went, so there is no reply left to send on its own (Slice 3).
 			const or = wf.promise && wf.sent && !wf.draft?.text ? `, or "skip ${wf.code}"` : `, or "ok ${wf.code} except ${left.map((_, i) => i + 1).join(' ')}" to send only the reply`
-			Object.assign(wf, { state: 'needs_human', waitingSince: undefined, status: `Made ${effects.length - left.length} of ${effects.length} changes. Not done: ${left.map(e => `${changeText(e)}${e.error ? ` (${e.error.slice(0, 80)})` : ''}`).join('; ')}. ${how}${or}` })
+			Object.assign(wf, { ...stateFields(wf, 'needs_human'), waitingSince: undefined, status: `Made ${effects.length - left.length} of ${effects.length} changes. Not done: ${left.map(e => `${changeText(e)}${e.error ? ` (${e.error.slice(0, 80)})` : ''}`).join('; ')}. ${how}${or}` })
 			commit()
 			continue
 		}
 		// Added as a reviewer by Add me: the declined review starts now, on the ask that asked for it (review gate).
 		const added = effects.find(e => e.done && isAddMe(e))
 		if (added && wf.reviewDecline) {
-			Object.assign(wf, { state: 'running', waitingSince: undefined, question: undefined, reviewDecline: undefined, context: wf.context?.filter(c => c.label !== 'Not reviewing'), status: `Added you as an optional reviewer on PR ${wf.reviewDecline.pr}; starting the review`, pending: wf.msgIds.slice(-1) })
+			Object.assign(wf, { ...stateFields(wf, 'running'), waitingSince: undefined, question: undefined, reviewDecline: undefined, context: wf.context?.filter(c => c.label !== 'Not reviewing'), status: `Added you as an optional reviewer on PR ${wf.reviewDecline.pr}; starting the review`, pending: wf.msgIds.slice(-1) })
 			store.log({ event: 'review-gate-added', code: wf.code, pr: added.call?.args.pullRequestId })
 			commit()
 			continue
 		}
 		// A tracker goes back to watching once its changes are made, or closes if it already reported done; there is no chat reply to send.
 		if (wf.kind === 'tracker') {
-			if (job.every) Object.assign(wf, { state: 'waiting_on_task', waitingSince: new Date().toISOString(), status: `Made ${effects.length} change(s); watching again` })
+			if (job.every) Object.assign(wf, { ...stateFields(wf, 'waiting_on_task'), waitingSince: new Date().toISOString(), status: `Made ${effects.length} change(s); watching again` })
 			else close(wf, `Made ${effects.length} change(s); stopped watching`)
 			commit()
 			continue
 		}
 		// A deploy with no reply to send: the work goes on, and the build check watches the run.
 		if (moving.length && !wf.draft?.text) {
-			Object.assign(wf, { state: 'open', status: moving.join('; '), waitingSince: undefined, pending: [] })
+			Object.assign(wf, { ...stateFields(wf, 'open'), status: moving.join('; '), waitingSince: undefined, pending: [] })
 			commit()
 			continue
 		}
@@ -634,7 +653,7 @@ async function finishExecute(store: Store, src: Source, cfg: Config, job: Job, p
 			commit()
 			continue
 		}
-		Object.assign(wf, { state: 'needs_human', waitingSince: undefined })
+		Object.assign(wf, { ...stateFields(wf, 'needs_human'), waitingSince: undefined })
 		commit()
 		try {
 			const sent = await send(store, src, cfg, wf, wf.draft?.text, { replyDigest, sendReview }, probe)
@@ -747,7 +766,7 @@ export function approveEffects(store: Store, cfg: Config, wf: Workflow, again = 
 	const now = new Date().toISOString()
 	if (!executing(job)) Object.assign(job, { state: 'queued', purpose: 'execute' })
 	store.saveJob(job)
-	Object.assign(wf, { state: 'waiting_on_task', approved: { text: wf.draft?.text ?? '', effects: effectsKey(wf), at: now }, waitingSince: now, status: `Making ${left.length} change(s)${wf.draft?.text ? ', then sending the reply' : ''}` })
+	Object.assign(wf, { ...stateFields(wf, 'waiting_on_task'), approved: { text: wf.draft?.text ?? '', effects: effectsKey(wf), at: now }, waitingSince: now, status: `Making ${left.length} change(s)${wf.draft?.text ? ', then sending the reply' : ''}` })
 	store.save(wf)
 	return ''
 }
@@ -755,6 +774,7 @@ export function approveEffects(store: Store, cfg: Config, wf: Workflow, again = 
 // A change proposed before exact calls existed can never be made: it becomes the owner's to-do once, with a note,
 // and the reply waits to be changed, since it counted on it (review 10-21 P2-11).
 export function legacyEffects(store: Store) {
+	repairPendingEffectCalls(store)
 	for (const wf of store.workflows().filter(w => w.state === 'needs_human' && pendingEffects(w.effects).some(e => !e.call))) {
 		const old = pendingEffects(wf.effects).filter(e => !e.call)
 		const keep = (es: Effect[] = []) => es.filter(e => e.call || e.done || e.off)
@@ -956,7 +976,7 @@ function missedCheck(store: Store, job: Job, why: string) {
 const hhmm = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
 
 function queueRetry(store: Store, job: Job, retry: Retry, fresh: boolean) {
-	for (const wf of parentsOf(store, job)) { Object.assign(wf, { state: 'waiting_on_task', status: retryStatus(retry, hhmm), waitingSince: wf.waitingSince ?? new Date().toISOString() }); store.save(wf) }
+	for (const wf of parentsOf(store, job)) { Object.assign(wf, { ...stateFields(wf, 'waiting_on_task'), status: retryStatus(retry, hhmm), waitingSince: wf.waitingSince ?? new Date().toISOString() }); store.save(wf) }
 	Object.assign(job, { state: 'queued', purpose: 'work', retry, nextAt: retry.at, run: undefined, error: undefined, ...(fresh ? { session: { ...job.session, id: randomUUID() } } : {}) })
 	store.saveJob(job)
 	store.log({ event: 'retry-planned', job: job.id, key: job.key, n: retry.n, kind: retry.last.kind, why: retry.last.why, at: retry.at, fresh, ...usedBy(job) })
@@ -973,7 +993,7 @@ function shortOfGoal(store: Store, job: Job, r: Report) {
 	const now = new Date().toISOString()
 	const b = blockerOf(r.blocker), tried = [...new Set([...(job.retry?.tried ?? []), ...b.tried])]
 	for (const wf of parentsOf(store, job)) {
-		if (r.reply) { wf.ownerSend = undefined; clearHold(wf) }
+		if (r.reply) { wf.ownerSend = undefined; clearHold(wf); wf.returnedFrom = undefined; wf.statusReason = undefined; wf.reviewAgain = undefined }
 		else if (wf.ownerSend && (!wf.sent || wf.sent.at < wf.ownerSend.at)) {
 			keepApprovedDraft(wf, r.summary || 'No reply needed')
 			wf.waitingSince = undefined
@@ -983,7 +1003,7 @@ function shortOfGoal(store: Store, job: Job, r: Report) {
 		}
 		const failed = !r.question && !draft ? { at: now, kind: 'content' as const, why: b.why.replace(/[.\s]+$/, ''), ...(tried.length ? { tried } : {}), job: job.id } : undefined
 		// Never an older ask's draft: only this run's holding reply, or none.
-		Object.assign(wf, { state: 'needs_human', waitingSince: undefined, status: failed ? `Couldn't finish: ${failed.why}` : p.stop, question: r.question, draft, runFailed: failed, learnAfter: undefined, effects: [], approved: undefined, newCount: 0, revAt: now, decision: { action: 'draft', reason: 'The work is not finished', confidence: 'low' } })
+		Object.assign(wf, { ...stateFields(wf, 'needs_human'), waitingSince: undefined, ...statusFields('not-finished', failed ? `Couldn't finish: ${failed.why}` : p.stop), question: r.question, draft, runFailed: failed, learnAfter: undefined, effects: [], approved: undefined, newCount: 0, revAt: now, decision: { action: 'draft', reason: 'The work is not finished', confidence: 'low' } })
 		const home = homeOf(store, wf)
 		if (home.work && step(home, `${home === wf ? '' : `${wf.code}: `}Not finished: ${p.stop}`, { ref: `job:${job.id}:${hashOf(p.stop)}` }) && home !== wf) store.save(home)
 		store.save(wf)
@@ -995,7 +1015,7 @@ function shortOfGoal(store: Store, job: Job, r: Report) {
 
 function fail(store: Store, job: Job, why: string) {
 	for (const wf of parentsOf(store, job)) {
-		Object.assign(wf, { state: 'needs_human', waitingSince: undefined, approved: undefined, status: `The job did not finish: ${why}`, question: `Answer ${wf.code} to retry with directions, or skip it` })
+		Object.assign(wf, { ...stateFields(wf, 'needs_human'), waitingSince: undefined, approved: undefined, ...statusFields('not-finished', `The job did not finish: ${why}`), question: `Answer ${wf.code} to retry with directions, or skip it` })
 		store.save(wf)
 	}
 	Object.assign(job, { state: 'failed', error: why, run: undefined, purpose: 'work', retry: undefined, nextAt: undefined })

@@ -6,7 +6,7 @@ export const FOLLOWUP_MS = 30 * 60_000
 export function freshAsk(store: Store, item: Workflow, at = Date.now(), closed = false): boolean {
 	if (item.redacted || item.state === 'done' && !closed || item.startFails || item.work?.closed) return false
 	const job = item.job ? store.job(item.job) : undefined
-	if (job?.error || job?.state === 'failed' || item.status === 'The worker did not finish' || /^The job did not finish:|^Could not start/.test(item.status) || item.status === store.agentHold()?.text) return false
+	if (job?.error || job?.state === 'failed' || item.runFailed || item.statusReason?.kind === 'not-finished' || item.statusReason?.kind === 'could-not-start') return false
 	const owned = new Set(item.msgIds)
 	const ask = store.thread(item.id).filter(message => !message.byOwner && owned.has(message.id)).sort((a, b) => b.at.localeCompare(a.at))[0]
 	const age = at - Date.parse(ask?.at ?? item.createdAt)

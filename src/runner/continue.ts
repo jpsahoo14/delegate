@@ -20,6 +20,7 @@ import { NAME } from '../brand.ts'
 import { freshRead } from '../store/fs.ts'
 import { recordCommit } from './commit.ts'
 import { alive, commandOf, ours } from '../os/process.ts'
+import { stateFields, statusFields } from '../core/upgrades.ts'
 
 
 // Old items keep their job target; a newer reply run becomes the continuation target.
@@ -42,7 +43,7 @@ export async function openContinue(store: Store, src: Source, wf: Workflow, a: A
 	// Reserved before the window exists, so a second continue or an ok in the same batch cannot slip in (tester P1-5).
 	store.setOpenWindow(t.id, { machine: store.machine, pid: 0, runId: '', since: new Date().toISOString() })
 	// A scheduled automatic reply waits for the owner instead (review 01-04 P1-3).
-	if (wf.state === 'scheduled') { Object.assign(wf, { state: 'needs_human', sendAt: undefined, status: 'Held: you opened it in a window' }); store.save(wf) }
+	if (wf.state === 'scheduled') { Object.assign(wf, { ...stateFields(wf, 'needs_human'), sendAt: undefined, status: 'Held: you opened it in a window' }); store.save(wf) }
 	procs.openWindow(`${NAME} ${wf.code}`, [process.execPath, CLI, 'continue', wf.code], { DELEGATE_LOCAL: LOCAL_DIR, DELEGATE_ROOT: store.root })
 	store.log({ event: 'continue-open', code: wf.code, target: t.id })
 	return tell(`Opening ${wf.code} in a new window on ${store.machine}. If it asks whether you trust the folder, answer it once, then it will summarize where ${wf.code} stands. I'll leave ${wf.code} alone until you close the window.`)
@@ -118,11 +119,12 @@ export function checkOpen(store: Store, procs: Procs, bootMs = Date.now() - upti
 			const fresh = freshRead(() => store.workflow(wf.id))
 			if (!fresh) throw new Error('The terminal item disappeared before its return could be saved')
 			const commit = recordCommit(fresh, () => store.workflow(fresh.id), store.save.bind(store))
-			if (r && !job) applyReport(fresh, r)
+			if (r && !job) applyReport(fresh, r, fresh, true, store)
 			// What the owner decided in the window comes back as a preview: nothing leaves without an ok outside it.
 			if (r && fresh.draft) fresh.draft.preview = true
 			fresh.openOn = undefined
-			if (!r && !fresh.status.startsWith('Back from')) fresh.status = `Back from your window, nothing decided. ${fresh.status}`.slice(0, 200)
+			if (!r && !fresh.returnedFrom && fresh.statusReason?.kind !== 'back-from-window') Object.assign(fresh, statusFields('back-from-window', `Back from your window, nothing decided. ${fresh.status}`.slice(0, 200)))
+			fresh.returnedFrom = { machine: o.machine, at: new Date().toISOString(), report: !!r }
 			commit()
 		}
 		store.archiveReport(id, o.runId)

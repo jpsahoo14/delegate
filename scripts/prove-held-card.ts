@@ -71,7 +71,8 @@ async function sees(card: Locator, line: string) {
 	await card.getByText(line, { exact: true }).waitFor({ timeout: 10_000 }).catch(async error => { throw new Error(`Expected "${line}"; the card says: ${await card.innerText()}`, { cause: error }) })
 }
 
-for (const experience of ['new', 'classic'] as const) {
+// PROOF_ONLY=late runs only case 5, so its race can be looped quickly (PE 19:40: 20 times).
+for (const experience of process.env.PROOF_ONLY === 'late' ? [] : ['new', 'classic'] as const) {
 	// 1. No reply looks needed, alone: Send anyway leads, Skip offered; it sends once.
 	{
 		const t = await open(experience, store => hold(store, [noReply('Kim only shared the plan status')]))
@@ -162,8 +163,12 @@ for (const experience of ['new', 'classic'] as const) {
 	const t = await open('new', store => hold(store, [noReply('Kim only shared the plan status')]))
 	try {
 		await sees(t.card, 'Delegate thinks no reply is needed now: Kim only shared the plan status.')
+		// The card he is looking at stays as drawn (no page refresh), as when a reason arrives just before his click.
+		await t.page.route('**/api/v1/page*', route => route.abort())
 		hold(t.store, [noReply('Kim only shared the plan status'), changedAsk('She now wants the risks by noon.')])
+		assert.equal(await primary(t.card).innerText(), 'Send anyway')
 		const receipt = await click(t.page, primary(t.card))
+		await t.page.unroute('**/api/v1/page*')
 		await applyAnswers(t.store, stub, t.store.config(), procs as never)
 		assert.equal(t.store.byCode('A20')!.sent, undefined, 'nothing was sent past a reason the card did not show')
 		assert.ok(receipt.refused || /Changed since you looked/.test(receipt.text ?? ''), JSON.stringify(receipt))

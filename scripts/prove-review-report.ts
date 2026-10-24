@@ -20,6 +20,7 @@ try {
 	const { buildJobPrompt, buildPrompt, buildPromisePrompt } = await import('../src/worker/prompt.ts')
 	const { buildCommentCall, effectCallProblem } = await import('../src/runner/effect-calls.ts')
 	const { workerTools } = await import('../src/runner/catalog.ts')
+	const { finishWork } = await import('../src/runner/jobs.ts')
 	const cfg: Config = {
 		schema: 1, owner: { id: 'robin', name: 'Robin' },
 		source: { command: ['unused'], selfChatId: 'fictional-self' }, watch: [], discover: false,
@@ -70,6 +71,10 @@ try {
 	const job: Job = { schema: 1, id: report.workflowId, key: 'pr:acme/aurora/1234', goal: 'Review the banner changes',
 		session: { agent: 'copilot', id: 'fictional-session' }, state: 'running', purpose: 'work', parents: [], asks: [],
 		intent: 'pr_review', createdAt: catalog.at, updatedAt: catalog.at }
+	finishWork(store, structuredClone(job), report, 0)
+	assert.deepEqual(store.job(job.id)!.result!.findings, report.findings)
+	assert.deepEqual(store.job(job.id)!.result!.voteRecommendation, report.voteRecommendation)
+	console.log('PASS real finishWork persists structured findings and vote recommendation on the saved job result')
 	const prompt = buildJobPrompt(job, cfg, root)
 	const shape = (text: string) => JSON.parse(text.split('\n').find(l => l.startsWith('- acme-ado-repo_pull_request_thread_write arguments (compact): '))!.split(' (compact): ')[1])
 	const expected = { properties: schema.properties, required: schema.required }
@@ -110,7 +115,7 @@ try {
 	const result: NonNullable<Job['result']> = { summary: ready.summary, effects: ready.effects ?? [], findings: ready.findings, voteRecommendation: ready.voteRecommendation }
 	writeFileSync(join(root, 'future-job-result.json'), JSON.stringify(result))
 	assert.deepEqual(JSON.parse(readFileSync(join(root, 'future-job-result.json'), 'utf8')), result)
-	console.log('PASS new findings and all vote names round-trip; recommendation creates no effects; future Job.result type accepts fields (finishWork wiring deferred)')
+	console.log('PASS new findings and all vote names round-trip; recommendation creates no effects; Job.result accepts structured fields')
 
 	const old = { workflowId: report.workflowId, intent: 'pr_review', state: 'done', summary: 'Earlier review' }
 	assert.deepEqual(REPORT.parse(old), old)

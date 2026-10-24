@@ -5,6 +5,71 @@ Owner intent checks may use only the warm host's optional one-shot `quick` API,
 never a cold CLI or the item's session. Rule sends retain their stricter checks
 and never use the relaxed intent check.
 
+## PR vote claims (L1)
+
+All PR-review replies, and replies mentioning approvals or votes, always wait for
+the owner, before rule selection. `decide()` and `whyWaited()` use the same
+core vote-word detector; the runner re-exports it without a core-to-runner import.
+Scheduled sends re-evaluate this policy before sending.
+
+Vote sentences are classified in order: requests/future/conditional/withholding,
+another reviewer's approval, then an owner claim for every remaining wording.
+No vote word means no claim classification. Bounded live-vote matching includes
+"Reviewed and approved", "Approved with one nit", rejection and requested changes.
+Future/negative words after an already-completed vote claim do not exempt it.
+Each comma, semicolon, dash or colon clause is classified independently. A
+condition, question or request elsewhere in the sentence cannot hide a completed
+claim; the full sentence is retained for its PR references. Past-tense "When I
+approved it" reports a completed action, rather than a future condition.
+The existing live PR check remains the authority. A recommendation is never
+evidence of a vote. Same-Send effects execute first; a completed vote receipt
+must match the PR, repository, head and current ask before it can support a
+completed PR whose reviewer list is unavailable.
+
+An unsupported owner claim preserves the approved draft and exposes
+`wf.statusReason = { kind: 'vote-claim', text, at }`, retaining HOST's shared
+lifecycle-reason shape. The sibling
+`wf.voteClaim = { why, pr?, claim, vote?, digest, automatic?, canOverride? }`
+contains the vote-only details. `text` is the final PM card/confirm copy; `why`
+retains the specific live-check failure. A vote hold requires both the
+`vote-claim` kind and the sibling details; a legacy `not-sent` reason is not a
+vote hold. Clearing chat/vote holds preserves every non-vote lifecycle reason.
+The digest covers the reply and live-check reason, and the page revision covers
+the status reason and vote digest. Only page **Send anyway** on that exact revision
+can override the same claim hold, after another live read; chat cannot override.
+A changed draft basis (`canOverride: false`) or automatic hold (`automatic: true`)
+cannot be overridden. Ordinary chat-reason digests and this digest are combined
+when both are held. Overrides log only code, PR, claim and vote metadata.
+
+Legacy automatic-send attempts redraft once, then preserve the second draft as
+not sent. A replacement draft, explicit edit or new turn clears the hold.
+Redraft starts a new retry budget. No owner-approved draft is redrafted by this
+check. No new tests, proofs or golden rows are added under the owner's current
+validation rule; PE reviews the eight cases with commit file-and-line references.
+
+Card-owner handoff (no card changes here):
+
+- Background PR polling retains its older approval-only definition of the owner
+  writing. Non-approval uses of "rejected", "waiting for author" or "my vote"
+  cannot make a vote refresh move the owner's own draft on. The broader live
+  vote-claim check still applies at send time.
+- `voteClaimGap(text, effects, lastKnownVote?)` is pure and exported from
+  `runner/work.ts`. Its optional last-known value is
+  `{ pr: number, vote?: number, head?: string }`; the result is
+  `{ pr?: number, claim: number | 'approval', why: string }` or `undefined`.
+  A proposed vote or matching live vote supports the warning; a made receipt
+  additionally requires the last-known head. `why` uses the PM's final copy.
+- Show the gap/held `text` above the bar, disable ordinary Send until the reply
+  changes, and use the same copy to confirm page **Send anyway** with the current
+  revision. Read held text from `statusReason.text` only for kind `vote-claim`
+  with `voteClaim` present. Read `automatic`, `canOverride` and `digest` from
+  `voteClaim`, not `statusReason`. Never offer override for `automatic` or
+  `canOverride: false`. With no PR number, the copy says "this PR".
+- **Add the vote** submits `verb: answer, text: add the vote` with the exact page
+  revision. The engine builds an unapproved proposal from the carrier report's
+  recommendation and existing PR scope. Normal approval makes the vote before
+  sending the reply. No recommendation means no proposal.
+
 ## Author edits
 
 Teams `lastEditedDateTime` becomes `RawMsg.editedAt` and is stored on each

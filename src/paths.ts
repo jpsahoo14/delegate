@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -17,3 +18,5 @@ export const SKILL_DIR = up(join('skills', 'delegate'))
 export const MESH_DIR = here.endsWith('dist') ? join(here, 'mesh') : join(ROOT, 'src', 'mesh')
 // The entry other processes start: the bundle when running from it, else the source CLI.
 export const CLI = here.endsWith('dist') ? join(here, 'delegate.mjs') : join(ROOT, 'src', 'cli.ts')
+// This machine's own settings and locks (local.json, tick.lock), never synced. Tests point it at a temp folder.
+export const LOCAL_DIR = process.env.DELEGATE_LOCAL ?? join(homedir(), '.delegate')

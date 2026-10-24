@@ -1,3 +1,4 @@
+import { stateFields } from '../core/upgrades.ts'
 // Slice 3 of next action (reviews/eng-next-action.md, case 6): the owner's own words that promise a change on the item's target.
 // The reply has already gone; one short run in the item's session maps the words to changes, which wait for one ok on the same
 // item, through the same vet, ok, and make_change as every other change. Nothing is made without that ok.
@@ -37,7 +38,7 @@ export function notePromise(store: Store, wf: Workflow, text: string) {
 // Where a sent reply leaves its item: open work stays in progress; anything else is done.
 export function rest(store: Store, wf: Workflow, status?: string) {
 	const home = homeOf(store, wf)
-	if (active(home)) Object.assign(wf, { state: 'open', status: status ?? statusOf(home), pending: [] })
+	if (active(home)) Object.assign(wf, { ...stateFields(wf, 'open'), status: status ?? statusOf(home), pending: [] })
 	else close(wf, status ?? `Sent: "${(wf.sent?.text ?? '').slice(0, 80)}"`)
 	Object.assign(wf, { promise: undefined, question: undefined })
 }
@@ -67,7 +68,7 @@ export function reopenPromise(store: Store, wf: Workflow) {
 }
 // The check could not finish: the reply already went; nothing is made. The owner sees that it failed and can run it again.
 export function failPromise(store: Store, wf: Workflow, error?: string, said = wf.promise?.text ?? '') {
-	Object.assign(wf, { state: 'needs_human', draft: undefined, promise: { ...wf.promise!, text: said, state: 'failed', why: error?.slice(0, 160) }, status: `Sent. Could not check what your reply promised${error ? `: ${error.slice(0, 120)}` : ''}`, question: undefined, revAt: new Date().toISOString() })
+	Object.assign(wf, { ...stateFields(wf, 'needs_human'), draft: undefined, promise: { ...wf.promise!, text: said, state: 'failed', why: error?.slice(0, 160) }, status: `Sent. Could not check what your reply promised${error ? `: ${error.slice(0, 120)}` : ''}`, question: undefined, revAt: new Date().toISOString() })
 	store.save(wf)
 	store.log({ event: 'promise-failed', workflowId: wf.id, code: wf.code, error: error?.slice(0, 200) })
 }
@@ -152,13 +153,15 @@ export async function checkPromise(store: Store, src: Source, cfg: Config, wf: W
 		// The PR moved since the review: no vote, and the owner reviews again, as at ok. The reply already went, so that is a new turn
 		// of the item, whose vote and reply both wait for ok.
 		newTurn(fresh)
-		Object.assign(fresh, { state: 'needs_human', promise: undefined, question: now.again, status: `PR ${prTarget(store, fresh)} changed since your review`, revAt: new Date().toISOString() })
+		const pr = prTarget(store, fresh)
+		if (pr && now.head) fresh.reviewAgain = { pr, head: now.head, at: new Date().toISOString() }
+		Object.assign(fresh, { ...stateFields(fresh, 'needs_human'), promise: undefined, question: now.again, status: `PR ${prTarget(store, fresh)} changed since your review`, revAt: new Date().toISOString() })
 		lines.push(`${fresh.code}: ${now.again}`)
 	} else if (now.effects.length && (shared = carry(store, cfg, fresh, now.effects)) !== 'shared') {
 		// A change run is making the list the owner already approved: this one is checked again after it.
 		if (shared === 'busy') return again()
 		const line = saidLine(now.effects), meaning = now.effects.map(e => e.pr).find(Boolean)
-		Object.assign(fresh, { state: 'needs_human', draft: undefined, effects: now.effects, promised: undefined, approved: undefined, question: undefined, promise: { ...fresh.promise!, text: said, state: 'offered', why: undefined }, status: line, revAt: new Date().toISOString() })
+		Object.assign(fresh, { ...stateFields(fresh, 'needs_human'), draft: undefined, effects: now.effects, promised: undefined, approved: undefined, question: undefined, promise: { ...fresh.promise!, text: said, state: 'offered', why: undefined }, status: line, revAt: new Date().toISOString() })
 		lines.push(`${fresh.code}: ${line.replace(/^You/, 'you')}${meaning ? ` ("${meaning.title}" by ${meaning.author}${meaning.autoComplete ? '; autocomplete is on: your approval may complete it' : ''})` : ''}. Say "ok ${fresh.code}" to do it, or "skip ${fresh.code}".`)
 	} else {
 		// Another open item on the same review shows its own changes, so this one's list cannot replace it: it is the owner's to do.

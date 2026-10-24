@@ -3,6 +3,7 @@ import { blockerOf } from './retry.ts'
 import { active, addPart, canCloseReport, hasDecisions, homeOf, joinWhy, mergeReportWork, settle, step } from './work.ts'
 import { assertTestSafe, freshRead, readPhase } from '../store/fs.ts'
 import { recordCommit } from './commit.ts'
+import { stateFields, statusFields } from '../core/upgrades.ts'
 import { closeFamily } from './apply.ts'
 import { realProcs } from './jobs.ts'
 import { stopWatch } from './track.ts'
@@ -47,6 +48,7 @@ import { ran } from '../core/runinfo.ts'
 import { agentSetupFailure, unavailableTools } from '../core/agent-failure.ts'
 import { blockedAgent, holdAgent, waitingForAgent } from './agent-health.ts'
 import { askRelation, freshAsk } from './same-ask.ts'
+import { prepareReportCalls } from './effect-preparation.ts'
 
 export type RunWorker = (cfg: Config['agent'], input: RunInput & { workflowId: string; runId: string }) => Promise<RunResult>
 
@@ -140,29 +142,6 @@ export function restoreApprovedDrafts(store: Store): number {
 	return restored
 }
 
-// One-time repair of items an older version left with the fallback question after a failed run (queue-new #11). An open item whose
-// last run failed for a setup reason (model, quota, sign-in, missing CLI), matched on the logged worker error, is queued again;
-// a content failure is never re-run, and shows as a failed run with its reason instead of a question.
-const OLD_FALLBACK = /^(?:Check this item, then answer or skip it|Sign in, then answer or skip this item)$/
-export function repairRunFailures(store: Store, days = 14): number {
-	const old = store.workflows().filter(w => w.state === 'needs_human' && OLD_FALLBACK.test(w.question ?? ''))
-	if (!old.length) return 0
-	const lastError = new Map<string, { at: string; error: string }>()
-	for (const e of store.logs(days)) if (e.event === 'worker' && typeof e.workflowId === 'string') lastError.set(e.workflowId, { at: String(e.at ?? ''), error: String(e.error ?? '') })
-	let n = 0
-	for (const w of old) {
-		const last = lastError.get(w.id)
-		const setup = last?.error ? agentSetupFailure(last.error) : undefined
-		if (setup) {
-			Object.assign(w, { state: 'running', question: undefined, runFailed: undefined, status: `Running again: the earlier run failed because ${setup.text.replace(/^The /, 'the ').replace(/\.\s.*$/, '')}`, pending: w.pending.length ? w.pending : w.msgIds.slice(-1) })
-			store.log({ event: 'repair-requeued', code: w.code, reason: setup.kind, error: last!.error.slice(0, 200) })
-			n++
-		} else Object.assign(w, { question: undefined, runFailed: { at: last?.at || w.updatedAt, kind: 'other', why: last?.error ? `the run failed (${last.error.split(/\r?\n/)[0].replace(/^Error: /, '').slice(0, 140)})` : 'the run stopped without a result' } })
-		store.save(w)
-	}
-	return n
-}
-
 // Versioned upgrade for preflight's first release. Only the latest failed host run is eligible; its log key prevents replay after
 // a crash, and the upgrade marker avoids scanning history on subsequent ticks. Ordinary content failures are never requeued.
 export function retryHostToolFailures(store: Store): number {
@@ -189,7 +168,7 @@ export function retryHostToolFailures(store: Store): number {
 		} catch (error) { store.log({ event: 'host-tools-history-unreadable', workflowId: w.id, runId: e.runId, error: String(error).slice(0, 200) }); continue }
 		const missing = unavailableTools(answer ?? '', [...WORKER_TOOLS, ...workerTools(store.config(), 'reply')])
 		if (!missing.length) continue
-		Object.assign(w, { state: 'running', question: undefined, runFailed: undefined, status: 'Running again: the earlier AI host did not provide its tools.', pending: w.pending.length ? w.pending : w.msgIds.slice(-1) })
+		Object.assign(w, { ...stateFields(w, 'running'), question: undefined, runFailed: undefined, status: 'Running again: the earlier AI host did not provide its tools.', pending: w.pending.length ? w.pending : w.msgIds.slice(-1) })
 		store.save(w)
 		store.log({ event: 'host-tools-requeued', workflowId: w.id, code: w.code, runId: e.runId, missing })
 		n++
@@ -197,28 +176,6 @@ export function retryHostToolFailures(store: Store): number {
 	store.saveProbeMark({ ...store.probeMark(), hostToolsUpgrade: 1 })
 	store.log({ event: 'host-tools-upgraded', version: 1, requeued: n })
 	return n
-}
-
-// One-time repair of items an older version left with a retry's stop text as their status and nothing to act on (queue-new #26): a
-// job that ran out of routes before #17 left no question, no draft and no failed run, so the card fell to a bare answer box. They get
-// the shape #17(b) gives new ones: one plain line, the routes tried in Details, and Try again, which queues the job again (now with
-// every read tool). Nothing runs by itself: a content failure waits for the owner.
-const STOP = /^(?:Tried \d+ times; |Blocked: |Needs the asker: |Still not ready after \d+ hours; )/
-export function repairBlocked(store: Store, days = 30): string[] {
-	const old = store.workflows().filter(w => w.state === 'needs_human' && !w.question && !w.draft && !w.runFailed && STOP.test(w.status ?? '') && w.job && store.job(w.job)?.state === 'done')
-	if (!old.length) return []
-	const stopped = new Map<string, string>()
-	for (const e of store.logs(days)) if (e.event === 'retry-stopped' && typeof e.job === 'string') stopped.set(e.job, String(e.at ?? ''))
-	for (const w of old) {
-		// "<why>. Tried: <route>; <route>", as planRetry wrote it; the line shown is the why's first sentence.
-		const rest = w.status.replace(STOP, ''), cut = rest.lastIndexOf('. Tried: ')
-		const why = (cut >= 0 ? rest.slice(0, cut) : rest).split(/(?<=[.!?])\s+/)[0].replace(/[.\s]+$/, '')
-		const tried = cut >= 0 ? rest.slice(cut + '. Tried: '.length).replace(/[.\s]+$/, '').split('; ').map(t => t.trim()).filter(Boolean) : []
-		Object.assign(w, { runFailed: { at: stopped.get(w.job!) || w.updatedAt, kind: 'content' as const, why, ...(tried.length ? { tried } : {}), job: w.job! }, status: `Couldn't finish: ${why}` })
-		store.save(w)
-	}
-	store.log({ event: 'repair-blocked', codes: old.map(w => w.code) })
-	return old.map(w => w.code)
 }
 
 // A person's message to the owner: anything in a 1:1, or in a group the message right after his own (within a day) (queue-new #18).
@@ -248,14 +205,14 @@ function startFailed(store: Store, wf: Workflow, e: unknown) {
 	// A setup the owner must change stops the run for the owner at once, a question about the item too (round 2 P2-1, P2-2).
 	if (fresh && setup) {
 		const why2 = raw.replace(/^Could not start(?: [^\n]*?)?: (?:Error: )?(?=\S)/, '').replace(/^(?:Could not start: )+/, '')
-		Object.assign(fresh, { startFails: undefined, ...(fresh.state === 'running' ? { state: 'needs_human' } : {}), status: `Could not start: ${why2}`, notes: fresh.notes?.map(n => (n.a === undefined ? { ...n, a: `Not asked: ${why2}` } : n)) })
+		Object.assign(fresh, { startFails: undefined, ...(fresh.state === 'running' ? { state: 'needs_human' } : {}), ...statusFields('could-not-start', `Could not start: ${why2}`), notes: fresh.notes?.map(n => (n.a === undefined ? { ...n, a: `Not asked: ${why2}` } : n)) })
 		store.save(fresh)
 		store.log({ event: 'run-start-refused', workflowId: wf.id, code: wf.code, error: why2 })
 		return
 	}
 	if (!fresh || fresh.state !== 'running') return
 	const n = (fresh.startFails ?? 0) + 1
-	Object.assign(fresh, n < 3 ? { startFails: n, status: `Could not start the AI run: ${why}. Trying again on the next check.` } : { startFails: undefined, state: 'needs_human', status: `Could not start the AI run 3 times: ${why}. Check the AI CLI with "${CMD} doctor".`, runFailed: { at: new Date().toISOString(), kind: 'other' as const, why: `the AI run could not start 3 times (${why.slice(0, 120)})` } })
+	Object.assign(fresh, n < 3 ? { startFails: n, ...statusFields('could-not-start', `Could not start the AI run: ${why}. Trying again on the next check.`) } : { startFails: undefined, ...stateFields(fresh, 'needs_human'), ...statusFields('could-not-start', `Could not start the AI run 3 times: ${why}. Check the AI CLI with "${CMD} doctor".`), runFailed: { at: new Date().toISOString(), kind: 'other' as const, why: `the AI run could not start 3 times (${why.slice(0, 120)})` } })
 	store.save(fresh)
 	store.log({ event: 'run-start-failed', workflowId: wf.id, code: wf.code, n, error: why })
 }
@@ -398,7 +355,7 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 	// A report salvaged from the run's last words is scrubbed as one written by submit_report is (review 10-21 P2-6).
 	const raw = store.peekReport(wf.id, runId) ? undefined : reportFromText(res.summary, wf.id, intents(store.root).map(i => i.id))
 	const salvaged = raw && scrubDeep(raw)
-	const report = store.peekReport(wf.id, runId) ?? salvaged
+	let report = store.peekReport(wf.id, runId) ?? salvaged
 	store.log({ event: 'worker', ...(salvaged ? { salvaged: true } : {}), workflowId: wf.id, code: wf.code, runId, sessionId, fresh: true, inputTokens: res.used?.tokensIn, calls: res.used?.modelCalls, exitCode: res.exitCode, ms: res.ms, ...(res.via ? { via: res.via } : {}), ...(res.via === 'host' ? { warm: !!res.warm } : {}), intent: report?.intent, summary: report?.summary, sources: report?.reply?.sources, commitment: report?.reply?.commitment, error: res.error, ...ran('draft', res.used) })
 	const fresh = freshRead(() => store.workflow(wf.id)) ?? wf
 	const commit = recordCommit(fresh, () => store.workflow(fresh.id), store.save.bind(store))
@@ -423,10 +380,10 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 		}
 		store.log({ event: 'worker-catalog-retry-blocked', kind: 'draft', workflowId: wf.id, code: wf.code, runId, reason: 'daily-run-limit' })
 	}
-	if (report) fresh.runFailed = undefined
+	if (report) { fresh.runFailed = undefined; fresh.statusReason = undefined; fresh.reviewAgain = undefined; if (report.reply) fresh.returnedFrom = undefined }
 	if (report && (fresh.pending.some(id => !wf.pending.includes(id)) || report.work?.closed && pendingEffects(fresh.effects).length)) {
 		const newer = fresh.pending.some(id => !wf.pending.includes(id))
-		Object.assign(fresh, { state: newer ? 'running' : 'needs_human', approved: undefined, status: newer ? 'New asks arrived during this run. Checking them next.' : 'Earlier changes are still unverified. Review them before closing this work.' })
+		Object.assign(fresh, { ...stateFields(fresh, newer ? 'running' : 'needs_human'), approved: undefined, status: newer ? 'New asks arrived during this run. Checking them next.' : 'Earlier changes are still unverified. Review them before closing this work.' })
 		store.log({ event: 'report-held', workflowId: fresh.id, reason: newer ? 'newer-ask' : 'unverified-effects' })
 		commit()
 		store.archiveReport(wf.id, runId)
@@ -441,13 +398,14 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 		store.archiveReport(wf.id, runId)
 		return
 	}
-	const into = report?.same ? others.find(o => o.code === report.same!.toUpperCase()) : undefined
+	const same = report?.same?.toUpperCase()
+	const into = same ? others.find(o => o.code === same) : undefined
 	if (into && report?.intent !== 'none' && !report?.fyi && joinInto(store, fresh, store.workflow(into.id) ?? into, true)) { store.archiveReport(wf.id, runId); return }
 	if (report?.same && !report.reply && !report.job && report.intent !== 'none') {
 		store.archiveReport(wf.id, runId)
 		store.log({ event: 'report-join-refused', code: fresh.code, target: report.same, reason: 'no eligible same-ask target' })
 		if (!separate && store.runsToday() < (cfg.dailyRuns ?? 200)) return runOne(store, src, cfg, fresh, run, probe, catalogRetried, true)
-		Object.assign(fresh, { state: 'needs_human', status: 'This is a separate ask. The AI did not draft its own answer.', question: 'What would you like to reply to this ask?' })
+		Object.assign(fresh, { ...stateFields(fresh, 'needs_human'), status: 'This is a separate ask. The AI did not draft its own answer.', question: 'What would you like to reply to this ask?' })
 		commit()
 		return
 	}
@@ -463,7 +421,7 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 	const gate = job && isReviewJob(job.key, report?.intent) ? reviewGate(store, cfg, wf, reviewRef ?? { project: '', repo: '', id: Number(/(\d+)\s*$/.exec(job.key)?.[1] ?? 0) }, undefined, !!probe?.pr) : undefined
 	const declined = gate && !gate.ok ? gate : undefined
 	// A run with no result is an error shown as one, with its time and reason, never a question to answer (queue-new #11).
-	if (!report) Object.assign(fresh, { state: 'needs_human', status: `${NAME} couldn't draft this: ${failWhy(res)}`, question: undefined, runFailed: { at: new Date().toISOString(), kind: 'other', why: failWhy(res) } })
+	if (!report) Object.assign(fresh, { ...stateFields(fresh, 'needs_human'), ...statusFields('not-finished', `${NAME} couldn't draft this: ${failWhy(res)}`), question: undefined, runFailed: { at: new Date().toISOString(), kind: 'other', why: failWhy(res) } })
 	else if (declined) {
 		fresh.intent = report.intent
 		if (declined.addMe) fresh.job = undefined
@@ -479,6 +437,7 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 	else {
 		// The home is read and written in one synchronous step, so a part's run and the home's run never overwrite each other (review part 2 #4).
 		const h = family(store, fresh, report)
+		report = prepareReportCalls(store, cfg, [fresh], report).report
 		applyReport(fresh, checked(store, cfg, report), h, canCloseReport(store, h, fresh))
 		if (completedJob?.state === 'done') fresh.context = replyFacts(jobContext, fresh.context)
 		if (fresh.holdCheckPending) await checkPreservedHold(store, src, fresh)
@@ -524,7 +483,7 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 		if (asked !== undefined && live && /^active$/i.test(live[1]) && typeof live[3] === 'number' && !sameVote(live[3], asked) && report.goalMet !== false && !fresh.question && !fresh.choices && !(h.work?.closed && fresh.state === 'done')
 			&& !(wf.prRole && !MAY_REVIEW.includes(wf.prRole))
 			&& !pendingEffects(fresh.effects).some(e => isVote(e.call) && voteValue(e.call) === asked)) {
-			Object.assign(fresh, { state: 'needs_human', question: `${fresh.asker?.name ?? 'They'} asked for your ${voteName(asked)} vote on PR ${live[0]}, but this draft proposes no vote. Answer ${fresh.code} to redo it with the vote, or skip it` })
+			Object.assign(fresh, { ...stateFields(fresh, 'needs_human'), question: `${fresh.asker?.name ?? 'They'} asked for your ${voteName(asked)} vote on PR ${live[0]}, but this draft proposes no vote. Answer ${fresh.code} to redo it with the vote, or skip it` })
 			store.log({ event: 'vote-ask-unmet', workflowId: fresh.id, code: fresh.code, pr: live[0], asked, live: live[3] })
 		}
 		// An explicit ask to book a meeting or send an invite, which the owner lets Delegate make, never ends with a reply that
@@ -533,7 +492,7 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 		const invites = (cfg.agent.effectTools ?? []).some(t => /CreateEvent/i.test(t))
 		const offered = pendingEffects(fresh.effects).some(isInvite) || !!fresh.choices?.options.some(o => o.effects?.some(isInvite))
 		if (invites && fresh.draft && asksInvite(askText) && !offered && report.goalMet !== false && !fresh.question && !(h.work?.closed && fresh.state === 'done')) {
-			Object.assign(fresh, { state: 'needs_human', question: `${fresh.asker?.name ?? 'They'} asked you to book it, but this draft sends no invite. Answer ${fresh.code} to redo it with the invite, or skip it` })
+			Object.assign(fresh, { ...stateFields(fresh, 'needs_human'), question: `${fresh.asker?.name ?? 'They'} asked you to book it, but this draft sends no invite. Answer ${fresh.code} to redo it with the invite, or skip it` })
 			store.log({ event: 'invite-ask-unmet', workflowId: fresh.id, code: fresh.code })
 		}
 	}
@@ -567,7 +526,7 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 	const arrived = freshRead(() => store.workflow(fresh.id))?.pending.filter(id => !wf.pending.includes(id)) ?? []
 	if (arrived.length) {
 		fresh.pending = [...new Set([...fresh.pending, ...arrived])]
-		Object.assign(fresh, { state: 'running', approved: undefined, sendAt: undefined, status: 'New asks arrived during this run. Checking them next.' })
+		Object.assign(fresh, { ...stateFields(fresh, 'running'), approved: undefined, sendAt: undefined, status: 'New asks arrived during this run. Checking them next.' })
 		store.log({ event: 'report-held', workflowId: fresh.id, reason: 'newer-ask' })
 	}
 	fresh.session.at = new Date().toISOString()
@@ -627,7 +586,10 @@ export function checked(store: Store, cfg: Config, r: Report): Report {
 	return q.reply ? { ...q, reply: { ...q.reply, sources: resolveEvidence(knowledgeOf(store, cfg), cfg, q.reply.sources, store.root) } } : q
 }
 
-export function applyReport(wf: Workflow, r: Report, home = wf, allowClose = true) {
+export function applyReport(wf: Workflow, r: Report, home = wf, allowClose = true, store?: Store) {
+	if (store) r = prepareReportCalls(store, store.config(), [wf], checked(store, store.config(), r)).report
+	wf.returnedFrom = undefined; wf.statusReason = undefined; wf.reviewAgain = undefined
+	if (r.reply) wf.runFailed = undefined
 	if (r.reply) { wf.ownerSend = undefined; clearHold(wf); wf.approved = undefined }
 	if (!r.reply && !wf.ownerSend && wf.approved?.text)
 		wf.ownerSend = { draft: wf.draft ?? { text: wf.approved.text, commitment: false, sources: [] }, at: wf.approved.at, askMsgId: wf.lastMsgId }
@@ -646,21 +608,21 @@ export function applyReport(wf: Workflow, r: Report, home = wf, allowClose = tru
 	if (wf.startedBy === 'owner' && fresh && home.work && home === wf) {
 		home.work.proposed = true
 		const plan = home.work.plan?.length ? ` Plan: ${home.work.plan.map(p => p.what).join('; ')}.` : ''
-		Object.assign(wf, { state: 'needs_human', draft: undefined, status: `Track this as work? ${home.work.goal}`, question: `Track this as work? Goal: ${home.work.goal}. Done when: ${home.work.doneWhen}.${plan} Say "ok ${wf.code}" to track it, or "skip ${wf.code}".` })
+		Object.assign(wf, { ...stateFields(wf, 'needs_human'), draft: undefined, status: `Track this as work? ${home.work.goal}`, question: `Track this as work? Goal: ${home.work.goal}. Done when: ${home.work.doneWhen}.${plan} Say "ok ${wf.code}" to track it, or "skip ${wf.code}".` })
 		return
 	}
-	if (wf.startedBy === 'owner' && !home.work) { Object.assign(wf, { state: 'done', status: wf.missed ? `Nothing to track: ${r.summary || 'it did not start work'}` : r.summary || 'Nothing to track', intent: 'none' }); return }
+	if (wf.startedBy === 'owner' && !home.work) { Object.assign(wf, { ...stateFields(wf, 'done'), status: wf.missed ? `Nothing to track: ${r.summary || 'it did not start work'}` : r.summary || 'Nothing to track', intent: 'none' }); return }
 	// "Needs me" never quietly closes again: with nothing drafted, the owner is asked what to say (review 10-20).
-	if (wf.needsMe && !home.work && !r.reply && !r.question && !hasDecisions(r)) { Object.assign(wf, { state: 'needs_human', question: 'You said this needs you. What should I say?', status: r.summary || 'Waiting for what you want to say' }); return }
+	if (wf.needsMe && !home.work && !r.reply && !r.question && !hasDecisions(r)) { Object.assign(wf, { ...stateFields(wf, 'needs_human'), question: 'You said this needs you. What should I say?', status: r.summary || 'Waiting for what you want to say' }); return }
 	if (settle(wf, r, home)) return
 	// Short of the goal: never closed as "no reply needed", never offered as the answer. The owner sees why and what was tried (design-spec/goal-retry.md).
 	if (r.goalMet === false && !home.work) {
 		const b = blockerOf(r.blocker)
-		Object.assign(wf, { state: 'needs_human', status: `Not finished: ${b.why}${b.tried.length ? `. Tried: ${b.tried.join('; ')}` : ''}`, learnAfter: r.reply ? undefined : wf.learnAfter, draft: r.reply ? { ...r.reply, text: greetBack(wf, r.reply.text), holding: true as const } : undefined, question: r.question, effects: undefined, revAt: new Date().toISOString() })
+		Object.assign(wf, { ...stateFields(wf, 'needs_human'), status: `Not finished: ${b.why}${b.tried.length ? `. Tried: ${b.tried.join('; ')}` : ''}`, learnAfter: r.reply ? undefined : wf.learnAfter, draft: r.reply ? { ...r.reply, text: greetBack(wf, r.reply.text), holding: true as const } : undefined, question: r.question, effects: undefined, revAt: new Date().toISOString() })
 		return
 	}
 	if ((!home.work && (r.intent === 'none' || r.state === 'done') || !r.reply && !r.question) && !hasDecisions(r)) {
-		Object.assign(wf, { state: 'done', status: r.summary || 'No reply needed', closedBy: 'nothing', fyi: r.fyi?.line.trim() && !wf.needsMe && (!wf.before || !!r.fyi.watch?.target) ? { line: r.fyi.line.trim(), weight: r.fyi.weight, at: new Date().toISOString(), ...(r.fyi.gist?.trim() ? { gist: r.fyi.gist.trim() } : {}), ...(r.fyi.watch?.target ? { watch: r.fyi.watch } : {}) } : undefined })
+		Object.assign(wf, { ...stateFields(wf, 'done'), status: r.summary || 'No reply needed', closedBy: 'nothing', fyi: r.fyi?.line.trim() && !wf.needsMe && (!wf.before || !!r.fyi.watch?.target) ? { line: r.fyi.line.trim(), weight: r.fyi.weight, at: new Date().toISOString(), ...(r.fyi.gist?.trim() ? { gist: r.fyi.gist.trim() } : {}), ...(r.fyi.watch?.target ? { watch: r.fyi.watch } : {}) } : undefined })
 		return
 	}
 	const preview = !!wf.ownerAnswer || !!wf.correction
@@ -680,7 +642,17 @@ export function applyReport(wf: Workflow, r: Report, home = wf, allowClose = tru
 	Object.assign(wf, { choices: preview || !r.choices ? undefined : { ...r.choices, other: r.choices.other ?? true }, context: r.context, meeting: r.meeting, picked: undefined })
 	wf.ownerAnswer = undefined
 	wf.status = r.summary
-	wf.state = 'needs_human'
+	Object.assign(wf, stateFields(wf, 'needs_human'))
+	if (store && r.goalMet !== false) {
+		const cfg = store.config(), v = vet(cfg, r.effects, prTarget(store, wf))
+		v.effects = voteGate(store, cfg, wf, v.effects, v.todos)
+		wf.effects = proposalEffects(v.effects, [wf])
+		if (wf.effects.length) carry(store, cfg, wf, wf.effects)
+		if (v.todos.length) {
+			wf.todos = [...new Set([...(wf.todos ?? []), ...v.todos])]
+			wf.question ??= wf.draft ? refusedAsk(wf.code, v.todos.length) : v.todos.join('\n')
+		}
+	}
 }
 
 export async function nudge(store: Store, src: Source, cfg: Config): Promise<boolean> {

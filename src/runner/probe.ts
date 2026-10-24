@@ -12,6 +12,7 @@ import { realProcs } from './jobs.ts'
 import { addMeEffect, isAddMe, MAY_REVIEW, groupQuestion, roleOn, roleWhy, unknownGroups } from './review-gate.ts'
 import { freshRead } from '../store/fs.ts'
 import { recordCommit } from './commit.ts'
+import { stateFields, statusFields } from '../core/upgrades.ts'
 
 // Checklist steps that wait on a build are checked by the runner, not the AI (R-WRK-13).
 // branch, version, repo: where the build is from, for a deploy's build check (review 10-21 P1-3).
@@ -208,7 +209,7 @@ export async function probePRs(store: Store, cfg: Config, probe: BuildProbe | un
 		// a week of the ask; a PR that could not be read is decided again now that it can be (review gate G6, G13).
 		const declined = w.reviewDecline
 		if (!subjects && declined && declined.pr === ref.id && declined.role !== 'not-asked' && (MAY_REVIEW.includes(w.prRole) || declined.role === 'unread') && /^active$/i.test(st.status) && now - Date.parse(declined.at) < 7 * 86_400_000) {
-			Object.assign(w, { state: 'running', status: MAY_REVIEW.includes(w.prRole) ? `You're a reviewer on PR ${ref.id} now; starting the review` : `PR ${ref.id} can be read again; checking whether you are a reviewer`,
+			Object.assign(w, { ...stateFields(w, 'running'), status: MAY_REVIEW.includes(w.prRole) ? `You're a reviewer on PR ${ref.id} now; starting the review` : `PR ${ref.id} can be read again; checking whether you are a reviewer`,
 				reviewDecline: undefined, question: undefined, context: w.context?.filter(c => c.label !== 'Not reviewing'), effects: (w.effects ?? []).filter(e => !isAddMe(e)), pending: w.pending.length ? w.pending : w.msgIds.slice(-1) })
 			store.log({ event: 'review-gate-reopened', code: w.code, pr: ref.id, role: w.prRole, was: declined.role })
 			commitFor(w)()
@@ -232,7 +233,7 @@ export async function probePRs(store: Store, cfg: Config, probe: BuildProbe | un
 		const asked = Date.parse(store.thread(w.id).filter(m => !m.byOwner).at(-1)?.at ?? w.createdAt)
 		const closedNow = /completed|abandoned/i.test(st.status) && (st.closedAt ? Date.parse(st.closedAt) > asked : w.prStatus !== undefined && !/completed|abandoned/i.test(w.prStatus))
 		const stale = !!w.draft && w.prDraft !== w.prRead && (!!w.prDraft || !receipt && mine !== undefined && mine >= 5 && approvalMention(w.draft.text))
-		const ownerWriting = w.draft?.byOwner && mine !== undefined && mine < 5 && !closedNow && approvalReplyMatches(w.draft.text, mine, ref.id)
+		const ownerWriting = w.draft?.byOwner && mine !== undefined && mine < 5 && !closedNow && (!approvalMention(w.draft.text) || approvalReplyMatches(w.draft.text, mine, ref.id))
 		const reason = receipt && !w.sent || w.draft && w.prDraft === w.prRead || ownerWriting ? undefined
 			: closedNow ? `PR ${ref.id} was ${/completed/i.test(st.status) ? 'completed' : 'abandoned'}`
 			: approvedNow || changed ? `You ${(VOTE[String(mine)] ?? (id => `voted on PR ${id}`))(ref.id)} in Azure DevOps`
@@ -245,10 +246,10 @@ export async function probePRs(store: Store, cfg: Config, probe: BuildProbe | un
 		if (active(home)) {
 			step(home, reason, { ref: `pr:${ref.id}:${st.status}:${mine}`, news: true })
 			if (home === w && canCloseApproval(store, home) && (approvedNow || closedNow)) closeFamily(store, realProcs, home, reason)
-			else Object.assign(w, { state: 'running', status: `PR checked: ${reason}; checking the remaining ask`, pending: w.pending.length ? w.pending : w.msgIds.slice(-1) })
+			else Object.assign(w, { ...stateFields(w, 'running'), status: `PR checked: ${reason}; checking the remaining ask`, pending: w.pending.length ? w.pending : w.msgIds.slice(-1) })
 			if (home !== w) store.save(home)
-		} else if (stale && !approvedNow && !closedNow || reReviewAsk(w.lastAsk ?? '') || !approvalAsk(w.lastAsk ?? '') && !closedNow || /\b(?:and|then|also|after|before|plus)\b|[;&]/i.test(w.lastAsk ?? '')) Object.assign(w, { state: 'running', status: `PR checked: ${reason}; checking the remaining ask`, pending: w.pending.length ? w.pending : w.msgIds.slice(-1) })
-		else Object.assign(w, { state: 'done', status: `Nothing needed: ${reason}`, pending: [], closedBy: 'nothing' })
+		} else if (stale && !approvedNow && !closedNow || reReviewAsk(w.lastAsk ?? '') || !approvalAsk(w.lastAsk ?? '') && !closedNow || /\b(?:and|then|also|after|before|plus)\b|[;&]/i.test(w.lastAsk ?? '')) Object.assign(w, { ...stateFields(w, 'running'), status: `PR checked: ${reason}; checking the remaining ask`, pending: w.pending.length ? w.pending : w.msgIds.slice(-1) })
+		else Object.assign(w, { ...stateFields(w, 'done'), status: `Nothing needed: ${reason}`, pending: [], closedBy: 'nothing' })
 		store.log({ event: 'pr-moved', code: w.code, pr: ref.id, reason })
 		commitFor(w)()
 		n++
@@ -359,13 +360,13 @@ export async function recheckPr(store: Store, w: Workflow, probe?: BuildProbe): 
 	if (/completed|abandoned/i.test(st.status)) {
 		setEffects(store, w, (es = []) => es.map(e => (isVote(e.call) && !e.done ? { ...e, off: true } : e)))
 		const rest = pendingEffects(w.effects).length, state = st.status.toLowerCase()
-		w.status = noVoteNeeded(id, state)
+		Object.assign(w, statusFields('refused', noVoteNeeded(id, state)))
 		// The reply was written counting on the vote, so it is quoted before it goes without it (review 10-21 P2-10).
 		return `Not done ${code}: PR ${id} is ${state}, so no vote is needed. The reply was written counting on the vote; it says: "${w.draft?.text ?? ''}". Say "ok ${code}" to ${rest ? 'make the other changes and send it as it is' : 'send it as it is'}, "edit ${code}: <text>" to change it, or "skip ${code}".`
 	}
 	const head = left.find(e => isVote(e.call))?.head
 	if (head && !sameHead(st.head, head)) {
-		Object.assign(w, { question: reviewAgain(code, `PR ${id} changed since your review (new commits).`), status: `PR ${id} changed since your review`, revAt: new Date().toISOString() })
+		Object.assign(w, { question: reviewAgain(code, `PR ${id} changed since your review (new commits).`), status: `PR ${id} changed since your review`, reviewAgain: { pr: id, head: st.head ?? head, at: new Date().toISOString() }, revAt: new Date().toISOString() })
 		return `Not done ${code}: ${reviewAgain(code, `PR ${id} changed since your review (new commits).`)} Nothing was changed or sent.`
 	}
 	if (!before.length) {
@@ -510,7 +511,7 @@ function redraw(store: Store, w: Workflow, why: string) {
 	const job = w.job ? store.job(w.job) : undefined
 	setEffects(store, w, (es = []) => es.map(x => (isDeploy(x.call) && !x.done ? { ...x, off: true } : x)))
 	if (job) { Object.assign(job, { asks: [...job.asks, `${NAME}: not deployed: ${why}. Read the rings, the PR, and its build again, and propose again.`], state: 'queued', purpose: 'work', error: undefined }); store.saveJob(job) }
-	Object.assign(w, { state: job ? 'waiting_on_task' : 'needs_human', status: `Not deployed: ${why}. Drawing it again`, waitingSince: new Date().toISOString(), approved: undefined })
+	Object.assign(w, { ...stateFields(w, job ? 'waiting_on_task' : 'needs_human'), status: `Not deployed: ${why}. Drawing it again`, waitingSince: new Date().toISOString(), approved: undefined })
 	const home = homeOf(store, w)
 	if (home.work && step(home, `Not deployed: ${why}`) && home !== w) store.save(home)
 }

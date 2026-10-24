@@ -15,6 +15,9 @@ export type CardUi = {
 	pending?: { submissionId: string; action: string; phase: 'submitting' | 'queued' | 'unknown' | 'unreached'; at?: number }; result?: Receipt; error?: string
 	lastAction?: string; submittedInput?: Intent['input']
 	submittedForm?: SubmittedForm; formConsumed?: string
+	// "Left for you" (#44(2)): the to-dos he ticked, by their place in the list; and the ones he marked done, held here for 6 s so Undo
+	// sends nothing (PM 18:40). Kept with the card's revision, as every other unsent choice is.
+	ticked?: number[]; marking?: { picks: number[]; texts: string[]; until: number }
 }
 type Pinned = { rev: string; snapshot: Snapshot; actionRev?: string }
 export type DataState = {
@@ -34,7 +37,7 @@ export function pinnedPlacements(state: Pick<DataState, 'pinned'>): Record<strin
 	}
 	return rows
 }
-export const dirty = (ui: CardUi) => !!(ui.editing || ui.composing || ui.interacting || ui.focusedField || ui.feedbackKind || ui.feedback || ui.watchText !== undefined || ui.watchUntil !== undefined || ui.watchBy !== undefined || ui.answer || ui.ask || ui.report || ui.pending || ui.picks || ui.excluded || ui.other)
+export const dirty = (ui: CardUi) => !!(ui.editing || ui.composing || ui.interacting || ui.focusedField || ui.feedbackKind || ui.feedback || ui.watchText !== undefined || ui.watchUntil !== undefined || ui.watchBy !== undefined || ui.answer || ui.ask || ui.report || ui.pending || ui.picks || ui.excluded || ui.other || ui.ticked?.length || ui.marking)
 function share<T>(before: Record<string, T>, after: Record<string, T>): Record<string, T> {
 	let equal = Object.keys(before).length === Object.keys(after).length
 	const result: Record<string, T> = {}

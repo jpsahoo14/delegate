@@ -20,18 +20,11 @@ import { knowledgeOf } from '../runner/proposals.ts'
 import { sourceFor } from '../adapters/registry.ts'
 import type { Source } from '../adapters/source.ts'
 import { NAME } from '../brand.ts'
+import { readBack, RuleSchema, voteLimitNotice } from '../core/capabilities.ts'
+import { writeRules } from '../store/rules.ts'
 
 export const STEPS = ['storage', 'source', 'agent', 'tools', 'knowledge', 'profile', 'rules', 'start'] as const
 export type Step = (typeof STEPS)[number]
-
-const RuleSchema = z.object({
-	id: z.string(), text: z.string(),
-	who: z.object({ accounts: z.array(z.object({ id: z.string().min(1), name: z.string() })).optional(), group: z.enum(['team', 'org', 'outside']).optional() })
-		.refine(w => !!w.accounts?.length || !!w.group, 'A rule must name people by account ID, or a group.'),
-	when: z.object({ intent: z.string().optional(), chat: z.string().optional().describe('A chat ID, or "direct" for any one-to-one chat with these people (no chat ID needed)'), minConfidence: z.enum(['high', 'medium']).optional() }),
-	then: z.enum(['send', 'draft', 'ack', 'ignore', 'shortcut']),
-	shortcut: z.object({ goal: z.string() }).optional(),
-})
 
 export const VALUES = {
 	storage: z.object({ root: z.string().min(1).optional().describe(`Leave out: the tool picks the work OneDrive, or the folder that already has ${NAME} data`) }),
@@ -49,7 +42,7 @@ export const VALUES = {
 	}).refine(v => !(v.effectTools ?? []).some(t => (v.tools ?? []).includes(toolOf(t))), 'A write tool cannot also be a read tool: workers would get it before the owner approves.'),
 	knowledge: z.object({ folders: z.array(z.string().min(1)).optional(), none: z.boolean().optional() }),
 	profile: z.object({ markdown: z.string().min(20).optional(), aliases: z.array(z.string().min(2)).optional().describe('Other names people call the owner in chat, such as initials, from their answer') }),
-	rules: z.object({ text: z.string(), compiled: z.array(RuleSchema) }).partial(),
+	rules: z.object({ text: z.string(), compiled: z.array(RuleSchema), preview: z.boolean().describe('First return the code-built read-back without saving; save only after the owner confirms it.') }).partial(),
 	start: z.object({ background: z.boolean().default(true), takeover: z.boolean().optional(), alwaysOn: z.boolean().optional().describe('This machine never sleeps, such as a server or a desktop in the cloud') }),
 }
 
@@ -99,6 +92,10 @@ export async function save(step: Step, raw: unknown, deps: Deps = {}): Promise<s
 	const missing = (NEEDS[step] ?? []).filter(s => !progress().done[s])
 	if (missing.length) throw new Error(`Do ${missing.join(', ')} first.`)
 	const v = VALUES[step].parse(raw) as never
+	if (step === 'rules') {
+		const rules = v as z.infer<typeof VALUES.rules>
+		if (rules.preview) return [...(rules.compiled ?? []).map(readBack), voteLimitNotice(rules.text ?? ''), 'Nothing saved. Confirm this read-back with the owner before saving.'].filter(Boolean).join('\n')
+	}
 	const summary = await apply(step, v, deps)
 	const p = progress()
 	const root = readJson<{ root?: string }>(join(LOCAL_DIR, 'local.json'), {}).root
@@ -193,10 +190,7 @@ async function apply(step: Step, v: never, deps: Deps): Promise<string> {
 			const r0 = v as z.infer<typeof VALUES.rules>
 			if (r0.text === undefined && r0.compiled === undefined) return existsSync(join(store.root, 'rules.compiled.json')) ? 'rules kept' : (writeJson(join(store.root, 'rules.compiled.json'), { schema: 1, rules: [], confirmedAt: new Date().toISOString() }, machine()), writeFileSync(join(store.root, 'rules.md'), 'None.\n'), 'no rules: every reply waits for your ok')
 			const r = { text: r0.text ?? '', compiled: r0.compiled ?? [] }
-			writeFileSync(join(store.root, 'rules.md'), r.text.trim() + '\n')
-			writeJson(join(store.root, 'rules.compiled.json'), { schema: 1, rules: r.compiled, confirmedAt: new Date().toISOString() }, machine())
-			store.saveHeldRules({})
-			return `${r.compiled.length} confirmed rule(s)`
+			return writeRules(store, r.text, r.compiled)
 		}
 		case 'start': {
 			const { background, takeover, alwaysOn } = v as z.infer<typeof VALUES.start>

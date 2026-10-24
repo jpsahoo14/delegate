@@ -26,7 +26,7 @@ export function suggestions(store: Store): string[] {
 	const started = store.chats().startedAt
 	if (!started || Date.now() - Date.parse(started) < 7 * 86_400_000) return []
 	// A drafting style covers no sender: it never hides the "let these go by themselves" suggestion (edit habits guard).
-	const ruled = new Set(store.rules().filter(r => !r.style).flatMap(r => r.who.accounts?.map(a => `${a.id}|${r.when.intent ?? ''}`) ?? []))
+	const ruled = new Set(store.rules().filter(r => !r.off && !r.style).flatMap(r => r.who.accounts?.map(a => `${a.id}|${r.when.intent ?? ''}`) ?? []))
 	const by = new Map<string, { who: Person; intent: string; sent: number; unchanged: number }>()
 	for (const e of store.logs(30).filter(e => e.event === 'sent' && e.asker && !String(e.approvedBy ?? '').startsWith('rule:'))) {
 		const who = e.asker as Person, intent = String(e.intent ?? 'other'), key = `${who.id}|${intent}`

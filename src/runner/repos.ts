@@ -2,7 +2,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { isAbsolute, join, resolve } from 'node:path'
 import type { Config, Job, Workflow } from '../core/types.ts'
-import { LOCAL_DIR } from '../store/state.ts'
+import { LOCAL_DIR } from '../paths.ts'
 import { assertTestSafe, readJson, writeJson } from '../store/fs.ts'
 
 // Work and jobs name a repo by its remote, never by a path or a web URL; each machine maps remotes to its own clones in
@@ -122,4 +122,10 @@ export function visibleCloneTodos(cfg: Config, wf: Workflow, job: Job | undefine
 	if (!cachedCloneExists && !readsThroughADO) return wf.todos
 	const template = cloneTodo(cfg, remote, machine)
 	return wf.todos.filter(todo => todo !== template)
+}
+
+export function visibleCloneKept(cfg: Config, wf: Workflow, job: Job | undefined, machine: string): Workflow['kept'] {
+	if (!wf.kept?.length) return wf.kept
+	const visible = new Set(visibleCloneTodos(cfg, { ...wf, todos: wf.kept.map(todo => todo.text) }, job, machine))
+	return wf.kept.filter(todo => !!todo.done || visible.has(todo.text))
 }

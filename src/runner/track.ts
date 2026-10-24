@@ -1,3 +1,4 @@
+import { stateFields, WORKFLOW_SCHEMA } from '../core/upgrades.ts'
 import { randomUUID } from 'node:crypto'
 import type { Follow, Job, Workflow } from '../core/types.ts'
 import { ulid } from '../core/ids.ts'
@@ -39,7 +40,7 @@ export function track(store: Store, t: TrackInput, session?: string, made?: (cod
 		: `Check ${t.target} and report its current state in one line`
 	const told = t.link ? `${goal}. It came from this Teams message: ${t.link}` : goal
 	const wf: Workflow = {
-		schema: 1, id: ulid(), code: store.nextCode(), kind: 'tracker', state: 'waiting_on_task', key: { type: 'thread', id: '' },
+		schema: WORKFLOW_SCHEMA, id: ulid(), code: store.nextCode(), kind: 'tracker', ...stateFields(undefined, 'waiting_on_task'), key: { type: 'thread', id: '' },
 		chat: { id: '', name: 'Watching', test: false }, asker: { id: cfg.owner.id, name: 'You' }, session: { agent: cfg.agent.flavor, id: session ?? randomUUID() },
 		lastMsgId: '', pending: [], msgIds: [], lastAsk: `Watch ${t.target} until ${until}`, status: `Watching ${t.target} every ${every} min`, waitingSince: now, newCount: 0, createdAt: now, updatedAt: now,
 		...(by ? { watchBy: by } : {}), ...(t.from ? { watchFrom: t.from } : {}),
@@ -166,7 +167,7 @@ export function dueTrackers(store: Store, now = Date.now()) {
 			Object.assign(job, { every: undefined, nextAt: undefined }); store.saveJob(job)
 			// The end of a watch is not the end of the work: the owner decides what next (review P0.2).
 			if (work) { watchEnded(item, `The watch on ${watchSubject(job)} ended after ${FOLLOW_DAYS} days`); store.save(item); continue }
-			Object.assign(item, { state: 'done', status: item.watchBy ? `Stopped watching: it was due by ${item.watchBy}. Say "watch …" to start again.` : `Stopped watching after ${FOLLOW_DAYS} days. Say "watch …" to start again.` }); store.save(item)
+			Object.assign(item, { ...stateFields(item, 'done'), status: item.watchBy ? `Stopped watching: it was due by ${item.watchBy}. Say "watch …" to start again.` : `Stopped watching after ${FOLLOW_DAYS} days. Say "watch …" to start again.` }); store.save(item)
 			continue
 		}
 		if (!work && item.state !== 'waiting_on_task') continue

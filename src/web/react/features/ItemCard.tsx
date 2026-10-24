@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState, type CSSProperties } from 'react'
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { chipHover } from '../domain/hover.ts'
 import { Button, Hint } from '../components/ui/button.tsx'
 import { useAction, useCardPresentation, useEdit, useItemBusy, useShowLatest, useSnapshot } from '../data/hooks.ts'
 import type { Entities, Intent, Item, Snapshot } from '../domain/contracts.ts'
+import { IMAGE_TOKEN } from '../domain/contracts.ts'
 import type { CardUi } from '../data/store.ts'
 import { ActionButton, ActionState } from './ActionButton.tsx'
 import { NAME } from '../brand.ts'
@@ -14,6 +15,7 @@ import { SentTime } from './SentTime.tsx'
 import './card.css'
 import { useScreenNavigation } from '../classic/navigation.tsx'
 import { useSetting } from '../data/screens.ts'
+import { markTodos, undoMark } from '../data/todo-marks.ts'
 
 // The card (spec S1, design-spec/mockups/card-redesign.html): the same blocks in New's opened row and Classic's Needs-you card.
 // 1 their message · 2 what you'll send · 3 what happens when you send · 4 actions · 5 Details.
@@ -30,13 +32,22 @@ export function sentAt(item: Item): { at: string; added: boolean } {
 // The row shows up to 200 of its characters, so the page never holds more than 2,000 of a huge message.
 const HUGE = 20_000, SHOWN = 2_000, HUGE_SHOWN = 1_800
 export const messageText = (text: string) => text.replace(/(\[image[^\]\n]*?)\s+inline:[0-9a-f]{16,40}(?=\])/gi, '$1')
+// An image in their message is a chip (L3c): "🖼 Image · Open in Teams ↗", opening that message in Teams when there is a link.
+function withImages(text: string, teams?: string) {
+	const parts = text.split(IMAGE_TOKEN)
+	if (parts.length === 1) return text
+	return parts.flatMap((part, n) => n === 0 ? [part] : [teams
+		? <a key={n} className="chip card-image" href={teams} target="_blank" rel="noopener noreferrer" title="Open this message in Teams, in a new tab.">{IMAGE_TOKEN} · Open in Teams <Icon name="ext" /></a>
+		: <span key={n} className="chip card-image">{IMAGE_TOKEN}</span>, part])
+}
 export function MessageBubble({ text: raw, teams, open, onToggle }: { text: string; teams?: string; open: boolean; onToggle: (open: boolean) => void }) {
-	const text = messageText(raw)
-	if (text.length > HUGE) return <div className="card-bubble-wrap"><blockquote className="card-bubble scroll">{text.slice(0, HUGE_SHOWN)}…</blockquote>
+	// L7c: a run of blank lines reads as one before the clamp, so a short message isn't cut to two visible lines.
+	const text = messageText(raw).replace(/\n[ \t]*(?:\n[ \t]*)+\n/g, '\n\n')
+	if (text.length > HUGE) return <div className="card-bubble-wrap"><blockquote className="card-bubble scroll">{withImages(text.slice(0, HUGE_SHOWN), teams)}…</blockquote>
 		<p className="muted">The rest is too long to show here ({text.length.toLocaleString()} characters).{teams && <> <a href={teams} target="_blank" rel="noopener noreferrer">Open in Teams <Icon name="ext" /></a></>}</p></div>
 	const long = text.length > 600 || text.split('\n').length > 6
-	if (!long) return <blockquote className="card-bubble">{text}</blockquote>
-	return <div className="card-bubble-wrap"><blockquote className={`card-bubble ${open ? 'scroll' : 'clamp'}`}>{text}</blockquote>
+	if (!long) return <blockquote className="card-bubble">{withImages(text, teams)}</blockquote>
+	return <div className="card-bubble-wrap"><blockquote className={`card-bubble ${open ? 'scroll' : 'clamp'}`}>{withImages(text, teams)}</blockquote>
 		<button type="button" className="link-button" onClick={() => onToggle(!open)} aria-expanded={open}>{open ? 'Show less' : `Show the whole message (${text.length.toLocaleString()} characters)`}</button></div>
 }
 const clip = (text: string) => text.length > SHOWN ? `${text.slice(0, SHOWN)}…` : text
@@ -63,6 +74,10 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 	const edit = readOnly ? (patch: Partial<CardUi>) => setLocalUi(previous => ({ ...previous, ...patch })) : liveEdit
 	const chatEdit = useEditInChat(), detailsCopy = useCopyDetails()
 	const pendingAsk = !!item && !!entities && item.noteIds.some(id => entities.notes[id]?.answer === undefined)
+	// A working card says when it is taking longer than usual (PM 19:50: after 3 minutes), so it reads the clock while it works.
+	const [now, setNow] = useState(Date.now), working = !!item?.working
+	useEffect(() => { if (!working) return; const timer = setInterval(() => setNow(Date.now()), 15_000); return () => clearInterval(timer) }, [working])
+	const long = (since?: string) => !!since && now - Date.parse(since) >= 3 * 60_000
 	useEffect(() => {
 		const target = inline ? article.current?.closest('.now-row') : article.current
 		if (!readOnly) { target?.scrollIntoView({ block: 'start' }); article.current?.focus({ preventScroll: true }) }
@@ -87,27 +102,28 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 	const primary = report ?? (boxMode === 'answer' ? answerAction : boxMode === 'reply' ? replyPrimary : declared)
 	const fold = (key: string, open: boolean) => { if (ui.folds?.[key] !== open) edit({ folds: { ...ui.folds, [key]: open } }) }
 	const editable = !!draft && actions.some(action => action.kind === 'send-edit')
-	const replyText = ui.editText ?? draft?.sendText ?? draft?.text ?? ''
-	const input: Intent['input'] = primary?.kind === 'send-edit' ? { text: replyText, excluded: ui.excluded } :
+	// L7b: the configured marker is a fixed, muted suffix under the box ("Teams will show: …"), not text he can delete or move. The box
+	// holds the reply without it, and Send your version adds it back once, as the box with the marker used to send.
+	const marker = draft?.marker && draft.sendText?.endsWith(draft.marker) ? draft.marker : undefined
+	const body = marker ? draft!.sendText!.slice(0, -marker.length).trimEnd() : draft?.sendText ?? draft?.text ?? ''
+	const signed = (text: string) => marker && text.trim() && !text.trimEnd().endsWith(marker) ? `${text.trimEnd()}\n\n${marker}` : text
+	const replyText = ui.editText ?? body
+	const input: Intent['input'] = primary?.kind === 'send-edit' ? { text: signed(replyText), excluded: ui.excluded } :
 		primary?.kind === 'pick' ? { picks: ui.picks ?? item.picked ?? [] } :
 			primary?.input === 'text' ? { text: ui.answer ?? '' } : { excluded: ui.excluded }
 	const invalid = primary?.input === 'text' && primary.kind !== 'send-edit' && !ui.answer?.trim() || primary?.kind === 'pick' && !input.picks?.length ||
-		primary?.kind === 'send-edit' && !input.text?.trim()
+		primary?.kind === 'send-edit' && !replyText.trim()
+	// L1b: Send stays off until he changes the reply (editing makes Send your version the primary); the line's sentence is its hover.
+	const voteBlocked = !!item.voteGap && primary?.kind === 'approve'
 	// Answering on 2a after editing the reply: the send next to Answer sends the edit, never the original draft.
 	const editedAside = boxMode === 'answer' && ui.editing && sendEdit ? sendEdit : undefined
 	const sent = sentAt(item), replyWhere = chat.group ? `in ${chat.name}` : 'in your 1:1'
 	const avatar: CSSProperties & { '--hue': number } = { '--hue': person.hue }
 	const continueAction = actions.find(action => action.kind === 'continue')
 
-	// Block 1: their message, with its chat and time, the thread in place, and every warning (never folded).
-	const changeWarns = item.changeIds.flatMap(id => entities.changes[id].meaning?.filter(part => part.warn).map(part => part.text) ?? [])
-	const warnings = [
-		draft?.commitment && 'This reply makes a commitment. Check it before sending.',
-		item.newCount > 0 && `${first} wrote again after this draft${item.newCount > 1 ? ` (${item.newCount} new messages)` : ''}.`,
-		...(item.context ?? []).filter(context => context.tone === 'warn').map(context => `${item.prLabel ? `${item.prLabel} · ` : ''}${context.label}: ${context.text}`),
-		...changeWarns,
-		item.attention,
-	].filter((line): line is string => !!line)
+	// Block 1: their message, with its chat and time, the thread in place, and the one warn line card-state chose (L4): every other
+	// reason is in Details › Why it waited. Nothing else here draws a warn line.
+	const warnings = [item.attention].filter((line): line is string => !!line && line !== item.voteGap?.text)
 	const earlier = item.thread.length
 	const block1 = <section className="card-block card-message" aria-label={`${person.name}'s message`}>
 		<div className="card-head"><span className="card-avatar" style={avatar} aria-hidden="true">{person.initials}</span>
@@ -121,25 +137,28 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 			<Hint text="Show the earlier messages of this conversation here. Nothing changes in Teams."><summary>Show {earlier} earlier message{earlier === 1 ? '' : 's'}</summary></Hint>
 			<ol className="thread-list">{item.thread.map((message, n) => <li key={n}><strong>{message.who}</strong> <time dateTime={message.at}>{when(message.at)}</time>			<p>{clip(messageText(message.text))}</p></li>)}</ol>
 		</details>}
-		{item.earlier && <p className="card-earlier"><Icon name="clock" /> {item.earlier}</p>}
-		{newer && <p role="status" className="warnline"><Icon name="warn" /> Changed since you looked. Your current text is kept. <Button variant="outline" onClick={showLatest} disabled={busy}>Show new version</Button></p>}
-		{warnings.map((line, n) => <p key={n} className="warnline"><Icon name="warn" /> {line}</p>)}
+		{/* L7d: every warn line shares one box, one line each (L4 leaves at most one from the card's state). */}
+		{(newer || warnings.length > 0 || placement?.chips.some(chip => chip.kind === 'retrying')) && <div className="warnbox">
+			{newer && <p role="status" className="warnline"><Icon name="warn" /> Changed since you looked. Your current text is kept. <Button variant="outline" onClick={showLatest} disabled={busy}>Show new version</Button></p>}
+			{warnings.map((line, n) => <p key={n} className="warnline"><Icon name="warn" /> {line}</p>)}
+			{placement?.chips.some(chip => chip.kind === 'retrying') && <p className="warnline">Retrying{placement.nextText ? `: ${placement.nextText.replace('{at}', placement.next?.at ? when(placement.next.at) : 'soon')}` : ''}</p>}
+		</div>}
 		{item.openOn && item.mode !== 'in-terminal' && <p className="card-status">Open in a terminal on {item.openOn} · {NAME} waits until you close it</p>}
 		{item.before && <Hint text={chipHover('before')}><p className="chip">From before setup</p></Hint>}
-		{placement?.chips.some(chip => chip.kind === 'retrying') && <p className="warnline">Retrying{placement.nextText ? `: ${placement.nextText.replace('{at}', placement.next?.at ? when(placement.next.at) : 'soon')}` : ''}</p>}
 	</section>
 
 	// A run that gave no result (queue-new #11): the reason and its time, never a question; Try again is the primary, or write it yourself.
 	const writeOwn = actions.find(action => action.kind === 'write-own')
+	const writeBox = writeOwn && !readOnly && ui.editing && <><Field code={code} rev={item.rev} field="answer" label={`Your reply to ${first}, ${replyWhere}`} value={ui.answer ?? ''} edit={edit} rows={4} />
+		<div className="action-bar"><ActionButton action={writeOwn} label="Send your reply" input={{ text: ui.answer ?? '' }} disabled={!ui.answer?.trim()} disabledReason="Write your reply first." />
+			<Button variant="outline" onClick={() => edit({ editing: false })}>Cancel</Button></div></>
 	const reopen = actions.find(action => action.kind === 'reopen')
 	const failed = item.runFailed && <section className="card-block card-failed">
 		<p role="status" className="warnline"><Icon name="warn" /> {item.runFailed.review && item.prLabel ? `Couldn't finish the review of ${item.prLabel.replace(/ · .*$/, '')}` : `${NAME} couldn't draft this`} at {when(item.runFailed.at)}: {item.runFailed.why}.</p>
 		{item.runFailed.review && <p><a href={item.runFailed.review} target="_blank" rel="noreferrer">Review it yourself</a> <span className="muted">opens the PR</span></p>}
 		{item.runFailed.toolsOff && !readOnly && <ToolsOff />}
 		{item.runFailed.tried?.length ? <details className="card-tried"><summary>What it tried ({item.runFailed.tried.length})</summary><ul>{item.runFailed.tried.map((route, n) => <li key={n}>{route}</li>)}</ul></details> : null}
-		{writeOwn && !readOnly && ui.editing && <><Field code={code} rev={item.rev} field="answer" label={`Your reply to ${first}, ${replyWhere}`} value={ui.answer ?? ''} edit={edit} rows={4} />
-			<div className="action-bar"><ActionButton action={writeOwn} label="Send your reply" input={{ text: ui.answer ?? '' }} disabled={!ui.answer?.trim()} disabledReason="Write your reply first." />
-				<Button variant="outline" onClick={() => edit({ editing: false })}>Cancel</Button></div></>}
+		{writeBox}
 	</section>
 
 	// What the work found (info facts), named by its PR when it comes from a PR job (queue-new #8, #10 c); warnings stay in block 1.
@@ -222,8 +241,11 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 		{draft && boxMode !== 'answer' && <section className="card-block reply-section">
 			{editable ? <Field code={code} rev={item.rev} field="editText" rows={Math.min(14, Math.max(3, Math.ceil(replyText.length / 70) + replyText.split('\n').length))}
 				label={draft.holding ? `Holding reply to ${first}, ${replyWhere} · says you are on it; not the answer yet` : `Your reply to ${first}, ${replyWhere}`}
-				value={replyText} edit={edit} patch={value => ({ editText: value, editing: value !== (draft.sendText ?? draft.text) })} />
+				value={replyText} edit={edit} patch={value => ({ editText: value, editing: value !== body })} />
 				: <><h3>{draft.holding ? `Holding reply to ${first}` : `Your reply to ${first}, ${replyWhere}`}</h3><div className="draft">{draft.sendText ?? draft.text}</div></>}
+			{editable && marker && <p className="muted card-marker">Teams will show: {marker}</p>}
+			{/* L1b (joint C2): the vote-claim line is about his text, so it sits right under the editor, not in block 1. */}
+			{item.voteGap && <p className="warnline card-vote-claim" role="note"><Icon name="warn" /> {item.voteGap.text}</p>}
 			{replyText.length > 400 && <p className="muted reply-count">{replyText.length.toLocaleString()} characters · the whole reply is shown above before you send</p>}
 			{draft.preview && !ui.editing && <p className="muted"><Icon name="spark" />{' '}{item.picked?.length ? 'The reply for your pick' : 'New draft from your answer'}. Not sent yet.</p>}
 			{boxMode === 'reply' && <p className="also-asks">💬 <strong>{NAME} also asks:</strong> {item.question}{' '}
@@ -235,7 +257,10 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 	// Block 3: what else happens when you send. Changes (each can be left out), to-dos you keep, and a watch.
 	const handled = item.effectIds?.filter(id => !item.changeIds.includes(id)) ?? []
 	const keep = draft && (editable || readOnly) ? item.todos ?? [] : []
-	const block3 = (item.changeIds.length > 0 || keep.length > 0 || !!item.follow) && <section className="card-block card-after">
+	// #28 / L1b: a PR reply with no vote proposed says so, so a reply that reads like an approval can't look like one.
+	const replyPr = prNumber ?? (Number(/^PR (\d+)/.exec(item.prLabel ?? '')?.[1]) || undefined)
+	const noVote = !!draft && editable && !!replyPr && !vote
+	const block3 = (item.changeIds.length > 0 || keep.length > 0 || !!item.follow || noVote) && <section className="card-block card-after">
 		<h3>{draft ? `When you send, ${NAME} will also` : item.changeIds.some(id => entities.changes[id].state === 'approved') ? 'Approved changes' : `When you approve, ${NAME} will`}</h3>
 		{item.changeIds.map((id, index) => {
 			const change = entities.changes[id], excluded = ui.excluded?.includes(change.n) ?? false
@@ -251,12 +276,25 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 		})}
 		{keep.map(todo => <p key={todo}><Icon name="check" /> Keep on your to-do list: {todo}</p>)}
 		{item.follow && <p><Icon name="clock" /> Watch {item.follow.target} until {item.follow.until}</p>}
+		{noVote && <p className="no-vote">On PR {replyPr} when you send: No vote</p>}
 	</section>
-	const earlierTodos = todoIds.length > 0 && <section className="card-block"><h3>Still to do from an earlier reply</h3><ul>{todoIds.map(id => <li key={id}>{entities.todos[id].text}</li>)}</ul>
-		{!readOnly && [...new Set(todoIds.map(id => `${entities.todos[id].code}/todo-done`))].filter(id => id !== primary?.id && entities.actions[id]).map(id => {
-			const action = entities.actions[id]
-			return <div key={id}><ActionButton action={action} /><ActionState item={action.item} rev={action.rev} /></div>
-		})}</section>
+	// "Left for you" (#44(2), PM 18:40; designer step 7 §4): the to-dos only he can do. One tick per line, "Tick all" at 2+, and one
+	// "I've done these (N)" that marks exactly the ticked lines after a 6 s Undo; it never closes the work and sends nothing.
+	const todoAction = !readOnly && todoIds.length ? entities.actions[`${code}/todo-done`] : undefined
+	const ticked = ui.ticked ?? [], marking = ui.marking
+	const doneButton = (lead: boolean) => todoAction && <Hint text={ticked.length ? "Records them here as done. Delegate doesn't do them and nothing is sent." : "Tick what you've done first"}>
+		<Button variant={lead ? 'default' : 'outline'} data-primary={lead || undefined} data-action-kind="todo-done" disabled={!ticked.length || newer || busy}
+			onClick={() => { const picks = [...ticked].sort((a, b) => a - b); markTodos(todoAction, item.rev, picks, picks.map(n => entities.todos[todoIds[n - 1]]?.text ?? ''), act) }}>
+			I've done these{ticked.length ? ` (${ticked.length})` : ''}</Button></Hint>
+	const shownTodos = todoIds.map((id, n) => ({ id, n: n + 1 })).filter(todo => !marking?.picks.includes(todo.n))
+	const earlierTodos = (todoIds.length > 0 || marking) && <section className="card-block card-left-for-you" aria-label="Left for you"><h3>Left for you</h3>
+		<p className="muted">Only you can do these. Ticking one off records it here; Delegate doesn't do it and nothing is sent.</p>
+		{!readOnly && shownTodos.length >= 2 && <button type="button" className="link-button" onClick={() => edit({ ticked: ticked.length === shownTodos.length ? [] : shownTodos.map(todo => todo.n) })}>Tick all</button>}
+		<ul className="todo-ticks">{shownTodos.map(({ id, n }) => <li key={id}>{readOnly ? entities.todos[id].text : <label><input type="checkbox" checked={ticked.includes(n)} disabled={newer || busy}
+			onChange={event => edit({ ticked: event.currentTarget.checked ? [...ticked, n] : ticked.filter(x => x !== n) })} /> {entities.todos[id].text}</label>}<TodoSource todo={entities.todos[id]} /></li>)}
+			{marking?.texts.map((text, n) => <li key={`done-${n}`} className="todo-done-line" role="status"><Icon name="check" /> Done: {text} · <button type="button" className="link-button" onClick={() => undoMark(code, item.rev)}>Undo</button></li>)}</ul>
+		{primary?.kind !== 'todo-done' && shownTodos.length > 0 && <div className="action-bar">{doneButton(false)}</div>}
+		{todoAction && <ActionState item={todoAction.item} rev={todoAction.rev} />}</section>
 
 	// An approved batch that partly ran: one plain line above the actions says what was done and what was not, and why (queue-new #7D).
 	const allChanges = [...new Set([...item.changeIds, ...(item.effectIds ?? [])])].map(id => entities.changes[id]).filter(Boolean)
@@ -271,40 +309,54 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 	const writeButton = writeOwn && !ui.editing && !readOnly && <Button variant={primary?.id === writeOwn.id ? 'default' : 'outline'} data-primary={primary?.id === writeOwn.id || undefined} disabled={newer}
 		onClick={() => { edit({ editing: true, answer: '' }); focusField('answer') }}>{writeOwn.label}</Button>
 	const block4 = <div className="card-block action-bar card-actions">
-		{primary && primary.kind !== 'write-own' && <ActionButton primary action={primary} label={primaryLabel} input={report && primary.id === report.id ? { result: ui.resultKind, text: ui.report } : input}
-			disabled={report && primary.id === report.id ? !ui.resultKind : !!invalid || newer} disabledReason={newer ? 'stale' : report && primary.id === report.id ? 'Pick how it went first.' : primary.kind === 'pick' || item.choices && !ui.other ? 'pick' : 'Type your answer first.'} />}
+		{/* Delegate is working on it (#48): one status strip in the bar's place; it is never a blank card. */}
+		{item.working && <div className="card-working" role="status"><Icon name="clock" />{long(item.working.since)
+			? <span><strong>Still working</strong> · taking longer than usual{item.working.since && <> · started {when(item.working.since)}</>}<small className="card-working-what">{item.working.doing}</small></span>
+			: <span><strong>{NAME} is working on it</strong> · back to you when there's something to send
+				<small className="card-working-what">{[item.working.doing, item.working.since && `started ${when(item.working.since)}`].filter(Boolean).join(' · ')}</small></span>}</div>}
+		{primary && primary.kind !== 'write-own' && primary.kind !== 'todo-done' && <ActionButton primary action={primary} label={primaryLabel} input={report && primary.id === report.id ? { result: ui.resultKind, text: ui.report } : input}
+			disabled={report && primary.id === report.id ? !ui.resultKind : !!invalid || newer || voteBlocked} disabledReason={newer ? 'stale' : voteBlocked ? item.voteGap!.text : report && primary.id === report.id ? 'Pick how it went first.' : primary.kind === 'pick' || item.choices && !ui.other ? 'pick' : 'Type your answer first.'} />}
 		{primary?.kind === 'write-own' && writeButton}
+		{primary?.kind === 'todo-done' && doneButton(true)}
 		{report && primary?.id !== report.id && <ActionButton primary action={report} label={`Draft my update to ${first}`} input={{ result: ui.resultKind, text: ui.report }} disabled={!ui.resultKind} disabledReason="Pick how it went first." />}
 		{/* An offered send is never hidden: when another action leads, it sits next to it (#33). */}
-		{actions.filter(action => ['approve', 'approve-again'].includes(action.kind) && action.id !== primary?.id).map(action => action.kind === 'approve' && editedAside ? <ActionButton key={editedAside.id} action={editedAside} label="Send your edited reply" input={{ text: replyText, excluded: ui.excluded }} disabled={newer || !replyText.trim()} disabledReason={newer ? 'stale' : 'Type your reply first.'} /> : <ActionButton key={action.id} action={action} label={draft?.holding && action.kind === 'approve' && !item.changeIds.length ? 'Send holding reply' : undefined} input={{ excluded: ui.excluded }} disabled={newer} disabledReason="stale" />)}
-		{actions.filter(action => ['try-again', 'review-again', 'send-anyway', 'redraft'].includes(action.kind) && action.id !== primary?.id).map(action => <ActionButton key={action.id} action={action} disabled={newer && action.staleness === 'exact'} disabledReason="stale" />)}
+		{actions.filter(action => ['approve', 'approve-again'].includes(action.kind) && action.id !== primary?.id).map(action => action.kind === 'approve' && editedAside ? <ActionButton key={editedAside.id} action={editedAside} label="Send your edited reply" input={{ text: signed(replyText), excluded: ui.excluded }} disabled={newer || !replyText.trim()} disabledReason={newer ? 'stale' : 'Type your reply first.'} /> : <ActionButton key={action.id} action={action} label={draft?.holding && action.kind === 'approve' && !item.changeIds.length ? 'Send holding reply' : undefined} input={{ excluded: ui.excluded }} disabled={newer || action.kind === 'approve' && !!item.voteGap} disabledReason={newer ? 'stale' : item.voteGap?.text ?? 'stale'} />)}
+		{actions.filter(action => ['try-again', 'review-again', 'send-anyway', 'redraft', 'add-vote'].includes(action.kind) && action.id !== primary?.id && !(item.voteGap && action.kind === 'send-anyway')).map(action => <ActionButton key={action.id} action={action} disabled={newer && action.staleness === 'exact'} disabledReason="stale" />)}
 		{primary?.kind !== 'write-own' && writeButton}
 		{item.mode === 'held' && actions.filter(action => action.kind === 'dismiss' && action.label === 'Skip').map(action => <ActionButton key={action.id} action={action} disabled={newer && action.staleness === 'exact'} disabledReason="stale" />)}
 		{actions.filter(action => action.kind === 'later').map(action => <ActionButton key={action.id} action={action} />)}
 		<details className="card-more-menu"><summary aria-label="More" title="More: Edit in Teams, Dismiss, Continue in a terminal"><Icon name="more" /></summary><div className="card-more-content">
 			{item.teams && draft && <Button variant="outline" title="Open Teams with this draft so you can change and send it there. Delegate sees that you replied." onClick={() => void chatEdit.open(ui.editing ? ui.editText ?? draft.text : draft.text, item.teams!)}>Edit in Teams</Button>}
 			{actions.filter(action => ['dismiss', 'reply-only'].includes(action.kind) && !(item.mode === 'held' && action.kind === 'dismiss' && action.label === 'Skip')).map(action => <ActionButton key={action.id} action={action} disabled={newer && action.staleness === 'exact'} disabledReason="stale" />)}
+			{/* L1b: past a vote claim, Send anyway is in ⋯ and asks again with the same sentence. */}
+			{item.voteGap && actions.filter(action => action.kind === 'send-anyway' && action.id !== primary?.id).map(action => <ActionButton key={action.id} action={action} disabled={newer} disabledReason="stale" />)}
 			{item.ownReply && reopen && <div className="card-reopen"><Field code={code} rev={item.rev} field="answer" label="Reopen: what should the new reply say?" value={ui.answer ?? ''} edit={edit} rows={2} />
 				<ActionButton action={reopen} input={{ text: ui.answer ?? '' }} disabled={!ui.answer?.trim()} disabledReason="Write what the reply should say first." /></div>}
 			{continueAction && <ActionButton action={continueAction} />}
 			{item.debug && <><pre>{item.debug.join('\n')}</pre><Button variant="outline" onClick={() => void detailsCopy.copy(item.debug!.join('\n'))}>Copy details</Button>{detailsCopy.message && <p role="status">{detailsCopy.message}</p>}</>}
 		</div></details>
 	</div>
-	const others = actions.filter(action => action.id !== primary?.id && action.id !== report?.id && !(report && action.id === declared?.id) && !['approve', 'approve-again', 'send-edit', 'answer', 'pick', 'ask', 'later', 'dismiss', 'continue', 'todo-done', 'reply-only', 'review-again', 'try-again', 'write-own', 'send-anyway', 'redraft'].includes(action.kind) && !(item.ownReply && action.kind === 'reopen'))
+	const others = actions.filter(action => action.id !== primary?.id && action.id !== report?.id && !(report && action.id === declared?.id) && !['approve', 'approve-again', 'send-edit', 'answer', 'pick', 'ask', 'later', 'dismiss', 'continue', 'todo-done', 'reply-only', 'review-again', 'try-again', 'write-own', 'send-anyway', 'redraft', 'add-vote'].includes(action.kind) && !(item.ownReply && action.kind === 'reopen'))
 	// Every action the projection offers is drawn somewhere (engineer-card-state-devspec.md §4, invariant 4); one that isn't is marked.
 	const drawn = (kind: string) => ({ answer: !!answerBox || !!decision || both || primary?.kind === 'answer', pick: !!item.choices, 'send-edit': !!draft && editable, 'todo-done': todoIds.length > 0 } as Record<string, boolean>)[kind] ?? true
 	const undrawn = readOnly ? [] : actions.filter(action => !drawn(action.kind)).map(action => action.kind)
 
 	// Block 5: Details, one collapsed line: why, sources, progress and history, changes already handled, and Ask Delegate.
-	const parts = [(item.why.reason || item.why.waited) && 'why', item.sourceIds.length > 0 && `${item.sourceIds.length} source${item.sourceIds.length === 1 ? '' : 's'}`, (work?.planIds.length || timeline?.stepIds.length) && 'history', `ask ${NAME}`].filter(Boolean)
+	const parts = [(item.why.reason || item.why.waited) && 'why', item.sourceIds.length > 0 && `${item.sourceIds.length} source${item.sourceIds.length === 1 ? '' : 's'}`, (work?.planIds.length || timeline?.stepIds.length || item.earlier) && 'history', `ask ${NAME}`].filter(Boolean)
+	const sub = (key: string, title: string, inner: ReactNode) => <details className="card-subfold" open={ui.folds?.[key] ?? false} onToggle={event => fold(key, event.currentTarget.open)}><summary>{title}</summary>{inner}</details>
 	const block5 = <details className="card-block card-details" open={ui.folds?.details ?? false} onToggle={event => fold('details', event.currentTarget.open)}><summary>Details: {parts.join(' · ')}</summary>
-		{(item.why.reason || item.why.confidence || item.why.waited) && <h4>Why</h4>}
-		{(item.why.reason || item.why.confidence) && <p>{item.why.reason}{item.why.confidence && ` Confidence: ${item.why.confidence}.`}</p>}
+		{(item.why.reason || item.why.confidence === 'low' || item.why.waited) && <h4>Why</h4>}
+		{item.why.reason && <p>{item.why.reason}</p>}
+		{/* L6: never the word "Confidence"; only a low one is worth a line. */}
+		{item.why.confidence === 'low' && <p>{NAME} isn&apos;t sure this reply is right.</p>}
 		{item.why.waited && <p className="card-why-waited">{item.why.waited}</p>}
-		{item.sourceIds.length > 0 && <><h4>Looked up</h4><Sources ids={ui.folds?.sources ? item.sourceIds : item.sourceIds.slice(0, 5)} entities={entities} />
-			{item.sourceIds.length > 5 && <button type="button" className="link-button" onClick={() => fold('sources', !ui.folds?.sources)}>{ui.folds?.sources ? 'Show fewer' : `+ ${item.sourceIds.length - 5} more`}</button>}</>}
-		{item.why.gaps.map(gap => <p key={gap}>Could not read: {gap}</p>)}
-		{item.why.searched?.map((searched, n) => <p key={n}>Looked up: {searched}</p>)}
+		{/* L7a: Why stays open; Looked up, Progress and What happened are sub-folds with counts. The S9 caps stay inside them. */}
+		{(lookedUp => lookedUp > 0 && sub('lookedUp', `Looked up (${lookedUp})`, <>
+			{item.sourceIds.length > 0 && <><Sources ids={ui.folds?.sources ? item.sourceIds : item.sourceIds.slice(0, 5)} entities={entities} />
+				{item.sourceIds.length > 5 && <button type="button" className="link-button" onClick={() => fold('sources', !ui.folds?.sources)}>{ui.folds?.sources ? 'Show fewer' : `+ ${item.sourceIds.length - 5} more`}</button>}</>}
+			{item.why.gaps.map(gap => <p key={gap}>Could not read: {gap}</p>)}
+			{item.why.searched?.map((searched, n) => <p key={n}>Looked up: {searched}</p>)}
+		</>))(item.sourceIds.length + item.why.gaps.length + (item.why.searched?.length ?? 0))}
 		{timeline && (() => {
 			const work = timeline
 			// Progress (S9): the goal, the open steps (▸ the current one), who does each and where, in words; done steps folded, ✓, never struck out.
@@ -312,19 +364,21 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 			const current = open.find(step => step.now) ?? open[0]
 			const whoOf = (step: typeof steps[number]) => step.owner.kind === 'you' ? 'You' : step.owner.kind === 'delegate' ? NAME : step.owner.kind === 'others' ? step.owner.text : 'Nobody'
 			const line = (step: typeof steps[number], mark: string) => <li key={step.id} aria-current={step === current ? 'step' : undefined}><span className="step-mark" aria-hidden="true">{mark}</span><span className="step-text">{step.what}</span><small>{whoOf(step)}{step.where ? ` · ${step.where}` : ''}{step.build ? ` · build ${step.build}` : ''}</small></li>
-			return <>{steps.length > 0 ? <h4>Progress: {done.length} of {steps.length} steps done</h4> : <h4>This work</h4>}<p>Goal: {work.goal}</p>{work.waiting && <p>Waiting on {work.waiting}</p>}
+			return sub('progress', steps.length > 0 ? `Progress: ${done.length} of ${steps.length} steps done` : 'This work', <><p>Goal: {work.goal}</p>{work.waiting && <p>Waiting on {work.waiting}</p>}
 				{work.then && <p>Then {work.then.owner.kind === 'you' ? 'you' : work.then.owner.kind === 'delegate' ? NAME : work.then.owner.kind === 'others' ? work.then.owner.text : 'nobody'}: {work.then.what}{work.then.you ? `. Then you: ${work.then.you}` : ''}</p>}
 				{open.length > 0 && <ul className="steps">{open.map(step => line(step, step === current ? '▸' : '○'))}</ul>}
 				{done.length > 0 && <><button type="button" className="link-button" aria-expanded={!!ui.folds?.doneSteps} onClick={() => fold('doneSteps', !ui.folds?.doneSteps)}>{ui.folds?.doneSteps ? 'Hide' : 'Show'} the {done.length} done step{done.length === 1 ? '' : 's'}</button>
-					{ui.folds?.doneSteps && <ul className="steps steps-done">{done.map(step => line(step, '✓'))}</ul>}</>}</>
+					{ui.folds?.doneSteps && <ul className="steps steps-done">{done.map(step => line(step, '✓'))}</ul>}</>}</>)
 		})()}
-		{!!timeline?.stepIds.length && (() => {
+		{(!!timeline?.stepIds.length || !!item.earlier) && (() => {
 			// What happened (S9): newest first, the 4 newest until "Show all"; codes and raw references are already gone (projection).
-			const all = [...timeline.stepIds].reverse(), shown = ui.folds?.history ? all : all.slice(0, 4)
-			return <><h4>What happened, newest first</h4><ol className="history">{shown.map(id => {
+			// The sender's earlier ask (L3d) is the oldest line: history, so here and not in block 1.
+			const all = [...(timeline?.stepIds ?? [])].reverse(), shown = ui.folds?.history ? all : all.slice(0, 4)
+			return sub('happened', `What happened (${all.length + (item.earlier ? 1 : 0)})`, <>{all.length > 0 && <ol className="history">{shown.map(id => {
 				const step = entities.workSteps[id]
 				return <li key={id}>{compact(step.at)}<span>{step.news ? <strong>{step.what}</strong> : step.what}</span></li>
-			})}</ol>{all.length > 4 && <button type="button" className="link-button" onClick={() => fold('history', !ui.folds?.history)}>{ui.folds?.history ? 'Show fewer' : `Show all ${all.length}`}</button>}</>
+			})}</ol>}{all.length > 4 && <button type="button" className="link-button" onClick={() => fold('history', !ui.folds?.history)}>{ui.folds?.history ? 'Show fewer' : `Show all ${all.length}`}</button>}
+				{item.earlier && <p className="card-earlier">{item.earlier}</p>}</>)
 		})()}
 		{handled.length > 0 && <><h4>Changes already handled</h4><ul>{handled.map(id => {
 			const effect = entities.changes[id]
@@ -332,7 +386,6 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 		})}</ul></>}
 		{item.unsent && <><h4>{NAME}'s draft (not sent)</h4><p className="muted">{item.unsent}</p></>}
 		{item.job && <p className="muted">{item.job}</p>}
-		<p className="muted">Item {code}</p>
 		<section className="ask-thread"><h4>Ask {NAME}</h4>{item.noteIds.map(id => {
 			const note = entities.notes[id]
 			return <div key={id}><p><strong>You:</strong> {note.question}</p><p>{note.answer === '' ? 'The answer contained only chat instructions. Review the item using its available buttons, or ask a follow-up.' : note.answer ?? 'Waiting for an answer...'}</p><Sources ids={note.sourceIds} entities={entities} />
@@ -354,7 +407,7 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 			}
 		}}>
 		{asks ? <AsksList codes={asks.codes} current={code} entities={entities} onOpen={asks.onOpen} /> : placement && placement.subjects.length >= 2 && <AsksList codes={placement.subjects} current={code} entities={entities} />}
-		{block1}{failed}{found}<fieldset className="card-readonly" disabled={readOnly}>{block2}{block3}</fieldset>{earlierTodos}{doneSoFar}{!readOnly && block4}
+		{block1}{failed}{found}{item.mode === 'working' && writeBox && <section className="card-block card-write-own">{writeBox}</section>}<fieldset className="card-readonly" disabled={readOnly}>{block2}{block3}</fieldset>{earlierTodos}{doneSoFar}{!readOnly && block4}
 		{chatEdit.message && <p role="status">{chatEdit.message}</p>}
 		{others.map(action => <div key={action.id}>{action.meaning && <p>{action.meaning}</p>}<ActionButton action={action} disabled={newer && action.staleness === 'exact' || action.effect !== 'local' && !action.meaning} disabledReason={newer ? 'stale' : undefined} /></div>)}
 		{!readOnly && <ActionState item={code} rev={item.rev} />}
@@ -363,6 +416,19 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 	</article>
 }
 
+// Under each "Left for you" line, where it came from (PM 20:00): "From your reply to Robin in Acme reviews · Tue 22 Oct", opening that
+// message in Teams when there is one; a change Delegate couldn't make says so, with its reason under Why?. No codes or links in the words.
+function TodoSource({ todo }: { todo: Entities['todos'][string] }) {
+	if (todo.why) {
+		const same = todo.text.replace(/[.\s]+$/, '').toLowerCase() === todo.why.toLowerCase()
+		return same ? <span className="todo-source todo-why">Delegate couldn&apos;t do this</span> : <details className="todo-source todo-why"><summary>Delegate couldn&apos;t do this · Why?</summary><p>{todo.why}.</p></details>
+	}
+	const from = todo.from
+	if (!from) return null
+	const day = Number.isFinite(Date.parse(from.at)) ? new Date(from.at).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }).replace(',', '') : ''
+	const words = [`From your reply${from.who ? ` to ${from.who}` : ''}${from.chat ? ` in ${from.chat}` : ''}`, day].filter(Boolean).join(' · ')
+	return from.teams ? <a className="todo-source" href={from.teams} target="_blank" rel="noopener noreferrer" title="Open this reply in Teams, in a new tab.">{words}</a> : <span className="todo-source">{words}</span>
+}
 // Several asks in one conversation (spec S4): one line per ask; the code is only a tooltip. A line opens that ask's card in place.
 export function AsksList({ codes, current, entities, onOpen }: { codes: string[]; current: string; entities: Entities; onOpen?: (code: string) => void }) {
 	const { classic, navigate } = useScreenNavigation()

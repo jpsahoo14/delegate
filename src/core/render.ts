@@ -22,7 +22,7 @@ export function statusLine(wf: Workflow, now = new Date()): string {
 	if (wf.openOn) return `Open in a window on ${wf.openOn}. I won't touch it until you close the window`
 	if (wf.state === 'running') return 'Running: drafting a reply'
 	if (wf.state === 'waiting_on_task') return `${wf.status} (${Math.max(0, Math.round((now.getTime() - Date.parse(wf.waitingSince ?? wf.updatedAt)) / 60000))} min)`
-	if (wf.state === 'scheduled') return wf.status.startsWith('Held') ? wf.status : `Sending at ${hhmm(wf.sendAt)} unless you act (${wf.decision?.reason ?? 'rule'})`
+	if (wf.state === 'scheduled') return wf.statusReason?.kind === 'not-sent' ? wf.statusReason.text : `Sending at ${hhmm(wf.sendAt)} unless you act (${wf.decision?.reason ?? 'rule'})`
 	if (wf.job && !wf.question) {
 		const effects = (wf.effects ?? []).filter(e => !e.off), error = effects.find(e => e.error)?.error
 		if (effects.some(e => e.maybe)) return effectResultLine(wf, 'unsure')

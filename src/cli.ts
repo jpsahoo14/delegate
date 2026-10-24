@@ -54,6 +54,7 @@ async function main() {
 		case 'service': return console.log(service(args[0]))
 		case 'install': return console.log(install().join('\n'))
 		case 'status': return console.log(statusText(store()))
+		case 'trace': { const { traceCommand } = await import('./cli/trace.ts'); return traceCommand(args, loadLocal().root, LOCAL_DIR) }
 		// The new experience's placement as text (N0), for checking before any page draws it.
 		case 'now': { const { snapshot, place, dryText } = await import('./web/next.ts'); return console.log(dryText(place(snapshot(store())))) }
 		case 'demo': return demo(args)

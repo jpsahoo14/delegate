@@ -65,6 +65,8 @@ try {
 			rightFileStartLine: 42, rightFileStartOffset: 1, rightFileEndLine: 44, rightFileEndOffset: 1, content: payload.text },
 	})
 	assert.equal(ready.effects[1].call!.args.rightFileEndLine, 8)
+	assert.equal(buildCommentCall({ ...payload, endLineLength: 73 }, ref,
+		{ name: ready.effects[0].call!.tool, info: cached.ado.tools[0].info }).call!.args.rightFileEndOffset, 73)
 	assert.equal(JSON.stringify(effect), original)
 	assert.deepEqual(events, Array.from({ length: 2 }, () => ({ event: 'effect-call-repaired', from: 'threadContext', ok: true })))
 	console.log('PASS nested REST calls rebuilt only from payload and authoritative PR reference; no mutation or execution')

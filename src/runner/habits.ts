@@ -30,7 +30,7 @@ export function outcome(store: Store, wf: Workflow, how: Outcome['how'], o: { dr
 	store.log({ event: 'outcome', how, chat: wf.chat.id, group: !!wf.chat.group, guests: wf.chat.guests, asker: wf.asker, intent: wf.intent, edited, approvedBy: o.approvedBy, ...(link ? { link } : {}) })
 }
 
-const covered = (rules: Rule[], asker: string, intent: string) => rules.some(r => r.then === 'send' && r.who.accounts?.some(a => a.id === asker) && (!r.when.intent || r.when.intent === intent) && (!r.when.chat || r.when.chat === 'direct'))
+const covered = (rules: Rule[], asker: string, intent: string) => rules.some(r => !r.off && r.then === 'send' && r.who.accounts?.some(a => a.id === asker) && (!r.when.intent || r.when.intent === intent) && (!r.when.chat || r.when.chat === 'direct'))
 
 // Once a day at most: the strongest new send habit, kept narrow (one person, one kind of ask, 1:1 chats).
 export function noticeHabits(store: Store, cfg: Config, now = Date.now()): Habit | undefined {
@@ -243,7 +243,7 @@ function styleHabit(store: Store, cfg: Config, habits: Habit[], now: number): Ha
 
 // The style rules that fit this item: the drafting prompt follows them, and nothing else reads them.
 export function stylesFor(rules: Rule[], wf: Workflow): Rule[] {
-	return rules.filter(r => r.style && (!r.who.accounts?.length || r.who.accounts.some(a => a.id === wf.asker?.id)) && (!r.when.chat || r.when.chat === wf.chat.id))
+	return rules.filter(r => !r.off && r.style && (!r.who.accounts?.length || r.who.accounts.some(a => a.id === wf.asker?.id)) && (!r.when.chat || r.when.chat === wf.chat.id))
 }
 
 // The compiled rules decide; rules.md gets a generated block for learned rules, rebuilt from them, so the two never drift.

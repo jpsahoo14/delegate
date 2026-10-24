@@ -10,6 +10,7 @@ import { NAME } from '../brand.ts'
 import { useState } from 'react'
 import { MessageBubble } from '../features/ItemCard.tsx'
 import { SentTime } from '../features/SentTime.tsx'
+import { busyReason } from '../data/busy.ts'
 import { Hint } from '../components/ui/button.tsx'
 import { codeHover, disabledHover, hoverOf } from '../domain/hover.ts'
 
@@ -76,6 +77,7 @@ export default function Ongoing() {
 			return <li className="ongoing-row" key={row.code} data-classic-progress={row.code}>
 				{person ? <Avatar person={person} /> : <span className="ongoing-icon"><Icon name="task" /></span>}
 				<div className="ongoing-text"><b>{row.goal}</b><span className="ongoing-meta">{[row.code, row.who, row.status].join(' · ')}</span>
+					{(todoIds => todoIds.length > 0 && entities.todos[todoIds[0]] && <span className="ongoing-meta" data-left-for-you>Left for you: {entities.todos[todoIds[0]].text}{todoIds.length > 1 ? ` (+${todoIds.length - 1} more)` : ''}</span>)(entities.items[row.code]?.todoIds ?? [])}
 					{row.last && <span className="ongoing-meta">Last: {preview(row.last.what, 160)} · {when(row.last.at)}</span>}
 					{row.checkAt && <span className="ongoing-meta">I&apos;ll ask you on {shortDate(row.checkAt)} if nothing happens</span>}
 					<Timing action={actions.find(action => action.input === 'interval')} every={row.every} endsAt={row.endsAt} extend={actions.find(action => action.kind === 'classic-extend')} /><RowState actions={actions} />
@@ -97,9 +99,11 @@ export default function Ongoing() {
 		{classic.running.length > 0 && <section id="classic-running"><h2 className="ongoing-section-title">Running</h2><p className="ongoing-description">Long work {NAME} is doing now. It tells you when each one is ready.</p><div className="ongoing-grid">{classic.running.map((row, index) => {
 			const actions = actionsOf(row.actionIds)
 			const held = !!row.detail?.startsWith('Held:')
-			return <article className="ongoing-card" key={`${row.code}:${index}`}><div className="ongoing-card-head"><span className="ongoing-icon ongoing-accent"><Icon name={row.code ? 'pr' : 'book'} /></span><div className="ongoing-text"><h3>{row.what}</h3><span className="ongoing-meta">{row.who && `For ${row.who} · `}since {when(row.since)}</span></div>			{row.code && <CodeHint code={row.code} />}</div>
+			// R11(1): a queued row has a clock and why it waits, never a progress bar; the projection lists the working ones first.
+			const queuedWhy = row.queued && snapshot?.busy ? busyReason(snapshot.busy) : undefined
+			return <article className="ongoing-card" key={`${row.code}:${index}`} data-queued={row.queued || undefined}><div className="ongoing-card-head"><span className="ongoing-icon ongoing-accent"><Icon name={row.queued ? 'clock' : row.code ? 'pr' : 'book'} /></span><div className="ongoing-text"><h3>{row.what}</h3><span className="ongoing-meta">{row.who && `For ${row.who} · `}{row.queued ? 'queued' : 'started'} {when(row.since)}</span></div>			{row.code && <CodeHint code={row.code} />}</div>
 				{row.retry ? <div className="ongoing-description"><p>Retry {row.retry.attempt} scheduled for {when(row.retry.at)}: {row.retry.reason}</p>{row.retry.tried.length > 0 && <p>Tried: {row.retry.tried.join('; ')}</p>}</div> : row.detail && row.detail !== row.what && <p className="ongoing-description">{row.detail}</p>}
-				{!held && (row.sendAt ? <p className="ongoing-description">Sends at <time dateTime={row.sendAt}>{when(row.sendAt)}</time>. Hold it to review before sending.</p> : <div className="ongoing-bar" role="progressbar" aria-label={row.what} aria-valuemin={0} aria-valuemax={100} aria-valuenow={row.progress === undefined ? undefined : Math.round(row.progress * 100)} aria-valuetext={row.progress === undefined ? 'Running' : undefined}><i className={row.progress === undefined ? 'ongoing-indeterminate' : undefined} style={row.progress === undefined ? undefined : { width: `${Math.max(4, Math.round(row.progress * 100))}%` }} /></div>)}
+				{row.queued ? queuedWhy && <p className="ongoing-description">Queued · {queuedWhy}</p> : !held && (row.sendAt ? <p className="ongoing-description">Sends at <time dateTime={row.sendAt}>{when(row.sendAt)}</time>. Hold it to review before sending.</p> : <div className="ongoing-bar" role="progressbar" aria-label={row.what} aria-valuemin={0} aria-valuemax={100} aria-valuenow={row.progress === undefined ? undefined : Math.round(row.progress * 100)} aria-valuetext={row.progress === undefined ? 'Running' : undefined}><i className={row.progress === undefined ? 'ongoing-indeterminate' : undefined} style={row.progress === undefined ? undefined : { width: `${Math.max(4, Math.round(row.progress * 100))}%` }} /></div>)}
 				<RowActions actions={actions} className="ongoing-right-actions" /><RowState actions={actions} />
 			</article>
 		})}</div></section>}

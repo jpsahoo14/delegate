@@ -1,5 +1,6 @@
 import type { Section } from './whose.ts'
 import type { Attachment } from './intake.ts'
+import type { Capability } from './capabilities.ts'
 export type Id = string
 export type Code = string
 // open: the reply is out and the work it started goes on; nothing needs the owner now (dev-spec/work.md).
@@ -18,7 +19,9 @@ export type Rule = {
 	id: string; text: string
 	who: { accounts?: Person[]; group?: 'team' | 'org' | 'outside' }
 	when: { intent?: string; chat?: string | 'direct'; minConfidence?: 'high' | 'medium' }
-	then: 'send' | 'draft' | 'ack' | 'ignore' | 'shortcut'
+	then: Capability
+	off?: true
+	review?: { comments: 'post'; reply: 'send' }
 	// A rule accepted from a habit, with what it was learned from (dev-spec/habits.md).
 	learned?: { key: string; at: string; evidence: string }
 	shortcut?: { goal: string }
@@ -172,7 +175,7 @@ export type Job = {
 export type Todo = { id: string; text: string; at: string; done?: string }
 
 export type Workflow = {
-	schema: 1
+	schema: number
 	id: Id
 	code: Code
 	kind: string
@@ -216,6 +219,8 @@ export type Workflow = {
 	reasons?: NonNullable<Workflow['reason']>[]
 	holdDigest?: string
 	holdCheckPending?: boolean
+	voteClaim?: { why: string; pr?: number; claim: number | 'approval' | 'others'; vote?: number; digest: string; automatic?: boolean; canOverride?: false }
+	voteClaimRedrafted?: true
 	question?: string
 	// What the worker could not read, such as an image or a file it has no access to (R-ING-11).
 	gaps?: string[]
@@ -230,6 +235,10 @@ export type Workflow = {
 	ownerAnswer?: string
 	answerSurface?: 'chat' | 'self' | 'panel'
 	status: string
+	workingSince?: string
+	statusReason?: { kind: 'not-sent' | 'not-sure-sent' | 'could-not-start' | 'not-finished' | 'refused' | 'back-from-window' | 'vote-claim'; text: string; at: string }
+	reviewAgain?: { pr: number; head: string; at: string }
+	returnedFrom?: { machine: string; at: string; report: boolean }
 	// holding: the last send was a holding reply; the full answer is still owed and the item stays open (#41).
 	sent?: { msgId: string; at: string; byRule?: string; undoUntil?: string; text?: string; sendText?: string; askMsgId?: string; holding?: true; checks?: string[] }
 	sendAt?: string

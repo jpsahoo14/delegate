@@ -11,6 +11,18 @@ Proof kinds:
 
 ## Engine crosscheck regressions
 
+Bug 10-24 step-6 B1 (manual): `node scripts/prove-workflow-upgrades.mjs` creates real intake, split, waiting-follow-up and
+tracker items. Every item has WORKFLOW_SCHEMA; migrateWorkflows returns zero and leaves bytes, logs and the existing
+completion marker alone. A typed AST guard rejects old schema literals in Workflow factories; Job schema remains 1.
+
+Bug 10-24 card-state step 6 (manual): `node scripts/prove-workflow-upgrades.mjs`, 35 fictional-store journeys. Old repair
+results match, pure reads do not write, schema transitions log once, each pass touches <=50 items, late old data still
+upgrades, current data stays byte-identical, PR goal links are authoritative, and only recoverable comment calls are proposed.
+Skipped v7 conversion preserves its entire original step. Structured fields drive readers and return/review lifecycles; an
+external metadata edit survives a migration context read. No model, remote effect or unit runner is used.
+Working clocks stamp real Retry/new-phase entry, remain stable on metadata saves, clear on completion, and an AST audit
+rejects bare typed workflow state writes anywhere in the engine.
+
 Bug 10-24 #51 effect wording (manual): `node scripts/prove-effect-lines.mjs` proves singular/plural comments, edits, resolves,
 all five votes, two PRs/order, running/done/changes-only/held/partial/failed/unsure/reply-only, group and direct recipients,
 unknown effects and scrubbed failure reasons. A real apply/approval queues execution once and emits the expected chat receipt.

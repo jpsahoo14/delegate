@@ -3,7 +3,7 @@
 // `node scripts/card-golden.ts` and paste its last line into the report of every change that touches card state. Every new card bug
 // adds its row here before the fix. Item codes are the owner's; everything else is fictional.
 import { cardState, checkCard, currentFailure, type CardFacts, type Failure, type HeldReason } from '../src/core/card-state.ts'
-import { cardFacts } from '../src/core/card-facts.ts'
+import { cardContext, cardFacts } from '../src/core/card-facts.ts'
 
 const DAY = 86_400_000, now = Date.parse('2026-10-24T12:00:00Z')
 const at = (daysAgo: number) => new Date(now - daysAgo * DAY).toISOString()
@@ -14,6 +14,9 @@ const held = (...reasons: HeldReason[]): NonNullable<CardFacts['held']> => ({ di
 type Row = { id: string; what: string; facts: CardFacts; expect: { mode: string; primary?: string | null; secondary?: string[]; more?: string[]; editor?: string; warn?: string | null; warnIs?: string; waited?: string | null }; broken?: string[] }
 // A failed document read as an item records it, through cardFacts (pure), so the cause mapping itself is checked (#40 handoff).
 const docFailure = (why: string, tried: string[], kind = 'content') => cardFacts({ wf: { state: 'needs_human', status: `Couldn't finish: ${why}`, runFailed: { at: at(1), kind, why, tried, job: 'j9' }, updatedAt: at(1) } as any, card: {}, changes: 0 })
+// An item Delegate is (or was) working on, through cardFacts: its state, status and job as the runner leaves them (#48).
+const workingItem = (state: string, status: string, job?: Record<string, unknown>, withDraft = false, changes = 0) => cardFacts({ wf: { state, status, job: job ? 'j48' : undefined, waitingSince: at(0), revAt: at(1), updatedAt: at(0) } as any,
+	job: job ? { id: 'j48', updatedAt: at(0), ...job } as any : undefined, card: withDraft ? { draft: {} } : {}, changes })
 // A held item as the engine leaves it (#45), through cardFacts: its approved draft kept and its reasons.
 const heldItem = (hold: Record<string, unknown>) => cardFacts({ wf: { state: 'needs_human', status: 'Your approved draft is kept. Send anyway or Redraft.', asker: { id: 'kim', name: 'Kim Lane' }, revAt: at(0), updatedAt: at(0), ...hold } as any, card: { draft: {} }, changes: 0 })
 
@@ -82,7 +85,8 @@ const rows: Row[] = [
 	{ id: 'G60', what: 'a terminal hold beats a running state', facts: facts({ state: 'running', hold: { kind: 'window', text: 'Open in a terminal', machine: 'PC-1', since: at(1) } }), expect: { mode: 'in-terminal', primary: 'take-back', secondary: [], more: [], editor: 'none', warn: 'Open in a terminal on PC-1 since' } },
 	{ id: 'G61', what: 'a terminal hold beats a draft (no "draft cannot be sent")', facts: facts({ draft: draft(), hold: { kind: 'window', text: 'Open in a terminal', machine: 'PC-1', since: at(1) } }), expect: { mode: 'in-terminal', primary: 'take-back', secondary: [] } },
 	{ id: 'G62', what: 'a terminal hold beats a failure and a question; nothing that moves the item on', facts: facts({ question: { text: 'Which region?', reviewAgain: false }, failure: fail(), hold: { kind: 'window', text: 'Open in a terminal', machine: 'PC-1' } }), expect: { mode: 'in-terminal', primary: 'take-back', secondary: [], more: [], warn: 'Open in a terminal on PC-1 · Delegate waits' } },
-	// Need to know (#36, PE 17:05 point 6): one "Why it waited" line per kind of hold, in the PM's words; the draft still sends on Send.
+	// Need to know (#36, PE 17:05 point 6), one line per kind of hold in the PM's words; with nothing above it, it is the card's one warn
+	// line (L4) and is not repeated in Why it waited. The draft still sends on Send.
 	...([
 		['G63', { kind: 'guest', record: 'Incident 900001' }, 'Waiting for you: this chat has a guest or someone from outside your org, and the reply uses Incident 900001.'],
 		['G64', { kind: 'restricted', record: 'Incident 900002', who: 'a restricted incident' }, 'Waiting for you: Incident 900002 is a restricted incident.'],
@@ -92,7 +96,7 @@ const rows: Row[] = [
 		['G68', { kind: 'marked', chat: 'Acme leads', level: 'private' }, 'Waiting for you: it uses Acme leads, which you marked private.'],
 		['G69', { kind: 'members', chat: 'Globex war room' }, "Waiting for you: it uses Globex war room, and I couldn't check who is in each chat."],
 		['G70', { kind: 'reads' }, "Waiting for you: it searched your chats and I couldn't tell which ones it read."],
-	] as const).map(([id, hold, line]) => ({ id, what: `need to know: ${hold.kind}`, facts: facts({ draft: draft(), shareHold: hold as any }), expect: { mode: 'reply', primary: 'approve', waited: line } })),
+	] as const).map(([id, hold, line]) => ({ id, what: `need to know: ${hold.kind}`, facts: facts({ draft: draft(), shareHold: hold as any }), expect: { mode: 'reply', primary: 'approve', warnIs: line.replace(/^Waiting for you: /, 'Need to know: '), waited: null } })),
 	// What ⋯ holds (PE step-4 review): Answer instead only where a question is open.
 	{ id: 'G52', what: 'more: reply', facts: facts({ draft: draft() }), expect: { mode: 'reply', more: ['dismiss'] } },
 	{ id: 'G53', what: 'more: holding', facts: facts({ draft: draft({ holding: true }) }), expect: { mode: 'holding', more: ['dismiss'] } },
@@ -114,6 +118,26 @@ const rows: Row[] = [
 	{ id: 'G78', what: 'held: a 9-digit incident number in the change line is not a leak', facts: facts({ draft: draft(), held: held({ kind: 'ask-edited', at: at(0), changed: 'Incident 900000123 is Active again.' }) }), expect: { mode: 'held', primary: 'redraft', warn: 'Kim edited their message after you approved: Incident 900000123 is Active again.' } },
 	{ id: 'G79', what: 'held: a hash in the change line is still a leak', facts: facts({ draft: draft(), held: held({ kind: 'ask-edited', at: at(0), changed: 'see 3fa9c0d2b7 for details' }) }), expect: { mode: 'held', primary: 'redraft' }, broken: ['the warning leaks an id or an error'] },
 	// PM final 19:20/19:40: each sentence about 110 characters at most, cut with … at a word; Details: 'Why it waited:', one reason per line.
+	// #48 (PE 19:40): Delegate is working on it, from the item's state now. A status strip, no primary, Dismiss in ⋯; never a blank card.
+	{ id: 'G83', what: 'working: Try again queued the job again (A76 shape)', facts: workingItem('waiting_on_task', 'Working: Read the complete Aurora v7 dev spec', { state: 'queued' }), expect: { mode: 'working', primary: null, secondary: ['write-own'], more: ['dismiss'], editor: 'none', warn: null } },
+	{ id: 'G84', what: 'working: an answer is being redrafted; the old draft does not make it a Send card; Write the reply yourself stays (PM 19:50)', facts: workingItem('running', 'Redrafting with your answer', undefined, true), expect: { mode: 'working', primary: null, secondary: ['write-own'], more: ['dismiss'], editor: 'none' } },
+	{ id: 'G85', what: 'working: approved changes are being made', facts: workingItem('waiting_on_task', 'Posting 2 comments on PR 4200001', { state: 'running' }, true, 2), expect: { mode: 'working', primary: null, more: ['dismiss'], editor: 'none' } },
+	{ id: 'G86', what: 'working: a terminal hold still wins', facts: facts({ working: { what: 'Redrafting with your answer' }, hold: { kind: 'window', text: 'Open in a terminal', machine: 'PC-1' } }), expect: { mode: 'in-terminal', primary: 'take-back' } },
+	{ id: 'G87', what: 'not working: a job that failed is a failure, not a working card', facts: workingItem('waiting_on_task', 'Working: Read the complete Aurora v7 dev spec', { state: 'failed', error: 'the run stopped without a result' }), expect: { mode: 'failed', primary: 'try-again' } },
+	{ id: 'G88', what: 'not working: a finished job waits for the owner, not for Delegate', facts: workingItem('waiting_on_task', 'Working: Read the complete Aurora v7 dev spec', { state: 'done' }), expect: { mode: 'failed' } },
+	// #44(2) (PE 18:15): kept to-dos only he can do. Alone, they are the card ("I've done these" leads); with a draft, the draft's mode
+	// wins and they stay as "Left for you" in block 3; never the generic "Write the reply yourself".
+	{ id: 'G89', what: 'to-dos only: a to-do card, "I\'ve done these" leads', facts: facts({ state: 'open', todos: 2 }), expect: { mode: 'todo', primary: 'todo-done', secondary: ['later'], more: ['dismiss'], editor: 'none', warn: null } },
+	{ id: 'G90', what: 'to-dos plus a draft: the reply card, to-dos in block 3', facts: facts({ draft: draft(), todos: 2 }), expect: { mode: 'reply', primary: 'approve', editor: 'reply' } },
+	{ id: 'G91', what: 'to-dos plus a question: the answer card wins', facts: facts({ question: { text: 'Which region first?', reviewAgain: false }, todos: 1 }), expect: { mode: 'answer', primary: 'answer' } },
+	{ id: 'G92', what: 'to-dos while Delegate works: the working card wins', facts: facts({ state: 'running', working: { what: 'Redrafting with your answer' }, todos: 1 }), expect: { mode: 'working', primary: null } },
+	{ id: 'G94', what: 'a change Delegate could not make is still his to-do: a to-do card, never Write the reply yourself (PM 20:00)', facts: cardFacts({ wf: { state: 'done', status: 'Sent', updatedAt: at(0) } as any, card: {}, changes: 0, todos: 1 }), expect: { mode: 'todo', primary: 'todo-done', editor: 'none' } },
+	// Card-state step 5: stored failures read through normalizeReport before the newest is chosen.
+	{ id: 'G95', what: 'step 5: a stored failure with a job id and a tool name reads in plain words', facts: cardFacts({ wf: { state: 'needs_human', status: 'Not finished', runFailed: { at: at(1), kind: 'other', why: 'Error: ado-repo_get_pr failed in job:j-77ab12cd', tried: [] }, updatedAt: at(1) } as any, card: {}, changes: 0 }), expect: { mode: 'failed', primary: 'try-again', warn: "Couldn't draft this: The work couldn't be completed." } },
+	{ id: 'G96', what: 'step 5: a job stopped on a change Delegate won\'t make says why, and Try again does not lead', facts: cardFacts({ wf: { state: 'waiting_on_task', status: 'Working', job: 'j96', updatedAt: at(1) } as any, job: { id: 'j96', state: 'failed', error: 'Post the comment on PR 5. Not made for you: PR 5 is not this item\'s PR (6)', updatedAt: at(1) } as any, card: {}, changes: 0 }), expect: { mode: 'failed', primary: 'write-own', warn: "Couldn't finish: This is about PR 5, but the item is about PR 6, so Delegate won't change PR 5 from here." } },
+	{ id: 'G93', what: 'to-dos through cardFacts on a sent, open item', facts: cardFacts({ wf: { state: 'open', status: 'Sent', updatedAt: at(0) } as any, card: {}, changes: 0, todos: 1 }), expect: { mode: 'todo', primary: 'todo-done' } },
+	// PM 20:15: Classic's "In progress" item (replied, the work goes on) ticks its to-dos on the same card as New; no "Mark N to-dos done".
+	{ id: 'G98', what: 'Classic in-progress work with two to-dos: the card leads with I\'ve done these', facts: cardFacts({ wf: { state: 'open', status: 'Replied; the work goes on', work: { goal: 'Acme fixed', links: [], steps: [], next: { who: 'them', what: 'Kim confirms fixed' } }, updatedAt: at(0) } as any, card: {}, changes: 0, todos: 2 }), expect: { mode: 'todo', primary: 'todo-done', editor: 'none' } },
 	// PE 19:16: an ask with a change line comes before a newer one without, so the line says why Redraft leads.
 	{ id: 'G82', what: 'held: the ask with a change line leads even when an ask without one is newer', facts: facts({ draft: draft(), held: held({ kind: 'asker-wrote-again', at: at(0) }, { kind: 'ask-edited', at: at(1), changed: 'She now wants the risks by noon.' }) }), expect: { mode: 'held', primary: 'redraft', secondary: ['send-anyway', 'later'], warnIs: 'Kim edited their message after you approved: She now wants the risks by noon. Kim wrote again after you approved.', waited: null } },
 	{ id: 'G80', what: 'held: a long change line is cut at about 110 characters and kept in full in Details', facts: facts({ draft: draft(), held: held({ kind: 'asker-wrote-again', at: at(0), count: 3, changed: 'She now asks you to own Incident 900002 and Incident 900003, post the rollback plan in the channel, and confirm the Friday date with Robin.' }) }), expect: { mode: 'held', primary: 'redraft', warnIs: 'Kim wrote 3 more messages after you approved: She now asks you to own Incident 900002 and Incident 900003…', waited: 'Why it waited:\nKim wrote 3 more messages after you approved: She now asks you to own Incident 900002 and Incident 900003, post the rollback plan in the channel, and confirm the Friday date with Robin.' } },
@@ -141,6 +165,17 @@ for (const r of rows) {
 for (const r of rows.filter(r => r.facts.held)) {
 	const long = (cardState(r.facts).warn ?? '').split(/(?<=[.…])\s+(?=[A-Z])/).find(s => s.length > 112)
 	if (long) { bad++; console.log(`FAIL ${r.id} a held sentence is ${long.length} characters: ${long}`) }
+}
+// Card-state step 5: an A50-shaped review item's old facts, through the card's reader: no CI, vote or reviewer status; the finding
+// stays (as info), the "Not reviewing" gate and the card's own "Need to know" keep their warning.
+{
+	const shown = cardContext({ intent: 'pr_review' } as any, { key: 'pr:Acme/Web/4200001' } as any, [
+		{ label: 'Need to know', text: 'This chat has a guest.', tone: 'warn' }, { label: 'CI', text: 'Build is green', tone: 'info' },
+		{ label: 'Kim approved', text: 'on Tue', tone: 'info' }, { label: 'Null check', text: 'getUser can return null in the Aurora reader', tone: 'warn' },
+		{ label: 'Not reviewing', text: 'You are not a reviewer of this PR.', tone: 'warn' }, { label: 'Tool discovery', text: 'found 3 tools', tone: 'info' },
+	]).map(f => `${f.label}:${f.tone}`)
+	const want = ['Need to know:warn', 'Null check:info', 'Not reviewing:warn']
+	if (JSON.stringify(shown) !== JSON.stringify(want)) { bad++; console.log(`FAIL G97 step 5 card facts ${JSON.stringify(shown)}, expected ${JSON.stringify(want)}`) }
 }
 // The digest a held card passes is the engine's holdDigest, or the one reason's digest for an item from before #45 (G75-G77).
 for (const [id, want] of [['G75', 'r1'], ['G76', 'h2'], ['G77', 'h3']] as const) {

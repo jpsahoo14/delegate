@@ -18,7 +18,7 @@ export function ClassicWhy({ why, sourceIds, entities, name, open, onToggle }: {
 	why: NonNullable<Entities['doneEntries'][string]['why']>; sourceIds: string[]; entities: Entities; name: string; open: boolean; onToggle: (open: boolean) => void
 }) {
 	return <details className="classic-why" open={open} onToggle={event => { if (open !== event.currentTarget.open) onToggle(event.currentTarget.open) }}>
-		<summary><Icon name="right" /><span><b>Why:</b> {why.reason || 'The sources behind this draft'}</span>{why.confidence && <small>{why.confidence.charAt(0).toUpperCase() + why.confidence.slice(1)} confidence</small>}{sourceIds.length > 0 && <small>{sourceIds.length} source{sourceIds.length === 1 ? '' : 's'}</small>}</summary>
+		<summary><Icon name="right" /><span><b>Why:</b> {why.reason || 'The sources behind this draft'}</span>{why.confidence === 'low' && <small>{NAME} isn&apos;t sure this reply is right</small>}{sourceIds.length > 0 && <small>{sourceIds.length} source{sourceIds.length === 1 ? '' : 's'}</small>}</summary>
 		<div className="classic-source-rows">{sourceIds.map(id => {
 			const source = entities.sources[id]
 			return <div className="classic-source-row" key={id}><span className="classic-source-kind">{source.kind}</span>{source.href ? <a href={source.href} target="_blank" rel="noopener noreferrer">{source.label}</a> : <span>{source.label}</span>}<small>{source.stale && 'May be out of date · '}{source.locked ? `Not visible to ${name.split(' ')[0]}` : source.kind === 'In the chat' ? `Visible to ${name.split(' ')[0]}` : ''}</small></div>

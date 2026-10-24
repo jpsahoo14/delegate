@@ -9,6 +9,7 @@ import type { BuildProbe } from './probe.ts'
 import { holdReplyGap } from './reply-gap.ts'
 import { freshRead } from '../store/fs.ts'
 import { recordCommit } from './commit.ts'
+import { stateFields, statusFields } from '../core/upgrades.ts'
 
 const policy = (cfg: Config) => ({ ...DEFAULT_POLICY, ...cfg.policy })
 // What the owner's rules are judged with for this item: the page's "why it waited" uses the same (#33).
@@ -26,9 +27,9 @@ export async function afterDraft(store: Store, src: Source, cfg: Config, wf: Wor
 	if (d.action === 'ignore') return close(wf, d.reason)
 	// Paused means nothing is sent, even after resume: a rule never schedules a send, and the draft stays with the owner,
 	// as the pause command holds a scheduled one (PM verification of N1a; apply.ts control).
-	if (d.action === 'send' && (store.control().paused || cfg.paused)) { Object.assign(wf, { held: 'paused', status: 'Held: you paused' }); return }
+	if (d.action === 'send' && (store.control().paused || cfg.paused)) { Object.assign(wf, { held: 'paused', ...statusFields('not-sent', 'Held: you paused') }); return }
 	if (d.action === 'send') {
-		wf.state = 'scheduled'
+		Object.assign(wf, stateFields(wf, 'scheduled'))
 		wf.sendAt = new Date(Date.now() + p.delayMin * 60_000).toISOString()
 		return
 	}
@@ -84,13 +85,13 @@ export async function dueSends(store: Store, src: Source, cfg: Config, probe?: B
 	const due = store.workflows().filter(w => w.state === 'scheduled' && w.sendAt && Date.parse(w.sendAt) <= Date.now()).filter(w => !holdReplyGap(store, w, w.draft?.text, true))
 	for (const w of due.filter(w => w.draft?.preview)) {
 		const commit = recordCommit(w, () => store.workflow(w.id), store.save.bind(store))
-		Object.assign(w, { state: 'needs_human', sendAt: undefined, status: 'Edited by you; waits for your ok' }); commit()
+		Object.assign(w, { ...stateFields(w, 'needs_human'), sendAt: undefined, status: 'Edited by you; waits for your ok' }); commit()
 	}
 	if (!due.length) return 0
 	if (await ownerActive(store, src)) {
 		for (const was of due) freshRead(() => {
 			const w = store.workflow(was.id)
-			if (w?.state === 'scheduled') { w.status = 'Held: you are active in Teams'; store.save(w) }
+			if (w?.state === 'scheduled') { Object.assign(w, statusFields('not-sent', 'Held: you are active in Teams')); store.save(w) }
 		})
 		return 0
 	}
@@ -102,12 +103,12 @@ export async function dueSends(store: Store, src: Source, cfg: Config, probe?: B
 		// Rules, auto-send, limits, and chat levels are checked again at send time, so a change during the delay wins.
 		wf.shareHold = markedHold(cfg, wf.drewOn) ?? wf.shareHold
 		const d = decide(wf, store.rules(), policyContext(store, cfg, wf))
-		if (d.action !== 'send') { Object.assign(wf, { state: 'needs_human', sendAt: undefined, decision: d, status: `Not sent: ${d.reason}` }); commit(); continue }
+		if (d.action !== 'send') { Object.assign(wf, { ...stateFields(wf, 'needs_human'), sendAt: undefined, decision: d, ...statusFields('not-sent', `Not sent: ${d.reason}`) }); commit(); continue }
 		try {
 			if (await send(store, src, cfg, wf, wf.draft?.text, { ruleId: d.ruleId }, probe)) { n++; store.addAuto(wf.chat.id, 'send') }
 		} catch (e) {
 			// One failed send never blocks the others; the owner sees why in the inbox.
-			Object.assign(wf, { state: 'needs_human', sendAt: undefined, status: `Not sent: ${String(e).slice(0, 120)}` })
+			Object.assign(wf, { ...stateFields(wf, 'needs_human'), sendAt: undefined, ...statusFields('not-sent', `Not sent: ${String(e).slice(0, 120)}`) })
 			store.log({ event: 'autosend-failed', workflowId: wf.id, code: wf.code, error: String(e).slice(0, 300) })
 		}
 		commit()

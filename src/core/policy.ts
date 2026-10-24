@@ -1,6 +1,7 @@
 import { shareHoldText } from './share.ts'
 import { pendingEffects } from './effects.ts'
 import type { Confidence, Config, Job, Person, Rule, Source, Workflow } from './types.ts'
+import { voteMention } from './vote-claims.ts'
 
 export function currentDraft(workflow: Workflow, job?: Job) {
 	if (workflow.ownerSend && (!workflow.sent || workflow.sent.at < workflow.ownerSend.at)) return workflow.draft ?? workflow.ownerSend.draft
@@ -36,6 +37,7 @@ export type PolicyContext = { autoSend: boolean; autoSendsThisHour: number; maxP
 
 // Sender groups cannot be detected from chat messages yet, so only rules that name accounts can match (R-RUL-04, R-RUL-07).
 function matches(r: Rule, wf: Workflow, conf: Confidence): boolean {
+	if (r.off) return false
 	const who = !!wf.asker && !!r.who.accounts?.some(a => a.id === wf.asker!.id)
 	if (!who) return false
 	if (r.when.intent && r.when.intent !== wf.intent) return false
@@ -62,6 +64,8 @@ export function decide(wf: Workflow, rules: Rule[], ctx: PolicyContext): Decisio
 	if (wf.work || wf.partOf) return d('draft', 'Replies on open work always wait for you')
 	if (wf.shareHold) return d('draft', shareHoldText(wf.shareHold)!)
 	if (pendingEffects(wf.effects).length || wf.todos?.length || wf.follow) return d('draft', 'It promises changes, a follow-up, or something you must do')
+	if (wf.intent === 'pr_review') return d('draft', 'Pull request review replies always wait for you')
+	if (voteMention(wf.draft?.text ?? '')) return d('draft', 'It speaks of an approval or a vote, so it waits for you')
 	if (!rule) return d('draft', 'No rule covers this sender and ask')
 	if (ctx.held?.includes(rule.id)) return d('draft', `Rule ${rule.id} is on hold: you said one of its replies was not needed`)
 	if (rule.then === 'ignore') return d('ignore', `Rule ${rule.id}: ignore`)
@@ -84,7 +88,7 @@ export function decide(wf: Workflow, rules: Rule[], ctx: PolicyContext): Decisio
 export function whyWaited(wf: Workflow, rules: Rule[], ctx: PolicyContext): string[] {
 	const conf = confidence(wf.draft?.sources ?? [])
 	const first = wf.asker?.name?.split(/\s+/)[0] || 'this person'
-	const auto = rules.filter(r => !r.style && r.then !== 'ignore')
+	const auto = rules.filter(r => !r.off && !r.style && r.then !== 'ignore')
 	const named = auto.filter(r => !!wf.asker && !!r.who.accounts?.some(a => a.id === wf.asker!.id))
 	const rule = named.find(r => matches(r, wf, conf))
 	const chatOk = (r: Rule) => r.when.chat === 'direct' ? !(wf.chat.group || wf.chat.test || wf.chat.id.startsWith('ch|')) : !r.when.chat || r.when.chat === wf.chat.id
@@ -99,6 +103,8 @@ export function whyWaited(wf: Workflow, rules: Rule[], ctx: PolicyContext): stri
 	const vote = pendingEffects(wf.effects).some(e => /pull_request_write/.test(e.call?.tool ?? '') && /vote/i.test(`${e.action} ${JSON.stringify(e.call?.args ?? {})}`))
 	const gate = replyGap(wf.draft?.text) ? 'it still has a blank to fill'
 		: vote ? 'a PR vote always waits for you'
+		: wf.intent === 'pr_review' ? 'pull request review replies always wait for you'
+		: voteMention(wf.draft?.text ?? '') ? 'it speaks of an approval or a vote, so it waits for you'
 		: commits(wf) ? (wf.intent === 'pr_review' || /\bapprov/i.test(`${wf.lastAsk ?? ''} ${wf.draft?.text ?? ''}`) ? 'replies about PR approvals always wait for you' : 'it commits you to something (a date, an approval or ownership)')
 		: wf.draft?.holding ? "the work didn't finish, so it's a holding reply"
 		: wf.draft?.preview ? 'you edited it, so it waits for your ok'

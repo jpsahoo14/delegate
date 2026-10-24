@@ -51,7 +51,7 @@ store.saveConfig(cfg); store.saveControl({ paused: false, stopped: false, autoSe
 store.saveNotify({ lastNudgeAt: at, summaryDay: at.slice(0, 10) })
 store.saveProbeMark({ runFailRepairAt: at, partsRepairAt: at, noNewsRepairAt: at, blockedRepairAt: at, hostToolsUpgrade: 1, habitsAt: at })
 store.saveUpgrades({ 'reply-sessions-1': at, 'draft-restore-37': at })
-const item = i => ({ schema: 1, id: `acme-item-${i}`, code: `A${i + 1}`, kind: 'reply', state: 'needs_human',
+const item = i => ({ schema: 7, id: `acme-item-${i}`, code: `A${i + 1}`, kind: 'reply', state: 'needs_human',
   key: { type: 'thread', id: `chat-${i}` }, chat: { id: `chat-${i}`, name: `Acme planning ${i}`, test: true },
   asker: { id: 'kim', name: 'Kim' }, session: { agent: 'copilot', id: randomUUID() },
   lastMsgId: '101', pending: [], msgIds: ['101'], lastAsk: 'Please check the plan.',

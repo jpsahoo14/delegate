@@ -1,5 +1,115 @@
 # React preview
 
+## Step-6 PE correction B1: distinguish new data from legacy data
+
+- All four Workflow factories (intake creation/split, waiting follow-up and tracker) stamp WORKFLOW_SCHEMA.
+  New items never enter the legacy schema chain. Jobs, automations and proposals keep their independent schema 1.
+  Existing old workflows still follow the bounded migration; no repair or migration behavior is changed here.
+- The typed engine AST audit rejects a Workflow literal whose schema does not reference WORKFLOW_SCHEMA.
+  The manual proof now constructs items through real intake, splitOff, applyAnswers and track, rather than seeding schema 7.
+  Migration returns zero, workflow bytes and the completion marker remain byte-identical, and no upgrade/skip logs appear.
+- `node scripts/prove-workflow-upgrades.mjs` now proves 40 journeys. The real-constructor assertion reproduced B1 before
+  the four-factory fix, then passed after it.
+
+## R5 exact SEND handoff merge
+
+- Merge only ac80ea62 onto the fd61abbc release integration (d894d2c2). Retain SEND's report preparation at runOne,
+  finishWork and terminal-return applyReport, the optional store context, structured review results and the idempotent
+  repairPendingEffectCalls path from legacyEffects. No later SEND work is included.
+- Retain HOST status/return/failure lifecycle fields, fresh owned-field commits and working clocks. The newly introduced
+  repair state transition uses stateFields too; SEND's workflow/job re-read merge fixes remain intact.
+- All comment-call, stage-B native MCP and structured-report proofs pass, as do migration/clock 36, send 26, aggregate
+  holds 20, sharing 12, receipt wording 21, scopes 29 and retention 15. Twenty current-schema simulated-storage ticks:
+  p50/p90/max 372/447/1769 ms; real page/settings during await 266/262 ms. Build and both app typechecks pass.
+
+## R5 release-base merge
+
+- Merge the exact 0.2.41 + CI-only base, retaining multi-reason owner holds, warm checks/history and New's released UI.
+  Host schema/status/return metadata and stateFields working clocks remain in place. Generated assets are rebuilt.
+- The released asynchronous approved-hold refresh now commits through recordCommit, preserving the host's fresh-merge
+  rule at the newly introduced await/save point. The merge proof adds a second-process write during that refresh.
+- Manual merge proof: workflow upgrades/clock audit 36 journeys, send 26, aggregate holds 20, effect wording 21,
+  build and both typechecks. SEND's later ac80ea62 integration is the next bounded merge, not included by this base.
+
+## Card-state step 6: compatibility and durable schema upgrades
+
+PE A1/A2 splits the original v2-v7 proposal:
+- `core/upgrades.ts` owns the pure v2 schema/msgIds/kept compatibility fill and v3 legacy reason/review mapping. Store's original two call
+  sites are unchanged; its only handover is removing the old function and importing this one. Reads do no migration I/O.
+- New `statusReason`, `reviewAgain { pr, head, at }` and `returnedFrom { machine, at, report }` are independent of SEND's
+  `reason` hold union. Writers stamp them beside display prose. Follow-up, vote refusal, review-again, window return and
+  scheduled-status readers use fields, not status prefixes. Owner actions durably clear the return marker; new drafts clear
+  obsolete return/failure/review metadata. There is no new active-hold field.
+- `workingSince` is stamped by `stateFields` at every typed workflow transition and constructor: entering running or
+  waiting_on_task starts its phase clock, reassigning the same state preserves it, and leaving clears it. Metadata-only
+  saves cannot move the clock. Legacy reads fall back to waitingSince or the saved updatedAt until the next write freezes it.
+  The standalone proof audits all typed engine state writers so a later bare assignment cannot silently bypass this rule.
+- The runner processes at most 50 workflows below schema 7 per tick, in order: v4 legacy setup/stopped failures, v5 part
+  links (the home goal's PR is authoritative), v6 no-news check dates, v7 author questions and recoverable finding comments.
+  Each step stages a private candidate. An inapplicable conversion preserves that step's data and records its skip reason.
+  The final owned-field commit saves schema 7 synchronously, then emits the ordered `upgraded` / `upgrade-skipped` events.
+  Existing probeMark run-failure/blocked/parts/no-news one-shots are removed.
+- `state/upgrades.json`'s `schema-7-done` is advisory, never a gate: later old items still migrate, and a pending late backlog
+  clears the marker. Already-current items are not rewritten or scanned twice. Root marker updates also use a fresh read.
+- v7 uses the existing PR-reference/comment builder; finding payload file/line/text survive. Recorded run evidence or a
+  unique archived report identifies the source. Missing/invalid payloads skip rather than invent text or half-convert a question.
+  Recovered effects are unapproved proposals, never claimed done or executed by migration.
+- This is a runner/store-compatibility change, not New's card-facts wiring. New still owns consuming these fields in cards.
+  SEND's applyReport signature/context call and effect-call-shape-1 repair are untouched.
+
+Proof: `node scripts/prove-workflow-upgrades.mjs`: 35 fictional-store journeys, including direct comparison with all four
+pre-change repair functions, every prior schema, per-version log idempotency, the 50-item limit, late arrivals, skip rollback,
+structured readers, exact review head, window lifecycle, stable working clocks and a second-process metadata edit during context reads.
+The 400-item tick rig now seeds current-schema workflows (a first migration is not an empty tick). Twenty ticks remain <=2 s;
+measured p50/p90/max 355/464/1607 ms on the fixed simulated-storage rig. No live-store or real-provider performance claim.
+## #50 stage B: comment ranges and structured results
+
+Code-built inline comment calls use the payload's positive `endLineLength` when
+known, otherwise offset 1 to anchor to the final line without an unverified
+out-of-range offset. The catalog still determines the argument names.
+`finishWork` saves the report's structured `findings` and `voteRecommendation`
+alongside its summary, reply and effects; it does not infer them from prose.
+
+Worker proposals are prepared at `runOne`, `finishWork` and terminal-return
+`applyReport`, using authoritative parent PR references and the full cached
+tool schema. Worker inline arguments are not authority. Missing payload fields
+become visible `Couldn't prepare comment N: ...` to-dos, not offered calls or
+silent completion. Votes/add-me retain their existing builders and live gates;
+code-built author questions are validated separately.
+
+Before the existing `legacyEffects` drop, `effect-call-shape-1` is an idempotent
+validity rule, not a once-only upgrade. Only definitely unmade pending comments
+outside running jobs are repaired; done, off, uncertain and ledger receipts
+are preserved. Workflow and carrier calls stay aligned even when two malformed
+calls were identical but their finding payloads differed. Repair clears old
+approval and queued execution, bumps `revAt`, retains the draft, and exposes
+`status: "The comment format was wrong and is fixed. Post them now?"`.
+The existing card contract is repaired `effects`, current revision, cleared
+`approved`, and explicit `todos`/`question` for failures; no card branch is added.
+Repair never posts or reruns work. A fresh exact-revision approval is required.
+Successful repair logs are keyed by the repaired effect's `pageChangeId`;
+unchanged ticks do not repeat them, and later catalog changes are still checked.
+Workflow repair uses the runner's `recordCommit` merge point, retaining newer
+drafts and kept tasks. Carrier updates re-read the job and change only its
+result effects and queued-execution fields, retaining newer result metadata;
+fresh running jobs and newly recorded receipts remain untouched.
+
+Fictional Temp-root proof: `node scripts/prove-effect-preparation.ts` exercises
+real dispatch/report submission, card data, stale/current approvals, native MCP
+schema-checked writes, closed-window return, repair receipts and catalog changes.
+`node scripts/prove-review-report.ts` also verifies structured result storage.
+
+## #53: shape-only tool result keys
+
+Run-tools metadata retains only the fixed envelope keys `content`,
+`structuredContent`, `isError`, `text`, `textResultForLlm`, `resultType`,
+`binaryResultsForLlm`, `error`, `image`, `data`, `value`, `items`, `nextLink`
+and `count`. All other top-level names map to one deduplicated `other`; the
+existing 20-key inspection bound and truncation signal are unchanged.
+`node scripts/prove-run-tools.ts` proves a name-keyed result logs only
+`['other']`, with no names, values, arguments or tool-call IDs.
+HOST still owns activation after every run with the current session slice.
+
 ## #46: app version before commit
 
 PM/design and PE approval: queue item #46, PE 19:30, "build as written".

@@ -8,6 +8,8 @@ const object = (value: unknown): Record<string, unknown> =>
 const toolName = (value: unknown) => typeof value === 'string' && /^[\w.:-]{1,160}$/.test(value) ? value : 'unknown'
 const timestamp = (value: unknown) => typeof value === 'string' && Number.isFinite(Date.parse(value)) ? Date.parse(value) : undefined
 const blockTypes = new Set(['text', 'image', 'audio', 'resource', 'resource_link', 'file'])
+const envelopeKeys = new Set(['content', 'structuredContent', 'isError', 'text', 'textResultForLlm', 'resultType',
+	'binaryResultsForLlm', 'error', 'image', 'data', 'value', 'items', 'nextLink', 'count'])
 
 // Inspect only the recorded envelope. Never open offloaded result files or copy arguments, text, error messages or binary data.
 function resultShape(value: unknown) {
@@ -26,7 +28,7 @@ function resultShape(value: unknown) {
 	if (result.image !== undefined || Array.isArray(result.binaryResultsForLlm)) contentTypes.add('image')
 	if (value !== undefined && !contentTypes.size) contentTypes.add('json')
 	const names = Object.keys(result)
-	const keys = [...new Set(names.slice(0, 20).map(key => /^[A-Za-z_][\w.-]{0,63}$/.test(key) ? key : 'other'))]
+	const keys = [...new Set(names.slice(0, 20).map(key => envelopeKeys.has(key) ? key : 'other'))]
 	return {
 		bytes: value === undefined ? 0 : Buffer.byteLength(typeof value === 'string' ? value : JSON.stringify(value), 'utf8'),
 		contentTypes: [...contentTypes].sort(), keys, keysTruncated: names.length > 20,

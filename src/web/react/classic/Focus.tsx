@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef, useState } from 'react'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { useCardPresentation, useEntities, useSnapshot } from '../data/hooks.ts'
 import { ClassicCard } from './Card.tsx'
 import { Button } from '../components/ui/button.tsx'
@@ -12,11 +12,15 @@ import { ViewportList } from '../components/ViewportList.tsx'
 import { messageText, sentAt } from '../features/ItemCard.tsx'
 import { SentTime } from '../features/SentTime.tsx'
 import { codeHover } from '../domain/hover.ts'
+import { NAME } from '../brand.ts'
 
-const QueueItem = memo(function QueueItem({ item, person, chat, active, current }: { item: Entities['items'][string]; person: Entities['people'][string]; chat: Entities['chats'][string]; active: boolean; current: boolean }) {
-	const sent = sentAt(item)
-	return <div className="classic-queue-row"><a className={active ? undefined : 'classic-queue-handled'} href={`#classic/focus/${item.code}`} title={codeHover(item.code)} aria-current={current ? 'step' : undefined} data-classic-code={item.code} data-classic-live={active}>
-		{active ? <Avatar person={person} /> : <span className="classic-queue-check"><Icon name="check" /></span>}<span className="classic-queue-text"><span className="classic-queue-name"><span>{person.name.split(/[\s,(]+/)[0]}</span><SentTime at={sent.at} added={sent.added} waiting={active} code={item.code} /></span><span className="classic-queue-preview">				{messageText(item.question || item.ask || '').slice(0, 200)}</span><span className="classic-queue-chat">{chat.group ? `in ${chat.name}` : '1:1 chat'}</span></span>
+// A row the owner acted on stays in the queue; how it looks comes from the item now (#48, PE 19:40): ticked and struck only when it is
+// finished for him (sent, dismissed, done), a clock and no strike while Delegate works on it, plain otherwise.
+type Look = 'live' | 'working' | 'done' | 'moved'
+const QueueItem = memo(function QueueItem({ item, person, chat, look, current }: { item: Entities['items'][string]; person: Entities['people'][string]; chat: Entities['chats'][string]; look: Look; current: boolean }) {
+	const sent = sentAt(item), active = look === 'live'
+	return <div className="classic-queue-row"><a className={look === 'done' ? 'classic-queue-handled' : look === 'live' ? undefined : `classic-queue-${look}`} href={`#classic/focus/${item.code}`} title={codeHover(item.code)} aria-current={current ? 'step' : undefined} data-classic-code={item.code} data-classic-live={active} data-look={look}>
+		{look === 'done' ? <span className="classic-queue-check"><Icon name="check" /></span> : look === 'working' ? <span className="classic-queue-clock"><Icon name="clock" /></span> : <Avatar person={person} />}<span className="classic-queue-text"><span className="classic-queue-name"><span>{person.name.split(/[\s,(]+/)[0]}</span><SentTime at={sent.at} added={sent.added} waiting={active} code={item.code} /></span><span className="classic-queue-preview">				{look === 'working' ? `${NAME} is working on it · back to you when there's something to send` : messageText(item.question || item.ask || '').slice(0, 200)}</span><span className="classic-queue-chat">{chat.group ? `in ${chat.name}` : '1:1 chat'}</span></span>
 	</a>{item.teams && <Button asChild variant="ghost" size="icon-xs" aria-label="Open in Teams"><a href={item.teams} target="_blank" rel="noopener noreferrer"><Icon name="ext" /></a></Button>}</div>
 })
 
@@ -39,13 +43,24 @@ export default function Focus() {
 	const code = route.split('/')[1] ?? shown.find(code => incoming.includes(code)) ?? shown[0]
 	const { primary } = useCardPresentation(code ?? '', undefined, visit.snapshots[code ?? ''])
 	const live = shown.filter(code => incoming.includes(code)), index = live.indexOf(code)
+	// The item as the page has it now: gone from Now, or placed in Done / Catch up, is finished; a working card, or a click whose
+	// result says Delegate queued it, is working.
+	const byRevision = useData(state => state.byRevision)
+	const queued = useMemo(() => new Set(Object.entries(byRevision).filter(([, ui]) => ui.result?.outcome?.kind === 'queued').map(([key]) => key.slice(0, key.lastIndexOf('@')))), [byRevision])
+	const lookOf = (id: string, active: boolean): Look => {
+		if (active) return 'live'
+		const now = entities.items[id]
+		if (!now) return 'done'
+		if (now.mode === 'working' || queued.has(id) && !Object.values(entities.placements).some(row => row.subjects.includes(id) && (row.section === 'done' || row.section === 'catchup'))) return 'working'
+		return Object.values(entities.placements).some(row => row.subjects.includes(id) && (row.section === 'done' || row.section === 'catchup')) ? 'done' : 'moved'
+	}
 	const next = index >= 0 ? live[index + 1] : shown.slice(shown.indexOf(code) + 1).find(code => incoming.includes(code)) ?? live[0]
 	return <><h1 className="sr-only">Needs you</h1>
 		{!shown.length ? <section className="empty"><h2>That&apos;s everything</h2><p>Nothing needs you right now.</p><a href="#classic/home">Home</a> - <a href="#classic/done">See what was done</a></section> :
 			<div className="classic-focus">{wide && <nav className="classic-queue" aria-label="Needs you queue"><h2><span>Needs you</span><span>{live.length}</span></h2>			<ViewportList ordered scrollable className="classic-queue-window" ids={shown} estimate={74} gap={2} target={code} retained={Object.keys(pins)} render={id => {
 				const data = entities.items[id] ? entities : pins[id]?.snapshot.entities ?? visit.snapshots[id].entities
 				const item = data.items[id], person = data.people[item.personId], active = incoming.includes(id)
-				return <QueueItem item={item} person={person} chat={data.chats[item.chatId]} active={active} current={id === code} />
+				return <QueueItem item={item} person={person} chat={data.chats[item.chatId]} look={lookOf(id, active)} current={id === code} />
 			}} /></nav>}<section className="classic-open-card">
 				<div className="classic-pager"><a href="#classic/home" aria-label="Back to Home"><Icon name="back" /></a><span className="classic-pager-spacer" />
 					<Button variant="outline" aria-label="Previous item" disabled={index <= 0} onClick={() => navigate(`focus/${live[index - 1]}`)}><Icon name="left" /><span className="classic-pager-label">Previous</span></Button>

@@ -1,3 +1,4 @@
+import { stateFields } from './upgrades.ts'
 import type { Workflow } from './types.ts'
 import { pageChangeId, pageDigest } from './page-approval.ts'
 
@@ -17,11 +18,16 @@ export function restampReasons(wf: Workflow) {
 	setHoldReasons(wf, holdReasons(wf).map(reason => ({ ...reason, digest: reviewDigest(wf, reasonMessages(reason)) })))
 }
 export function reviewedReasons(wf: Workflow, reviewed?: string): string[] {
-	const reasons = holdReasons(wf)
-	return reviewed && (reviewed === holdDigest(reasons) || reasons.length === 1 && reviewed === reasons[0].digest) ?
+	const reasons = holdReasons(wf), vote = voteHold(wf)
+	return reviewed && (reviewed === holdDigest(reasons) || !!vote && reviewed === pageDigest([wf.holdDigest, vote.digest]) || reasons.length === 1 && reviewed === reasons[0].digest) ?
 		reasons.filter(reason => reviewDigest(wf, reasonMessages(reason)) === reason.digest).map(reason => reason.digest) : []
 }
-export function clearHold(wf: Workflow) { setHoldReasons(wf, []); wf.holdCheckPending = undefined }
+export const voteHold = (wf: Workflow) => wf.statusReason?.kind === 'vote-claim' ? wf.voteClaim : undefined
+export function clearVoteHold(wf: Workflow) {
+	if (wf.statusReason?.kind === 'vote-claim') wf.statusReason = undefined
+	wf.voteClaim = undefined
+}
+export function clearHold(wf: Workflow) { setHoldReasons(wf, []); wf.holdCheckPending = undefined; clearVoteHold(wf) }
 
 export function keepApprovedDraft(wf: Workflow, reason: string) {
 	if (!wf.ownerSend || wf.sent && !wf.sent.holding && wf.sent.at >= wf.ownerSend.at) return
@@ -29,6 +35,6 @@ export function keepApprovedDraft(wf: Workflow, reason: string) {
 	const messages: { id: string; text: string; at: string }[] = []
 	setHoldReasons(wf, [...holdReasons(wf).filter(r => r.kind !== 'no-reply-needed'), { kind: 'no-reply-needed', why: reason, digest: reviewDigest(wf, messages) }])
 	wf.holdCheckPending = true
-	Object.assign(wf, { state: 'needs_human', question: undefined, choices: undefined, sendAt: undefined, approved: undefined,
+	Object.assign(wf, { ...stateFields(wf, 'needs_human'), question: undefined, choices: undefined, sendAt: undefined, approved: undefined,
 		closedBy: undefined, status: `Delegate thinks no reply is needed now: ${reason}. Your approved draft is kept. Send anyway or Skip.` })
 }

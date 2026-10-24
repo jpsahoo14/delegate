@@ -20,7 +20,8 @@ export function whoAndChat(entities: Entities, code: string, kept?: { who?: stri
 // The words, from the stored outcome and the item, never from the chat text (#47, PE 18:40, PM 19:12). A held Send reuses the card's
 // own held line. A receipt saved before outcomes existed has no words: the line is hidden.
 const bare = (s?: string) => s?.replace(/[.\s]+$/, '') || undefined
-const TODOS = new Set(['todo-done', 'todo-row-done', 'classic-close'])
+// classic-close only closes work now (PM 20:15); a receipt from before, when it marked to-dos, still has its count.
+const TODOS = new Set(['todo-done', 'todo-row-done'])
 const until = (at?: string) => at && Number.isFinite(Date.parse(at)) ? new Date(at).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) : at
 export function resultWords(r: Receipt, entities: Entities): string | undefined {
 	const o = r.outcome
@@ -30,7 +31,9 @@ export function resultWords(r: Receipt, entities: Entities): string | undefined 
 	const chat = item ? (c => c?.group ? c.name : undefined)(entities.chats[item.chatId]) : r.chat
 	const message = first ? `${first}'s message` : chat ? `the message in ${chat}` : undefined
 	if (o.kind === 'sent') return to ? `Sent to ${to}.` : 'Sent.'
-	const why = bare(o.kind === 'held' ? item?.mode === 'held' ? item.attention : undefined : o.stale ? 'it changed since you looked' : item?.attention)
+	// The card's warn is a click's reason only when it is one (L4, PE 22:12): never a promise or a report notice.
+	const reason = item?.attentionKind ? item.attention : undefined
+	const why = bare(o.kind === 'held' ? item?.mode === 'held' ? item.attention : undefined : o.stale ? 'it changed since you looked' : reason)
 	if (o.kind === 'held' || (o.kind === 'refused' || o.kind === 'failed') && o.send) return `Your reply${to ? ` to ${to}` : ''} wasn't sent${why ? `: ${why}.` : '.'}`
 	const forWho = first ? ` for ${first}` : ''
 	if (o.kind === 'refused' || o.kind === 'failed') return why ? `Couldn't do that${forWho}: ${why}.` : `Couldn't do that${forWho}; open it to see why.`
@@ -39,7 +42,7 @@ export function resultWords(r: Receipt, entities: Entities): string | undefined 
 	if (a === 'dismiss' && message) return `Dismissed ${message}.`
 	if (a === 'later' && message) return `${message[0].toUpperCase()}${message.slice(1)} is in Later.`
 	if (a === 'answer') return `Got your answer; redrafting your reply${first ? ` to ${first}` : ''}.`
-	if (a && TODOS.has(a)) return o.count && o.count > 1 ? `Marked ${o.count} tasks done.` : o.count === 1 ? 'Marked the task done.' : 'Marked the tasks done.'
+	if (a && (TODOS.has(a) || a === 'classic-close' && o.count)) return o.count && o.count > 1 ? `Marked ${o.count} tasks done.` : o.count === 1 ? 'Marked the task done.' : 'Marked the tasks done.'
 	if (a === 'reopen' && message) return `Reopened ${message}.`
 	if (a === 'watch-fyi' && o.watch) return `Watching ${bare(o.watch.target)}${o.watch.until ? ` until ${until(o.watch.until)}` : ''}.`
 	if (o.kind === 'queued') return `Working on it${to ? ` for ${to}` : ''}…`
