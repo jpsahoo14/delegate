@@ -2,6 +2,7 @@ import { pendingEffects } from './effects.ts'
 import type { Confidence, Config, Job, Person, Rule, Source, Workflow } from './types.ts'
 
 export function currentDraft(workflow: Workflow, job?: Job) {
+	if (workflow.ownerSend && (!workflow.sent || workflow.sent.at < workflow.ownerSend.at)) return workflow.draft ?? workflow.ownerSend.draft
 	const endedWithoutReply = job && job.id === workflow.job && job.state === 'done' && job.purpose === 'work' && job.result && !job.result.reply &&
 		(workflow.status === job.result.summary || workflow.status === `Nothing needed: ${job.result.summary}`) &&
 		Date.parse(workflow.revAt ?? workflow.updatedAt) <= Date.parse(job.result.at ?? job.updatedAt)

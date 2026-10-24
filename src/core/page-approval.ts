@@ -15,7 +15,7 @@ export const workflowApprovalRev = (workflow: Workflow): string => pageDigest({
 	conversation: [workflow.chat.id, workflow.chat.guests, workflow.lastMsgId, workflow.lastAsk, workflow.pending, workflow.msgIds, workflow.newCount],
 	changes: pendingEffects(workflow.effects).map(effect => ({ id: pageChangeId(effect), meaning: [effect.pr, effect.ring, effect.build, effect.deploy], summary: effect.summary, maybe: effect.maybe })),
 	choices: workflow.choices && { ...workflow.choices, options: workflow.choices.options.map(pageOptionId) },
-	question: workflow.question, meeting: workflow.meeting, sent: workflow.sent?.msgId,
+	question: workflow.question, reason: workflow.reason, meeting: workflow.meeting, sent: workflow.sent?.msgId,
 	fyi: workflow.fyi, watchedAs: workflow.watchedAs,
 	promises: workflow.todos,
 	todos: workflow.kept?.filter(todo => !todo.done).map(todo => [todo.id, todo.text, todo.at]),

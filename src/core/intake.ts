@@ -2,7 +2,7 @@ import type { Person } from './types.ts'
 import { MARK } from './render.ts'
 
 export type Attachment = { name: string; type: string; url?: string }
-export type RawMsg = { id: string; at: string; from: Person | null; html: boolean; body: string; deleted?: boolean; attachments?: Attachment[]; replyToId?: string }
+export type RawMsg = { id: string; at: string; editedAt?: string; from: Person | null; html: boolean; body: string; deleted?: boolean; attachments?: Attachment[]; replyToId?: string }
 export const replyTarget = (raw: RawMsg): string | undefined => raw.replyToId || (raw.html ?
 	/<blockquote[^>]*itemtype="http:\/\/schema\.skype\.com\/Reply"[^>]*itemid="([^"]+)"/i.exec(raw.body)?.[1] ??
 	/<blockquote[^>]*itemid="([^"]+)"[^>]*itemtype="http:\/\/schema\.skype\.com\/Reply"/i.exec(raw.body)?.[1] : undefined)
@@ -54,6 +54,24 @@ export function htmlToText(html: string): string {
 			return point <= 0x10ffff && !(point >= 0xd800 && point <= 0xdfff) ? String.fromCodePoint(point) : entity
 		})
 		.replace(/\n{3,}/g, '\n\n').trim()
+}
+
+export const contentKey = (text: string) => htmlToText(text.replace(/<img\b[^>]*>/gi, '').replace(/<at\b[^>]*>[\s\S]*?<\/at>/gi, ''))
+	.replace(/\[image[^\]\n]*\]|\[attachment:[^\]\n]*\]/gi, '')
+	.replace(/https?:\/\/[^\s<>)\]]+|inline:[\da-f]+|@[\p{L}\p{N}_]+/giu, '')
+	.normalize('NFKC').toLowerCase().replace(/[\u2018\u2019]/g, "'").replace(/[^\p{L}\p{N}']+/gu, ' ').trim()
+
+const MEANING_WORD = /\d|^(?:not|no|never|don'?t|can'?t|cannot|won'?t|isn'?t|aren'?t|wasn'?t|weren'?t|shouldn'?t|wouldn'?t|couldn'?t|mustn'?t|without|monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|wed|thu|fri|sat|sun|january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec|today|tomorrow|yesterday)$/i
+export function cosmeticEdit(before: string, after: string) {
+	const a = contentKey(before).split(' ').filter(Boolean), b = contentKey(after).split(' ').filter(Boolean)
+	const small = (i: number, j: number, left: number): boolean => {
+		while (i < a.length && j < b.length && a[i] === b[j]) { i++; j++ }
+		if (i === a.length && j === b.length) return true
+		if (!left || Math.abs((a.length - i) - (b.length - j)) > left) return false
+		const x = i < a.length && !MEANING_WORD.test(a[i]), y = j < b.length && !MEANING_WORD.test(b[j])
+		return !!(x && y && small(i + 1, j + 1, left - 1) || x && small(i + 1, j, left - 1) || y && small(i, j + 1, left - 1))
+	}
+	return small(0, 0, 2)
 }
 
 const DISCLOSURE = /\(sent by [^)]*assistant\)\s*$/i

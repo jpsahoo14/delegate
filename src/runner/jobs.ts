@@ -2,6 +2,7 @@ import { blockerOf, planRetry, retryStatus } from './retry.ts'
 import { NAME } from '../brand.ts'
 import { active, afterSend, canCloseApproval, canCloseReport, hasDecisions, homeOf, mergeReportWork, newTurn, pendingParts, reReviewAsk, step, watchEnded, watchNews } from './work.ts'
 import { confidence } from '../core/policy.ts'
+import { keepApprovedDraft } from '../core/owner-send.ts'
 import { PAGE_REPLY_CHANGED } from '../core/page-approval.ts'
 import { uptime } from 'node:os'
 import { allows, changeName, changeSays, isVote, unsafeRead, pendingEffects, proposalEffects, refusal, refusedAsk, reviewAgain, carryMarks, shown, vet, voteValue, SETUP_REFUSAL, OLD_INVITE, OLD_INVITE_ASK } from '../core/effects.ts'
@@ -410,6 +411,14 @@ export function finishWork(store: Store, job: Job, r: Report, asksAtStart: numbe
 			store.save(wf)
 			continue
 		}
+		if (r.reply) { wf.ownerSend = undefined; wf.reason = undefined }
+		else if (wf.ownerSend && (!wf.sent || wf.sent.at < wf.ownerSend.at)) {
+			keepApprovedDraft(wf, r.summary || 'No reply needed')
+			wf.waitingSince = undefined
+			store.save(wf)
+			store.log({ event: 'approved-draft-kept', code: wf.code, why: r.summary })
+			continue
+		}
 		// The reply already went and its promised change waits, or its check failed: a new result is a new turn, whose own reply can
 		// go; the owner's words are checked again once it rests (Slice 3, re-review).
 		if (wf.sent) reopenPromise(store, wf)
@@ -534,6 +543,7 @@ async function finishExecute(store: Store, src: Source, cfg: Config, job: Job, p
 	for (const wf of parents) {
 		const ok = stillApproved(wf, before)
 		const replyDigest = wf.approved?.replyDigest
+		const sendReview = wf.approved?.sendReview
 		// An item whose list was not the one made keeps its own, with what was made marked (review 10-21c P1-1).
 		wf.effects = ok ? effects : wf.effects && carryMarks(wf.effects, effects)
 		if (vote !== undefined) wf.prVote = vote
@@ -604,7 +614,7 @@ async function finishExecute(store: Store, src: Source, cfg: Config, job: Job, p
 		Object.assign(wf, { state: 'needs_human', waitingSince: undefined })
 		store.save(wf)
 		try {
-			const sent = await send(store, src, cfg, wf, wf.draft?.text, { replyDigest }, probe)
+			const sent = await send(store, src, cfg, wf, wf.draft?.text, { replyDigest, sendReview }, probe)
 			if (!sent && wf.state === 'needs_human' && wf.status !== PAGE_REPLY_CHANGED) wf.status = `Changes made. The reply was not sent. Reply "ok ${wf.code}" to send it`
 		} catch (e) {
 			wf.status = `Changes made. Could not send the reply: ${String(e).slice(0, 100)}. Reply "ok ${wf.code}" to retry`
@@ -938,6 +948,14 @@ function shortOfGoal(store: Store, job: Job, r: Report) {
 	const now = new Date().toISOString()
 	const b = blockerOf(r.blocker), tried = [...new Set([...(job.retry?.tried ?? []), ...b.tried])]
 	for (const wf of parentsOf(store, job)) {
+		if (r.reply) { wf.ownerSend = undefined; wf.reason = undefined }
+		else if (wf.ownerSend && (!wf.sent || wf.sent.at < wf.ownerSend.at)) {
+			keepApprovedDraft(wf, r.summary || 'No reply needed')
+			wf.waitingSince = undefined
+			store.save(wf)
+			store.log({ event: 'approved-draft-kept', code: wf.code, why: r.summary })
+			continue
+		}
 		const failed = !r.question && !draft ? { at: now, kind: 'content' as const, why: b.why.replace(/[.\s]+$/, ''), ...(tried.length ? { tried } : {}), job: job.id } : undefined
 		// Never an older ask's draft: only this run's holding reply, or none.
 		Object.assign(wf, { state: 'needs_human', waitingSince: undefined, status: failed ? `Couldn't finish: ${failed.why}` : p.stop, question: r.question, draft, runFailed: failed, learnAfter: undefined, effects: [], approved: undefined, newCount: 0, revAt: now, decision: { action: 'draft', reason: 'The work is not finished', confidence: 'low' } })

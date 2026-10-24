@@ -6,7 +6,7 @@ import { outcome } from './habits.ts'
 import { answers, askedOf, type Waiting } from '../core/waiting.ts'
 import { randomUUID } from 'node:crypto'
 import type { Config, Msg, Person, WatchedChat, Workflow } from '../core/types.ts'
-import { asSpeaker, classify, continuesOwner, htmlToText, inlineImages, nextTurn, replyTarget, type RawMsg, type Turn } from '../core/intake.ts'
+import { asSpeaker, classify, contentKey, continuesOwner, htmlToText, inlineImages, nextTurn, replyTarget, type RawMsg, type Turn } from '../core/intake.ts'
 import { matchesOwnerDraft, ownReplyText, ownerReplies, rememberOwnerReply } from './owner-reply.ts'
 import { MARK, plain, renderPhone } from '../core/render.ts'
 import { catchUpLines, inbox, nextProposal } from './proposals.ts'
@@ -26,7 +26,7 @@ import { prTarget } from './probe.ts'
 import { askRelation, freshAsk } from './same-ask.ts'
 
 const toMsg = (r: RawMsg, from: { id: string; name: string }, text: string, byOwner: boolean): Msg =>
-	({ id: r.id, at: r.at, from, text, byOwner })
+	({ id: r.id, at: r.at, editedAt: r.editedAt, contentKey: contentKey(text), from, text, byOwner })
 
 // Owner commands in the self-chat (R-HIL-15, R-HIL-16).
 export async function readOwnerCommands(store: Store, src: Source, cursors: Record<string, string>): Promise<number> {
@@ -405,7 +405,7 @@ export function workOfAsk(store: Store, open: Workflow[], raw: RawMsg, text: str
 
 // A close starts with no reason; the caller sets one when it has it, so an earlier close's never carries over.
 export function close(wf: Workflow, status: string) {
-	Object.assign(wf, { state: 'done', status, pending: [], closedBy: undefined })
+	Object.assign(wf, { state: 'done', status, pending: [], closedBy: undefined, ownerSend: undefined, reason: undefined })
 }
 
 // Move messages the worker marked as another topic into a new item in the same chat, and queue it (D2).

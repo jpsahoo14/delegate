@@ -242,6 +242,8 @@ export class Store {
 	// When build steps were last checked; only the runner writes it (R-WRK-13).
 	probeMark(): { checkedAt?: string; habitsAt?: string; prAt?: string; placedAt?: string; runFailRepairAt?: string; partsRepairAt?: string; noNewsRepairAt?: string; blockedRepairAt?: string } { return readJson(this.p('state', 'probe.json'), {}) }
 	saveProbeMark(m: { checkedAt?: string; habitsAt?: string; prAt?: string; placedAt?: string; runFailRepairAt?: string; partsRepairAt?: string; noNewsRepairAt?: string; blockedRepairAt?: string }) { this.w(this.p('state', 'probe.json'), m) }
+	upgrades(): Record<string, string> { return readJson(this.p('state', 'upgrades.json'), {}) }
+	saveUpgrades(m: Record<string, string>) { this.w(this.p('state', 'upgrades.json'), m) }
 	missed(): (Missed & { file: string })[] {
 		const old = this.p('state', 'missed.json')
 		if (existsSync(old)) { for (const m of readJson<Missed[]>(old, [])) this.addMissed(m); rmSync(old, { force: true }) }
@@ -391,6 +393,10 @@ export class Store {
 	archiveReport(workflowId: string, runId: string) {
 		const f = this.p('state', 'reports', `${workflowId}-${runId}.json`)
 		if (existsSync(f)) moveTo(f, this.p('state', 'done', 'reports'))
+	}
+	archivedReport(workflowId: string, runId: string): Report | undefined {
+		if (!/^[\w-]+$/.test(workflowId) || !/^[\w-]+$/.test(runId)) return undefined
+		return readJson<Report | undefined>(this.p('state', 'done', 'reports', `${workflowId}-${runId}.json`), undefined)
 	}
 	takeReport(workflowId: string, runId: string): Report | undefined {
 		const r = this.peekReport(workflowId, runId)

@@ -8,7 +8,7 @@ import type { ReadOpts, SendOpts, Source } from './source.ts'
 import { isThread, parseThread, Threads, type ThreadCache, type WatchedChannel } from './channels.ts'
 import { NAME } from '../brand.ts'
 
-export type TeamsMsg = { id: string; createdDateTime: string; lastModifiedDateTime?: string; deletedDateTime?: string | null; replyToId?: string | null; from?: { id: string; displayName: string } | null; body?: { contentType: string; content: string }; attachments?: { name?: string | null; contentType?: string; contentUrl?: string | null; content?: string | null }[] }
+export type TeamsMsg = { id: string; createdDateTime: string; lastModifiedDateTime?: string; lastEditedDateTime?: string | null; deletedDateTime?: string | null; replyToId?: string | null; from?: { id: string; displayName: string } | null; body?: { contentType: string; content: string }; attachments?: { name?: string | null; contentType?: string; contentUrl?: string | null; content?: string | null }[] }
 type Page = { messages?: TeamsMsg[]; nextLink?: string; '@odata.nextLink'?: string }
 
 const DEFAULT_TOOLS = { list: 'ListChatMessages', send: 'SendMessageToChat', sendSelf: 'SendMessageToSelf', get: 'GetChat', chats: 'ListChats', del: 'DeleteChatMessage', edit: 'UpdateChatMessage', presence: 'GetUserPresence', members: 'ListChatMembers', message: 'GetChatMessage' }
@@ -202,6 +202,7 @@ export function toRaw(m: TeamsMsg): RawMsg {
 	return {
 		id: m.id,
 		at: m.createdDateTime,
+		editedAt: m.lastEditedDateTime ?? undefined,
 		from: m.from ? { id: m.from.id, name: m.from.displayName } : null,
 		html: m.body?.contentType?.toLowerCase() === 'html',
 		body: m.body?.content ?? '',

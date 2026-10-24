@@ -33,6 +33,7 @@ export type ItemCard = {
 	// From the first-setup read: when the ask was sent.
 	before?: string
 	question?: string; draft?: { text: string; commitment: boolean; preview: boolean; holding?: true }
+	reason?: Workflow['reason']
 	choices?: Choices; picked?: number[]; context?: Fact[]; meeting?: Meeting; changes: Change[]; job?: string
 	why: { reason?: string; confidence?: string; sources: SourceRow[]; gaps: string[]; searched?: string[] }
 	notes: Note[]; status: string; openOn?: string; teams?: string
@@ -186,6 +187,7 @@ export function card(store: Store, w: Workflow, k = knowledgeOf(store, store.con
 		ask: w.lastAsk === undefined ? undefined : htmlToText(w.lastAsk), newCount: w.newCount, earlier: w.earlier === undefined ? undefined : htmlToText(w.earlier), before: w.before ? store.thread(w.id).find(m => m.id === w.lastMsgId)?.at ?? w.createdAt : undefined,
 		thread: thread.slice(-12).map(m => ({ who: m.from.name, text: htmlToText(m.text).slice(0, 600), at: m.at, owner: !!m.byOwner })),
 		question: w.question === undefined || replied ? undefined : htmlToText(w.question), draft: draft?.text && !/^_{3,}$/.test(draft.text.trim()) ? { text: draft.text, commitment: draft.commitment, preview: !!draft.preview, ...(draft.holding ? { holding: true } : {}) } : undefined,
+		reason: replied ? undefined : w.reason,
 		choices: replied ? undefined : w.choices, picked: w.picked, context: [...(w.shareHold && !replied ? [{ label: 'Need to know', text: w.shareHold, tone: 'warn' as const }] : []), ...(w.context ?? []).filter(fact => !replied || fact.tone !== 'warn')].map(fact => ({ ...fact, label: htmlToText(fact.label), text: htmlToText(fact.text) })), meeting: w.meeting, job: job?.goal,
 		...(replied && mine ? { ownReply: { text: htmlToText(mine.ownerReply?.text ?? mine.text), at: mine.at, ...(teamsOf(w, mine.id) ? { teams: teamsOf(w, mine.id) } : {}) } } : {}),
 		...(unsent && !/^_{3,}$/.test(unsent.trim()) ? { unsent } : {}),

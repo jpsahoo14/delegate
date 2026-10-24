@@ -14,6 +14,7 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Automation, Config, Report, Workflow } from '../core/types.ts'
 import { randomUUID } from 'node:crypto'
+import { keepApprovedDraft } from '../core/owner-send.ts'
 import { describe } from './automations.ts'
 import { ulid } from '../core/ids.ts'
 import { MARK, plain, renderNudge, renderPreview } from '../core/render.ts'
@@ -52,6 +53,7 @@ const CATALOG_CHANGED = /MCP tool catalog changed/i
 
 // Each queued workflow runs once, with all of its new messages together (R-WF-02, R-WF-06).
 export async function dispatch(store: Store, src: Source, cfg: Config, run: RunWorker = runAgent, probe?: BuildProbe): Promise<number> {
+	restoreApprovedDrafts(store)
 	const held = blockedAgent(store, cfg)
 	if (held) { waitingForAgent(store, held); return 0 }
 	// An item open in a Continue window belongs to the owner until it closes (R-WF-07).
@@ -94,6 +96,42 @@ export async function dispatch(store: Store, src: Source, cfg: Config, run: RunW
 	}
 	for (const a of store.automations().filter(a => a.heard && a.state === 'active').slice(0, Math.max(0, room - done))) { if (blockedAgent(store, cfg)) break; await judgeReply(store, cfg, a, run); done++ }
 	return done
+}
+
+// The last legacy repair (#37): only the logged approval -> forced rerun -> no-reply sequence qualifies.
+// Log evidence is scanned only once per store, recorded in the versioned upgrade markers.
+export function restoreApprovedDrafts(store: Store): number {
+	const upgrades = store.upgrades()
+	if (upgrades['draft-restore-37']) return 0
+	const candidates = store.workflows().filter(w => !w.draft && !w.ownerSend && !w.sent && !w.redacted && w.kind === 'reply' &&
+		(w.state === 'open' || w.state === 'done' && w.closedBy === 'nothing') && !w.work?.closed)
+	const logs = candidates.length ? store.logs(30).sort((a, b) => String(a.at).localeCompare(String(b.at))) : []
+	let restored = 0
+	for (const w of candidates) {
+		const own = logs.filter(e => e.workflowId === w.id || e.code === w.code)
+		const answer = own.filter(e => e.event === 'answer').at(-1)
+		if (!answer || answer.verb !== 'ok' && answer.verb !== 'send') continue
+		const approvalAt = Date.parse(String(answer.at))
+		const rerun = own.find(e => e.event === 'state' && e.to === 'running' && e.status === 'New messages arrived. Redrafting.' &&
+			// Applying an answer logs its state before its final "answer" receipt, often in the same second.
+			Math.abs(Date.parse(String(e.at)) - approvalAt) <= 60_000)
+		if (!rerun) continue
+		const ended = own.filter(e => e.event === 'worker' && Date.parse(String(e.at)) >= Date.parse(String(rerun.at)) &&
+			Date.parse(String(e.at)) <= approvalAt + 10 * 60_000 && typeof e.runId === 'string').at(-1)
+		if (!ended) continue
+		const empty = store.archivedReport(w.id, String(ended.runId))
+		if (!empty || empty.reply) continue
+		const previous = own.filter(e => e.event === 'worker' && typeof e.runId === 'string' && Date.parse(String(e.at)) <= approvalAt).reverse()
+		const reply = previous.map(e => ({ event: e, report: store.archivedReport(w.id, String(e.runId)) })).find(e => !!e.report?.reply?.text.trim())
+		if (!reply?.report?.reply) continue
+		w.ownerSend = { draft: { ...reply.report.reply }, at: String(answer.at), askMsgId: w.lastMsgId }
+		keepApprovedDraft(w, empty.summary || 'No reply needed')
+		store.save(w)
+		store.log({ event: 'draft-restored', code: w.code, workflowId: w.id, fromRunId: reply.event.runId, approvedAt: answer.at })
+		restored++
+	}
+	store.saveUpgrades({ ...upgrades, 'draft-restore-37': new Date().toISOString() })
+	return restored
 }
 
 // One-time repair of items an older version left with the fallback question after a failed run (queue-new #11). An open item whose
@@ -274,6 +312,14 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 	const tools = workerTools(cfg, 'reply')
 	refuseStart(cfg, tools)
 	if (wf.state !== 'running') return runAsk(store, src, cfg, wf, run)
+	const approvedDraft = wf.draft ?? (wf.approved?.text ? { text: wf.approved.text, commitment: false, sources: [] } : undefined)
+	if (!wf.ownerSend && approvedDraft && wf.approved) {
+		const at = wf.approved.at
+		if (!wf.sent || wf.sent.at < at) {
+			wf.ownerSend = { draft: structuredClone(approvedDraft), at, askMsgId: wf.lastMsgId }
+			store.save(wf, false)
+		}
+	}
 	await probePRs(store, cfg, probe, Date.now(), true, [wf])
 	if (wf.state !== 'running' || blockedAgent(store, cfg)) return
 	const runId = ulid()
@@ -323,6 +369,14 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 		Object.assign(fresh, { state: newer ? 'running' : 'needs_human', approved: undefined, status: newer ? 'New asks arrived during this run. Checking them next.' : 'Earlier changes are still unverified. Review them before closing this work.' })
 		store.log({ event: 'report-held', workflowId: fresh.id, reason: newer ? 'newer-ask' : 'unverified-effects' })
 		store.save(fresh)
+		store.archiveReport(wf.id, runId)
+		return
+	}
+	if (report && !report.reply && fresh.ownerSend && (!fresh.sent || fresh.sent.at < fresh.ownerSend.at)) {
+		keepApprovedDraft(fresh, report.summary || 'No reply needed')
+		fresh.pending = []
+		store.save(fresh)
+		store.log({ event: 'approved-draft-kept', code: fresh.code, why: report.summary })
 		store.archiveReport(wf.id, runId)
 		return
 	}
@@ -492,6 +546,14 @@ export function checked(store: Store, cfg: Config, r: Report): Report {
 }
 
 export function applyReport(wf: Workflow, r: Report, home = wf, allowClose = true) {
+	if (r.reply) { wf.ownerSend = undefined; wf.reason = undefined; wf.approved = undefined }
+	if (!r.reply && !wf.ownerSend && wf.approved?.text)
+		wf.ownerSend = { draft: wf.draft ?? { text: wf.approved.text, commitment: false, sources: [] }, at: wf.approved.at, askMsgId: wf.lastMsgId }
+	if (wf.ownerSend && !r.reply && (!wf.sent || wf.sent.at < wf.ownerSend.at)) {
+		keepApprovedDraft(wf, r.summary || 'No reply needed')
+		wf.pending = []
+		return
+	}
 	const changedAsk = home === wf && r.work?.changedAsk && wf.pending.includes(r.work.changedAsk) && wf.msgIds.includes(r.work.changedAsk) ? r.work.changedAsk : undefined
 	if (!r.reply) { wf.draft = undefined; wf.learnAfter = undefined }
 	wf.intent = r.intent

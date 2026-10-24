@@ -1002,6 +1002,7 @@ var init_effects = __esm({
 
 // src/core/policy.ts
 function currentDraft(workflow, job) {
+  if (workflow.ownerSend && (!workflow.sent || workflow.sent.at < workflow.ownerSend.at)) return workflow.draft ?? workflow.ownerSend.draft;
   const endedWithoutReply = job && job.id === workflow.job && job.state === "done" && job.purpose === "work" && job.result && !job.result.reply && (workflow.status === job.result.summary || workflow.status === `Nothing needed: ${job.result.summary}`) && Date.parse(workflow.revAt ?? workflow.updatedAt) <= Date.parse(job.result.at ?? job.updatedAt);
   return endedWithoutReply ? void 0 : workflow.draft;
 }
@@ -1144,6 +1145,7 @@ var init_page_approval = __esm({
       changes: pendingEffects(workflow.effects).map((effect) => ({ id: pageChangeId(effect), meaning: [effect.pr, effect.ring, effect.build, effect.deploy], summary: effect.summary, maybe: effect.maybe })),
       choices: workflow.choices && { ...workflow.choices, options: workflow.choices.options.map(pageOptionId) },
       question: workflow.question,
+      reason: workflow.reason,
       meeting: workflow.meeting,
       sent: workflow.sent?.msgId,
       fyi: workflow.fyi,
@@ -22537,6 +22539,12 @@ var init_state = __esm({
       saveProbeMark(m) {
         this.w(this.p("state", "probe.json"), m);
       }
+      upgrades() {
+        return readJson(this.p("state", "upgrades.json"), {});
+      }
+      saveUpgrades(m) {
+        this.w(this.p("state", "upgrades.json"), m);
+      }
       missed() {
         const old = this.p("state", "missed.json");
         if (existsSync6(old)) {
@@ -22750,6 +22758,10 @@ var init_state = __esm({
       archiveReport(workflowId, runId) {
         const f = this.p("state", "reports", `${workflowId}-${runId}.json`);
         if (existsSync6(f)) moveTo(f, this.p("state", "done", "reports"));
+      }
+      archivedReport(workflowId, runId) {
+        if (!/^[\w-]+$/.test(workflowId) || !/^[\w-]+$/.test(runId)) return void 0;
+        return readJson(this.p("state", "done", "reports", `${workflowId}-${runId}.json`), void 0);
       }
       takeReport(workflowId, runId) {
         const r = this.peekReport(workflowId, runId);
@@ -40318,6 +40330,32 @@ var init_retry = __esm({
   }
 });
 
+// src/core/owner-send.ts
+function keepApprovedDraft(wf, reason) {
+  if (!wf.ownerSend || wf.sent && wf.sent.at >= wf.ownerSend.at) return;
+  wf.draft = { ...wf.ownerSend.draft };
+  const messages = [];
+  wf.reason = { kind: "no-reply-needed", why: reason, digest: reviewDigest(wf, messages) };
+  Object.assign(wf, {
+    state: "needs_human",
+    question: void 0,
+    choices: void 0,
+    sendAt: void 0,
+    approved: void 0,
+    closedBy: void 0,
+    status: `Delegate thinks no reply is needed now: ${reason}. Your approved draft is kept. Send anyway or Skip.`
+  });
+}
+var reviewDigest, reasonMessages;
+var init_owner_send = __esm({
+  "src/core/owner-send.ts"() {
+    "use strict";
+    init_page_approval();
+    reviewDigest = (wf, messages) => pageDigest([wf.draft, wf.effects?.map((e) => [pageChangeId(e), e.summary, e.off, e.maybe]), messages]);
+    reasonMessages = (reason) => reason.kind === "no-reply-needed" ? [] : [{ id: reason.msgId, text: reason.text, at: reason.at }];
+  }
+});
+
 // src/core/render.ts
 function age(fromIso, now) {
   const m = Math.max(0, Math.round((now.getTime() - Date.parse(fromIso)) / 6e4));
@@ -40751,7 +40789,7 @@ function sendGate(wf, text3, ctx) {
   if (replyGap(text3)) return { send: false, reason: REPLY_BLANK };
   if (ctx.paused) return { send: false, reason: "Paused" };
   if (ctx.alreadyReplied) return { send: false, reason: "A reply to this message already exists" };
-  if (ctx.newestThreadMsgId !== wf.lastMsgId) return { send: false, reason: "New messages since the draft", rerun: true };
+  if (!ctx.ownerApproved && ctx.newestThreadMsgId !== wf.lastMsgId) return { send: false, reason: "New messages since the draft", rerun: true };
   if (ctx.ownerApproved) return { send: true };
   if (ctx.draftOnly) return { send: false, reason: "Draft-only mode" };
   if (commits(wf)) return { send: false, reason: "Commitment needs the owner" };
@@ -40806,6 +40844,20 @@ function htmlToText(html) {
     return point <= 1114111 && !(point >= 55296 && point <= 57343) ? String.fromCodePoint(point) : entity;
   }).replace(/\n{3,}/g, "\n\n").trim();
 }
+function cosmeticEdit(before, after) {
+  const a = contentKey(before).split(" ").filter(Boolean), b = contentKey(after).split(" ").filter(Boolean);
+  const small = (i, j, left) => {
+    while (i < a.length && j < b.length && a[i] === b[j]) {
+      i++;
+      j++;
+    }
+    if (i === a.length && j === b.length) return true;
+    if (!left || Math.abs(a.length - i - (b.length - j)) > left) return false;
+    const x = i < a.length && !MEANING_WORD.test(a[i]), y = j < b.length && !MEANING_WORD.test(b[j]);
+    return !!(x && y && small(i + 1, j + 1, left - 1) || x && small(i + 1, j, left - 1) || y && small(i, j + 1, left - 1));
+  };
+  return small(0, 0, 2);
+}
 function asSpeaker(text3, test) {
   const as = test ? text3.match(AS) : null;
   if (!as) return void 0;
@@ -40842,7 +40894,7 @@ function nextTurn(t2, by) {
   if (by.owner) return { last: t2?.last, owner: { at: by.at, to: by.to ?? (t2?.last ? [t2.last.id] : []), text: by.text.slice(0, 600) } };
   return { last: { id: by.from.id, at: by.at }, owner: continuesOwner(t2, by.from, by.at) ? t2.owner : void 0 };
 }
-var replyTarget, ENT, DATA_IMG, keyOf, DISCLOSURE, AS, isPersona, TURN_HOURS, escape2;
+var replyTarget, ENT, DATA_IMG, keyOf, contentKey, MEANING_WORD, DISCLOSURE, AS, isPersona, TURN_HOURS, escape2;
 var init_intake = __esm({
   "src/core/intake.ts"() {
     "use strict";
@@ -40874,6 +40926,8 @@ var init_intake = __esm({
       for (let i = 0; i < data.length; i++) h = BigInt.asUintN(64, (h ^ BigInt(data.charCodeAt(i))) * 0x100000001b3n);
       return `${h.toString(16).padStart(16, "0")}${data.length.toString(16)}`;
     };
+    contentKey = (text3) => htmlToText(text3.replace(/<img\b[^>]*>/gi, "").replace(/<at\b[^>]*>[\s\S]*?<\/at>/gi, "")).replace(/\[image[^\]\n]*\]|\[attachment:[^\]\n]*\]/gi, "").replace(/https?:\/\/[^\s<>)\]]+|inline:[\da-f]+|@[\p{L}\p{N}_]+/giu, "").normalize("NFKC").toLowerCase().replace(/[\u2018\u2019]/g, "'").replace(/[^\p{L}\p{N}']+/gu, " ").trim();
+    MEANING_WORD = /\d|^(?:not|no|never|don'?t|can'?t|cannot|won'?t|isn'?t|aren'?t|wasn'?t|weren'?t|shouldn'?t|wouldn'?t|couldn'?t|mustn'?t|without|monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|wed|thu|fri|sat|sun|january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec|today|tomorrow|yesterday)$/i;
     DISCLOSURE = /\(sent by [^)]*assistant\)\s*$/i;
     AS = /^\[as ([^\]]{1,60})\]\s*/i;
     isPersona = (id) => id.startsWith("test:");
@@ -42743,6 +42797,7 @@ import { mkdirSync as mkdirSync7, writeFileSync as writeFileSync8 } from "node:f
 import { join as join15 } from "node:path";
 import { randomUUID as randomUUID4 } from "node:crypto";
 async function dispatch(store2, src, cfg, run2 = runAgent, probe) {
+  restoreApprovedDrafts(store2);
   const held = blockedAgent(store2, cfg);
   if (held) {
     waitingForAgent(store2, held);
@@ -42802,6 +42857,36 @@ async function dispatch(store2, src, cfg, run2 = runAgent, probe) {
     done2++;
   }
   return done2;
+}
+function restoreApprovedDrafts(store2) {
+  const upgrades = store2.upgrades();
+  if (upgrades["draft-restore-37"]) return 0;
+  const candidates2 = store2.workflows().filter((w) => !w.draft && !w.ownerSend && !w.sent && !w.redacted && w.kind === "reply" && (w.state === "open" || w.state === "done" && w.closedBy === "nothing") && !w.work?.closed);
+  const logs = candidates2.length ? store2.logs(30).sort((a, b) => String(a.at).localeCompare(String(b.at))) : [];
+  let restored = 0;
+  for (const w of candidates2) {
+    const own3 = logs.filter((e) => e.workflowId === w.id || e.code === w.code);
+    const answer = own3.filter((e) => e.event === "answer").at(-1);
+    if (!answer || answer.verb !== "ok" && answer.verb !== "send") continue;
+    const approvalAt = Date.parse(String(answer.at));
+    const rerun = own3.find((e) => e.event === "state" && e.to === "running" && e.status === "New messages arrived. Redrafting." && // Applying an answer logs its state before its final "answer" receipt, often in the same second.
+    Math.abs(Date.parse(String(e.at)) - approvalAt) <= 6e4);
+    if (!rerun) continue;
+    const ended2 = own3.filter((e) => e.event === "worker" && Date.parse(String(e.at)) >= Date.parse(String(rerun.at)) && Date.parse(String(e.at)) <= approvalAt + 10 * 6e4 && typeof e.runId === "string").at(-1);
+    if (!ended2) continue;
+    const empty = store2.archivedReport(w.id, String(ended2.runId));
+    if (!empty || empty.reply) continue;
+    const previous = own3.filter((e) => e.event === "worker" && typeof e.runId === "string" && Date.parse(String(e.at)) <= approvalAt).reverse();
+    const reply2 = previous.map((e) => ({ event: e, report: store2.archivedReport(w.id, String(e.runId)) })).find((e) => !!e.report?.reply?.text.trim());
+    if (!reply2?.report?.reply) continue;
+    w.ownerSend = { draft: { ...reply2.report.reply }, at: String(answer.at), askMsgId: w.lastMsgId };
+    keepApprovedDraft(w, empty.summary || "No reply needed");
+    store2.save(w);
+    store2.log({ event: "draft-restored", code: w.code, workflowId: w.id, fromRunId: reply2.event.runId, approvedAt: answer.at });
+    restored++;
+  }
+  store2.saveUpgrades({ ...upgrades, "draft-restore-37": (/* @__PURE__ */ new Date()).toISOString() });
+  return restored;
 }
 function repairRunFailures(store2, days2 = 14) {
   const old = store2.workflows().filter((w) => w.state === "needs_human" && OLD_FALLBACK.test(w.question ?? ""));
@@ -42933,6 +43018,14 @@ async function runOne(store2, src, cfg, wf, run2, probe, catalogRetried = false,
   const tools = workerTools(cfg, "reply");
   refuseStart(cfg, tools);
   if (wf.state !== "running") return runAsk(store2, src, cfg, wf, run2);
+  const approvedDraft = wf.draft ?? (wf.approved?.text ? { text: wf.approved.text, commitment: false, sources: [] } : void 0);
+  if (!wf.ownerSend && approvedDraft && wf.approved) {
+    const at3 = wf.approved.at;
+    if (!wf.sent || wf.sent.at < at3) {
+      wf.ownerSend = { draft: structuredClone(approvedDraft), at: at3, askMsgId: wf.lastMsgId };
+      store2.save(wf, false);
+    }
+  }
   await probePRs(store2, cfg, probe, Date.now(), true, [wf]);
   if (wf.state !== "running" || blockedAgent(store2, cfg)) return;
   const runId = ulid3();
@@ -42982,6 +43075,14 @@ ${res.summary ?? ""}`));
     Object.assign(fresh, { state: newer2 ? "running" : "needs_human", approved: void 0, status: newer2 ? "New asks arrived during this run. Checking them next." : "Earlier changes are still unverified. Review them before closing this work." });
     store2.log({ event: "report-held", workflowId: fresh.id, reason: newer2 ? "newer-ask" : "unverified-effects" });
     store2.save(fresh);
+    store2.archiveReport(wf.id, runId);
+    return;
+  }
+  if (report2 && !report2.reply && fresh.ownerSend && (!fresh.sent || fresh.sent.at < fresh.ownerSend.at)) {
+    keepApprovedDraft(fresh, report2.summary || "No reply needed");
+    fresh.pending = [];
+    store2.save(fresh);
+    store2.log({ event: "approved-draft-kept", code: fresh.code, why: report2.summary });
     store2.archiveReport(wf.id, runId);
     return;
   }
@@ -43139,6 +43240,18 @@ function checked(store2, cfg, r) {
   return q2.reply ? { ...q2, reply: { ...q2.reply, sources: resolveEvidence(knowledgeOf(store2, cfg), cfg, q2.reply.sources, store2.root) } } : q2;
 }
 function applyReport(wf, r, home = wf, allowClose = true) {
+  if (r.reply) {
+    wf.ownerSend = void 0;
+    wf.reason = void 0;
+    wf.approved = void 0;
+  }
+  if (!r.reply && !wf.ownerSend && wf.approved?.text)
+    wf.ownerSend = { draft: wf.draft ?? { text: wf.approved.text, commitment: false, sources: [] }, at: wf.approved.at, askMsgId: wf.lastMsgId };
+  if (wf.ownerSend && !r.reply && (!wf.sent || wf.sent.at < wf.ownerSend.at)) {
+    keepApprovedDraft(wf, r.summary || "No reply needed");
+    wf.pending = [];
+    return;
+  }
   const changedAsk = home === wf && r.work?.changedAsk && wf.pending.includes(r.work.changedAsk) && wf.msgIds.includes(r.work.changedAsk) ? r.work.changedAsk : void 0;
   if (!r.reply) {
     wf.draft = void 0;
@@ -43242,6 +43355,7 @@ var init_dispatch = __esm({
     init_provenance();
     init_catalog();
     init_own();
+    init_owner_send();
     init_automations();
     init_ids();
     init_render();
@@ -44535,7 +44649,7 @@ function workOfAsk(store2, open2, raw, text3, to) {
   return topics > 1 && hit[0] !== named2 && !waited.includes(hit[0]) ? void 0 : hit[0].code;
 }
 function close(wf, status3) {
-  Object.assign(wf, { state: "done", status: status3, pending: [], closedBy: void 0 });
+  Object.assign(wf, { state: "done", status: status3, pending: [], closedBy: void 0, ownerSend: void 0, reason: void 0 });
 }
 function splitOff(store2, cfg, from, ids) {
   const moving = new Set(ids.filter((id) => from.msgIds.includes(id)));
@@ -44634,7 +44748,7 @@ var init_intake2 = __esm({
     init_probe();
     init_same_ask();
     isControl = (v) => CONTROL_VERBS.includes(v);
-    toMsg = (r, from, text3, byOwner) => ({ id: r.id, at: r.at, from, text: text3, byOwner });
+    toMsg = (r, from, text3, byOwner) => ({ id: r.id, at: r.at, editedAt: r.editedAt, contentKey: contentKey(text3), from, text: text3, byOwner });
     COMMIT = /\b(I(?:'|’)ll|I will|I(?:'|’)d be|I would be|I can take|I(?:'|’)m on it|let me (?:check|take|look|handle|test|try|do))\b/i;
     closedBy = (store2, chatId, senderId) => store2.workflows().filter((w) => w.state === "done" && !w.redacted && w.chat.id === chatId && w.asker?.id === senderId).sort((a, b) => a.updatedAt.localeCompare(b.updatedAt));
     MISSED = /^missed\s+(https?:\/\/\S+)\s*(?::\s*([\s\S]*))?$/i;
@@ -44946,6 +45060,8 @@ ${nextProposal(store2, kp.code, answer.surface === "self" ? 6 : Infinity)}`}`).s
 }
 async function applyOne(store2, src, cfg, wf, a, procs, probe) {
   wf.answerSurface = a.surface;
+  if (a.verb === "answer" && /^send anyway[.!]?$/i.test(a.text?.trim() ?? "") && wf.reason)
+    a = { ...a, verb: "ok", text: void 0, sendReview: wf.reason.digest };
   const yesNo = wf.groupAsk && a.verb === "answer" ? /^\s*(?:(yes|yeah|yep|y|i am)|(no|nope|n|i'm not|i am not))\b/i.exec(a.text ?? "") : void 0;
   if (wf.groupAsk && yesNo) return groupAnswer(store2, src, wf, a, !!yesNo[1], probe);
   if (wf.runFailed && a.verb === "answer" && /^\s*try again\s*$/i.test(a.text ?? "")) {
@@ -45039,6 +45155,8 @@ async function applyOne(store2, src, cfg, wf, a, procs, probe) {
       const blocked = cancelRetry(store2, procs, wf);
       if (blocked) return reply(store2, src, a, `${MARK} ${blocked}`, true);
       wf.needsMe = void 0;
+      wf.ownerSend = void 0;
+      wf.reason = void 0;
       wf.learnAfter = void 0;
       if (wf.kind !== "tracker" && wf.draft && !wf.sent) store2.log({ event: "skipped", workflowId: wf.id, code: wf.code, chat: wf.chat.id, intent: wf.intent, asker: wf.asker, ask: wf.lastAsk?.slice(0, 400), draft: wf.draft.text });
       if (wf.kind !== "tracker" && wf.draft && !wf.sent) outcome(store2, wf, "skipped");
@@ -45078,6 +45196,17 @@ async function applyOne(store2, src, cfg, wf, a, procs, probe) {
       store2.save(wf);
       return reply(store2, src, a, `${MARK} Asking about ${wf.code}. The answer comes back here; nothing is sent to ${wf.asker?.name ?? "anyone"}.`);
     case "answer":
+      if (/^redraft[.!]?$/i.test(a.text?.trim() ?? "") && wf.reason && wf.reason.kind !== "no-reply-needed") {
+        const reason = wf.reason, thread2 = store2.thread(wf.id);
+        if (!thread2.some((m) => m.id === reason.msgId) && wf.asker)
+          store2.saveThread(wf.id, [...thread2, { id: reason.msgId, text: reason.text, at: reason.at, from: wf.asker, byOwner: false, contentKey: contentKey(reason.text) }]);
+        wf.lastAsk = reason.text;
+        wf.lastMsgId = reason.msgId;
+        wf.msgIds = [.../* @__PURE__ */ new Set([...wf.msgIds, reason.msgId])];
+        wf.pending = [reason.msgId];
+      }
+      wf.ownerSend = void 0;
+      wf.reason = void 0;
       withdraw(store2, procs, wf);
       if (wf.sent) reopenPromise(store2, wf);
       if (wf.kind === "tracker" && wf.job && store2.job(wf.job)) {
@@ -45099,6 +45228,8 @@ async function applyOne(store2, src, cfg, wf, a, procs, probe) {
     case "edit": {
       if (wf.state === "waiting_on_task" || wf.state === "running") return reply(store2, src, a, `${MARK} ${wf.code} is still working. I'll show the draft first.`);
       const original = wf.learnAfter?.draft ?? wf.draft?.text;
+      wf.ownerSend = void 0;
+      wf.reason = void 0;
       Object.assign(wf, { state: "needs_human", sendAt: void 0, approved: void 0, draft: { ...wf.draft ?? { commitment: false, sources: [] }, text: a.text, preview: true, byOwner: true, ownWords: ownWords(wf, a.text) }, question: void 0, revAt: (/* @__PURE__ */ new Date()).toISOString(), status: "Edited by you", learnAfter: original ? { draft: original, sent: a.text } : void 0 });
       store2.save(wf);
       store2.markShown([wf]);
@@ -45118,6 +45249,8 @@ async function applyOne(store2, src, cfg, wf, a, procs, probe) {
         wf.draft = { ...wf.draft ?? { commitment: false, sources: [] }, text: a.text, byOwner: true, ownWords: ownWords(wf, a.text) };
       }
       if (holdReplyGap(store2, wf, wf.draft?.text)) return reply(store2, src, a, `${MARK} ${REPLY_BLANK}`, true);
+      rememberSend(store2, wf);
+      if (await heldSend(store2, src, wf, a)) return;
       if (wf.job && pendingEffects(wf.effects).length > 0) {
         if (await askGone(store2, src, cfg, wf, a)) {
           store2.save(wf);
@@ -45125,13 +45258,14 @@ async function applyOne(store2, src, cfg, wf, a, procs, probe) {
         }
         const t2 = await threadSince(store2, src, cfg, wf, "");
         if (t2.ownerUnknown && !t2.ownerReplied) store2.log({ event: "owner-reply-fallback", code: wf.code, before: "approved-changes", note: OWNER_REPLY_UNCHECKED });
-        if (t2.ownerReplied || t2.asker) {
+        if (t2.ownerReplied || await newMessageHold(store2, src, wf, a, t2.messages)) {
           if (t2.ownerReplied) {
             close(wf, t2.ownerExact ? "You sent it yourself" : "You replied yourself");
             wf.closedBy = "replied";
-          } else Object.assign(wf, { state: "running", status: "New messages arrived. Redrafting." });
+          }
           store2.save(wf, true, t2.ownerReplied ? { askAt: askAtOf(store2.thread(wf.id), wf.msgIds), replyAt: t2.ownerAt } : void 0);
-          return reply(store2, src, a, `${MARK} Not done ${wf.code}: ${t2.ownerReplied ? "you already replied in the chat" : "new messages since the draft. I will redraft first"}.`);
+          if (t2.ownerReplied) return reply(store2, src, a, `${MARK} Not done ${wf.code}: you already replied in the chat.`);
+          return;
         }
       }
       if (a.nums?.length) {
@@ -45178,7 +45312,10 @@ async function applyOne(store2, src, cfg, wf, a, procs, probe) {
         return reply(store2, src, a, `${MARK} ${stale}`, true);
       }
       const held = approveEffects(store2, cfg, wf, !!a.again);
-      if (!held && wf.approved) wf.approved.replyDigest = a.page?.replyDigest;
+      if (!held && wf.approved) {
+        wf.approved.replyDigest = a.page?.replyDigest;
+        wf.approved.sendReview = a.sendReview;
+      }
       if (held !== void 0) {
         store2.save(wf);
         return reply(store2, src, a, `${MARK} ${held || `Posting ${wf.code}'s ${effectLine(pendingEffects(wf.effects))} now${wf.draft?.text ? ", then sending the reply" : ""}.`}`, !!held);
@@ -45316,10 +45453,41 @@ function ownWords(wf, text3) {
   const theirs = wf.learnAfter?.draft ?? (wf.draft?.byOwner ? void 0 : wf.draft?.text);
   return !theirs || flat(theirs) !== flat(text3) ? true : void 0;
 }
-async function askGone(store2, src, cfg, wf, a) {
+function rememberSend(store2, wf) {
+  if (!wf.draft) return;
+  wf.ownerSend = { draft: structuredClone(wf.draft), at: (/* @__PURE__ */ new Date()).toISOString(), askMsgId: wf.lastMsgId };
+  store2.save(wf, false);
+}
+async function heldSend(store2, src, wf, a) {
+  if (!wf.reason || a.sendReview === wf.reason.digest && reviewDigest(wf, reasonMessages(wf.reason)) === a.sendReview) return false;
+  await reply(store2, src, a, `${MARK} Not sent ${wf.code}: ${wf.status}`, true);
+  return true;
+}
+async function holdSend(store2, src, wf, a, kind, before, message) {
+  const digest = reviewDigest(wf, [message]);
+  wf.reason = kind === "ask-edited" ? { kind, msgId: message.id, before, text: message.text, at: message.at, digest } : { kind, msgId: message.id, text: message.text, at: message.at, digest };
+  Object.assign(wf, {
+    state: "needs_human",
+    approved: void 0,
+    sendAt: void 0,
+    status: "Your approved draft is kept. Send anyway or Redraft."
+  });
+  store2.save(wf);
+  store2.log({ event: "owner-send-held", code: wf.code, kind, msgId: message.id });
+  await reply(store2, src, a, `${MARK} Not sent ${wf.code}: ${wf.status}`, true);
+}
+async function newMessageHold(store2, src, wf, a, messages) {
+  const message = messages.at(-1);
+  if (!message) return false;
+  const digest = reviewDigest(wf, [message]);
+  if (a.sendReview === digest) return false;
+  await holdSend(store2, src, wf, a, "asker-wrote-again", wf.lastAsk ?? "", message);
+  return true;
+}
+async function askGone(store2, src, cfg, wf, a, automatic = false) {
   const id = wf.msgIds.at(-1);
   if (!id || !wf.chat.id) return false;
-  const m = (await src.recent(wf.chat.id, 30)).find((x) => x.id === id);
+  const m = src.around ? (await src.around(wf.chat.id, id)).msg : (await src.recent(wf.chat.id, 30)).find((x) => x.id === id);
   if (!m) return false;
   if (m.deleted || !m.body.trim()) {
     close(wf, "The message was deleted");
@@ -45329,10 +45497,23 @@ async function askGone(store2, src, cfg, wf, a) {
   const now = classify(m, { ownerId: cfg.owner.id, ownerName: cfg.owner.name, aliases: cfg.aliases, test: wf.chat.test, group: !!wf.chat.group, sentIds: /* @__PURE__ */ new Set() });
   const thread2 = store2.thread(wf.id);
   const was = thread2.find((x) => x.id === id);
-  if (!was || now.kind === "skip" || norm3(now.text) === norm3(was.text)) return false;
-  store2.saveThread(wf.id, thread2.map((x) => x.id === id ? { ...x, text: now.text } : x));
-  Object.assign(wf, { state: "running", lastAsk: now.text, pending: [id], approved: void 0, status: "The message was edited. Redrafting." });
-  await reply(store2, src, a, `${MARK} Not sent ${wf.code}: ${wf.asker?.name ?? "they"} edited the message. I will redraft first.`);
+  if (!was || now.kind === "skip") return false;
+  const sameRevision = !!m.editedAt && !!was.editedAt && m.editedAt === was.editedAt;
+  const sameContent = (was.contentKey ?? contentKey(was.text)) === contentKey(now.text);
+  const cosmetic = sameContent || !automatic && cosmeticEdit(was.text, now.text);
+  store2.saveThread(wf.id, thread2.map((x) => x.id === id ? { ...x, text: now.text, editedAt: m.editedAt, contentKey: contentKey(now.text) } : x));
+  if (sameRevision || cosmetic) {
+    if (was.text !== now.text || was.editedAt !== m.editedAt)
+      store2.log({ event: "edit-ignored", code: wf.code, reason: sameRevision || sameContent ? "render" : "cosmetic" });
+    return false;
+  }
+  if (automatic) {
+    Object.assign(wf, { state: "running", lastAsk: now.text, pending: [id], approved: void 0, status: "The message was edited. Redrafting." });
+    return true;
+  }
+  const messages = [{ id, text: now.text, at: m.editedAt ?? m.at }];
+  if (a.sendReview === reviewDigest(wf, messages)) return false;
+  await holdSend(store2, src, wf, a, "ask-edited", was.text, messages[0]);
   return true;
 }
 async function threadSince(store2, src, cfg, wf, want, signed = false) {
@@ -45341,6 +45522,7 @@ async function threadSince(store2, src, cfg, wf, want, signed = false) {
   const openHere = store2.openInChat(wf.chat.id);
   const claimed = new Set(openHere.filter((o) => o.id !== wf.id).flatMap((o) => o.msgIds));
   let asker, ours4 = false, ownerReplied = false, ownerAt, ownerUnknown = false, ownerExact = false;
+  const messages = [];
   for (const m of fresh.msgs) {
     if (m.from?.id === cfg.owner.id && want && !c.sentIds.has(m.id) && (norm3(m.body) === want || signed && squash(m.body).endsWith(squash(want)))) {
       ours4 = true;
@@ -45348,7 +45530,10 @@ async function threadSince(store2, src, cfg, wf, want, signed = false) {
       continue;
     }
     const k = classify(m, c);
-    if (k.kind === "ask" && k.from.id === wf.asker?.id && !claimed.has(m.id)) asker = m.id;
+    if (k.kind === "ask" && k.from.id === wf.asker?.id && !claimed.has(m.id)) {
+      asker = m.id;
+      messages.push({ id: m.id, text: k.text, at: m.at });
+    }
     if (k.kind !== "owner") continue;
     if (homeOf(store2, wf).work?.steps.some((s3) => s3.ref === `owner:${m.id}`)) continue;
     const replied = await ownerReplies(store2, cfg, m, k.text, openHere, { ai: false });
@@ -45360,14 +45545,19 @@ async function threadSince(store2, src, cfg, wf, want, signed = false) {
       ownerExact ||= matchesOwnerDraft(ownText, wf);
     } else if (!replied.has(wf.id)) ownerUnknown = true;
   }
-  return { asker, ours: ours4, ownerReplied, ownerAt, ownerUnknown, ownerExact };
+  return { asker, messages, ours: ours4, ownerReplied, ownerAt, ownerUnknown, ownerExact };
 }
 async function send(store2, src, cfg, wf, text3, by, probe) {
+  if (!by.ruleId) rememberSend(store2, wf);
   if (holdReplyGap(store2, wf, text3, !!by.ruleId)) {
     if (by.answer) await reply(store2, src, by.answer, `${MARK} ${REPLY_BLANK}`, true);
     return false;
   }
-  if (wf.draft && !currentDraft(wf, wf.job ? store2.job(wf.job) : void 0)) {
+  if (by.ruleId && wf.reason) {
+    store2.log({ event: "automatic-send-held", code: wf.code, reason: wf.reason.kind });
+    return false;
+  }
+  if (!wf.ownerSend && wf.draft && !currentDraft(wf, wf.job ? store2.job(wf.job) : void 0)) {
     wf.draft = void 0;
     wf.learnAfter = void 0;
     wf.approved = void 0;
@@ -45433,6 +45623,12 @@ async function send(store2, src, cfg, wf, text3, by, probe) {
           const why2 = othersApprovalMismatch(others, st, ref2.id);
           store2.log({ event: "pr-others-checked", code: wf.code, pr: ref2.id, status: st.status, reviewers: st.votes.length, ok: !why2, ...why2 ? { why: why2 } : {} });
           if (why2) {
+            if (!by.ruleId) {
+              Object.assign(wf, { state: "needs_human", sendAt: void 0, approved: void 0, status: `Not sent: ${why2}. Your approved draft is kept. Edit the reply or check the PR first.` });
+              store2.save(wf);
+              await told(wf.status);
+              return false;
+            }
             Object.assign(wf, { state: "running", draft: void 0, prDraft: void 0, sendAt: void 0, approved: void 0, status: `The PR evidence does not support this reply (${why2}). Redrafting.`, pending: wf.pending.length ? wf.pending : wf.msgIds.slice(-1) });
             store2.log({ event: "pr-reply-redraft", workflowId: wf.id, why: why2 });
             store2.save(wf);
@@ -45460,6 +45656,12 @@ async function send(store2, src, cfg, wf, text3, by, probe) {
           return false;
         }
         if (!owner2 && !others && !approvalReplyMatches(text3 ?? "", vote, ref2.id)) {
+          if (!by.ruleId) {
+            Object.assign(wf, { state: "needs_human", sendAt: void 0, approved: void 0, status: `Not sent: PR ${ref2.id}'s live vote does not support this reply. Your approved draft is kept. Edit the reply or check the PR first.` });
+            store2.save(wf);
+            await told(wf.status);
+            return false;
+          }
           Object.assign(wf, { state: "running", draft: void 0, prDraft: void 0, sendAt: void 0, approved: void 0, status: "The PR evidence does not support this approval reply. Redrafting.", pending: wf.pending.length ? wf.pending : wf.msgIds.slice(-1) });
           store2.log({ event: "pr-reply-redraft", workflowId: wf.id });
           store2.save(wf);
@@ -45487,7 +45689,7 @@ async function send(store2, src, cfg, wf, text3, by, probe) {
       if (!probe) await live2?.close?.();
     }
   }
-  const a = by.answer ?? { id: "", code: wf.code, verb: "ok", surface: wf.answerSurface ?? "chat", at: "" };
+  const a = by.answer ?? { id: "", code: wf.code, verb: "ok", surface: wf.answerSurface ?? "chat", at: "", sendReview: by.sendReview };
   const p = { ...DEFAULT_POLICY, ...cfg.policy };
   const out = text3 ? by.ruleId ? withMarker(text3, signatureOf(cfg), cfg.owner.name) : approvedReplyText(text3, wf, cfg) : text3;
   if (out !== text3 && holdReplyGap(store2, wf, out, !!by.ruleId)) {
@@ -45506,8 +45708,12 @@ async function send(store2, src, cfg, wf, text3, by, probe) {
     await reply(store2, src, a, `${MARK} Not sent ${wf.code}: it is open in a window.`, true);
     return false;
   }
-  if (await askGone(store2, src, cfg, wf, a)) return false;
-  const { asker, ours: ours4, ownerReplied, ownerAt, ownerUnknown, ownerExact } = await threadSince(store2, src, cfg, wf, out ? norm3(mdToHtml(out)) : "", !!out && out !== text3);
+  if (!by.ruleId && await heldSend(store2, src, wf, a)) return false;
+  if (await askGone(store2, src, cfg, wf, a, !!by.ruleId)) {
+    store2.save(wf);
+    return false;
+  }
+  const { asker, messages, ours: ours4, ownerReplied, ownerAt, ownerUnknown, ownerExact } = await threadSince(store2, src, cfg, wf, out ? norm3(mdToHtml(out)) : "", !!out && out !== text3);
   if (ownerUnknown && !ownerReplied && !ours4) {
     store2.log({ event: "owner-reply-fallback", code: wf.code, byRule: by.ruleId, note: OWNER_REPLY_UNCHECKED });
   }
@@ -45527,6 +45733,7 @@ async function send(store2, src, cfg, wf, text3, by, probe) {
     await reply(store2, src, a, `${MARK} Not sent ${wf.code}: you already replied in the chat.`);
     return false;
   }
+  if (!by.ruleId && !ours4 && await newMessageHold(store2, src, wf, a, messages)) return false;
   if (by.ruleId && wf.draft?.sources.some((s3) => s3.label)) wf.chat.guests = await src.members?.(wf.chat.id).then((m) => m.guests, () => void 0);
   const newest2 = store2.thread(wf.id).filter((m) => !m.byOwner && wf.msgIds.includes(m.id)).sort((x, y) => x.at.localeCompare(y.at)).at(-1);
   const sameOrLater = (a2, b) => a2 === b || /^\d+$/.test(a2) && /^\d+$/.test(b) && BigInt(a2) >= BigInt(b);
@@ -45569,6 +45776,8 @@ async function send(store2, src, cfg, wf, text3, by, probe) {
   const askAt = ask?.at, askMsgId = ask?.id, edited = !!wf.draft?.byOwner;
   const changesOff = (wf.effects ?? []).filter((e) => e.off).length;
   wf.needsMe = void 0;
+  wf.ownerSend = void 0;
+  wf.reason = void 0;
   wf.sent = { msgId, at: (/* @__PURE__ */ new Date()).toISOString(), text: text3, sendText: out !== text3 ? out : void 0, byRule: by.ruleId, undoUntil: new Date(Date.now() + p.undoMin * 6e4).toISOString(), ...askMsgId ? { askMsgId } : {} };
   if (wf.approved) wf.approved.replyDigest = void 0;
   store2.save(wf, false);
@@ -45812,6 +46021,7 @@ var init_apply = __esm({
     init_page_approval();
     init_page_revision();
     init_reply_gap();
+    init_owner_send();
     norm3 = (t2) => htmlToText(t2).replace(/\s+/g, " ").trim();
     flat = (t2) => t2.replace(/\s+/g, " ").trim();
     squash = (t2) => norm3(t2).replace(/[^\p{L}\p{N}]+/gu, "").toLowerCase();
@@ -46960,6 +47170,16 @@ function finishWork(store2, job, r, asksAtStart) {
       store2.save(wf);
       continue;
     }
+    if (r.reply) {
+      wf.ownerSend = void 0;
+      wf.reason = void 0;
+    } else if (wf.ownerSend && (!wf.sent || wf.sent.at < wf.ownerSend.at)) {
+      keepApprovedDraft(wf, r.summary || "No reply needed");
+      wf.waitingSince = void 0;
+      store2.save(wf);
+      store2.log({ event: "approved-draft-kept", code: wf.code, why: r.summary });
+      continue;
+    }
     if (wf.sent) reopenPromise(store2, wf);
     const decision = r.reply ? { action: "draft", reason: "A review or investigation result always waits for you", confidence: confidence(r.reply.sources ?? []) } : wf.decision;
     Object.assign(wf, { state: nothing ? wf.work || wf.partOf ? "open" : "done" : "needs_human", closedBy: nothing && !(wf.work || wf.partOf) ? "job" : void 0, learnAfter: void 0, status: nothing ? `Nothing needed: ${r.summary}` : r.summary, question: r.question, draft: r.reply ? { ...r.reply } : void 0, effects, decision, waitingSince: void 0, approved: void 0, newCount: 0, revAt: (/* @__PURE__ */ new Date()).toISOString(), ...r.context ? { context: r.context } : {} });
@@ -47065,6 +47285,7 @@ async function finishExecute(store2, src, cfg, job, procs, probe) {
   for (const wf of parents) {
     const ok = stillApproved(wf, before);
     const replyDigest = wf.approved?.replyDigest;
+    const sendReview = wf.approved?.sendReview;
     wf.effects = ok ? effects : wf.effects && carryMarks(wf.effects, effects);
     if (vote !== void 0) wf.prVote = vote;
     wf.approved = void 0;
@@ -47131,7 +47352,7 @@ async function finishExecute(store2, src, cfg, job, procs, probe) {
     Object.assign(wf, { state: "needs_human", waitingSince: void 0 });
     store2.save(wf);
     try {
-      const sent = await send(store2, src, cfg, wf, wf.draft?.text, { replyDigest }, probe);
+      const sent = await send(store2, src, cfg, wf, wf.draft?.text, { replyDigest, sendReview }, probe);
       if (!sent && wf.state === "needs_human" && wf.status !== PAGE_REPLY_CHANGED) wf.status = `Changes made. The reply was not sent. Reply "ok ${wf.code}" to send it`;
     } catch (e) {
       wf.status = `Changes made. Could not send the reply: ${String(e).slice(0, 100)}. Reply "ok ${wf.code}" to retry`;
@@ -47437,6 +47658,16 @@ function shortOfGoal(store2, job, r) {
   const now = (/* @__PURE__ */ new Date()).toISOString();
   const b = blockerOf(r.blocker), tried = [.../* @__PURE__ */ new Set([...job.retry?.tried ?? [], ...b.tried])];
   for (const wf of parentsOf(store2, job)) {
+    if (r.reply) {
+      wf.ownerSend = void 0;
+      wf.reason = void 0;
+    } else if (wf.ownerSend && (!wf.sent || wf.sent.at < wf.ownerSend.at)) {
+      keepApprovedDraft(wf, r.summary || "No reply needed");
+      wf.waitingSince = void 0;
+      store2.save(wf);
+      store2.log({ event: "approved-draft-kept", code: wf.code, why: r.summary });
+      continue;
+    }
     const failed = !r.question && !draft2 ? { at: now, kind: "content", why: b.why.replace(/[.\s]+$/, ""), ...tried.length ? { tried } : {}, job: job.id } : void 0;
     Object.assign(wf, { state: "needs_human", waitingSince: void 0, status: failed ? `Couldn't finish: ${failed.why}` : p.stop, question: r.question, draft: draft2, runFailed: failed, learnAfter: void 0, effects: [], approved: void 0, newCount: 0, revAt: now, decision: { action: "draft", reason: "The work is not finished", confidence: "low" } });
     const home = homeOf(store2, wf);
@@ -47473,6 +47704,7 @@ var init_jobs = __esm({
     init_brand();
     init_work();
     init_policy();
+    init_owner_send();
     init_page_approval();
     init_effects();
     init_probe();
@@ -47675,6 +47907,8 @@ function mergePlan(old, next2, at3, keep = false) {
   return [...old.map((o) => merged.find((m) => m.id === o.id) ?? o), ...merged.filter((m) => !old.some((o) => o.id === m.id))].slice(0, 12);
 }
 function newTurn(wf, keepSent = false) {
+  wf.ownerSend = void 0;
+  wf.reason = void 0;
   Object.assign(wf, { draft: void 0, prDraft: void 0, learnAfter: void 0, closeWorkAfterSend: void 0, choices: void 0, question: void 0, effects: void 0, promised: void 0, decision: void 0, approved: void 0, picked: void 0, sendAt: void 0, correction: void 0, todos: void 0, newCount: 0, ...keepSent ? {} : { sent: void 0 } });
 }
 function keepTodos(wf, at3, todos = wf.todos) {
@@ -47819,6 +48053,8 @@ function statusOf(wf) {
 }
 function closeWork(wf, why2) {
   if (!wf.work) return;
+  wf.ownerSend = void 0;
+  wf.reason = void 0;
   wf.work.closed = { at: (/* @__PURE__ */ new Date()).toISOString(), why: why2 };
   wf.work.next = void 0;
   wf.work.waitingOn = void 0;
@@ -47880,6 +48116,8 @@ function ownerStep(wf, text3, msgId, home = wf) {
   step(home, `${wf === home ? "You wrote" : `You wrote to ${label(wf, home).replace(/: $/, "")}`}: ${text3}`, { ref: `owner:${msgId}` });
   if (home.work && !home.work.closed) home.work.checkAt = new Date(Date.now() + CHECK_DAYS * DAY3).toISOString();
   if (wf.state === "waiting_on_task") return;
+  wf.ownerSend = void 0;
+  wf.reason = void 0;
   newTurn(wf, !!wf.sent);
   Object.assign(wf, { state: "open", status: statusOf(home), pending: [] });
 }
@@ -48569,6 +48807,7 @@ function card(store2, w, k = knowledgeOf(store2, store2.config())) {
     thread: thread2.slice(-12).map((m) => ({ who: m.from.name, text: htmlToText(m.text).slice(0, 600), at: m.at, owner: !!m.byOwner })),
     question: w.question === void 0 || replied ? void 0 : htmlToText(w.question),
     draft: draft2?.text && !/^_{3,}$/.test(draft2.text.trim()) ? { text: draft2.text, commitment: draft2.commitment, preview: !!draft2.preview, ...draft2.holding ? { holding: true } : {} } : void 0,
+    reason: replied ? void 0 : w.reason,
     choices: replied ? void 0 : w.choices,
     picked: w.picked,
     context: [...w.shareHold && !replied ? [{ label: "Need to know", text: w.shareHold, tone: "warn" }] : [], ...(w.context ?? []).filter((fact) => !replied || fact.tone !== "warn")].map((fact) => ({ ...fact, label: htmlToText(fact.label), text: htmlToText(fact.text) })),
@@ -49838,6 +50077,7 @@ function toRaw(m) {
   return {
     id: m.id,
     at: m.createdDateTime,
+    editedAt: m.lastEditedDateTime ?? void 0,
     from: m.from ? { id: m.from.id, name: m.from.displayName } : null,
     html: m.body?.contentType?.toLowerCase() === "html",
     body: m.body?.content ?? "",

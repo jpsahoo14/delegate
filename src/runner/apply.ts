@@ -4,7 +4,7 @@ import { active, afterSend, approvalAsk, approvalMention, approvalReplyMatches, 
 import { asksReviewAgain, claimsInvite, doLine, isInvite, isVote, OLD_INVITE, OLD_INVITE_ASK, pendingEffects, prIdOf, proposalEffects, refusal, refusedAsk, saidLine, sameChange, sameHead, shown, vet, voteName, voteValue } from '../core/effects.ts'
 import type { Answer, Config, Effect, Person, Workflow } from '../core/types.ts'
 import { sendGate } from '../core/gate.ts'
-import { classify, htmlToText } from '../core/intake.ts'
+import { classify, contentKey, cosmeticEdit, htmlToText } from '../core/intake.ts'
 import { mdToHtml } from '../core/format.ts'
 import { approvedReplyText, currentDraft, DEFAULT_POLICY, REPLY_BLANK, signatureOf, withMarker, reopenable } from '../core/policy.ts'
 import { effectLine, MARK, plain, renderMore, renderPreview } from '../core/render.ts'
@@ -33,6 +33,7 @@ import { isDeploy } from '../core/deploy.ts'
 import { PAGE_REPLY_CHANGED, pageAnswerRefusal, pageDigest } from '../core/page-approval.ts'
 import { pageManagementRev } from '../store/page-revision.ts'
 import { holdReplyGap } from './reply-gap.ts'
+import { reasonMessages, reviewDigest } from '../core/owner-send.ts'
 
 // Apply owner answers in time order. Effects run here and nowhere else.
 export async function applyAnswers(store: Store, src: Source, cfg: Config, procs: Procs = realProcs, controlsOnly = false, probe?: BuildProbe): Promise<number> {
@@ -94,6 +95,8 @@ export async function applyAnswers(store: Store, src: Source, cfg: Config, procs
 
 async function applyOne(store: Store, src: Source, cfg: Config, wf: Workflow, a: Answer, procs: Procs, probe?: BuildProbe) {
 	wf.answerSurface = a.surface
+	if (a.verb === 'answer' && /^send anyway[.!]?$/i.test(a.text?.trim() ?? '') && wf.reason)
+		a = { ...a, verb: 'ok', text: undefined, sendReview: wf.reason.digest }
 	// "Are you in <group>?": yes or no is remembered in config, and the PR's role is read again at once (queue-new #7C).
 	const yesNo = wf.groupAsk && a.verb === 'answer' ? /^\s*(?:(yes|yeah|yep|y|i am)|(no|nope|n|i'm not|i am not))\b/i.exec(a.text ?? '') : undefined
 	if (wf.groupAsk && yesNo) return groupAnswer(store, src, wf, a, !!yesNo[1], probe)
@@ -188,6 +191,7 @@ async function applyOne(store: Store, src: Source, cfg: Config, wf: Workflow, a:
 			const blocked = cancelRetry(store, procs, wf)
 			if (blocked) return reply(store, src, a, `${MARK} ${blocked}`, true)
 			wf.needsMe = undefined
+			wf.ownerSend = undefined; wf.reason = undefined
 			// A skipped draft's edit never went out, so it is not carried to the next draft (R-NEX-11).
 			wf.learnAfter = undefined
 			if (wf.kind !== 'tracker' && wf.draft && !wf.sent) store.log({ event: 'skipped', workflowId: wf.id, code: wf.code, chat: wf.chat.id, intent: wf.intent, asker: wf.asker, ask: wf.lastAsk?.slice(0, 400), draft: wf.draft.text })
@@ -217,6 +221,14 @@ async function applyOne(store: Store, src: Source, cfg: Config, wf: Workflow, a:
 			store.save(wf)
 			return reply(store, src, a, `${MARK} Asking about ${wf.code}. The answer comes back here; nothing is sent to ${wf.asker?.name ?? 'anyone'}.`)
 		case 'answer':
+			if (/^redraft[.!]?$/i.test(a.text?.trim() ?? '') && wf.reason && wf.reason.kind !== 'no-reply-needed') {
+				const reason = wf.reason, thread = store.thread(wf.id)
+				if (!thread.some(m => m.id === reason.msgId) && wf.asker)
+					store.saveThread(wf.id, [...thread, { id: reason.msgId, text: reason.text, at: reason.at, from: wf.asker, byOwner: false, contentKey: contentKey(reason.text) }])
+				wf.lastAsk = reason.text; wf.lastMsgId = reason.msgId
+				wf.msgIds = [...new Set([...wf.msgIds, reason.msgId])]; wf.pending = [reason.msgId]
+			}
+			wf.ownerSend = undefined; wf.reason = undefined
 			withdraw(store, procs, wf)
 			// The reply already went and its promised change waits, or its check failed: the owner's answer is a new turn, whose own
 			// reply can go; the promise is checked again once it rests (re-review P1-1, P1-2).
@@ -245,6 +257,7 @@ async function applyOne(store: Store, src: Source, cfg: Config, wf: Workflow, a:
 			// edit changes the draft and shows it; only ok or send makes it go out (persona test P0).
 			if (wf.state === 'waiting_on_task' || wf.state === 'running') return reply(store, src, a, `${MARK} ${wf.code} is still working. I'll show the draft first.`)
 			const original = wf.learnAfter?.draft ?? wf.draft?.text
+			wf.ownerSend = undefined; wf.reason = undefined
 			// An edit is never approved: a scheduled automatic send is cancelled and waits for ok (final review P0-3).
 			Object.assign(wf, { state: 'needs_human', sendAt: undefined, approved: undefined, draft: { ...(wf.draft ?? { commitment: false, sources: [] }), text: a.text!, preview: true, byOwner: true, ownWords: ownWords(wf, a.text!) }, question: undefined, revAt: new Date().toISOString(), status: 'Edited by you', learnAfter: original ? { draft: original, sent: a.text! } : undefined })
 			store.save(wf)
@@ -268,17 +281,19 @@ async function applyOne(store: Store, src: Source, cfg: Config, wf: Workflow, a:
 				wf.draft = { ...(wf.draft ?? { commitment: false, sources: [] }), text: a.text, byOwner: true, ownWords: ownWords(wf, a.text) }
 			}
 			if (holdReplyGap(store, wf, wf.draft?.text)) return reply(store, src, a, `${MARK} ${REPLY_BLANK}`, true)
+			rememberSend(store, wf)
+			if (await heldSend(store, src, wf, a)) return
 			// An item with changes on other systems makes them first; the reply follows when all are done (R-HIL-21).
 			// New messages are read first, so a "never mind" stops the changes too (tester P1-4).
 			if (wf.job && (pendingEffects(wf.effects).length > 0)) {
 				if (await askGone(store, src, cfg, wf, a)) { store.save(wf); return }
 				const t = await threadSince(store, src, cfg, wf, '')
 				if (t.ownerUnknown && !t.ownerReplied) store.log({ event: 'owner-reply-fallback', code: wf.code, before: 'approved-changes', note: OWNER_REPLY_UNCHECKED })
-				if (t.ownerReplied || t.asker) {
+				if (t.ownerReplied || await newMessageHold(store, src, wf, a, t.messages)) {
 					if (t.ownerReplied) { close(wf, t.ownerExact ? 'You sent it yourself' : 'You replied yourself'); wf.closedBy = 'replied' }
-					else Object.assign(wf, { state: 'running', status: 'New messages arrived. Redrafting.' })
 					store.save(wf, true, t.ownerReplied ? { askAt: askAtOf(store.thread(wf.id), wf.msgIds), replyAt: t.ownerAt } : undefined)
-					return reply(store, src, a, `${MARK} Not done ${wf.code}: ${t.ownerReplied ? 'you already replied in the chat' : 'new messages since the draft. I will redraft first'}.`)
+					if (t.ownerReplied) return reply(store, src, a, `${MARK} Not done ${wf.code}: you already replied in the chat.`)
+					return
 				}
 			}
 			// "ok A6 #1 #3" makes only those changes; the rest are unchecked on the item and its job alike (design-spec S6).
@@ -318,7 +333,7 @@ async function applyOne(store: Store, src: Source, cfg: Config, wf: Workflow, a:
 			}
 			if (stale) { store.save(wf); store.markShown([wf]); return reply(store, src, a, `${MARK} ${stale}`, true) }
 			const held = approveEffects(store, cfg, wf, !!a.again)
-			if (!held && wf.approved) wf.approved.replyDigest = a.page?.replyDigest
+			if (!held && wf.approved) { wf.approved.replyDigest = a.page?.replyDigest; wf.approved.sendReview = a.sendReview }
 			if (held !== undefined) { store.save(wf); return reply(store, src, a, `${MARK} ${held || `Posting ${wf.code}'s ${effectLine(pendingEffects(wf.effects))} now${wf.draft?.text ? ', then sending the reply' : ''}.`}`, !!held) }
 			// The owner left out every change their own words promised, and the reply already went: nothing is left to do (Slice 3).
 			if (wf.promise && wf.sent && !wf.draft?.text) { rest(store, wf); store.save(wf); return reply(store, src, a, `${MARK} Nothing was changed for ${wf.code}; its reply already went.`) }
@@ -442,13 +457,45 @@ function ownWords(wf: Workflow, text: string): true | undefined {
 // Letters and digits only: a post carries our text after the quote it answers, with tags and mentions in between (review 10-20 R1c).
 const squash = (t: string) => norm(t).replace(/[^\p{L}\p{N}]+/gu, '').toLowerCase()
 
-export type SendBy = { answer?: Answer; ruleId?: string; replyDigest?: string }
+export type SendBy = { answer?: Answer; ruleId?: string; replyDigest?: string; sendReview?: string }
 
-// The ask a reply answers must still be there as it was: deleted closes the item, edited redrafts it (scenario 09C, tester 06-07 P1-7).
-async function askGone(store: Store, src: Source, cfg: Config, wf: Workflow, a: Answer): Promise<boolean> {
+function rememberSend(store: Store, wf: Workflow) {
+	if (!wf.draft) return
+	wf.ownerSend = { draft: structuredClone(wf.draft), at: new Date().toISOString(), askMsgId: wf.lastMsgId }
+	store.save(wf, false)
+}
+
+async function heldSend(store: Store, src: Source, wf: Workflow, a: Answer): Promise<boolean> {
+	if (!wf.reason || a.sendReview === wf.reason.digest && reviewDigest(wf, reasonMessages(wf.reason)) === a.sendReview) return false
+	await reply(store, src, a, `${MARK} Not sent ${wf.code}: ${wf.status}`, true)
+	return true
+}
+
+async function holdSend(store: Store, src: Source, wf: Workflow, a: Answer, kind: 'ask-edited' | 'asker-wrote-again', before: string, message: { id: string; text: string; at: string }) {
+	const digest = reviewDigest(wf, [message])
+	wf.reason = kind === 'ask-edited' ? { kind, msgId: message.id, before, text: message.text, at: message.at, digest }
+		: { kind, msgId: message.id, text: message.text, at: message.at, digest }
+	Object.assign(wf, { state: 'needs_human', approved: undefined, sendAt: undefined,
+		status: 'Your approved draft is kept. Send anyway or Redraft.' })
+	store.save(wf)
+	store.log({ event: 'owner-send-held', code: wf.code, kind, msgId: message.id })
+	await reply(store, src, a, `${MARK} Not sent ${wf.code}: ${wf.status}`, true)
+}
+
+async function newMessageHold(store: Store, src: Source, wf: Workflow, a: Answer, messages: { id: string; text: string; at: string }[]) {
+	const message = messages.at(-1)
+	if (!message) return false
+	const digest = reviewDigest(wf, [message])
+	if (a.sendReview === digest) return false
+	await holdSend(store, src, wf, a, 'asker-wrote-again', wf.lastAsk ?? '', message)
+	return true
+}
+
+// Teams' revision is authoritative. Old stored conversions ignore link/image rendering differences.
+async function askGone(store: Store, src: Source, cfg: Config, wf: Workflow, a: Answer, automatic = false): Promise<boolean> {
 	const id = wf.msgIds.at(-1)
 	if (!id || !wf.chat.id) return false
-	const m = (await src.recent(wf.chat.id, 30)).find(x => x.id === id)
+	const m = src.around ? (await src.around(wf.chat.id, id)).msg : (await src.recent(wf.chat.id, 30)).find(x => x.id === id)
 	if (!m) return false
 	if (m.deleted || !m.body.trim()) {
 		close(wf, 'The message was deleted')
@@ -458,10 +505,23 @@ async function askGone(store: Store, src: Source, cfg: Config, wf: Workflow, a: 
 	const now = classify(m, { ownerId: cfg.owner.id, ownerName: cfg.owner.name, aliases: cfg.aliases, test: wf.chat.test, group: !!wf.chat.group, sentIds: new Set() })
 	const thread = store.thread(wf.id)
 	const was = thread.find(x => x.id === id)
-	if (!was || now.kind === 'skip' || norm(now.text) === norm(was.text)) return false
-	store.saveThread(wf.id, thread.map(x => (x.id === id ? { ...x, text: now.text } : x)))
-	Object.assign(wf, { state: 'running', lastAsk: now.text, pending: [id], approved: undefined, status: 'The message was edited. Redrafting.' })
-	await reply(store, src, a, `${MARK} Not sent ${wf.code}: ${wf.asker?.name ?? 'they'} edited the message. I will redraft first.`)
+	if (!was || now.kind === 'skip') return false
+	const sameRevision = !!m.editedAt && !!was.editedAt && m.editedAt === was.editedAt
+	const sameContent = (was.contentKey ?? contentKey(was.text)) === contentKey(now.text)
+	const cosmetic = sameContent || !automatic && cosmeticEdit(was.text, now.text)
+	store.saveThread(wf.id, thread.map(x => x.id === id ? { ...x, text: now.text, editedAt: m.editedAt, contentKey: contentKey(now.text) } : x))
+	if (sameRevision || cosmetic) {
+		if (was.text !== now.text || was.editedAt !== m.editedAt)
+			store.log({ event: 'edit-ignored', code: wf.code, reason: sameRevision || sameContent ? 'render' : 'cosmetic' })
+		return false
+	}
+	if (automatic) {
+		Object.assign(wf, { state: 'running', lastAsk: now.text, pending: [id], approved: undefined, status: 'The message was edited. Redrafting.' })
+		return true
+	}
+	const messages = [{ id, text: now.text, at: m.editedAt ?? m.at }]
+	if (a.sendReview === reviewDigest(wf, messages)) return false
+	await holdSend(store, src, wf, a, 'ask-edited', was.text, messages[0])
 	return true
 }
 
@@ -472,6 +532,7 @@ async function threadSince(store: Store, src: Source, cfg: Config, wf: Workflow,
 	const openHere = store.openInChat(wf.chat.id)
 	const claimed = new Set(openHere.filter(o => o.id !== wf.id).flatMap(o => o.msgIds))
 	let asker: string | undefined, ours = false, ownerReplied = false, ownerAt: string | undefined, ownerUnknown = false, ownerExact = false
+	const messages: { id: string; text: string; at: string }[] = []
 	for (const m of fresh.msgs) {
 		// Reconcile before sending: our earlier send may have landed even if we never recorded it (R-STO-06).
 		// Checked before classify, which skips marked text.
@@ -479,7 +540,10 @@ async function threadSince(store: Store, src: Source, cfg: Config, wf: Workflow,
 		// Ending the same way counts only for a signed reply: the signature is in the post. Unsigned, only the exact text is ours.
 		if (m.from?.id === cfg.owner.id && want && !c.sentIds.has(m.id) && (norm(m.body) === want || signed && squash(m.body).endsWith(squash(want)))) { ours = true; ownerAt ??= m.at; continue }
 		const k = classify(m, c)
-		if (k.kind === 'ask' && k.from.id === wf.asker?.id && !claimed.has(m.id)) asker = m.id
+		if (k.kind === 'ask' && k.from.id === wf.asker?.id && !claimed.has(m.id)) {
+			asker = m.id
+			messages.push({ id: m.id, text: k.text, at: m.at })
+		}
 		if (k.kind !== 'owner') continue
 		// A message open work already took as a step belongs to an earlier turn.
 		if (homeOf(store, wf).work?.steps.some(s => s.ref === `owner:${m.id}`)) continue
@@ -489,15 +553,20 @@ async function threadSince(store: Store, src: Source, cfg: Config, wf: Workflow,
 		if (replied.get(wf.id)) { ownerReplied = true; ownerAt ??= m.at; ownerExact ||= matchesOwnerDraft(ownText, wf) }
 		else if (!replied.has(wf.id)) ownerUnknown = true
 	}
-	return { asker, ours, ownerReplied, ownerAt, ownerUnknown, ownerExact }
+	return { asker, messages, ours, ownerReplied, ownerAt, ownerUnknown, ownerExact }
 }
 
 export async function send(store: Store, src: Source, cfg: Config, wf: Workflow, text: string | undefined, by: SendBy, probe?: BuildProbe): Promise<boolean> {
+	if (!by.ruleId) rememberSend(store, wf)
 	if (holdReplyGap(store, wf, text, !!by.ruleId)) {
 		if (by.answer) await reply(store, src, by.answer, `${MARK} ${REPLY_BLANK}`, true)
 		return false
 	}
-	if (wf.draft && !currentDraft(wf, wf.job ? store.job(wf.job) : undefined)) {
+	if (by.ruleId && wf.reason) {
+		store.log({ event: 'automatic-send-held', code: wf.code, reason: wf.reason.kind })
+		return false
+	}
+	if (!wf.ownerSend && wf.draft && !currentDraft(wf, wf.job ? store.job(wf.job) : undefined)) {
 		wf.draft = undefined; wf.learnAfter = undefined; wf.approved = undefined; wf.sendAt = undefined
 		store.save(wf)
 		store.log({ event: 'stale-draft-refused', code: wf.code, reason: 'latest-work-result-has-no-reply' })
@@ -562,6 +631,11 @@ export async function send(store: Store, src: Source, cfg: Config, wf: Workflow,
 				const why = othersApprovalMismatch(others, st, ref.id)
 				store.log({ event: 'pr-others-checked', code: wf.code, pr: ref.id, status: st.status, reviewers: st.votes.length, ok: !why, ...(why ? { why } : {}) })
 				if (why) {
+					if (!by.ruleId) {
+						Object.assign(wf, { state: 'needs_human', sendAt: undefined, approved: undefined, status: `Not sent: ${why}. Your approved draft is kept. Edit the reply or check the PR first.` })
+						store.save(wf); await told(wf.status)
+						return false
+					}
 					Object.assign(wf, { state: 'running', draft: undefined, prDraft: undefined, sendAt: undefined, approved: undefined, status: `The PR evidence does not support this reply (${why}). Redrafting.`, pending: wf.pending.length ? wf.pending : wf.msgIds.slice(-1) })
 					store.log({ event: 'pr-reply-redraft', workflowId: wf.id, why })
 					store.save(wf); await told(`${why}. Redrafting; I'll show the new draft first.`)
@@ -591,6 +665,11 @@ export async function send(store: Store, src: Source, cfg: Config, wf: Workflow,
 				return false
 			}
 			if (!owner && !others && !approvalReplyMatches(text ?? '', vote, ref.id)) {
+				if (!by.ruleId) {
+					Object.assign(wf, { state: 'needs_human', sendAt: undefined, approved: undefined, status: `Not sent: PR ${ref.id}'s live vote does not support this reply. Your approved draft is kept. Edit the reply or check the PR first.` })
+					store.save(wf); await told(wf.status)
+					return false
+				}
 				Object.assign(wf, { state: 'running', draft: undefined, prDraft: undefined, sendAt: undefined, approved: undefined, status: 'The PR evidence does not support this approval reply. Redrafting.', pending: wf.pending.length ? wf.pending : wf.msgIds.slice(-1) })
 				store.log({ event: 'pr-reply-redraft', workflowId: wf.id })
 				store.save(wf); await told(`PR ${ref.id}'s live vote does not support this approval reply. Redrafting; I'll show the new draft first.`)
@@ -612,7 +691,7 @@ export async function send(store: Store, src: Source, cfg: Config, wf: Workflow,
 		} finally { if (!probe) await live?.close?.() }
 	}
 	// After approved changes the reply goes out later; the result goes back to where the owner said ok.
-	const a = by.answer ?? { id: '', code: wf.code, verb: 'ok', surface: wf.answerSurface ?? 'chat', at: '' } as Answer
+	const a = by.answer ?? { id: '', code: wf.code, verb: 'ok', surface: wf.answerSurface ?? 'chat', at: '', sendReview: by.sendReview } as Answer
 	const p = { ...DEFAULT_POLICY, ...cfg.policy }
 	// Only text no human approved carries the disclosure marker (R-POL-10).
 	// Automatic sends always carry the signature (R-POL-10); approved ones too when the owner asks, unless they wrote the words.
@@ -633,8 +712,9 @@ export async function send(store: Store, src: Source, cfg: Config, wf: Workflow,
 		await reply(store, src, a, `${MARK} Not sent ${wf.code}: it is open in a window.`, true)
 		return false
 	}
-	if (await askGone(store, src, cfg, wf, a)) return false
-	const { asker, ours, ownerReplied, ownerAt, ownerUnknown, ownerExact } = await threadSince(store, src, cfg, wf, out ? norm(mdToHtml(out)) : '', !!out && out !== text)
+	if (!by.ruleId && await heldSend(store, src, wf, a)) return false
+	if (await askGone(store, src, cfg, wf, a, !!by.ruleId)) { store.save(wf); return false }
+	const { asker, messages, ours, ownerReplied, ownerAt, ownerUnknown, ownerExact } = await threadSince(store, src, cfg, wf, out ? norm(mdToHtml(out)) : '', !!out && out !== text)
 	if (ownerUnknown && !ownerReplied && !ours) {
 		store.log({ event: 'owner-reply-fallback', code: wf.code, byRule: by.ruleId, note: OWNER_REPLY_UNCHECKED })
 	}
@@ -644,6 +724,7 @@ export async function send(store: Store, src: Source, cfg: Config, wf: Workflow,
 		await reply(store, src, a, `${MARK} Not sent ${wf.code}: you already replied in the chat.`)
 		return false
 	}
+	if (!by.ruleId && !ours && await newMessageHold(store, src, wf, a, messages)) return false
 	// Membership can change after drafting. An automatic send that quotes labeled content asks again first; a failed read holds it (review 085 P0-2).
 	if (by.ruleId && wf.draft?.sources.some(s => s.label)) wf.chat.guests = await src.members?.(wf.chat.id).then(m => m.guests, () => undefined)
 	// A send answers one inbound ask: only a send that answered the newest one (or came after it) makes this reply a duplicate.
@@ -687,6 +768,7 @@ export async function send(store: Store, src: Source, cfg: Config, wf: Workflow,
 	// Every new draft replaces effects, so an off change here belongs to this reply's turn.
 	const changesOff = (wf.effects ?? []).filter(e => e.off).length
 	wf.needsMe = undefined
+	wf.ownerSend = undefined; wf.reason = undefined
 	wf.sent = { msgId, at: new Date().toISOString(), text, sendText: out !== text ? out : undefined, byRule: by.ruleId, undoUntil: new Date(Date.now() + p.undoMin * 60_000).toISOString(), ...(askMsgId ? { askMsgId } : {}) }
 	if (wf.approved) wf.approved.replyDigest = undefined
 	store.save(wf, false)

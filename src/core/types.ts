@@ -26,7 +26,7 @@ export type Rule = {
 	style?: string
 }
 
-export type Msg = { id: string; at: string; from: Person; text: string; byOwner: boolean; ownerReply?: { askId: string; answered?: boolean; text?: string } }
+export type Msg = { id: string; at: string; editedAt?: string; contentKey?: string; from: Person; text: string; byOwner: boolean; ownerReply?: { askId: string; answered?: boolean; text?: string } }
 
 // stale: set by the runner when a card citation does not resolve or has expired; it then counts as no card (R-ANS-02).
 // label: the sensitivity label of a file or page the draft quotes, such as Confidential (R-SEC-08).
@@ -205,6 +205,11 @@ export type Workflow = {
 	prDraft?: string
 	completionSeen?: string
 	draft?: Draft
+	// Kept independently of worker reports until the owner sends, skips, or explicitly asks for a replacement.
+	ownerSend?: { draft: Draft; at: string; askMsgId: string }
+	reason?: { kind: 'ask-edited'; msgId: string; before: string; text: string; at: string; digest: string }
+		| { kind: 'asker-wrote-again'; msgId: string; text: string; at: string; digest: string }
+		| { kind: 'no-reply-needed'; why: string; digest: string }
 	question?: string
 	// What the worker could not read, such as an image or a file it has no access to (R-ING-11).
 	gaps?: string[]
@@ -289,7 +294,7 @@ export type Workflow = {
 	// The owner's own words went out on an item whose PR Delegate can change: one short run maps what they promise to changes held
 	// for ok (Slice 3). pending: waits for the run; checking: the run is going; offered: its changes wait for ok; failed: it could not tell.
 	promise?: { text: string; at: string; state: 'pending' | 'checking' | 'offered' | 'failed'; why?: string }
-	approved?: { text: string; effects: string; at: string; replyDigest?: string }
+	approved?: { text: string; effects: string; at: string; replyDigest?: string; sendReview?: string }
 	revAt?: string
 	newCount: number
 	// A short summary of this sender's previous, closed item, so a new item starts with that context (R-WF-09).
@@ -347,7 +352,7 @@ export const CONTROL_VERBS = ['pause', 'resume', 'stop', 'auto-on', 'auto-off'] 
 // again: "ok A1 again", the owner checked that a change which may have been made was not, so it is made once more.
 // todos: on a close from the page, the open to-dos the owner saw, so Mark done marks only those (review N2 P2-1).
 export type PageApproval = { kind: 'send-reply' | 'make-changes' | 'pick' | 'undo-send' | 'feedback-send' | 'mark-todos' | 'approve' | 'manage'; expect: string; sentMessageId?: string; todoIds?: string[]; replyDigest?: string }
-export type Answer = { id: Id; code: Code; verb: Verb; text?: string; nums?: number[]; except?: number[]; again?: true; surface: 'chat' | 'self' | 'panel'; at: string; seenAt?: string; todos?: string[]; page?: PageApproval; pageSubmissionId?: string }
+export type Answer = { id: Id; code: Code; verb: Verb; text?: string; nums?: number[]; except?: number[]; again?: true; sendReview?: string; surface: 'chat' | 'self' | 'panel'; at: string; seenAt?: string; todos?: string[]; page?: PageApproval; pageSubmissionId?: string }
 
 export type WatchedChat = { id: string; name: string; test?: boolean; group?: boolean; since?: string }
 

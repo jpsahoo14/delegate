@@ -34,7 +34,7 @@ export function sendGate(wf: Workflow, text: string | undefined, ctx: SendContex
 	if (replyGap(text)) return { send: false, reason: REPLY_BLANK }
 	if (ctx.paused) return { send: false, reason: 'Paused' }
 	if (ctx.alreadyReplied) return { send: false, reason: 'A reply to this message already exists' }
-	if (ctx.newestThreadMsgId !== wf.lastMsgId) return { send: false, reason: 'New messages since the draft', rerun: true }
+	if (!ctx.ownerApproved && ctx.newestThreadMsgId !== wf.lastMsgId) return { send: false, reason: 'New messages since the draft', rerun: true }
 	if (ctx.ownerApproved) return { send: true }
 	if (ctx.draftOnly) return { send: false, reason: 'Draft-only mode' }
 	if (commits(wf)) return { send: false, reason: 'Commitment needs the owner' }
