@@ -6,6 +6,7 @@ import { existsSync, readdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { Config } from '../core/types.ts'
+import { isWorkHours } from '../core/schedule.ts'
 
 export type CliPackage = { dir: string; version: string; runtime: string; sdk: string }
 
@@ -51,3 +52,10 @@ export function hostOff(cfg: Config): string | undefined {
 	if (!cliPackage()) return "the Copilot CLI's own SDK was not found"
 	return undefined
 }
+
+// How long the AI host stays ready after its last run (#25): through the working day by default during work hours (Monday to
+// Friday, 9:00 to 18:00 in the owner's time zone), as the owner set it; 20 minutes outside them. Quiet hours stop it either way.
+export const HOST_IDLE_MIN = 20, HOST_WORK_IDLE_MIN = 540
+// Its memory while it waits, measured on the owner's machine (#25 d), for Settings to say plainly.
+export const HOST_MEMORY_MB = 365
+export const hostIdleMin = (cfg: Config, now = new Date()) => isWorkHours(now, cfg.tz) ? cfg.agent.hostIdleMin ?? HOST_WORK_IDLE_MIN : HOST_IDLE_MIN

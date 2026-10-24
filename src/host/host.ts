@@ -17,18 +17,18 @@ import type { Config } from '../core/types.ts'
 import { VERSION } from '../paths.ts'
 import { diagnose, hostSkips, listable, readCatalog } from '../runner/catalog.ts'
 import { LOCAL_DIR, loadLocal, Store } from '../store/state.ts'
-import { cliPackage } from './locate.ts'
+import { cliPackage, hostIdleMin } from './locate.ts'
 import { z } from 'zod'
 import { IMAGE_DESCRIPTION, IMAGE_LINK, readImage, REPORT, reportTaker, SUBMIT_DESCRIPTION, type ToolOut } from '../worker/tools.ts'
 
 export type HostInfo = { pid: number; port: number; token: string; startedAt: string; cli: string; delegate: string; configHash: string }
 // hostFault: the run never reached the model through the host (#19b); the caller makes it on one process instead.
-export type HostResult = RunResult & { hostFault?: 'session' | 'no model turn' }
+export type HostResult = RunResult & { hostFault?: 'session' | 'no model turn'; warm?: boolean }
 export type HostRun = { agent: Config['agent']; input: RunInput & { workflowId: string; runId: string } }
 export const hostFile = () => join(LOCAL_DIR, 'host.json')
 const WORKER_SERVER = 'delegate_worker'
 const REPORT_JSON = z.toJSONSchema(REPORT) as Record<string, unknown>
-const IDLE_MS = 20 * 60_000, LEASE_MS = 5 * 60_000, RUN_MS = 10 * 60_000, WARM_MS = 30_000
+const LEASE_MS = 5 * 60_000, RUN_MS = 10 * 60_000, WARM_MS = 30_000
 // A provider the owner set for the CLI (COPILOT_PROVIDER_*): the CLI applies it per process, an SDK session only when told.
 function envProvider(): Record<string, unknown> | undefined {
 	const e = process.env
@@ -62,11 +62,11 @@ export async function runHost(): Promise<void> {
 	// the catalog found failing waits for its retry step there (#23), and one only the CLI could list is called on the CLI's own
 	// connection, which every session has; one that doesn't answer in time is left out, never holding a run.
 	const warm = new Map<string, Warm>()
-	const specs = new Map(listable(cfg))
+	const specs = new Map(listable(cfg)), ready = new Set<string>()
 	const connect = (name: string) => {
 		const spec = specs.get(name)!, mcp = clientFor(spec, name), at = Date.now()
 		const listed = Promise.race([mcp.listAll(), new Promise<never>((_, no) => setTimeout(() => no(new Error(`no answer in ${WARM_MS / 1000} s`)), WARM_MS).unref())])
-		const tools = listed.then(r => { store.log({ event: 'host-server-ready', server: name, ms: Date.now() - at, tools: r.tools.length }); return new Map(r.tools.map(t => [t.name, t])) })
+		const tools = listed.then(r => { ready.add(name); store.log({ event: 'host-server-ready', server: name, ms: Date.now() - at, tools: r.tools.length }); return new Map(r.tools.map(t => [t.name, t])) })
 		tools.catch(e => store.log({ event: 'host-server-failed', server: name, error: diagnose(e, spec, mcp.stderrText()).text }))
 		const w = { client: mcp, tools }
 		warm.set(name, w)
@@ -85,11 +85,14 @@ export async function runHost(): Promise<void> {
 	async function run({ agent, input }: HostRun): Promise<HostResult> {
 		const t = Date.now(), id = input.sessionId
 		const names = [...new Set([...agent.tools, ...input.extraTools, 'task_complete'])]
-		// A proxy per owner tool the run may use, with the server's own schema; its only shared state is the warm connection.
+		// A proxy per owner tool the run may use, with the server's own schema; its only shared state is the warm connection. warm: every
+		// server it uses was connected before it began (#25), as the worker event reports.
 		const tools: unknown[] = []
+		let warm = true
 		for (const name of names) {
 			const server = serverOf(name), w = server ? warmOf(server) : undefined
 			if (!server || !w) continue
+			if (!ready.has(server)) warm = false
 			const tool = name.slice(server.length + 1), info = (await w.tools.catch(() => new Map<string, ToolInfo>())).get(tool)
 			if (!info) continue
 			tools.push(sdk.defineTool(name, { description: info.description ?? tool, parameters: info.inputSchema ?? { type: 'object', properties: {} }, skipPermission: true,
@@ -128,7 +131,7 @@ export async function runHost(): Promise<void> {
 			// The session log is complete once the session lets go of it.
 			await session!.disconnect().catch(() => undefined); session = undefined
 			const used = readRun('', t, process.env, sessionLog('copilot', id), Date.now()).use
-			return { exitCode: 0, ms: Date.now() - t, summary: r?.data?.content, used }
+			return { exitCode: 0, ms: Date.now() - t, summary: r?.data?.content, used, warm }
 		} catch (e) {
 			await session?.disconnect().catch(() => undefined); session = undefined
 			const why = String(e).replace(/^Error: /, '').slice(0, 400)
@@ -225,10 +228,11 @@ export async function runHost(): Promise<void> {
 	}
 	let drainWhy = 'drained'
 	function maybeExit() { if (draining && !active) void stop(drainWhy) }
-	// Idle for 20 minutes, or quiet hours begin with nothing running: finish what runs, then go (design §7). A tick with work starts it again.
+	// Idle past its time (a working day during work hours, else 20 minutes, #25), or quiet hours begin with nothing running: finish what
+	// runs, then go (design §7). A tick with work starts it again.
 	setInterval(() => {
-		const now = store.config()
-		if (!active && (Date.now() - lastRun > IDLE_MS || inQuietHours(new Date(), now?.quiet))) void stop(Date.now() - lastRun > IDLE_MS ? 'idle' : 'quiet hours')
+		const now = store.config() ?? cfg, idle = Date.now() - lastRun > hostIdleMin(now) * 60_000
+		if (!active && (idle || inQuietHours(new Date(), now.quiet))) void stop(idle ? 'idle' : 'quiet hours')
 	}, 30_000).unref()
 	// Another machine reads the chats now: the owner moved it (config), or it took the lease. Finish what runs, then go (design §5).
 	setInterval(() => {

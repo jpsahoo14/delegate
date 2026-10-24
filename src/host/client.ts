@@ -9,6 +9,8 @@ import { LostResponse } from '../adapters/mcp-client.ts'
 import { mcpCaller, type Caller } from '../runner/change.ts'
 import { staleCatalog, type CliLister } from '../runner/catalog.ts'
 import type { ToolInfo } from '../core/tool-class.ts'
+import { inQuietHours } from '../core/policy.ts'
+import { dayIn, isWorkHours } from '../core/schedule.ts'
 import type { Config } from '../core/types.ts'
 import { CLI } from '../paths.ts'
 import type { RunWorker } from '../runner/dispatch.ts'
@@ -21,7 +23,7 @@ const READY_MS = 15_000, BACKOFF = [5_000, 30_000, 120_000]
 const markFile = () => join(LOCAL_DIR, 'host-start.json')
 const alive = (pid: number) => { try { process.kill(pid, 0); return true } catch (e) { return (e as NodeJS.ErrnoException).code === 'EPERM' } }
 // fails: hosts that did not start. strikes: host faults in a row (#19b); disables: times it was set aside since its last good run.
-type Mark = { at: string; fails: number; strikes?: number; disables?: number; disabledUntil?: string }
+type Mark = { at: string; fails: number; strikes?: number; disables?: number; disabledUntil?: string; warmDay?: string }
 const readMark = () => readJson<Mark>(markFile(), { at: '', fails: 0 })
 // Until when runs skip the host after it failed again and again; undefined when they may use it.
 export function hostDisabledUntil(now = Date.now()): string | undefined { const u = readMark().disabledUntil; return u && Date.parse(u) > now ? u : undefined }
@@ -42,12 +44,14 @@ const current = () => readJson<HostInfo | undefined>(hostFile(), undefined)
 
 // A live host started for this config, else a new one; undefined means "use one process per run" this time. Calls that come together
 // (the pool's first runs) share one look and one start, so one tick never starts two hosts.
-let looking: Promise<HostInfo | undefined> | undefined
-export function ensureHost(store: Store, cfg: Config): Promise<HostInfo | undefined> {
+// fresh: started for this call, so the run it serves is not warm (#25).
+type Found = HostInfo & { fresh?: true }
+let looking: Promise<Found | undefined> | undefined
+export function ensureHost(store: Store, cfg: Config): Promise<Found | undefined> {
 	looking ??= findOrStart(store, cfg).finally(() => { looking = undefined })
 	return looking
 }
-async function findOrStart(store: Store, cfg: Config): Promise<HostInfo | undefined> {
+async function findOrStart(store: Store, cfg: Config): Promise<Found | undefined> {
 	if (hostOff(cfg) || process.env.NODE_TEST_CONTEXT || hostDisabledUntil()) return undefined
 	const h = current(), want = hostHash(cfg)
 	const live = h && alive(h.pid), answers = live && await pingOk(h!)
@@ -67,7 +71,7 @@ async function findOrStart(store: Store, cfg: Config): Promise<HostInfo | undefi
 	while (Date.now() < until) {
 		await new Promise(r => setTimeout(r, 250))
 		const n = current()
-		if (n && n.pid !== h?.pid && n.configHash === want && await pingOk(n)) { writeJson(markFile(), { ...readMark(), at: new Date().toISOString(), fails: 0, strikes: 0, disabledUntil: undefined }, store.machine); return n }
+		if (n && n.pid !== h?.pid && n.configHash === want && await pingOk(n)) { writeJson(markFile(), { ...readMark(), at: new Date().toISOString(), fails: 0, strikes: 0, disabledUntil: undefined }, store.machine); return { ...n, fresh: true } }
 	}
 	writeJson(markFile(), { ...mark, at: new Date().toISOString(), fails: mark.fails + 1 }, store.machine)
 	store.log({ event: 'host-start-failed', fails: mark.fails + 1 })
@@ -107,7 +111,8 @@ export const hostCaller = (store: Store, cfg: Config, fallback: Caller = mcpCall
 }
 
 // Runs a reply on the host, or on today's path when there is none, it is busy, or it could not run it (that run is made here).
-export const hostRunner = (store: Store, fallback: RunWorker = runAgent): RunWorker => async (agent, input) => {
+export const hostRunner = (store: Store, own: RunWorker = runAgent): RunWorker => async (agent, input) => {
+	const fallback: RunWorker = async (a, i) => ({ ...(await own(a, i)), via: 'spawn' })
 	const cfg = store.config(), h = await ensureHost(store, cfg)
 	if (!h) return fallback(agent, input)
 	let r: { status: number; body: RunResult & { hostFault?: string } }
@@ -121,7 +126,8 @@ export const hostRunner = (store: Store, fallback: RunWorker = runAgent): RunWor
 	if (r.status === 502 && r.body.hostFault) { hostFault(store, cfg, h, `run ${r.body.hostFault}`, r.body.error); return fallback(agent, input) }
 	if (r.status !== 200) return { exitCode: 1, ms: 0, error: `The AI host refused the run (${r.status})` }
 	hostGood(store)
-	return r.body
+	// Warm: the host was there before this run and every server it used was already connected (#25).
+	return { ...r.body, via: 'host', warm: !h.fresh && r.body.warm !== false }
 }
 
 // Tool lists through the AI CLI's own connections (#23c), for servers Delegate's client can't list: none without a host.
@@ -130,4 +136,15 @@ export const hostLister = (store: Store, cfg: Config): CliLister => async server
 	if (!h) return undefined
 	const r = await call<{ servers?: Record<string, { tools?: ToolInfo[]; error?: string }> }>(h, 'POST', '/list', { servers }, 60_000).catch(() => undefined)
 	return r?.status === 200 ? r.body.servers : undefined
+}
+
+// The first check of a work day starts the AI host, so the day's first reply is warm too (#25 c). Once a day, recorded before the
+// start, so a host that can't start is not tried again on every check; runs still start it as before.
+export async function prewarmHost(store: Store, cfg: Config, now = new Date()): Promise<void> {
+	if (hostOff(cfg) || process.env.NODE_TEST_CONTEXT || !isWorkHours(now, cfg.tz) || inQuietHours(now, cfg.quiet)) return
+	const day = dayIn(now, cfg.tz), m = readMark()
+	if (m.warmDay === day) return
+	writeJson(markFile(), { ...m, warmDay: day }, store.machine)
+	const h = await ensureHost(store, cfg)
+	store.log({ event: 'host-prewarmed', day, started: !!h?.fresh, ...(h ? {} : { skipped: true }) })
 }

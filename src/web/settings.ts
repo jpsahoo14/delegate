@@ -17,7 +17,7 @@ import { UPDATE_EVERY_MIN } from '../os/autoupdate.ts'
 import { nameFor, runLines, runsOf } from '../core/runinfo.ts'
 import { habitUndoable, undoMs } from '../runner/habits.ts'
 import { cachedCatalogs, denied, ignoredServers, listable, readCatalog, remoteServers, serverSource, workerTools } from '../runner/catalog.ts'
-import { hostOff } from '../host/locate.ts'
+import { HOST_IDLE_MIN, HOST_MEMORY_MB, HOST_WORK_IDLE_MIN, hostOff } from '../host/locate.ts'
 import { hostFile } from '../host/host.ts'
 import { hostDisabledUntil, hostFaultLimit } from '../host/client.ts'
 
@@ -127,6 +127,9 @@ export const SETTINGS: Spec[] = [
 		read: c => String((c.poll ?? DEFAULT_POLL).fastForMin), parse: raw => numTo(raw, 1, 30, (c, n) => ({ ...c, poll: { ...(c.poll ?? DEFAULT_POLL), fastForMin: n } })) },
 	{ key: 'maxParallel', label: 'AI runs at once', help: 'Drafts and jobs running side by side on the runner machine.', kind: 'number', section: 'system', advanced: true,
 		read: c => String(c.maxParallel ?? 3), parse: raw => num(raw, 1, 6, 'maxParallel') },
+	// How long the resident AI host waits for the next run during work hours (#25); outside them it stops sooner.
+	{ key: 'hostIdleMin', label: 'Keep the AI host ready for', help: `Minutes after its last run, during work hours (Monday to Friday, 9:00 to 18:00), so replies start in seconds. Outside work hours it stops after ${HOST_IDLE_MIN} minutes, and quiet hours stop it. It uses about ${HOST_MEMORY_MB} MB of memory while it waits.`, kind: 'number', section: 'system', advanced: true,
+		read: c => String(c.agent.hostIdleMin ?? HOST_WORK_IDLE_MIN), parse: raw => numTo(raw, HOST_IDLE_MIN, 1440, (c, n) => ({ ...c, agent: { ...c.agent, hostIdleMin: n } })) },
 	{ key: 'retentionDays', label: 'Keep message text for', help: 'Days. After that, items keep codes, people, and times only.', kind: 'number', section: 'system', advanced: true,
 		read: c => String(c.retentionDays ?? 30), parse: raw => num(raw, 7, 365, 'retentionDays') },
 	{ key: 'followUpHours', label: 'Your unanswered asks show under Waiting on others after', help: 'Hours.', kind: 'number', section: 'timing',
@@ -279,10 +282,12 @@ export function hostLine(cfg: Config, now = Date.now()): string {
 	let h: { pid: number; startedAt: string; cli: string } | undefined
 	try { h = JSON.parse(readFileSync(hostFile(), 'utf8')) } catch { h = undefined }
 	const alive = (pid: number) => { try { process.kill(pid, 0); return true } catch (e) { return (e as NodeJS.ErrnoException).code === 'EPERM' } }
-	if (!h || !alive(h.pid)) return 'Not running: it starts with the next AI run.'
-	const mins = Math.round((now - Date.parse(h.startedAt)) / 60_000)
-	return `On for ${mins < 60 ? `${mins} min` : `${Math.floor(mins / 60)} h ${mins % 60} min`} (Copilot CLI ${h.cli}); its tool servers stay connected between runs.`
+	if (!h || !alive(h.pid)) return 'Not running: it starts with the next AI run, or at the first check of a work day.'
+	// Warm since it started: its runtime and tool servers stay up between runs, so a reply starts in seconds (#25).
+	const at = new Date(h.startedAt), today = at.toDateString() === new Date(now).toDateString(), tz = cfg.tz && validTz(cfg.tz) ? { timeZone: cfg.tz } : {}
+	return `On, warm since ${at.toLocaleString(undefined, { ...(today ? {} : { weekday: 'short' }), hour: 'numeric', minute: '2-digit', ...tz })} (Copilot CLI ${h.cli}): replies start in seconds. It uses about ${HOST_MEMORY_MB} MB of memory while it waits.`
 }
+const hours = (min: number) => min % 60 ? `${min} minutes` : min === 60 ? '1 hour' : `${min / 60} hours`
 
 export function settingsView(store: Store, experience?: 'classic' | 'new'): { rows: SettingRow[]; fixed: ReadOnlyRow[]; about: AboutView; models: ModelsView; tools?: ToolsView } {
 	const cfg = store.config()
@@ -302,7 +307,7 @@ export function settingsView(store: Store, experience?: 'classic' | 'new'): { ro
 			// While a session history differs between machines: one plain line, nothing to do (queue-new #16 c).
 			...Object.entries(store.health()).filter(([key]) => key.startsWith('session:')).map(([, h]) => ({ label: 'AI history', value: h.text, how: 'Nothing to do. This line goes away by itself.' })),
 			// The resident AI host on this machine (#19): on since when, or why runs use one process each.
-			{ label: 'AI host', value: hostLine(cfg), how: `It starts with the next AI run and stops after 20 minutes idle or in quiet hours. Set agent.host to false in config.json to use one process per run.` },
+			{ label: 'AI host', value: hostLine(cfg), how: `During work hours it stays ready for ${hours(cfg.agent.hostIdleMin ?? HOST_WORK_IDLE_MIN)} after its last run (Keep the AI host ready for, below); otherwise ${HOST_IDLE_MIN} minutes. Quiet hours stop it. Set agent.host to false in config.json to use one process per run.` },
 		],
 	}
 }

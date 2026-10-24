@@ -1,5 +1,40 @@
 # React preview
 
+## The AI host stays warm through the work day (#25)
+
+The live log showed host runs starting in 14–18 s: each came right after `host-started`, and the host stopped seconds later (quiet
+hours) or after 20 min idle. The 2 s start was only met within 20 min of a previous run.
+
+**Measured** (a). The worker event now records `via: "host" | "spawn"`. On host runs it also records `warm`: true when the host was
+there before the run (the client didn't start it for this call) and every tool server the run uses was already connected.
+
+**Kept through work hours** (b).
+- A System advanced setting, **Keep the AI host ready for** (`agent.hostIdleMin`, default 540 minutes, one working day). It applies
+  during work hours, the existing `isWorkHours`: Monday to Friday, 9:00 to 18:00 in the owner's time zone.
+- Outside work hours the host still stops after 20 minutes idle, and quiet hours still stop it.
+- The host reads the setting each idle check, so a change needs no restart.
+
+**Started with the day** (c). The first check of each work day, outside quiet hours, starts the host, so the first reply is warm
+too. It is recorded as `warmDay` in `host-start.json` before the start, so it is tried once a day; runs still start a host as
+before.
+
+**Settings › System** (d).
+- The AI host row reads "On, warm since 10:00 AM (Copilot CLI x): replies start in seconds. It uses about 365 MB of memory while it
+  waits." (365 MB is the owner's measurement.)
+- Its help gives the work-hours rule; the new row's help gives the same memory note.
+
+**Proof** (fictional root, stub model (quota), a stub tool server). A proof-only clock (a `--import` preload shared through
+`NODE_OPTIONS` by the tick, the page server and the spawned host) moved `Date` without waiting.
+- **Monday 10:00 IST, first check:** `host-started`, `host-prewarmed`. The second check did nothing.
+- **First reply:** started in 1.4 s, `via=host warm=true`.
+- **+30 min:** after the host's real 30 s idle check it was still alive (the old 20 min rule would have stopped it). The next reply
+  started in 1.4 s, `warm=true`.
+- **Saturday 12:00:** a reply started a fresh host (`warm=false`, 3.6 s). 25 min idle stopped it (`idle`); a weekend check didn't
+  pre-warm.
+- **Monday 21:50, then 22:01:** a reply at 21:50, then quiet hours stopped the host 11 min later (`quiet hours`); a quiet-hours
+  check didn't pre-warm.
+- **Edge:** the Settings line and row in New and Classic at 1280 light, and New at 400 dark.
+
 ## Items blocked before #17 get the failed-run card (#26)
 
 A job that ran out of routes before #17 left its item with the retry's stop text as its status, and with no question, no draft and

@@ -42883,7 +42883,7 @@ async function runOne(store2, src, cfg, wf, run2, probe, catalogRetried = false,
   const raw = store2.peekReport(wf.id, runId) ? void 0 : reportFromText(res.summary, wf.id, intents(store2.root).map((i) => i.id));
   const salvaged = raw && scrubDeep(raw);
   const report2 = store2.peekReport(wf.id, runId) ?? salvaged;
-  store2.log({ event: "worker", ...salvaged ? { salvaged: true } : {}, workflowId: wf.id, code: wf.code, runId, exitCode: res.exitCode, ms: res.ms, intent: report2?.intent, summary: report2?.summary, sources: report2?.reply?.sources, commitment: report2?.reply?.commitment, error: res.error, ...ran("draft", res.used) });
+  store2.log({ event: "worker", ...salvaged ? { salvaged: true } : {}, workflowId: wf.id, code: wf.code, runId, exitCode: res.exitCode, ms: res.ms, ...res.via ? { via: res.via } : {}, ...res.via === "host" ? { warm: !!res.warm } : {}, intent: report2?.intent, summary: report2?.summary, sources: report2?.reply?.sources, commitment: report2?.reply?.commitment, error: res.error, ...ran("draft", res.used) });
   const fresh = store2.workflow(wf.id) ?? wf;
   const account = !report2 && (res.setup ?? agentSetupFailure(`${res.error ?? ""}
 ${res.summary ?? ""}`));
@@ -43456,15 +43456,15 @@ function drafted(e) {
 }
 function slim(raw) {
   const moved = new Set(raw.filter((e) => e.event === "pr-moved").map((e) => str2(e.code)));
-  const hours = /* @__PURE__ */ new Map(), out = [];
+  const hours2 = /* @__PURE__ */ new Map(), out = [];
   for (const e of raw) {
     const at3 = str2(e.at), code = str2(e.code);
     if (!at3 || Number.isNaN(Date.parse(at3))) continue;
     const opt = (k) => str2(e[k]) ? { [k]: str2(e[k]) } : {};
     switch (e.event) {
       case "tick": {
-        const h = hours.get(at3.slice(0, 13));
-        if (!h) hours.set(at3.slice(0, 13), [at3, at3]);
+        const h = hours2.get(at3.slice(0, 13));
+        if (!h) hours2.set(at3.slice(0, 13), [at3, at3]);
         else if (at3 < h[0]) h[0] = at3;
         else if (at3 > h[1]) h[1] = at3;
         break;
@@ -43502,7 +43502,7 @@ function slim(raw) {
         break;
     }
   }
-  return [...out, ...[...hours.values()].flatMap(([a, b]) => (a === b ? [a] : [a, b]).map((at3) => ({ at: at3, event: "tick" })))];
+  return [...out, ...[...hours2.values()].flatMap(([a, b]) => (a === b ? [a] : [a, b]).map((at3) => ({ at: at3, event: "tick" })))];
 }
 function askAtOf(thread2, ids) {
   const last2 = thread2.findLastIndex((m) => m.byOwner && (m.ownerReply ? m.ownerReply.answered === true : true));
@@ -44237,11 +44237,11 @@ async function intake(store2, src, cfg, cursors, chats = cfg.watch, o = {}) {
       const ws = store2.waiting(), hit = ws.filter((w) => w.state === "waiting" && w.chat.id === chat2.id && answers(w, sender.name) && raw.at > w.at);
       if (hit.length) store2.saveWaiting(ws.map((w) => hit.includes(w) ? { ...w, state: "answered", doneAt: raw.at } : w));
       hearReply(store2, chat2, c.from.name, c.text, raw.at);
-      const hours = cfg.quietHours ?? 48;
-      const live2 = open2.filter((w) => (w.job || inWork(store2, w) || !quietFor(store2, w, hours, now)) && (!backlog || w.before));
+      const hours2 = cfg.quietHours ?? 48;
+      const live2 = open2.filter((w) => (w.job || inWork(store2, w) || !quietFor(store2, w, hours2, now)) && (!backlog || w.before));
       const follows = groupJudgment ? route(store2, live2.filter((o2) => o2.asker?.id === c.from.id), raw, c.from.id, void 0, c.text) : void 0;
       if (groupJudgment && !follows) for (const o2 of open2) appendThread(store2, o2, toMsg(raw, c.from, c.text, false));
-      let wf = follows ?? (groupJudgment ? void 0 : route(store2, live2, raw, c.kind === "ask" || c.kind === "context" ? c.from.id : "", c.kind === "ask" && !backlog ? recentItem(store2, chat2.id, c.from.id, hours, now) : void 0, c.text));
+      let wf = follows ?? (groupJudgment ? void 0 : route(store2, live2, raw, c.kind === "ask" || c.kind === "context" ? c.from.id : "", c.kind === "ask" && !backlog ? recentItem(store2, chat2.id, c.from.id, hours2, now) : void 0, c.text));
       if (wf && c.kind === "ask") {
         const asked = linksIn(c.text).filter((l) => l.startsWith("pr:")).map((l) => l.slice(3)), own3 = ownLinks(store2, wf).filter((l) => l.startsWith("pr:")).map((l) => l.split(/[:/]/).at(-1));
         if (asked.length && own3.length && asked.some((id) => !own3.includes(id))) {
@@ -44310,8 +44310,8 @@ function recentItem(store2, chatId, senderId, quietHours, now = Date.now()) {
   const fresh = (w) => w.job ? now - Date.parse(w.updatedAt) < 7 * 864e5 : !quietFor(store2, w, quietHours, now);
   return closedBy(store2, chatId, senderId).filter((w) => !undoable(w) && fresh(w)).at(-1);
 }
-function quietFor(store2, w, hours, now = Date.now()) {
-  return now - Date.parse(store2.thread(w.id).at(-1)?.at ?? w.updatedAt) > hours * 36e5;
+function quietFor(store2, w, hours2, now = Date.now()) {
+  return now - Date.parse(store2.thread(w.id).at(-1)?.at ?? w.updatedAt) > hours2 * 36e5;
 }
 function earlierOf(store2, chatId, senderId) {
   const w = store2.workflows().filter((w2) => w2.code && !w2.redacted && w2.chat.id === chatId && w2.asker?.id === senderId).sort((a, b) => a.updatedAt.localeCompare(b.updatedAt)).at(-1);
@@ -50065,11 +50065,16 @@ function hostOff(cfg) {
   if (!cliPackage()) return "the Copilot CLI's own SDK was not found";
   return void 0;
 }
-var versionKey, cached2;
+var versionKey, cached2, HOST_IDLE_MIN, HOST_WORK_IDLE_MIN, HOST_MEMORY_MB, hostIdleMin;
 var init_locate = __esm({
   "src/host/locate.ts"() {
     "use strict";
+    init_schedule();
     versionKey = (v) => v.split(/[.-]/).map((p) => /^\d+$/.test(p) ? p.padStart(6, "0") : p).join(".");
+    HOST_IDLE_MIN = 20;
+    HOST_WORK_IDLE_MIN = 540;
+    HOST_MEMORY_MB = 365;
+    hostIdleMin = (cfg, now = /* @__PURE__ */ new Date()) => isWorkHours(now, cfg.tz) ? cfg.agent.hostIdleMin ?? HOST_WORK_IDLE_MIN : HOST_IDLE_MIN;
   }
 });
 
@@ -50151,11 +50156,12 @@ async function runHost() {
   const client = new sdk.CopilotClient({ connection: { kind: "stdio", path: process.execPath, args: [pkg.runtime] }, env: env() });
   await client.start();
   const warm = /* @__PURE__ */ new Map();
-  const specs = new Map(listable(cfg));
+  const specs = new Map(listable(cfg)), ready = /* @__PURE__ */ new Set();
   const connect = (name) => {
     const spec = specs.get(name), mcp = clientFor(spec, name), at3 = Date.now();
     const listed2 = Promise.race([mcp.listAll(), new Promise((_, no) => setTimeout(() => no(new Error(`no answer in ${WARM_MS / 1e3} s`)), WARM_MS).unref())]);
     const tools = listed2.then((r) => {
+      ready.add(name);
       store2.log({ event: "host-server-ready", server: name, ms: Date.now() - at3, tools: r.tools.length });
       return new Map(r.tools.map((t2) => [t2.name, t2]));
     });
@@ -50176,9 +50182,11 @@ async function runHost() {
     const t2 = Date.now(), id = input2.sessionId;
     const names = [.../* @__PURE__ */ new Set([...agent.tools, ...input2.extraTools, "task_complete"])];
     const tools = [];
+    let warm2 = true;
     for (const name of names) {
       const server2 = serverOf2(name), w = server2 ? warmOf(server2) : void 0;
       if (!server2 || !w) continue;
+      if (!ready.has(server2)) warm2 = false;
       const tool = name.slice(server2.length + 1), info2 = (await w.tools.catch(() => /* @__PURE__ */ new Map())).get(tool);
       if (!info2) continue;
       tools.push(sdk.defineTool(name, {
@@ -50229,7 +50237,7 @@ async function runHost() {
       await session.disconnect().catch(() => void 0);
       session = void 0;
       const used = readRun("", t2, process.env, sessionLog("copilot", id), Date.now()).use;
-      return { exitCode: 0, ms: Date.now() - t2, summary: r?.data?.content, used };
+      return { exitCode: 0, ms: Date.now() - t2, summary: r?.data?.content, used, warm: warm2 };
     } catch (e) {
       await session?.disconnect().catch(() => void 0);
       session = void 0;
@@ -50387,8 +50395,8 @@ async function runHost() {
     if (draining && !active2) void stop(drainWhy);
   }
   setInterval(() => {
-    const now = store2.config();
-    if (!active2 && (Date.now() - lastRun > IDLE_MS || inQuietHours(/* @__PURE__ */ new Date(), now?.quiet))) void stop(Date.now() - lastRun > IDLE_MS ? "idle" : "quiet hours");
+    const now = store2.config() ?? cfg, idle = Date.now() - lastRun > hostIdleMin(now) * 6e4;
+    if (!active2 && (idle || inQuietHours(/* @__PURE__ */ new Date(), now.quiet))) void stop(idle ? "idle" : "quiet hours");
   }, 3e4).unref();
   setInterval(() => {
     const s3 = new Store(loadLocal()), l = s3.lease(), pinned2 = s3.config()?.runner;
@@ -50400,7 +50408,7 @@ async function runHost() {
   }, LEASE_MS).unref();
   for (const sig of ["SIGINT", "SIGTERM"]) process.once(sig, () => void stop(sig));
 }
-var hostFile, WORKER_SERVER2, REPORT_JSON, IDLE_MS, LEASE_MS, RUN_MS, WARM_MS, env, under, turnStarted, sessionFile;
+var hostFile, WORKER_SERVER2, REPORT_JSON, LEASE_MS, RUN_MS, WARM_MS, env, under, turnStarted, sessionFile;
 var init_host = __esm({
   "src/host/host.ts"() {
     "use strict";
@@ -50417,7 +50425,6 @@ var init_host = __esm({
     hostFile = () => join30(LOCAL_DIR, "host.json");
     WORKER_SERVER2 = "delegate_worker";
     REPORT_JSON = external_exports.toJSONSchema(REPORT2);
-    IDLE_MS = 20 * 6e4;
     LEASE_MS = 5 * 6e4;
     RUN_MS = 10 * 6e4;
     WARM_MS = 3e4;
@@ -50967,6 +50974,8 @@ init_agent();
 init_mcp_client();
 init_change();
 init_catalog();
+init_policy();
+init_schedule();
 init_paths();
 init_fs();
 init_state();
@@ -51051,7 +51060,7 @@ async function findOrStart(store2, cfg) {
     const n = current();
     if (n && n.pid !== h?.pid && n.configHash === want && await pingOk(n)) {
       writeJson(markFile(), { ...readMark2(), at: (/* @__PURE__ */ new Date()).toISOString(), fails: 0, strikes: 0, disabledUntil: void 0 }, store2.machine);
-      return n;
+      return { ...n, fresh: true };
     }
   }
   writeJson(markFile(), { ...mark2, at: (/* @__PURE__ */ new Date()).toISOString(), fails: mark2.fails + 1 }, store2.machine);
@@ -51092,7 +51101,8 @@ var hostCaller = (store2, cfg, fallback = mcpCaller(cfg)) => async (server, tool
   hostGood(store2);
   return r.body.result;
 };
-var hostRunner = (store2, fallback = runAgent) => async (agent, input2) => {
+var hostRunner = (store2, own3 = runAgent) => async (agent, input2) => {
+  const fallback = async (a, i) => ({ ...await own3(a, i), via: "spawn" });
   const cfg = store2.config(), h = await ensureHost(store2, cfg);
   if (!h) return fallback(agent, input2);
   let r;
@@ -51109,7 +51119,7 @@ var hostRunner = (store2, fallback = runAgent) => async (agent, input2) => {
   }
   if (r.status !== 200) return { exitCode: 1, ms: 0, error: `The AI host refused the run (${r.status})` };
   hostGood(store2);
-  return r.body;
+  return { ...r.body, via: "host", warm: !h.fresh && r.body.warm !== false };
 };
 var hostLister = (store2, cfg) => async (servers) => {
   const h = await ensureHost(store2, cfg);
@@ -51117,6 +51127,14 @@ var hostLister = (store2, cfg) => async (servers) => {
   const r = await call(h, "POST", "/list", { servers }, 6e4).catch(() => void 0);
   return r?.status === 200 ? r.body.servers : void 0;
 };
+async function prewarmHost(store2, cfg, now = /* @__PURE__ */ new Date()) {
+  if (hostOff(cfg) || process.env.NODE_TEST_CONTEXT || !isWorkHours(now, cfg.tz) || inQuietHours(now, cfg.quiet)) return;
+  const day3 = dayIn(now, cfg.tz), m = readMark2();
+  if (m.warmDay === day3) return;
+  writeJson(markFile(), { ...m, warmDay: day3 }, store2.machine);
+  const h = await ensureHost(store2, cfg);
+  store2.log({ event: "host-prewarmed", day: day3, started: !!h?.fresh, ...h ? {} : { skipped: true } });
+}
 
 // src/runner/tick.ts
 init_locate();
@@ -53074,6 +53092,17 @@ var SETTINGS = [
     read: (c) => String(c.maxParallel ?? 3),
     parse: (raw) => num3(raw, 1, 6, "maxParallel")
   },
+  // How long the resident AI host waits for the next run during work hours (#25); outside them it stops sooner.
+  {
+    key: "hostIdleMin",
+    label: "Keep the AI host ready for",
+    help: `Minutes after its last run, during work hours (Monday to Friday, 9:00 to 18:00), so replies start in seconds. Outside work hours it stops after ${HOST_IDLE_MIN} minutes, and quiet hours stop it. It uses about ${HOST_MEMORY_MB} MB of memory while it waits.`,
+    kind: "number",
+    section: "system",
+    advanced: true,
+    read: (c) => String(c.agent.hostIdleMin ?? HOST_WORK_IDLE_MIN),
+    parse: (raw) => numTo(raw, HOST_IDLE_MIN, 1440, (c, n) => ({ ...c, agent: { ...c.agent, hostIdleMin: n } }))
+  },
   {
     key: "retentionDays",
     label: "Keep message text for",
@@ -53284,10 +53313,11 @@ function hostLine(cfg, now = Date.now()) {
       return e.code === "EPERM";
     }
   };
-  if (!h || !alive4(h.pid)) return "Not running: it starts with the next AI run.";
-  const mins = Math.round((now - Date.parse(h.startedAt)) / 6e4);
-  return `On for ${mins < 60 ? `${mins} min` : `${Math.floor(mins / 60)} h ${mins % 60} min`} (Copilot CLI ${h.cli}); its tool servers stay connected between runs.`;
+  if (!h || !alive4(h.pid)) return "Not running: it starts with the next AI run, or at the first check of a work day.";
+  const at3 = new Date(h.startedAt), today = at3.toDateString() === new Date(now).toDateString(), tz = cfg.tz && validTz(cfg.tz) ? { timeZone: cfg.tz } : {};
+  return `On, warm since ${at3.toLocaleString(void 0, { ...today ? {} : { weekday: "short" }, hour: "numeric", minute: "2-digit", ...tz })} (Copilot CLI ${h.cli}): replies start in seconds. It uses about ${HOST_MEMORY_MB} MB of memory while it waits.`;
 }
+var hours = (min) => min % 60 ? `${min} minutes` : min === 60 ? "1 hour" : `${min / 60} hours`;
 function settingsView(store2, experience) {
   const cfg = store2.config();
   const words3 = (t2) => (experience ?? experienceOf(store2.ui())) !== "classic" ? t2.replace("Waiting on others", "Waiting").replace("Check for updates on Home", "Check for updates at the foot of Now") : t2;
@@ -53305,7 +53335,7 @@ function settingsView(store2, experience) {
       // While a session history differs between machines: one plain line, nothing to do (queue-new #16 c).
       ...Object.entries(store2.health()).filter(([key]) => key.startsWith("session:")).map(([, h]) => ({ label: "AI history", value: h.text, how: "Nothing to do. This line goes away by itself." })),
       // The resident AI host on this machine (#19): on since when, or why runs use one process each.
-      { label: "AI host", value: hostLine(cfg), how: `It starts with the next AI run and stops after 20 minutes idle or in quiet hours. Set agent.host to false in config.json to use one process per run.` }
+      { label: "AI host", value: hostLine(cfg), how: `During work hours it stays ready for ${hours(cfg.agent.hostIdleMin ?? HOST_WORK_IDLE_MIN)} after its last run (Keep the AI host ready for, below); otherwise ${HOST_IDLE_MIN} minutes. Quiet hours stop it. Set agent.host to false in config.json to use one process per run.` }
     ]
   };
 }
@@ -56038,6 +56068,7 @@ async function tick(store2, deps = {}) {
     await listing;
     finishTrim(store2);
     serverBanners(store2, cfg);
+    await prewarmHost(store2, cfg);
     const runs = await dispatch(store2, src, cfg, deps.run ?? hostRunner(store2), probe).finally(closeProbe);
     const handedBack = checkOpen(store2, procs, procs.bootMs?.());
     const jobsDone = await checkJobs(store2, src, cfg, procs, deps.probe, jobsNow ? jobsMark : void 0);

@@ -297,7 +297,7 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 	const raw = store.peekReport(wf.id, runId) ? undefined : reportFromText(res.summary, wf.id, intents(store.root).map(i => i.id))
 	const salvaged = raw && scrubDeep(raw)
 	const report = store.peekReport(wf.id, runId) ?? salvaged
-	store.log({ event: 'worker', ...(salvaged ? { salvaged: true } : {}), workflowId: wf.id, code: wf.code, runId, exitCode: res.exitCode, ms: res.ms, intent: report?.intent, summary: report?.summary, sources: report?.reply?.sources, commitment: report?.reply?.commitment, error: res.error, ...ran('draft', res.used) })
+	store.log({ event: 'worker', ...(salvaged ? { salvaged: true } : {}), workflowId: wf.id, code: wf.code, runId, exitCode: res.exitCode, ms: res.ms, ...(res.via ? { via: res.via } : {}), ...(res.via === 'host' ? { warm: !!res.warm } : {}), intent: report?.intent, summary: report?.summary, sources: report?.reply?.sources, commitment: report?.reply?.commitment, error: res.error, ...ran('draft', res.used) })
 	const fresh = store.workflow(wf.id) ?? wf
 	const account = !report && (res.setup ?? agentSetupFailure(`${res.error ?? ''}\n${res.summary ?? ''}`))
 	if (account) {

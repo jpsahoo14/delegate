@@ -13,7 +13,8 @@ import { scrub } from '../core/secrets.ts'
 
 export type RunInput = { sessionId: string; prompt: string; cwd: string; mcpConfigPath: string; extraTools: string[]; dirs?: string[] }
 // used: what the run used and where its time went, when the AI CLI said so (R-SET-14).
-export type RunResult = { exitCode: number; ms: number; summary?: string; error?: string; used?: RunUse; setup?: AgentSetupFailure }
+// via: the resident AI host or one process per run, and on the host whether it was already warm (#25), as the worker event reports.
+export type RunResult = { exitCode: number; ms: number; summary?: string; error?: string; used?: RunUse; setup?: AgentSetupFailure; via?: 'host' | 'spawn'; warm?: boolean }
 
 const ALWAYS = ['task_complete']
 
