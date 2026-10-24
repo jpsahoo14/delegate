@@ -19,7 +19,7 @@ import { WINDOWS, type WindowKey } from '../core/numbers.ts'
 import { nextView } from './next.ts'
 import { reactAsset, reactPage, snapshotPage, SNAPSHOT_TEMPLATE } from './react-build.ts'
 import { chatNormalActionId, reactProjection, IntentError } from './react-projection.ts'
-import { submissionReceipt, submitIntent } from './react-submissions.ts'
+import { submissionReceipt, submitIntentWhenFree } from './react-submissions.ts'
 import { intentSchema } from './react/domain/contracts.ts'
 import { listsOf, numbersModel, RULES as NUMBER_RULES } from './model/numbers.ts'
 import { ROOT } from '../paths.ts'
@@ -182,14 +182,14 @@ export function serveInbox(get: () => Store, port = 0, token = randomBytes(16).t
 					body += chunk
 					if (Buffer.byteLength(body) > 20_000) { tooLarge = true; body = ''; json(413, { text: 'That action is too large.' }) }
 				})
-				req.on('end', () => {
+				req.on('end', async () => {
 					if (tooLarge) return
 					let raw: unknown
 					try { raw = JSON.parse(body) } catch { json(422, { text: 'Could not read that action.' }); return }
 					const parsed = intentSchema.safeParse(raw)
 					if (!parsed.success) { json(422, { text: 'That action has invalid fields.' }); return }
 					try {
-						const result = submitIntent(get(), parsed.data)
+						const result = await submitIntentWhenFree(get(), parsed.data)
 						json(result.status, result.receipt)
 					} catch (error) { failure(error) }
 				})

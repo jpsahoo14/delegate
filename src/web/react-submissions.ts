@@ -1,4 +1,4 @@
-import type { PageSubmission, Store } from '../store/state.ts'
+import { BUSY, type PageSubmission, type Store } from '../store/state.ts'
 import { enqueueParsed } from '../mcp/server.ts'
 import { forPage } from './model/format.ts'
 import { resolvePageIntent, IntentError } from './react-projection.ts'
@@ -34,14 +34,17 @@ function recover(store: Store, record: PageSubmission): PageSubmission {
 	return saved
 }
 
+// The page server never waits on its thread for a receipt lock another process holds (#27 b): that process (the runner, saving the
+// result) is mid-write, so what is saved now is read without the lock and without writing; the next poll sees the rest.
 export function submissionReceipt(store: Store, id: string): Receipt | undefined {
-	return store.withPageSubmission(id, () => readSubmissionReceipt(store, id))
+	const r = store.withPageSubmissionNow(id, () => readSubmissionReceipt(store, id))
+	return r === BUSY ? readSubmissionReceipt(store, id, false) : r
 }
 
-function readSubmissionReceipt(store: Store, id: string): Receipt | undefined {
+function readSubmissionReceipt(store: Store, id: string, write = true): Receipt | undefined {
 	const record = store.pageSubmission(id)
 	if (!record) return undefined
-	const saved = recover(store, record), outcomes = saved.ids.map(answerId => store.outcome(answerId))
+	const saved = write ? recover(store, record) : record, outcomes = saved.ids.map(answerId => store.outcome(answerId))
 	const applied = saved.processed || !saved.ids.length || outcomes.every(outcome => outcome !== undefined) || saved.ids.every(id => store.answered(id))
 	const lostDetails = applied && saved.ids.length > 0 && !saved.processed && outcomes.some(outcome => outcome === undefined)
 	const recorded = pageText(outcomes.join(' '))
@@ -52,12 +55,21 @@ function readSubmissionReceipt(store: Store, id: string): Receipt | undefined {
 		applied ? pageText(saved.text) || missingDetail : `Queued. Waiting for ${NAME}.`
 	const refused = !!saved.refused || !saved.accepted || saved.ids.some(id => store.outcomeRefused(id))
 	const uncertain = !!saved.uncertain || !!lostDetails
-	if (applied && !saved.processed) store.savePageSubmission({ ...saved, processed: true, text, refused, uncertain })
+	if (write && applied && !saved.processed) store.savePageSubmission({ ...saved, processed: true, text, refused, uncertain })
 	return { submissionId: saved.id, item: saved.item, rev: saved.rev, ids: saved.ids, accepted: saved.accepted, applied: !!applied, text, refused, uncertain, at: saved.at }
 }
 
 export function submitIntent(store: Store, intent: Intent): { status: number; receipt: Receipt } {
 	return store.withPageSubmission(intent.submissionId, () => submitLocked(store, intent))
+}
+// The page server's submit: it waits for the receipt lock between turns of its thread, so other requests go on meanwhile (#27 b).
+export async function submitIntentWhenFree(store: Store, intent: Intent, waitMs = 10_000): Promise<{ status: number; receipt: Receipt }> {
+	for (const until = Date.now() + waitMs; ;) {
+		const r = store.withPageSubmissionNow(intent.submissionId, () => submitLocked(store, intent))
+		if (r !== BUSY) return r
+		if (Date.now() >= until) throw new IntentError(503, `Timed out waiting for this action's saved result. Check it again before acting; nothing was sent twice.`)
+		await new Promise(r => setTimeout(r, 50))
+	}
 }
 
 function submitLocked(store: Store, intent: Intent): { status: number; receipt: Receipt } {

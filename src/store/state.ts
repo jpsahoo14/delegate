@@ -318,6 +318,11 @@ export class Store {
 		if (!/^[a-f0-9-]{36}$/i.test(id)) throw new Error('Invalid page submission identity.')
 		return withReceiptLock(this.p('state', 'page-submissions', `${id}.json`), action)
 	}
+	// The same, for the page server: at once or BUSY, never a wait on its thread (#27 b).
+	withPageSubmissionNow<T>(id: string, action: () => T): T | typeof BUSY {
+		if (!/^[a-f0-9-]{36}$/i.test(id)) throw new Error('Invalid page submission identity.')
+		return withReceiptLockNow(this.p('state', 'page-submissions', `${id}.json`), action)
+	}
 	private updatePageSubmission(id: string, update: (current: PageSubmission | undefined) => PageSubmission | undefined): PageSubmission | undefined {
 		return this.withPageSubmission(id, () => {
 			const path = this.p('state', 'page-submissions', `${id}.json`)
@@ -497,6 +502,27 @@ function releaseLoop(path: string, token: string, deadline: number) {
 		try { if (holder === token) { rmSync(path, { force: true }); return } } catch (error) { if (!busyReceiptLock(error)) throw error }
 		if (Date.now() >= deadline) throw new Error(`Could not release page receipt lock ${basename(path)}.`)
 		Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5)
+	}
+}
+// The page server takes a receipt lock at once or not at all, never spinning on its one thread (#27 b): the caller reads without it
+// or waits asynchronously. BUSY says another process holds it.
+export const BUSY = Symbol('busy')
+function withReceiptLockNow<T>(path: string, action: () => T): T | typeof BUSY {
+	assertTestSafe(path)
+	if (receiptLocks.has(path)) return action()
+	mkdirSync(dirname(path), { recursive: true })
+	const lock = `${path}.lock`, token = `${process.pid} ${Date.now()} ${Math.random()}`
+	if (!tryReceiptLock(lock, token)) {
+		const holder = readReceiptLock(lock), pid = Number(holder?.split(' ')[0])
+		// Gone, or this very process outside any receipt action: a lock left behind (a release OneDrive refused), taken over.
+		if (!holder || !Number.isSafeInteger(pid) || pid <= 0 || alive(pid) && pid !== process.pid) return BUSY
+		releaseReceiptLock(lock, holder)
+		if (!tryReceiptLock(lock, token)) return BUSY
+	}
+	receiptLocks.add(path)
+	try { return action() } finally {
+		receiptLocks.delete(path)
+		releaseReceiptLock(lock, token)
 	}
 }
 function withReceiptLock<T>(path: string, action: () => T): T {

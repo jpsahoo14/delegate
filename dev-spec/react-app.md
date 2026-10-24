@@ -1,5 +1,31 @@
 # React preview
 
+## Settings stays fast while an action waits for its saved result (#27 b, c, d)
+
+**The blocker, reproduced.** The test root was a fictional one in the OneDrive-synced folder with 400 items. A pending page action
+was polled every second while another process held its receipt lock for 8 s, as the runner does while it saves the result, and
+another process rewrote item files for 12 s.
+- **Before:** the receipt poll held the page server's only thread in `withReceiptLock`'s `Atomics.wait` spin: `page-slow GET
+  /api/v1/result 8362 ms, lockMs 8022`, `page-stall 8332`. A page load took 7.5 s and one Settings request failed outright.
+- **After, same root and load:** Settings answered in 355 ms or less, receipt polls in 727 ms or less, page loads in 750 ms or
+  less.
+
+**The fix (b).** The page server never waits on its thread for another process.
+- `withReceiptLockNow` takes the lock at once or returns `BUSY`. A lock left by a gone process, or by this process outside any
+  receipt action, is taken over.
+- A receipt poll that finds the lock busy reads what is saved, without the lock and without writing; the next poll sees the rest.
+- A page action's submit (`submitIntentWhenFree`) retries every 50 ms between turns of the thread, for up to 10 s, then answers 503
+  with "check it again before acting". While a submit waited 5 s for a held lock, Settings answered in 5–7 ms, with no stall.
+- The runner and the AI chat keep the blocking lock, as before.
+
+**An empty tick (d).** The tick log line now has `allMs` and the store time split: `readMs`/`reads`, `writeMs`/`writes`,
+`waitMs`. On the 400-item OneDrive root an empty tick took about 3.1 s, almost all of it 6,462 store file reads (about 16 per item);
+writes and OneDrive sleeps were near zero. The VM's 13–20 s fits the same reads on a slower synced store; its own tick lines will
+confirm it, and cutting those reads is a separate fix.
+
+**Still for the owner's VM:** one session's `page-slow`/`page-stall` lines, before and after, and Settings' first paint while an
+action is pending (c).
+
 ## A drafted reply can always be sent, and says why it waited (#33)
 
 A37 had a drafted holding reply but offered only "Draft reply". The cause: its review job had failed four days earlier, for a cause

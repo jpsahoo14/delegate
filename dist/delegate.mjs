@@ -22176,6 +22176,25 @@ function releaseLoop(path, token, deadline) {
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
   }
 }
+function withReceiptLockNow(path, action2) {
+  assertTestSafe(path);
+  if (receiptLocks.has(path)) return action2();
+  mkdirSync3(dirname5(path), { recursive: true });
+  const lock = `${path}.lock`, token = `${process.pid} ${Date.now()} ${Math.random()}`;
+  if (!tryReceiptLock(lock, token)) {
+    const holder = readReceiptLock(lock), pid = Number(holder?.split(" ")[0]);
+    if (!holder || !Number.isSafeInteger(pid) || pid <= 0 || alive(pid) && pid !== process.pid) return BUSY;
+    releaseReceiptLock(lock, holder);
+    if (!tryReceiptLock(lock, token)) return BUSY;
+  }
+  receiptLocks.add(path);
+  try {
+    return action2();
+  } finally {
+    receiptLocks.delete(path);
+    releaseReceiptLock(lock, token);
+  }
+}
 function withReceiptLock(path, action2) {
   assertTestSafe(path);
   if (receiptLocks.has(path)) return action2();
@@ -22238,7 +22257,7 @@ function tryLock(path, token) {
     throw e;
   }
 }
-var localDay, portable, here2, LOCAL_DIR, experienceOf, Store, submissionRank, receiptLocks, busyReceiptLock;
+var localDay, portable, here2, LOCAL_DIR, experienceOf, Store, submissionRank, receiptLocks, busyReceiptLock, BUSY;
 var init_state = __esm({
   "src/store/state.ts"() {
     "use strict";
@@ -22630,6 +22649,11 @@ var init_state = __esm({
         if (!/^[a-f0-9-]{36}$/i.test(id)) throw new Error("Invalid page submission identity.");
         return withReceiptLock(this.p("state", "page-submissions", `${id}.json`), action2);
       }
+      // The same, for the page server: at once or BUSY, never a wait on its thread (#27 b).
+      withPageSubmissionNow(id, action2) {
+        if (!/^[a-f0-9-]{36}$/i.test(id)) throw new Error("Invalid page submission identity.");
+        return withReceiptLockNow(this.p("state", "page-submissions", `${id}.json`), action2);
+      }
       updatePageSubmission(id, update2) {
         return this.withPageSubmission(id, () => {
           const path = this.p("state", "page-submissions", `${id}.json`);
@@ -22823,6 +22847,7 @@ var init_state = __esm({
     submissionRank = (r) => r.uncertain ? 4 : r.refused || r.phase === "refused" ? 3 : r.processed ? 2 : r.accepted || r.phase === "queued" ? 1 : 0;
     receiptLocks = /* @__PURE__ */ new Set();
     busyReceiptLock = (error62) => ["EPERM", "EBUSY", "EACCES"].includes(error62.code ?? "");
+    BUSY = /* @__PURE__ */ Symbol("busy");
   }
 });
 
@@ -51182,6 +51207,7 @@ async function prewarmHost(store2, cfg, now = /* @__PURE__ */ new Date()) {
 
 // src/runner/tick.ts
 init_locate();
+init_fs();
 
 // src/runner/server-needs.ts
 init_catalog();
@@ -55406,6 +55432,7 @@ function resolvePageIntent(store2, intent) {
 }
 
 // src/web/react-submissions.ts
+init_state();
 init_ids();
 init_brand();
 init_page_approval();
@@ -55436,12 +55463,13 @@ function recover(store2, record3) {
   return saved;
 }
 function submissionReceipt(store2, id) {
-  return store2.withPageSubmission(id, () => readSubmissionReceipt(store2, id));
+  const r = store2.withPageSubmissionNow(id, () => readSubmissionReceipt(store2, id));
+  return r === BUSY ? readSubmissionReceipt(store2, id, false) : r;
 }
-function readSubmissionReceipt(store2, id) {
+function readSubmissionReceipt(store2, id, write = true) {
   const record3 = store2.pageSubmission(id);
   if (!record3) return void 0;
-  const saved = recover(store2, record3), outcomes = saved.ids.map((answerId) => store2.outcome(answerId));
+  const saved = write ? recover(store2, record3) : record3, outcomes = saved.ids.map((answerId) => store2.outcome(answerId));
   const applied = saved.processed || !saved.ids.length || outcomes.every((outcome2) => outcome2 !== void 0) || saved.ids.every((id2) => store2.answered(id2));
   const lostDetails = applied && saved.ids.length > 0 && !saved.processed && outcomes.some((outcome2) => outcome2 === void 0);
   const recorded = pageText(outcomes.join(" "));
@@ -55450,11 +55478,16 @@ function readSubmissionReceipt(store2, id) {
   const text3 = lostDetails ? "The saved action was processed, but its detailed result is no longer available. Check the current item before acting; it will not be resent." : outcomes.length && outcomes.every((outcome2) => outcome2 !== void 0) ? recorded || missingDetail : applied ? pageText(saved.text) || missingDetail : `Queued. Waiting for ${NAME}.`;
   const refused = !!saved.refused || !saved.accepted || saved.ids.some((id2) => store2.outcomeRefused(id2));
   const uncertain = !!saved.uncertain || !!lostDetails;
-  if (applied && !saved.processed) store2.savePageSubmission({ ...saved, processed: true, text: text3, refused, uncertain });
+  if (write && applied && !saved.processed) store2.savePageSubmission({ ...saved, processed: true, text: text3, refused, uncertain });
   return { submissionId: saved.id, item: saved.item, rev: saved.rev, ids: saved.ids, accepted: saved.accepted, applied: !!applied, text: text3, refused, uncertain, at: saved.at };
 }
-function submitIntent(store2, intent) {
-  return store2.withPageSubmission(intent.submissionId, () => submitLocked(store2, intent));
+async function submitIntentWhenFree(store2, intent, waitMs = 1e4) {
+  for (const until = Date.now() + waitMs; ; ) {
+    const r = store2.withPageSubmissionNow(intent.submissionId, () => submitLocked(store2, intent));
+    if (r !== BUSY) return r;
+    if (Date.now() >= until) throw new IntentError(503, `Timed out waiting for this action's saved result. Check it again before acting; nothing was sent twice.`);
+    await new Promise((r2) => setTimeout(r2, 50));
+  }
 }
 function submitLocked(store2, intent) {
   const fingerprint = pageDigest(intent), previous = store2.pageSubmission(intent.submissionId);
@@ -55771,7 +55804,7 @@ function serveInbox(get, port = 0, token = randomBytes3(16).toString("hex"), pro
             json2(413, { text: "That action is too large." });
           }
         });
-        req.on("end", () => {
+        req.on("end", async () => {
           if (tooLarge) return;
           let raw;
           try {
@@ -55786,7 +55819,7 @@ function serveInbox(get, port = 0, token = randomBytes3(16).toString("hex"), pro
             return;
           }
           try {
-            const result = submitIntent(get(), parsed.data);
+            const result = await submitIntentWhenFree(get(), parsed.data);
             json2(result.status, result.receipt);
           } catch (error62) {
             failure2(error62);
@@ -55997,7 +56030,7 @@ init_schedule();
 init_brand();
 var TAKEOVER_MIN = 30;
 async function tick(store2, deps = {}) {
-  const t0 = Date.now();
+  const t0 = Date.now(), fs0 = { ...fsTime };
   const mono = deps.mono ?? (() => performance.now()), p0 = mono();
   const empty = { commands: 0, answers: 0, asks: 0, runs: 0, nudged: false };
   const cfg = store2.config();
@@ -56209,7 +56242,8 @@ async function tick(store2, deps = {}) {
     } catch (error62) {
       console.error("The read-only snapshot could not be written:", error62);
     }
-    store2.log({ event: "tick", ...r });
+    const fsd = (k) => Math.round(fsTime[k] - fs0[k]);
+    store2.log({ event: "tick", ...r, allMs: Date.now() - t0, readMs: fsd("read"), reads: fsd("reads"), writeMs: fsd("write"), writes: fsd("writes"), waitMs: fsd("wait") });
     return r;
   } finally {
     try {

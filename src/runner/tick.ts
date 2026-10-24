@@ -30,6 +30,7 @@ import { refreshCatalogs } from './catalog.ts'
 import { finishTrim } from './tools-migrate.ts'
 import { hostCaller, hostLister, hostRunner, prewarmHost } from '../host/client.ts'
 import { hostOff } from '../host/locate.ts'
+import { fsTime } from '../store/fs.ts'
 import { serverBanners } from './server-needs.ts'
 import { stampPlaces } from './place.ts'
 import { writeSnapshot } from '../web/server.ts'
@@ -44,7 +45,7 @@ export type TickResult = { skipped?: string; commands: number; answers: number; 
 export const TAKEOVER_MIN = 30
 
 export async function tick(store: Store, deps: { source?: Source; run?: RunWorker; procs?: Procs; force?: boolean; history?: History; probe?: BuildProbe; mono?: () => number; call?: Caller } = {}): Promise<TickResult> {
-	const t0 = Date.now()
+	const t0 = Date.now(), fs0 = { ...fsTime }
 	// A monotonic clock does not advance while the machine sleeps, so a sleep inside a cycle shows as the difference.
 	const mono = deps.mono ?? (() => performance.now()), p0 = mono()
 	const empty = { commands: 0, answers: 0, asks: 0, runs: 0, nudged: false }
@@ -208,7 +209,10 @@ export async function tick(store: Store, deps: { source?: Source; run?: RunWorke
 		reschedule(store, cfg, commands + answers + asks + missed + probed + due.length + runs + autoSent + handedBack + jobsEarly + jobsDone + jobsStarted + jobsNow + jobsLate > 0 || nudged || busy, t0)
 		// The read-only snapshot is best effort: it records its own health warning and never ends the tick.
 		try { writeSnapshot(store) } catch (error) { console.error('The read-only snapshot could not be written:', error) }
-		store.log({ event: 'tick', ...r })
+		// Where an empty tick's time goes on a synced store (#27 d): store reads and writes, and sleeps while OneDrive held a file;
+		// allMs also counts the snapshot written after ms was taken.
+		const fsd = (k: keyof typeof fsTime) => Math.round(fsTime[k] - fs0[k])
+		store.log({ event: 'tick', ...r, allMs: Date.now() - t0, readMs: fsd('read'), reads: fsd('reads'), writeMs: fsd('write'), writes: fsd('writes'), waitMs: fsd('wait') })
 		return r
 	} finally {
 		// Every cycle that ran, even stopped or with Teams down, stamps where each item now stands for the new page (N1b).
