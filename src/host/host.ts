@@ -15,7 +15,7 @@ import { readRun } from '../core/runinfo.ts'
 import type { ToolInfo } from '../core/tool-class.ts'
 import type { Config } from '../core/types.ts'
 import { VERSION } from '../paths.ts'
-import { hostSkips, listable, readCatalog, whyFailed } from '../runner/catalog.ts'
+import { diagnose, hostSkips, listable, readCatalog } from '../runner/catalog.ts'
 import { LOCAL_DIR, loadLocal, Store } from '../store/state.ts'
 import { cliPackage } from './locate.ts'
 import { z } from 'zod'
@@ -67,7 +67,7 @@ export async function runHost(): Promise<void> {
 		const spec = specs.get(name)!, mcp = clientFor(spec, name), at = Date.now()
 		const listed = Promise.race([mcp.listAll(), new Promise<never>((_, no) => setTimeout(() => no(new Error(`no answer in ${WARM_MS / 1000} s`)), WARM_MS).unref())])
 		const tools = listed.then(r => { store.log({ event: 'host-server-ready', server: name, ms: Date.now() - at, tools: r.tools.length }); return new Map(r.tools.map(t => [t.name, t])) })
-		tools.catch(e => store.log({ event: 'host-server-failed', server: name, error: whyFailed(e, spec, mcp.stderrTail()) }))
+		tools.catch(e => store.log({ event: 'host-server-failed', server: name, error: diagnose(e, spec, mcp.stderrText()).text }))
 		const w = { client: mcp, tools }
 		warm.set(name, w)
 		return w

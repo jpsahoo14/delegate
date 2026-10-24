@@ -9,6 +9,8 @@ import { knowledgeOf } from '../runner/proposals.ts'
 import { find, teamsMessage } from './model/find.ts'
 import { freshOf, rowMark } from './model/derive.ts'
 import { NAME } from '../brand.ts'
+import { toolServerKey, toolsView } from './settings.ts'
+import { ignoreServer, retryServer } from '../runner/catalog.ts'
 import { isPersona } from '../core/intake.ts'
 import { PAGE_REPLY_CHANGED, automationApprovalRev, pageChangeId, pageDigest, pageOptionId, proposalApprovalRev, workflowApprovalRev } from '../core/page-approval.ts'
 import type { Config, PageApproval, Workflow } from '../core/types.ts'
@@ -564,6 +566,30 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 			meaning: `Stop treating ${level.name} as ${level.level === 'off' ? 'off the record' : 'private'}? Future learning and replies use the normal privacy checks.${level.level === 'off' ? ' Facts set aside from it come back to your knowledge.' : ' Existing stored facts are not changed.'}`,
 		})
 		settingsActions[key] = [actionId]
+	}
+	// A tool server that won't start on this machine (#24): Retry, or Don't use it here; one set aside can be used again. Per machine.
+	for (const server of toolsView(store.config(), { machine: store.machine, root: store.root })?.servers ?? []) {
+		if (!server.actionIds?.length) continue
+		const key = toolServerKey(server.name), name = server.name
+		for (const id of server.actionIds) {
+			const kind = id.slice(key.length + 1)
+			if (kind === 'server-retry') tool(key, kind, 'Retry', () => {
+				retryServer(name); store.saveKick()
+				return { accepted: true, text: `${NAME} tries ${name} again at the next check, in a moment.` }
+			}, undefined, key)
+			else if (kind === 'server-ignore') tool(key, kind, "Don't use this server", () => {
+				ignoreServer(name, true); store.setHealth(`catalog:${name}`); store.saveKick()
+				store.log({ event: 'tool-server-ignored', server: name })
+				return { accepted: true, text: `${name} isn't used on ${store.machine} any more: ${NAME} won't start it or offer its tools here.` }
+			}, undefined, key)
+			else if (kind === 'server-use') tool(key, kind, 'Use this server again', () => {
+				ignoreServer(name, false); retryServer(name); store.saveKick()
+				store.log({ event: 'tool-server-used', server: name })
+				return { accepted: true, text: `${NAME} uses ${name} on ${store.machine} again, from the next check.` }
+			}, undefined, key)
+			if (entities.actions[id]) Object.assign(entities.actions[id], { effect: 'changes-system', meaning: kind === 'server-ignore' ? `Stop starting ${name} on ${store.machine}? Its tools aren't offered here until you use it again.` : kind === 'server-use' ? `Start ${name} on ${store.machine} again and offer its read tools.` : `Try to start ${name} again now.` })
+		}
+		settingsActions[key] = server.actionIds.filter(id => entities.actions[id])
 	}
 	if (base.status.state !== 'on') for (const action of Object.values(entities.actions)) {
 		if (action.effect === 'sends' || action.effect === 'changes-system' && ['approve', 'approve-again'].includes(action.kind)) {

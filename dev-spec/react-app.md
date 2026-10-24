@@ -1,5 +1,49 @@
 # React preview
 
+## A tool server that can't start: one Settings row, not a banner (#24)
+
+0.2.26 put a top banner on the owner's page for an optional server in his own AI CLI tool settings, one whose program isn't
+installed on that machine: "Couldn't start github here (Connection closed; it said: operable program or batch file. …)". That was
+half of Windows' "'X' is not recognized as an internal or external command, operable program or batch file.", with no command, no
+file and no way out.
+
+**The reason, in plain words** (`diagnose` in `catalog.ts`). It reads the server's whole stderr, the error and what the AI CLI said:
+- **A missing program:** "not recognized as an internal or external command", "program not found", ENOENT or "command not found"
+  give "the program '<command>' isn't installed".
+- **Settings:** an unset `${VAR}` gives "it needs VAR, which isn't set where Delegate runs".
+- **Sign-in:** 401/403, unauthorized, token or sign-in give "it couldn't sign in: check its token or sign-in".
+- **Anything else:** "it stopped as it started (exit code N)". The server's words are quoted only when short enough to quote whole,
+  never as a cut-off tail.
+
+**Retries.** A missing program waits until the config file that names the server changes (its mtime and size are kept in the
+catalog), or until the owner presses Retry. Other causes keep the 1 h, then 6 h steps (#23).
+
+**Settings › Tools, one row per server.**
+- **The row:** "<name> (in your AI CLI's tool settings, ~/.copilot/mcp-config.json) can't start on <machine>: <reason>. Delegate
+  works without it." A server from Delegate's own settings names config.json instead.
+- **The buttons:** **Retry** (the next check tries it) and **Don't use this server**.
+- **Don't use this server:** a per-machine ignore, `tool-servers.json` in the local folder. That server is never started, listed or
+  offered on this machine, and the host doesn't connect it. Its row says so, with **Use this server again**.
+- These are immediate page actions under `settingsActions["tool-server:<name>"]`, the same in New and Classic.
+
+**The top of the page.** A failure no longer sets Health. Each check, `serverBanners` (`server-needs.ts`) raises `catalog:<name>`
+only while an open item needs the server: a change not yet made that calls one of its tools, or, for `ado`, an item about a PR. It
+names those items and points to Retry in Settings › Tools. Any other `catalog:` banner, including 0.2.26's, is cleared.
+
+**Proof** (fictional root, stub model (quota), the AI host on). Servers: one whose program doesn't exist, and one that exits with
+"401 Unauthorized"; Health started with 0.2.26's banner.
+- **First check:** one try each, read as "the program 'acme-not-installed-xyz' isn't installed" and "it couldn't sign in". The old
+  banner went, a reply was drafted, and the top of the page stayed empty in New and Classic.
+- **Retries:** at +8 h the missing program was not tried, while the sign-in one was. After the CLI config file was edited, it was
+  tried once.
+- **Edge, Settings › Tools:**
+  - New: both rows name the command, the file and the machine.
+  - Don't use: the row says it isn't used, and a forced listing skipped it.
+  - Classic: Retry, then Use again: both said "tries it again at the next check", and the next check tried both.
+  - Screenshots at 1280 light and 400 dark.
+- **Banner:** `ado` with a missing program and a PR review queued (A2) gave one top banner naming A2 in New and Classic. It went
+  once A2 was done.
+
 ## Tool servers that can't be listed: back off, say why, list through the AI CLI (#23)
 
 The owner's live log showed one `catalog-failed {server:"github", error:"Connection closed"}` per check: the retry window (10 min)

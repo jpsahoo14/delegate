@@ -2,9 +2,10 @@
 // cache lives in the local folder, never the synced root. A server that cannot be listed keeps its last good list; with none,
 // it offers drafts no tools.
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
-import { clientFor, McpClient, toolServers, unsetVars, type ServerSpec } from '../adapters/mcp-client.ts'
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { basename, join } from 'node:path'
+import { cliConfigPath, clientFor, McpClient, toolServers, unsetVars, type ServerSpec } from '../adapters/mcp-client.ts'
 import { NAME } from '../brand.ts'
 import { classifyTool, type ToolClass, type ToolInfo } from '../core/tool-class.ts'
 import type { Config } from '../core/types.ts'
@@ -12,11 +13,14 @@ import { LOCAL_DIR, type Store } from '../store/state.ts'
 import { UNTRACKED } from './sharing.ts'
 
 export type CatalogTool = { name: string; cls: ToolClass; why: string; description?: string; info: ToolInfo }
-export type Catalog = { server: string; version?: string; hash: string; spec: string; tools: CatalogTool[]; at: string; error?: string; errorAt?: string; triedAt?: string; stale?: true; fails?: number; retryAt?: string; via?: 'cli' }
+// cause: what stopped the server, from diagnose (#24); file: the config that names it; fileStamp: that file as it was when a
+// missing program was found, so the next try waits for an edit; retryNow: the owner pressed Retry.
+export type Cause = 'missing' | 'config' | 'auth' | 'other'
+export type Catalog = { server: string; version?: string; hash: string; spec: string; tools: CatalogTool[]; at: string; error?: string; errorAt?: string; triedAt?: string; stale?: true; fails?: number; retryAt?: string; via?: 'cli'; cause?: Cause; command?: string; file?: string; fileStamp?: string; retryNow?: true }
 
 const DAY = 86_400_000, HOUR = 3_600_000, TIMEOUT = 30_000
 // A server that keeps failing is tried less often (#23): an hour after its first failure, then every 6 hours, until it lists or its
-// config changes. Its last good list, if any, is used meanwhile.
+// config changes. Its last good list, if any, is used meanwhile. A program that isn't installed waits for its config file (#24).
 const RETRY = [HOUR, 6 * HOUR]
 // Delegate's own server is never a source of worker tools.
 const OWN = new Set(['delegate', 'delegate_worker'])
@@ -24,6 +28,7 @@ const dir = () => join(LOCAL_DIR, 'catalog')
 const file = (server: string) => join(dir(), `${server.replace(/[^\w.-]/g, '_')}.json`)
 const specKey = (s: ServerSpec) => createHash('sha256').update(JSON.stringify({ command: s.command, args: s.args ?? [], env: Object.keys(s.env ?? {}).sort(), ...(s.url ? { url: s.url } : {}) })).digest('hex').slice(0, 16)
 const toolsHash = (tools: ToolInfo[]) => createHash('sha256').update(JSON.stringify(tools.map(t => [t.name, t.annotations ?? null, t.inputSchema ?? null]).sort())).digest('hex').slice(0, 16)
+const stampOf = (path?: string) => { try { const s = statSync(path!); return `${s.mtimeMs}:${s.size}` } catch { return '' } }
 
 export function readCatalog(server: string): Catalog | undefined {
 	try { return JSON.parse(readFileSync(file(server), 'utf8')) as Catalog } catch { return undefined }
@@ -40,13 +45,39 @@ export function staleCatalog(server: string) {
 	if (c && !c.stale) writeCatalog({ ...c, stale: true })
 }
 McpClient.onListChanged = staleCatalog
+// Retry in Settings (#24): the next check tries the server again, whatever its wait.
+export function retryServer(server: string): boolean {
+	const c = readCatalog(server)
+	if (!c?.error) return false
+	writeCatalog({ ...c, retryNow: true })
+	return true
+}
+
+// Servers the owner chose not to use on this machine (#24): never started, listed or offered here; Settings can bring one back.
+const ignoreFile = () => join(LOCAL_DIR, 'tool-servers.json')
+export const ignoredServers = (): string[] => { try { return (JSON.parse(readFileSync(ignoreFile(), 'utf8')) as { ignored?: string[] }).ignored ?? [] } catch { return [] } }
+export function ignoreServer(server: string, ignore: boolean) {
+	const now = new Set(ignoredServers())
+	if (ignore) now.add(server); else now.delete(server)
+	mkdirSync(LOCAL_DIR, { recursive: true })
+	writeFileSync(ignoreFile(), JSON.stringify({ ignored: [...now].sort() }, null, 1))
+}
+const usable = (name: string, ignored: Set<string>) => !OWN.has(name) && !ignored.has(name)
 
 // The servers whose tools workers may be given: the owner's servers this machine can start (a remote one cannot be listed here).
-export const listable = (cfg: Config) => Object.entries(toolServers(cfg)).filter((e): e is [string, ServerSpec & { command: string }] => !!e[1].command && !OWN.has(e[0]))
+export const listable = (cfg: Config) => { const ig = new Set(ignoredServers()); return Object.entries(toolServers(cfg)).filter((e): e is [string, ServerSpec & { command: string }] => !!e[1].command && usable(e[0], ig)) }
 // Remote servers (a url the AI CLI signs in to itself): Delegate's client can't open them; the AI host lists them through the CLI (#23).
-export const remoteServers = (cfg: Config) => Object.entries(toolServers(cfg)).filter(([n, s]) => !s.command && !!s.url && !OWN.has(n)).map(([n]) => n)
-// A failing server whose next try is still ahead: nothing starts it before then, here or in the AI host.
-export const resting = (c: Catalog | undefined, spec: ServerSpec, now = Date.now()) => !!(c?.error && c.retryAt && c.spec === specKey(spec) && Date.parse(c.retryAt) > now)
+export const remoteServers = (cfg: Config) => { const ig = new Set(ignoredServers()); return Object.entries(toolServers(cfg)).filter(([n, s]) => !s.command && !!s.url && usable(n, ig)).map(([n]) => n) }
+// Where a server is set up, for the owner to fix it: Delegate's own settings, or the AI CLI's tool settings (#24).
+export function serverSource(cfg: Config, server: string, root: string): { file: string; shown: string } {
+	if ((cfg.agent.mcpServers ?? {})[server]) return { file: join(root, 'config.json'), shown: `${NAME}'s settings, config.json` }
+	const path = cliConfigPath(cfg.agent.flavor), home = homedir()
+	return { file: path, shown: `your AI CLI's tool settings, ${path.startsWith(home) ? `~${path.slice(home.length).replace(/\\/g, '/')}` : path}` }
+}
+// A failing server whose next try is still ahead: nothing starts it before then, here or in the AI host. One whose program isn't
+// installed waits until its config file changes (#24); Retry ends any wait.
+export const resting = (c: Catalog | undefined, spec: ServerSpec, now = Date.now()) => !!(c?.error && !c.retryNow && c.spec === specKey(spec)
+	&& (c.cause === 'missing' && c.fileStamp !== undefined ? stampOf(c.file) === c.fileStamp : !!c.retryAt && Date.parse(c.retryAt) > now))
 // The AI host doesn't start these itself: one resting, or one only the CLI's own connection could list (runs use that one).
 export const hostSkips = (c: Catalog | undefined, spec: ServerSpec, now = Date.now()) => resting(c, spec, now) || (c?.via === 'cli' && !c.error && c.spec === specKey(spec))
 // Every cached catalog for the owner's servers, read now (sync, for building a run's tool list).
@@ -55,7 +86,6 @@ export function cachedCatalogs(cfg: Config): Record<string, Catalog> {
 }
 export const catalogFiles = () => (existsSync(dir()) ? readdirSync(dir()).filter(f => f.endsWith('.json')) : [])
 
-const when = (iso: string) => new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
 
 // "<server>-<tool>" matches itself and "<server>-*".
 export const denied = (deny: string[], t: string) => deny.some(d => d === t || (d.endsWith('-*') && t.startsWith(d.slice(0, -1))))
@@ -100,26 +130,26 @@ export async function refreshCatalogs(store: Store, cfg: Config, now = Date.now(
 		if (!had || had.hash !== toolsHash(info) || had.version !== version) store.log({ event: 'catalog-listed', server: name, version, tools: tools.length, reads: tools.filter(t => t.cls === 'read').length, unknown: tools.filter(t => t.cls === 'unknown').length, ...(via ? { via } : {}) })
 		n++
 	}
-	const failed = (name: string, spec: ServerSpec, why: string) => {
-		const had = readCatalog(name), key = specKey(spec), at = new Date(now).toISOString()
+	const failed = (name: string, spec: ServerSpec, d: Diagnosis) => {
+		const had = readCatalog(name), key = specKey(spec), at = new Date(now).toISOString(), src = serverSource(cfg, name, store.root)
 		// Failures in a row count only for the same command: a config change starts again at the first step.
 		const same = had?.error && had.spec === key, fails = (same ? had.fails ?? 1 : 0) + 1, since = same && had.errorAt ? had.errorAt : at
 		const retryAt = new Date(now + RETRY[Math.min(fails, RETRY.length) - 1]).toISOString()
-		// The last good list stays in use, even from an earlier command; the failure is this command's.
-		writeCatalog({ ...(had ?? { server: name, hash: '', tools: [], at: '' }), spec: key, error: why, errorAt: since, triedAt: at, fails, retryAt })
-		store.setHealth(`catalog:${name}`, had?.tools.length ? `Couldn't list ${name}'s tools since ${when(since)}; using the list from ${when(had.at)}.` : `Couldn't start ${name} here (${why}); drafts aren't given its tools.`)
-		store.log({ event: 'catalog-failed', server: name, error: why, cached: !!had?.tools.length, fails, retryAt })
+		// The last good list stays in use, even from an earlier command; the failure is this command's. It is not a banner: Settings ›
+		// Tools shows it, and the top of the page only when an open item needs the server (server-needs.ts, #24).
+		const { retryNow: _r, fileStamp: _s, ...kept } = had ?? { server: name, hash: '', tools: [], at: '' }
+		writeCatalog({ ...kept, spec: key, error: d.text, cause: d.cause, ...(spec.command ? { command: commandOf(spec, d) } : {}), file: src.file, ...(d.cause === 'missing' ? { fileStamp: stampOf(src.file) } : {}), errorAt: since, triedAt: at, fails, retryAt })
+		store.log({ event: 'catalog-failed', server: name, error: d.text, cause: d.cause, cached: !!had?.tools.length, fails, ...(d.cause === 'missing' ? { until: 'its config file changes' } : { retryAt }) })
 	}
-	const ask: { name: string; spec: ServerSpec; own?: string }[] = []
+	const ask: { name: string; spec: ServerSpec; e?: unknown; said?: string }[] = []
 	await Promise.all(listable(cfg).filter(([name, spec]) => due(name, spec)).map(async ([name, spec]) => {
 		const client = clientFor(spec, name)
 		try {
 			const got = await Promise.race([client.listAll(), new Promise<never>((_, no) => setTimeout(() => no(new Error(`no answer in ${TIMEOUT / 1000} s`)), TIMEOUT).unref())])
 			listed(name, spec, got.tools, got.server ? `${got.server.name}@${got.server.version}` : undefined)
 		} catch (e) {
-			const why = whyFailed(e, spec, client.stderrTail())
-			if (viaCli) ask.push({ name, spec, own: why })
-			else failed(name, spec, why)
+			if (viaCli) ask.push({ name, spec, e, said: client.stderrText() })
+			else failed(name, spec, diagnose(e, spec, client.stderrText()))
 		} finally { await client.close().catch(() => undefined) }
 	}))
 	const specs = toolServers(cfg)
@@ -127,19 +157,31 @@ export async function refreshCatalogs(store: Store, cfg: Config, now = Date.now(
 	if (!ask.length) return n
 	const got = await viaCli!(ask.map(a => a.name)).catch(() => undefined)
 	for (const a of ask) {
-		const r = got?.[a.name]
+		const r = got?.[a.name], cli = r?.error && !/no server by that name/.test(r.error) ? r.error : undefined
 		if (r?.tools) listed(a.name, a.spec, r.tools, undefined, 'cli')
-		// No host to ask this time: a remote server waits for one; a command server's own failure stands. Its own reason is the plain
-		// one; the CLI's is added only when it says something else.
-		else if (a.own) failed(a.name, a.spec, !r?.error || /no server by that name/.test(r.error) ? a.own : /^the AI CLI couldn't start it either/.test(r.error) ? `${a.own}; the AI CLI couldn't start it either` : `${a.own}; through the AI CLI: ${r.error}`)
-		else if (r?.error) failed(a.name, a.spec, r.error)
+		// No host to ask this time: a remote server waits for one; a command server's own failure stands, read with what the CLI said.
+		else if (a.e !== undefined) failed(a.name, a.spec, diagnose(a.e, a.spec, a.said, cli))
+		else if (r?.error) failed(a.name, a.spec, { cause: diagnose('', a.spec, '', r.error).cause, text: r.error })
 	}
 	return n
 }
 
-// The plain reason a server could not be listed: a variable its config needs that is empty here, else what it said as it exited.
-export function whyFailed(e: unknown, spec: ServerSpec, said = ''): string {
-	const raw = String(e).replace(/^(?:Mcp)?Error: /, '').replace(/^MCP error -?\d+: /, '').slice(0, 160), missing = unsetVars(spec)
-	if (missing.length) return `it needs ${missing.join(', ')}, which ${missing.length === 1 ? "isn't" : "aren't"} set where ${NAME} runs`
-	return said && !raw.includes(said) ? `${raw}; it said: ${said}` : raw
+// Why a server would not start, in plain words, from what it and the AI CLI said (#24). Never a cut-off piece of stderr: a known
+// cause gets its own line, and the server's words are quoted only when they are short enough to quote whole.
+export type Diagnosis = { cause: Cause; text: string; program?: string }
+export function diagnose(e: unknown, spec: ServerSpec, said = '', cli = ''): Diagnosis {
+	const raw = String(e ?? '').replace(/^(?:Mcp)?Error: /, '').replace(/^MCP error -?\d+: /, ''), all = `${said}\n${raw}\n${cli}`
+	const named = /'([^'\r\n]+)' is not recognized as an internal or external command/i.exec(all)?.[1] ?? /(?:^|\s)([^\s:]+): (?:command )?not found/i.exec(all)?.[1]
+	if (named || /program not found|\bENOENT\b|is not recognized as an internal or external command|command not found|cannot find the file specified/i.test(all)) {
+		const program = named ?? basename(spec.command ?? '')
+		return { cause: 'missing', text: `the program '${program}' isn't installed`, program }
+	}
+	const unset = unsetVars(spec)
+	if (unset.length) return { cause: 'config', text: `it needs ${unset.join(', ')}, which ${unset.length === 1 ? "isn't" : "aren't"} set where ${NAME} runs` }
+	if (/needs you to sign in/i.test(all)) return { cause: 'auth', text: 'it needs you to sign in to it in the AI CLI' }
+	if (/\b40[13]\b|unauthori[sz]ed|forbidden|authenticat|credential|sign[- ]?in|\blog ?in\b|\btoken\b/i.test(all)) return { cause: 'auth', text: "it couldn't sign in: check its token or sign-in" }
+	if (/no answer in \d+ s/.test(all)) return { cause: 'other', text: `it didn't answer in ${TIMEOUT / 1000} s` }
+	const code = /exit code (-?\d+)/i.exec(all)?.[1], whole = said.trim().replace(/\s*\r?\n\s*/g, ' ')
+	return { cause: 'other', text: `it stopped as it started${code ? ` (exit code ${code})` : ''}${whole && whole.length <= 160 ? `; it said "${whole}"` : ''}` }
 }
+const commandOf = (spec: ServerSpec, d: Diagnosis) => d.program ?? basename(spec.command ?? '')

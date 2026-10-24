@@ -2,6 +2,8 @@ import { useState, type ComponentType } from 'react'
 import { Button } from '../components/ui/button.tsx'
 import { useSetting } from '../data/screens.ts'
 import type { Settings as SettingsData } from '../domain/screens.ts'
+import { useEntities } from '../data/hooks.ts'
+import { ActionButton, ActionState } from './ActionButton.tsx'
 
 type Row = SettingsData['rows'][number]
 // The same section in New and Classic; each passes its own switch row and class names.
@@ -29,7 +31,7 @@ function AllowAll({ row, look }: { row: Row; look: Look }) {
 // Tools your drafts may read (#17): grouped per server, each server folded to one line until opened.
 export function ToolsSettings({ data, Setting, look }: { data: SettingsData; Setting: ComponentType<{ row: Row }>; look: Look }) {
 	if (!data.tools) return null
-	const rows = data.rows.filter(row => row.group), all = rows.find(row => row.key === 'toolsAll')
+	const rows = data.rows.filter(row => row.group), all = rows.find(row => row.key === 'toolsAll'), entities = useEntities()
 	return <section id="setting-tools" aria-labelledby="tools-title">
 		<h3 className={look.title} id="tools-title">Tools your drafts may read</h3>
 		<p className={look.muted}>Drafts look things up with these; none of them can change anything. Changes are only the ones above, each after your ok.</p>
@@ -38,6 +40,7 @@ export function ToolsSettings({ data, Setting, look }: { data: SettingsData; Set
 			const reads = rows.filter(row => row.group === server.name && row.key.startsWith('read:')), unknown = rows.filter(row => row.group === server.name && row.key.startsWith('allow:'))
 			return <div className={look.row} key={server.name} data-server={server.name}>
 				{server.line && <p role="status" className="tools-server-line">{server.line}</p>}
+				{(() => { const actions = (server.actionIds ?? []).map(id => entities.actions[id]).filter(Boolean); return actions.length > 0 && <><div className={look.actions}>{actions.map(action => <ActionButton key={action.id} action={action} />)}</div><ActionState item={actions[0].item} rev={actions[0].rev} /></> })()}
 				{server.reads + server.unknown === 0 ? <p><strong>{server.name}</strong>: {server.none ?? 'no list of its tools yet'}</p> : <details className="tools-server"><summary><strong>{server.name}</strong>: {server.on === server.reads ? `${server.reads} read tools` : `${server.on} of ${server.reads} read tools on`}{server.unknown ? ` · ${server.unknown} not placed` : ''}</summary>
 					<div className={look.rows}>{reads.map(row => <Setting key={row.key} row={row} />)}</div>
 					{unknown.length > 0 && <><h4>{server.name} doesn&apos;t say whether these read or change things</h4><div className={look.rows}>{unknown.map(row => <AllowRead key={row.key} row={row} Setting={Setting} look={look} />)}</div></>}

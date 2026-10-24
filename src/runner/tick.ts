@@ -30,6 +30,7 @@ import { refreshCatalogs } from './catalog.ts'
 import { finishTrim } from './tools-migrate.ts'
 import { hostCaller, hostLister, hostRunner } from '../host/client.ts'
 import { hostOff } from '../host/locate.ts'
+import { serverBanners } from './server-needs.ts'
 import { stampPlaces } from './place.ts'
 import { writeSnapshot } from '../web/server.ts'
 import { notify } from '../os/notify.ts'
@@ -159,6 +160,8 @@ export async function tick(store: Store, deps: { source?: Source; run?: RunWorke
 		// A server whose part of an old, shorter tools list waited for a listing is settled before drafts get tools (#17).
 		await listing
 		finishTrim(store)
+		// A server that won't start reaches the top of the page only when an open item needs it (#24).
+		serverBanners(store, cfg)
 		// Reply runs go to the resident AI host when there can be one; else one process per run, as before (#19).
 		const runs = await dispatch(store, src, cfg, deps.run ?? hostRunner(store), probe).finally(closeProbe)
 		// Jobs run detached: the tick starts and checks them, and never waits (R-LNG-02).

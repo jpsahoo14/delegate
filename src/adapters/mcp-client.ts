@@ -36,9 +36,9 @@ export class McpClient {
 	// env: the whole environment for the server, when its config names variables of its own. name: the server's name in the config.
 	constructor(command: string[], env?: Record<string, string>, name?: string) { this.command = command; this.env = env; this.name = name }
 
-	// The end of what the server wrote to stderr: a server that exits at start says why there ("token not set"), not in MCP (#23).
+	// What the server wrote to stderr: a server that exits at start says why there ("not recognized", "token"), not in MCP (#23, #24).
 	private err = ''
-	stderrTail(): string { return this.err.trim().split(/\r?\n/).map(l => l.trim()).filter(Boolean).at(-1)?.slice(0, 200) ?? '' }
+	stderrText(): string { return this.err.trim() }
 
 	// One connection, shared by calls that start together; two connects on one client throw.
 	private connect(): Promise<void> {
