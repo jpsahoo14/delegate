@@ -3,13 +3,16 @@
 // `node scripts/card-golden.ts` and paste its last line into the report of every change that touches card state. Every new card bug
 // adds its row here before the fix. Item codes are the owner's; everything else is fictional.
 import { cardState, checkCard, currentFailure, type CardFacts, type Failure } from '../src/core/card-state.ts'
+import { cardFacts } from '../src/core/card-facts.ts'
 
 const DAY = 86_400_000, now = Date.parse('2026-10-24T12:00:00Z')
 const at = (daysAgo: number) => new Date(now - daysAgo * DAY).toISOString()
 const fail = (f: Partial<Failure> = {}): Failure => ({ kind: 'other', at: at(1), why: 'the run stopped without a result', tried: [], repeats: 0, systemChanged: false, ...f })
 const draft = (d: Partial<NonNullable<CardFacts['draft']>> = {}) => ({ holding: false, preview: false, at: at(0), ...d })
 const facts = (f: Partial<CardFacts> = {}): CardFacts => ({ state: 'needs_human', changes: 0, ...f })
-type Row = { id: string; what: string; facts: CardFacts; expect: { mode: string; primary?: string | null; secondary?: string[]; editor?: string; warn?: string | null }; broken?: string[] }
+type Row = { id: string; what: string; facts: CardFacts; expect: { mode: string; primary?: string | null; secondary?: string[]; more?: string[]; editor?: string; warn?: string | null }; broken?: string[] }
+// A failed document read as an item records it, through cardFacts (pure), so the cause mapping itself is checked (#40 handoff).
+const docFailure = (why: string, tried: string[]) => cardFacts({ wf: { state: 'needs_human', status: `Couldn't finish: ${why}`, runFailed: { at: at(1), kind: 'content', why, tried, job: 'j9' }, updatedAt: at(1) } as any, card: {}, changes: 0 })
 
 const rows: Row[] = [
 	// One per rule (§2), the least that selects it.
@@ -60,6 +63,22 @@ const rows: Row[] = [
 	// Found by the inert-copy check of step 3 (owner data, 23 Oct).
 	{ id: 'G43', what: 'A57/A61: approval not verified; Send checks again', facts: facts({ draft: draft(), notSent: { why: 'the PR approval could not be verified' } }), expect: { mode: 'not-sent', primary: 'approve', editor: 'reply', warn: "Didn't send: the PR approval" } },
 	{ id: 'G44', what: 'A90: "Not finished" with nothing to send', facts: facts({ failure: fail({ kind: 'content', why: "The forwarded message's contents were not exposed" }) }), expect: { mode: 'failed', primary: 'write-own', secondary: ['try-again', 'later'] } },
+	// The owner's Send held by SEND's wf.reason (PE 14:28): Send anyway past exactly that reason, or Redraft / Skip.
+	{ id: 'G45', what: 'held: Kim edited the ask after the ok', facts: facts({ draft: draft(), held: { kind: 'ask-edited', digest: 'd1', who: 'Kim' } }), expect: { mode: 'held', primary: 'send-anyway', secondary: ['redraft', 'later'], editor: 'reply', warn: 'Kim edited the question after you approved.' } },
+	{ id: 'G46', what: 'held: Kim wrote again after the ok', facts: facts({ draft: draft(), held: { kind: 'asker-wrote-again', digest: 'd2', who: 'Kim' } }), expect: { mode: 'held', primary: 'send-anyway', secondary: ['redraft', 'later'], warn: 'Kim wrote again after you approved.' } },
+	{ id: 'G47', what: 'held: no reply looks needed', facts: facts({ draft: draft(), held: { kind: 'no-reply-needed', digest: 'd3', who: 'Kim', why: 'Kim said thanks, no question' } }), expect: { mode: 'held', primary: 'send-anyway', secondary: ['dismiss', 'later'], warn: 'Delegate thinks no reply is needed: Kim said thanks' } },
+	// #40 handoff (SEND 14:50): a missing decoder is a fixed cause; no access or too large can't be helped by trying again.
+	{ id: 'G49', what: 'A76 (#40): Office file only as encoded binary: fixed now, Try again leads', facts: docFailure('Available readers return only the opening of the spec', ['readSmallBinaryFile: the whole file as base64, no decoder']), expect: { mode: 'failed', primary: 'try-again', secondary: ['write-own', 'later'] } },
+	{ id: 'G50', what: '#40: no access to the document', facts: docFailure("Couldn't open Robin's v7 spec: no access", []), expect: { mode: 'failed', primary: 'write-own', secondary: ['try-again', 'later'], more: ['dismiss'] } },
+	{ id: 'G51', what: '#40: the document is over the size limit', facts: docFailure("Couldn't open the Acme deck: too large to open (over 25 MB)", []), expect: { mode: 'failed', primary: 'write-own', secondary: ['try-again', 'later'] } },
+	// What ⋯ holds (PE step-4 review): Answer instead only where a question is open.
+	{ id: 'G52', what: 'more: reply', facts: facts({ draft: draft() }), expect: { mode: 'reply', more: ['dismiss'] } },
+	{ id: 'G53', what: 'more: holding', facts: facts({ draft: draft({ holding: true }) }), expect: { mode: 'holding', more: ['dismiss'] } },
+	{ id: 'G54', what: 'more: reply-with-question', facts: facts({ question: { text: 'Also ping the release channel?', reviewAgain: false }, draft: draft() }), expect: { mode: 'reply-with-question', more: ['answer', 'dismiss'] } },
+	{ id: 'G48', what: 'an edit cleared the hold: a plain Send', facts: facts({ draft: draft({ preview: true }) }), expect: { mode: 'reply', primary: 'approve', editor: 'reply' } },
+	{ id: 'G55', what: 'held with a preview draft still leads with Send anyway (PE B2)', facts: facts({ draft: draft({ preview: true }), held: { kind: 'ask-edited', digest: 'd1', who: 'Kim' } }), expect: { mode: 'held', primary: 'send-anyway', more: ['dismiss'] } },
+	{ id: 'G56', what: 'more: held, wrote again', facts: facts({ draft: draft(), held: { kind: 'asker-wrote-again', digest: 'd2', who: 'Kim' } }), expect: { mode: 'held', more: ['dismiss'] } },
+	{ id: 'G57', what: 'more: held, no reply needed (Skip is in the bar)', facts: facts({ draft: draft(), held: { kind: 'no-reply-needed', digest: 'd3', who: 'Kim', why: 'thanks' } }), expect: { mode: 'held', more: [] } },
 ]
 
 const t0 = performance.now()
@@ -69,6 +88,7 @@ for (const r of rows) {
 	if (s.mode !== e.mode) why.push(`mode ${s.mode}, expected ${e.mode}`)
 	if (e.primary !== undefined && (s.primary ?? null) !== e.primary) why.push(`primary ${s.primary ?? 'none'}, expected ${e.primary ?? 'none'}`)
 	if (e.secondary && JSON.stringify(s.secondary) !== JSON.stringify(e.secondary)) why.push(`secondary ${s.secondary.join(',')}, expected ${e.secondary.join(',')}`)
+	if (e.more && JSON.stringify(s.more) !== JSON.stringify(e.more)) why.push(`more ${s.more.join(',')}, expected ${e.more.join(',')}`)
 	if (e.editor && s.editor !== e.editor) why.push(`editor ${s.editor}, expected ${e.editor}`)
 	if (e.warn === null && s.warn) why.push(`warn "${s.warn}", expected none`)
 	if (e.warn && !s.warn?.startsWith(e.warn)) why.push(`warn "${s.warn ?? ''}", expected "${e.warn}…"`)

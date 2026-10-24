@@ -77,8 +77,14 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 	const report = !readOnly && work?.reportActionId ? entities.actions[work.reportActionId] : undefined
 	// Your step (S2): its form is the card's primary; the row's free-text "Tell Delegate" is gone (redirecting is in Details › Ask).
 	const answerAction = actions.find(action => action.kind === 'answer')
-	// The projection names the primary from the card state; the card never picks one (#34).
-	const primary = report ?? declared
+	const approveAction = actions.find(action => action.kind === 'approve'), sendEdit = actions.find(action => action.kind === 'send-edit')
+	// A question and a draft on one card (designer states 2a/2b): one box is open, and a link switches it, keeping both texts. The
+	// projection names which opens first; the primary acts on the open box.
+	const both = !readOnly && !!item.question && !!draft && !!answerAction && !!approveAction && (item.mode === 'answer-with-holding' || item.mode === 'reply-with-question')
+	const boxMode = both ? ui.mode ?? (item.editor === 'answer' ? 'answer' : 'reply') : undefined
+	const replyPrimary = declared && declared.kind !== 'answer' ? declared : ui.editing && sendEdit ? sendEdit : approveAction
+	// The projection names the primary from the card state; the card never picks one (#34). A mode switch only chooses which box it acts on.
+	const primary = report ?? (boxMode === 'answer' ? answerAction : boxMode === 'reply' ? replyPrimary : declared)
 	const fold = (key: string, open: boolean) => { if (ui.folds?.[key] !== open) edit({ folds: { ...ui.folds, [key]: open } }) }
 	const editable = !!draft && actions.some(action => action.kind === 'send-edit')
 	const replyText = ui.editText ?? draft?.sendText ?? draft?.text ?? ''
@@ -87,6 +93,8 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 			primary?.input === 'text' ? { text: ui.answer ?? '' } : { excluded: ui.excluded }
 	const invalid = primary?.input === 'text' && primary.kind !== 'send-edit' && !ui.answer?.trim() || primary?.kind === 'pick' && !input.picks?.length ||
 		primary?.kind === 'send-edit' && !input.text?.trim()
+	// Answering on 2a after editing the reply: the send next to Answer sends the edit, never the original draft.
+	const editedAside = boxMode === 'answer' && ui.editing && sendEdit ? sendEdit : undefined
 	const sent = sentAt(item), replyWhere = chat.group ? `in ${chat.name}` : 'in your 1:1'
 	const avatar: CSSProperties & { '--hue': number } = { '--hue': person.hue }
 	const continueAction = actions.find(action => action.kind === 'continue')
@@ -129,10 +137,9 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 		{item.runFailed.review && <p><a href={item.runFailed.review} target="_blank" rel="noreferrer">Review it yourself</a> <span className="muted">opens the PR</span></p>}
 		{item.runFailed.toolsOff && !readOnly && <ToolsOff />}
 		{item.runFailed.tried?.length ? <details className="card-tried"><summary>What it tried ({item.runFailed.tried.length})</summary><ul>{item.runFailed.tried.map((route, n) => <li key={n}>{route}</li>)}</ul></details> : null}
-		{writeOwn && !readOnly && (ui.editing ? <><Field code={code} rev={item.rev} field="answer" label={`Your reply to ${first}, ${replyWhere}`} value={ui.answer ?? ''} edit={edit} rows={4} />
+		{writeOwn && !readOnly && ui.editing && <><Field code={code} rev={item.rev} field="answer" label={`Your reply to ${first}, ${replyWhere}`} value={ui.answer ?? ''} edit={edit} rows={4} />
 			<div className="action-bar"><ActionButton action={writeOwn} label="Send your reply" input={{ text: ui.answer ?? '' }} disabled={!ui.answer?.trim()} disabledReason="Write your reply first." />
-				<Button variant="outline" onClick={() => edit({ editing: false })}>Cancel</Button></div></>
-			: <Button variant="outline" onClick={() => edit({ editing: true })}>{writeOwn.label}</Button>)}
+				<Button variant="outline" onClick={() => edit({ editing: false })}>Cancel</Button></div></>}
 	</section>
 
 	// What the work found (info facts), named by its PR when it comes from a PR job (queue-new #8, #10 c); warnings stay in block 1.
@@ -150,8 +157,11 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 	</section>
 	// A decision the owner must make on his work (S9): its own block and box; the answer path carries it. A test step has the S2 form.
 	const decision = work?.yours && !report && answerAction ? work.yours.what : undefined
-	const question = !item.choices && !report && !decision && item.question
-	const answerBox = !report && !decision && (!!answerAction && item.editor !== 'reply' && (!!item.question || !draft && !item.choices || ui.other) || primary?.input === 'text' && primary.kind !== 'send-edit')
+	const question = !item.choices && !report && !decision && boxMode !== 'reply' && item.question
+	const answerBox = !report && !decision && (boxMode ? boxMode === 'answer' : !!answerAction && item.editor !== 'reply' && item.mode !== 'failed' && (!!item.question || !draft && !item.choices || ui.other)
+		|| primary?.input === 'text' && primary.kind !== 'send-edit' && primary.kind !== 'write-own')
+	// Opens a box and moves the focus into it, as the switch link and Write the reply yourself do.
+	const focusField = (field: string) => setTimeout(() => document.getElementById(`${code}-${item.rev}-${field}`)?.focus(), 0)
 	// A PR review (S9): Delegate's review in its own block; the comments and vote go to the PR, the reply goes to the chat.
 	const changes = item.changeIds.map(id => entities.changes[id])
 	const prOf = (change: Entities['changes'][string]) => Number(/\bPR (\d+)\b/.exec(`${change.target} ${change.summary}`)?.[1] ?? /pullRequestId: (\d+)/.exec(change.detail ?? '')?.[1] ?? 0) || undefined
@@ -201,17 +211,25 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 						if (!item.choices!.multi && preview) void act(preview, { picks })
 					}} /> <span>{option.label}{option.note && <small>{option.note}</small>}</span></label>
 			})}{item.choices.other && <label className="option"><input type="radio" name={`choice-${code}`} checked={!!ui.other} disabled={busy || newer} onChange={() => edit({ other: true })} />Other answer…</label>}</fieldset>}
-			{answerBox && <><Field code={code} rev={item.rev} field="answer" label="Your answer" value={ui.answer ?? ''} edit={edit} />
-				<p className="muted">{NAME} drafts the reply. Nothing is sent yet.</p></>}
+			{answerBox && <><Field code={code} rev={item.rev} field="answer" label="Your answer" placeholder={`only ${NAME} sees it`} value={ui.answer ?? ''} edit={edit} />
+				<p className="muted">{NAME} {draft ? 'writes a new draft from your answer' : 'drafts the reply from your answer'}. Nothing is sent.</p></>}
 		</section>}
-		{draft && <section className="card-block reply-section">
+		{draft && boxMode === 'answer' && <section className="card-block reply-section">
+			{/* The owner's edit stays what this fold shows and what the bar sends, while he answers (PE step-4 review, 2). */}
+			<details className="card-draft-fold"><summary>{ui.editing ? 'Your edited reply · not sent' : `${NAME}'s draft so far · not sent`}</summary><div className="draft">{ui.editing ? replyText : draft.sendText ?? draft.text}</div></details>
+			<button type="button" className="link-button" aria-controls={`${code}-${item.rev}-editText`} onClick={() => { edit({ mode: 'reply' }); focusField('editText') }}>Edit and send the draft instead</button>
+		</section>}
+		{draft && boxMode !== 'answer' && <section className="card-block reply-section">
 			{editable ? <Field code={code} rev={item.rev} field="editText" rows={Math.min(14, Math.max(3, Math.ceil(replyText.length / 70) + replyText.split('\n').length))}
 				label={draft.holding ? `Holding reply to ${first}, ${replyWhere} · says you are on it; not the answer yet` : `Your reply to ${first}, ${replyWhere}`}
 				value={replyText} edit={edit} patch={value => ({ editText: value, editing: value !== (draft.sendText ?? draft.text) })} />
 				: <><h3>{draft.holding ? `Holding reply to ${first}` : `Your reply to ${first}, ${replyWhere}`}</h3><div className="draft">{draft.sendText ?? draft.text}</div></>}
 			{replyText.length > 400 && <p className="muted reply-count">{replyText.length.toLocaleString()} characters · the whole reply is shown above before you send</p>}
 			{draft.preview && !ui.editing && <p className="muted"><Icon name="spark" />{' '}{item.picked?.length ? 'The reply for your pick' : 'New draft from your answer'}. Not sent yet.</p>}
+			{boxMode === 'reply' && <p className="also-asks">💬 <strong>{NAME} also asks:</strong> {item.question}{' '}
+				<button type="button" className="link-button" aria-controls={`${code}-${item.rev}-answer`} onClick={() => { edit({ mode: 'answer' }); focusField('answer') }}>Answer instead</button></p>}
 		</section>}
+		{both && ui.mode && <p className="sr-only" role="status">{boxMode === 'answer' ? `Answering ${NAME}. The draft is kept.` : 'Editing the draft. Your answer is kept.'}</p>}
 	</>
 
 	// Block 3: what else happens when you send. Changes (each can be left out), to-dos you keep, and a watch.
@@ -247,24 +265,35 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 		<strong>Done:</strong> {made.map(change => change.action).join('; ')}. <strong>Not done:</strong> {notDone.map(change => `${change.action}, ${change.error!.replace(/\.$/, '').replace(/^Error: /, '')}`).join('; ')}.</p>
 
 	// Block 4: one primary that says its result, Later, and ⋯ (Edit in Teams, Dismiss, Continue in a terminal).
-	const primaryLabel = report && primary?.id === report.id ? `Draft my update to ${first}` : reviewLabel ?? (draft?.holding && primary?.kind === 'approve' && !item.changeIds.length ? 'Send holding reply' : decision && primary?.kind === 'answer' ? 'Send decision' : undefined)
+	const primaryLabel = report && primary?.id === report.id ? `Draft my update to ${first}` : reviewLabel ?? (draft?.holding && primary?.kind === 'approve' && !item.changeIds.length ? 'Send holding reply' : decision && primary?.kind === 'answer' ? 'Send decision'
+		: primary?.kind === 'answer' && answerBox ? draft ? 'Answer and redraft' : 'Answer and draft reply' : undefined)
+	// Write the reply yourself opens an empty box first; the box's own button sends it (designer failure pattern, check 4).
+	const writeButton = writeOwn && !ui.editing && !readOnly && <Button variant={primary?.id === writeOwn.id ? 'default' : 'outline'} data-primary={primary?.id === writeOwn.id || undefined} disabled={newer}
+		onClick={() => { edit({ editing: true, answer: '' }); focusField('answer') }}>{writeOwn.label}</Button>
 	const block4 = <div className="card-block action-bar card-actions">
-		{primary && <ActionButton primary action={primary} label={primaryLabel} input={report && primary.id === report.id ? { result: ui.resultKind, text: ui.report } : input}
+		{primary && primary.kind !== 'write-own' && <ActionButton primary action={primary} label={primaryLabel} input={report && primary.id === report.id ? { result: ui.resultKind, text: ui.report } : input}
 			disabled={report && primary.id === report.id ? !ui.resultKind : !!invalid || newer} disabledReason={newer ? 'stale' : report && primary.id === report.id ? 'Pick how it went first.' : primary.kind === 'pick' || item.choices && !ui.other ? 'pick' : 'Type your answer first.'} />}
+		{primary?.kind === 'write-own' && writeButton}
 		{report && primary?.id !== report.id && <ActionButton primary action={report} label={`Draft my update to ${first}`} input={{ result: ui.resultKind, text: ui.report }} disabled={!ui.resultKind} disabledReason="Pick how it went first." />}
 		{/* An offered send is never hidden: when another action leads, it sits next to it (#33). */}
-		{actions.filter(action => ['approve', 'approve-again'].includes(action.kind) && action.id !== primary?.id).map(action => <ActionButton key={action.id} action={action} label={draft?.holding && action.kind === 'approve' && !item.changeIds.length ? 'Send holding reply' : undefined} input={{ excluded: ui.excluded }} disabled={newer} disabledReason="stale" />)}
+		{actions.filter(action => ['approve', 'approve-again'].includes(action.kind) && action.id !== primary?.id).map(action => action.kind === 'approve' && editedAside ? <ActionButton key={editedAside.id} action={editedAside} label="Send your edited reply" input={{ text: replyText, excluded: ui.excluded }} disabled={newer || !replyText.trim()} disabledReason={newer ? 'stale' : 'Type your reply first.'} /> : <ActionButton key={action.id} action={action} label={draft?.holding && action.kind === 'approve' && !item.changeIds.length ? 'Send holding reply' : undefined} input={{ excluded: ui.excluded }} disabled={newer} disabledReason="stale" />)}
+		{actions.filter(action => ['try-again', 'review-again', 'send-anyway', 'redraft'].includes(action.kind) && action.id !== primary?.id).map(action => <ActionButton key={action.id} action={action} disabled={newer && action.staleness === 'exact'} disabledReason="stale" />)}
+		{primary?.kind !== 'write-own' && writeButton}
+		{item.mode === 'held' && actions.filter(action => action.kind === 'dismiss' && action.label === 'Skip').map(action => <ActionButton key={action.id} action={action} disabled={newer && action.staleness === 'exact'} disabledReason="stale" />)}
 		{actions.filter(action => action.kind === 'later').map(action => <ActionButton key={action.id} action={action} />)}
 		<details className="card-more-menu"><summary aria-label="More" title="More: Edit in Teams, Dismiss, Continue in a terminal"><Icon name="more" /></summary><div className="card-more-content">
 			{item.teams && draft && <Button variant="outline" title="Open Teams with this draft so you can change and send it there. Delegate sees that you replied." onClick={() => void chatEdit.open(ui.editing ? ui.editText ?? draft.text : draft.text, item.teams!)}>Edit in Teams</Button>}
-			{actions.filter(action => ['dismiss', 'reply-only'].includes(action.kind)).map(action => <ActionButton key={action.id} action={action} disabled={newer && action.staleness === 'exact'} disabledReason="stale" />)}
+			{actions.filter(action => ['dismiss', 'reply-only'].includes(action.kind) && !(item.mode === 'held' && action.kind === 'dismiss' && action.label === 'Skip')).map(action => <ActionButton key={action.id} action={action} disabled={newer && action.staleness === 'exact'} disabledReason="stale" />)}
 			{item.ownReply && reopen && <div className="card-reopen"><Field code={code} rev={item.rev} field="answer" label="Reopen: what should the new reply say?" value={ui.answer ?? ''} edit={edit} rows={2} />
 				<ActionButton action={reopen} input={{ text: ui.answer ?? '' }} disabled={!ui.answer?.trim()} disabledReason="Write what the reply should say first." /></div>}
 			{continueAction && <ActionButton action={continueAction} />}
 			{item.debug && <><pre>{item.debug.join('\n')}</pre><Button variant="outline" onClick={() => void detailsCopy.copy(item.debug!.join('\n'))}>Copy details</Button>{detailsCopy.message && <p role="status">{detailsCopy.message}</p>}</>}
 		</div></details>
 	</div>
-	const others = actions.filter(action => action.id !== primary?.id && action.id !== report?.id && !(report && action.id === declared?.id) && !['approve', 'approve-again', 'send-edit', 'answer', 'pick', 'ask', 'later', 'dismiss', 'continue', 'todo-done', 'reply-only', 'review-again', 'try-again', 'write-own'].includes(action.kind) && !(item.ownReply && action.kind === 'reopen'))
+	const others = actions.filter(action => action.id !== primary?.id && action.id !== report?.id && !(report && action.id === declared?.id) && !['approve', 'approve-again', 'send-edit', 'answer', 'pick', 'ask', 'later', 'dismiss', 'continue', 'todo-done', 'reply-only', 'review-again', 'try-again', 'write-own', 'send-anyway', 'redraft'].includes(action.kind) && !(item.ownReply && action.kind === 'reopen'))
+	// Every action the projection offers is drawn somewhere (engineer-card-state-devspec.md §4, invariant 4); one that isn't is marked.
+	const drawn = (kind: string) => ({ answer: !!answerBox || !!decision || both || primary?.kind === 'answer', pick: !!item.choices, 'send-edit': !!draft && editable, 'todo-done': todoIds.length > 0 } as Record<string, boolean>)[kind] ?? true
+	const undrawn = readOnly ? [] : actions.filter(action => !drawn(action.kind)).map(action => action.kind)
 
 	// Block 5: Details, one collapsed line: why, sources, progress and history, changes already handled, and Ask Delegate.
 	const parts = [(item.why.reason || item.why.waited) && 'why', item.sourceIds.length > 0 && `${item.sourceIds.length} source${item.sourceIds.length === 1 ? '' : 's'}`, (work?.planIds.length || timeline?.stepIds.length) && 'history', `ask ${NAME}`].filter(Boolean)
@@ -315,7 +344,7 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 		</section>
 	</details>
 
-	return <article className={`item-card${inline ? ' inline-card' : ''}`} aria-labelledby={`card-title-${code}`} tabIndex={-1} ref={article}
+	return <article className={`item-card${inline ? ' inline-card' : ''}`} aria-labelledby={`card-title-${code}`} tabIndex={-1} ref={article} data-mode={item.mode} data-undrawn={undrawn.join(' ') || undefined}
 		onPointerDownCapture={event => { if (event.target instanceof Element && event.target.closest('[data-primary="true"]')) edit({ interacting: true }) }}
 		onKeyDown={event => {
 			if ((event.ctrlKey || event.metaKey) && event.key === 'Enter' && !event.nativeEvent.isComposing &&

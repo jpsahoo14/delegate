@@ -278,9 +278,15 @@ async function applyOne(store: Store, src: Source, cfg: Config, wf: Workflow, a:
 			if (wf.state === 'waiting_on_task') return reply(store, src, a, `${MARK} ${wf.code} is still working. I'll show the result first.`)
 			// The owner's own words: learned from once they really go out (R-LRN-01).
 			if (a.verb === 'send' && a.text) {
+				// A typed chat "send" on a held item is refused before his text replaces the draft the hold is about (PE 0b review, B1).
+				if (wf.reason && !a.page && await heldSend(store, src, wf, a)) return
 				const original = wf.learnAfter?.draft ?? wf.draft?.text
 				if (original && original.trim() !== a.text.trim()) wf.learnAfter = { draft: original, sent: a.text }
 				wf.draft = { ...(wf.draft ?? { commitment: false, sources: [] }), text: a.text, byOwner: true, ownWords: ownWords(wf, a.text) }
+				// His own words typed on the page's held card (its exact rev hashes the reason he was shown) go past that hold: the
+				// digest is restamped for his text, so the later checks pass for the same message too. A typed chat "send" stays held
+				// (PE 0b review, B1).
+				if (a.page && wf.reason) { wf.reason = { ...wf.reason, digest: reviewDigest(wf, reasonMessages(wf.reason)) }; a = { ...a, sendReview: wf.reason.digest } }
 			}
 			if (holdReplyGap(store, wf, wf.draft?.text)) return reply(store, src, a, `${MARK} ${REPLY_BLANK}`, true)
 			rememberSend(store, wf)

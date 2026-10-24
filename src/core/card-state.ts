@@ -2,8 +2,8 @@
 // and the card draws them; nothing else picks a card's primary, its one editable box, or its warning line. Pure: no store, no clock.
 // The first rule whose `when` holds decides, as core/whose.ts places rows.
 
-export type ActionKind = 'approve' | 'send-edit' | 'answer' | 'pick' | 'later' | 'dismiss' | 'try-again' | 'write-own' | 'review-again' | 'reply-only' | 'reopen' | 'report'
-export type Mode = 'agent-wait' | 'own-reply' | 'review-again' | 'failed' | 'declined' | 'your-step' | 'choices' | 'answer' | 'answer-with-holding'
+export type ActionKind = 'approve' | 'send-anyway' | 'redraft' | 'send-edit' | 'answer' | 'pick' | 'later' | 'dismiss' | 'try-again' | 'write-own' | 'review-again' | 'reply-only' | 'reopen' | 'report'
+export type Mode = 'agent-wait' | 'own-reply' | 'review-again' | 'failed' | 'declined' | 'held' | 'your-step' | 'choices' | 'answer' | 'answer-with-holding'
 	| 'reply-with-question' | 'changes' | 'reply' | 'holding' | 'not-sent' | 'unknown'
 export type Failure = { kind: 'setup' | 'other' | 'content' | 'tool' | 'stopped'; at: string; why: string; tried: string[]; repeats: number; systemChanged: boolean; job?: string; review?: boolean }
 // Everything a card may depend on, computed once per item (card-facts.ts). draft.at: when Delegate (or the owner's edit) wrote it.
@@ -17,6 +17,8 @@ export type CardFacts = {
 	failure?: Failure
 	hold?: { kind: 'agent' | 'paused' | 'active'; until?: string; text: string }
 	notSent?: { why: string }
+	// The owner's Send was held by the engine (SEND, wf.reason): the asker changed or added to the ask, or no reply looks needed.
+	held?: { kind: 'ask-edited' | 'asker-wrote-again' | 'no-reply-needed'; digest: string; who: string; why?: string }
 	ownReply?: { at: string }
 	declined?: { pr: number; addMe: boolean }
 	yourStep?: { kind: 'decision' | 'report'; what: string }
@@ -45,7 +47,6 @@ const failLine = (f: Failure) => `${f.kind === 'content' ? "Couldn't finish" : "
 
 type Rule = { mode: Mode; when: (f: CardFacts) => boolean; build: (f: CardFacts) => Omit<CardState, 'mode' | 'block3'> }
 const asked = (f: CardFacts) => !!f.question || f.yourStep?.kind === 'decision'
-const send = (f: CardFacts): ActionKind => f.draft?.preview ? 'approve' : 'approve'
 export const RULES: Rule[] = [
 	{ mode: 'agent-wait', when: f => f.hold?.kind === 'agent', build: f => ({ primary: 'write-own', secondary: [], more: ['dismiss'], editor: 'none', warn: f.hold!.text }) },
 	{ mode: 'own-reply', when: f => !!f.ownReply, build: () => ({ secondary: [], more: ['reopen'], editor: 'none' }) },
@@ -60,6 +61,14 @@ export const RULES: Rule[] = [
 	} },
 	{ mode: 'review-again', when: f => !!f.question?.reviewAgain, build: f => ({ primary: 'review-again', secondary: [...(f.draft ? [f.changes ? 'reply-only' as const : 'approve' as const] : []), 'later'], more: ['dismiss'], editor: 'none' }) },
 	{ mode: 'declined', when: f => !!f.declined, build: f => ({ primary: f.declined!.addMe && f.changes ? 'approve' : undefined, secondary: ['later'], more: ['dismiss'], editor: 'none' }) },
+	// A held Send (SEND B1, PE 14:28): Send anyway sends the draft the owner saw past exactly this reason; Redraft starts over with the
+	// new message, or Skip when no reply looks needed. It always leads with Send anyway: an edit or a redraft clears the reason, so an
+	// edited draft is no longer held (PE 0b review, B2); his own text typed here goes with Send your version.
+	{ mode: 'held', when: f => !!f.held && !!f.draft, build: f => {
+		const h = f.held!, warn = h.kind === 'ask-edited' ? `${h.who} edited the question after you approved.` : h.kind === 'asker-wrote-again' ? `${h.who} wrote again after you approved.` : `Delegate thinks no reply is needed: ${(h.why ?? '').replace(/[.\s]+$/, '')}.`.replace(/: \.$/, '.')
+		const primary: ActionKind = 'send-anyway'
+		return h.kind === 'no-reply-needed' ? { primary, secondary: ['dismiss', 'later'], more: [], editor: 'reply', warn } : { primary, secondary: ['redraft', 'later'], more: ['dismiss'], editor: 'reply', warn }
+	} },
 	// Send stays: the engine checks the refused condition again on every Send, so it goes once that holds (A57, A61).
 	{ mode: 'not-sent', when: f => !!f.notSent && !!f.draft, build: f => ({ primary: 'approve', secondary: ['later'], more: ['dismiss'], editor: 'reply', warn: `Didn't send: ${f.notSent!.why.replace(/[.\s]+$/, '')}.` }) },
 	{ mode: 'your-step', when: f => f.yourStep?.kind === 'report', build: () => ({ primary: 'report', secondary: ['later'], more: ['dismiss'], editor: 'none' }) },
@@ -68,8 +77,8 @@ export const RULES: Rule[] = [
 	{ mode: 'answer-with-holding', when: f => asked(f) && !!f.draft?.holding, build: () => ({ primary: 'answer', secondary: ['approve', 'later'], more: ['dismiss'], editor: 'answer' }) },
 	{ mode: 'reply-with-question', when: f => asked(f) && !!f.draft, build: f => ({ primary: 'approve', secondary: ['later'], more: ['answer', 'dismiss'], editor: 'reply' }) },
 	{ mode: 'changes', when: f => f.changes > 0, build: f => ({ primary: 'approve', secondary: [...(f.draft ? ['reply-only' as const] : []), 'later'], more: ['dismiss'], editor: f.draft ? 'reply' : 'none' }) },
-	{ mode: 'holding', when: f => !!f.draft?.holding, build: f => ({ primary: 'approve', secondary: ['later'], more: ['answer', 'dismiss'], editor: 'reply' }) },
-	{ mode: 'reply', when: f => !!f.draft, build: f => ({ primary: 'approve', secondary: ['later'], more: ['answer', 'dismiss'], editor: 'reply' }) },
+	{ mode: 'holding', when: f => !!f.draft?.holding, build: () => ({ primary: 'approve', secondary: ['later'], more: ['dismiss'], editor: 'reply' }) },
+	{ mode: 'reply', when: f => !!f.draft, build: () => ({ primary: 'approve', secondary: ['later'], more: ['dismiss'], editor: 'reply' }) },
 	{ mode: 'unknown', when: () => true, build: () => ({ primary: 'write-own', secondary: ['later'], more: ['dismiss'], editor: 'none' }) },
 ]
 
@@ -87,7 +96,8 @@ export function checkCard(f: CardFacts, s: CardState): string[] {
 	const out: string[] = []
 	const all = [s.primary, ...s.secondary, ...s.more].filter(Boolean)
 	if (new Set(all).size !== all.length) out.push('an action is offered twice')
-	if (f.draft && !['not-sent', 'failed', 'own-reply', 'agent-wait', 'review-again', 'declined', 'your-step', 'choices'].includes(s.mode) && !all.includes('approve') && !all.includes('send-edit')) out.push('a draft cannot be sent')
+	if (f.draft && !['not-sent', 'failed', 'own-reply', 'agent-wait', 'review-again', 'declined', 'your-step', 'choices'].includes(s.mode) && !all.includes('approve') && !all.includes('send-anyway') && !all.includes('send-edit')) out.push('a draft cannot be sent')
+	if (f.held && f.draft && !all.includes('send-anyway')) out.push('a held Send offers no Send anyway')
 	if (f.failure && f.draft && Date.parse(f.draft.at) > Date.parse(f.failure.at) && s.mode === 'failed') out.push('a failure older than the draft decided the card')
 	if (s.mode === 'unknown') out.push('no mode fits')
 	if (s.warn && LEAK.test(s.warn)) out.push('the warning leaks an id or an error')

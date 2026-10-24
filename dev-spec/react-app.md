@@ -1,5 +1,97 @@
 # React preview
 
+## Card state: fixes from the PE review of 0b, the 2a edited reply and #40 document failures
+
+- **B1, his own version on a held card.**
+  - A page `send` with the owner's text on a held item restamps the hold's digest for his text and carries it as `sendReview`
+    (apply.ts, send case). `heldSend` and the later ask-edited and new-message checks then pass for the same message.
+  - This is safe: the page's exact rev hashes `reason`, so he typed it on the card that showed the hold.
+  - A typed chat `send` stays held, and is now refused before his text replaces the draft. Before this, a refused send kept the
+    text, and Send anyway's digest never matched again.
+- **B2.** Held mode always leads with Send anyway; the `preview` exemption is gone from the rule and `checkCard`. An edit or a
+  redraft clears `wf.reason`, so an edited draft is mode `reply` (G48).
+- **2a after an edit (PE step-4 condition 2).** When the owner edited the reply and switched back to the answer:
+  - the fold reads "Your edited reply · not sent" and shows his edit;
+  - the send next to Answer is "Send your edited reply" (send-edit).
+- **#40 (PE doc-read item 5).**
+  - "no decoder", "encoded binary" or "base64" in a failure's reason or routes counts as fixed, so Try again leads (A76).
+  - "Couldn't open …: no access | too large to open | too much content to open | not a Word, PowerPoint or Excel file" is a
+    content failure: Write the reply yourself leads, Try again follows (as G44).
+- **Golden.** Rows can assert `more`.
+  - G49–G51: the document causes, through `cardFacts`.
+  - G52–G54 and G56–G57: ⋯ for reply, holding, reply-with-question and held.
+  - G55: held with a preview still leads with Send anyway.
+  - 57/57. The dead `send` helper is removed.
+- **Not done here (PE: an engine item).** Sending a holding reply still closes the item. It needs its own PE line, before #29e.
+## Card state: a held Send offers Send anyway (PE follow-up to step 3)
+
+SEND (0.2.32) holds the owner's Send with a structured `wf.reason` when the asker edited the ask, wrote again, or no reply looks
+needed. Step 3 never read it, so such a card showed a plain Send that the engine refused every time (PE review of 09f9d57).
+- **`cardFacts`:** `held = { kind, digest, who, why }` from `wf.reason` when there is a draft. It outranks the status-prose
+  `notSent`.
+- **`cardState`:** a new mode `held`, placed before `not-sent`. The editor is the reply.
+  - **Ask edited, or wrote again:** primary **Send anyway**, secondary Redraft and Later, ⋯ Dismiss. The warn line is "Kim edited
+    the question after you approved." or "Kim wrote again after you approved."
+  - **No reply needed:** Send anyway, then Skip and Later. The warn line is "Delegate thinks no reply is needed: …".
+  - **An edited draft under a hold:** a plain Send, because the edit gives a new digest (SEND B2).
+- **`checkCard`:** a held card without an edit must offer Send anyway.
+- **Projection:** Send anyway and Redraft use the chat's own verbs, the answers "Send anyway" (which becomes `ok` with the held
+  reason's digest) and "Redraft". There are no engine changes, and exact staleness keeps them to the card the owner saw.
+- **`ItemCard`:** draws both in the bar; Skip moves from ⋯ into the bar.
+
+**Proof** (fictional root, stub model (quota), Edge)
+- **Golden:** `card-golden: 48/48 pass` (G45–G48: one row per hold kind, plus an edited draft under a hold).
+- **Kim:** her ask was edited in the stub Teams source, then Send from New. The engine held it (`ask-edited`), and the card
+  showed Send anyway · Redraft · Later with "Kim edited the question after you approved." in New and Classic at 1280 light and
+  New at 400 dark.
+- **Sam:** stored as SEND's `holdSend` stores it, with its own `reviewDigest`. Same buttons, with "Sam wrote again after you
+  approved." (In the live tick, Sam's new message was read before the Send, so it went out: a SEND-engine ordering question, noted
+  for that builder.)
+- **Ana:** SEND's `keepApprovedDraft`, then Send anyway · Skip · Later.
+- **A plain chat `ok` while held** was refused, and nothing was sent. **Send anyway from New** sent Kim's and Ana's drafts once
+  each. **Redraft from Classic** started one rewrite of Sam's, from his new message.
+
+## Card state from one place, step 4: the card renders by mode (#34)
+
+- **One box, one primary.** `ItemCard` draws the projection's primary and never picks its own. A card with a question and a draft
+  follows the designer's two modes (question-and-draft):
+  - **2a (question + holding draft):** the answer box opens, the draft folds read-only ("Delegate's draft so far · not sent"), and
+    "Edit and send the draft instead" switches.
+  - **2b (question + full draft):** the reply box opens, with "💬 Delegate also asks: …" and "Answer instead" under it.
+  - **Switching:** keeps both typed texts (`CardUi.mode`), moves the focus into the box that opens, and announces the switch.
+    Ctrl+Enter clicks the open box's primary.
+  - **Labels:** "Answer and draft reply" / "Answer and redraft"; the answer box says "only Delegate sees it".
+- **One failure shape.** The failed block keeps its line and "What it tried". Try again and Write the reply yourself are both in the
+  bar, the one `retryHelps` picks as primary. Write the reply yourself opens an empty, focused box whose own button sends the text.
+- **Offered ⊆ drawn.** Try again and Review again are drawn whenever offered and not primary, and the old `others` approve filter is
+  gone. The card marks `data-undrawn` if any offered action has nowhere to be drawn.
+- **Two fixes found by the proof:**
+  - Draft-only cards no longer offer an undrawn "Answer instead".
+  - 2a also offers Send your version, so its switch opens an editable reply.
+- **Not built in this step, noted for the PE:**
+  - Q/E shortcuts.
+  - State 4, "redrafting" (needs #29e's receipt).
+  - After Send holding reply on 2a, the card returning to state 1 with the question still open: the engine closes the item on any
+    send, as before.
+  - The flip to Write after a second failure with the same cause: `cardState` supports it, but `repeats` isn't read from the log
+    yet.
+  - New's row line 3 by mode.
+
+**Proof** (fictional root, stub model (quota), Edge)
+- **Golden:** `card-golden: 44/44 pass in 1.7 ms`.
+- **One card per state (1, 2a, 2b, 3) and two failures (content; a failed job), in New and Classic at 1280 light and New at 400
+  dark:** each has exactly one editable box outside Details and one `data-primary`. Every offered action is drawn, and there's no
+  leak and no "Send decision".
+  - 1: Answer and draft reply.
+  - 2a: Answer and redraft, with Send holding reply.
+  - 2b and 3: Send.
+  - Content failure: Write the reply yourself, then Try again.
+  - Failed job: Try again, then Write the reply yourself.
+- **2a:** an answer typed, switched to the draft and edited, then switched back: both texts kept, focus in the open box, and the
+  reply mode's primary became Send your version. Ctrl+Enter in answer mode queued exactly the answer and sent nothing.
+- **2b (Classic):** Send sent the draft once.
+- **Failures:** Write the reply yourself opened an empty, focused box and sent exactly the typed text once; Try again queued once.
+
 ## Card state from one place, step 3: the projection offers what cardState names (#34)
 
 - **Projection:** `react-projection.ts` builds `cardFacts` for every item and calls `cardState`. For items waiting on the owner it

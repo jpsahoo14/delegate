@@ -275,8 +275,12 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 					if (!picks.length || picks.some(n => n > c.choices!.options.length) || !c.choices!.multi && picks.length !== 1) throw new IntentError(422, 'Pick an offered option.')
 					return { code: id, verb: 'pick', nums: picks }
 				}, { input: 'picks', staleness: 'exact', expect })) },
+				// A held Send (PE 14:28): the chat's own verbs. "Send anyway" becomes ok past exactly the held reason's digest (apply.ts),
+				// so the owner sends only the card he saw; "Redraft" starts over with the new message.
+				'send-anyway': () => actionIds.push(offer(id, rev, 'send-anyway', 'Send anyway', () => ({ code: id, verb: 'answer', text: 'Send anyway' }), { effect: 'sends', staleness: 'exact', expect })),
+				redraft: () => actionIds.push(offer(id, rev, 'redraft', 'Redraft', () => ({ code: id, verb: 'answer', text: 'Redraft' }), { staleness: 'exact', expect })),
 				later: () => actionIds.push(offer(id, rev, 'later', 'Later', () => ({ code: id, verb: 'later' }))),
-				dismiss: () => actionIds.push(offer(id, rev, 'dismiss', failed || c.promise ? 'Skip' : 'Dismiss', () => ({ code: id, verb: 'skip' }))),
+				dismiss: () => actionIds.push(offer(id, rev, 'dismiss', failed || c.promise || fx.held?.kind === 'no-reply-needed' ? 'Skip' : 'Dismiss', () => ({ code: id, verb: 'skip' }))),
 				// A run that gave no result (queue-new #11): Try again re-runs it as it was; a job that ran out of routes is queued again (#17 b).
 				'try-again': () => actionIds.push(offer(id, rev, 'try-again', 'Try again', () => ({ code: id, verb: 'answer', text: 'try again' }), { staleness: 'exact', expect })),
 				'write-own': () => actionIds.push(offer(id, rev, 'write-own', 'Write the reply yourself', input => ({ code: id, verb: 'send', text: requiredText(input) }), { effect: 'sends', staleness: 'exact', expect, input: 'text' })),
@@ -284,8 +288,8 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 				'reply-only': () => actionIds.push(offer(id, rev, 'reply-only', 'Send reply only', () => ({ code: id, verb: 'ok', except: changes.map(change => change.n) }), { staleness: 'exact', expect, effect: 'sends' })),
 			}
 			const kinds = new Set([cs.primary, ...cs.secondary, ...cs.more].filter((k): k is ActionKind => !!k))
-			// The one reply box sends the owner's own version when it is changed.
-			if (cs.editor === 'reply' && draft) kinds.add('send-edit')
+			// The reply box sends the owner's own version when it is changed, also when the card opens on the answer and can switch to it.
+			if (draft && (cs.editor === 'reply' || cs.mode === 'answer-with-holding')) kinds.add('send-edit')
 			for (const kind of kinds) make[kind]?.()
 		}		else if (wf.job && facts.jobs.get(wf.job)?.state === 'queued' && facts.jobs.get(wf.job)?.retry) {
 			actionIds.push(offer(id, rev, 'dismiss', 'Dismiss', () => ({ code: id, verb: 'skip' }), { staleness: 'exact', expect }))

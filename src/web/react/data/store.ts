@@ -5,6 +5,8 @@ import type { SubmittedForm } from './forms.ts'
 export type CardUi = {
 	editText?: string; answer?: string; ask?: string; report?: string
 	editing?: boolean; picks?: number[]; excluded?: number[]; folds?: Record<string, boolean>
+	// A card with a question and a draft has one open box (designer question-and-draft): the owner's switch, else the card's own.
+	mode?: 'answer' | 'reply'
 	composing?: boolean; interacting?: boolean
 	focusedField?: string; feedback?: string; feedbackKind?: string; watchText?: string; watchUntil?: string; watchBy?: string
 	watchByChoice?: '' | 'today' | 'fri' | 'week'

@@ -18,14 +18,17 @@ export type FactsInput = {
 }
 
 // Causes that a later version fixed: a failure with one of these is worth trying again whatever its kind.
-const FIXED = [/It needs the repo https?:/i]
+// After #40 an Office document is read server-side, so a failure for want of a decoder no longer happens (SEND handoff 14:50).
+const FIXED = [/It needs the repo https?:/i, /no decoder|encoded binary|base64/i]
+// A document doc_read can't open whatever it tries (#40, PE doc-read item 5) is a content failure: Write leads, Try again follows.
+const PERMANENT = /^Couldn't open .*?: (?:no access|too large to open|too much content to open|not a Word, PowerPoint or Excel file)/i
 const NOT_SENT = /^(?:Not sent: |Not sure it was sent[:.]?\s*|Could not start: )/
 
 export function cardFacts(i: FactsInput): CardFacts {
 	const { wf, job, card } = i
 	const draftAt = wf.revAt ?? wf.updatedAt
 	const fixed = (why: string) => FIXED.some(r => r.test(why))
-	const own = (f: Omit<Failure, 'repeats' | 'systemChanged'>): Failure => ({ ...f, repeats: i.repeats ?? 0, systemChanged: fixed(f.why) })
+	const own = (f: Omit<Failure, 'repeats' | 'systemChanged'>): Failure => ({ ...f, repeats: i.repeats ?? 0, systemChanged: fixed([f.why, ...f.tried].join(' ')), ...(PERMANENT.test(f.why) ? { kind: 'content' as const } : {}) })
 	const waiting = wf.state === 'needs_human'
 	const stopped = wf.state === 'waiting_on_task' && (!job || job.state === 'failed' || job.state === 'done')
 	const failure = waiting || stopped ? currentFailure([
@@ -35,7 +38,10 @@ export function cardFacts(i: FactsInput): CardFacts {
 		// A run that fell short with nothing to send and no question left only its status (dispatch.ts "Not finished: ", A90).
 		waiting && !wf.runFailed && !card.draft && card.question === undefined && /^Not finished: /.test(wf.status) ? own({ kind: 'content', at: wf.revAt ?? wf.updatedAt, why: wf.status.replace(/^Not finished: /, '').split(/(?<=[.!?])\s+/)[0], tried: [] }) : undefined,
 	], card.draft ? draftAt : undefined) : undefined
-	const notSent = waiting && !!card.draft && NOT_SENT.test(wf.status) ? { why: wf.status.replace(NOT_SENT, '').replace(/\s*\((?:Error|error)\b[^)]*\)/g, '').trim() } : undefined
+	// The engine held the owner's Send (SEND's wf.reason): structured, so it outranks any status prose.
+	const r = waiting && card.draft ? wf.reason : undefined
+	const held = r ? { kind: r.kind, digest: r.digest, who: wf.asker?.name?.split(/\s+/)[0] || 'They', ...(r.kind === 'no-reply-needed' ? { why: r.why } : {}) } : undefined
+	const notSent = !held && waiting && !!card.draft && NOT_SENT.test(wf.status) ? { why: wf.status.replace(NOT_SENT, '').replace(/\s*\((?:Error|error)\b[^)]*\)/g, '').trim() } : undefined
 	return {
 		state: wf.state,
 		...(card.draft ? { draft: { holding: !!card.draft.holding, preview: !!card.draft.preview, at: draftAt } } : {}),
@@ -46,6 +52,7 @@ export function cardFacts(i: FactsInput): CardFacts {
 		...(failure ? { failure } : {}),
 		...(i.agentWait ? { hold: { kind: 'agent' as const, text: i.agentWait } } : {}),
 		...(notSent ? { notSent } : {}),
+		...(held ? { held } : {}),
 		...(card.ownReply ? { ownReply: { at: card.ownReply.at } } : {}),
 		...(waiting && wf.reviewDecline ? { declined: { pr: wf.reviewDecline.pr, addMe: i.changes > 0 } } : {}),
 		...(card.promise?.failed ? { promiseFailed: card.promise.failed } : {}),

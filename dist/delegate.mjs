@@ -45363,9 +45363,14 @@ async function applyOne(store2, src, cfg, wf, a, procs, probe) {
     case "send": {
       if (wf.state === "waiting_on_task") return reply(store2, src, a, `${MARK} ${wf.code} is still working. I'll show the result first.`);
       if (a.verb === "send" && a.text) {
+        if (wf.reason && !a.page && await heldSend(store2, src, wf, a)) return;
         const original = wf.learnAfter?.draft ?? wf.draft?.text;
         if (original && original.trim() !== a.text.trim()) wf.learnAfter = { draft: original, sent: a.text };
         wf.draft = { ...wf.draft ?? { commitment: false, sources: [] }, text: a.text, byOwner: true, ownWords: ownWords(wf, a.text) };
+        if (a.page && wf.reason) {
+          wf.reason = { ...wf.reason, digest: reviewDigest(wf, reasonMessages(wf.reason)) };
+          a = { ...a, sendReview: wf.reason.digest };
+        }
       }
       if (holdReplyGap(store2, wf, wf.draft?.text)) return reply(store2, src, a, `${MARK} ${REPLY_BLANK}`, true);
       rememberSend(store2, wf);
@@ -55220,6 +55225,14 @@ var RULES4 = [
   } },
   { mode: "review-again", when: (f) => !!f.question?.reviewAgain, build: (f) => ({ primary: "review-again", secondary: [...f.draft ? [f.changes ? "reply-only" : "approve"] : [], "later"], more: ["dismiss"], editor: "none" }) },
   { mode: "declined", when: (f) => !!f.declined, build: (f) => ({ primary: f.declined.addMe && f.changes ? "approve" : void 0, secondary: ["later"], more: ["dismiss"], editor: "none" }) },
+  // A held Send (SEND B1, PE 14:28): Send anyway sends the draft the owner saw past exactly this reason; Redraft starts over with the
+  // new message, or Skip when no reply looks needed. It always leads with Send anyway: an edit or a redraft clears the reason, so an
+  // edited draft is no longer held (PE 0b review, B2); his own text typed here goes with Send your version.
+  { mode: "held", when: (f) => !!f.held && !!f.draft, build: (f) => {
+    const h = f.held, warn = h.kind === "ask-edited" ? `${h.who} edited the question after you approved.` : h.kind === "asker-wrote-again" ? `${h.who} wrote again after you approved.` : `Delegate thinks no reply is needed: ${(h.why ?? "").replace(/[.\s]+$/, "")}.`.replace(/: \.$/, ".");
+    const primary = "send-anyway";
+    return h.kind === "no-reply-needed" ? { primary, secondary: ["dismiss", "later"], more: [], editor: "reply", warn } : { primary, secondary: ["redraft", "later"], more: ["dismiss"], editor: "reply", warn };
+  } },
   // Send stays: the engine checks the refused condition again on every Send, so it goes once that holds (A57, A61).
   { mode: "not-sent", when: (f) => !!f.notSent && !!f.draft, build: (f) => ({ primary: "approve", secondary: ["later"], more: ["dismiss"], editor: "reply", warn: `Didn't send: ${f.notSent.why.replace(/[.\s]+$/, "")}.` }) },
   { mode: "your-step", when: (f) => f.yourStep?.kind === "report", build: () => ({ primary: "report", secondary: ["later"], more: ["dismiss"], editor: "none" }) },
@@ -55228,8 +55241,8 @@ var RULES4 = [
   { mode: "answer-with-holding", when: (f) => asked(f) && !!f.draft?.holding, build: () => ({ primary: "answer", secondary: ["approve", "later"], more: ["dismiss"], editor: "answer" }) },
   { mode: "reply-with-question", when: (f) => asked(f) && !!f.draft, build: (f) => ({ primary: "approve", secondary: ["later"], more: ["answer", "dismiss"], editor: "reply" }) },
   { mode: "changes", when: (f) => f.changes > 0, build: (f) => ({ primary: "approve", secondary: [...f.draft ? ["reply-only"] : [], "later"], more: ["dismiss"], editor: f.draft ? "reply" : "none" }) },
-  { mode: "holding", when: (f) => !!f.draft?.holding, build: (f) => ({ primary: "approve", secondary: ["later"], more: ["answer", "dismiss"], editor: "reply" }) },
-  { mode: "reply", when: (f) => !!f.draft, build: (f) => ({ primary: "approve", secondary: ["later"], more: ["answer", "dismiss"], editor: "reply" }) },
+  { mode: "holding", when: (f) => !!f.draft?.holding, build: () => ({ primary: "approve", secondary: ["later"], more: ["dismiss"], editor: "reply" }) },
+  { mode: "reply", when: (f) => !!f.draft, build: () => ({ primary: "approve", secondary: ["later"], more: ["dismiss"], editor: "reply" }) },
   { mode: "unknown", when: () => true, build: () => ({ primary: "write-own", secondary: ["later"], more: ["dismiss"], editor: "none" }) }
 ];
 function cardState(f) {
@@ -55243,7 +55256,8 @@ function checkCard(f, s3) {
   const out = [];
   const all = [s3.primary, ...s3.secondary, ...s3.more].filter(Boolean);
   if (new Set(all).size !== all.length) out.push("an action is offered twice");
-  if (f.draft && !["not-sent", "failed", "own-reply", "agent-wait", "review-again", "declined", "your-step", "choices"].includes(s3.mode) && !all.includes("approve") && !all.includes("send-edit")) out.push("a draft cannot be sent");
+  if (f.draft && !["not-sent", "failed", "own-reply", "agent-wait", "review-again", "declined", "your-step", "choices"].includes(s3.mode) && !all.includes("approve") && !all.includes("send-anyway") && !all.includes("send-edit")) out.push("a draft cannot be sent");
+  if (f.held && f.draft && !all.includes("send-anyway")) out.push("a held Send offers no Send anyway");
   if (f.failure && f.draft && Date.parse(f.draft.at) > Date.parse(f.failure.at) && s3.mode === "failed") out.push("a failure older than the draft decided the card");
   if (s3.mode === "unknown") out.push("no mode fits");
   if (s3.warn && LEAK.test(s3.warn)) out.push("the warning leaks an id or an error");
@@ -55252,13 +55266,14 @@ function checkCard(f, s3) {
 }
 
 // src/core/card-facts.ts
-var FIXED = [/It needs the repo https?:/i];
+var FIXED = [/It needs the repo https?:/i, /no decoder|encoded binary|base64/i];
+var PERMANENT = /^Couldn't open .*?: (?:no access|too large to open|too much content to open|not a Word, PowerPoint or Excel file)/i;
 var NOT_SENT = /^(?:Not sent: |Not sure it was sent[:.]?\s*|Could not start: )/;
 function cardFacts(i) {
   const { wf, job, card: card2 } = i;
   const draftAt = wf.revAt ?? wf.updatedAt;
-  const fixed = (why2) => FIXED.some((r) => r.test(why2));
-  const own3 = (f) => ({ ...f, repeats: i.repeats ?? 0, systemChanged: fixed(f.why) });
+  const fixed = (why2) => FIXED.some((r2) => r2.test(why2));
+  const own3 = (f) => ({ ...f, repeats: i.repeats ?? 0, systemChanged: fixed([f.why, ...f.tried].join(" ")), ...PERMANENT.test(f.why) ? { kind: "content" } : {} });
   const waiting = wf.state === "needs_human";
   const stopped = wf.state === "waiting_on_task" && (!job || job.state === "failed" || job.state === "done");
   const failure2 = waiting || stopped ? currentFailure([
@@ -55268,7 +55283,9 @@ function cardFacts(i) {
     // A run that fell short with nothing to send and no question left only its status (dispatch.ts "Not finished: ", A90).
     waiting && !wf.runFailed && !card2.draft && card2.question === void 0 && /^Not finished: /.test(wf.status) ? own3({ kind: "content", at: wf.revAt ?? wf.updatedAt, why: wf.status.replace(/^Not finished: /, "").split(/(?<=[.!?])\s+/)[0], tried: [] }) : void 0
   ], card2.draft ? draftAt : void 0) : void 0;
-  const notSent = waiting && !!card2.draft && NOT_SENT.test(wf.status) ? { why: wf.status.replace(NOT_SENT, "").replace(/\s*\((?:Error|error)\b[^)]*\)/g, "").trim() } : void 0;
+  const r = waiting && card2.draft ? wf.reason : void 0;
+  const held = r ? { kind: r.kind, digest: r.digest, who: wf.asker?.name?.split(/\s+/)[0] || "They", ...r.kind === "no-reply-needed" ? { why: r.why } : {} } : void 0;
+  const notSent = !held && waiting && !!card2.draft && NOT_SENT.test(wf.status) ? { why: wf.status.replace(NOT_SENT, "").replace(/\s*\((?:Error|error)\b[^)]*\)/g, "").trim() } : void 0;
   return {
     state: wf.state,
     ...card2.draft ? { draft: { holding: !!card2.draft.holding, preview: !!card2.draft.preview, at: draftAt } } : {},
@@ -55279,6 +55296,7 @@ function cardFacts(i) {
     ...failure2 ? { failure: failure2 } : {},
     ...i.agentWait ? { hold: { kind: "agent", text: i.agentWait } } : {},
     ...notSent ? { notSent } : {},
+    ...held ? { held } : {},
     ...card2.ownReply ? { ownReply: { at: card2.ownReply.at } } : {},
     ...waiting && wf.reviewDecline ? { declined: { pr: wf.reviewDecline.pr, addMe: i.changes > 0 } } : {},
     ...card2.promise?.failed ? { promiseFailed: card2.promise.failed } : {}
@@ -55597,8 +55615,12 @@ ${code} stays ${byCode.get(code)?.state === "done" ? "done" : "open"}. Nothing i
             return { code: id, verb: "pick", nums: picks };
           }, { input: "picks", staleness: "exact", expect }));
         },
+        // A held Send (PE 14:28): the chat's own verbs. "Send anyway" becomes ok past exactly the held reason's digest (apply.ts),
+        // so the owner sends only the card he saw; "Redraft" starts over with the new message.
+        "send-anyway": () => actionIds.push(offer(id, rev, "send-anyway", "Send anyway", () => ({ code: id, verb: "answer", text: "Send anyway" }), { effect: "sends", staleness: "exact", expect })),
+        redraft: () => actionIds.push(offer(id, rev, "redraft", "Redraft", () => ({ code: id, verb: "answer", text: "Redraft" }), { staleness: "exact", expect })),
         later: () => actionIds.push(offer(id, rev, "later", "Later", () => ({ code: id, verb: "later" }))),
-        dismiss: () => actionIds.push(offer(id, rev, "dismiss", failed || c.promise ? "Skip" : "Dismiss", () => ({ code: id, verb: "skip" }))),
+        dismiss: () => actionIds.push(offer(id, rev, "dismiss", failed || c.promise || fx.held?.kind === "no-reply-needed" ? "Skip" : "Dismiss", () => ({ code: id, verb: "skip" }))),
         // A run that gave no result (queue-new #11): Try again re-runs it as it was; a job that ran out of routes is queued again (#17 b).
         "try-again": () => actionIds.push(offer(id, rev, "try-again", "Try again", () => ({ code: id, verb: "answer", text: "try again" }), { staleness: "exact", expect })),
         "write-own": () => actionIds.push(offer(id, rev, "write-own", "Write the reply yourself", (input2) => ({ code: id, verb: "send", text: requiredText(input2) }), { effect: "sends", staleness: "exact", expect, input: "text" })),
@@ -55606,7 +55628,7 @@ ${code} stays ${byCode.get(code)?.state === "done" ? "done" : "open"}. Nothing i
         "reply-only": () => actionIds.push(offer(id, rev, "reply-only", "Send reply only", () => ({ code: id, verb: "ok", except: changes.map((change2) => change2.n) }), { staleness: "exact", expect, effect: "sends" }))
       };
       const kinds = new Set([cs.primary, ...cs.secondary, ...cs.more].filter((k) => !!k));
-      if (cs.editor === "reply" && draft2) kinds.add("send-edit");
+      if (draft2 && (cs.editor === "reply" || cs.mode === "answer-with-holding")) kinds.add("send-edit");
       for (const kind of kinds) make[kind]?.();
     } else if (wf.job && facts.jobs.get(wf.job)?.state === "queued" && facts.jobs.get(wf.job)?.retry) {
       actionIds.push(offer(id, rev, "dismiss", "Dismiss", () => ({ code: id, verb: "skip" }), { staleness: "exact", expect }));
