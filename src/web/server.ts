@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import type { Store } from '../store/state.ts'
 import { experienceOf } from '../store/state.ts'
 import { hashOf } from '../knowledge/format.ts'
-import { readScope, writeText } from '../store/fs.ts'
+import { fsTime, readScope, writeText } from '../store/fs.ts'
 import { actResult } from '../mcp/server.ts'
 import { SEEN_KEYS, view } from './view.ts'
 import { answerAutomation, propose as proposeAutomation, type AutomateInput } from '../runner/automations.ts'
@@ -24,6 +24,9 @@ import { intentSchema } from './react/domain/contracts.ts'
 import { listsOf, numbersModel, RULES as NUMBER_RULES } from './model/numbers.ts'
 import { ROOT } from '../paths.ts'
 import { pageDelta } from './react/domain/page-delta.ts'
+
+// A page request this slow is logged with its parts, and so is a stall of the page server's thread (#27).
+const SLOW_MS = 1_000, BEAT_MS = 500
 
 // What a page or panel action really did once applied, and the item's fresh card if it still needs the owner.
 export function actOutcome(store: Store, ids: string[], code: string) {
@@ -100,12 +103,22 @@ export function serveInbox(get: () => Store, port = 0, token = randomBytes(16).t
 	let reactVisit: { since?: string; fallbackSince: string } | undefined
 	const reactPages = new Map<string, ReturnType<typeof reactProjection>['snapshot']>()
 	const server = createServer((req, res) => {
+		// A request over a second is logged with where its time went (#27): lock waits, store reads and writes, OneDrive sleeps, JSON,
+		// and the rest (building the view). The counters are this process's, so a request that overlapped another shares its numbers.
+		const t0 = performance.now(), before = { ...fsTime }
+		let jsonMs = 0
+		res.on('finish', () => {
+			const ms = performance.now() - t0
+			if (ms < SLOW_MS) return
+			const d = (k: keyof typeof fsTime) => Math.round(fsTime[k] - before[k]), spent = d('lock') + d('read') + d('write') + d('wait') + Math.round(jsonMs)
+			try { get().log({ event: 'page-slow', route: `${req.method} ${(req.url ?? '').split('?')[0]}`, status: res.statusCode, ms: Math.round(ms), lockMs: d('lock'), readMs: d('read'), reads: d('reads'), writeMs: d('write'), writes: d('writes'), waitMs: d('wait'), jsonMs: Math.round(jsonMs), buildMs: Math.max(0, Math.round(ms) - spent) }) } catch { /* logging is best effort */ }
+		})
 		const u = new URL(req.url ?? '/', 'http://127.0.0.1')
 		const host = req.headers.host ?? ''
 		if (u.searchParams.get('t') !== token || !/^(127\.0\.0\.1|localhost):\d+$/.test(host)) { res.writeHead(403).end(`Open the link ${NAME} gave you.`); return }
 		const headers = { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'" }
 		if (u.pathname.startsWith('/api/v1/')) {
-			const json = (status: number, body: unknown, extra: Record<string, string> = {}) => res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store', ...extra }).end(JSON.stringify(body))
+			const json = (status: number, body: unknown, extra: Record<string, string> = {}) => { const t = performance.now(), text = JSON.stringify(body); jsonMs += performance.now() - t; res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store', ...extra }).end(text) }
 			const failure = (error: unknown) => {
 				if (error instanceof IntentError) json(error.status, { text: error.message })
 				else { console.error('React API request failed:', error); json(500, { text: `${NAME} could not complete this request. Nothing will be retried automatically.` }) }
@@ -291,6 +304,14 @@ export function serveInbox(get: () => Store, port = 0, token = randomBytes(16).t
 		}
 		res.writeHead(404).end()
 	})
+	// The page server's one thread was held for over a second: every request waited, whichever one held it (#27).
+	let beat = performance.now()
+	const stall = setInterval(() => {
+		const now = performance.now(), late = now - beat - BEAT_MS
+		beat = now
+		if (late >= SLOW_MS) try { get().log({ event: 'page-stall', ms: Math.round(late) }) } catch { /* best effort */ }
+	}, BEAT_MS).unref()
+	server.on('close', () => clearInterval(stall))
 	return new Promise(resolve => server.listen(port, '127.0.0.1', () => {
 		const a = server.address()
 		resolve({ url: `http://127.0.0.1:${typeof a === 'object' && a ? a.port : port}/?t=${token}`, server })

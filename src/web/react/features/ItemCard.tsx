@@ -251,6 +251,8 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 		{primary && <ActionButton primary action={primary} label={primaryLabel} input={report && primary.id === report.id ? { result: ui.resultKind, text: ui.report } : input}
 			disabled={report && primary.id === report.id ? !ui.resultKind : !!invalid || newer} disabledReason={newer ? 'stale' : report && primary.id === report.id ? 'Pick how it went first.' : primary.kind === 'pick' || item.choices && !ui.other ? 'pick' : 'Type your answer first.'} />}
 		{report && primary?.id !== report.id && <ActionButton primary action={report} label={`Draft my update to ${first}`} input={{ result: ui.resultKind, text: ui.report }} disabled={!ui.resultKind} disabledReason="Pick how it went first." />}
+		{/* An offered send is never hidden: when another action leads, it sits next to it (#33). */}
+		{actions.filter(action => ['approve', 'approve-again'].includes(action.kind) && action.id !== primary?.id).map(action => <ActionButton key={action.id} action={action} label={draft?.holding && action.kind === 'approve' && !item.changeIds.length ? 'Send holding reply' : undefined} input={{ excluded: ui.excluded }} disabled={newer} disabledReason="stale" />)}
 		{actions.filter(action => action.kind === 'later').map(action => <ActionButton key={action.id} action={action} />)}
 		<details className="card-more-menu"><summary aria-label="More" title="More: Edit in Teams, Dismiss, Continue in a terminal"><Icon name="more" /></summary><div className="card-more-content">
 			{item.teams && draft && <Button variant="outline" title="Open Teams with this draft so you can change and send it there. Delegate sees that you replied." onClick={() => void chatEdit.open(ui.editing ? ui.editText ?? draft.text : draft.text, item.teams!)}>Edit in Teams</Button>}
@@ -264,9 +266,11 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 	const others = actions.filter(action => action.id !== primary?.id && action.id !== report?.id && !(report && action.id === declared?.id) && !['approve', 'approve-again', 'send-edit', 'answer', 'pick', 'ask', 'later', 'dismiss', 'continue', 'todo-done', 'reply-only', 'review-again', 'try-again', 'write-own'].includes(action.kind) && !(item.ownReply && action.kind === 'reopen'))
 
 	// Block 5: Details, one collapsed line: why, sources, progress and history, changes already handled, and Ask Delegate.
-	const parts = [item.why.reason && 'why', item.sourceIds.length > 0 && `${item.sourceIds.length} source${item.sourceIds.length === 1 ? '' : 's'}`, (work?.planIds.length || timeline?.stepIds.length) && 'history', `ask ${NAME}`].filter(Boolean)
+	const parts = [(item.why.reason || item.why.waited) && 'why', item.sourceIds.length > 0 && `${item.sourceIds.length} source${item.sourceIds.length === 1 ? '' : 's'}`, (work?.planIds.length || timeline?.stepIds.length) && 'history', `ask ${NAME}`].filter(Boolean)
 	const block5 = <details className="card-block card-details" open={ui.folds?.details ?? false} onToggle={event => fold('details', event.currentTarget.open)}><summary>Details: {parts.join(' · ')}</summary>
-		{(item.why.reason || item.why.confidence) && <><h4>Why</h4><p>{item.why.reason}{item.why.confidence && ` Confidence: ${item.why.confidence}.`}</p></>}
+		{(item.why.reason || item.why.confidence || item.why.waited) && <h4>Why</h4>}
+		{(item.why.reason || item.why.confidence) && <p>{item.why.reason}{item.why.confidence && ` Confidence: ${item.why.confidence}.`}</p>}
+		{item.why.waited && <p className="card-why-waited">{item.why.waited}</p>}
 		{item.sourceIds.length > 0 && <><h4>Looked up</h4><Sources ids={ui.folds?.sources ? item.sourceIds : item.sourceIds.slice(0, 5)} entities={entities} />
 			{item.sourceIds.length > 5 && <button type="button" className="link-button" onClick={() => fold('sources', !ui.folds?.sources)}>{ui.folds?.sources ? 'Show fewer' : `+ ${item.sourceIds.length - 5} more`}</button>}</>}
 		{item.why.gaps.map(gap => <p key={gap}>Could not read: {gap}</p>)}

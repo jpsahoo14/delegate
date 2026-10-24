@@ -1,5 +1,56 @@
 # React preview
 
+## A drafted reply can always be sent, and says why it waited (#33)
+
+A37 had a drafted holding reply but offered only "Draft reply". The cause: its review job had failed four days earlier, for a cause
+fixed since. That put the item in recovery, which forced the answer as the primary. `ItemCard` never draws an approve action except
+as the primary, so Send was gone. The same stale failure kept the "It needs the repo …" warning. And `wf.decision` was empty after
+the answer redraft, so Details said nothing about why the reply waited.
+
+- **(a) Recovery yields to a newer draft.** A failed job puts its item in recovery (answer first) only while there is no draft
+  written after the failure (`revAt` later than the job's `updatedAt`). With a current draft, the primary is Send or Send holding
+  reply, as on any card.
+- **(b) An offered send is never hidden.** When another action leads, an offered approve sits next to it in the bar, labelled
+  "Send holding reply" for a holding draft.
+- **(c) Why it waited.** `whyWaited()` in `policy.ts`, beside `decide()`, gives up to two plain parts:
+  - **The rule that didn't apply, and why:** no rule names the person, a rule covers other chats or other kinds of asks, it needs
+    more evidence, it's on hold, it always drafts, or automatic replies are off or at their hourly limit.
+  - **The check that held the draft:** a blank, a PR vote, an approval or other commitment, a holding reply, the owner's edit, a
+    correction, a channel, open work, promised changes, labeled content with guests, an unreadable file, a private source, or low
+    evidence.
+  - **A rule that would have sent it** but for one check says so ("your rule for Sam would have sent it, but …").
+  - The page computes this for every waiting draft, answer redrafts included, with the same context `decide()` uses
+    (`policyContext` in `autosend.ts`, now shared by its three callers). Details shows "Why it waited: …".
+- **(d) The stale warning goes.** The card's warning uses the failed job's error only while the item is in recovery; otherwise it
+  shows the item's own status.
+- **Not changed:** with a question as well as a draft, the page still offers no Send (that card is #31's design decision).
+
+**Proof** (fictional root, stub model (quota)). A37's shape: in the group "Acme live-site", Sam asked "can you approve?" about a
+PR. The review job failed 4 days ago with "It needs the repo …", and a holding draft came later. The rule R1 covers Kim and Sam in
+1:1 chats only.
+- **The card (Edge, New and Classic at 1280 light, New at 400 dark):** the primary is "Send holding reply", with no repo warning.
+  Details reads "Why it waited: no automatic-reply rule covers this chat; replies about PR approvals always wait for you."
+- **A draft older than the failure:** recovery still leads ("Draft reply"), and "Send holding reply" is in the bar, in New and
+  Classic.
+- **Send holding reply (Classic):** the reply was posted once, and A37 is done.
+- **A covered 1:1:** Kim's draft, with a card source and a live one, was sent by rule R1 by itself, as before.
+
+## Settings slow after an action: measure first (#27 a)
+
+On the owner's VM, Settings sat on "Loading settings..." for about a minute right after an action. The endpoint itself is fast on
+the owner's data (152 ms), so the page server's thread was busy or blocked. The page server is its own process (`delegate open`
+runs it as a child), not the runner's.
+
+**Instrumented, nothing changed.**
+- `fsTime` in `fs.ts` counts, per process, time spent in store reads (with a count), writes (with a count), sleeps while OneDrive
+  or antivirus held a file (the rename retry), and receipt-lock waits (both spin loops in `state.ts`).
+- The page server logs `page-slow` for any request over 1 s: route, status, total ms, `lockMs`, `readMs`/`reads`,
+  `writeMs`/`writes`, `waitMs`, `jsonMs`, and `buildMs` (the rest: building the view). A request that overlapped another shares
+  the process counters.
+- It also logs `page-stall` when its thread was held over 1 s (a 500 ms heartbeat came late): every request waited then, whichever
+  held it.
+- Next: one owner session on the VM names the real blocker; then (b) to (d).
+
 ## The AI host stays warm through the work day (#25)
 
 The live log showed host runs starting in 14–18 s: each came right after `host-started`, and the host stopped seconds later (quiet

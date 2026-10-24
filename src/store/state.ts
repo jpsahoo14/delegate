@@ -9,7 +9,7 @@ import type { Turn } from '../core/intake.ts'
 import { emptyThreadCache, type ThreadCache } from '../adapters/channels.ts'
 import type { Schedule } from '../core/schedule.ts'
 import type { Habit } from '../runner/habits.ts'
-import { appendLine, assertTestSafe, listJson, moveTo, readJson, records, strays, writeJson } from './fs.ts'
+import { appendLine, assertTestSafe, fsTime, listJson, moveTo, readJson, records, strays, writeJson } from './fs.ts'
 import { alive, aliveAs } from '../os/process.ts'
 import { VERSION } from '../paths.ts'
 import { lessonOf, type Lesson } from './feedback.ts'
@@ -487,7 +487,10 @@ function tryReceiptLock(path: string, token: string): boolean {
 	}
 }
 function releaseReceiptLock(path: string, token: string) {
-	const deadline = Date.now() + 10_000
+	const deadline = Date.now() + 10_000, t = performance.now()
+	try { releaseLoop(path, token, deadline) } finally { fsTime.lock += performance.now() - t }
+}
+function releaseLoop(path: string, token: string, deadline: number) {
 	for (;;) {
 		const holder = readReceiptLock(path)
 		if (holder !== null && holder !== token) return
@@ -500,7 +503,16 @@ function withReceiptLock<T>(path: string, action: () => T): T {
 	assertTestSafe(path)
 	if (receiptLocks.has(path)) return action()
 	mkdirSync(dirname(path), { recursive: true })
-	const lock = `${path}.lock`, token = `${process.pid} ${Date.now()} ${Math.random()}`, deadline = Date.now() + 10_000
+	const lock = `${path}.lock`, token = `${process.pid} ${Date.now()} ${Math.random()}`, deadline = Date.now() + 10_000, t = performance.now()
+	try { takeLoop(lock, token, deadline, path) } finally { fsTime.lock += performance.now() - t }
+	receiptLocks.add(path)
+	try { return action() } finally {
+		receiptLocks.delete(path)
+		releaseReceiptLock(lock, token)
+	}
+}
+// Waits for the receipt lock, taking it over from a process that is gone.
+function takeLoop(lock: string, token: string, deadline: number, path: string) {
 	while (!tryReceiptLock(lock, token)) {
 		if (Date.now() >= deadline) throw new Error(`Timed out waiting for page receipt ${basename(path)}. Check its saved result before acting again.`)
 		const holder = readReceiptLock(lock)
@@ -511,11 +523,6 @@ function withReceiptLock<T>(path: string, action: () => T): T {
 			continue
 		}
 		Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5)
-	}
-	receiptLocks.add(path)
-	try { return action() } finally {
-		receiptLocks.delete(path)
-		releaseReceiptLock(lock, token)
 	}
 }
 

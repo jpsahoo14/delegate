@@ -3,6 +3,11 @@ import { basename, dirname, join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { randomUUID } from 'node:crypto'
 
+// Time this process spent in the store's file calls, for the page server's slow-request log (#27): reads, writes, sleeps while
+// OneDrive or antivirus held a file, and waits for a receipt lock (state.ts). Counted always; read as before-and-after differences.
+export const fsTime = { read: 0, reads: 0, write: 0, writes: 0, wait: 0, lock: 0 }
+const since = (t: number) => performance.now() - t
+
 // Under the test runner nothing is written outside the temp folder: on 10-20 a broken test wrote fixture values into the owner's real config.
 const TMP = [tmpdir(), '/tmp', '/private/tmp', '/private/var/folders', '/var/folders'].map(p => resolve(p))
 export const inTemp = (path: string) => { const p = resolve(path); return TMP.some(t => p === t || p.startsWith(t + '/') || p.startsWith(t + '\\')) }
@@ -34,6 +39,10 @@ export function scoped<T>(key: string, make: () => T): T {
 // and size), so its signature changes. Outside a page request nothing is kept.
 const texts = new Map<string, { sig: string; text: string }>()
 export function readText(path: string): string {
+	const t = performance.now()
+	try { return readTextNow(path) } finally { fsTime.read += since(t); fsTime.reads++ }
+}
+function readTextNow(path: string): string {
 	if (!scope) return readFileSync(path, 'utf8')
 	const st = statSync(path)
 	const sig = `${st.mtimeMs}:${st.size}:${st.ino}`, hit = texts.get(path)
@@ -67,13 +76,14 @@ export function writeText(path: string, text: string, machine: string): void {
 	assertTestSafe(path)
 	scope?.clear()
 	mkdirSync(dirname(path), { recursive: true })
-	const tmp = `${path}.tmp-${machine}-${process.pid}-${randomUUID()}`
+	const tmp = `${path}.tmp-${machine}-${process.pid}-${randomUUID()}`, t = performance.now()
 	const fd = openSync(tmp, 'wx')
 	try {
 		try { writeFileSync(fd, text) } finally { closeSync(fd) }
 		retry(() => renameSync(tmp, path))
 	} finally {
 		rmSync(tmp, { force: true })
+		fsTime.write += since(t); fsTime.writes++
 	}
 }
 
@@ -83,7 +93,9 @@ function retry(fn: () => void, tries = 5) {
 		try { return fn() } catch (e) {
 			const code = (e as NodeJS.ErrnoException).code
 			if (i >= tries || (code !== 'EPERM' && code !== 'EBUSY' && code !== 'EACCES')) throw e
+			const t = performance.now()
 			Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50 * i)
+			fsTime.wait += since(t)
 		}
 	}
 }
@@ -98,7 +110,9 @@ export function appendLine(path: string, value: unknown): void {
 export function listJson(dir: string): string[] {
 	const key = `dir:${dir}`
 	if (scope?.has(key)) return [...scope.get(key) as string[]]
+	const t = performance.now()
 	const files = existsSync(dir) ? readdirSync(dir).filter(f => f.endsWith('.json') && !f.includes('.tmp-')).sort().map(f => join(dir, f)) : []
+	fsTime.read += since(t)
 	scope?.set(key, files)
 	return [...files]
 }

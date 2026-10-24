@@ -1,6 +1,6 @@
 import type { Config, Workflow } from '../core/types.ts'
 import { markedHold } from './sharing.ts'
-import { DEFAULT_POLICY, decide, REPLY_BLANK, replyGap, signatureOf, withMarker } from '../core/policy.ts'
+import { DEFAULT_POLICY, decide, REPLY_BLANK, replyGap, signatureOf, withMarker, type PolicyContext } from '../core/policy.ts'
 import type { Source } from '../adapters/source.ts'
 import type { Store } from '../store/state.ts'
 import { send } from './apply.ts'
@@ -9,13 +9,15 @@ import type { BuildProbe } from './probe.ts'
 import { holdReplyGap } from './reply-gap.ts'
 
 const policy = (cfg: Config) => ({ ...DEFAULT_POLICY, ...cfg.policy })
+// What the owner's rules are judged with for this item: the page's "why it waited" uses the same (#33).
+export const policyContext = (store: Store, cfg: Config, wf: Workflow): PolicyContext => ({ autoSend: !!store.control().autoSend, autoSendsThisHour: autoCount(store, wf), maxPerHour: policy(cfg).maxAutoPerChatHour, never: policy(cfg).never, held: Object.keys(store.heldRules()) })
 
 // After a worker drafts, the owner's rules decide: send later, acknowledge now, keep as a draft, or ignore (R-POL-01).
 export async function afterDraft(store: Store, src: Source, cfg: Config, wf: Workflow): Promise<void> {
 	if (wf.state !== 'needs_human' || !wf.draft || wf.draft.preview) return
 	if (holdReplyGap(store, wf, wf.draft.text, true)) return
 	const p = policy(cfg)
-	const d = decide(wf, store.rules(), { autoSend: !!store.control().autoSend, autoSendsThisHour: autoCount(store, wf), maxPerHour: p.maxAutoPerChatHour, never: p.never, held: Object.keys(store.heldRules()) })
+	const d = decide(wf, store.rules(), policyContext(store, cfg, wf))
 	wf.decision = d
 	wf.held = undefined
 	if (d.action === 'ignore') return close(wf, d.reason)
@@ -32,8 +34,7 @@ export async function afterDraft(store: Store, src: Source, cfg: Config, wf: Wor
 
 // A job item gets the same acknowledgement a rule allows for a draft (scenario 04 step 1, tester P2-16).
 export async function ackJob(store: Store, src: Source, cfg: Config, wf: Workflow): Promise<void> {
-	const p = policy(cfg)
-	const d = decide(wf, store.rules(), { autoSend: !!store.control().autoSend, autoSendsThisHour: autoCount(store, wf), maxPerHour: p.maxAutoPerChatHour, never: p.never, held: Object.keys(store.heldRules()) })
+	const d = decide(wf, store.rules(), policyContext(store, cfg, wf))
 	if (d.action === 'ack') await ack(store, src, cfg, wf, d.ruleId)
 }
 
@@ -87,7 +88,7 @@ export async function dueSends(store: Store, src: Source, cfg: Config, probe?: B
 	for (const wf of due.filter(w => w.state === 'scheduled')) {
 		// Rules, auto-send, limits, and chat levels are checked again at send time, so a change during the delay wins.
 		wf.shareHold = markedHold(cfg, wf.drewOn) ?? wf.shareHold
-		const d = decide(wf, store.rules(), { autoSend: !!store.control().autoSend, autoSendsThisHour: autoCount(store, wf), maxPerHour: policy(cfg).maxAutoPerChatHour, never: policy(cfg).never, held: Object.keys(store.heldRules()) })
+		const d = decide(wf, store.rules(), policyContext(store, cfg, wf))
 		if (d.action !== 'send') { Object.assign(wf, { state: 'needs_human', sendAt: undefined, decision: d, status: `Not sent: ${d.reason}` }); store.save(wf); continue }
 		try {
 			if (await send(store, src, cfg, wf, wf.draft?.text, { ruleId: d.ruleId }, probe)) { n++; store.addAuto(wf.chat.id, 'send') }

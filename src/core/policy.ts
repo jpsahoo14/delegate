@@ -76,6 +76,48 @@ export function decide(wf: Workflow, rules: Rule[], ctx: PolicyContext): Decisio
 	return d('send', `Rule ${rule.id}, confidence ${conf}`)
 }
 
+// Why a draft waits for the owner instead of going out by itself, in at most two plain parts (#33): the automatic-reply rule that
+// didn't apply (and why), and the safety check that held it. A rule that would have sent it but for one check says so. Any one
+// part alone makes it wait; the checks are the ones decide() and the send gate apply.
+export function whyWaited(wf: Workflow, rules: Rule[], ctx: PolicyContext): string[] {
+	const conf = confidence(wf.draft?.sources ?? [])
+	const first = wf.asker?.name?.split(/\s+/)[0] || 'this person'
+	const auto = rules.filter(r => !r.style && r.then !== 'ignore')
+	const named = auto.filter(r => !!wf.asker && !!r.who.accounts?.some(a => a.id === wf.asker!.id))
+	const rule = named.find(r => matches(r, wf, conf))
+	const chatOk = (r: Rule) => r.when.chat === 'direct' ? !(wf.chat.group || wf.chat.test || wf.chat.id.startsWith('ch|')) : !r.when.chat || r.when.chat === wf.chat.id
+	const ruleLine = !named.length ? `no automatic-reply rule covers ${first}`
+		: !rule ? (!named.some(chatOk) ? 'no automatic-reply rule covers this chat'
+			: !named.some(r => chatOk(r) && (!r.when.intent || r.when.intent === wf.intent)) ? `your rule for ${first} covers other kinds of asks`
+			: `your rule for ${first} needs more evidence than this draft has`)
+		: ctx.held?.includes(rule.id) ? `your rule for ${first} is on hold`
+		: rule.then === 'draft' || rule.then === 'shortcut' ? `your rule for ${first} says to always draft`
+		: !ctx.autoSend ? 'automatic replies are off'
+		: ctx.autoSendsThisHour >= ctx.maxPerHour ? `${ctx.maxPerHour} automatic replies already went to this chat this hour` : undefined
+	const vote = pendingEffects(wf.effects).some(e => /pull_request_write/.test(e.call?.tool ?? '') && /vote/i.test(`${e.action} ${JSON.stringify(e.call?.args ?? {})}`))
+	const gate = replyGap(wf.draft?.text) ? 'it still has a blank to fill'
+		: vote ? 'a PR vote always waits for you'
+		: commits(wf) ? (wf.intent === 'pr_review' || /\bapprov/i.test(`${wf.lastAsk ?? ''} ${wf.draft?.text ?? ''}`) ? 'replies about PR approvals always wait for you' : 'it commits you to something (a date, an approval or ownership)')
+		: wf.draft?.holding ? "the work didn't finish, so it's a holding reply"
+		: wf.draft?.preview ? 'you edited it, so it waits for your ok'
+		: wf.correction ? 'a correction always waits for you'
+		: wf.before ? 'it came before setup'
+		: ctx.never?.some(p => p.id === wf.asker?.id) ? `${first} never gets automatic replies`
+		: wf.chat.id.startsWith('ch|') ? 'channel replies always wait for you'
+		: wf.needsMe ? 'you said this one needs you'
+		: wf.startedBy === 'room' ? 'it was asked of the whole chat'
+		: wf.work || wf.partOf ? 'replies on open work always wait for you'
+		: wf.shareHold ? wf.shareHold.replace(/^./, c => c.toLowerCase())
+		: pendingEffects(wf.effects).length || wf.todos?.length || wf.follow ? 'it promises changes, a follow-up, or something you must do'
+		: labeledToGuests(wf) ? 'it quotes labeled content, and this chat has guests'
+		: wf.gaps?.length ? `it could not read ${wf.gaps.join(', ')}`
+		: wf.draft?.sources.some(s => s.tier === 'private') ? 'it uses a private source'
+		: conf === 'low' ? 'there is not enough evidence for it to go on its own' : undefined
+	// The rule matched and would have sent it: only the check held it.
+	if (rule && !ruleLine) return gate ? [`your rule for ${first} would have sent it, but ${gate}`] : []
+	return [ruleLine, gate].filter((s): s is string => !!s)
+}
+
 // Labeled content never goes to a chat that has, or may have, guests without the owner (R-SEC-08).
 // An item Delegate closed without replying can be reopened by the owner's answer: "A40: this one is mine, review it" (dogfood 10-20).
 export const reopenable = (wf: Workflow, verb: string) => wf.state === 'done' && verb === 'answer' && wf.kind !== 'tracker' && !wf.sent && !wf.work && !wf.redacted

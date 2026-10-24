@@ -162,11 +162,11 @@ function eventsOf(out) {
     }
   });
 }
-function sessionEvents(log, since, until = Infinity) {
+function sessionEvents(log, since2, until = Infinity) {
   return log.split("\n").filter((l) => WANTED.test(l)).flatMap((l) => {
     try {
       const e = JSON.parse(l), at3 = Date.parse(e.timestamp);
-      return at3 >= since && at3 <= until ? [e] : [];
+      return at3 >= since2 && at3 <= until ? [e] : [];
     } catch {
       return [];
     }
@@ -351,6 +351,15 @@ function scoped(key, make) {
   return copy(v);
 }
 function readText(path) {
+  const t2 = performance.now();
+  try {
+    return readTextNow(path);
+  } finally {
+    fsTime.read += since(t2);
+    fsTime.reads++;
+  }
+}
+function readTextNow(path) {
   if (!scope) return readFileSync2(path, "utf8");
   const st = statSync2(path);
   const sig = `${st.mtimeMs}:${st.size}:${st.ino}`, hit = texts.get(path);
@@ -385,7 +394,7 @@ function writeText(path, text3, machine2) {
   assertTestSafe(path);
   scope?.clear();
   mkdirSync(dirname(path), { recursive: true });
-  const tmp = `${path}.tmp-${machine2}-${process.pid}-${randomUUID()}`;
+  const tmp = `${path}.tmp-${machine2}-${process.pid}-${randomUUID()}`, t2 = performance.now();
   const fd = openSync(tmp, "wx");
   try {
     try {
@@ -396,6 +405,8 @@ function writeText(path, text3, machine2) {
     retry(() => renameSync(tmp, path));
   } finally {
     rmSync(tmp, { force: true });
+    fsTime.write += since(t2);
+    fsTime.writes++;
   }
 }
 function retry(fn, tries = 5) {
@@ -405,7 +416,9 @@ function retry(fn, tries = 5) {
     } catch (e) {
       const code = e.code;
       if (i >= tries || code !== "EPERM" && code !== "EBUSY" && code !== "EACCES") throw e;
+      const t2 = performance.now();
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50 * i);
+      fsTime.wait += since(t2);
     }
   }
 }
@@ -418,7 +431,9 @@ function appendLine(path, value) {
 function listJson(dir2) {
   const key = `dir:${dir2}`;
   if (scope?.has(key)) return [...scope.get(key)];
+  const t2 = performance.now();
   const files2 = existsSync2(dir2) ? readdirSync(dir2).filter((f) => f.endsWith(".json") && !f.includes(".tmp-")).sort().map((f) => join2(dir2, f)) : [];
+  fsTime.read += since(t2);
   scope?.set(key, files2);
   return [...files2];
 }
@@ -443,10 +458,12 @@ function moveTo(path, dir2) {
   mkdirSync(dir2, { recursive: true });
   retry(() => renameSync(path, join2(dir2, basename(path))));
 }
-var TMP, inTemp, scope, MISSING, copy, texts;
+var fsTime, since, TMP, inTemp, scope, MISSING, copy, texts;
 var init_fs = __esm({
   "src/store/fs.ts"() {
     "use strict";
+    fsTime = { read: 0, reads: 0, write: 0, writes: 0, wait: 0, lock: 0 };
+    since = (t2) => performance.now() - t2;
     TMP = [tmpdir(), "/tmp", "/private/tmp", "/private/var/folders", "/var/folders"].map((p) => resolve2(p));
     inTemp = (path) => {
       const p = resolve2(path);
@@ -1036,6 +1053,19 @@ function decide(wf, rules, ctx) {
   if (wf.draft?.sources.some((s3) => s3.tier === "private")) return d("draft", "It uses a private source");
   if (conf === "low") return d("draft", "Not enough evidence to send on its own");
   return d("send", `Rule ${rule.id}, confidence ${conf}`);
+}
+function whyWaited(wf, rules, ctx) {
+  const conf = confidence(wf.draft?.sources ?? []);
+  const first3 = wf.asker?.name?.split(/\s+/)[0] || "this person";
+  const auto = rules.filter((r) => !r.style && r.then !== "ignore");
+  const named2 = auto.filter((r) => !!wf.asker && !!r.who.accounts?.some((a) => a.id === wf.asker.id));
+  const rule = named2.find((r) => matches(r, wf, conf));
+  const chatOk = (r) => r.when.chat === "direct" ? !(wf.chat.group || wf.chat.test || wf.chat.id.startsWith("ch|")) : !r.when.chat || r.when.chat === wf.chat.id;
+  const ruleLine = !named2.length ? `no automatic-reply rule covers ${first3}` : !rule ? !named2.some(chatOk) ? "no automatic-reply rule covers this chat" : !named2.some((r) => chatOk(r) && (!r.when.intent || r.when.intent === wf.intent)) ? `your rule for ${first3} covers other kinds of asks` : `your rule for ${first3} needs more evidence than this draft has` : ctx.held?.includes(rule.id) ? `your rule for ${first3} is on hold` : rule.then === "draft" || rule.then === "shortcut" ? `your rule for ${first3} says to always draft` : !ctx.autoSend ? "automatic replies are off" : ctx.autoSendsThisHour >= ctx.maxPerHour ? `${ctx.maxPerHour} automatic replies already went to this chat this hour` : void 0;
+  const vote = pendingEffects(wf.effects).some((e) => /pull_request_write/.test(e.call?.tool ?? "") && /vote/i.test(`${e.action} ${JSON.stringify(e.call?.args ?? {})}`));
+  const gate = replyGap(wf.draft?.text) ? "it still has a blank to fill" : vote ? "a PR vote always waits for you" : commits(wf) ? wf.intent === "pr_review" || /\bapprov/i.test(`${wf.lastAsk ?? ""} ${wf.draft?.text ?? ""}`) ? "replies about PR approvals always wait for you" : "it commits you to something (a date, an approval or ownership)" : wf.draft?.holding ? "the work didn't finish, so it's a holding reply" : wf.draft?.preview ? "you edited it, so it waits for your ok" : wf.correction ? "a correction always waits for you" : wf.before ? "it came before setup" : ctx.never?.some((p) => p.id === wf.asker?.id) ? `${first3} never gets automatic replies` : wf.chat.id.startsWith("ch|") ? "channel replies always wait for you" : wf.needsMe ? "you said this one needs you" : wf.startedBy === "room" ? "it was asked of the whole chat" : wf.work || wf.partOf ? "replies on open work always wait for you" : wf.shareHold ? wf.shareHold.replace(/^./, (c) => c.toLowerCase()) : pendingEffects(wf.effects).length || wf.todos?.length || wf.follow ? "it promises changes, a follow-up, or something you must do" : labeledToGuests(wf) ? "it quotes labeled content, and this chat has guests" : wf.gaps?.length ? `it could not read ${wf.gaps.join(", ")}` : wf.draft?.sources.some((s3) => s3.tier === "private") ? "it uses a private source" : conf === "low" ? "there is not enough evidence for it to go on its own" : void 0;
+  if (rule && !ruleLine) return gate ? [`your rule for ${first3} would have sent it, but ${gate}`] : [];
+  return [ruleLine, gate].filter((s3) => !!s3);
 }
 function withMarker(text3, marker, ownerName) {
   const line2 = marker.replace("{first}", ownerName.split(/\s+/)[0]);
@@ -21946,7 +21976,7 @@ var init_channels = __esm({
       // Threads the owner started, posted in, or was @mentioned in, in the last week (capped).
       async discover(sinceIso, cache2, now = /* @__PURE__ */ new Date(), channels = []) {
         if (cache2.scannedAt && now.getTime() - Date.parse(cache2.scannedAt) < 30 * 6e4) return cache2;
-        const since = sinceIso.slice(0, 10);
+        const since2 = sinceIso.slice(0, 10);
         const found = new Map(cache2.threads.map((t2) => [t2.id, t2]));
         for (const ch of channels) {
           for (const t2 of await this.scanChannel(ch, sinceIso).catch(() => [])) {
@@ -21954,7 +21984,7 @@ var init_channels = __esm({
             found.set(id, { id, name: ch.name, mine: !!old?.mine || t2.mine, hitAt: [old?.hitAt ?? "", t2.at].sort().at(-1) });
           }
         }
-        const hits = [...await this.search(`from:"${this.owner}" AND sent>=${since}`), ...await this.search(`IsMentioned:true AND sent>=${since}`)];
+        const hits = [...await this.search(`from:"${this.owner}" AND sent>=${since2}`), ...await this.search(`IsMentioned:true AND sent>=${since2}`)];
         for (const h of hits.filter((h2) => isChannel(h2.resource?.chatId) && h2.resource?.channelIdentity?.teamId && h2.resource.id)) {
           const r = h.resource, teamId = r.channelIdentity.teamId, channelId = r.channelIdentity.channelId ?? r.chatId;
           const root = await this.rootOf(teamId, channelId, r.id, cache2);
@@ -22123,7 +22153,14 @@ function tryReceiptLock(path, token) {
   }
 }
 function releaseReceiptLock(path, token) {
-  const deadline = Date.now() + 1e4;
+  const deadline = Date.now() + 1e4, t2 = performance.now();
+  try {
+    releaseLoop(path, token, deadline);
+  } finally {
+    fsTime.lock += performance.now() - t2;
+  }
+}
+function releaseLoop(path, token, deadline) {
   for (; ; ) {
     const holder = readReceiptLock(path);
     if (holder !== null && holder !== token) return;
@@ -22143,7 +22180,21 @@ function withReceiptLock(path, action2) {
   assertTestSafe(path);
   if (receiptLocks.has(path)) return action2();
   mkdirSync3(dirname5(path), { recursive: true });
-  const lock = `${path}.lock`, token = `${process.pid} ${Date.now()} ${Math.random()}`, deadline = Date.now() + 1e4;
+  const lock = `${path}.lock`, token = `${process.pid} ${Date.now()} ${Math.random()}`, deadline = Date.now() + 1e4, t2 = performance.now();
+  try {
+    takeLoop(lock, token, deadline, path);
+  } finally {
+    fsTime.lock += performance.now() - t2;
+  }
+  receiptLocks.add(path);
+  try {
+    return action2();
+  } finally {
+    receiptLocks.delete(path);
+    releaseReceiptLock(lock, token);
+  }
+}
+function takeLoop(lock, token, deadline, path) {
   while (!tryReceiptLock(lock, token)) {
     if (Date.now() >= deadline) throw new Error(`Timed out waiting for page receipt ${basename4(path)}. Check its saved result before acting again.`);
     const holder = readReceiptLock(lock);
@@ -22157,13 +22208,6 @@ function withReceiptLock(path, action2) {
       continue;
     }
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
-  }
-  receiptLocks.add(path);
-  try {
-    return action2();
-  } finally {
-    receiptLocks.delete(path);
-    releaseReceiptLock(lock, token);
   }
 }
 async function withTickLock(fn, bootMs = Date.now() - uptime() * 1e3) {
@@ -22695,20 +22739,20 @@ var init_state = __esm({
       visitSince(now = /* @__PURE__ */ new Date()) {
         const last2 = this.lastViewed(), v = readJson(this.p("state", "visit.json"), {});
         const fresh = last2 && now.getTime() - Date.parse(last2) < 30 * 6e4 && v.started;
-        const since = fresh ? v.since : last2;
-        this.w(this.p("state", "visit.json"), { since, started: fresh ? v.started : now.toISOString() });
+        const since2 = fresh ? v.since : last2;
+        this.w(this.p("state", "visit.json"), { since: since2, started: fresh ? v.started : now.toISOString() });
         this.markViewed();
-        return since;
+        return since2;
       }
       lastViewed() {
         return listJson(this.p("state", "viewed")).map((f) => readJson(f, { at: "" }).at).sort().at(-1);
       }
       // Log lines from the last N days, from every machine.
       logs(days2 = 1) {
-        const since = new Date(Date.now() - days2 * 864e5).toISOString().slice(0, 10);
+        const since2 = new Date(Date.now() - days2 * 864e5).toISOString().slice(0, 10);
         const dir2 = this.p("state", "log");
         if (!existsSync6(dir2)) return [];
-        return readdirSync4(dir2).filter((f) => f.endsWith(".jsonl") && f.slice(0, 10) >= since).flatMap((f) => readFileSync6(join6(dir2, f), "utf8").split("\n").filter(Boolean).map((l) => {
+        return readdirSync4(dir2).filter((f) => f.endsWith(".jsonl") && f.slice(0, 10) >= since2).flatMap((f) => readFileSync6(join6(dir2, f), "utf8").split("\n").filter(Boolean).map((l) => {
           try {
             return JSON.parse(l);
           } catch {
@@ -40305,17 +40349,17 @@ function effectLine(effects) {
   }
   return [...groups2].map(([k, n]) => n > 1 ? `${n}\xD7 ${k}` : k).join(", ");
 }
-function groups(wfs, since) {
+function groups(wfs, since2) {
   const needs = wfs.filter((w) => w.state === "needs_human").sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   const watching = wfs.filter((w) => w.kind === "tracker" && w.state === "waiting_on_task");
   const running2 = wfs.filter((w) => w.kind !== "tracker" && (w.state === "running" || w.state === "waiting_on_task" || w.state === "scheduled"));
-  const done2 = [...wfs.filter((w) => w.state === "done" && w.code && (!since || w.updatedAt > since) && w.intent !== "none"), ...watching.filter((w) => w.changedAt && (!since || w.changedAt > since) && (!w.ackAt || w.changedAt > w.ackAt))];
+  const done2 = [...wfs.filter((w) => w.state === "done" && w.code && (!since2 || w.updatedAt > since2) && w.intent !== "none"), ...watching.filter((w) => w.changedAt && (!since2 || w.changedAt > since2) && (!w.ackAt || w.changedAt > w.ackAt))];
   return { needs, watching, running: running2, done: done2 };
 }
-function renderList(wfs, now, since, health = {}, extra = {}) {
+function renderList(wfs, now, since2, health = {}, extra = {}) {
   const kp = (extra.proposals ?? []).filter((p) => p.state === "needs_human").sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   const bg = extra.background ?? [];
-  const { needs, watching, running: running2, done: done2 } = groups(wfs, since);
+  const { needs, watching, running: running2, done: done2 } = groups(wfs, since2);
   const head = [`${needs.length} need you`, `${done2.length} done`, `${running2.length + bg.length} running`, ...kp.length ? [`${kp.length} to learn`] : []].join(" \xB7 ");
   const out = [head];
   const problems = Object.values(health);
@@ -40355,8 +40399,8 @@ function okWill(wf) {
   const left = pendingEffects(wf.effects);
   return left.length ? `ok will: ${effectLine(left)}${wf.draft?.text ? ", then send the reply" : ""}` : "";
 }
-function renderPhone(wfs, kp = [], health = {}, since) {
-  const { needs, watching, running: running2, done: done2 } = groups(wfs, since);
+function renderPhone(wfs, kp = [], health = {}, since2) {
+  const { needs, watching, running: running2, done: done2 } = groups(wfs, since2);
   const line2 = (w) => {
     const left = pendingEffects(w.effects);
     const what = w.choices && !w.draft?.preview ? `pick one: ${w.choices.options.map((o, i) => `${i + 1} ${clip(o.label, 24)}`).join(" \xB7 ")}` : w.question ? `needs your answer: ${clip(oneLine(w.question), 60)}` : left.length ? `${effectLine(left)}, then reply` : `reply ready: "${clip(oneLine(w.draft?.text ?? ""), 50)}"`;
@@ -40548,8 +40592,8 @@ function scopeOf(es, language) {
   return { key: "everywhere", to: "", for: " for every reply", who: {}, when: {} };
 }
 function styleHabit(store2, cfg, habits, now) {
-  const since = now - 14 * DAY;
-  const all = store2.logs(15).filter((e) => e.event === "edit-style").filter((e) => Date.parse(e.at) >= since && !offRecord(cfg, e.chat)).sort((a, b) => a.at.localeCompare(b.at));
+  const since2 = now - 14 * DAY;
+  const all = store2.logs(15).filter((e) => e.event === "edit-style").filter((e) => Date.parse(e.at) >= since2 && !offRecord(cfg, e.chat)).sort((a, b) => a.at.localeCompare(b.at));
   if (!all.length) return void 0;
   const at3 = new Date(now).toISOString();
   const sendOf = (e) => e.link ?? `${e.item}@${e.at}`;
@@ -42161,7 +42205,7 @@ async function afterDraft(store2, src, cfg, wf) {
   if (wf.state !== "needs_human" || !wf.draft || wf.draft.preview) return;
   if (holdReplyGap(store2, wf, wf.draft.text, true)) return;
   const p = policy(cfg);
-  const d = decide(wf, store2.rules(), { autoSend: !!store2.control().autoSend, autoSendsThisHour: autoCount(store2, wf), maxPerHour: p.maxAutoPerChatHour, never: p.never, held: Object.keys(store2.heldRules()) });
+  const d = decide(wf, store2.rules(), policyContext(store2, cfg, wf));
   wf.decision = d;
   wf.held = void 0;
   if (d.action === "ignore") return close(wf, d.reason);
@@ -42177,8 +42221,7 @@ async function afterDraft(store2, src, cfg, wf) {
   if (d.action === "ack") await ack(store2, src, cfg, wf, d.ruleId);
 }
 async function ackJob(store2, src, cfg, wf) {
-  const p = policy(cfg);
-  const d = decide(wf, store2.rules(), { autoSend: !!store2.control().autoSend, autoSendsThisHour: autoCount(store2, wf), maxPerHour: p.maxAutoPerChatHour, never: p.never, held: Object.keys(store2.heldRules()) });
+  const d = decide(wf, store2.rules(), policyContext(store2, cfg, wf));
   if (d.action === "ack") await ack(store2, src, cfg, wf, d.ruleId);
 }
 async function ack(store2, src, cfg, wf, ruleId) {
@@ -42231,7 +42274,7 @@ async function dueSends(store2, src, cfg, probe) {
   let n = 0;
   for (const wf of due2.filter((w) => w.state === "scheduled")) {
     wf.shareHold = markedHold(cfg, wf.drewOn) ?? wf.shareHold;
-    const d = decide(wf, store2.rules(), { autoSend: !!store2.control().autoSend, autoSendsThisHour: autoCount(store2, wf), maxPerHour: policy(cfg).maxAutoPerChatHour, never: policy(cfg).never, held: Object.keys(store2.heldRules()) });
+    const d = decide(wf, store2.rules(), policyContext(store2, cfg, wf));
     if (d.action !== "send") {
       Object.assign(wf, { state: "needs_human", sendAt: void 0, decision: d, status: `Not sent: ${d.reason}` });
       store2.save(wf);
@@ -42250,7 +42293,7 @@ async function dueSends(store2, src, cfg, probe) {
   }
   return n;
 }
-var policy;
+var policy, policyContext;
 var init_autosend = __esm({
   "src/runner/autosend.ts"() {
     "use strict";
@@ -42260,6 +42303,7 @@ var init_autosend = __esm({
     init_intake2();
     init_reply_gap();
     policy = (cfg) => ({ ...DEFAULT_POLICY, ...cfg.policy });
+    policyContext = (store2, cfg, wf) => ({ autoSend: !!store2.control().autoSend, autoSendsThisHour: autoCount(store2, wf), maxPerHour: policy(cfg).maxAutoPerChatHour, never: policy(cfg).never, held: Object.keys(store2.heldRules()) });
   }
 });
 
@@ -43394,9 +43438,9 @@ function local(d, tz) {
   const p = Object.fromEntries(fmt.get(key).formatToParts(d).map((x) => [x.type, x.value]));
   return { day: DAYS2.indexOf(p.weekday), hour: Number(p.hour), label: `${p.weekday} ${p.hour}:${p.minute}`, date: `${p.day} ${p.month}` };
 }
-function offNotice(since, now, machine2, tz) {
-  if (!since) return void 0;
-  const from = Date.parse(since);
+function offNotice(since2, now, machine2, tz) {
+  if (!since2) return void 0;
+  const from = Date.parse(since2);
   let work2 = 0;
   for (let t2 = from; t2 < now.getTime() && work2 < 30; t2 += 5 * 6e4) if (isWorkHours(new Date(t2), tz)) work2 += 5;
   if (work2 < 30) return void 0;
@@ -44088,9 +44132,9 @@ async function readOwnerCommands(store2, src, cursors) {
     const text3 = (m.html ? htmlToText(m.body) : m.body).trim();
     if (sent.has(m.id) || text3.startsWith(MARK) || store2.wasSentRecently(text3)) continue;
     if (/^(what needs me|what did i miss|inbox)\??$/i.test(text3)) {
-      const since = store2.lastViewed(), all = store2.workflows();
-      const caught = catchUpLines(store2, since);
-      await say(store2, src, renderPhone(all, store2.proposals(), store2.health(), since) + (caught.length ? `
+      const since2 = store2.lastViewed(), all = store2.workflows();
+      const caught = catchUpLines(store2, since2);
+      await say(store2, src, renderPhone(all, store2.proposals(), store2.health(), since2) + (caught.length ? `
 
 Catch up:
 ${caught.join("\n")}` : ""));
@@ -46310,8 +46354,8 @@ function startBootstrap(store2, sources = ["chats", "prs", "workitems"], runnerO
   const started2 = [], busy2 = [];
   for (const s3 of sources) {
     const key = `bootstrap:${s3}`;
-    const since = checkpoints[key];
-    const goal = `Read ${WHAT[s3]} ${since ? `newer than ${since}` : "from the last 90 days"}${s3 === "notes" ? `: ${(cfg.knowledge ?? []).map((f) => resolve6(store2.root, f)).join(", ") || "none configured"}` : ""}, and propose lasting knowledge`;
+    const since2 = checkpoints[key];
+    const goal = `Read ${WHAT[s3]} ${since2 ? `newer than ${since2}` : "from the last 90 days"}${s3 === "notes" ? `: ${(cfg.knowledge ?? []).map((f) => resolve6(store2.root, f)).join(", ") || "none configured"}` : ""}, and propose lasting knowledge`;
     const now = (/* @__PURE__ */ new Date()).toISOString();
     const old = store2.jobs().find((j) => j.key === key);
     if (old && (old.state === "running" || old.state === "queued")) {
@@ -46347,20 +46391,20 @@ function pack(cs, maxMsgs = 300, maxChats = 12) {
 async function planChats(store2, history, now = /* @__PURE__ */ new Date()) {
   const plan2 = store2.jobs().find((j) => j.key === "bootstrap:chats" && j.state === "queued");
   if (!plan2 || !history?.conversations) return 0;
-  const since = store2.sources()["bootstrap:chats"] ?? day2(now.getTime() - 90 * 864e5);
-  const cfg = store2.config(), cs = (await history.conversations(since, now)).filter((c) => !offRecord(cfg, c.id));
+  const since2 = store2.sources()["bootstrap:chats"] ?? day2(now.getTime() - 90 * 864e5);
+  const cfg = store2.config(), cs = (await history.conversations(since2, now)).filter((c) => !offRecord(cfg, c.id));
   const parts2 = pack(cs), at3 = now.toISOString(), stamp2 = day2(now.getTime());
   parts2.forEach((p, i) => {
     const goal = [
-      `Read ${p.length === 1 ? "this Teams conversation" : `these ${p.length} Teams conversations`} from ${since} on, newest first, and propose lasting knowledge. The owner wrote in each; the number is how many of their messages there are.`,
+      `Read ${p.length === 1 ? "this Teams conversation" : `these ${p.length} Teams conversations`} from ${since2} on, newest first, and propose lasting knowledge. The owner wrote in each; the number is how many of their messages there are.`,
       ...p.map((c) => `- ${c.team ? `channel ${c.id} in team ${c.team}` : `chat ${c.id}`} (${c.mine} by the owner, last ${c.lastAt.slice(0, 10)})`)
     ].join("\n");
     store2.saveJob({ schema: 1, id: ulid3(), key: `bootstrap:chats:${stamp2}:${i + 1}`, goal, label: `your Teams chats, part ${i + 1} of ${parts2.length}`, session: { agent: cfg.agent.flavor, id: randomUUID9() }, state: "queued", purpose: "work", parents: [], asks: [goal], createdAt: at3, updatedAt: at3 });
   });
-  Object.assign(plan2, { state: "done", result: { summary: `Found ${cs.length} conversations you wrote in since ${since}; reading them in ${parts2.length} parts.`, effects: [] } });
+  Object.assign(plan2, { state: "done", result: { summary: `Found ${cs.length} conversations you wrote in since ${since2}; reading them in ${parts2.length} parts.`, effects: [] } });
   store2.saveJob(plan2);
   store2.saveSource("bootstrap:chats", stamp2);
-  store2.log({ event: "harvest-planned", since, conversations: cs.length, parts: parts2.length, messages: cs.reduce((n, c) => n + c.mine, 0) });
+  store2.log({ event: "harvest-planned", since: since2, conversations: cs.length, parts: parts2.length, messages: cs.reduce((n, c) => n + c.mine, 0) });
   return parts2.length;
 }
 var BOOT_SOURCES, WHAT, YOURS, isBootstrap, day2;
@@ -47773,12 +47817,12 @@ function due(wf, now = Date.now(), store2) {
 }
 function askWhatNext(wf, store2) {
   const k = wf.work;
-  const since = (store2 && lastActivity(store2, wf) || k.steps.at(-1)?.at || "").slice(0, 10);
+  const since2 = (store2 && lastActivity(store2, wf) || k.steps.at(-1)?.at || "").slice(0, 10);
   newTurn(wf, true);
   Object.assign(wf, {
     state: "needs_human",
-    status: `No news since ${since}`,
-    question: `No news on "${k.goal}" since ${since}${k.waitingOn ? `; waiting on ${k.waitingOn.who}` : ""}. Answer "${wf.code}: nudge them" for a drafted follow-up, "wait ${wf.code}: 3d", or "close ${wf.code}".`
+    status: `No news since ${since2}`,
+    question: `No news on "${k.goal}" since ${since2}${k.waitingOn ? `; waiting on ${k.waitingOn.who}` : ""}. Answer "${wf.code}: nudge them" for a drafted follow-up, "wait ${wf.code}: 3d", or "close ${wf.code}".`
   });
 }
 function wait(wf, days2) {
@@ -48547,42 +48591,42 @@ function itemRows(store2, codes, wfs = store2.workflows()) {
   for (const w of wfs) if (w.code && want.has(w.code)) out[w.code] = itemRow2(store2, w) ?? { code: w.code, kind: "closed", who: who(w.asker?.name), sentence: `${w.asker?.name ?? "Someone"}: ${htmlToText(w.status.replace(/: ".*$/s, ""))}`, by: "", at: w.updatedAt, teams: teamsOf(w) };
   return out;
 }
-function doneRows(store2, since, workflows = store2.workflows()) {
+function doneRows(store2, since2, workflows = store2.workflows()) {
   const rows = [], listed2 = /* @__PURE__ */ new Set();
-  for (const w of workflows.filter((w2) => (w2.state === "done" || w2.state === "open" && w2.sent) && w2.code && (w2.intent !== "none" || w2.fyi) && w2.updatedAt > since && w2.kind !== "tracker")) {
+  for (const w of workflows.filter((w2) => (w2.state === "done" || w2.state === "open" && w2.sent) && w2.code && (w2.intent !== "none" || w2.fyi) && w2.updatedAt > since2 && w2.kind !== "tracker")) {
     const r = itemRow2(store2, w), name = w.asker?.name ?? "Someone";
     if (r) rows.push(r);
     if (w.sent?.msgId) listed2.add(w.sent.msgId);
     for (const e of (w.effects ?? []).filter((e2) => e2.done)) if (!(w.intent === "pr_review" && COMMENT.test(e.action))) rows.push({ code: w.code, kind: "change", who: who(name), sentence: htmlToText(shown(e).line), by: shown(e).system, at: e.done.at, own: true, href: /^https:\/\//.test(e.done?.ref ?? "") ? e.done.ref : void 0 });
   }
   const byCode = new Map(workflows.map((w) => [w.code, w]));
-  for (const e of store2.logs(7).filter((e2) => e2.event === "sent" && String(e2.at) > since && typeof e2.msgId === "string" && !listed2.has(e2.msgId) && !String(e2.approvedBy ?? "").startsWith("automation:"))) {
+  for (const e of store2.logs(7).filter((e2) => e2.event === "sent" && String(e2.at) > since2 && typeof e2.msgId === "string" && !listed2.has(e2.msgId) && !String(e2.approvedBy ?? "").startsWith("automation:"))) {
     const w = byCode.get(String(e.code)), asker = e.asker, name = asker?.name ?? w?.asker?.name ?? "Someone";
     const rule = String(e.approvedBy ?? "").startsWith("rule:") ? String(e.approvedBy).slice(5) : void 0, chat2 = typeof e.chat === "string" ? e.chat : w?.chat.id;
     listed2.add(String(e.msgId));
     rows.push({ code: String(e.code), kind: "reply", who: who(name), sentence: `Replied to ${name}${w?.chat.group ? ` in ${w.chat.name}` : ""}`, by: rule ? `by rule ${rule}` : "by you", at: String(e.at), text: typeof e.text === "string" && !w?.redacted ? htmlToText(e.text) : void 0, said: typeof e.text === "string" && !w?.redacted ? short2(e.text) : void 0, own: !rule, rule, sentId: String(e.msgId), earlier: true, teams: chat2 && (!w?.chat.test || teamsChat(chat2)) ? messageLink(chat2, String(e.msgId)) : void 0 });
   }
-  for (const e of store2.logs(7).filter((e2) => e2.event === "sent" && String(e2.approvedBy ?? "").startsWith("automation:") && String(e2.at) > since)) {
+  for (const e of store2.logs(7).filter((e2) => e2.event === "sent" && String(e2.approvedBy ?? "").startsWith("automation:") && String(e2.at) > since2)) {
     const name = e.asker?.name ?? "someone";
     rows.push({ code: String(e.code), kind: "reminder", who: who(name), sentence: `Reminded ${name}`, said: typeof e.text === "string" ? short2(e.text) : void 0, by: String(e.code), at: String(e.at) });
   }
-  for (const p of store2.proposals().filter((p2) => p2.state === "applied" && p2.from !== "remember" && p2.applied && p2.applied.at > since)) {
+  for (const p of store2.proposals().filter((p2) => p2.state === "applied" && p2.from !== "remember" && p2.applied && p2.applied.at > since2)) {
     const n = p.ops.length, swap = p.ops.find((o) => o.was !== void 0), clip3 = (s3) => ((x) => x.length > 60 ? `${x.slice(0, 59)}\u2026` : x)(short2(s3));
     rows.push({ code: p.code, kind: "learned", who: who(p.source ?? "your chats"), sentence: htmlToText(`Learned ${n} ${n === 1 ? "fact" : "facts"} about ${p.title}, from ${p.source ?? "your chats"}`), gist: swap ? `Replaced: "${clip3(swap.was)}" \u2192 "${clip3(swap.entry.text)}"` : p.ops[0]?.entry.text ? short2(p.ops[0].entry.text) : void 0, by: `say "undo ${p.code}" to take it back`, at: p.applied.at });
   }
   return rows.sort((a, b) => b.at.localeCompare(a.at));
 }
-function tiles(store2, since, needs, done2) {
+function tiles(store2, since2, needs, done2) {
   const replies = done2.filter((r) => r.kind === "reply" || r.kind === "review");
   const people = new Set(replies.map((r) => r.who.name));
   const byRule = replies.filter((r) => r.by.startsWith("by rule")).length;
-  const reviews = store2.jobs().filter((j) => j.intent === "pr_review" && j.result && j.updatedAt > since).length;
-  const effects = store2.workflows().flatMap((w) => (w.effects ?? []).filter((e) => e.done && e.done.at > since));
+  const reviews = store2.jobs().filter((j) => j.intent === "pr_review" && j.result && j.updatedAt > since2).length;
+  const effects = store2.workflows().flatMap((w) => (w.effects ?? []).filter((e) => e.done && e.done.at > since2));
   const count = (re) => effects.filter((e) => re.test(`${e.system} ${e.action}`)).length;
   const tasks = count(TASK2), prs = effects.filter((e) => PR.test(e.action)).length, invites = count(INVITE);
   const comments = effects.filter((e) => COMMENT.test(e.action)).length;
   const reminders = done2.filter((r) => r.kind === "reminder").length;
-  const learned = store2.proposals().filter((p) => p.state === "applied" && p.from !== "remember" && p.applied && p.applied.at > since).reduce((n, p) => n + p.ops.length, 0);
+  const learned = store2.proposals().filter((p) => p.state === "applied" && p.from !== "remember" && p.applied && p.applied.at > since2).reduce((n, p) => n + p.ops.length, 0);
   const t2 = [
     { key: "needs", count: needs, label: needs === 1 ? "needs you" : "need you" },
     { key: "replies", count: people.size, label: people.size === 1 ? "Replied to 1 person" : `Replied to ${people.size} people`, sub: replies.length ? `${replies.length - byRule} by you, ${byRule} by your rules` : void 0 },
@@ -48595,9 +48639,9 @@ function tiles(store2, since, needs, done2) {
   ];
   return t2.filter((x) => x.key === "needs" || x.count > 0);
 }
-function view(store2, since, now = /* @__PURE__ */ new Date(), workflows = store2.workflows()) {
+function view(store2, since2, now = /* @__PURE__ */ new Date(), workflows = store2.workflows()) {
   const cfg = store2.config(), c = store2.control();
-  const from = since ?? new Date(now.getTime() - 864e5).toISOString();
+  const from = since2 ?? new Date(now.getTime() - 864e5).toISOString();
   const wfs = workflows;
   const g = groups(wfs, from);
   const placements = place(snapshot(store2));
@@ -48629,7 +48673,7 @@ function view(store2, since, now = /* @__PURE__ */ new Date(), workflows = store
   const updates = watching.filter((w) => w.update).length;
   return {
     now: now.toISOString(),
-    since,
+    since: since2,
     owner: cfg.owner.name,
     status: { state, autoSend: !!c.autoSend, runs: store2.runsToday(), cap: cfg.dailyRuns ?? 200, reading: readingOf(store2) },
     health,
@@ -49147,11 +49191,11 @@ function resolveEvidence(k, cfg, sources, root = "") {
     return { ...s3, stale: true };
   });
 }
-function inbox2(store2, since) {
+function inbox2(store2, since2) {
   const receipts = store2.takeReceipts();
-  const list2 = renderList(store2.workflows(), /* @__PURE__ */ new Date(), since, store2.health(), { proposals: store2.proposals(), background: bootLines(store2), automations: store2.automations().filter((a) => a.state !== "ended").map((a) => ({ line: describe3(a), state: a.state, next: a.next, code: a.code })), waiting: view(store2, since).waiting });
+  const list2 = renderList(store2.workflows(), /* @__PURE__ */ new Date(), since2, store2.health(), { proposals: store2.proposals(), background: bootLines(store2), automations: store2.automations().filter((a) => a.state !== "ended").map((a) => ({ line: describe3(a), state: a.state, next: a.next, code: a.code })), waiting: view(store2, since2).waiting });
   store2.markShown(store2.workflows());
-  const caught = catchUpLines(store2, since);
+  const caught = catchUpLines(store2, since2);
   const all = caught.length ? `${list2}
 
 ### Catch up
@@ -49162,8 +49206,8 @@ ${receipts.map((r) => `- ${r.text.replace(/\n+/g, " ")}`).join("\n")}
 
 ${all}` : all;
 }
-function catchUpLines(store2, since, max = 8) {
-  const from = since ?? new Date(Date.now() - 864e5).toISOString();
+function catchUpLines(store2, since2, max = 8) {
+  const from = since2 ?? new Date(Date.now() - 864e5).toISOString();
   const ws = store2.workflows().filter((w) => w.state === "done" && w.fyi && w.updatedAt > from).sort((a, b) => Number(b.fyi.weight === "high") - Number(a.fyi.weight === "high") || b.updatedAt.localeCompare(a.updatedAt));
   return [...ws.slice(0, max).map((w) => `- ${w.code} ${w.asker?.name.split(/\s+/)[0] ?? "Someone"}${w.chat.group ? ` \xB7 ${w.chat.name}` : ""}: ${w.fyi.line}`), ...ws.length > max ? [`- and ${ws.length - max} more on the page, under Done \u203A Catch up`] : []];
 }
@@ -49177,10 +49221,10 @@ function bootLines(store2) {
     const active2 = js.filter((j) => j.state === "running" || j.state === "queued");
     if (!active2.length) return [];
     const what = (js[0].label ?? YOURS[js[0].key.replace("bootstrap:", "")] ?? js[0].key).replace(/, part \d+ of \d+$/, "");
-    const since = js.map((j) => j.createdAt).sort()[0];
-    if (js.length === 1) return [{ what: `${active2[0].state === "running" ? "Learning from" : "Waiting to learn from"} ${what}`, since: active2[0].run?.startedAt ?? since }];
+    const since2 = js.map((j) => j.createdAt).sort()[0];
+    if (js.length === 1) return [{ what: `${active2[0].state === "running" ? "Learning from" : "Waiting to learn from"} ${what}`, since: active2[0].run?.startedAt ?? since2 }];
     const reading = active2.filter((j) => j.state === "running").length, done2 = js.length - active2.length;
-    return [{ what: `Learning from ${what}: ${done2} of ${js.length} parts done${reading ? `, ${reading} reading now` : ""}`, since, done: done2, total: js.length }];
+    return [{ what: `Learning from ${what}: ${done2} of ${js.length} parts done${reading ? `, ${reading} reading now` : ""}`, since: since2, done: done2, total: js.length }];
   });
 }
 var knowledgeOf, privateLink, audienceOf, mergeSrc, newest;
@@ -49407,10 +49451,10 @@ async function refreshCatalogs(store2, cfg, now = Date.now(), force = false, via
   };
   const failed = (name, spec, d) => {
     const had = readCatalog(name), key = specKey(spec), at3 = new Date(now).toISOString(), src = serverSource(cfg, name, store2.root);
-    const same2 = had?.error && had.spec === key, fails = (same2 ? had.fails ?? 1 : 0) + 1, since = same2 && had.errorAt ? had.errorAt : at3;
+    const same2 = had?.error && had.spec === key, fails = (same2 ? had.fails ?? 1 : 0) + 1, since2 = same2 && had.errorAt ? had.errorAt : at3;
     const retryAt = new Date(now + RETRY[Math.min(fails, RETRY.length) - 1]).toISOString();
     const { retryNow: _r, fileStamp: _s, ...kept } = had ?? { server: name, hash: "", tools: [], at: "" };
-    writeCatalog({ ...kept, spec: key, error: d.text, cause: d.cause, ...spec.command ? { command: commandOf2(spec, d) } : {}, file: src.file, ...d.cause === "missing" ? { fileStamp: stampOf(src.file) } : {}, errorAt: since, triedAt: at3, fails, retryAt });
+    writeCatalog({ ...kept, spec: key, error: d.text, cause: d.cause, ...spec.command ? { command: commandOf2(spec, d) } : {}, file: src.file, ...d.cause === "missing" ? { fileStamp: stampOf(src.file) } : {}, errorAt: since2, triedAt: at3, fails, retryAt });
     store2.log({ event: "catalog-failed", server: name, error: d.text, cause: d.cause, cached: !!had?.tools.length, fails, ...d.cause === "missing" ? { until: "its config file changes" } : { retryAt } });
   };
   const ask = [];
@@ -49908,7 +49952,7 @@ var init_source_teams = __esm({
           return { msgId: idOf(await post()) };
         } catch (e) {
           if (!(e instanceof LostResponse)) throw e;
-          const want = squashText(words3), since = started2 - 12e4;
+          const want = squashText(words3), since2 = started2 - 12e4;
           let recent = [];
           try {
             if (isThread(chatId)) {
@@ -49918,7 +49962,7 @@ var init_source_teams = __esm({
           } catch (read3) {
             throw new SendUncertain(`${e.message}; reading the chat back failed too (${String(read3).slice(0, 120)})`);
           }
-          const hit = recent.filter((m) => !m.deletedDateTime && Date.parse(m.createdDateTime) >= since && !!want && squashText(m.body?.content ?? "").endsWith(want)).sort((a, b) => newer(a.id, b.id) ? -1 : 1)[0];
+          const hit = recent.filter((m) => !m.deletedDateTime && Date.parse(m.createdDateTime) >= since2 && !!want && squashText(m.body?.content ?? "").endsWith(want)).sort((a, b) => newer(a.id, b.id) ? -1 : 1)[0];
           if (hit) {
             console.warn(`${NAME}: the send's answer was lost; found it in the chat as ${hit.id}.`);
             return { msgId: hit.id };
@@ -50436,10 +50480,10 @@ var init_host = __esm({
         return r === "" || !r.startsWith("..") && !isAbsolute6(r);
       });
     };
-    turnStarted = (log, since) => log.split("\n").some((l) => {
+    turnStarted = (log, since2) => log.split("\n").some((l) => {
       try {
         const e = JSON.parse(l);
-        return (e.type === "assistant.turn_start" || e.type === "tool.execution_start") && Date.parse(e.timestamp ?? "") >= since;
+        return (e.type === "assistant.turn_start" || e.type === "tool.execution_start") && Date.parse(e.timestamp ?? "") >= since2;
       } catch {
         return false;
       }
@@ -50579,20 +50623,20 @@ async function sweep(store2, src, cfg, now = Date.now) {
   if (!s3 || s3.told) return 0;
   const t0 = now();
   if (!s3.cut) try {
-    const cut = store2.chats().startedAt, since = s3.since;
+    const cut = store2.chats().startedAt, since2 = s3.since;
     const skip = (id) => id === src.selfChatId || (cfg.exclude ?? []).includes(id) || offRecord(cfg, id);
     const listed2 = (await src.recentChats()).filter((c) => c.lastAt);
-    const threads = cfg.channels !== false && src.channelThreads ? (await src.channelThreads(store2.threadCache(), since, cfg.channels || [])).list : [];
+    const threads = cfg.channels !== false && src.channelThreads ? (await src.channelThreads(store2.threadCache(), since2, cfg.channels || [])).list : [];
     const chats = /* @__PURE__ */ new Map();
     const add = (c) => {
-      if (t(c.lastAt) > t(since) && t(c.lastAt) <= t(cut) && !skip(c.id) && !chats.has(c.id)) chats.set(c.id, { id: c.id, name: c.name, group: isThread(c.id) || kindOf(c.id) !== "oneOnOne" });
+      if (t(c.lastAt) > t(since2) && t(c.lastAt) <= t(cut) && !skip(c.id) && !chats.has(c.id)) chats.set(c.id, { id: c.id, name: c.name, group: isThread(c.id) || kindOf(c.id) !== "oneOnOne" });
     };
     for (const c of [...listed2, ...threads]) add(c);
-    let reach = since;
+    let reach = since2;
     const oldest = listed2.map((c) => c.lastAt).sort((a, b) => t(a) - t(b))[0];
-    if (listed2.length >= FULL && t(oldest) > t(since)) {
+    if (listed2.length >= FULL && t(oldest) > t(since2)) {
       try {
-        for (const c of await src.awaiting?.(since, oldest) ?? []) if (!chats.has(c.id)) add(isThread(c.id) || kindOf(c.id) !== "oneOnOne" ? { ...c, name: await src.chatName?.(c.id).catch(() => c.name) ?? c.name } : c);
+        for (const c of await src.awaiting?.(since2, oldest) ?? []) if (!chats.has(c.id)) add(isThread(c.id) || kindOf(c.id) !== "oneOnOne" ? { ...c, name: await src.chatName?.(c.id).catch(() => c.name) ?? c.name } : c);
         if (!src.awaiting) reach = oldest;
       } catch (e) {
         reach = oldest;
@@ -51190,10 +51234,10 @@ function stampPlaces(store2, now = Date.now()) {
       const moved = was.section !== section && section === "move";
       if (real || moved) changedAt = at3;
     }
-    const since = !was ? wf.createdAt : was.section === section ? was.since : at3;
+    const since2 = !was ? wf.createdAt : was.section === section ? was.since : at3;
     const cur = store2.workflow(wf.id);
     if (!cur) continue;
-    store2.save({ ...cur, place: { section, rule, since, sig: key }, ...changedAt ? { changedAt } : {} }, false);
+    store2.save({ ...cur, place: { section, rule, since: since2, sig: key }, ...changedAt ? { changedAt } : {} }, false);
     n++;
   }
   if (!first3) store2.saveProbeMark({ ...store2.probeMark(), placedAt: at3 });
@@ -53341,7 +53385,7 @@ function settingsView(store2, experience) {
 }
 var runCache = /* @__PURE__ */ new Map();
 function modelsView(store2, now = Date.now()) {
-  const since = now - 7 * 864e5, day3 = new Date(since - 864e5).toISOString().slice(0, 10);
+  const since2 = now - 7 * 864e5, day3 = new Date(since2 - 864e5).toISOString().slice(0, 10);
   const files2 = store2.logFiles().filter((f) => f.day >= day3).map((f) => f.file);
   for (const f of runCache.keys()) if (!files2.includes(f)) runCache.delete(f);
   const events = files2.flatMap((file4) => {
@@ -53354,7 +53398,7 @@ function modelsView(store2, now = Date.now()) {
     } catch {
       return [];
     }
-  }).filter((e) => Date.parse(String(e.at)) >= since);
+  }).filter((e) => Date.parse(String(e.at)) >= since2);
   const lines = runLines(events), model = store2.config().agent.model, name = model && nameFor(events, model);
   return { set: model ? `Set to: ${model}${name && name !== model ? ` (${name})` : ""}` : "Uses the AI CLI's default", lines: lines.length ? lines : ["Models that ran: not recorded yet."] };
 }
@@ -53594,8 +53638,8 @@ function registerOwner(server, get) {
   });
   server.registerTool("inbox", { description: "Show what needs the owner, what was done while away, and what is running. Show the returned text exactly." }, async () => {
     const store2 = get();
-    const since = store2.lastViewed();
-    const out = inbox2(store2, since);
+    const since2 = store2.lastViewed();
+    const out = inbox2(store2, since2);
     store2.markViewed();
     return text(out);
   });
@@ -54148,7 +54192,7 @@ var owner = external_exports.discriminatedUnion("kind", [
   external_exports.object({ kind: external_exports.literal("others"), text: text2 })
 ]);
 var source2 = external_exports.object({ id: text2, itemId: text2, kind: external_exports.enum(["Knowledge", "In the chat", "Private"]), label: text2, href: optional2, stale: external_exports.boolean().optional(), locked: external_exports.boolean().optional() });
-var why = external_exports.object({ reason: optional2, confidence: optional2, gaps: strings, searched: strings.optional() });
+var why = external_exports.object({ reason: optional2, confidence: optional2, gaps: strings, searched: strings.optional(), waited: optional2 });
 var change = external_exports.object({
   id: text2,
   itemId: text2,
@@ -54564,6 +54608,8 @@ function sinceOf(v) {
 // src/web/react-projection.ts
 init_brand();
 init_catalog();
+init_policy();
+init_autosend();
 init_intake();
 init_page_approval();
 init_effects();
@@ -54627,8 +54673,8 @@ function reactProjection(store2, query = "", visit2) {
   const stored = snapshot(store2);
   const facts = { ...stored, workflows: stored.workflows.map((workflow) => currentDraft(workflow, workflow.job ? stored.jobs.get(workflow.job) : void 0) === workflow.draft ? workflow : { ...workflow, draft: void 0 }) };
   const placed = place(facts), placementOf = new Map(placed.map((placement2) => [placement2.code, placement2])), cfg = store2.config();
-  const since = visit2 ? visit2.since : store2.lastViewed();
-  const base = view(store2, since, new Date(facts.now), facts.workflows), next2 = nextView(store2, facts.now, { snapshot: facts, allCatchup: true }), entities = emptyEntities();
+  const since2 = visit2 ? visit2.since : store2.lastViewed();
+  const base = view(store2, since2, new Date(facts.now), facts.workflows), next2 = nextView(store2, facts.now, { snapshot: facts, allCatchup: true }), entities = emptyEntities();
   const bindings = /* @__PURE__ */ new Map(), workflows = facts.workflows, byCode = new Map(workflows.map((w) => [w.code, w]));
   const expectations = /* @__PURE__ */ new Map();
   const managementRevisions = /* @__PURE__ */ new Map();
@@ -54747,7 +54793,9 @@ ${code} stays ${byCode.get(code)?.state === "done" ? "done" : "open"}. Nothing i
     }, form ? "watch" : void 0, prefix, rev);
   }
   const stoppedCodes = new Set(next2.move.filter((row) => row.kind === "stopped").map((row) => row.act));
-  const recoveryCodes = /* @__PURE__ */ new Set([...stoppedCodes, ...workflows.filter((workflow) => workflow.state === "needs_human" && workflow.job && facts.jobs.get(workflow.job)?.state === "failed").map((workflow) => workflow.code)]);
+  const staleFailure = (workflow, failedAt) => !!workflow.draft && !!failedAt && Date.parse(workflow.revAt ?? "") > Date.parse(failedAt);
+  const ownerRules = store2.rules();
+  const recoveryCodes = /* @__PURE__ */ new Set([...stoppedCodes, ...workflows.filter((workflow) => workflow.state === "needs_human" && workflow.job && facts.jobs.get(workflow.job)?.state === "failed" && !staleFailure(workflow, facts.jobs.get(workflow.job)?.updatedAt)).map((workflow) => workflow.code)]);
   const editable = /* @__PURE__ */ new Set([...workflows.filter((workflow) => workflow.state === "needs_human").map((workflow) => workflow.code), ...stoppedCodes]);
   for (const wf of workflows) {
     const c = readyCards.get(wf.code) ?? card(store2, wf, knowledge2), id = c.code, rev = presentationRev(wf, cfg);
@@ -54889,6 +54937,7 @@ ${code} stays ${byCode.get(code)?.state === "done" ? "done" : "open"}. Nothing i
     const stopped = wf.state === "waiting_on_task" && (!job || job.state === "failed" || job.state === "done");
     const replyChanged = wf.state === "needs_human" && wf.status === PAGE_REPLY_CHANGED;
     const notSent = !replyChanged && wf.state === "needs_human" && (!!draft2 && /^(?:Not sent: |Not sure it was sent)/.test(wf.status) || /^Could not start: /.test(wf.status));
+    const waited = draft2 && wf.state === "needs_human" && !wf.sent ? whyWaited(wf, ownerRules, policyContext(store2, cfg, wf)).map(pageText) : [];
     entities.items[id] = {
       ...rest2,
       rev,
@@ -54903,7 +54952,7 @@ ${code} stays ${byCode.get(code)?.state === "done" ? "done" : "open"}. Nothing i
       actionIds,
       askAt: asksAt.get(id),
       status: pageText(c.status),
-      attention: replyChanged ? PAGE_REPLY_CHANGED : agentWait ?? (wf.runFailed && !draft2 ? void 0 : notSent ? pageText(wf.status) : recovery || stopped || c.draft?.holding ? pageText(job?.error ?? wf.status) || "The previous run could not finish. Use the available action, ask a question or review the visible holding reply." : !draft2 && job?.state === "done" && job.result && !job.result.reply && wf.status.endsWith(job.result.summary) ? pageText(job.result.summary) : void 0),
+      attention: replyChanged ? PAGE_REPLY_CHANGED : agentWait ?? (wf.runFailed && !draft2 ? void 0 : notSent ? pageText(wf.status) : recovery || stopped || c.draft?.holding ? pageText((recovery ? job?.error : void 0) ?? wf.status) || "The previous run could not finish. Use the available action, ask a question or review the visible holding reply." : !draft2 && job?.state === "done" && job.result && !job.result.reply && wf.status.endsWith(job.result.summary) ? pageText(job.result.summary) : void 0),
       attentionKind: replyChanged ? "reply-changed" : agentWait ? "agent-setup" : wf.runFailed && !draft2 || recovery || stopped || c.draft?.holding ? "run-failed" : void 0,
       // A job's failure also carries the routes it tried, the PR to review by hand, and whether some read tools are off (#17 b).
       runFailed: wf.runFailed && !draft2 ? { at: wf.runFailed.at, why: pageText(wf.runFailed.why), ...wf.runFailed.tried?.length ? { tried: wf.runFailed.tried.map(pageText) } : {}, ...wf.runFailed.job && wf.intent === "pr_review" ? /* @__PURE__ */ ((u) => u ? { review: u } : {})(safeLink(prOf(store2, wf)?.url)) : {}, ...wf.runFailed.job && (cfg.agent.toolsTrimmed || cfg.agent.deny?.length) ? { toolsOff: true } : {} } : void 0,
@@ -54914,7 +54963,7 @@ ${code} stays ${byCode.get(code)?.state === "done" ? "done" : "open"}. Nothing i
       sourceIds: sources(id, id, why2.sources),
       noteIds,
       primaryActionId: recovery ? `${id}/answer` : ["try-again", "review-again", "approve-again", ...c.choices && !draft2?.preview ? ["pick"] : [], "approve", "answer", ...c.ownReply ? [] : ["reopen"]].map((kind) => `${id}/${kind}`).find((key) => actionIds.includes(key)),
-      why: { reason: why2.reason, confidence: why2.confidence, gaps: why2.gaps, searched: why2.searched },
+      why: { reason: why2.reason, confidence: why2.confidence, gaps: why2.gaps, searched: why2.searched, ...waited.length ? { waited: `Why it waited: ${waited.join("; ")}.` } : {} },
       teams: safeLink(c.teams)
     };
   }
@@ -55540,6 +55589,8 @@ function pageDelta(before, after, base) {
 }
 
 // src/web/server.ts
+var SLOW_MS = 1e3;
+var BEAT_MS2 = 500;
 function actOutcome(store2, ids, code) {
   const said2 = ids.map((id) => store2.outcome(id));
   const v = view(store2, store2.lastViewed());
@@ -55606,6 +55657,17 @@ function serveInbox(get, port = 0, token = randomBytes3(16).toString("hex"), pro
   let reactVisit;
   const reactPages = /* @__PURE__ */ new Map();
   const server = createServer2((req, res) => {
+    const t0 = performance.now(), before = { ...fsTime };
+    let jsonMs = 0;
+    res.on("finish", () => {
+      const ms = performance.now() - t0;
+      if (ms < SLOW_MS) return;
+      const d = (k) => Math.round(fsTime[k] - before[k]), spent = d("lock") + d("read") + d("write") + d("wait") + Math.round(jsonMs);
+      try {
+        get().log({ event: "page-slow", route: `${req.method} ${(req.url ?? "").split("?")[0]}`, status: res.statusCode, ms: Math.round(ms), lockMs: d("lock"), readMs: d("read"), reads: d("reads"), writeMs: d("write"), writes: d("writes"), waitMs: d("wait"), jsonMs: Math.round(jsonMs), buildMs: Math.max(0, Math.round(ms) - spent) });
+      } catch {
+      }
+    });
     const u = new URL(req.url ?? "/", "http://127.0.0.1");
     const host = req.headers.host ?? "";
     if (u.searchParams.get("t") !== token || !/^(127\.0\.0\.1|localhost):\d+$/.test(host)) {
@@ -55614,7 +55676,11 @@ function serveInbox(get, port = 0, token = randomBytes3(16).toString("hex"), pro
     }
     const headers = { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'" };
     if (u.pathname.startsWith("/api/v1/")) {
-      const json2 = (status3, body, extra = {}) => res.writeHead(status3, { "content-type": "application/json", "cache-control": "no-store", ...extra }).end(JSON.stringify(body));
+      const json2 = (status3, body, extra = {}) => {
+        const t2 = performance.now(), text3 = JSON.stringify(body);
+        jsonMs += performance.now() - t2;
+        res.writeHead(status3, { "content-type": "application/json", "cache-control": "no-store", ...extra }).end(text3);
+      };
       const failure2 = (error62) => {
         if (error62 instanceof IntentError) json2(error62.status, { text: error62.message });
         else {
@@ -55880,6 +55946,16 @@ function serveInbox(get, port = 0, token = randomBytes3(16).toString("hex"), pro
     }
     res.writeHead(404).end();
   });
+  let beat = performance.now();
+  const stall = setInterval(() => {
+    const now = performance.now(), late2 = now - beat - BEAT_MS2;
+    beat = now;
+    if (late2 >= SLOW_MS) try {
+      get().log({ event: "page-stall", ms: Math.round(late2) });
+    } catch {
+    }
+  }, BEAT_MS2).unref();
+  server.on("close", () => clearInterval(stall));
   return new Promise((resolve9) => server.listen(port, "127.0.0.1", () => {
     const a = server.address();
     resolve9({ url: `http://127.0.0.1:${typeof a === "object" && a ? a.port : port}/?t=${token}`, server });
@@ -56929,9 +57005,9 @@ async function main() {
     }
     case "inbox": {
       const s3 = store();
-      const since = s3.lastViewed();
+      const since2 = s3.lastViewed();
       s3.markViewed();
-      return console.log(inbox2(s3, since));
+      return console.log(inbox2(s3, since2));
     }
     case "act":
       return console.log(act(store(), args.join(" ")));

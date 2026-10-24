@@ -11,6 +11,8 @@ import { freshOf, rowMark } from './model/derive.ts'
 import { NAME } from '../brand.ts'
 import { toolServerKey, toolsView } from './settings.ts'
 import { ignoreServer, retryServer } from '../runner/catalog.ts'
+import { whyWaited } from '../core/policy.ts'
+import { policyContext } from '../runner/autosend.ts'
 import { isPersona } from '../core/intake.ts'
 import { PAGE_REPLY_CHANGED, automationApprovalRev, pageChangeId, pageDigest, pageOptionId, proposalApprovalRev, workflowApprovalRev } from '../core/page-approval.ts'
 import type { Config, PageApproval, Workflow } from '../core/types.ts'
@@ -172,7 +174,10 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 		}, form ? 'watch' : undefined, prefix, rev)
 	}
 	const stoppedCodes = new Set(next.move.filter(row => row.kind === 'stopped').map(row => row.act))
-	const recoveryCodes = new Set([...stoppedCodes, ...workflows.filter(workflow => workflow.state === 'needs_human' && workflow.job && facts.jobs.get(workflow.job)?.state === 'failed').map(workflow => workflow.code)])
+	// A failed job puts its item in recovery (answer first) only until a newer run drafted a reply: then the draft is sent as on any card (#33).
+	const staleFailure = (workflow: Workflow, failedAt?: string) => !!workflow.draft && !!failedAt && Date.parse(workflow.revAt ?? '') > Date.parse(failedAt)
+	const ownerRules = store.rules()
+	const recoveryCodes = new Set([...stoppedCodes, ...workflows.filter(workflow => workflow.state === 'needs_human' && workflow.job && facts.jobs.get(workflow.job)?.state === 'failed' && !staleFailure(workflow, facts.jobs.get(workflow.job)?.updatedAt)).map(workflow => workflow.code)])
 	const editable = new Set([...workflows.filter(workflow => workflow.state === 'needs_human').map(workflow => workflow.code), ...stoppedCodes])
 	for (const wf of workflows) {
 		const c = readyCards.get(wf.code) ?? card(store, wf, knowledge), id = c.code, rev = presentationRev(wf, cfg)
@@ -297,11 +302,13 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 		const replyChanged = wf.state === 'needs_human' && wf.status === PAGE_REPLY_CHANGED
 		// A send the engine refused (owner words claiming an approval the PR does not show, an unverifiable PR) says why on the card (bug 10-23 E35).
 		const notSent = !replyChanged && wf.state === 'needs_human' && (!!draft && /^(?:Not sent: |Not sure it was sent)/.test(wf.status) || /^Could not start: /.test(wf.status))
+		// Why a waiting draft didn't go out by itself, from the rules and checks that would have sent it (#33).
+		const waited = draft && wf.state === 'needs_human' && !wf.sent ? whyWaited(wf, ownerRules, policyContext(store, cfg, wf)).map(pageText) : []
 		entities.items[id] = {
 			...rest, rev, id, personId, chatId, draftId, changeIds, effectIds, todoIds, workId, actionIds,
 			askAt: asksAt.get(id),
 			status: pageText(c.status),
-			attention: replyChanged ? PAGE_REPLY_CHANGED : agentWait ?? (wf.runFailed && !draft ? undefined : notSent ? pageText(wf.status) : recovery || stopped || c.draft?.holding ? pageText(job?.error ?? wf.status) || 'The previous run could not finish. Use the available action, ask a question or review the visible holding reply.' : !draft && job?.state === 'done' && job.result && !job.result.reply && wf.status.endsWith(job.result.summary) ? pageText(job.result.summary) : undefined),
+			attention: replyChanged ? PAGE_REPLY_CHANGED : agentWait ?? (wf.runFailed && !draft ? undefined : notSent ? pageText(wf.status) : recovery || stopped || c.draft?.holding ? pageText((recovery ? job?.error : undefined) ?? wf.status) || 'The previous run could not finish. Use the available action, ask a question or review the visible holding reply.' : !draft && job?.state === 'done' && job.result && !job.result.reply && wf.status.endsWith(job.result.summary) ? pageText(job.result.summary) : undefined),
 			attentionKind: replyChanged ? 'reply-changed' : agentWait ? 'agent-setup' : wf.runFailed && !draft || recovery || stopped || c.draft?.holding ? 'run-failed' : undefined,
 			// A job's failure also carries the routes it tried, the PR to review by hand, and whether some read tools are off (#17 b).
 			runFailed: wf.runFailed && !draft ? { at: wf.runFailed.at, why: pageText(wf.runFailed.why), ...(wf.runFailed.tried?.length ? { tried: wf.runFailed.tried.map(pageText) } : {}), ...(wf.runFailed.job && wf.intent === 'pr_review' ? (u => (u ? { review: u } : {}))(safeLink(prOf(store, wf)?.url)) : {}), ...(wf.runFailed.job && (cfg.agent.toolsTrimmed || cfg.agent.deny?.length) ? { toolsOff: true } : {}) } : undefined,
@@ -311,7 +318,7 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 			choices: c.choices && { ...c.choices, prompt: forPage(c.choices.prompt), options: c.choices.options.map(option => ({ ...option, id: pageOptionId(option) })) },
 			sourceIds: sources(id, id, why.sources), noteIds,
 			primaryActionId: recovery ? `${id}/answer` : ['try-again', 'review-again', 'approve-again', ...(c.choices && !draft?.preview ? ['pick'] : []), 'approve', 'answer', ...(c.ownReply ? [] : ['reopen'])].map(kind => `${id}/${kind}`).find(key => actionIds.includes(key)),
-			why: { reason: why.reason, confidence: why.confidence, gaps: why.gaps, searched: why.searched }, teams: safeLink(c.teams),
+			why: { reason: why.reason, confidence: why.confidence, gaps: why.gaps, searched: why.searched, ...(waited.length ? { waited: `Why it waited: ${waited.join('; ')}.` } : {}) }, teams: safeLink(c.teams),
 		}
 	}
 	// Spec S3: the sections say whose move it is, Delegate's queued rows say Delegate does them, and a group message is "Posted to everyone".
