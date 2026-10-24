@@ -4,6 +4,7 @@ import { createInterface } from 'node:readline'
 import { TELEMETRY_CATALOG, telemetryError, telemetryPrivacy } from '../core/telemetry.ts'
 import { scrubDeep } from '../core/secrets.ts'
 import { CMD } from '../brand.ts'
+import { isCode } from '../core/ids.ts'
 
 type Entry = Record<string, unknown>
 type Row = { entry: Entry; source: 'state' | 'host' | 'report' }
@@ -16,16 +17,24 @@ const legacy = ['code', 'workflowId', 'job', 'jobId', 'sessionId', 'submissionId
 	'tool', 'ms', 'ok', 'exitCode', 'via', 'warm', 'fallback', 'direct', 'purpose', 'intent', 'calls', 'inputTokens',
 	'outputTokens', 'tokensIn', 'tokensOut', 'modelCalls', 'modelMs', 'toolCalls', 'toolMs', 'startMs',
 	'effects', 'hasReply', 'findingCount', 'todoCount', 'blocked', 'error']
-const links = (e: Entry): string[] => [
-	...(identifier(e.trace) ? [`trace:${e.trace}`] : []),
-	...(identifier(e.runId) ? [`run:${e.runId}`] : []),
-	...(identifier(e.submissionId) ? [`submission:${e.submissionId}`] : []),
-	...(identifier(e.trace) && e.trace.includes(':') ? [`submission:${e.trace.slice(e.trace.indexOf(':') + 1)}`] : []),
-]
+function itemTrace(value: unknown) {
+	if (!identifier(value)) return undefined
+	const split = value.indexOf(':'), code = value.slice(0, split), submission = value.slice(split + 1)
+	return split > 0 && isCode(code.toUpperCase()) && identifier(submission) ? { code, submission } : undefined
+}
+function links(e: Entry): string[] {
+	const trace = itemTrace(e.trace)
+	return [
+		...(trace ? [`trace:${e.trace}`, `submission:${trace.submission}`] : []),
+		...(identifier(e.runId) ? [`run:${e.runId}`] : []),
+		...(identifier(e.submissionId) ? [`submission:${e.submissionId}`] : []),
+	]
+}
 function matches(e: Entry, selector: string) {
 	const codeMatches = (value: unknown) => typeof value === 'string' && value.toUpperCase() === selector.toUpperCase()
+	const trace = itemTrace(e.trace)
 	return e.trace === selector || e.runId === selector || e.submissionId === selector ||
-		codeMatches(e.code) || typeof e.trace === 'string' && (codeMatches(e.trace.split(':')[0]) || e.trace.slice(e.trace.indexOf(':') + 1) === selector)
+		codeMatches(e.code) || !!trace && (codeMatches(trace.code) || trace.submission === selector)
 }
 function metadata(e: Entry): Entry {
 	const event = String(e.event), definition = Object.hasOwn(TELEMETRY_CATALOG, event) ? TELEMETRY_CATALOG[event as keyof typeof TELEMETRY_CATALOG] : undefined

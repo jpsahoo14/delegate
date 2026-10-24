@@ -65,6 +65,7 @@ function Watch({ watch, actions }: { watch: Entities['watches'][string]; actions
 
 export default function Ongoing() {
 	const [opened, setOpened] = useState<Record<string, boolean>>({})
+	const [cards, setCards] = useState<Record<string, boolean>>({})
 	const snapshot = useSnapshot(), entities = useEntities(), classic = snapshot?.classic
 	if (!classic) return <p role="alert">Classic data is not available. Reload after the app finishes updating.</p>
 	const watches = Object.values(entities.watches), waiting = Object.values(entities.waiting), channels = Object.values(entities.channels), automations = Object.values(entities.automations)
@@ -84,10 +85,13 @@ export default function Ongoing() {
 				</div><a href={`#classic/focus/${row.code}`}>Open</a><RowActions actions={actions.filter(action => ['classic-close', 'stop-watch'].includes(action.kind))} />
 			</li>
 		})}</ul></section>}
-		{waiting.length > 0 && <section><h2 className="ongoing-section-title ongoing-first-title">Waiting on others</h2><p className="ongoing-description">No answer for a day. Follow up drafts a short nudge for you to check first.</p><div className="ongoing-grid">{waiting.map(row => {
-			const actions = actionsOf(row.actionIds)
-			return <article className="ongoing-card" key={row.id} data-classic-waiting={row.code} aria-labelledby={`waiting-${row.code}`}><div className="ongoing-card-head"><span className="ongoing-icon"><Icon name="clock" /></span><div className="ongoing-text"><h3 id={`waiting-${row.code}`}>You asked {row.to}</h3>			<span className="ongoing-meta">{row.chat} · <SentTime at={row.at} code={row.code} />{row.link && <> · <a href={row.link} target="_blank" rel="noopener noreferrer">Open in Teams</a></>}			</span></div><CodeHint code={row.code} /></div>
-				<MessageBubble text={row.text} teams={row.link} open={!!opened[row.code]} onToggle={value => setOpened(previous => ({ ...previous, [row.code]: value }))} /><RowActions actions={actions.map(action => action.kind === 'follow-up' ? { ...action, label: 'Follow up' } : action)} primary="follow-up" /><RowState actions={actions} />
+		{waiting.length > 0 && <section><h2 className="ongoing-section-title ongoing-first-title">Waiting on others</h2><p className="ongoing-description">No answer for a day. Open one to draft a follow-up for you to check first.</p><div className="ongoing-grid">{waiting.map(row => {
+			const actions = actionsOf(row.actionIds), open = !!cards[row.code]
+			// A206 (R11(3)): no action buttons on the row; it opens its card in place, where the follow-up only drafts and Stop waiting ends it.
+			const toggle = (event: { target: EventTarget }) => { if (!(event.target instanceof Element && event.target.closest('a, button'))) setCards(previous => ({ ...previous, [row.code]: !open })) }
+			return <article className="ongoing-card" key={row.id} data-classic-waiting={row.code} aria-labelledby={`waiting-${row.code}`}><div className="ongoing-card-head ongoing-card-open" tabIndex={0} aria-expanded={open} title="Open" onClick={toggle} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); toggle(event) } }}><span className="ongoing-icon"><Icon name="clock" /></span><div className="ongoing-text"><h3 id={`waiting-${row.code}`}>You asked {row.to}</h3>			<span className="ongoing-meta">{row.chat} · <SentTime at={row.at} code={row.code} />{row.link && <> · <a href={row.link} target="_blank" rel="noopener noreferrer">Open in Teams</a></>}			</span></div><CodeHint code={row.code} /><span className="row-chevron" aria-hidden="true">{open ? '⌄' : '›'}</span></div>
+				<MessageBubble text={row.text} teams={row.link} open={!!opened[row.code]} onToggle={value => setOpened(previous => ({ ...previous, [row.code]: value }))} />
+				{open && <div className="ongoing-waiting-card"><p className="ongoing-meta">No reply from {row.to.split(/,\s*/)[0]?.split(/\s+/)[0] || 'them'} yet</p><RowActions actions={actions} primary="follow-up" /></div>}<RowState actions={actions} />
 			</article>
 		})}</div></section>}
 		{updates.length > 0 && <section><h2 className="ongoing-section-title ongoing-first-title">{updates.length} update{updates.length === 1 ? '' : 's'}</h2><div className="ongoing-grid">{updates.map(watch => <Watch key={watch.id} watch={watch} actions={actionsOf(classic.watchActionIds[watch.code] ?? watch.actionIds)} />)}</div></section>}

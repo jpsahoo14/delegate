@@ -176,7 +176,8 @@ function nextSteps(w: Workflow): Pick<ItemCard, 'replyOnly' | 'reviewAgain'> {
 		// Never while a question is open: every ok is refused then (a stale vote after a change run, a refusedAsk; review chui P2-1).
 		// Nor on a draft with a blank, which every ok refuses too (re-review N4).
 		...(left.length && w.draft?.text && !/_{3,}/.test(w.draft.text) && !w.sent && !w.question && (failed || dropped) ? { replyOnly: `ok ${w.code} except ${left.map((_, i) => i + 1).join(' ')}` } : {}),
-		...(asksReviewAgain(w.code, w.question) ? { reviewAgain: reviewAgainCmd(w.code) } : {}),
+		// P0-10 (A R27): a head that moved during the review sets wf.reviewAgain with no question; it offers Review again too.
+		...(asksReviewAgain(w.code, w.question) || w.reviewAgain ? { reviewAgain: reviewAgainCmd(w.code) } : {}),
 	}
 }
 

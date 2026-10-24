@@ -1192,6 +1192,10 @@ var init_effects = __esm({
 });
 
 // src/core/share.ts
+function shareChatName(name) {
+  const value = name?.trim();
+  return value && value !== "another chat" && !/^\d+:\S+$/.test(value) && value.replace(CHAT_ID, "another chat") === value ? value : void 0;
+}
 function recordOfLink(link2) {
   const incident = /^https:\/\/[^/\s]+\/.*?\bincidents?\/(?:details\/)?(\d{5,})/i.exec(link2);
   if (incident) return { id: `inc:${incident[1]}`, label: `Incident ${incident[1]}` };
@@ -1215,31 +1219,33 @@ function incidentAudience(r) {
 }
 function shareHoldText(h) {
   if (!h) return void 0;
-  if (typeof h === "string") return `Waiting for you: ${h.replace(/^./, (c) => c.toLowerCase()).replace(/[.\s]+$/, "")}.`;
-  const chat2 = h.chat ?? "another chat";
+  if (typeof h === "string") return `Waiting for you: ${h.replace(CHAT_ID, "another chat").replace(/^./, (c) => c.toLowerCase()).replace(/[.\s]+$/, "")}.`;
+  const name = shareChatName(h.chat), chat2 = name ?? "another chat";
+  const record3 = h.record?.replace(CHAT_ID, "another chat"), who2 = h.who?.replace(CHAT_ID, "another chat");
   switch (h.kind) {
     case "marked":
       return `Waiting for you: it uses ${chat2}, which you marked ${h.level === "off" ? "off the record" : "private"}.`;
     case "guest":
-      return `Waiting for you: this chat has ${h.who ? `a guest (${h.who})` : "a guest or someone from outside your org"}, and the reply uses ${h.record ?? chat2}.`;
+      return `Waiting for you: this chat has ${who2 ? `a guest (${who2})` : "a guest or someone from outside your org"}, and the reply uses ${record3 ?? chat2}.`;
     case "restricted":
-      return `Waiting for you: ${h.record ?? "a record it used"} is ${h.who ?? "restricted"}.`;
+      return `Waiting for you: ${record3 ?? "a record it used"} is ${who2 ?? "restricted"}.`;
     case "unread":
-      return `Waiting for you: it cites ${h.record ?? "a record"} without having read it.`;
+      return `Waiting for you: it cites ${record3 ?? "a record"} without having read it.`;
     case "conversation":
-      return `Waiting for you: it uses ${chat2}, and ${h.who ? `${h.who} ${/ and /.test(h.who) ? "aren't" : "isn't"} in it` : "not everyone here is in it"}.`;
+      return name ? `Waiting for you: uses something from ${chat2}, and ${who2 ? `${who2} ${/ and /.test(who2) ? "aren't" : "isn't"} in it` : "not everyone here is in it"}.` : "Waiting for you: uses something from another chat you're in, and not everyone here is.";
     case "customer":
-      return `Waiting for you: it names the customer from ${h.record ?? "a record"}.`;
+      return `Waiting for you: it names the customer from ${record3 ?? "a record"}.`;
     case "members":
       return `Waiting for you: it uses ${chat2}, and I couldn't check who is in each chat.`;
     case "reads":
       return "Waiting for you: it searched your chats and I couldn't tell which ones it read.";
   }
 }
-var GUID, EMAIL, customerDetails;
+var CHAT_ID, GUID, EMAIL, customerDetails;
 var init_share = __esm({
   "src/core/share.ts"() {
     "use strict";
+    CHAT_ID = /\b\d+:[^\s@]+@(?:thread\.(?:v2|tacv2|skype)|unq\.gbl\.spaces)\b/gi;
     GUID = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
     EMAIL = /\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b/g;
     customerDetails = (text4) => [...new Set([...text4.match(GUID) ?? [], ...text4.match(EMAIL) ?? []].map((s3) => s3.toLowerCase()))];
@@ -1281,19 +1287,23 @@ function confidence(sources) {
 }
 function matches(r, wf, conf) {
   if (r.off) return false;
-  const who2 = !!wf.asker && !!r.who.accounts?.some((a) => a.id === wf.asker.id);
+  const who2 = !!wf.asker && (!!r.who.accounts?.some((a) => a.id === wf.asker.id) || r.then === "review" && !r.who.accounts?.length && r.who.group === "org" && wf.chat.guests === false);
   if (!who2) return false;
   if (r.when.intent && r.when.intent !== wf.intent) return false;
   if (r.when.chat === "direct") {
     if (wf.chat.group || wf.chat.test || wf.chat.id.startsWith("ch|")) return false;
   } else if (r.when.chat && r.when.chat !== wf.chat.id) return false;
-  return !r.when.minConfidence || RANK[conf] >= RANK[r.when.minConfidence];
+  if (r.when.reviewerGroup && !wf.prGroups?.some((g) => groupName(g) === groupName(r.when.reviewerGroup))) return false;
+  return r.then === "review" || !r.when.minConfidence || RANK[conf] >= RANK[r.when.minConfidence];
 }
-function decide(wf, rules, ctx) {
+function decide(wf, rules, ctx, mode = "reply") {
   const conf = confidence(wf.draft?.sources ?? []);
-  const rule = rules.find((r) => !r.style && matches(r, wf, conf));
+  const review = reviewRuleFor(wf, rules);
+  const rule = review ?? rules.find((r) => !r.style && matches(r, wf, conf));
+  const reviewReply = !!review && !!wf.reviewBasis && wf.reviewBasis.pr === wf.reviewRun?.pr && sameHead(wf.reviewBasis.head, wf.reviewRun.head) && wf.reviewRun.rule === review.id && (mode === "review-comments" ? wf.reviewRun.phase === "posting" : wf.reviewRun.phase === "held" && wf.reviewRun.turn === wf.revAt && wf.reviewRun.sendText === wf.draft?.text && wf.reviewDone?.byRule === review.id && (wf.reviewDone.posted.length > 0 || wf.reviewDone.clean === true));
   const d = (action2, reason) => ({ action: action2, ruleId: rule?.id, reason, confidence: conf });
   if (replyGap(wf.draft?.text)) return d("draft", REPLY_BLANK);
+  if (ctx.paused) return d("draft", "Paused or stopped");
   if (wf.before) return d("draft", "It came before setup; replies to older messages wait for you");
   if (wf.draft?.holding) return d("draft", "A holding reply: the work is not finished, so it waits for you");
   if (ctx.never?.some((p) => p.id === wf.asker?.id)) return d("draft", "This person never gets automatic replies");
@@ -1303,8 +1313,9 @@ function decide(wf, rules, ctx) {
   if (wf.startedBy === "room") return d("draft", "It was sent to the whole chat; a reply there waits for you");
   if (wf.work || wf.partOf) return d("draft", "Replies on open work always wait for you");
   if (wf.shareHold) return d("draft", shareHoldText(wf.shareHold));
-  if (pendingEffects(wf.effects).length || wf.todos?.length || wf.follow) return d("draft", "It promises changes, a follow-up, or something you must do");
-  if (wf.intent === "pr_review") return d("draft", "Pull request review replies always wait for you");
+  if (!reviewReply && pendingEffects(wf.effects).length || wf.todos?.length || wf.follow) return d("draft", "It promises changes, a follow-up, or something you must do");
+  if (wf.intent === "pr_review" && !review) return d("draft", "PR reviews wait for you; no review rule covers this.");
+  if (review && wf.reviewRun?.phase === "replied") return d("draft", "The review reply was sent; approving stays yours.");
   if (voteMention(wf.draft?.text ?? "")) return d("draft", "It speaks of an approval or a vote, so it waits for you");
   if (!rule) return d("draft", "No rule covers this sender and ask");
   if (ctx.held?.includes(rule.id)) return d("draft", `Rule ${rule.id} is on hold: you said one of its replies was not needed`);
@@ -1312,16 +1323,25 @@ function decide(wf, rules, ctx) {
   if (rule.then === "draft") return d("draft", `Rule ${rule.id}: always draft`);
   if (rule.then === "shortcut") return d("draft", `Rule ${rule.id}: shortcut actions arrive later`);
   if (!ctx.autoSend) return d("draft", "Auto-send is off");
-  if (ctx.autoSendsThisHour >= ctx.maxPerHour) return d("draft", `Already ${ctx.maxPerHour} automatic replies in this chat this hour`);
+  const cap2 = review ? Math.min(ctx.maxPerHour, DEFAULT_POLICY.maxAutoPerChatHour) : ctx.maxPerHour;
+  if (ctx.autoSendsThisHour >= cap2) return d("draft", `Already ${cap2} automatic replies in this chat this hour`);
   if (rule.then === "ack") return d("ack", `Rule ${rule.id}: acknowledge`);
   if (commits(wf)) return d("draft", "It commits you to something");
   if (labeledToGuests(wf)) return d("draft", "It quotes labeled content, and this chat has guests");
   if (wf.gaps?.length) return d("draft", `It could not read ${wf.gaps.join(", ")}`);
   if (wf.draft?.sources.some((s3) => s3.tier === "private")) return d("draft", "It uses a private source");
+  if (review) return reviewReply ? d("send", `Review rule ${review.id}: posted comments and receipt-built reply`) : d("draft", "The review comments must be posted before its rule can send a reply");
   if (conf === "low") return d("draft", "Not enough evidence to send on its own");
   return d("send", `Rule ${rule.id}, confidence ${conf}`);
 }
 function whyWaited(wf, rules, ctx) {
+  if (wf.intent === "pr_review") {
+    const review = reviewRuleFor(wf, rules);
+    const off = !review && reviewRuleFor(wf, rules.map((r) => ({ ...r, off: void 0 })));
+    if (!review) return [off ? `Your PR review rule ${off.id} is off.` : "PR reviews wait for you; no review rule covers this."];
+    const decision = decide(wf, rules, ctx);
+    return decision.action === "send" ? [] : [decision.reason];
+  }
   const conf = confidence(wf.draft?.sources ?? []);
   const first3 = wf.asker?.name?.split(/\s+/)[0] || "this person";
   const auto = rules.filter((r) => !r.off && !r.style && r.then !== "ignore");
@@ -1334,12 +1354,16 @@ function whyWaited(wf, rules, ctx) {
   if (rule && !ruleLine) return gate ? [`your rule for ${first3} would have sent it, but ${gate}`] : [];
   return [ruleLine, gate].filter((s3) => !!s3);
 }
-function withMarker(text4, marker, ownerName) {
+function withMarker(text4, marker, ownerName, required2 = true) {
   const line3 = marker.replace("{first}", ownerName.split(/\s+/)[0]);
-  const body = text4.trimEnd().toLowerCase().endsWith(line3.toLowerCase()) ? text4.trimEnd().slice(0, -line3.length).trimEnd() : text4;
-  return `${body}
+  let body = text4.trimEnd(), marked = false;
+  while (line3.length && body.toLowerCase().endsWith(line3.toLowerCase())) {
+    body = body.slice(0, -line3.length).trimEnd();
+    marked = true;
+  }
+  return required2 || marked ? `${body}
 
-${line3}`;
+${line3}` : text4;
 }
 function inQuietHours(now, quiet = { from: "20:00", to: "08:00" }) {
   const m = now.getHours() * 60 + now.getMinutes();
@@ -1349,7 +1373,7 @@ function inQuietHours(now, quiet = { from: "20:00", to: "08:00" }) {
   });
   return f <= t2 ? m >= f && m < t2 : m >= f || m < t2;
 }
-var DEFAULT_POLICY, RANK, REPLY_BLANK, reopenable, labeledToGuests, commits, signsApproved, signatureOf, approvedReplyText;
+var DEFAULT_POLICY, RANK, REPLY_BLANK, groupName, reviewRuleFor, reopenable, labeledToGuests, commits, signsApproved, signatureOf, approvedReplyText;
 var init_policy = __esm({
   "src/core/policy.ts"() {
     "use strict";
@@ -1365,12 +1389,14 @@ var init_policy = __esm({
     };
     RANK = { low: 0, medium: 1, high: 2 };
     REPLY_BLANK = "This reply still has a blank: fill it or edit";
+    groupName = (name) => name.split("\\").at(-1).normalize("NFKC").trim().toLowerCase();
+    reviewRuleFor = (wf, rules) => wf.intent === "pr_review" ? rules.find((r) => r.then === "review" && r.review?.comments === "post" && r.review.reply === "send" && !r.style && matches(r, wf, "high")) : void 0;
     reopenable = (wf, verb) => wf.state === "done" && verb === "answer" && wf.kind !== "tracker" && (!wf.sent || !!wf.sent.holding) && !wf.work && !wf.redacted;
     labeledToGuests = (wf) => wf.chat.guests !== false && !!wf.draft?.sources.some((s3) => !!s3.label && !/^(public|general|non-?business)$/i.test(s3.label));
     commits = (wf) => !!wf.draft?.commitment || wf.intent === "commitment_decision";
     signsApproved = (cfg) => cfg.signApproved ?? !!cfg.signature?.trim();
     signatureOf = (cfg) => cfg.signature?.trim() || cfg.policy?.marker || DEFAULT_POLICY.marker;
-    approvedReplyText = (text4, workflow, cfg) => text4 && signsApproved(cfg) && !workflow.learnAfter && !workflow.draft?.byOwner ? withMarker(text4, signatureOf(cfg), cfg.owner.name) : text4;
+    approvedReplyText = (text4, workflow, cfg) => text4 ? withMarker(text4, signatureOf(cfg), cfg.owner.name, signsApproved(cfg) && !workflow.learnAfter && !workflow.draft?.byOwner) : text4;
   }
 });
 
@@ -1563,9 +1589,9 @@ function agentProcessLog(flavor, mcpConfigPath) {
   const folder = agentLogDir(mcpConfigPath);
   if (flavor !== "copilot" || !existsSync3(folder)) return "";
   return readdirSync3(folder).filter((name) => name.endsWith(".log")).map((name) => {
-    const file4 = join4(folder, name), raw = readFileSync4(file4, "utf8"), clean3 = scrub(raw);
-    if (raw !== clean3) writeFileSync3(file4, clean3, { encoding: "utf8", mode: 384 });
-    return clean3.slice(-65536);
+    const file4 = join4(folder, name), raw = readFileSync4(file4, "utf8"), clean4 = scrub(raw);
+    if (raw !== clean4) writeFileSync3(file4, clean4, { encoding: "utf8", mode: 384 });
+    return clean4.slice(-65536);
   }).join("\n");
 }
 function interactiveCommand(cfg, sessionId, prompt, mcpConfigPath) {
@@ -1876,9 +1902,9 @@ function floatSafeRemainder(val, step2) {
     return 0;
   return ratio2 - roundedRatio;
 }
-function defineLazy(object7, key, getter) {
+function defineLazy(object8, key, getter) {
   let value = void 0;
-  Object.defineProperty(object7, key, {
+  Object.defineProperty(object8, key, {
     get() {
       if (value === EVALUATING) {
         return void 0;
@@ -1890,7 +1916,7 @@ function defineLazy(object7, key, getter) {
       return value;
     },
     set(v) {
-      Object.defineProperty(object7, key, {
+      Object.defineProperty(object8, key, {
         value: v
         // configurable: true,
       });
@@ -17504,8 +17530,8 @@ function foldObjects(members2) {
   }
   const properties = {};
   const required2 = /* @__PURE__ */ new Set();
-  for (const object7 of objects) {
-    for (const key in object7.properties) {
+  for (const object8 of objects) {
+    for (const key in object8.properties) {
       if (Object.prototype.hasOwnProperty.call(properties, key))
         continue;
       const parts2 = [];
@@ -17519,18 +17545,18 @@ function foldObjects(members2) {
       const merged = parts2.length === 1 ? parts2[0] : foldObjects(parts2) ?? { allOf: parts2 };
       assignProp(properties, key, merged);
     }
-    for (const key of object7.required ?? [])
+    for (const key of object8.required ?? [])
       required2.add(key);
   }
   const folded = { type: "object", properties };
   if (required2.size)
     folded.required = [...required2];
-  if (objects.every((object7) => object7.additionalProperties === false)) {
+  if (objects.every((object8) => object8.additionalProperties === false)) {
     folded.additionalProperties = false;
   } else {
     const constraints = [];
-    for (const object7 of objects) {
-      const constraint = undeclaredConstraint(object7);
+    for (const object8 of objects) {
+      const constraint = undeclaredConstraint(object8);
       if (constraint && !constraints.some((seen) => JSON.stringify(seen) === JSON.stringify(constraint)))
         constraints.push(constraint);
     }
@@ -22222,8 +22248,8 @@ function scanCodeFolders(now = Date.now(), onlyRequested = false) {
 function cloneFor(remote, branch, now = Date.now()) {
   const want = branch?.replace(/^refs\/heads\//, "");
   const pick3 = (paths2 = []) => {
-    const live2 = paths2.map((p) => ({ p, g: gitInfo(p) })).filter((x) => x.g?.remote === remote);
-    return want && live2.find((x) => x.g.branch === want)?.p || live2[0]?.p;
+    const live3 = paths2.map((p) => ({ p, g: gitInfo(p) })).filter((x) => x.g?.remote === remote);
+    return want && live3.find((x) => x.g.branch === want)?.p || live3[0]?.p;
   };
   const was = localClones();
   const hit = pick3(was.clones?.[remote]);
@@ -22240,6 +22266,11 @@ function visibleCloneTodos(cfg, wf, job, machine2) {
   if (!cachedCloneExists && !readsThroughADO) return wf.todos;
   const template = cloneTodo(cfg, remote, machine2);
   return wf.todos.filter((todo) => todo !== template);
+}
+function visibleCloneKept(cfg, wf, job, machine2) {
+  if (!wf.kept?.length) return wf.kept;
+  const visible = new Set(visibleCloneTodos(cfg, { ...wf, todos: wf.kept.map((todo) => todo.text) }, job, machine2));
+  return wf.kept.filter((todo) => !!todo.done || visible.has(todo.text));
 }
 var repoName, cloneUrl, LOCAL, saveCodeFolders, requestCloneScan, RESCAN_MS, cloneTodo;
 var init_repos = __esm({
@@ -22291,10 +22322,10 @@ var init_util2 = __esm({
           return obj3[e];
         });
       };
-      util2.objectKeys = typeof Object.keys === "function" ? (obj3) => Object.keys(obj3) : (object7) => {
+      util2.objectKeys = typeof Object.keys === "function" ? (obj3) => Object.keys(obj3) : (object8) => {
         const keys2 = [];
-        for (const key in object7) {
-          if (Object.prototype.hasOwnProperty.call(object7, key)) {
+        for (const key in object8) {
+          if (Object.prototype.hasOwnProperty.call(object8, key)) {
             keys2.push(key);
           }
         }
@@ -28898,11 +28929,11 @@ var init_map = __esm({
 
 // node_modules/zod-to-json-schema/dist/esm/parsers/nativeEnum.js
 function parseNativeEnumDef(def) {
-  const object7 = def.values;
+  const object8 = def.values;
   const actualKeys = Object.keys(def.values).filter((key) => {
-    return typeof object7[object7[key]] !== "number";
+    return typeof object8[object8[key]] !== "number";
   });
-  const actualValues = actualKeys.map((key) => object7[key]);
+  const actualValues = actualKeys.map((key) => object8[key]);
   const parsedTypes = Array.from(new Set(actualValues.map((values) => typeof values)));
   return {
     type: parsedTypes.length === 1 ? parsedTypes[0] === "string" ? "string" : "number" : ["string", "number"],
@@ -39652,6 +39683,9 @@ function ulid3(now = Date.now()) {
 function itemCode(n, prefix = "A") {
   return `${prefix}${n}`;
 }
+function isCode(s3) {
+  return /^[A-Z]\d+$/.test(s3);
+}
 var B32, last;
 var init_ids = __esm({
   "src/core/ids.ts"() {
@@ -39752,8 +39786,8 @@ function effectResultLine(wf, result, reason = "") {
   const effects = wf.effects ?? [], first3 = wf.asker?.name?.split(/\s+/)[0] ?? "them";
   const person2 = `${first3}${wf.chat.group ? ` in ${wf.chat.name}` : ""}`;
   const pr = effects.map((e) => prIdOf(e.call)).find((id) => id !== void 0), place2 = pr === void 0 ? "the changes" : `PR ${pr}`;
-  const clean3 = reason.replace(/^Error:\s*/i, "").split(/(?<=[.!?])\s+/)[0].replace(/\b[A-Z]\d+\b/g, "this item").replace(/[.\s]+$/, "");
-  const why2 = /not allowed|haven.t allowed|not enabled|not permitted/i.test(clean3) ? "you haven't allowed Delegate to make this change" : /changed|stale|\bhead\b/i.test(clean3) ? `${place2} changed since the review` : /closed|completed|abandoned/i.test(clean3) ? "the PR is closed" : /unreach|network|ECONN|timeout|timed out/i.test(clean3) ? "Azure DevOps wasn't reachable" : /[0-9a-f]{8,}|job:|Error:|[_-](?:write|read|request)|\btool\b|\bschema\b/i.test(clean3) ? "the change could not be verified" : clean3 || "the change could not be verified";
+  const clean4 = reason.replace(/^Error:\s*/i, "").split(/(?<=[.!?])\s+/)[0].replace(/\b[A-Z]\d+\b/g, "this item").replace(/[.\s]+$/, "");
+  const why2 = /not allowed|haven.t allowed|not enabled|not permitted/i.test(clean4) ? "you haven't allowed Delegate to make this change" : /changed|stale|\bhead\b/i.test(clean4) ? `${place2} changed since the review` : /closed|completed|abandoned/i.test(clean4) ? "the PR is closed" : /unreach|network|ECONN|timeout|timed out/i.test(clean4) ? "Azure DevOps wasn't reachable" : /[0-9a-f]{8,}|job:|Error:|[_-](?:write|read|request)|\btool\b|\bschema\b/i.test(clean4) ? "the change could not be verified" : clean4 || "the change could not be verified";
   if (result === "running") return `${effectLine(pendingEffects(effects), "doing").replace(/^./, (c) => c.toUpperCase())}${wf.draft?.text ? `, then replying to ${person2}` : ` for ${person2}`}.`;
   if (result === "done") return `Done: ${effectLine(effects.filter((e) => e.done && !e.off), "done")}, then replied to ${person2}.`;
   if (result === "changes-only") return `Done: ${effectLine(effects.filter((e) => e.done && !e.off), "done", true)}. No reply was needed.`;
@@ -40237,13 +40271,13 @@ function telemetryPrivacy(event) {
 }
 function telemetryEvent(event, fields3) {
   const allowed2 = Object.hasOwn(metadataEvents, event) ? metadataEvents[event].fields : [];
-  const clean3 = { ...fields3 };
-  for (const key of Object.keys(clean3)) if (!allowed2.includes(key)) {
-    Reflect.deleteProperty(clean3, key);
+  const clean4 = { ...fields3 };
+  for (const key of Object.keys(clean4)) if (!allowed2.includes(key)) {
+    Reflect.deleteProperty(clean4, key);
     diagnostic({ event: "telemetry-field-dropped", targetEvent: scrub(String(event)).slice(0, 80), field: scrub(key).slice(0, 80) });
   }
-  const entry = { ...clean3, event };
-  if ("error" in clean3 && clean3.error !== void 0) Object.assign(entry, { error: telemetryError(clean3.error) });
+  const entry = { ...clean4, event };
+  if ("error" in clean4 && clean4.error !== void 0) Object.assign(entry, { error: telemetryError(clean4.error) });
   return entry;
 }
 function readTelemetryCommit(root) {
@@ -40622,9 +40656,16 @@ var init_state = __esm({
       save(wf, touch = true, also) {
         const before = this.workflow(wf.id)?.state;
         if (touch) wf.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
-        if (wf.todos?.length) {
-          const todos = visibleCloneTodos(this.config(), wf, wf.job ? this.job(wf.job) : void 0, this.machine);
-          if (todos?.length !== wf.todos.length) wf.todos = todos;
+        if (wf.todos?.length || wf.kept?.length) {
+          const cfg = this.config(), job = wf.job ? this.job(wf.job) : void 0;
+          if (wf.todos?.length) {
+            const todos = visibleCloneTodos(cfg, wf, job, this.machine);
+            if (todos?.length !== wf.todos.length) wf.todos = todos;
+          }
+          if (wf.kept?.length) {
+            const kept = visibleCloneKept(cfg, wf, job, this.machine);
+            if (kept?.length !== wf.kept.length) wf.kept = kept;
+          }
         }
         this.w(this.p("state", "workflows", `${wf.id}.json`), wf);
         this.noteCode(wf);
@@ -41426,9 +41467,9 @@ function noticeHabits(store2, cfg, now = Date.now()) {
     if (never3.has(asker) || covered(rules, asker, intent)) continue;
     if (os.some((o) => o.group || o.guests)) continue;
     const mine = os.filter((o) => o.how === "skipped" || o.approvedBy === "owner").sort((a, b) => a.at.localeCompare(b.at));
-    const clean3 = mine.filter((o) => o.how === "sent" && !o.edited);
-    const days2 = new Set(clean3.map((o) => o.at.slice(0, 10))).size;
-    if (clean3.length < 5 || days2 < 3 || clean3.length / mine.length < 0.9 || mine.slice(-3).some((o) => o.how !== "sent" || o.edited)) continue;
+    const clean4 = mine.filter((o) => o.how === "sent" && !o.edited);
+    const days2 = new Set(clean4.map((o) => o.at.slice(0, 10))).size;
+    if (clean4.length < 5 || days2 < 3 || clean4.length / mine.length < 0.9 || mine.slice(-3).some((o) => o.how !== "sent" || o.edited)) continue;
     const name = os.at(-1).asker.name, first3 = name.split(/\s+/)[0];
     const label2 = intent.replace(/_/g, " ");
     found.push({
@@ -41437,9 +41478,9 @@ function noticeHabits(store2, cfg, now = Date.now()) {
       kind: "send",
       state: "suggested",
       at: new Date(now).toISOString(),
-      text: `You sent your last ${clean3.length} replies to ${first3} (${label2}) without changes. Let those go by themselves?`,
+      text: `You sent your last ${clean4.length} replies to ${first3} (${label2}) without changes. Let those go by themselves?`,
       does: `Replies to ${name} in your 1:1 about ${label2} go out by themselves, with the usual checks (private sources, commitments, open work, guests, need to know) and an undo.`,
-      evidence: { count: clean3.length, days: days2, total: mine.length, links: clean3.map((o) => o.link).filter((l) => !!l).slice(-5) },
+      evidence: { count: clean4.length, days: days2, total: mine.length, links: clean4.map((o) => o.link).filter((l) => !!l).slice(-5) },
       rule: { id: `learned-${asker.slice(0, 8)}-${intent}`, text: `Learned: replies to ${name} in 1:1 about ${label2} go by themselves`, who: { accounts: [{ id: asker, name }] }, when: { chat: "direct", intent }, then: "send" }
     });
   }
@@ -41710,19 +41751,6 @@ var init_format = __esm({
   "src/core/format.ts"() {
     "use strict";
     esc2 = (s3) => s3.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  }
-});
-
-// src/adapters/source.ts
-var SendUncertain;
-var init_source = __esm({
-  "src/adapters/source.ts"() {
-    "use strict";
-    SendUncertain = class extends Error {
-      constructor(detail) {
-        super(`Not sure it was sent; check Teams. ${detail}`);
-      }
-    };
   }
 });
 
@@ -42590,8 +42618,8 @@ function ownerFor(store2, id) {
   return { owner: owner2 };
 }
 function scrubbed(raw) {
-  const text4 = raw.toString("utf8"), clean3 = scrub(text4);
-  return clean3 === text4 ? raw : Buffer.from(clean3, "utf8");
+  const text4 = raw.toString("utf8"), clean4 = scrub(text4);
+  return clean4 === text4 ? raw : Buffer.from(clean4, "utf8");
 }
 var sessions, sessionExists, sessionBytes, plain2, isPrefix, read2, leads;
 var init_own = __esm({
@@ -42795,8 +42823,8 @@ function watchItem(store2, wf, body) {
 }
 function watchItemTarget(store2, wf, input2) {
   if (wf.state !== "done" || !wf.fyi) return { text: `${wf.code} is not in Catch up, so there is nothing to watch from it. To watch something else, say "watch: <what should get done>".`, accepted: false };
-  const live2 = wf.watchedAs ? store2.byCode(wf.watchedAs) : void 0;
-  if (live2 && live2.state !== "done") return { text: `${wf.code} is already watched as ${live2.code}.`, accepted: true, code: live2.code };
+  const live3 = wf.watchedAs ? store2.byCode(wf.watchedAs) : void 0;
+  if (live3 && live3.state !== "done") return { text: `${wf.code} is already watched as ${live3.code}.`, accepted: true, code: live3.code };
   const link2 = teamsLink(wf);
   const target2 = input2.target ?? wf.fyi.watch?.target ?? wf.fyi.line;
   const r = started(store2, { target: target2, until: input2.until ?? wf.fyi.watch?.until, by: input2.by, endsAt: input2.by ? void 0 : weekOut(), shepherd: input2.shepherd || void 0, from: "catchup", link: link2 });
@@ -42814,8 +42842,8 @@ function watchSomething(store2, body) {
 }
 function watchTarget(store2, input2) {
   const until = input2.until ?? DEFAULT_UNTIL;
-  const live2 = store2.workflows().find((x) => x.kind === "tracker" && x.state !== "done" && x.watchFrom === "owner" && x.lastAsk === `Watch ${input2.target} until ${until}`);
-  if (live2) return { text: `Already watching ${input2.target} as ${live2.code}.`, accepted: true, code: live2.code };
+  const live3 = store2.workflows().find((x) => x.kind === "tracker" && x.state !== "done" && x.watchFrom === "owner" && x.lastAsk === `Watch ${input2.target} until ${until}`);
+  if (live3) return { text: `Already watching ${input2.target} as ${live3.code}.`, accepted: true, code: live3.code };
   return started(store2, { ...input2, until, endsAt: input2.by ? void 0 : weekOut(), from: "owner" });
 }
 function startFollow(store2, f, now = Date.now()) {
@@ -42829,20 +42857,20 @@ function startWatch(store2, wf, f, now = Date.now()) {
   const at3 = new Date(now).toISOString(), every2 = Math.min(1440, Math.max(5, Math.round((f.everyHours ?? 4) * 60)));
   const endsAt = new Date(now + FOLLOW_DAYS * 864e5).toISOString(), goal = `Check ${f.target} and report its current state in one line`;
   const key = `watch:${slug(f.target)}:${wf.id}`;
-  const live2 = wf.work?.watch ? store2.job(wf.work.watch) : void 0;
-  if (live2?.every && live2.state !== "failed" && live2.key === key) {
-    const due2 = now + every2 * 6e4, next2 = live2.nextAt && Date.parse(live2.nextAt) <= due2 ? live2.nextAt : new Date(due2).toISOString();
-    Object.assign(live2, { every: every2, until: f.until, goal, endsAt, nextAt: live2.state === "queued" ? live2.nextAt ?? at3 : next2 });
-    store2.saveJob(live2);
+  const live3 = wf.work?.watch ? store2.job(wf.work.watch) : void 0;
+  if (live3?.every && live3.state !== "failed" && live3.key === key) {
+    const due2 = now + every2 * 6e4, next2 = live3.nextAt && Date.parse(live3.nextAt) <= due2 ? live3.nextAt : new Date(due2).toISOString();
+    Object.assign(live3, { every: every2, until: f.until, goal, endsAt, nextAt: live3.state === "queued" ? live3.nextAt ?? at3 : next2 });
+    store2.saveJob(live3);
     return wf.code;
   }
-  if (live2) {
-    const was = watchSubject(live2);
-    if (live2.state === "failed") step(wf, `The check-back on ${was} had stopped: ${live2.error ?? "its last check failed"}. A new check-back starts now`, { ref: `watch-replaced:${live2.id}` });
-    else if (live2.every) step(wf, `Stopped checking back on ${was}; the newer promise checks back on ${f.target}`, { ref: `watch-replaced:${live2.id}` });
-    if (live2.every) {
-      Object.assign(live2, { every: void 0, nextAt: void 0, ...live2.state === "queued" ? { state: "done" } : {} });
-      store2.saveJob(live2);
+  if (live3) {
+    const was = watchSubject(live3);
+    if (live3.state === "failed") step(wf, `The check-back on ${was} had stopped: ${live3.error ?? "its last check failed"}. A new check-back starts now`, { ref: `watch-replaced:${live3.id}` });
+    else if (live3.every) step(wf, `Stopped checking back on ${was}; the newer promise checks back on ${f.target}`, { ref: `watch-replaced:${live3.id}` });
+    if (live3.every) {
+      Object.assign(live3, { every: void 0, nextAt: void 0, ...live3.state === "queued" ? { state: "done" } : {} });
+      store2.saveJob(live3);
     }
   }
   const job = {
@@ -43059,14 +43087,14 @@ ${text4 ?? ""}`)) {
   for (const [id, s3] of starts) if (docTool(s3) && !done2.has(id)) calls.push({ tool: String(s3.mcpToolName ?? s3.toolName ?? ""), from: "none", chats: 0, unknown: "unfinished" });
   return { chats: [...chats], searches: searches.slice(-20), unknown: calls.some((c) => c.unknown), calls, knowledge: knowledge2, ...records2.size ? { records: [...records2.values()] } : {}, ...customerNames.length ? { customerNames } : {} };
 }
-var CHAT_ID, LINK, CARD, SAVED, chatTool, docTool, QUERY_KEYS, chatsIn, readSaved, object4;
+var CHAT_ID2, LINK, CARD, SAVED, chatTool, docTool, QUERY_KEYS, chatsIn, readSaved, object4;
 var init_provenance = __esm({
   "src/runner/provenance.ts"() {
     "use strict";
     init_channels();
     init_intake();
     init_share();
-    CHAT_ID = /19:[\w.\-=:]+@(?:thread\.(?:v2|tacv2|skype)|unq\.gbl\.spaces)/g;
+    CHAT_ID2 = /19:[\w.\-=:]+@(?:thread\.(?:v2|tacv2|skype)|unq\.gbl\.spaces)/g;
     LINK = /https:\/\/teams\.microsoft\.com\/l\/message\/[^\s"'<>)\]\\]+|https:\/\/teams\.cloud\.microsoft\/l\/message\/[^\s"'<>)\]\\]+/g;
     CARD = /topics[\\/]+([^\\/\s"'`]+)[\\/]+(architecture|decisions|faq|status)\.md/g;
     SAVED = /Output too large[^\n]*?Saved to:\s*(\S+)/i;
@@ -43075,7 +43103,7 @@ var init_provenance = __esm({
     QUERY_KEYS = ["query", "queryString", "q", "searchText", "search", "message", "pattern"];
     chatsIn = (text4) => {
       const plain5 = text4.replace(/%3a/gi, ":").replace(/%40/gi, "@").replace(/\\u003a/gi, ":").replace(/\\u0040/gi, "@");
-      return [.../* @__PURE__ */ new Set([...plain5.match(CHAT_ID) ?? [], ...[...text4.matchAll(LINK)].map((m) => parseMessageLink(m[0])?.chatId).filter((c) => !!c)])];
+      return [.../* @__PURE__ */ new Set([...plain5.match(CHAT_ID2) ?? [], ...[...text4.matchAll(LINK)].map((m) => parseMessageLink(m[0])?.chatId).filter((c) => !!c)])];
     };
     readSaved = (path) => {
       try {
@@ -43285,162 +43313,39 @@ var init_automations = __esm({
   }
 });
 
-// src/runner/reply-gap.ts
-function holdReplyGap(store2, item2, text4, automatic = false) {
-  if (!replyGap(text4)) return false;
-  Object.assign(item2, { ...stateFields(item2, "needs_human"), approved: void 0, sendAt: void 0, ...statusFields("not-sent", `Not sent: ${REPLY_BLANK}`), question: item2.question || "What goes in the blank?" });
-  store2.save(item2);
-  store2.log({ event: automatic ? "rule-held-gap" : "reply-held-gap", code: item2.code, workflowId: item2.id, reason: REPLY_BLANK });
-  return true;
-}
-var init_reply_gap = __esm({
-  "src/runner/reply-gap.ts"() {
-    "use strict";
-    init_upgrades();
-    init_policy();
-  }
-});
-
-// src/runner/autosend.ts
-async function afterDraft(store2, src, cfg, wf) {
-  if (wf.state !== "needs_human" || !wf.draft || wf.draft.preview) return;
-  if (holdReplyGap(store2, wf, wf.draft.text, true)) return;
-  const p = policy(cfg);
-  const d = decide(wf, store2.rules(), policyContext(store2, cfg, wf));
-  if (d.action === "ack") recordCommit(wf, () => store2.workflow(wf.id), store2.save.bind(store2));
-  wf.decision = d;
-  wf.held = void 0;
-  if (d.action === "ignore") return close(wf, d.reason);
-  if (d.action === "send" && (store2.control().paused || cfg.paused)) {
-    Object.assign(wf, { held: "paused", ...statusFields("not-sent", "Held: you paused") });
-    return;
-  }
-  if (d.action === "send") {
-    Object.assign(wf, stateFields(wf, "scheduled"));
-    wf.sendAt = new Date(Date.now() + p.delayMin * 6e4).toISOString();
-    return;
-  }
-  if (d.action === "ack") await ack(store2, src, cfg, wf, d.ruleId);
-}
-async function ackJob(store2, src, cfg, wf) {
-  const d = decide(wf, store2.rules(), policyContext(store2, cfg, wf));
-  if (d.action === "ack") await ack(store2, src, cfg, wf, d.ruleId);
-}
-async function ack(store2, src, cfg, wf, ruleId) {
-  const commit = recordCommit(wf, () => store2.workflow(wf.id), store2.save.bind(store2));
-  const p = policy(cfg);
-  if (!wf.sent && !wf.acked && !store2.control().paused && !await ownerActive(store2, src)) {
-    const first3 = cfg.owner.name.split(/\s+/)[0];
-    const oof = await src.presence().then((r) => r.oof, () => void 0);
-    const text4 = withMarker([p.ackText.replace("{first}", first3), oof && awayLine(first3, oof)].filter(Boolean).join(" "), signatureOf(cfg), cfg.owner.name);
-    if (replyGap(text4)) {
-      holdReplyGap(store2, wf, text4, true);
-      store2.setHealth(`ack:${wf.code}`, REPLY_BLANK);
-      return;
-    }
-    wf.acked = true;
-    commit();
-    const { msgId } = await src.send(wf.chat.id, text4);
-    store2.addSent(msgId, text4);
-    store2.addAuto(wf.chat.id, "ack");
-    store2.log({ event: "ack", workflowId: wf.id, code: wf.code, rule: ruleId, msgId });
-  }
-}
-function awayLine(first3, oof) {
-  const back = oof.match(/\b(?:until|till|returning(?: on)?|back(?: on)?|return(?:ing)? on)\s+([A-Z0-9][^.,;\n]{1,28}?)(?=[.,;\n]|\s+(?:and|with|for|please)\b|$)/i)?.[1]?.trim();
-  return back ? `${first3} is out of office until ${back}.` : `${first3} is out of office.`;
-}
-function autoCount(store2, wf) {
-  const hourAgo = Date.now() - 36e5;
-  const done2 = store2.autoLedger().filter((e) => e.chat === wf.chat.id && Date.parse(e.at) > hourAgo).length;
-  return done2 + store2.workflows().filter((w) => w.id !== wf.id && w.chat.id === wf.chat.id && w.state === "scheduled").length;
-}
-async function ownerActive(store2, src) {
-  const last2 = store2.activity().ownerLastAt;
-  if (!last2 || Date.now() - Date.parse(last2) > 10 * 6e4) return false;
-  return (await src.presence()).availability === "Available";
-}
-async function dueSends(store2, src, cfg, probe) {
-  const due2 = store2.workflows().filter((w) => w.state === "scheduled" && w.sendAt && Date.parse(w.sendAt) <= Date.now()).filter((w) => !holdReplyGap(store2, w, w.draft?.text, true));
-  for (const w of due2.filter((w2) => w2.draft?.preview)) {
-    const commit = recordCommit(w, () => store2.workflow(w.id), store2.save.bind(store2));
-    Object.assign(w, { ...stateFields(w, "needs_human"), sendAt: void 0, status: "Edited by you; waits for your ok" });
-    commit();
-  }
-  if (!due2.length) return 0;
-  if (await ownerActive(store2, src)) {
-    for (const was of due2) freshRead(() => {
-      const w = store2.workflow(was.id);
-      if (w?.state === "scheduled") {
-        Object.assign(w, statusFields("not-sent", "Held: you are active in Teams"));
-        store2.save(w);
-      }
-    });
-    return 0;
-  }
-  let n = 0;
-  for (const was of due2.filter((w) => w.state === "scheduled")) {
-    const wf = freshRead(() => store2.workflow(was.id));
-    if (!wf || wf.state !== "scheduled") continue;
-    const commit = recordCommit(wf, () => store2.workflow(wf.id), store2.save.bind(store2));
-    wf.shareHold = markedHold(cfg, wf.drewOn) ?? wf.shareHold;
-    const d = decide(wf, store2.rules(), policyContext(store2, cfg, wf));
-    if (d.action !== "send") {
-      Object.assign(wf, { ...stateFields(wf, "needs_human"), sendAt: void 0, decision: d, ...statusFields("not-sent", `Not sent: ${d.reason}`) });
-      commit();
-      continue;
-    }
-    try {
-      if (await send(store2, src, cfg, wf, wf.draft?.text, { ruleId: d.ruleId }, probe)) {
-        n++;
-        store2.addAuto(wf.chat.id, "send");
-      }
-    } catch (e) {
-      Object.assign(wf, { ...stateFields(wf, "needs_human"), sendAt: void 0, ...statusFields("not-sent", `Not sent: ${String(e).slice(0, 120)}`) });
-      store2.log({ event: "autosend-failed", workflowId: wf.id, code: wf.code, error: String(e).slice(0, 300) });
-    }
-    commit();
-  }
-  return n;
-}
-var policy, policyContext;
-var init_autosend = __esm({
-  "src/runner/autosend.ts"() {
-    "use strict";
-    init_sharing();
-    init_policy();
-    init_apply();
-    init_intake2();
-    init_reply_gap();
-    init_fs();
-    init_commit();
-    init_upgrades();
-    policy = (cfg) => ({ ...DEFAULT_POLICY, ...cfg.policy });
-    policyContext = (store2, cfg, wf) => ({ autoSend: !!store2.control().autoSend, autoSendsThisHour: autoCount(store2, wf), maxPerHour: policy(cfg).maxAutoPerChatHour, never: policy(cfg).never, held: Object.keys(store2.heldRules()) });
-  }
-});
-
 // src/runner/review-gate.ts
+function reviewerGroupLabel(name) {
+  return unescapeGroup(name).trim().replace(/^\[[^\]\r\n]+\]\\+\s*/, "").replace(/\\([!"#$%&'()*+,\-.\/:;<=>?@\[\]\\^_`{|}~])/g, "$1").replace(/\s*\([A-Za-z][A-Za-z0-9_-]*\)(?=\s|$)/g, " ").replace(/\s+/g, " ").trim();
+}
+function reviewerGroupMatches(name, listed2) {
+  return norm2(listed2) === norm2(name) || norm2(listed2) === norm2(name.split("\\").at(-1));
+}
+function liveOwnerVote(cfg, st) {
+  const named2 = st.reviewers ? st.reviewers.filter((r) => !r.group && isOwner(cfg, r.name, r.unique)) : st.votes.filter((v) => isOwner(cfg, v.name));
+  return named2.length === 1 && Object.values(VOTES).includes(named2[0].vote) ? named2[0].vote : void 0;
+}
+function reviewerGroups(st) {
+  if (!st.reviewers) return void 0;
+  const labels = st.reviewers.filter((r) => r.group).map((r) => reviewerGroupLabel(r.name)).filter(Boolean);
+  return [...new Map(labels.map((label2) => [norm2(label2), label2])).values()];
+}
 function ownerRole(cfg, st, teams) {
-  const name = norm2(cfg.owner.name), upn = norm2(cfg.owner.upn);
-  const isMe2 = (display, unique) => upn && unique ? norm2(unique) === upn : !!name && norm2(display) === name;
-  if (isMe2(st.author, st.authorUnique)) return "author";
+  if (isOwner(cfg, st.author, st.authorUnique)) return "author";
   const all = st.reviewers ?? st.votes.map((v) => ({ name: v.name, vote: v.vote, required: false, group: false, declined: false }));
-  const me = all.filter((r) => !r.group && isMe2(r.name, r.unique));
+  const me = all.filter((r) => !r.group && isOwner(cfg, r.name, r.unique));
   if (me.length > 1) return "ambiguous";
   if (me.length === 1) return me[0].declined ? "declined" : "reviewer";
   const groups2 = all.filter((r) => r.group);
   if (!groups2.length) return "none";
   const short3 = (n) => norm2(n.split("\\").at(-1));
-  const listed2 = (g, list2) => !!list2?.some((x) => norm2(x) === norm2(g) || norm2(x) === short3(g));
+  const listed2 = (g, list2) => !!list2?.some((x) => reviewerGroupMatches(g, x));
   const mine = groups2.filter((g) => listed2(g.name, cfg.owner.reviewerGroups) || !!teams?.some((t2) => norm2(t2) === short3(g.name)));
   if (!mine.length) return groups2.every((g) => listed2(g.name, cfg.owner.notReviewerGroups)) ? "none" : "group-unknown";
   return mine.some((g) => g.vote < 5 && !g.declined) ? "group" : "group-approved";
 }
 function unknownGroups(cfg, st) {
-  const short3 = (n) => norm2(n.split("\\").at(-1));
   const said2 = [...cfg.owner.reviewerGroups ?? [], ...cfg.owner.notReviewerGroups ?? []];
-  return (st.reviewers ?? []).filter((r) => r.group && !said2.some((x) => norm2(x) === norm2(r.name) || norm2(x) === short3(r.name))).map((r) => r.name);
+  return (st.reviewers ?? []).filter((r) => r.group && !said2.some((x) => reviewerGroupMatches(r.name, x))).map((r) => r.name);
 }
 async function teamsFor(probe, project, now = Date.now()) {
   const hit = teamCache.get(project);
@@ -43521,7 +43426,45 @@ function addMeEffect(cfg, wf, ref) {
   if (!allows(cfg.agent.effectTools, call2)) return void 0;
   return { system: "azure devops", action: "add reviewer", target: `PR ${ref.id}`, summary: `Add you as an optional reviewer on PR ${ref.id}`, call: call2 };
 }
-var MAY_REVIEW, norm2, teamCache, REVIEW_ASK, SPLIT_ASK_MS, isReviewJob, roleWhy, isAddMe, groupQuestion;
+function groupQuestion(ask) {
+  const labels = ask.groups.map(reviewerGroupLabel);
+  const names = labels.length > 1 ? `${labels.slice(0, -1).join(", ")} or ${labels.at(-1)}` : labels.join("");
+  return `Which of these review groups on PR ${ask.pr} are you in: ${names}? Say the names, or none.`;
+}
+function groupChoices(ask) {
+  return {
+    prompt: `Which of these review groups on PR ${ask.pr} are you in?`,
+    multi: true,
+    other: false,
+    options: [...ask.groups.map((value) => ({ label: reviewerGroupLabel(value), value })), { label: "None of these", value: "" }]
+  };
+}
+function groupSelection(ask, input2) {
+  if (input2.nums !== void 0) {
+    const nums = [...new Set(input2.nums)], none = ask.groups.length + 1;
+    if (!nums.length || nums.some((n) => !Number.isInteger(n) || n < 1 || n > none) || nums.includes(none) && nums.length !== 1) return void 0;
+    return nums[0] === none ? [] : ask.groups.filter((_, i) => nums.includes(i + 1));
+  }
+  const normalize = (text4) => unescapeGroup(text4).replace(/\r?\n/g, ",").replace(/[ \t]+/g, " ").trim().toLowerCase();
+  let rest2 = normalize(input2.text ?? "");
+  if (/^(?:none(?: of (?:these|them))?)[.!]?$/.test(rest2)) return [];
+  const yes = /^(?:yes|yeah|yep|y|i am)[.!]?$/.test(rest2), no = /^(?:no|nope|n|i'm not|i am not)[.!]?$/.test(rest2);
+  if (yes || no) return ask.groups.length === 1 ? yes ? [...ask.groups] : [] : void 0;
+  const aliases = ask.groups.flatMap((value, index) => [...new Set([reviewerGroupLabel(value), unescapeGroup(value)].map(normalize))].filter(Boolean).flatMap((label2) => [label2, `"${label2}"`, `'${label2}'`].map((text4) => ({ text: text4, index }))));
+  const selected = /* @__PURE__ */ new Set();
+  while (rest2) {
+    const matching = aliases.filter((a) => rest2.startsWith(a.text) && (!rest2.slice(a.text.length) || /^(?:\s*[,;]\s*|\s+and\s+|\s*\+\s*)/.test(rest2.slice(a.text.length))));
+    const length = Math.max(0, ...matching.map((a) => a.text.length)), hits = [...new Set(matching.filter((a) => a.text.length === length).map((a) => a.index))];
+    if (hits.length !== 1) return void 0;
+    selected.add(hits[0]);
+    rest2 = rest2.slice(length);
+    if (!rest2) break;
+    rest2 = rest2.replace(/^(?:\s*[,;]\s*|\s+and\s+|\s*\+\s*)/, "");
+    if (!rest2) return void 0;
+  }
+  return selected.size ? ask.groups.filter((_, i) => selected.has(i)) : void 0;
+}
+var MAY_REVIEW, norm2, unescapeGroup, isOwner, teamCache, REVIEW_ASK, SPLIT_ASK_MS, isReviewJob, roleWhy, isAddMe;
 var init_review_gate = __esm({
   "src/runner/review-gate.ts"() {
     "use strict";
@@ -43531,13 +43474,17 @@ var init_review_gate = __esm({
     init_probe();
     MAY_REVIEW = ["reviewer", "group"];
     norm2 = (s3 = "") => s3.trim().toLowerCase();
+    unescapeGroup = (name) => name.replace(/\\([\[\]])/g, "$1").replace(/\\\\/g, "\\");
+    isOwner = (cfg, display, unique) => {
+      const name = norm2(cfg.owner.name), upn = norm2(cfg.owner.upn);
+      return upn && unique ? norm2(unique) === upn : !!name && norm2(display) === name;
+    };
     teamCache = /* @__PURE__ */ new Map();
     REVIEW_ASK = /\b(?:re-?review|review|re-?check|look at|take a look|have a look|approve|approval|sign[- ]?off|lgtm|can you check|could you check|please check|vote|waiting for (?:the )?author|wait for (?:the )?author|reject)\b/i;
     SPLIT_ASK_MS = 15 * 6e4;
     isReviewJob = (key, intent) => /^pr:/i.test(key.trim()) || intent === "pr_review";
     roleWhy = (cfg, role) => role === "author" ? "the PR is yours" : role === "declined" ? "you declined it in Azure DevOps" : role === "group-approved" ? "your team already approved it" : role === "group-unknown" ? `${NAME} cannot tell whether you are in the group that reviews it` : role === "ambiguous" ? `two reviewers there are named ${cfg.owner.name}` : role === "none" ? "you are not on its reviewer list" : "you are a reviewer";
     isAddMe = (e) => e?.call?.args.action === "update_reviewers" && e.call.args.reviewerAction === "add";
-    groupQuestion = (ask) => `Are you in ${ask.groups.map((g) => `"${g}"`).join(" or ")}, the reviewer group${ask.groups.length > 1 ? "s" : ""} on PR ${ask.pr}? Answer "yes" or "no"; ${NAME} remembers it.`;
   }
 });
 
@@ -43602,6 +43549,8 @@ var init_report = __esm({
         text: external_exports.string().min(1),
         file: external_exports.string().min(1).optional(),
         line: external_exports.number().int().positive().optional(),
+        severity: external_exports.enum(["High", "Medium", "Low"]).optional().describe("Required for a new comment to be eligible for the review rule."),
+        sources: external_exports.array(SourceSchema).optional().describe("Every source used by this finding, in addition to the PR code itself. Private or unknown audiences stay proposed."),
         thread: external_exports.object({
           author: external_exports.string().min(1),
           url: external_exports.string().url(),
@@ -44480,10 +44429,10 @@ ${res.summary ?? ""}`));
       Object.assign(fresh, { effects: void 0, promised: void 0 });
     } else if (fresh.promised) Object.assign(fresh, { effects: void 0, promised: void 0 });
     const asked3 = askedVote(store2.thread(wf.id).filter((m) => wf.pending.includes(m.id) && !m.byOwner).map((m) => m.text).join("\n"));
-    const live2 = fresh.prRead ?? wf.prRead ? JSON.parse(fresh.prRead ?? wf.prRead) : void 0;
-    if (asked3 !== void 0 && live2 && /^active$/i.test(live2[1]) && typeof live2[3] === "number" && !sameVote(live2[3], asked3) && report2.goalMet !== false && !fresh.question && !fresh.choices && !(h.work?.closed && fresh.state === "done") && !(wf.prRole && !MAY_REVIEW.includes(wf.prRole)) && !pendingEffects(fresh.effects).some((e) => isVote(e.call) && voteValue(e.call) === asked3)) {
-      Object.assign(fresh, { ...stateFields(fresh, "needs_human"), question: `${fresh.asker?.name ?? "They"} asked for your ${voteName(asked3)} vote on PR ${live2[0]}, but this draft proposes no vote. Answer ${fresh.code} to redo it with the vote, or skip it` });
-      store2.log({ event: "vote-ask-unmet", workflowId: fresh.id, code: fresh.code, pr: live2[0], asked: asked3, live: live2[3] });
+    const live3 = fresh.prRead ?? wf.prRead ? JSON.parse(fresh.prRead ?? wf.prRead) : void 0;
+    if (asked3 !== void 0 && live3 && /^active$/i.test(live3[1]) && typeof live3[3] === "number" && !sameVote(live3[3], asked3) && report2.goalMet !== false && !fresh.question && !fresh.choices && !(h.work?.closed && fresh.state === "done") && !(wf.prRole && !MAY_REVIEW.includes(wf.prRole)) && !pendingEffects(fresh.effects).some((e) => isVote(e.call) && voteValue(e.call) === asked3)) {
+      Object.assign(fresh, { ...stateFields(fresh, "needs_human"), question: `${fresh.asker?.name ?? "They"} asked for your ${voteName(asked3)} vote on PR ${live3[0]}, but this draft proposes no vote. Answer ${fresh.code} to redo it with the vote, or skip it` });
+      store2.log({ event: "vote-ask-unmet", workflowId: fresh.id, code: fresh.code, pr: live3[0], asked: asked3, live: live3[3] });
     }
     const askText = store2.thread(wf.id).filter((m) => wf.pending.includes(m.id) && !m.byOwner).map((m) => m.text).join("\n");
     const invites = (cfg.agent.effectTools ?? []).some((t2) => /CreateEvent/i.test(t2));
@@ -45569,11 +45518,11 @@ async function readOwnerCommands(store2, src, cursors) {
     if (sent.has(m.id) || text4.startsWith(MARK) || store2.wasSentRecently(text4)) continue;
     if (/^(what needs me|what did i miss|inbox)\??$/i.test(text4)) {
       const since2 = store2.lastViewed(), all = store2.workflows();
-      const caught = catchUpLines(store2, since2);
-      await say(store2, src, renderPhone(all, store2.proposals(), store2.health(), since2) + (caught.length ? `
+      const caught2 = catchUpLines(store2, since2);
+      await say(store2, src, renderPhone(all, store2.proposals(), store2.health(), since2) + (caught2.length ? `
 
 Catch up:
-${caught.join("\n")}` : ""));
+${caught2.join("\n")}` : ""));
       store2.markShown(all);
       store2.markViewed();
       continue;
@@ -45718,10 +45667,10 @@ async function intake(store2, src, cfg, cursors, chats = cfg.watch, o = {}) {
       if (hit.length) store2.saveWaiting(ws.map((w) => hit.includes(w) ? { ...w, state: "answered", doneAt: raw.at } : w));
       hearReply(store2, chat2, c.from.name, c.text, raw.at);
       const hours2 = cfg.quietHours ?? 48;
-      const live2 = open2.filter((w) => (w.job || inWork(store2, w) || !quietFor(store2, w, hours2, now)) && (!backlog || w.before));
-      const follows = groupJudgment ? route(store2, live2.filter((o2) => o2.asker?.id === c.from.id), raw, c.from.id, void 0, c.text) : void 0;
+      const live3 = open2.filter((w) => (w.job || inWork(store2, w) || !quietFor(store2, w, hours2, now)) && (!backlog || w.before));
+      const follows = groupJudgment ? route(store2, live3.filter((o2) => o2.asker?.id === c.from.id), raw, c.from.id, void 0, c.text) : void 0;
       if (groupJudgment && !follows) for (const o2 of open2) appendThread(store2, o2, toMsg(raw, c.from, c.text, false));
-      let wf = follows ?? (groupJudgment ? void 0 : route(store2, live2, raw, c.kind === "ask" || c.kind === "context" ? c.from.id : "", c.kind === "ask" && !backlog ? recentItem(store2, chat2.id, c.from.id, hours2, now) : void 0, c.text));
+      let wf = follows ?? (groupJudgment ? void 0 : route(store2, live3, raw, c.kind === "ask" || c.kind === "context" ? c.from.id : "", c.kind === "ask" && !backlog ? recentItem(store2, chat2.id, c.from.id, hours2, now) : void 0, c.text));
       if (wf && c.kind === "ask") {
         const asked3 = linksIn(c.text).filter((l) => l.startsWith("pr:")).map((l) => l.slice(3)), own3 = ownLinks(store2, wf).filter((l) => l.startsWith("pr:")).map((l) => l.split(/[:/]/).at(-1));
         if (asked3.length && own3.length && asked3.some((id) => !own3.includes(id))) {
@@ -45731,7 +45680,7 @@ async function intake(store2, src, cfg, cursors, chats = cfg.watch, o = {}) {
       }
       const named2 = c.kind === "ask" && !groupJudgment && !(wf && inWork(store2, wf)) ? homeNamed(store2, store2.workflows(), c.text) : void 0;
       const elsewhere = named2 && named2.chat.id !== chat2.id ? named2 : void 0;
-      if (elsewhere) wf = live2.find((o2) => o2.partOf === elsewhere.id && freshAsk(store2, o2, Date.parse(raw.at)) && askRelation(store2, o2, c.text) === "same");
+      if (elsewhere) wf = live3.find((o2) => o2.partOf === elsewhere.id && freshAsk(store2, o2, Date.parse(raw.at)) && askRelation(store2, o2, c.text) === "same");
       if (wf?.state === "done") {
         newTurn(wf);
         Object.assign(wf, { job: void 0, closedBy: void 0, fyi: void 0, prVote: void 0, prStatus: void 0, before: void 0, paced: void 0 });
@@ -46054,6 +46003,154 @@ var init_intake2 = __esm({
   }
 });
 
+// src/runner/reply-gap.ts
+function holdReplyGap(store2, item2, text4, automatic = false) {
+  if (!replyGap(text4)) return false;
+  Object.assign(item2, { ...stateFields(item2, "needs_human"), approved: void 0, sendAt: void 0, ...statusFields("not-sent", `Not sent: ${REPLY_BLANK}`), question: item2.question || "What goes in the blank?" });
+  store2.save(item2);
+  store2.log({ event: automatic ? "rule-held-gap" : "reply-held-gap", code: item2.code, workflowId: item2.id, reason: REPLY_BLANK });
+  return true;
+}
+var init_reply_gap = __esm({
+  "src/runner/reply-gap.ts"() {
+    "use strict";
+    init_upgrades();
+    init_policy();
+  }
+});
+
+// src/runner/autosend.ts
+async function afterDraft(store2, src, cfg, wf) {
+  if (wf.state !== "needs_human" || !wf.draft || wf.draft.preview) return;
+  if (holdReplyGap(store2, wf, wf.draft.text, true)) return;
+  const p = policy(cfg);
+  const d = decide(wf, store2.rules(), policyContext(store2, cfg, wf));
+  if (d.action === "ack") recordCommit(wf, () => store2.workflow(wf.id), store2.save.bind(store2));
+  wf.decision = d;
+  wf.held = void 0;
+  if (d.action === "ignore") return close(wf, d.reason);
+  if (d.action === "send" && (store2.control().paused || cfg.paused)) {
+    Object.assign(wf, { held: "paused", ...statusFields("not-sent", "Held: you paused") });
+    return;
+  }
+  if (d.action === "send") {
+    Object.assign(wf, stateFields(wf, "scheduled"));
+    wf.sendAt = new Date(Date.now() + p.delayMin * 6e4).toISOString();
+    return;
+  }
+  if (d.action === "ack") await ack(store2, src, cfg, wf, d.ruleId);
+}
+async function ackJob(store2, src, cfg, wf) {
+  const d = decide(wf, store2.rules(), policyContext(store2, cfg, wf));
+  if (d.action === "ack") await ack(store2, src, cfg, wf, d.ruleId);
+}
+async function ack(store2, src, cfg, wf, ruleId) {
+  const commit = recordCommit(wf, () => store2.workflow(wf.id), store2.save.bind(store2));
+  const p = policy(cfg);
+  if (!wf.sent && !wf.acked && !store2.control().paused && !await ownerActive(store2, src)) {
+    const first3 = cfg.owner.name.split(/\s+/)[0];
+    const oof = await src.presence().then((r) => r.oof, () => void 0);
+    const text4 = withMarker([p.ackText.replace("{first}", first3), oof && awayLine(first3, oof)].filter(Boolean).join(" "), signatureOf(cfg), cfg.owner.name);
+    if (replyGap(text4)) {
+      holdReplyGap(store2, wf, text4, true);
+      store2.setHealth(`ack:${wf.code}`, REPLY_BLANK);
+      return;
+    }
+    wf.acked = true;
+    commit();
+    const { msgId } = await src.send(wf.chat.id, text4);
+    store2.addSent(msgId, text4);
+    store2.addAuto(wf.chat.id, "ack");
+    store2.log({ event: "ack", workflowId: wf.id, code: wf.code, rule: ruleId, byRule: ruleId, msgId });
+  }
+}
+function awayLine(first3, oof) {
+  const back = oof.match(/\b(?:until|till|returning(?: on)?|back(?: on)?|return(?:ing)? on)\s+([A-Z0-9][^.,;\n]{1,28}?)(?=[.,;\n]|\s+(?:and|with|for|please)\b|$)/i)?.[1]?.trim();
+  return back ? `${first3} is out of office until ${back}.` : `${first3} is out of office.`;
+}
+function autoCount(store2, wf) {
+  const hourAgo = Date.now() - 36e5;
+  const done2 = store2.autoLedger().filter((e) => e.chat === wf.chat.id && Date.parse(e.at) > hourAgo).length;
+  return done2 + store2.workflows().filter((w) => w.id !== wf.id && w.chat.id === wf.chat.id && (w.state === "scheduled" || w.reviewRun?.phase === "posting")).length;
+}
+async function ownerActive(store2, src) {
+  const last2 = store2.activity().ownerLastAt;
+  if (!last2 || Date.now() - Date.parse(last2) > 10 * 6e4) return false;
+  return (await src.presence()).availability === "Available";
+}
+async function dueSends(store2, src, cfg, probe) {
+  const due2 = store2.workflows().filter((w) => w.state === "scheduled" && w.sendAt && Date.parse(w.sendAt) <= Date.now()).filter((w) => !holdReplyGap(store2, w, w.draft?.text, true));
+  for (const w of due2.filter((w2) => w2.draft?.preview)) {
+    const commit = recordCommit(w, () => store2.workflow(w.id), store2.save.bind(store2));
+    Object.assign(w, { ...stateFields(w, "needs_human"), sendAt: void 0, status: "Edited by you; waits for your ok" });
+    commit();
+  }
+  if (!due2.length) return 0;
+  if (await ownerActive(store2, src)) {
+    for (const was of due2) freshRead(() => {
+      const w = store2.workflow(was.id);
+      if (w?.state === "scheduled") {
+        Object.assign(w, statusFields("not-sent", "Held: you are active in Teams"));
+        store2.save(w);
+      }
+    });
+    return 0;
+  }
+  let n = 0;
+  for (const was of due2.filter((w) => w.state === "scheduled")) {
+    const wf = freshRead(() => store2.workflow(was.id));
+    if (!wf || wf.state !== "scheduled") continue;
+    const commit = recordCommit(wf, () => store2.workflow(wf.id), store2.save.bind(store2));
+    wf.shareHold = markedHold(cfg, wf.drewOn) ?? wf.shareHold;
+    const d = decide(wf, store2.rules(), policyContext(store2, cfg, wf));
+    if (d.action !== "send") {
+      Object.assign(wf, { ...stateFields(wf, "needs_human"), sendAt: void 0, decision: d, ...statusFields("not-sent", `Not sent: ${d.reason}`) });
+      commit();
+      continue;
+    }
+    try {
+      if (await send(store2, src, cfg, wf, wf.draft?.text, { ruleId: d.ruleId }, probe)) {
+        n++;
+        store2.addAuto(wf.chat.id, "send");
+      }
+    } catch (e) {
+      Object.assign(wf, { ...stateFields(wf, "needs_human"), sendAt: void 0, ...statusFields("not-sent", `Not sent: ${String(e).slice(0, 120)}`) });
+      store2.log({ event: "autosend-failed", workflowId: wf.id, code: wf.code, error: String(e).slice(0, 300) });
+    }
+    commit();
+  }
+  return n;
+}
+var policy, policyContext;
+var init_autosend = __esm({
+  "src/runner/autosend.ts"() {
+    "use strict";
+    init_sharing();
+    init_policy();
+    init_apply();
+    init_intake2();
+    init_reply_gap();
+    init_fs();
+    init_commit();
+    init_upgrades();
+    policy = (cfg) => ({ ...DEFAULT_POLICY, ...cfg.policy });
+    policyContext = (store2, cfg, wf) => ({ autoSend: !!store2.control().autoSend, autoSendsThisHour: autoCount(store2, wf), maxPerHour: policy(cfg).maxAutoPerChatHour, never: policy(cfg).never, held: Object.keys(store2.heldRules()), paused: !!cfg.paused || store2.control().paused || store2.control().stopped });
+  }
+});
+
+// src/adapters/source.ts
+var SendUncertain;
+var init_source = __esm({
+  "src/adapters/source.ts"() {
+    "use strict";
+    SendUncertain = class extends Error {
+      constructor(detail) {
+        super(`Not sure it was sent; check Teams. ${detail}`);
+      }
+    };
+  }
+});
+
 // src/runner/continue.ts
 import { spawnSync as spawnSync3 } from "node:child_process";
 import { uptime as uptime2 } from "node:os";
@@ -46326,17 +46423,17 @@ var init_page_revision = __esm({
 
 // src/runner/vote-claim.ts
 async function checkVoteClaims(store2, cfg, wf, text4, ownWords2, probe) {
-  const live2 = probe ?? adoProbe(cfg), sentences = voteSentences(text4, cfg.owner.name).filter((s3) => s3.kind !== "none");
+  const live3 = probe ?? adoProbe(cfg), sentences = voteSentences(text4, cfg.owner.name).filter((s3) => s3.kind !== "none");
   let pr, claim2 = sentences[0]?.kind === "others" ? "others" : sentences[0]?.vote ?? "approval";
   try {
-    if (!live2?.pr) throw new Error("no live PR check is configured");
+    if (!live3?.pr) throw new Error("no live PR check is configured");
     const ids = claimedPrs(text4, askPrs(store2, wf), prTarget(store2, wf)), primary = prRefOf(store2, wf);
     if (!ids.length) throw new Error("the reply claims a vote but no single PR can be identified");
     for (const id of ids) {
       pr = id;
       const ref = primary?.id === id ? primary : prRefFor(store2, wf, id);
       if (!ref) throw new Error(`no link to PR ${id} was found to read it`);
-      const st = await live2.pr(ref.project, ref.repo, id);
+      const st = await live3.pr(ref.project, ref.repo, id);
       if (!/^(active|completed|abandoned)$/i.test(st.status)) throw new Error(`PR ${id} returned no readable status`);
       const named2 = st.votes.filter((v) => v.name.trim().toLowerCase() === cfg.owner.name.trim().toLowerCase());
       let vote = named2.length === 1 ? named2[0].vote : void 0;
@@ -46370,7 +46467,7 @@ async function checkVoteClaims(store2, cfg, wf, text4, ownWords2, probe) {
     store2.log({ event: "pr-send-held", code: wf.code, pr, reason: why2 });
     return { pr, claim: claim2, why: why2 };
   } finally {
-    if (!probe) await live2?.close?.();
+    if (!probe) await live3?.close?.();
   }
 }
 var voteClaimDigest, voteClaimReview;
@@ -46494,8 +46591,12 @@ async function applyOne(store2, src, cfg, wf, a, procs, probe, quick2) {
     store2.markShown([wf]);
     return reply(store2, src, a, `${MARK} ${wf.status}`);
   }
-  const yesNo = wf.groupAsk && a.verb === "answer" ? /^\s*(?:(yes|yeah|yep|y|i am)|(no|nope|n|i'm not|i am not))\b/i.exec(a.text ?? "") : void 0;
-  if (wf.groupAsk && yesNo) return groupAnswer(store2, src, wf, a, !!yesNo[1], probe);
+  const cardAnswer = a.verb === "answer" && /^(?:try again|redraft|add the vote|send anyway|review again)[.!]?$/i.test(a.text?.trim() ?? "");
+  if (wf.groupAsk && !cardAnswer && (a.verb === "answer" || a.verb === "pick" && !wf.choices)) {
+    const selected = groupSelection(wf.groupAsk, a.verb === "pick" ? { nums: a.nums ?? [] } : { text: a.text });
+    if (!selected) return reply(store2, src, a, `${MARK} Say which groups you're in, or none.`);
+    return groupAnswer(store2, src, wf, a, selected, probe);
+  }
   if (wf.runFailed && a.verb === "answer" && /^\s*try again\s*$/i.test(a.text ?? "")) {
     store2.log({ event: "run-retried", code: wf.code, why: wf.runFailed.why, ...wf.runFailed.job ? { job: wf.runFailed.job } : {} });
     const job = wf.runFailed.job ? store2.job(wf.runFailed.job) : void 0;
@@ -46812,30 +46913,39 @@ async function followUp(store2, src, cfg, w, a) {
   store2.saveWaiting(store2.waiting().map((x) => x.code === w.code ? { ...x, item: wf.code } : x));
   return `Drafting a follow-up to ${who2} as ${wf.code}. You'll see it before anything is sent.`;
 }
-async function groupAnswer(store2, src, wf, a, yes, probe) {
-  const ask = wf.groupAsk, cfg = store2.config(), low = (s3) => s3.toLowerCase();
-  const add = (list2) => [...(list2 ?? []).filter((g) => !ask.groups.some((x) => low(x) === low(g))), ...ask.groups];
-  const drop = (list2) => {
-    const left = (list2 ?? []).filter((g) => !ask.groups.some((x) => low(x) === low(g)));
-    return left.length ? left : void 0;
-  };
-  const owner2 = yes ? { ...cfg.owner, reviewerGroups: add(cfg.owner.reviewerGroups), notReviewerGroups: drop(cfg.owner.notReviewerGroups) } : { ...cfg.owner, notReviewerGroups: add(cfg.owner.notReviewerGroups), reviewerGroups: drop(cfg.owner.reviewerGroups) };
-  store2.saveConfig({ ...cfg, owner: owner2 });
+async function groupAnswer(store2, src, wf, a, selected, probe) {
+  const ask = wf.groupAsk, commit = recordCommit(wf, () => store2.workflow(wf.id), store2.save.bind(store2));
+  const cfg = freshRead(() => {
+    const cfg2 = store2.config();
+    const replace = (list2, add) => {
+      const names = [.../* @__PURE__ */ new Set([...(list2 ?? []).filter((g) => !ask.groups.some((x) => reviewerGroupMatches(x, g))), ...add])];
+      return names.length ? names : void 0;
+    };
+    const owner2 = {
+      ...cfg2.owner,
+      reviewerGroups: replace(cfg2.owner.reviewerGroups, selected),
+      notReviewerGroups: replace(cfg2.owner.notReviewerGroups, ask.groups.filter((g) => !selected.includes(g)))
+    };
+    const updated = { ...cfg2, owner: owner2 };
+    store2.saveConfig(updated);
+    return updated;
+  });
   Object.assign(wf, { groupAsk: void 0, question: void 0, revAt: (/* @__PURE__ */ new Date()).toISOString() });
-  store2.log({ event: "group-answer", code: wf.code, pr: ask.pr, yes, groups: ask.groups.length });
-  const live2 = probe ?? adoProbe(store2.config());
+  commit();
+  store2.log({ event: "group-answer", code: wf.code, pr: ask.pr, selected: selected.length, groups: ask.groups.length });
+  const live3 = probe ?? adoProbe(cfg);
   try {
-    if (live2?.pr) await probePRs(store2, store2.config(), live2, Date.now(), true, [wf]);
+    if (live3?.pr) await probePRs(store2, cfg, live3, Date.now(), true, [wf]);
   } finally {
-    if (!probe) await live2?.close?.();
+    if (!probe) await live3?.close?.();
   }
-  const named2 = ask.groups.map((g) => `"${g}"`).join(", ");
-  if (yes && wf.prRole && MAY_REVIEW.includes(wf.prRole) && !wf.heldVotes && !pendingEffects(wf.effects).some((e) => isVote(e.call)) && wf.todos?.some((t2) => /Not made for you: /.test(t2))) {
-    Object.assign(wf, { ...stateFields(wf, "running"), todos: wf.todos.filter((t2) => !/Not made for you: .*group that reviews it/.test(t2)), status: `You're in ${named2}; reviewing PR ${ask.pr} again so it can propose your vote`, pending: wf.pending.length ? wf.pending : wf.msgIds.slice(-1) });
+  commit.refresh();
+  if (selected.length && wf.state === "needs_human" && live3?.pr && wf.prRead && wf.prRole && MAY_REVIEW.includes(wf.prRole) && !wf.heldVotes && !pendingEffects(wf.effects).some((e) => isVote(e.call)) && wf.todos?.some((t2) => /Not made for you: /.test(t2))) {
+    Object.assign(wf, { ...stateFields(wf, "running"), todos: wf.todos.filter((t2) => !/Not made for you: .*group that reviews it/.test(t2)), status: `Your reviewer groups are saved; reviewing PR ${ask.pr} again so it can propose your vote`, pending: wf.pending.length ? wf.pending : wf.msgIds.slice(-1) });
     if (!wf.todos?.length) wf.todos = void 0;
   }
-  recordCommit(wf, () => store2.workflow(wf.id), store2.save.bind(store2))();
-  await reply(store2, src, a, `${MARK} ${yes ? `Noted: you're in ${named2}.` : `Noted: you're not in ${named2}.`} ${NAME} remembers it for every PR; change it in Settings \u203A You and your replies \u203A Your reviewer groups.`);
+  commit();
+  await reply(store2, src, a, `${MARK} ${NAME} remembers your answer.`);
 }
 function pick2(store2, cfg, wf, a) {
   const c = wf.choices;
@@ -46961,8 +47071,12 @@ async function threadSince(store2, src, cfg, wf, want, signed = false) {
   }
   return { asker, messages, ours: ours4, ownerReplied, ownerAt, ownerUnknown, ownerExact };
 }
+function aboutPr(store2, wf, text4) {
+  return !!prRefOf(store2, wf) || wf.intent === "pr_review" || linksIn([text4 ?? "", wf.lastAsk ?? "", ...store2.thread(wf.id).filter((m) => m.from.id === wf.asker?.id).map((m) => m.text)].join("\n")).some((l) => l.startsWith("pr:"));
+}
 async function send(store2, src, cfg, wf, text4, by, probe) {
   const commit = recordCommit(wf, () => store2.workflow(wf.id), store2.save.bind(store2));
+  const reviewReply = !!by.ruleId && wf.reviewRun?.rule === by.ruleId && !!wf.reviewDone;
   if (!by.ruleId) rememberSend(store2, wf);
   if (holdReplyGap(store2, wf, text4, !!by.ruleId)) {
     if (by.answer) await reply(store2, src, by.answer, `${MARK} ${REPLY_BLANK}`, true);
@@ -46978,8 +47092,7 @@ async function send(store2, src, cfg, wf, text4, by, probe) {
     await reply(store2, src, by.answer ?? { id: "", code: wf.code, verb: "ok", surface: "chat", at: "" }, `${MARK} The latest turn proposes no reply. Nothing was sent.`, true);
     return false;
   }
-  const ref = prRefOf(store2, wf);
-  const aboutPR = !!ref || wf.intent === "pr_review" || linksIn([text4 ?? "", wf.lastAsk ?? "", ...store2.thread(wf.id).filter((m) => m.from.id === wf.asker?.id).map((m) => m.text)].join("\n")).some((l) => l.startsWith("pr:"));
+  const aboutPR = aboutPr(store2, wf, text4);
   const owner2 = !by.ruleId && !!wf.draft?.byOwner && text4 === wf.draft.text;
   const told = async (why2) => {
     if (by.answer) await reply(store2, src, by.answer, `${MARK} Not sent ${wf.code}: ${why2}`, true);
@@ -47112,6 +47225,17 @@ async function send(store2, src, cfg, wf, text4, by, probe) {
   const beforeSend = (/* @__PURE__ */ new Date()).toISOString();
   const ask = store2.thread(wf.id).filter((message) => !message.byOwner && message.at <= beforeSend && wf.msgIds.includes(message.id) && (!wf.asker || message.from.id === wf.asker.id)).sort((a2, b) => a2.at.localeCompare(b.at)).at(-1);
   let msgId;
+  if (by.ruleId && (reviewReply || wf.reviewRun)) {
+    const held = freshRead(() => {
+      const latest2 = store2.workflow(wf.id), currentCfg = store2.config();
+      const decision = latest2 && decide(latest2, store2.rules(), policyContext(store2, currentCfg, latest2));
+      return !latest2 || latest2.state !== "needs_human" || latest2.pending.length || latest2.ownerSend || latest2.reviewRun?.rule !== by.ruleId || latest2.reviewRun?.sendText !== text4 || reviewRuleFor(latest2, store2.rules())?.id !== by.ruleId || decision?.action !== "send" ? decision?.reason ?? "The review reply changed" : void 0;
+    });
+    if (held) {
+      store2.log({ event: "review-autoreply-held", code: wf.code, byRule: by.ruleId, reason: held });
+      return false;
+    }
+  }
   try {
     ({ msgId } = await src.send(wf.chat.id, out, replyContext(wf, out, named2, cfg.owner.id)));
   } catch (e) {
@@ -47135,6 +47259,7 @@ async function send(store2, src, cfg, wf, text4, by, probe) {
   wf.sent = { msgId, at: (/* @__PURE__ */ new Date()).toISOString(), text: text4, sendText: out !== text4 ? out : void 0, byRule: by.ruleId, undoUntil: new Date(Date.now() + p.undoMin * 6e4).toISOString(), ...askMsgId ? { askMsgId } : {}, ...sendChecks.length ? { checks: sendChecks } : {}, ...holding ? { holding: true } : {} };
   if (wf.approved) wf.approved.replyDigest = void 0;
   commit(false);
+  if (reviewReply) store2.addAuto(wf.chat.id, "send");
   keepTodos(wf, wf.sent.at);
   const home = homeOf(store2, wf);
   for (const check2 of sendChecks) {
@@ -47143,7 +47268,10 @@ async function send(store2, src, cfg, wf, text4, by, probe) {
   }
   const first3 = (wf.asker?.name ?? "them").split(/\s+/)[0];
   if (holding) Object.assign(wf, { ...stateFields(wf, "needs_human"), question: wf.question ?? `What should the full reply to ${first3} say?`, approved: void 0, status: `Holding reply sent. ${first3} is waiting for the full answer.` });
-  else if (home.work) {
+  else if (reviewReply) {
+    if (wf.reviewRun?.rule === by.ruleId && wf.reviewDone && !wf.pending.length)
+      Object.assign(wf, { ...stateFields(wf, "needs_human"), status: `PR ${wf.reviewDone.pr} waits for your approval`, approved: void 0 });
+  } else if (home.work) {
     afterSend(wf, out, msgId, home, canCloseApproval(store2, home), !home.pending.length && !pendingEffects(home.effects).length && !pendingParts(store2, home, wf.id));
     if (!active(home)) {
       stopWatch(store2, home);
@@ -47155,7 +47283,7 @@ async function send(store2, src, cfg, wf, text4, by, probe) {
   wf.sendAt = void 0;
   wf.newCount = 0;
   commit();
-  store2.log({ event: "sent", workflowId: wf.id, code: wf.code, chat: wf.chat.id, asker: wf.asker, intent: wf.intent, unchanged: !by.ruleId && a.verb === "ok" && !edited, v: 2, edited, ...changesOff ? { changesOff } : {}, ...wf.draft?.holding ? { holding: true } : {}, ...askAt ? { askAt, askMsgId } : {}, msgId, approvedBy: by.ruleId ? `rule:${by.ruleId}` : "owner", surface: a.surface, verb: a.verb, text: out, draft: wf.learnAfter?.draft, sources: wf.draft?.sources ?? [], confidence: wf.decision?.confidence });
+  store2.log({ event: "sent", workflowId: wf.id, code: wf.code, chat: wf.chat.id, asker: wf.asker, intent: wf.intent, unchanged: !by.ruleId && a.verb === "ok" && !edited, v: 2, edited, ...changesOff ? { changesOff } : {}, ...wf.draft?.holding ? { holding: true } : {}, ...askAt ? { askAt, askMsgId } : {}, msgId, approvedBy: by.ruleId ? `rule:${by.ruleId}` : "owner", ...by.ruleId ? { byRule: by.ruleId } : {}, surface: a.surface, verb: a.verb, text: out, draft: wf.learnAfter?.draft, sources: wf.draft?.sources ?? [], confidence: wf.decision?.confidence });
   outcome(store2, wf, "sent", { draft: wf.learnAfter?.draft ?? text4, sent: text4, approvedBy: by.ruleId ? `rule:${by.ruleId}` : "owner", msgId });
   if (wf.correction) {
     wf.learnAfter = { draft: wf.correction.sent, sent: `${out}${wf.correction.note ? `
@@ -47346,8 +47474,9 @@ function closeFamily(store2, procs, home, why2) {
 }
 async function correct(store2, src, wf, a) {
   if (store2.control().paused) return reply(store2, src, a, `${MARK} Paused, so the correction for ${wf.code} was not posted. Say "resume", then send it again.`);
-  const { msgId } = await src.send(wf.chat.id, a.text);
-  store2.addSent(msgId, a.text);
+  const cfg = store2.config(), text4 = withMarker(a.text, signatureOf(cfg), cfg.owner.name, false);
+  const { msgId } = await src.send(wf.chat.id, text4);
+  store2.addSent(msgId, text4);
   store2.log({ event: "correction", workflowId: wf.id, code: wf.code, msgId, sentId: wf.sent?.msgId, text: a.text });
   if (prTarget(store2, wf)) {
     notePromise(store2, wf, a.text);
@@ -47367,6 +47496,7 @@ var init_apply = __esm({
     init_intake();
     init_format();
     init_policy();
+    init_autosend();
     init_render();
     init_source();
     init_intake2();
@@ -47539,15 +47669,24 @@ async function probePRs(store2, cfg, probe, now = Date.now(), force = false, sub
     return commit;
   };
   if (!probe?.pr) {
-    for (const w of (subjects ?? []).filter((w2) => w2.prRead || prRefOf(store2, w2))) {
+    const unknown2 = subjects ?? store2.workflows().filter((w) => w.state !== "done" && w.prGroups !== void 0);
+    for (const w of unknown2.filter((w2) => w2.prRead || w2.prGroups !== void 0 || prRefOf(store2, w2))) {
+      const commit = commitFor(w);
       w.prRead = void 0;
       w.prUnknown = true;
-      commitFor(w)(false);
+      w.prGroups = void 0;
+      commit(false);
     }
     return 0;
   }
   const mark2 = store2.probeMark();
-  const items2 = (subjects ?? store2.workflows()).filter((w) => w.kind !== "tracker" && (w.state === "needs_human" || !!subjects)).map((w) => ({ w, ref: prRefOf(store2, w) })).filter((x) => !!x.ref);
+  const candidates2 = (subjects ?? store2.workflows()).filter((w) => w.kind !== "tracker" && (w.state === "needs_human" || !!subjects)).map((w) => ({ w, ref: prRefOf(store2, w) }));
+  for (const { w } of candidates2.filter((x) => !x.ref && x.w.prGroups !== void 0)) {
+    const commit = commitFor(w);
+    w.prGroups = void 0;
+    commit(false);
+  }
+  const items2 = candidates2.filter((x) => !!x.ref);
   if (!force && mark2.prAt && now - Date.parse(mark2.prAt) < EVERY_MS && !items2.some((x) => prChanges(x.w).some((e) => !e.pr))) return 0;
   if (!items2.length) return 0;
   store2.saveProbeMark({ ...store2.probeMark(), prAt: new Date(now).toISOString() });
@@ -47563,7 +47702,6 @@ async function probePRs(store2, cfg, probe, now = Date.now(), force = false, sub
       store2.log({ event: "pr-check-failed", pr: ref.id, error: String(e).slice(0, 200) });
     }
   }));
-  const me = cfg.owner.name.trim().toLowerCase();
   const queued = freshRead(() => new Set(store2.answers().map((a) => a.answer.code)));
   let n = 0;
   for (const { w: was, ref } of items2) {
@@ -47575,13 +47713,36 @@ async function probePRs(store2, cfg, probe, now = Date.now(), force = false, sub
       w.prRead = void 0;
       w.prUnknown = true;
       w.prRole = void 0;
+      w.prGroups = void 0;
       commitFor(w)(false);
       continue;
     }
     const role = await roleOn(cfg, probe, ref, st);
     commit.refresh();
+    if (!subjects && (w.state !== "needs_human" || freshRead(() => store2.answers().some((a) => a.answer.code === w.code)))) continue;
     w.prRole = role;
+    w.prGroups = reviewerGroups(st);
     if (st.author) w.prAuthor = st.author;
+    const mine = liveOwnerVote(cfg, st), jobId = w.job, job = jobId ? freshRead(() => store2.job(jobId)) : void 0;
+    const compoundAsk = /\b(?:and|then|also|after|before|plus)\b|[;&]/i.test(w.lastAsk ?? "");
+    const standaloneReview = w.intent === "pr_review" && !w.partOf && !pendingParts(store2, w) && (!compoundAsk || canCloseApproval(store2, w));
+    const ownerItem = standaloneReview && w.state === "needs_human" && !w.pending.length && job?.state !== "running" && job?.state !== "queued";
+    const asked3 = Date.parse(store2.thread(w.id).filter((m) => !m.byOwner).at(-1)?.at ?? w.createdAt);
+    const closedNow = /completed|abandoned/i.test(st.status) && (st.closedAt ? Date.parse(st.closedAt) > asked3 : w.prStatus !== void 0 && !/completed|abandoned/i.test(w.prStatus));
+    const voteNews = mine !== void 0 && mine !== 0 && w.prVote !== void 0 && mine !== w.prVote;
+    if (ownerItem && (closedNow || voteNews)) {
+      const reason2 = closedNow ? `PR ${ref.id} closed` : mine === 10 ? `You approved PR ${ref.id}` : mine === 5 ? `You voted "Approved with suggestions" on PR ${ref.id}` : mine === -5 ? `You voted "Waiting for author" on PR ${ref.id}` : `You voted "Rejected" on PR ${ref.id}`;
+      w.prRead = JSON.stringify([ref.id, st.status, st.head, mine]);
+      w.prReadAt = new Date(now).toISOString();
+      w.prUnknown = mine === void 0 ? true : void 0;
+      w.prVote = mine;
+      w.prStatus = st.status;
+      closeReviewItem(store2, w, reason2, now);
+      store2.log({ event: "pr-moved", code: w.code, pr: ref.id, reason: reason2 });
+      commit();
+      n++;
+      continue;
+    }
     regateVotes(store2, cfg, w, ref, st);
     const declined = w.reviewDecline;
     if (!subjects && declined && declined.pr === ref.id && declined.role !== "not-asked" && (MAY_REVIEW.includes(w.prRole) || declined.role === "unread") && /^active$/i.test(st.status) && now - Date.parse(declined.at) < 7 * 864e5) {
@@ -47599,8 +47760,6 @@ async function probePRs(store2, cfg, probe, now = Date.now(), force = false, sub
       n++;
       continue;
     }
-    const named2 = me ? st.votes.filter((v) => v.name.trim().toLowerCase() === me) : [];
-    const mine = named2.length === 1 && Object.values(VOTES).includes(named2[0].vote) ? named2[0].vote : void 0;
     w.prRead = JSON.stringify([ref.id, st.status, st.head, mine]);
     w.prReadAt = new Date(now).toISOString();
     w.prUnknown = mine === void 0 ? true : void 0;
@@ -47610,12 +47769,10 @@ async function probePRs(store2, cfg, probe, now = Date.now(), force = false, sub
     const receipt = (w.effects ?? []).find((e) => e.done && isVote(e.call) && prIdOf(e.call) === ref.id);
     const madeHere = !!receipt && sameVote(mine ?? 0, voteValue(receipt.call));
     const approvedNow = mine !== void 0 && mine >= 5 && !madeHere && (changed || approvalAsk(w.lastAsk ?? ""));
-    const asked3 = Date.parse(store2.thread(w.id).filter((m) => !m.byOwner).at(-1)?.at ?? w.createdAt);
-    const closedNow = /completed|abandoned/i.test(st.status) && (st.closedAt ? Date.parse(st.closedAt) > asked3 : w.prStatus !== void 0 && !/completed|abandoned/i.test(w.prStatus));
     const stale = !!w.draft && w.prDraft !== w.prRead && (!!w.prDraft || !receipt && mine !== void 0 && mine >= 5 && approvalMention(w.draft.text));
     const ownerWriting = w.draft?.byOwner && mine !== void 0 && mine < 5 && !closedNow && (!approvalMention(w.draft.text) || approvalReplyMatches(w.draft.text, mine, ref.id));
     const reason = receipt && !w.sent || w.draft && w.prDraft === w.prRead || ownerWriting ? void 0 : closedNow ? `PR ${ref.id} was ${/completed/i.test(st.status) ? "completed" : "abandoned"}` : approvedNow || changed ? `You ${(VOTE[String(mine)] ?? ((id) => `voted on PR ${id}`))(ref.id)} in Azure DevOps` : stale ? `PR ${ref.id} changed since this draft` : void 0;
-    if (mine !== void 0 && mine !== w.prVote) w.prVote = mine;
+    if (!standaloneReview && mine !== void 0 && mine !== w.prVote) w.prVote = mine;
     w.prStatus = st.status;
     if (!reason) {
       commitFor(w)(false);
@@ -47628,13 +47785,39 @@ async function probePRs(store2, cfg, probe, now = Date.now(), force = false, sub
       if (home === w && canCloseApproval(store2, home) && (approvedNow || closedNow)) closeFamily(store2, realProcs, home, reason);
       else Object.assign(w, { ...stateFields(w, "running"), status: `PR checked: ${reason}; checking the remaining ask`, pending: w.pending.length ? w.pending : w.msgIds.slice(-1) });
       if (home !== w) store2.save(home);
-    } else if (stale && !approvedNow && !closedNow || reReviewAsk(w.lastAsk ?? "") || !approvalAsk(w.lastAsk ?? "") && !closedNow || /\b(?:and|then|also|after|before|plus)\b|[;&]/i.test(w.lastAsk ?? "")) Object.assign(w, { ...stateFields(w, "running"), status: `PR checked: ${reason}; checking the remaining ask`, pending: w.pending.length ? w.pending : w.msgIds.slice(-1) });
+    } else if (stale && !approvedNow && !closedNow || reReviewAsk(w.lastAsk ?? "") || !approvalAsk(w.lastAsk ?? "") && !closedNow || compoundAsk) Object.assign(w, { ...stateFields(w, "running"), status: `PR checked: ${reason}; checking the remaining ask`, pending: w.pending.length ? w.pending : w.msgIds.slice(-1) });
     else Object.assign(w, { ...stateFields(w, "done"), status: `Nothing needed: ${reason}`, pending: [], closedBy: "nothing" });
     store2.log({ event: "pr-moved", code: w.code, pr: ref.id, reason });
     commitFor(w)();
     n++;
   }
   return n;
+}
+function closeReviewItem(store2, w, reason, now) {
+  const at3 = new Date(now).toISOString();
+  stopWatch(store2, w);
+  if (w.work) {
+    w.work.closed = { at: at3, why: reason };
+    w.work.next = void 0;
+    w.work.waitingOn = void 0;
+    step(w, reason, { at: at3, news: true });
+  }
+  close(w, reason);
+  Object.assign(w, {
+    closedBy: "nothing",
+    question: void 0,
+    groupAsk: void 0,
+    heldVotes: void 0,
+    reviewDecline: void 0,
+    reviewAgain: void 0,
+    statusReason: void 0,
+    approved: void 0,
+    sendAt: void 0,
+    waitingSince: void 0,
+    runFailed: void 0,
+    promise: void 0,
+    revAt: at3
+  });
 }
 function prRefOf(store2, w) {
   const target2 = prTarget(store2, w);
@@ -47660,6 +47843,15 @@ function setEffects(store2, w, f) {
 }
 function regateVotes(store2, cfg, w, ref, st) {
   if (w.state !== "needs_human" || !w.prRole) return;
+  if (w.groupAsk?.pr === ref.id) {
+    const groups2 = w.prRole === "group-unknown" ? unknownGroups(cfg, st) : [];
+    if (JSON.stringify(groups2) !== JSON.stringify(w.groupAsk.groups)) {
+      const at3 = (/* @__PURE__ */ new Date()).toISOString();
+      w.revAt = at3 === w.revAt ? new Date(Date.parse(at3) + 1).toISOString() : at3;
+    }
+    w.groupAsk = groups2.length ? { pr: ref.id, groups: groups2 } : void 0;
+    w.question = w.groupAsk ? groupQuestion(w.groupAsk) : void 0;
+  }
   const ours4 = (e) => !!pendingEffects([e]).length && isVote(e.call) && prIdOf(e.call) === ref.id;
   const votes = (w.effects ?? []).filter(ours4);
   if (!MAY_REVIEW.includes(w.prRole)) {
@@ -47706,17 +47898,27 @@ async function recheckPr(store2, w, probe) {
   const votes = (w.effects ?? []).filter((e) => !e.off && isVote(e.call) && prIdOf(e.call) !== void 0);
   if (!votes.length) return void 0;
   const ref = prRefOf(store2, w), code = w.code, id = prIdOf(votes[0].call);
-  if (!ref || ref.id !== id || id !== prTarget(store2, w)) return `Not done ${code}: PR ${id} is not this item's PR. Nothing was changed.`;
-  if (!probe?.pr) return `Not done ${code}: PR ${id} must be checked first, and no Azure DevOps server is set up. Nothing was changed.`;
+  if (!ref || ref.id !== id || id !== prTarget(store2, w)) {
+    w.prGroups = void 0;
+    return `Not done ${code}: PR ${id} is not this item's PR. Nothing was changed.`;
+  }
+  if (!probe?.pr) {
+    w.prGroups = void 0;
+    return `Not done ${code}: PR ${id} must be checked first, and no Azure DevOps server is set up. Nothing was changed.`;
+  }
   let st;
   try {
     st = await probe.pr(ref.project, ref.repo, id);
   } catch (e) {
+    w.prGroups = void 0;
     return `Not done ${code}: could not read PR ${id} first (${String(e).slice(0, 120)}). Nothing was changed. Say "ok ${code}" to try again.`;
   }
-  if (!/^(active|completed|abandoned)$/i.test(st.status)) return `Not done ${code}: Azure DevOps did not say what state PR ${id} is in. Nothing was changed. Say "ok ${code}" to try again.`;
-  const me = store2.config().owner.name.trim().toLowerCase(), named2 = st.votes.filter((v) => v.name.trim().toLowerCase() === me);
-  const mine = named2.length === 1 && Object.values(VOTES).includes(named2[0].vote) ? named2[0].vote : void 0;
+  if (!/^(active|completed|abandoned)$/i.test(st.status)) {
+    w.prGroups = void 0;
+    return `Not done ${code}: Azure DevOps did not say what state PR ${id} is in. Nothing was changed. Say "ok ${code}" to try again.`;
+  }
+  w.prGroups = reviewerGroups(st);
+  const mine = liveOwnerVote(store2.config(), st);
   w.prRead = JSON.stringify([id, st.status, st.head, mine]);
   w.prUnknown = mine === void 0 ? true : void 0;
   clearResetVotes(store2, w, id, st, mine);
@@ -47743,23 +47945,31 @@ async function recheckPr(store2, w, probe) {
 }
 async function voteNow(store2, cfg, w, effects, probe) {
   const votes = effects.filter((e) => isVote(e.call));
-  if (!votes.length || !probe?.pr) return { effects };
+  if (!votes.length) return { effects };
+  if (!probe?.pr) {
+    w.prGroups = void 0;
+    return { effects };
+  }
   const c = votes[0].call, ref = prOf(store2, w) ?? { project: String(c.args.project ?? ""), repo: String(c.args.repositoryId ?? ""), id: prIdOf(c) };
   let st;
   try {
     st = await probe.pr(ref.project, ref.repo, ref.id);
   } catch (e) {
+    w.prGroups = void 0;
     store2.log({ event: "pr-check-failed", pr: ref.id, error: String(e).slice(0, 200) });
     return { effects };
   }
-  if (!/^(active|completed|abandoned)$/i.test(st.status)) return { effects };
+  if (!/^(active|completed|abandoned)$/i.test(st.status)) {
+    w.prGroups = void 0;
+    return { effects };
+  }
+  w.prGroups = reviewerGroups(st);
   const rest2 = effects.filter((e) => !isVote(e.call));
   if (/completed|abandoned/i.test(st.status)) return { effects: rest2, why: `PR ${ref.id} is ${st.status.toLowerCase()}` };
-  const me = cfg.owner.name.trim().toLowerCase(), named2 = st.votes.filter((v) => v.name.trim().toLowerCase() === me);
-  const vote = named2.length === 1 && Object.values(VOTES).includes(named2[0].vote) ? named2[0].vote : void 0;
+  const vote = liveOwnerVote(cfg, st);
   clearResetVotes(store2, w, ref.id, st, vote);
   const current3 = { vote, head: st.head };
-  if (named2.length === 1 && votes.every((e) => sameVote(named2[0].vote, voteValue(e.call)))) return { effects: rest2, why: `you already voted on PR ${ref.id}`, ...current3 };
+  if (vote !== void 0 && votes.every((e) => sameVote(vote, voteValue(e.call)))) return { effects: rest2, why: `you already voted on PR ${ref.id}`, ...current3 };
   if (votes.some((e) => !sameHead(st.head, e.head))) return { effects: rest2, again: reviewAgain(w.code, `PR ${ref.id} changed since your review (new commits).`), ...current3 };
   const facts = factsOf(st);
   return { effects: effects.map((e) => isVote(e.call) ? { ...e, pr: facts } : e), ...current3 };
@@ -47907,6 +48117,8 @@ var init_probe = __esm({
     init_work();
     init_apply();
     init_jobs();
+    init_intake2();
+    init_track();
     init_review_gate();
     init_fs();
     init_commit();
@@ -47933,6 +48145,385 @@ var init_probe = __esm({
   }
 });
 
+// src/core/review.ts
+function reviewDoneFacts(basis, byRule, effects) {
+  const posted = effects.filter((e) => e.done && !e.off && !e.maybe && !e.error && e.done.byRule === byRule && e.done.severity).map((e) => {
+    const args2 = e.call?.args ?? {}, payload = e.payload && typeof e.payload === "object" ? e.payload : {};
+    return {
+      severity: e.done.severity,
+      text: String(args2.content ?? args2.text ?? args2.body ?? e.summary),
+      ..."file" in payload && typeof payload.file === "string" ? { file: payload.file } : {},
+      ..."line" in payload && typeof payload.line === "number" ? { line: payload.line } : {},
+      ...e.done.ref && /^https?:\/\//i.test(e.done.ref) ? { thread: e.done.ref } : {}
+    };
+  });
+  return {
+    pr: basis.pr,
+    head: basis.head,
+    byRule,
+    reviewedAt: basis.at,
+    posted,
+    counts: { high: posted.filter((e) => e.severity === "High").length, medium: posted.filter((e) => e.severity === "Medium").length, low: posted.filter((e) => e.severity === "Low").length },
+    waiting: effects.filter((e) => !e.done && !e.off).map(pageChangeId)
+  };
+}
+var reviewFrame;
+var init_review = __esm({
+  "src/core/review.ts"() {
+    "use strict";
+    init_page_approval();
+    reviewFrame = (pr, counts) => {
+      const n = counts.high + counts.medium + counts.low;
+      return n ? `Reviewed PR ${pr} and left ${n} comments (${counts.high} high, ${counts.medium} medium, ${counts.low} low).` : `Reviewed PR ${pr}; no comments from my side.`;
+    };
+  }
+});
+
+// src/runner/review-autonomy.ts
+import { isDeepStrictEqual as isDeepStrictEqual4 } from "node:util";
+async function checkReviewCompletion(store2, job, probe) {
+  const wf = freshRead(() => job.parents.map((id) => store2.workflow(id)).find((w) => w?.intent === "pr_review"));
+  const ref = wf && prOf(store2, wf);
+  if (!ref) return void 0;
+  const at3 = (/* @__PURE__ */ new Date()).toISOString();
+  let reader = probe;
+  try {
+    reader ??= adoProbe(freshRead(() => store2.config()));
+    if (!reader?.pr) throw new Error("The PR cannot be read at review completion");
+    const live3 = await reader.pr(ref.project, ref.repo, ref.id);
+    const start = job.reviewStart;
+    const basis = start?.pr === ref.id && sameHead(start.head, live3.head) ? { ...start } : void 0;
+    return { pr: ref.id, head: live3.head, status: live3.status, at: at3, basis };
+  } catch (error62) {
+    store2.log({ event: "review-basis-held", job: job.id, pr: ref.id, reason: String(error62).slice(0, 300) });
+    return { pr: ref.id, at: at3 };
+  } finally {
+    if (!probe) try {
+      await reader?.close?.();
+    } catch (error62) {
+      store2.log({ event: "probe-close-failed", job: job.id, error: String(error62).slice(0, 200) });
+    }
+  }
+}
+function findingFor(e, findings = []) {
+  const p = e.payload;
+  return object6(p) && typeof p.text === "string" ? findings.find((f) => f.file === p.file && f.line === p.line && clean3(f.text) === clean3(String(p.text))) : void 0;
+}
+function commentCall(cfg, e, ref) {
+  const tool = Object.entries(cachedCatalogs(cfg)).flatMap(([server, catalog]) => catalog.tools.map((t2) => ({ name: `${server}-${t2.name}`, info: t2.info }))).find((t2) => t2.name === e.call?.tool);
+  return tool && isInlineComment(e) && !isVote(e.call) && /pull_request_thread_write$/i.test(tool.name) ? buildCommentCall(e.payload, { project: ref.project, repositoryId: ref.repo, pullRequestId: ref.id }, tool).call : void 0;
+}
+function shareable2(wf, f, ref, reads) {
+  if (!reads || reads.unknown || reads.restricted || reads.chats.length) return false;
+  if (wf.shareHold || wf.records?.some((r) => r.audience !== "org") || wf.drewOn?.length || wf.looked?.some((r) => r.tool !== "ado" && r.n > 0)) return false;
+  const sources = [...wf.draft?.sources ?? [], ...f.sources ?? []];
+  const root = ref.url?.split("/pullrequest/")[0].toLowerCase();
+  return sources.every((s3) => s3.tier !== "private" && !s3.stale && !s3.label && !!root && s3.ref.toLowerCase().startsWith(`${root}/`));
+}
+async function threads(cfg, ref, call2) {
+  const listed2 = Object.entries(cachedCatalogs(cfg)).flatMap(([server, catalog]) => catalog.tools.filter((t2) => /(?:^|_)repo_pull_request_thread$|^pull_request_thread$/i.test(t2.name)).map((t2) => ({ server, ...t2 })));
+  if (listed2.length !== 1) throw new Error("The PR thread reader isn't uniquely available; comments stay proposed");
+  const tool = listed2[0], result = [];
+  for (let skip = 0; skip < 2e3; skip += 100) {
+    const args2 = { action: "list", project: ref.project, repositoryId: ref.repo, pullRequestId: ref.id, top: 100, skip };
+    const problem = effectCallProblem({ tool: tool.name, args: args2 }, tool.info);
+    if (problem) throw new Error(`PR threads could not be checked: ${problem}`);
+    let raw = await call2(tool.server, tool.name, args2);
+    if (object6(raw) && Array.isArray(raw.content)) {
+      const chunks = raw.content.filter(object6).filter((p) => p.type === "text" && typeof p.text === "string");
+      if (chunks.length !== 1) throw new Error("The PR thread reader returned an unfamiliar result");
+      raw = JSON.parse(String(chunks[0].text));
+    }
+    const rows = Array.isArray(raw) ? raw : object6(raw) ? raw.value ?? raw.items ?? raw.threads : void 0;
+    if (!Array.isArray(rows) || rows.length > 100) throw new Error("The PR thread reader returned an unfamiliar page");
+    if (object6(raw) && raw.continuationToken) throw new Error("The PR thread reader needs unsupported continuation paging");
+    for (const row of rows) {
+      if (!object6(row) || !Array.isArray(row.comments)) throw new Error("A PR thread could not be checked");
+      if (row.isDeleted) continue;
+      const context2 = object6(row.threadContext) ? row.threadContext : row;
+      const start = object6(context2.rightFileStart) ? context2.rightFileStart.line : context2.rightFileStartLine;
+      for (const c of row.comments) if (object6(c) && !c.isDeleted && typeof c.content === "string") {
+        result.push({ file: String(context2.filePath ?? ""), line: Number(start), text: clean3(c.content) });
+      }
+    }
+    if (rows.length < 100 && !(object6(raw) && raw.hasMoreResults)) return result;
+  }
+  throw new Error("Too many PR threads to check completely; comments stay proposed");
+}
+async function live2(store2, cfg, wf, probe) {
+  const ref = prOf(store2, wf);
+  if (!ref || !probe?.pr) throw new Error("The PR cannot be checked; comments stay proposed");
+  const st = await probe.pr(ref.project, ref.repo, ref.id);
+  if (!/^active$/i.test(st.status) || !st.head) throw new Error(`PR ${ref.id} is closed or its head could not be read`);
+  const role = await roleOn(cfg, probe, ref, st);
+  if (!MAY_REVIEW.includes(role)) throw new Error(`The owner is not an eligible reviewer on PR ${ref.id} (${role})`);
+  wf.prGroups = (st.reviewers ?? []).filter((r) => r.group).map((r) => r.name.split("\\").at(-1).normalize("NFKC").trim());
+  return { ref, head: st.head };
+}
+function safety(store2, cfg, wf) {
+  const check2 = { ...wf, draft: { text: "Review comments.", commitment: false, sources: [] } };
+  const decision = decide(check2, store2.rules(), policyContext(store2, cfg, wf), "review-comments");
+  return decision.action === "send" ? void 0 : decision.reason;
+}
+async function reviewPostCheck(store2, job, e, call2, probe) {
+  try {
+    const cfg = freshRead(() => store2.config());
+    const wf = freshRead(() => job.parents.map((id) => store2.workflow(id)).find((w) => w && stillApproved(w, job)));
+    if (!wf || job.byRule !== e.byRule || !wf.reviewRun || wf.reviewRun.job !== job.id || wf.reviewRun.phase !== "posting") return { error: "The review comment approval changed; it stays proposed" };
+    const { ref, head } = await live2(store2, cfg, wf, probe);
+    if (!wf.reviewBasis || wf.reviewBasis.pr !== ref.id || !sameHead(wf.reviewBasis.head, head) || ref.id !== wf.reviewRun.pr || !sameHead(head, wf.reviewRun.head) || !sameHead(e.head, head)) return { error: "New changes since the review; comments stay proposed" };
+    const carrier = store2.job(wf.reviewRun.carrier);
+    const f = findingFor(e, carrier?.result?.findings);
+    if (!f?.severity || !shareable2(wf, f, ref, carrier?.result?.reviewSources) || !isDeepStrictEqual4(commentCall(cfg, e, ref), e.call)) return { error: "The finding or its audience could not be verified; it stays proposed" };
+    const duplicate = covered2(await threads(cfg, ref, call2), e);
+    return freshRead(() => {
+      const latest2 = store2.workflow(wf.id), currentCfg = store2.config(), currentJob = store2.job(job.id);
+      if (!latest2 || latest2.state !== "waiting_on_task" || !currentJob || currentJob.run?.id !== job.run?.id || currentJob.state !== "running" || !stillApproved(latest2, currentJob) || latest2.pending.length || latest2.ownerSend || latest2.reviewRun?.turn !== wf.reviewRun.turn || !sameHead(latest2.reviewRun?.head, head)) return { error: "The review changed while checking; comments stay proposed" };
+      if (!latest2.reviewBasis || latest2.reviewBasis.pr !== ref.id || !sameHead(latest2.reviewBasis.head, head)) return { error: "The reviewed revision is no longer verified; comments stay proposed" };
+      const now = { ...latest2, prGroups: wf.prGroups };
+      if (JSON.stringify(cfg.owner) !== JSON.stringify(currentCfg.owner)) return { error: "Reviewer settings changed while checking; comments stay proposed" };
+      if (reviewRuleFor(now, store2.rules())?.id !== job.byRule) return { error: "The review rule is off or no longer covers this PR; comments stay proposed" };
+      const currentCarrier = store2.job(latest2.reviewRun.carrier);
+      const currentFinding = findingFor(e, currentCarrier?.result?.findings);
+      if (!currentFinding || !shareable2(latest2, currentFinding, ref, currentCarrier?.result?.reviewSources) || !isDeepStrictEqual4(commentCall(currentCfg, e, ref), e.call)) return { error: "The finding or its audience changed while checking; comments stay proposed" };
+      const error62 = refusal(currentCfg, e, ref.id) ?? safety(store2, currentCfg, now);
+      return error62 ? { error: error62 } : duplicate ? { duplicate: true } : {};
+    });
+  } catch (error62) {
+    return { error: String(error62).slice(0, 300) };
+  }
+}
+async function reviewCommentHook(store2, src, cfg, options) {
+  if (options.completed) return finishReview(store2, src, options.completed.job, options.completed.effects, options.probe);
+  if (!reviewRuleForEnabled(store2) || !store2.control().autoSend || cfg.paused || store2.control().paused || store2.control().stopped) return;
+  for (const old of store2.workflows()) {
+    if (old.intent !== "pr_review" || old.state !== "needs_human" || old.ownerSend || old.approved || old.pending.length || old.draft?.preview || old.draft?.byOwner) continue;
+    const original = old.job && store2.job(old.job);
+    if (!original || original.byRule || original.every || original.state !== "done" || original.purpose !== "work" || !original.result?.findings || !original.result.at || old.reviewRun?.resultAt === original.result.at) continue;
+    if (old.reviewAttempt?.job === original.id && old.reviewAttempt.resultAt === original.result.at) continue;
+    const cleanReview = original.result.reviewClean === true && original.result.findings.length === 0 && !original.result.effects.length && !old.effects?.length && !old.question && !old.todos?.length;
+    if (!cleanReview && !pendingEffects(old.effects).some((e) => {
+      const f = findingFor(e, original.result?.findings);
+      return f?.severity && !f.thread && !e.error && !e.maybe && !e.held;
+    })) continue;
+    const wf = freshRead(() => store2.workflow(old.id));
+    if (!wf) continue;
+    const commit = recordCommit(wf, () => store2.workflow(wf.id), store2.save.bind(store2));
+    const reviewedHead = wf.reviewBasis?.head;
+    if (!reviewedHead) {
+      wf.reviewAttempt = { job: original.id, resultAt: original.result.at };
+      wf.status = "Review comments not posted: the reviewed revision was not verified. Review again before posting by rule.";
+      commit();
+      continue;
+    }
+    try {
+      await membersOf(store2, src, wf.chat.id);
+      wf.chat = { ...wf.chat, guests: store2.members()[wf.chat.id]?.guests };
+      const { ref, head } = await live2(store2, cfg, wf, options.probe);
+      const rule = reviewRuleFor(wf, store2.rules());
+      const scope2 = wf.reviewAsk?.job === original.id && wf.reviewAsk.lastMsgId === wf.lastMsgId ? wf.reviewAsk : void 0;
+      if (!rule || !reviewAsked(store2, { ...wf, pending: scope2?.ids ?? [wf.lastMsgId], ownerAnswer: scope2?.ownerAnswer }, ref.id)) continue;
+      if (wf.reviewBasis?.pr !== ref.id || !sameHead(head, reviewedHead)) throw new Error("The reviewed head is missing or changed; comments stay proposed");
+      if (cleanReview) {
+        commit.refresh();
+        if (wf.state !== "needs_human" || wf.pending.length || wf.ownerSend || wf.approved || wf.job !== original.id || wf.revAt !== old.revAt || wf.effects?.length) continue;
+        wf.reviewRun = { job: original.id, carrier: original.id, resultAt: original.result.at, rule: rule.id, pr: ref.id, head, turn: wf.revAt, phase: "posting", reply: wf.draft };
+        const error63 = freshRead(() => safety(store2, store2.config(), wf));
+        if (error63) {
+          wf.reviewRun = void 0;
+          wf.status = `Review waits: ${error63}`;
+          commit();
+          continue;
+        }
+        commit();
+        await finishReview(store2, src, original, [], options.probe, true);
+        continue;
+      }
+      const seen = await threads(cfg, ref, options.call);
+      commit.refresh();
+      if (wf.state !== "needs_human" || wf.pending.length || wf.ownerSend || wf.approved || wf.job !== original.id || wf.revAt !== old.revAt) continue;
+      const selected = [];
+      const effects = (wf.effects ?? []).map((e) => {
+        if (!pendingEffects([e]).length || e.error || maybeOf(store2, e) || madeBefore(store2, e)) return e;
+        const finding = findingFor(e, original.result.findings);
+        if (!finding?.severity || finding.thread || !isInlineComment(e)) return e;
+        if (!shareable2(wf, finding, ref, original.result?.reviewSources)) return { ...e, held: "sharing" };
+        const payload = object6(e.payload) ? scrubDeep({ ...e.payload, text: `[${finding.severity}] ${clean3(finding.text)}` }) : e.payload;
+        const candidate = { ...e, payload, head, severity: finding.severity, byRule: rule.id };
+        const call2 = commentCall(cfg, candidate, ref);
+        if (!call2) return e;
+        const built = { ...candidate, call: call2, summary: scrubDeep(e.summary), held: void 0 };
+        if (covered2(seen, built)) return { ...e, off: true };
+        if (!selected.some((other) => sameChange(other, built))) selected.push(built);
+        return built;
+      });
+      selected.sort((a, b) => priority[a.severity] - priority[b.severity]);
+      const batch = selected.slice(0, 10);
+      if (!batch.length) {
+        wf.effects = effects;
+        wf.status = "Review comments wait for you: no new comment with verified severity and audience is ready";
+        commit();
+        continue;
+      }
+      wf.reviewRun = { job: "", carrier: original.id, resultAt: original.result.at, rule: rule.id, pr: ref.id, head, turn: wf.revAt, phase: "posting", reply: wf.draft };
+      const error62 = safety(store2, cfg, wf);
+      if (error62) {
+        wf.reviewRun = void 0;
+        wf.effects = effects;
+        wf.status = `Review waits: ${error62}`;
+        commit();
+        continue;
+      }
+      const approvedIds = new Set(batch.map(pageChangeId));
+      wf.effects = effects.map((e) => !e.done && !approvedIds.has(pageChangeId(e)) ? { ...e, byRule: void 0 } : e);
+      changesJob(store2, cfg, wf, batch);
+      const job = store2.job(wf.job);
+      job.byRule = rule.id;
+      job.state = "queued";
+      job.purpose = "execute";
+      job.key = `review-comments:${wf.id}:${job.id}`;
+      job.goal = `Post review comments on PR ${ref.id} under rule ${rule.id}`;
+      job.result.summary = "Comments authorized by the review rule";
+      wf.reviewRun.job = job.id;
+      wf.approved = { text: wf.draft?.text ?? "", effects: JSON.stringify(batch.map((e) => [e.system, e.action, e.target, e.payload, e.call, e.head])), at: (/* @__PURE__ */ new Date()).toISOString(), byRule: rule.id, effectIds: batch.map(pageChangeId) };
+      Object.assign(wf, { ...stateFields(wf, "waiting_on_task"), status: `Posting review comments on PR ${ref.id}` });
+      store2.saveJob(job);
+      commit();
+    } catch (error62) {
+      commit.refresh();
+      if (wf.state === "needs_human" && wf.job === original.id && wf.revAt === old.revAt) {
+        wf.reviewAttempt = { job: original.id, resultAt: original.result.at };
+        wf.status = `Review comments not posted: ${String(error62).replace(/^Error: /, "").slice(0, 240)}`;
+        commit();
+      }
+      store2.log({ event: "review-autopost-held", code: wf.code, reason: String(error62).slice(0, 300) });
+    }
+  }
+}
+async function finishReview(store2, src, job, effects, probe, cleanReview = false) {
+  for (const id of job.parents) {
+    const wf = freshRead(() => store2.workflow(id));
+    if (!wf || wf.reviewRun?.job !== job.id || wf.job !== job.id) continue;
+    const commit = recordCommit(wf, () => store2.workflow(wf.id), store2.save.bind(store2));
+    const run2 = wf.reviewRun;
+    const verifiedClean = cleanReview && job.result?.reviewClean === true && job.result.findings?.length === 0 && !job.result.effects.length && !wf.effects?.length && !wf.pending.length && !wf.ownerSend && !wf.approved && !wf.question && !wf.todos?.length && run2.turn === wf.revAt;
+    const ok = verifiedClean || !cleanReview && stillApproved(wf, job);
+    wf.effects = (wf.effects ?? []).map((e) => {
+      const made = effects.find((r) => sameChange(r, e));
+      return made ? { ...e, done: made.done, error: made.error, maybe: made.maybe, off: made.off, byRule: made.done?.byRule } : e;
+    });
+    const basis = wf.reviewBasis;
+    if (!basis || basis.pr !== run2.pr || !sameHead(basis.head, run2.head)) {
+      wf.approved = void 0;
+      wf.reviewRun = { ...run2, phase: "held" };
+      wf.job = run2.carrier;
+      if (wf.state !== "done") Object.assign(wf, { ...stateFields(wf, "needs_human"), status: "The reviewed revision is no longer verified; check the comment receipts before sending" });
+      commit();
+      continue;
+    }
+    const facts = reviewDoneFacts(basis, run2.rule, effects);
+    if (verifiedClean) facts.clean = true;
+    facts.waiting = (wf.effects ?? []).filter((e) => !e.done && !e.off).map(pageChangeId);
+    wf.reviewDone = facts;
+    wf.approved = void 0;
+    wf.reviewRun = { ...run2, phase: "held" };
+    wf.job = run2.carrier;
+    const original = store2.job(run2.carrier);
+    if (original?.result && original.result.at === run2.resultAt && original.state === "done") {
+      original.result.effects = wf.effects;
+      store2.saveJob(original);
+    }
+    const failed2 = effects.filter((e) => e.error || e.maybe).length;
+    const skipped = (wf.effects ?? []).filter(isInlineComment).length - facts.posted.length - failed2;
+    store2.log({ event: "review-autoposted", code: wf.code, pr: run2.pr, posted: facts.posted.length, skipped: Math.max(0, skipped), failed: failed2, severities: facts.counts, rule: run2.rule, byRule: run2.rule });
+    if (!ok || wf.state === "done") {
+      if (wf.state === "waiting_on_task") Object.assign(wf, { ...stateFields(wf, "needs_human"), waitingSince: void 0, status: "The review changed while posting; check its receipts before sending the reply" });
+      commit();
+      continue;
+    }
+    Object.assign(wf, { ...stateFields(wf, "needs_human"), waitingSince: void 0, status: facts.posted.length ? `PR ${run2.pr} waits for your approval; posted ${facts.posted.length} comments` : `No review comments posted; the review stays with you` });
+    const unsettled = effects.some((e) => e.maybe || !e.done && !e.off && !e.error);
+    if (unsettled) wf.status = "Some review comments have no final receipt; check them before sending the reply";
+    commit();
+    if (!facts.posted.length && !facts.clean || unsettled) continue;
+    const frame = reviewFrame(run2.pr, facts.counts);
+    const sentence2 = run2.reply?.text.trim().match(/^[^\n]+?[.!?](?:\s|$)|^[^\n]+$/)?.[0].trim();
+    let extra = "", fallback;
+    if (sentence2) {
+      const candidate = { ...wf, draft: { ...run2.reply, text: sentence2 } };
+      try {
+        const hold = await sharingHold(store2, src, candidate, draftUse(candidate, knowledgeOf(store2, store2.config()), { chats: wf.drewOn, records: wf.records }));
+        if (voteMention(sentence2)) fallback = "Sent the short version: the longer reply mentioned approving, and Delegate never says that for you.";
+        else if (commits(candidate) || candidate.shareHold || hold || labeledToGuests(candidate) || candidate.draft.sources.some((s3) => s3.tier === "private" || s3.stale) || /\b(?:iteration|reviewed|posted|sent|left)\b|\d|\b[0-9a-f]{7,40}\b/i.test(sentence2)) fallback = "Sent the short version: the longer reply could not pass the commitment, source or audience checks.";
+        else extra = ` ${scrubDeep(sentence2)}`;
+      } catch (error62) {
+        fallback = "Sent the short version: the longer reply could not pass the source or audience checks.";
+        store2.log({ event: "review-summary-held", code: wf.code, byRule: run2.rule, reason: String(error62).slice(0, 300) });
+      }
+    }
+    commit.refresh();
+    if (wf.state !== "needs_human" || wf.reviewRun?.job !== job.id || wf.revAt !== run2.turn || wf.ownerSend || wf.pending.length) {
+      commit();
+      continue;
+    }
+    wf.draft = { text: frame + extra, commitment: false, sources: extra ? run2.reply?.sources ?? [] : [] };
+    wf.reviewRun = { ...wf.reviewRun, sendText: wf.draft.text };
+    wf.reviewDone = facts;
+    const cfg = store2.config(), rule = reviewRuleFor(wf, store2.rules());
+    const decision = decide(wf, store2.rules(), policyContext(store2, cfg, wf));
+    wf.decision = decision;
+    commit();
+    if (rule?.id !== run2.rule || decision.action !== "send") continue;
+    try {
+      const sent = await send(store2, src, cfg, wf, wf.draft?.text, { ruleId: run2.rule }, probe);
+      if (sent && wf.sent) {
+        store2.log({ event: "review-autoreplied", code: wf.code, pr: run2.pr, rule: run2.rule, byRule: run2.rule });
+        commit.refresh();
+        if (wf.reviewRun?.job !== job.id || wf.revAt !== run2.turn || wf.pending.length) continue;
+        wf.reviewRun = { ...run2, phase: "replied" };
+        wf.reviewDone = { ...facts, ...fallback ? { fallback } : {}, reply: { text: wf.sent.text ?? frame, teams: messageLink(wf.chat.id, wf.sent.msgId) } };
+        commit();
+      }
+    } catch (error62) {
+      commit.refresh();
+      wf.status = `Review comments posted; reply not sent: ${String(error62).slice(0, 180)}`;
+      commit();
+      store2.log({ event: "review-autoreply-failed", code: wf.code, byRule: run2.rule, reason: String(error62).slice(0, 300) });
+    }
+  }
+}
+var object6, clean3, priority, covered2, reviewRuleForEnabled;
+var init_review_autonomy = __esm({
+  "src/runner/review-autonomy.ts"() {
+    "use strict";
+    init_channels();
+    init_effects();
+    init_page_approval();
+    init_policy();
+    init_review();
+    init_secrets();
+    init_upgrades();
+    init_vote_claims();
+    init_fs();
+    init_apply();
+    init_autosend();
+    init_catalog();
+    init_commit();
+    init_effect_calls();
+    init_jobs();
+    init_ledger();
+    init_probe();
+    init_proposals();
+    init_review_gate();
+    init_sharing();
+    object6 = (v) => !!v && typeof v === "object" && !Array.isArray(v);
+    clean3 = (v) => v.replace(/^\[(?:High|Medium|Low)\]\s*/i, "").replace(/\s+/g, " ").trim();
+    priority = { High: 0, Medium: 1, Low: 2 };
+    covered2 = (all, e) => object6(e.payload) && all.some((t2) => t2.file.replace(/^[/\\]/, "") === String(e.payload && object6(e.payload) ? e.payload.file : "").replace(/^[/\\]/, "") && t2.line === (object6(e.payload) ? e.payload.line : void 0) && t2.text === clean3(String(object6(e.payload) ? e.payload.text : "")));
+    reviewRuleForEnabled = (store2) => store2.rules().some((r) => r.then === "review" && !r.off);
+  }
+});
+
 // src/runner/change.ts
 async function makeChange(store2, jobId, runId, index, call2, probe) {
   const job = store2.job(jobId), e = job?.result?.effects[index];
@@ -47949,7 +48540,7 @@ async function makeChange(store2, jobId, runId, index, call2, probe) {
   const why2 = refusal(cfg, e, prTarget(store2, owner2));
   if (why2) {
     const error62 = `Change ${index} cannot be made: ${why2}.`;
-    if (why2.startsWith(OLD_INVITE)) store2.saveChange(jobId, runId, index, { call: JSON.stringify(e.call), state: "failed", error: error62, at: (/* @__PURE__ */ new Date()).toISOString() });
+    if (job.byRule || why2.startsWith(OLD_INVITE)) store2.saveChange(jobId, runId, index, { call: JSON.stringify(e.call), state: "failed", error: error62, at: (/* @__PURE__ */ new Date()).toISOString() });
     return { error: error62 };
   }
   const key = JSON.stringify(e.call), at3 = () => (/* @__PURE__ */ new Date()).toISOString();
@@ -47969,7 +48560,7 @@ async function makeChange(store2, jobId, runId, index, call2, probe) {
   }
   const made = isVote(e.call) ? void 0 : madeBefore(store2, e);
   if (made) {
-    store2.saveChange(jobId, runId, index, { call: JSON.stringify(e.call), state: "done", ref: made.ref, at: made.at });
+    store2.saveChange(jobId, runId, index, { call: JSON.stringify(e.call), state: "done", ref: made.ref, at: made.at, ...job.byRule ? { skipped: true } : {} });
     return { ref: made.ref };
   }
   const open2 = store2.callRec(callKey(e.call));
@@ -47987,13 +48578,25 @@ async function makeChange(store2, jobId, runId, index, call2, probe) {
     store2.saveChange(jobId, runId, index, { call: key, state: "failed", error: moved.error, at: at3(), ...moved.stale ? { stale: true } : {} });
     return { error: moved.error };
   }
+  if (job.byRule) {
+    const check2 = await reviewPostCheck(store2, job, e, call2, probe);
+    if (check2.error) {
+      store2.saveChange(jobId, runId, index, { call: key, state: "failed", error: check2.error, at: at3() });
+      return { error: check2.error };
+    }
+    if (check2.duplicate) {
+      store2.saveChange(jobId, runId, index, { call: key, state: "done", ref: "Already covered on the PR", skipped: true, at: at3() });
+      return { ref: "Already covered on the PR" };
+    }
+  }
   const ledger = (r) => store2.saveCallRec(ledgerRec(e, r));
   store2.saveChange(jobId, runId, index, { call: key, state: "calling", at: at3() });
   ledger({ state: "calling" });
   try {
     const r = await call2(to[0], to[1], toolShape(e.call).args);
-    const ref = String(r?.id ?? "done");
-    store2.saveChange(jobId, runId, index, { call: key, state: "done", ref, at: at3() });
+    const pr = job.byRule ? prOf(store2, owner2) : void 0;
+    const ref = pr?.url && r?.id !== void 0 ? `${pr.url}?discussionId=${encodeURIComponent(String(r.id))}` : String(r?.id ?? "done");
+    store2.saveChange(jobId, runId, index, { call: key, state: "done", ref, at: at3(), ...job.byRule ? { byRule: job.byRule, severity: e.severity } : {} });
     ledger({ state: "done", ref });
     return { ref };
   } catch (err) {
@@ -48061,6 +48664,7 @@ var init_change = __esm({
     init_deploy();
     init_ledger();
     init_catalog();
+    init_review_autonomy();
     mcpCaller = (cfg) => async (server, tool, args2) => {
       const s3 = toolServers(cfg)[server];
       if (!s3?.command) throw new Error(s3 ? `The ${server} tool server is remote (${s3.type ?? "http"}); ${NAME} cannot call it yet.` : `No command for the ${server} tool server`);
@@ -49471,8 +50075,8 @@ function ensureHost(store2, cfg) {
 async function findOrStart(store2, cfg) {
   if (hostOff(cfg) || process.env.NODE_TEST_CONTEXT || hostDisabledUntil()) return void 0;
   const h = current2(), want = hostHash(cfg);
-  const live2 = h && alive2(h.pid), answers2 = live2 && await pingOk(h);
-  if (h && live2 && !answers2) {
+  const live3 = h && alive2(h.pid), answers2 = live3 && await pingOk(h);
+  if (h && live3 && !answers2) {
     try {
       process.kill(h.pid);
     } catch {
@@ -49931,6 +50535,7 @@ function attachJob(store2, cfg, wf, raw) {
     newTurn(wf);
     wf.effects = effects;
   }
+  if (wf.intent === "pr_review") wf.reviewAsk = { job: job.id, ids: [...wf.pending], lastMsgId: wf.lastMsgId, ownerAnswer: wf.ownerAnswer };
   Object.assign(wf, { job: job.id, ...stateFields(wf, "waiting_on_task"), status: `Working: ${want.goal}${job.label ? ` (${job.label})` : ""}`, waitingSince: now, pending: [], question: void 0, draft: void 0, learnAfter: void 0, approved: void 0 });
   const trusted = !!wf.asker && !wf.chat.guests && !NEVER_RELAY.includes(wf.intent ?? "") && store2.rules().some((r) => !r.off && r.then === "send" && r.who.accounts?.some((a) => a.id === wf.asker.id));
   if (job.relay && trusted) {
@@ -49947,7 +50552,7 @@ function okRelay(store2, wf) {
   Object.assign(wf, { ...stateFields(wf, "waiting_on_task"), question: void 0, status: `Working in your open session for ${job.relay.what} on ${job.relay.machine}`, waitingSince: (/* @__PURE__ */ new Date()).toISOString() });
   return `Sending ${wf.code} to your open session for ${job.relay.what} on ${job.relay.machine}. Its answer comes back here.`;
 }
-function startJobs(store2, cfg, procs, hold = []) {
+async function startJobs(store2, cfg, procs, hold = [], probe) {
   dueTrackers(store2);
   const held = blockedAgent(store2, cfg);
   if (held) {
@@ -49960,7 +50565,28 @@ function startJobs(store2, cfg, procs, hold = []) {
   for (const was of store2.jobs().filter((j) => j.state === "queued" && !store2.openWindow(j.id) && !hold.includes(j.key) && (!j.retry || Date.parse(j.retry.at) <= now))) {
     const job = freshRead(() => store2.job(was.id));
     if (!job || job.state !== "queued") continue;
+    if (job.byRule) continue;
     const commit = recordCommit(job, () => store2.job(job.id), store2.saveJob.bind(store2));
+    const review = job.purpose === "work" && (job.intent === "pr_review" || !job.every && isReviewJob(job.key));
+    const prepareReview = async () => {
+      const key = job.key, session = job.session.id, wrapUp = job.wrapUp, intent = job.intent, relay = JSON.stringify(job.relay);
+      const start = await reviewStart(store2, cfg, job, probe);
+      commit.refresh();
+      if (job.state !== "queued" || job.purpose !== "work" || job.key !== key || job.session.id !== session || job.wrapUp !== wrapUp || job.intent !== intent || JSON.stringify(job.relay) !== relay) return false;
+      cfg = freshRead(() => store2.config());
+      const control3 = freshRead(() => store2.control());
+      if (control3.paused || control3.stopped || blockedAgent(store2, cfg)) return false;
+      if (!freshRead(() => parentsOf(store2, job).length)) return false;
+      if (freshRead(() => store2.runsToday()) >= (cfg.dailyRuns ?? 200)) return false;
+      if (!job.relay && freshRead(() => store2.jobs().filter((j) => j.state === "running" && !j.run?.relay).length) >= (cfg.jobs?.parallel ?? 3)) return false;
+      job.reviewStart = start.stamp;
+      if (!wrapUp) for (const parent of freshRead(() => parentsOf(store2, job))) {
+        const save2 = recordCommit(parent, () => store2.workflow(parent.id), store2.save.bind(store2));
+        parent.prVote = start.vote;
+        save2(false);
+      }
+      return true;
+    };
     if (blockedAgent(store2, cfg)) break;
     if (job.retry) {
       if (control2.paused || control2.stopped) continue;
@@ -49972,7 +50598,7 @@ function startJobs(store2, cfg, procs, hold = []) {
       }
     }
     if (job.relay && job.purpose === "work") {
-      if ((job.relay.ok ?? 0) >= job.asks.length) {
+      if ((job.relay.ok ?? 0) >= job.asks.length && (!review || await prepareReview())) {
         relayJob(store2, job);
         n++;
       }
@@ -50013,6 +50639,7 @@ function startJobs(store2, cfg, procs, hold = []) {
         }
       }
     }
+    if (review && !await prepareReview()) continue;
     const reads = workerTools(cfg, "job");
     const unsafe = unsafeRead(reads, Object.keys(toolServers(cfg)), catalogInfo(cfg));
     if (unsafe) {
@@ -50069,6 +50696,34 @@ function startJobs(store2, cfg, procs, hold = []) {
   }
   return n;
 }
+async function reviewStart(store2, cfg, job, probe) {
+  let live3 = probe, pr;
+  try {
+    const refs = parentsOf(store2, job).map((w) => prOf(store2, w)), ref = refs[0];
+    pr = ref?.id;
+    if (!ref || refs.some((r) => !r || r.id !== ref.id || r.project !== ref.project || r.repo !== ref.repo)) throw new Error("The review job has no single readable PR target");
+    const id = /^pr:.*?(\d+)$/.exec(job.key)?.[1];
+    if (id && Number(id) !== ref.id) throw new Error("The current item and review job name different PRs");
+    live3 ??= adoProbe(cfg);
+    if (!live3?.pr) throw new Error("No PR reader is configured");
+    const state = await live3.pr(ref.project, ref.repo, ref.id);
+    if (!/^(active|completed|abandoned)$/i.test(state.status) || !state.head?.trim()) throw new Error("The PR read returned no valid status or head");
+    if (job.wrapUp) {
+      if (job.reviewStart?.pr !== ref.id || !sameHead(job.reviewStart.head, state.head)) throw new Error("The report-only continuation has no verified original review head");
+      return { stamp: job.reviewStart };
+    }
+    return { stamp: { pr: ref.id, head: state.head, at: (/* @__PURE__ */ new Date()).toISOString() }, vote: liveOwnerVote(cfg, state) };
+  } catch (error62) {
+    store2.log({ event: "pr-check-failed", job: job.id, pr, phase: "review-start", error: String(error62).slice(0, 200) });
+    return {};
+  } finally {
+    if (!probe) try {
+      await live3?.close?.();
+    } catch (error62) {
+      store2.log({ event: "probe-close-failed", job: job.id, error: String(error62).slice(0, 200) });
+    }
+  }
+}
 async function checkJobs(store2, src, cfg, procs, probe, startedBefore) {
   let n = 0;
   const minutes = cfg.jobs?.minutes ?? 30;
@@ -50083,7 +50738,7 @@ async function checkJobs(store2, src, cfg, procs, probe, startedBefore) {
     const r = store2.peekReport(job.id, run2.id);
     const over = Date.now() - Date.parse(run2.startedAt) > (run2.wrapUp ? WRAP_UP_MINUTES : minutes) * 6e4;
     const rebooted = Date.parse(run2.startedAt) < (procs.bootMs?.() ?? Date.now() - uptime3() * 1e3);
-    const live2 = !run2.direct && run2.machine === store2.machine && !rebooted && procs.alive(run2.pid);
+    const live3 = !run2.direct && run2.machine === store2.machine && !rebooted && procs.alive(run2.pid);
     if (run2.machine !== store2.machine && !r) {
       if (over) fail(store2, job, `Stopped after ${minutes} minutes on ${run2.machine}, with no result`);
       continue;
@@ -50096,32 +50751,36 @@ async function checkJobs(store2, src, cfg, procs, probe, startedBefore) {
       store2.log({ event: "job-resumed-after-restart", job: job.id, key: job.key, ...used });
       continue;
     }
-    if (run2.purpose === "execute" && !r && live2 && !parentsOf(store2, job).some((p) => stillApproved(p, job))) {
+    if (run2.purpose === "execute" && !r && live3 && !parentsOf(store2, job).some((p) => stillApproved(p, job))) {
       stopRun(store2, procs, job, "its ok was withdrawn");
       continue;
     }
-    if (r && live2 && !over) continue;
-    if (live2 && over) {
+    if (r && live3 && !over) continue;
+    if (live3 && over) {
       if (!procs.kill(run2.pid)) {
         store2.setHealth(`job:${job.id}`, `Could not stop the job for ${job.key} (process ${run2.pid}). Stop it by hand.`);
         continue;
       }
       store2.setHealth(`job:${job.id}`);
     }
-    if (!live2) {
+    if (!live3) {
       backupSession(store2, job.session.id);
       if (run2.machine === store2.machine) scrubLog(store2, run2.id);
     }
     ended.set(job.id, readUse(store2, job));
     try {
       const f = join24(LOCAL_DIR, "sessions", `${run2.id}.log`);
-      const account = !r && !live2 ? agentSetupFailure(`${existsSync21(f) ? readFileSync19(f, "utf8") : ""}
+      const account = !r && !live3 ? agentSetupFailure(`${existsSync21(f) ? readFileSync19(f, "utf8") : ""}
 ${agentProcessLog(job.session.agent, join24(LOCAL_DIR, "sessions", `mcp-${run2.id}.json`))}`) : void 0;
       if (account) holdJob(store2, cfg, job, account);
       else if (r) {
         if (run2.purpose === "execute") await finishExecute(store2, src, cfg, job, procs, probe);
         else {
-          finishWork(store2, job, r, run2.asks);
+          const review = await checkReviewCompletion(store2, job, probe);
+          freshRead(() => {
+            const current3 = store2.job(job.id);
+            if (current3?.state === "running" && current3.run?.id === run2.id) finishWork(store2, current3, r, run2.asks, review);
+          });
           await refreshApprovedHolds(store2, src);
         }
         store2.archiveReport(job.id, run2.id);
@@ -50131,9 +50790,9 @@ ${agentProcessLog(job.session.agent, join24(LOCAL_DIR, "sessions", `mcp-${run2.i
         store2.saveJob(job);
         store2.log({ event: "job-wrap-up", job: job.id, key: job.key, ...usedBy(job) });
       } else if (over) (job.every ? missedCheck : fail)(store2, job, `Stopped after ${run2.wrapUp ? minutes + WRAP_UP_MINUTES : minutes} minutes, its time budget`);
-      else if (!live2) failOrRetry(store2, job, "It stopped without a result");
+      else if (!live3) failOrRetry(store2, job, "It stopped without a result");
     } finally {
-      if (!live2 || over) cleanJobFiles(store2, run2);
+      if (!live3 || over) cleanJobFiles(store2, run2);
       const left = usedBy(job);
       if (Object.keys(left).length) store2.log({ event: "job-run", job: job.id, key: job.key, ...left });
     }
@@ -50193,7 +50852,7 @@ function authorAsk(store2, parents, job, question) {
     call: { tool: "ado-repo_pull_request_thread_write", args: { action: "create", project: ref.project, repositoryId: ref.repo, pullRequestId: ref.id, content } }
   };
 }
-function finishWork(store2, job, r, asksAtStart) {
+function finishWork(store2, job, r, asksAtStart, review) {
   if (isBootstrap(job) || job.key.startsWith("learn:")) return finishBootstrap(store2, job, r);
   if (job.every && !r.effects?.length && !r.question) return finishCheck(store2, job, r, asksAtStart);
   if (job.every && r.done) Object.assign(job, { every: void 0, nextAt: void 0 });
@@ -50238,8 +50897,11 @@ function finishWork(store2, job, r, asksAtStart) {
   if (finding) r = { ...r, context: [...r.context ?? [], { label: "Not reached", text: r.blocker.why, tone: "warn" }] };
   if (r.goalMet === false && !again && !finding) return shortOfGoal(store2, job, r);
   Object.assign(job, job.every ? { retry: void 0, missed: void 0 } : { retry: void 0, nextAt: void 0 });
-  const nothing = r.state === "done" && !r.reply && !r.question && !effects.length && !prepared.problems.length;
+  const rules = store2.rules();
+  const cleanReview = !!review?.basis && /^active$/i.test(review.status ?? "") && r.findings?.length === 0 && parents.some((w) => w.intent === "pr_review" && prTarget(store2, w) === review.pr && reviewRuleFor(w, rules)) && r.state !== "waiting_on_sender" && r.goalMet !== false && !r.effects?.length && !effects.length && !v.todos.length && !r.question && !r.blocker;
   if (!again) for (const wf of parentsOf(store2, job)) {
+    const reviewRule = wf.intent === "pr_review" ? reviewRuleFor(wf, rules) : void 0;
+    const nothing = !(cleanReview && reviewRule) && r.state === "done" && !r.reply && !r.question && !effects.length && !prepared.problems.length;
     if (wf.pending.length) {
       Object.assign(wf, { ...stateFields(wf, "running"), waitingSince: void 0, status: "New asks arrived after this job started. Checking them next." });
       store2.save(wf);
@@ -50267,6 +50929,13 @@ function finishWork(store2, job, r, asksAtStart) {
     if (wf.sent) reopenPromise(store2, wf);
     const decision = r.reply ? { action: "draft", reason: "A review or investigation result always waits for you", confidence: confidence(r.reply.sources ?? []) } : wf.decision;
     Object.assign(wf, { ...stateFields(wf, nothing ? wf.work || wf.partOf ? "open" : "done" : "needs_human"), closedBy: nothing && !(wf.work || wf.partOf) ? "job" : void 0, learnAfter: void 0, status: nothing ? `Nothing needed: ${r.summary}` : r.summary, question: r.question, draft: r.reply ? { ...r.reply } : void 0, effects, decision, waitingSince: void 0, approved: void 0, newCount: 0, revAt: (/* @__PURE__ */ new Date()).toISOString(), ...r.context ? { context: r.context } : {} });
+    if (wf.intent === "pr_review") {
+      const current3 = review?.pr === prTarget(store2, wf) ? review : void 0;
+      wf.reviewBasis = current3?.basis;
+      wf.reviewDone = void 0;
+      wf.reviewAgain = !current3?.basis && current3?.head && job.reviewStart?.pr === current3.pr && !sameHead(job.reviewStart.head, current3.head) ? { pr: current3.pr, head: current3.head, at: current3.at } : void 0;
+      if (reviewRule && !current3?.basis && !nothing) wf.status = "The reviewed revision could not be verified. Findings stay proposed for your OK; review again before posting by rule.";
+    }
     const allowedNow = (t2) => effects.some((e) => t2.startsWith(`${e.summary.replace(/[.\s]+$/, "")}. Not made for you: `));
     if (wf.todos?.some(allowedNow)) wf.todos = wf.todos.filter((t2) => !allowedNow(t2));
     if (v.todos.length) Object.assign(wf, { todos: [.../* @__PURE__ */ new Set([...wf.todos ?? [], ...v.todos])], question: wf.question ?? (wf.draft ? refusedAsk(wf.code, v.todos.length) : void 0) });
@@ -50282,7 +50951,14 @@ function finishWork(store2, job, r, asksAtStart) {
     if (home.work && step(home, `${home === wf ? "" : `${wf.code}: `}Found: ${r.summary}`, { ref: `job:${job.id}:${hashOf(r.summary)}` }) && home !== wf) store2.save(home);
     store2.save(wf);
   }
-  Object.assign(job, { result: { summary: r.summary, reply: r.reply ? { ...r.reply } : void 0, effects, context: (r.context ?? []).slice(0, 12), findings: r.findings, voteRecommendation: r.voteRecommendation, at: (/* @__PURE__ */ new Date()).toISOString() }, state: again ? "queued" : "done", purpose: "work", run: void 0 });
+  const reads = r.findings ? runReads(store2, cfg, job.session.id, 0) : void 0;
+  const targets = parents.map((w) => prTarget(store2, w));
+  const reviewSources = reads ? {
+    unknown: cfg.agent.flavor !== "copilot" || reads.unknown,
+    chats: reads.chats,
+    restricted: !!reads.knowledge || !!reads.customerNames?.length || !!reads.records?.some((record3) => !targets.some((id) => record3.id === `pr:${id}`))
+  } : void 0;
+  Object.assign(job, { result: { summary: r.summary, reply: r.reply ? { ...r.reply } : void 0, effects, context: (r.context ?? []).slice(0, 12), findings: r.findings, reviewHead: review?.basis?.head, reviewClean: cleanReview ? true : void 0, reviewSources, voteRecommendation: r.voteRecommendation, at: (/* @__PURE__ */ new Date()).toISOString() }, state: again ? "queued" : "done", purpose: "work", run: void 0 });
   store2.saveJob(job);
   if (!again) store2.log({ event: "job-done", job: job.id, key: job.key, summary: r.summary, effects: effects.length, ...usedBy(job) });
 }
@@ -50326,12 +51002,20 @@ function settleCompleted(store2, procs = realProcs) {
   }
 }
 async function executeDirect(store2, src, cfg, procs, probe, call2 = mcpCaller(cfg)) {
+  await reviewCommentHook(store2, src, cfg, { probe, call: call2 });
   let n = 0;
   for (const was of store2.jobs().filter((j) => j.state === "queued" && j.purpose === "execute" && !store2.openWindow(j.id))) {
     const job = freshRead(() => store2.job(was.id));
     if (!job || job.state !== "queued" || job.purpose !== "execute") continue;
     if (store2.control().paused || store2.control().stopped) break;
-    if (!parentsOf(store2, job).some((p) => stillApproved(p, job))) continue;
+    if (!parentsOf(store2, job).some((p) => stillApproved(p, job))) {
+      if (job.byRule) {
+        await reviewCommentHook(store2, src, cfg, { probe, call: call2, completed: { job, effects: job.result?.effects ?? [] } });
+        Object.assign(job, { state: "done", purpose: "work" });
+        store2.saveJob(job);
+      }
+      continue;
+    }
     const effects = job.result?.effects ?? [];
     const todo = effects.map((e, i) => pendingEffects([e]).length ? i : -1).filter((i) => i >= 0);
     if (!todo.length || todo.some((i) => !directCall(cfg, effects[i]))) continue;
@@ -50353,6 +51037,12 @@ async function executeDirect(store2, src, cfg, procs, probe, call2 = mcpCaller(c
 async function finishExecute(store2, src, cfg, job, procs, probe) {
   const commitJob = recordCommit(job, () => store2.job(job.id), store2.saveJob.bind(store2));
   const effects = foldChanges(store2, job);
+  if (job.byRule) {
+    await reviewCommentHook(store2, src, cfg, { probe, call: mcpCaller(cfg), completed: { job, effects } });
+    Object.assign(job, { result: { ...job.result, effects }, state: "done", purpose: "work", run: void 0 });
+    commitJob();
+    return;
+  }
   const stale = Object.values(store2.changes(job.id, job.run.id)).find((c) => c.stale);
   const vote = voteValue(effects.find((e) => e.done && isVote(e.call))?.call);
   const left = pendingEffects(effects);
@@ -50465,13 +51155,14 @@ function foldChanges(store2, job) {
   for (const [i, c] of Object.entries(job.run ? store2.changes(job.id, job.run.id) : {})) {
     const e = effects[Number(i)];
     if (!e) continue;
-    if (c.state === "done") Object.assign(e, { done: { ref: c.ref, at: c.at }, error: void 0 });
+    if (c.state === "done") Object.assign(e, c.skipped ? { off: true, error: void 0 } : { done: { ref: c.ref, at: c.at, ...c.byRule ? { byRule: c.byRule, severity: c.severity } : {} }, error: void 0 });
     else if (c.state === "failed") e.error = c.error;
     else Object.assign(e, { error: "No answer from the tool, so it may have been made", ...isVote(e.call) ? {} : { maybe: true } });
   }
   return effects;
 }
 function adoptList(store2, job) {
+  if (job.byRule) return;
   const parents = parentsOf(store2, job).filter((p) => pendingEffects(p.effects).length);
   if (!parents.length || !parents.every((p) => effectsKey(p) === effectsKey(parents[0]))) return;
   const list2 = carryMarks(parents[0].effects.map((e) => ({ ...e })), job.result?.effects);
@@ -50511,6 +51202,7 @@ function carry(store2, cfg, wf, effects) {
 }
 function approveEffects(store2, cfg, wf, again = false) {
   let job = wf.job ? store2.job(wf.job) : void 0;
+  if (job?.byRule && executing(job)) return `Review comments for ${wf.code} are being posted. Wait for their receipts before approving other changes.`;
   if (job?.state === "queued" && job.purpose === "work" && !job.every && wf.state === "needs_human" && wf.promised && wf.draft && !wf.pending.length && pendingEffects(wf.effects).length && keyOf2(job.result?.effects) === effectsKey(wf)) {
     carry(store2, cfg, wf, wf.effects ?? []);
     job = wf.job ? store2.job(wf.job) : void 0;
@@ -50683,8 +51375,8 @@ function finishBootstrap(store2, job, r) {
 }
 function relayJob(store2, job) {
   const to = job.relay;
-  const live2 = findSession(store2, to.session);
-  if (!live2?.open) {
+  const live3 = findSession(store2, to.session);
+  if (!live3?.open) {
     Object.assign(job, { relay: void 0, session: { ...job.session, id: randomUUID11() }, label: `your session for ${to.what} was not open, so a fresh session was used` });
     store2.saveJob(job);
     return;
@@ -50695,9 +51387,9 @@ function relayJob(store2, job) {
 ${asks}
 Task: ${job.goal}
 Do it here as if I had typed it. Never vote on, approve, complete, or abandon a pull request, and post nothing to other people. Never run, cancel, or retry a pipeline, and never deploy; propose it, and I will decide. End with what you found and the reply you suggest, and I will decide.`;
-  const sent = sendToSession(store2, live2.session, text4);
+  const sent = sendToSession(store2, live3.session, text4);
   if (typeof sent === "string") return fail(store2, job, sent);
-  Object.assign(job, { relay: { ...to, from: to.sent ?? 0, sent: job.asks.length }, state: "running", run: { id: sent.msg.id, pid: 0, startedAt: (/* @__PURE__ */ new Date()).toISOString(), machine: live2.machine, purpose: "work", asks: job.asks.length, relay: addr(live2.machine, live2.session) } });
+  Object.assign(job, { relay: { ...to, from: to.sent ?? 0, sent: job.asks.length }, state: "running", run: { id: sent.msg.id, pid: 0, startedAt: (/* @__PURE__ */ new Date()).toISOString(), machine: live3.machine, purpose: "work", asks: job.asks.length, relay: addr(live3.machine, live3.session) } });
   store2.saveJob(job);
   store2.log({ event: "job-relayed", job: job.id, key: job.key, to: job.run.relay, message: sent.msg.id });
 }
@@ -50791,8 +51483,8 @@ function fail(store2, job, why2) {
 function scrubLog(store2, runId) {
   const f = join24(LOCAL_DIR, "sessions", `${runId}.log`);
   if (!existsSync21(f)) return;
-  const text4 = readFileSync19(f, "utf8"), clean3 = scrub(text4);
-  if (clean3 !== text4) writeText(f, clean3, store2.machine);
+  const text4 = readFileSync19(f, "utf8"), clean4 = scrub(text4);
+  if (clean4 !== text4) writeText(f, clean4, store2.machine);
 }
 function parentsOf(store2, job) {
   return job.parents.map((id) => store2.workflow(id)).filter((w) => !!w && w.state !== "done" && (w.job === job.id || w.work?.watch === job.id));
@@ -50847,6 +51539,8 @@ var init_jobs = __esm({
     init_agent_health();
     init_change();
     init_effect_preparation();
+    init_review_autonomy();
+    init_page_approval();
     realProcs = {
       start: (cfg, i) => startAgent(cfg, i, join24(LOCAL_DIR, "sessions", `${i.runId}.log`)),
       alive: (pid) => aliveAs(pid),
@@ -50863,7 +51557,19 @@ var init_jobs = __esm({
     NEVER_RELAY = ["commitment_decision", "validate"];
     keyOf2 = (effects = []) => JSON.stringify(pendingEffects(effects).map((e) => [e.system, e.action, e.target, e.payload, e.call, e.head]));
     effectsKey = (wf) => keyOf2(wf.effects);
-    stillApproved = (wf, job) => !!wf.approved && wf.state !== "done" && wf.approved.text === (wf.draft?.text ?? "") && wf.approved.effects === effectsKey(wf) && (!job || wf.approved.effects === keyOf2(job.result?.effects));
+    stillApproved = (wf, job) => {
+      const approval = wf.approved;
+      if (!approval || wf.state === "done" || approval.text !== (wf.draft?.text ?? "")) return false;
+      if (approval.byRule) {
+        const ids = approval.effectIds ?? [], pending = pendingEffects(wf.effects);
+        const subset = ids.flatMap((id) => {
+          const e = pending.find((e2) => pageChangeId(e2) === id);
+          return e ? [e] : [];
+        });
+        return !!job && job.byRule === approval.byRule && wf.reviewRun?.job === job.id && wf.reviewRun.turn === wf.revAt && !!ids.length && new Set(ids).size === ids.length && subset.length === ids.length && subset.every((e) => !isVote(e.call)) && approval.effects === keyOf2(subset) && approval.effects === keyOf2(job.result?.effects);
+      }
+      return approval.effects === effectsKey(wf) && (!job || !job.byRule && approval.effects === keyOf2(job.result?.effects));
+    };
     executing = (job) => job.purpose === "execute" && (job.state === "queued" || job.state === "running");
     WRAP_UP_MINUTES = 3;
     WRAP_UP = (id) => `Your time for this job is up. Stop looking further. Call submit_report now with workflowId "${id}": what you found, with sources, and a question for the owner if they must decide something. If the goal is not met yet, set goalMet to false and blocker with kind "budget", what is left, and what you tried, so the next run continues; any reply is then only a holding reply.`;
@@ -50995,6 +51701,11 @@ function newTurn(wf, keepSent = false) {
   wf.returnedFrom = void 0;
   wf.ownerSend = void 0;
   clearHold(wf);
+  wf.reviewRun = void 0;
+  wf.reviewDone = void 0;
+  wf.reviewAsk = void 0;
+  wf.reviewAttempt = void 0;
+  wf.reviewBasis = void 0;
   wf.voteClaimRedrafted = void 0;
   Object.assign(wf, { draft: void 0, prDraft: void 0, learnAfter: void 0, closeWorkAfterSend: void 0, choices: void 0, question: void 0, effects: void 0, promised: void 0, decision: void 0, approved: void 0, picked: void 0, sendAt: void 0, correction: void 0, todos: void 0, newCount: 0, ...keepSent ? {} : { sent: void 0 } });
 }
@@ -51494,18 +52205,18 @@ function place(s3) {
     ...s3.waiting.filter((w) => w.state === "waiting").map((w) => ({ home: w.item && byCode.get(w.item) && homeOf2(byCode.get(w.item)).code || w.code, sub: { kind: "waiting", w }, at: w.at, who: w.to.join(", "), chat: w.chat.name })),
     ...s3.automations.filter((a) => a.state !== "ended").map((a) => ({ home: a.code, sub: { kind: "reminder", a }, at: a.updatedAt, who: a.to.name }))
   ];
-  const threads = /* @__PURE__ */ new Map();
+  const threads2 = /* @__PURE__ */ new Map();
   for (const x of subjects) {
     const f = factsOf2(s3, x.sub), { section, rule } = whoseMove(f);
     const code = x.sub.kind === "item" ? x.sub.wf.code : x.sub.kind === "waiting" ? x.sub.w.code : x.sub.a.code;
-    const have = threads.get(x.home);
+    const have = threads2.get(x.home);
     const sec = have ? URGENCY.indexOf(section) - URGENCY.indexOf(have.section) : -1, rk = have ? rankOf(rule) - rankOf(have.rule) : -1;
     const wins = !have || sec < 0 || sec === 0 && (rk < 0 || rk === 0 && code === x.home);
     const placed = { code: x.home, act: code, section, rule, subjects: [...have?.subjects ?? [], code], title: titleOf(x.sub).slice(0, 160), who: x.who, chat: x.chat, at: x.at, ...nextOf(s3, x.sub, f, section) };
-    if (wins) threads.set(x.home, have ? { ...placed, at: have.at > x.at ? have.at : x.at } : placed);
-    else threads.set(x.home, { ...have, subjects: [...have.subjects, code], at: have.at > x.at ? have.at : x.at });
+    if (wins) threads2.set(x.home, have ? { ...placed, at: have.at > x.at ? have.at : x.at } : placed);
+    else threads2.set(x.home, { ...have, subjects: [...have.subjects, code], at: have.at > x.at ? have.at : x.at });
   }
-  return [...threads.values()].sort((a, b) => URGENCY.indexOf(a.section) - URGENCY.indexOf(b.section) || b.at.localeCompare(a.at));
+  return [...threads2.values()].sort((a, b) => URGENCY.indexOf(a.section) - URGENCY.indexOf(b.section) || b.at.localeCompare(a.at));
 }
 function dryText(rows) {
   const out = [];
@@ -51887,7 +52598,8 @@ function nextSteps(w) {
     // Never while a question is open: every ok is refused then (a stale vote after a change run, a refusedAsk; review chui P2-1).
     // Nor on a draft with a blank, which every ok refuses too (re-review N4).
     ...left.length && w.draft?.text && !/_{3,}/.test(w.draft.text) && !w.sent && !w.question && (failed2 || dropped) ? { replyOnly: `ok ${w.code} except ${left.map((_, i) => i + 1).join(" ")}` } : {},
-    ...asksReviewAgain(w.code, w.question) ? { reviewAgain: reviewAgainCmd(w.code) } : {}
+    // P0-10 (A R27): a head that moved during the review sets wf.reviewAgain with no question; it offers Review again too.
+    ...asksReviewAgain(w.code, w.question) || w.reviewAgain ? { reviewAgain: reviewAgainCmd(w.code) } : {}
   };
 }
 function card(store2, w, k = knowledgeOf(store2, store2.config())) {
@@ -52570,12 +53282,12 @@ function inbox2(store2, since2) {
   const receipts = store2.takeReceipts();
   const list2 = renderList(store2.workflows(), /* @__PURE__ */ new Date(), since2, store2.health(), { proposals: store2.proposals(), background: bootLines(store2), automations: store2.automations().filter((a) => a.state !== "ended").map((a) => ({ line: describe3(a), state: a.state, next: a.next, code: a.code })), waiting: view(store2, since2).waiting });
   store2.markShown(store2.workflows());
-  const caught = catchUpLines(store2, since2);
-  const all = caught.length ? `${list2}
+  const caught2 = catchUpLines(store2, since2);
+  const all = caught2.length ? `${list2}
 
 ### Catch up
-${caught.join("\n")}
-Say "mine ${caught[0].split(" ")[1]}" if one of these needs you.` : list2;
+${caught2.join("\n")}
+Say "mine ${caught2[0].split(" ")[1]}" if one of these needs you.` : list2;
   return receipts.length ? `### Since you last asked
 ${receipts.map((r) => `- ${r.text.replace(/\n+/g, " ")}`).join("\n")}
 
@@ -52715,7 +53427,7 @@ function draftUse(wf, k, read3 = {}) {
 }
 function markedHold(cfg, chats = []) {
   const c = chats.find((x) => heldLevel(cfg, x));
-  return c ? { kind: "marked", chat: cfg.chatLevels[c].name, level: heldLevel(cfg, c) } : void 0;
+  return c ? { kind: "marked", chat: shareChatName(cfg.chatLevels[c].name), level: heldLevel(cfg, c) } : void 0;
 }
 async function sharingHold(store2, src, wf, use) {
   const cfg = store2.config(), thread2 = use.records.length || use.customerNames?.length ? store2.thread(wf.id).map((m) => m.text).join("\n") : "";
@@ -52724,10 +53436,10 @@ async function sharingHold(store2, src, wf, use) {
   if (!use.chats.length && !use.records.length && !use.unread.length && !use.labelled && !customer) return void 0;
   const marked = markedHold(cfg, use.chats);
   if (marked) return marked;
-  const chatName = async (c) => await src.chatName?.(c).catch(() => void 0) ?? cfg.chatLevels?.[c]?.name ?? "another chat";
+  const chatName = async (c) => shareChatName(await src.chatName?.(c).catch(() => void 0)) ?? shareChatName(cfg.chatLevels?.[c]?.name);
   const here3 = await membersOf(store2, src, wf.chat.id);
   if (!here3) return { kind: "members", chat: use.chats.length ? await chatName(use.chats[0]) : firstUse };
-  if (guestsIn(store2, wf.chat.id) ?? wf.chat.guests) return { kind: "guest", ...firstUse ? { record: firstUse } : { record: await chatName(use.chats[0]) } };
+  if (guestsIn(store2, wf.chat.id) ?? wf.chat.guests) return { kind: "guest", ...firstUse ? { record: firstUse } : { chat: await chatName(use.chats[0]) } };
   const restricted = use.records.find((r) => r.audience === "restricted");
   if (restricted) return { kind: "restricted", record: restricted.label, ...restricted.why ? { who: restricted.why } : {} };
   if (use.labelled) return { kind: "restricted", record: "A document it uses", who: `labelled ${use.labelled}` };
@@ -52989,9 +53701,23 @@ __export(trace_exports, {
 import { createReadStream, existsSync as existsSync35, readFileSync as readFileSync29, readdirSync as readdirSync12 } from "node:fs";
 import { join as join41 } from "node:path";
 import { createInterface } from "node:readline";
+function itemTrace(value) {
+  if (!identifier(value)) return void 0;
+  const split2 = value.indexOf(":"), code = value.slice(0, split2), submission = value.slice(split2 + 1);
+  return split2 > 0 && isCode(code.toUpperCase()) && identifier(submission) ? { code, submission } : void 0;
+}
+function links(e) {
+  const trace = itemTrace(e.trace);
+  return [
+    ...trace ? [`trace:${e.trace}`, `submission:${trace.submission}`] : [],
+    ...identifier(e.runId) ? [`run:${e.runId}`] : [],
+    ...identifier(e.submissionId) ? [`submission:${e.submissionId}`] : []
+  ];
+}
 function matches2(e, selector) {
   const codeMatches = (value) => typeof value === "string" && value.toUpperCase() === selector.toUpperCase();
-  return e.trace === selector || e.runId === selector || e.submissionId === selector || codeMatches(e.code) || typeof e.trace === "string" && (codeMatches(e.trace.split(":")[0]) || e.trace.slice(e.trace.indexOf(":") + 1) === selector);
+  const trace = itemTrace(e.trace);
+  return e.trace === selector || e.runId === selector || e.submissionId === selector || codeMatches(e.code) || !!trace && (codeMatches(trace.code) || trace.submission === selector);
 }
 function metadata(e) {
   const event = String(e.event), definition = Object.hasOwn(TELEMETRY_CATALOG, event) ? TELEMETRY_CATALOG[event] : void 0;
@@ -53014,7 +53740,7 @@ async function traceTimeline(root, local2, selector, content = false, now = Date
   let invalid = 0;
   const within = (e) => typeof e.at === "string" && Date.parse(e.at) >= Date.parse(since2) && Date.parse(e.at) < until;
   const add = (entry, source3) => {
-    if (!object6(entry) || typeof entry.event !== "string" || !/^[\w.-]{1,100}$/.test(entry.event) || typeof entry.at !== "string" || !Number.isFinite(Date.parse(entry.at))) {
+    if (!object7(entry) || typeof entry.event !== "string" || !/^[\w.-]{1,100}$/.test(entry.event) || typeof entry.at !== "string" || !Number.isFinite(Date.parse(entry.at))) {
       invalid++;
       return;
     }
@@ -53078,7 +53804,7 @@ async function traceTimeline(root, local2, selector, content = false, now = Date
       invalid++;
       continue;
     }
-    if (!object6(report2)) {
+    if (!object7(report2)) {
       invalid++;
       continue;
     }
@@ -53090,7 +53816,7 @@ async function traceTimeline(root, local2, selector, content = false, now = Date
       workflowId: id,
       intent: report2.intent,
       effects: Array.isArray(report2.effects) ? report2.effects.length : 0,
-      hasReply: object6(report2.reply),
+      hasReply: object7(report2.reply),
       findingCount: Array.isArray(report2.findings) ? report2.findings.length : 0,
       todoCount: Array.isArray(report2.todos) ? report2.todos.length : 0,
       blocked: !!report2.blocker || report2.goalMet === false,
@@ -53116,14 +53842,15 @@ async function traceCommand(args2, root, local2) {
   for (const entry of result.timeline) console.log(JSON.stringify(entry));
   if (!result.timeline.length) console.log(`No trace entries found for ${ids[0]} (${result.since} through ${result.today} UTC).`);
 }
-var object6, identifier, fileId, base, legacy, links;
+var object7, identifier, fileId, base, legacy;
 var init_trace = __esm({
   "src/cli/trace.ts"() {
     "use strict";
     init_telemetry();
     init_secrets();
     init_brand();
-    object6 = (value) => !!value && typeof value === "object" && !Array.isArray(value);
+    init_ids();
+    object7 = (value) => !!value && typeof value === "object" && !Array.isArray(value);
     identifier = (value) => typeof value === "string" && /^[\w.:-]{1,256}$/.test(value);
     fileId = (value) => typeof value === "string" && /^[\w-]+$/.test(value);
     base = ["at", "v", "machine", "pid", "trace", "runId", "event"];
@@ -53164,12 +53891,6 @@ var init_trace = __esm({
       "todoCount",
       "blocked",
       "error"
-    ];
-    links = (e) => [
-      ...identifier(e.trace) ? [`trace:${e.trace}`] : [],
-      ...identifier(e.runId) ? [`run:${e.runId}`] : [],
-      ...identifier(e.submissionId) ? [`submission:${e.submissionId}`] : [],
-      ...identifier(e.trace) && e.trace.includes(":") ? [`submission:${e.trace.slice(e.trace.indexOf(":") + 1)}`] : []
     ];
   }
 });
@@ -53467,12 +54188,12 @@ async function sweep(store2, src, cfg, now = Date.now) {
     const cut = store2.chats().startedAt, since2 = s3.since;
     const skip = (id) => id === src.selfChatId || (cfg.exclude ?? []).includes(id) || offRecord(cfg, id);
     const listed2 = (await src.recentChats()).filter((c) => c.lastAt);
-    const threads = cfg.channels !== false && src.channelThreads ? (await src.channelThreads(store2.threadCache(), since2, cfg.channels || [])).list : [];
+    const threads2 = cfg.channels !== false && src.channelThreads ? (await src.channelThreads(store2.threadCache(), since2, cfg.channels || [])).list : [];
     const chats = /* @__PURE__ */ new Map();
     const add = (c) => {
       if (t(c.lastAt) > t(since2) && t(c.lastAt) <= t(cut) && !skip(c.id) && !chats.has(c.id)) chats.set(c.id, { id: c.id, name: c.name, group: isThread(c.id) || kindOf(c.id) !== "oneOnOne" });
     };
-    for (const c of [...listed2, ...threads]) add(c);
+    for (const c of [...listed2, ...threads2]) add(c);
     let reach = since2;
     const oldest = listed2.map((c) => c.lastAt).sort((a, b) => t(a) - t(b))[0];
     if (listed2.length >= FULL && t(oldest) > t(since2)) {
@@ -53767,11 +54488,11 @@ function sweep2(store2, days2 = 30, now = Date.now()) {
     n++;
   }
   store2.pruneOutcomes(cutoff);
-  const live2 = /* @__PURE__ */ new Set([...store2.workflows().filter((w) => w.state !== "done").map((w) => w.session.id), ...store2.jobs().filter((j) => j.state !== "done" && j.state !== "failed").map((j) => j.session.id), ...store2.owners().map((o) => o.session)]);
+  const live3 = /* @__PURE__ */ new Set([...store2.workflows().filter((w) => w.state !== "done").map((w) => w.session.id), ...store2.jobs().filter((j) => j.state !== "done" && j.state !== "failed").map((j) => j.session.id), ...store2.owners().map((o) => o.session)]);
   const sessions2 = join33(store2.root, "sessions");
   if (existsSync28(sessions2)) for (const id of readdirSync10(sessions2)) {
     const p = join33(sessions2, id);
-    if (!live2.has(id) && statSync10(p).mtimeMs < now - days2 * 864e5) {
+    if (!live3.has(id) && statSync10(p).mtimeMs < now - days2 * 864e5) {
       rmSync10(p, { recursive: true, force: true });
       n++;
     }
@@ -53956,10 +54677,10 @@ function stampPlaces(store2, now = Date.now()) {
 init_state();
 init_format2();
 init_fs();
-import { createHash as createHash9, randomBytes as randomBytes3 } from "node:crypto";
+import { createHash as createHash10, randomBytes as randomBytes3 } from "node:crypto";
 import { createServer as createServer2 } from "node:http";
-import { existsSync as existsSync30 } from "node:fs";
-import { join as join36, resolve as resolve11 } from "node:path";
+import { existsSync as existsSync31 } from "node:fs";
+import { join as join37, resolve as resolve11 } from "node:path";
 
 // src/mcp/server.ts
 init_effects();
@@ -55571,14 +56292,98 @@ init_deploy();
 init_repos();
 init_state();
 init_brand();
-import { existsSync as existsSync29, readFileSync as readFileSync25, statSync as statSync11, writeFileSync as writeFileSync16 } from "node:fs";
-import { isAbsolute as isAbsolute8, join as join34, resolve as resolve10 } from "node:path";
+import { existsSync as existsSync30, readFileSync as readFileSync26, statSync as statSync11, writeFileSync as writeFileSync17 } from "node:fs";
+import { isAbsolute as isAbsolute8, join as join35, resolve as resolve10 } from "node:path";
 init_runinfo();
 init_habits();
 init_catalog();
 init_locate();
 init_host();
 init_client3();
+
+// src/store/rules.ts
+import { createHash as createHash9 } from "node:crypto";
+import { existsSync as existsSync29, readFileSync as readFileSync25, writeFileSync as writeFileSync16 } from "node:fs";
+import { join as join34 } from "node:path";
+
+// src/core/capabilities.ts
+init_zod();
+var scope = { who: ["accounts", "team", "org", "outside"], chat: true, minConfidence: true };
+var people = (r) => r.who.accounts?.map((p) => p.name).join(", ") || (r.who.group === "org" ? "someone in your org" : r.who.group === "team" ? "someone in your team" : "someone outside your org");
+var empty = external_exports.object({}).strict();
+var CAPABILITIES = {
+  send: { scope, params: empty, readBack: (r) => `Send replies to ${people(r)} when this rule matches.` },
+  ack: { scope, params: empty, readBack: (r) => `Acknowledge requests from ${people(r)} when this rule matches.` },
+  draft: { scope, params: empty, readBack: (r) => `Keep replies to ${people(r)} as drafts for you.` },
+  ignore: { scope, params: empty, readBack: (r) => `Ignore matching requests from ${people(r)}.` },
+  shortcut: { scope, params: external_exports.object({ goal: external_exports.string() }).strict(), readBack: (r) => `Propose this shortcut for ${people(r)}: ${r.shortcut?.goal ?? "not specified"}.` },
+  review: {
+    active: true,
+    scope: { ...scope, intent: "pr_review", minConfidence: false },
+    params: external_exports.object({ comments: external_exports.literal("post"), reply: external_exports.literal("send") }).strict(),
+    readBack: (r) => `When ${people(r)} asks you to review a PR ${r.when.reviewerGroup ? `that ${r.when.reviewerGroup} reviews` : "you're a reviewer on"}${r.when.chat ? r.when.chat === "direct" ? " in a one-to-one chat" : " in the specified chat" : ""}: Delegate reviews it, posts up to 10 comments on the PR (most important first) and replies to whoever asked, without asking you. It never votes or approves; approving stays yours.`
+  }
+};
+var kinds = Object.keys(CAPABILITIES);
+var RuleSchema = external_exports.object({
+  id: external_exports.string(),
+  text: external_exports.string(),
+  who: external_exports.object({ accounts: external_exports.array(external_exports.object({ id: external_exports.string().min(1), name: external_exports.string() })).optional(), group: external_exports.enum(["team", "org", "outside"]).optional() }).refine((w) => !!w.accounts?.length || !!w.group, "A rule must name people by account ID, or a group."),
+  when: external_exports.object({ intent: external_exports.string().optional(), chat: external_exports.string().optional(), minConfidence: external_exports.enum(["high", "medium"]).optional(), reviewerGroup: external_exports.string().trim().min(1).optional() }),
+  then: external_exports.enum(kinds),
+  off: external_exports.literal(true).optional(),
+  review: CAPABILITIES.review.params.optional(),
+  shortcut: CAPABILITIES.shortcut.params.optional()
+}).superRefine((rule, ctx) => {
+  if (rule.then === "review" && rule.when.intent !== "pr_review")
+    ctx.addIssue({ code: "custom", message: "A review rule is only for PR review requests." });
+  if (rule.then === "review" && !rule.review)
+    ctx.addIssue({ code: "custom", message: "A review rule must post comments and send the review reply." });
+  if (rule.then !== "review" && rule.review)
+    ctx.addIssue({ code: "custom", message: "Review permissions belong only to a review rule." });
+});
+var readBack = (rule) => {
+  const capability = CAPABILITIES[rule.then];
+  if ("active" in capability && !capability.active) return "Not active yet: Delegate can't do this in this version. Until then: PR reviews wait for you.";
+  return `${rule.off ? "Off: " : ""}${capability.readBack(rule)}`;
+};
+var REVIEW_RULE_TEXT = "When someone asks me to review a PR I'm a reviewer on, review it, post your comments on the PR and reply to them, without asking me first. Never vote or approve for me.";
+function voteLimitNotice(text4) {
+  return text4.split(/[.;\n]/).some((line3) => /\b(?:approv\w*|vot\w*)\b/i.test(line3) && !/\b(?:never|not|no|don't|do not)\b/i.test(line3)) ? "Delegate never votes or approves for you; that part was left out." : void 0;
+}
+
+// src/store/rules.ts
+init_fs();
+var rulesText = (store2) => existsSync29(join34(store2.root, "rules.md")) ? readFileSync25(join34(store2.root, "rules.md"), "utf8") : "";
+var ruleTextHash = (text4) => createHash9("sha256").update(text4.trim()).digest("hex");
+function writeRules(store2, text4, rules) {
+  const settings = store2.rules().filter((r) => r.source === "settings" && r.textHash === ruleTextHash(r.text) && text4.split("\n").some((line3) => line3.trim().replace(/^[-*]\s+/, "") === r.text.trim()));
+  const grants = rules.map((rule) => {
+    const kept = settings.find((r) => r.text === rule.text) ?? (rule.source === "settings" && rule.text === REVIEW_RULE_TEXT && rule.textHash === ruleTextHash(rule.text) && text4.split("\n").some((line3) => line3.trim().replace(/^[-*]\s+/, "") === rule.text) ? rule : void 0);
+    return { ...rule, ...RuleSchema.parse(rule), source: kept?.source, textHash: kept?.textHash };
+  });
+  for (const kept of settings) if (!grants.some((r) => r.id === kept.id || r.text === kept.text)) grants.push(kept);
+  const file4 = join34(store2.root, "rules.md"), source3 = text4.trim() + "\n";
+  assertTestSafe(file4);
+  writeFileSync16(file4, source3);
+  writeJson(join34(store2.root, "rules.compiled.json"), { schema: 1, rules: grants, confirmedAt: (/* @__PURE__ */ new Date()).toISOString(), sourceHash: createHash9("sha256").update(source3).digest("hex") }, store2.machine);
+  store2.saveHeldRules({});
+  return [`${grants.length} confirmed rule(s)`, ...grants.map(readBack), voteLimitNotice(text4)].filter(Boolean).join("\n");
+}
+function toggleReviewRules(store2, on) {
+  let rules = store2.rules(), text4 = rulesText(store2);
+  if (!rules.some((r) => r.then === "review") && on) {
+    let n = 1;
+    while (rules.some((r) => r.id === `R${n}`)) n++;
+    const line3 = REVIEW_RULE_TEXT;
+    rules = [...rules, { id: `R${n}`, text: line3, source: "settings", textHash: ruleTextHash(line3), who: { group: "org" }, when: { intent: "pr_review" }, then: "review", review: { comments: "post", reply: "send" } }];
+    text4 = `${text4.trim()}
+- ${line3}`.trim();
+  }
+  return writeRules(store2, text4, rules.map((r) => r.then === "review" ? { ...r, off: on ? void 0 : true } : r));
+}
+
+// src/web/settings.ts
 var set2 = (patch) => ({ ok: true, save: (cfg) => ({ ...cfg, ...patch }) });
 var list = (raw) => raw.split(/[,\n]/).map((s3) => s3.trim()).filter(Boolean);
 var num3 = (raw, min, max, key) => {
@@ -55598,14 +56403,26 @@ var HHMM2 = /^([01]\d|2[0-3]):[0-5]\d$/;
 var EVERY = [[10, "Every 10 minutes"], [60, "Every hour"], [UPDATE_EVERY_MIN, "Once a day"]];
 var SETTINGS = [
   {
+    key: "reviewRule",
+    label: "PR reviews: post comments and reply without asking",
+    help: "When someone asks you to review a PR you're a reviewer on, Delegate reviews it, posts its comments and replies to them for you. It never approves; approving stays yours.",
+    kind: "switch",
+    section: "you",
+    read: (_c, s3) => String(s3.rules().some((r) => r.then === "review" && !r.off)),
+    parse: (raw) => raw !== "true" && raw !== "false" ? { ok: false, why: "Choose On or Off." } : { ok: true, save: (c, s3) => {
+      toggleReviewRules(s3, raw === "true");
+      return c;
+    } }
+  },
+  {
     key: "profile",
     label: "About you",
     help: `A few lines ${NAME} reads before every draft: what you do and how you write.`,
     kind: "text",
     section: "you",
-    read: (_c, s3) => existsSync29(join34(s3.root, "profile.md")) ? readFileSync25(join34(s3.root, "profile.md"), "utf8") : "",
+    read: (_c, s3) => existsSync30(join35(s3.root, "profile.md")) ? readFileSync26(join35(s3.root, "profile.md"), "utf8") : "",
     parse: (raw) => raw.trim().length < 20 ? { ok: false, why: "Write at least a sentence about yourself." } : { ok: true, save: (cfg, s3) => {
-      writeFileSync16(join34(s3.root, "profile.md"), raw.trim() + "\n");
+      writeFileSync17(join35(s3.root, "profile.md"), raw.trim() + "\n");
       return cfg;
     } }
   },
@@ -55639,7 +56456,7 @@ var SETTINGS = [
     section: "you",
     read: (c) => (c.knowledge ?? []).join(", "),
     parse: (raw, s3) => {
-      const fs = list(raw), missing = fs.filter((f) => !existsSync29(here2(s3.root, f)));
+      const fs = list(raw), missing = fs.filter((f) => !existsSync30(here2(s3.root, f)));
       return missing.length ? { ok: false, why: `Not found on this machine: ${missing.join(", ")}` } : set2({ knowledge: fs });
     }
   },
@@ -56023,11 +56840,11 @@ function whoOf(r) {
 function aboutView(store2) {
   const habits = store2.habits(), held = store2.heldRules(), cfg = store2.config();
   return {
-    profile: existsSync29(join34(store2.root, "profile.md")) ? readFileSync25(join34(store2.root, "profile.md"), "utf8").trim() : "",
+    profile: existsSync30(join35(store2.root, "profile.md")) ? readFileSync26(join35(store2.root, "profile.md"), "utf8").trim() : "",
     rules: store2.rules().map((r) => {
       const h = r.learned ? habits.find((x) => x.key === r.learned.key) : void 0;
       return {
-        text: r.text.replace(/^Learned: /, ""),
+        text: `${r.off ? "Off: " : ""}${r.text.replace(/^Learned: /, "")}`,
         who: whoOf(r),
         ...r.learned ? { learned: `Learned ${r.learned.at.slice(0, 10)} from ${r.learned.evidence}` } : {},
         held: !!held[r.id],
@@ -56064,7 +56881,7 @@ function hostLine(cfg, now = Date.now()) {
   if (until) return `Not used: the AI host failed ${((n) => n === 1 ? "once" : n === 2 ? "twice" : `${n} times`)(hostFaultLimit(cfg))}; using one process per run until ${new Date(until).toLocaleTimeString(void 0, { hour: "numeric", minute: "2-digit", ...cfg.tz && validTz(cfg.tz) ? { timeZone: cfg.tz } : {} })}.`;
   let h;
   try {
-    h = JSON.parse(readFileSync25(hostFile(), "utf8"));
+    h = JSON.parse(readFileSync26(hostFile(), "utf8"));
   } catch {
     h = void 0;
   }
@@ -56097,7 +56914,7 @@ function settingsView(store2, experience) {
   const words4 = (t2) => (experience ?? experienceOf(store2.ui())) !== "classic" ? t2.replace("Waiting on others", "Waiting").replace("Check for updates on Home", "Check for updates at the foot of Now") : t2;
   return {
     code: codeFoldersView(store2.machine, cfg),
-    rows: specsOf(cfg).map((s3) => ({ key: s3.key, label: words4(s3.label), help: words4(typeof s3.help === "function" ? s3.help(cfg) : s3.help), kind: s3.kind, section: s3.section, value: s3.read(cfg, store2), options: s3.options, ...s3.advanced ? { advanced: true } : {}, ...s3.group ? { group: s3.group } : {} })),
+    rows: specsOf(cfg).map((s3) => ({ key: s3.key, label: words4(s3.label), help: words4(typeof s3.help === "function" ? s3.help(cfg) : s3.help) + (s3.key === "reviewRule" && store2.rules().filter((r) => r.then === "review").length > 1 ? ` Custom (${store2.rules().filter((r) => r.then === "review").length} rules). This switch turns all of them on or off; their text is kept.` : ""), kind: s3.kind, section: s3.section, value: s3.read(cfg, store2), options: s3.options, ...s3.advanced ? { advanced: true } : {}, ...s3.group ? { group: s3.group } : {} })),
     .../* @__PURE__ */ ((t2) => t2 ? { tools: t2 } : {})(toolsView(cfg, { machine: store2.machine, root: store2.root })),
     about: aboutView(store2),
     models: modelsView(store2),
@@ -56884,11 +57701,11 @@ init_next();
 
 // src/web/react-build.ts
 init_paths();
-import { readFileSync as readFileSync26, statSync as statSync12 } from "node:fs";
-import { join as join35, basename as basename6 } from "node:path";
+import { readFileSync as readFileSync27, statSync as statSync12 } from "node:fs";
+import { join as join36, basename as basename6 } from "node:path";
 import { deflateRawSync } from "node:zlib";
-var directory = (root) => join35(root, "dist", "web-react");
-var SNAPSHOT_TEMPLATE = join35("dist", "web-snapshot", "snapshot.html");
+var directory = (root) => join36(root, "dist", "web-react");
+var SNAPSHOT_TEMPLATE = join36("dist", "web-snapshot", "snapshot.html");
 var SNAPSHOT_DATA = '<script id="delegate-snapshot" type="application/json">__SNAPSHOT__</script>';
 var APP = /<script type="module" id="delegate-snapshot-app">([\s\S]*?)<\/script>/;
 var STYLE = /<style id="delegate-snapshot-style">([\s\S]*?)<\/style>/;
@@ -56896,9 +57713,9 @@ var packed = (id, text4) => `<script id="${id}" type="application/octet-stream">
 var LOADER = `<script>(async()=>{const read=async id=>new Response(new Blob([Uint8Array.from(atob(document.getElementById(id).textContent),c=>c.charCodeAt(0))]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).text();try{const[app,style,data]=await Promise.all(['delegate-snapshot-app','delegate-snapshot-style','delegate-snapshot'].map(read));const s=document.createElement('style');s.textContent=style;document.head.append(s);window.DELEGATE_SNAPSHOT=JSON.parse(data);history.replaceState(null,'',location.pathname+location.search+'#classic/snapshot');await import(URL.createObjectURL(new Blob([app],{type:'text/javascript'})))}catch(e){document.getElementById('react-root').textContent='This snapshot could not be opened in this browser: '+e}})()</script>`;
 var shell;
 function snapshotPage(snapshot2, root = ROOT) {
-  const file4 = join35(root, SNAPSHOT_TEMPLATE), key = `${file4}:${statSync12(file4).mtimeMs}`;
+  const file4 = join36(root, SNAPSHOT_TEMPLATE), key = `${file4}:${statSync12(file4).mtimeMs}`;
   if (shell?.key !== key) {
-    const template = readFileSync26(file4, "utf8"), app = APP.exec(template), style = STYLE.exec(template), end = template.lastIndexOf("</body>");
+    const template = readFileSync27(file4, "utf8"), app = APP.exec(template), style = STYLE.exec(template), end = template.lastIndexOf("</body>");
     if (!app || !style || end < 0 || !template.includes(SNAPSHOT_DATA)) throw new Error(`${SNAPSHOT_TEMPLATE} is not a snapshot page template.`);
     const html = template.slice(0, end).replace(app[0], () => packed("delegate-snapshot-app", app[1])).replace(style[0], () => packed("delegate-snapshot-style", style[1]));
     shell = { key, html: `${html}${LOADER}${template.slice(end)}` };
@@ -56906,12 +57723,12 @@ function snapshotPage(snapshot2, root = ROOT) {
   return shell.html.replace(SNAPSHOT_DATA, () => packed("delegate-snapshot", JSON.stringify(snapshot2)));
 }
 function reactAssets(root = ROOT) {
-  const manifest = JSON.parse(readFileSync26(join35(directory(root), ".vite", "manifest.json"), "utf8"));
+  const manifest = JSON.parse(readFileSync27(join36(directory(root), ".vite", "manifest.json"), "utf8"));
   return new Set(Object.values(manifest).flatMap((e) => [e.file, ...e.css ?? [], ...e.assets ?? []]));
 }
 function reactPage(token, root = ROOT, experience = "new") {
   reactAssets(root);
-  return readFileSync26(join35(directory(root), "index.html"), "utf8").replaceAll("__PAGE_TOKEN__", encodeURIComponent(token)).replace(/<html\b/, `<html data-experience="${experience === "classic" ? "classic" : "new"}"`).replace(
+  return readFileSync27(join36(directory(root), "index.html"), "utf8").replaceAll("__PAGE_TOKEN__", encodeURIComponent(token)).replace(/<html\b/, `<html data-experience="${experience === "classic" ? "classic" : "new"}"`).replace(
     /(src|href)="\.\/([^"]+)"/g,
     (_, attribute, file4) => `${attribute}="/web-react/${file4}?t=${encodeURIComponent(token)}"`
   );
@@ -56921,7 +57738,7 @@ function reactAsset(path, token, root = ROOT) {
   if (!assets.has(path)) return void 0;
   const js = path.endsWith(".js"), css = path.endsWith(".css");
   if (!js && !css) return void 0;
-  let content = readFileSync26(join35(directory(root), path), "utf8");
+  let content = readFileSync27(join36(directory(root), path), "utf8");
   if (js) for (const file4 of assets) for (const value of [file4, `./${basename6(file4)}`, `../${file4}`]) {
     for (const quote of ['"', "'", "`"]) content = content.replaceAll(`${quote}${value}${quote}`, `${quote}${value}?t=${encodeURIComponent(token)}${quote}`);
   }
@@ -56966,7 +57783,7 @@ var change = external_exports.object({
 });
 var draft = external_exports.object({ id: text3, itemId: text3, rev: text3, text: text3, sendText: optional2, marker: optional2, commitment: external_exports.boolean(), preview: external_exports.boolean(), holding: external_exports.boolean().optional() });
 var choice = external_exports.object({ id: optional2, label: text3, note: optional2, reply: optional2 });
-var choices = external_exports.object({ prompt: text3, multi: external_exports.boolean().optional(), options: external_exports.array(choice), other: external_exports.boolean().optional() });
+var choices = external_exports.object({ prompt: text3, multi: external_exports.boolean().optional(), options: external_exports.array(choice), other: external_exports.boolean().optional(), group: external_exports.boolean().optional() });
 var context = external_exports.object({ label: text3, text: text3, tone: external_exports.enum(["info", "warn"]).optional() });
 var thread = external_exports.object({ who: text3, text: text3, at: text3, owner: external_exports.boolean() });
 var item = external_exports.object({
@@ -57003,6 +57820,8 @@ var item = external_exports.object({
   attention: optional2,
   attentionKind: external_exports.enum(["reply-changed", "run-failed", "agent-setup", "reason"]).optional(),
   voteGap: external_exports.object({ text: text3, held: external_exports.boolean() }).optional(),
+  returned: external_exports.object({ machine: text3, at: text3, report: external_exports.boolean() }).optional(),
+  prReview: external_exports.object({ pr: external_exports.number(), voteRecommended: external_exports.boolean(), findings: external_exports.array(external_exports.object({ text: text3, file: optional2, line: external_exports.number().optional(), thread: external_exports.object({ author: text3, at: text3, url: optional2 }).optional() })) }).optional(),
   mode: optional2,
   editor: external_exports.enum(["reply", "answer", "none"]).optional(),
   block3: external_exports.enum(["when-you-send", "none"]).optional(),
@@ -57011,6 +57830,24 @@ var item = external_exports.object({
   debug: strings.optional(),
   promise: external_exports.object({ said: text3, failed: optional2 }).optional(),
   todos: strings.optional(),
+  leftLines: external_exports.array(external_exports.object({ text: text3, why: text3 })).optional(),
+  repaired: external_exports.boolean().optional(),
+  // R10b: a review posted under his rule that waits for his approval (SEND's reviewDone, from receipts).
+  reviewDone: external_exports.object({
+    pr: external_exports.number(),
+    reviewedAt: text3,
+    counts: external_exports.object({ high: external_exports.number(), medium: external_exports.number(), low: external_exports.number() }),
+    posted: external_exports.array(external_exports.object({ severity: external_exports.enum(["High", "Medium", "Low"]), file: optional2, line: external_exports.number().optional(), text: text3, thread: optional2 })),
+    more: external_exports.number(),
+    to: text3,
+    reply: external_exports.object({ text: text3, teams: optional2 }).optional(),
+    clean: external_exports.boolean().optional(),
+    fallback: optional2,
+    prUrl: optional2,
+    openPr: external_exports.enum(["primary", "secondary"]).optional(),
+    voteChangeIds: strings.optional(),
+    closed: external_exports.boolean().optional()
+  }).optional(),
   runFailed: external_exports.object({ at: text3, why: text3, tried: strings.optional(), review: optional2, toolsOff: external_exports.boolean().optional() }).optional(),
   prLabel: optional2,
   ownReply: external_exports.object({ text: text3, at: text3, teams: optional2 }).optional(),
@@ -57178,7 +58015,7 @@ var snapshotSchema = external_exports.object({
   showExperienceNote: external_exports.boolean().optional(),
   running: external_exports.array(external_exports.object({ what: text3, since: text3, progress: external_exports.number().optional() })).optional(),
   // R11(1): what Delegate is on: working now (runs actually going), queued, how many at a time, and why the rest wait.
-  busy: external_exports.object({ now: external_exports.number(), queued: external_exports.number(), max: external_exports.number(), reason: external_exports.object({ kind: external_exports.enum(["ai", "paused", "off", "slots"]), at: optional2, text: optional2 }).optional() }).optional(),
+  busy: external_exports.object({ now: external_exports.number(), queued: external_exports.number(), max: external_exports.number(), scheduled: external_exports.object({ n: external_exports.number(), at: text3, to: optional2 }).optional(), reason: external_exports.object({ kind: external_exports.enum(["ai", "paused", "off", "slots"]), at: optional2, text: optional2 }).optional() }).optional(),
   version: external_exports.object({ version: optional2, code: optional2, fullCode: optional2, tag: optional2, auto: external_exports.boolean(), channel: text3, everyMin: external_exports.number(), checkedAt: optional2, failed: optional2, last: external_exports.object({ to: text3, rolledBack: optional2 }).optional() }).optional(),
   sinceLine: external_exports.object({ at: text3, parts: external_exports.array(external_exports.object({ text: text3, href: text3 })) }).optional(),
   settingsActions: external_exports.record(text3, strings).optional(),
@@ -57420,6 +58257,7 @@ function heldLine(who2, reasons) {
 }
 var asked2 = (f) => !!f.question || f.yourStep?.kind === "decision";
 var sinceWords = (at3) => at3 && Number.isFinite(Date.parse(at3)) ? ` since ${new Date(at3).toLocaleString("en-US", { weekday: "short", hour: "numeric", minute: "2-digit" })}` : "";
+var dayTime = (at3) => at3 && Number.isFinite(Date.parse(at3)) ? ` \xB7 ${new Date(at3).toLocaleString("en-US", { weekday: "short", hour: "numeric", minute: "2-digit" })}` : "";
 var RULES4 = [
   // Open in a terminal (#43, PE 16:50): Delegate leaves the item alone, so the only page step is taking it back; it beats any state.
   { mode: "in-terminal", when: (f) => f.hold?.kind === "window", build: (f) => ({ primary: "take-back", secondary: [], more: [], editor: "none", warn: `Open in a terminal on ${f.hold.machine ?? "another machine"}${sinceWords(f.hold.since)} \xB7 Delegate waits until you close it.` }) },
@@ -57435,7 +58273,15 @@ var RULES4 = [
   // Delegate is working on it (#48, PE 19:40): no button leads, a status strip says what it is doing; Dismiss stays in ⋯. Write the
   // reply yourself stays visible the whole time (PM 19:50). A terminal hold, an AI-limit wait, his own reply and a failure decide first.
   { mode: "working", when: (f) => !!f.working, build: (f) => ({ secondary: ["write-own"], more: ["dismiss"], editor: "none", strip: { doing: f.working.what, ...f.working.since ? { since: f.working.since } : {} } }) },
-  { mode: "review-again", when: (f) => !!f.question?.reviewAgain, build: (f) => ({ primary: "review-again", secondary: [...f.draft ? [f.changes ? "reply-only" : "approve"] : [], "later"], more: ["dismiss"], editor: "none" }) },
+  { mode: "review-again", when: (f) => !!f.question?.reviewAgain || !!f.reviewAgain && !f.reviewDone, build: (f) => ({ primary: "review-again", secondary: [...f.draft ? [f.changes ? "reply-only" : "approve"] : [], "later"], more: ["dismiss"], editor: "none" }) },
+  // R10b (joint C2, A5.4/A5.5): the bar is chosen by the findings. Any High: Open PR to approve leads, Approve PR <n> beside it; else
+  // Approve leads. Approve only while it is his proposed vote on the reviewed head; on new changes Review again leads, Open PR beside it.
+  { mode: "review-done", when: (f) => !!f.reviewDone && !f.draft, build: (f) => {
+    const r = f.reviewDone, post = r.waiting ? ["post-waiting"] : [];
+    if (r.moved) return { primary: "review-again", secondary: [...post, "later"], more: ["dismiss"], editor: "none", openPr: "secondary", warn: `New changes since the review${dayTime(r.moved.at)}` };
+    if (!r.approvable) return { secondary: [...post, "later"], more: ["review-again", "dismiss"], editor: "none", openPr: "primary" };
+    return r.high ? { secondary: ["approve-pr", ...post, "later"], more: ["review-again", "dismiss"], editor: "none", openPr: "primary" } : { primary: "approve-pr", secondary: [...post, "later"], more: ["review-again", "dismiss"], editor: "none", openPr: "secondary" };
+  } },
   { mode: "declined", when: (f) => !!f.declined, build: (f) => ({ primary: f.declined.addMe && f.changes ? "approve" : void 0, secondary: ["later"], more: ["dismiss"], editor: "none" }) },
   // A held Send (#45, PE 17:15): every current reason in one line, newest first; Send anyway passes exactly those (holdDigest).
   // Redraft leads when the engine found a real change in what is asked of him (a reason with `changed`), because the draft no
@@ -57518,6 +58364,7 @@ function checkCard(f, s3) {
   if (f.working && !["in-terminal", "agent-wait", "own-reply", "failed", "working"].includes(s3.mode)) out.push("a working item has no working card");
   if (s3.warn && LEAK.test(s3.warn)) out.push("the warning leaks an id or an error");
   if (s3.editor === "answer" && s3.primary !== "answer") out.push("an answer box without Answer");
+  if (all.includes("approve-pr") && !(f.reviewDone?.approvable && !f.reviewDone.moved)) out.push("Approve is offered on a PR that changed since the review");
   return out;
 }
 
@@ -57528,6 +58375,7 @@ init_owner_send();
 var CI = /\b(?:builds?|CI|pipelines?|checks?|validation)\s+(?:(?:is|are|has|have)\s+)?(?:failed|failing|passed|green|red|pending|running|succeeded|queued)\b|\bcoverage\s+(?:dropped|is below|fell)\b/i;
 var VOTE_STATUS = /\b(?:your|my|our|(?:the )?owner's)\s+(?:reviewer\s+)?groups?\b|\bowner\s+(?:has\s+)?(?:approved|voted|is waiting)\b|\b(?:votes?|reviewer status)\s+(?:is|are)\s+(?:(?:still|already)\s+)?(?:present|recorded|approved|pending|waiting)\b/i;
 var REVIEWER_STATUS = /^(?:[A-Z][\w'-]*\s+){1,3}(?:has\s+)?(?:approved|voted|(?:is\s+)?waiting)(?=$|[.!;,]|\s+(?:on|for|with|this|the|PR)\b)/;
+var REVIEW_STATUS_LABEL = /^(?:live votes?|newest builds?)\b|\bdependency\b.*\bvotes?\b/i;
 var PLUMBING = /\b(?:tool discovery|execution calls?|tool schema)\b/i;
 var INTERNAL = /[0-9a-f]{8,}|job:|Error:|Not made for you|\bworker\b|\b(?:ado|teams|sharepoint|delegate_worker)[-_][\w-]+/i;
 var REFUSAL = /(?:\.\s*)?Not made for you:\s*/i;
@@ -57576,8 +58424,8 @@ function normalizeReport(stored) {
   const review = !stored.every && ((stored.intent ?? report2.intent) === "pr_review" || /^pr:/i.test(stored.key?.trim() ?? ""));
   const normalized2 = { context: [], findings: [], refused: [], todos: [] };
   const addRefusal = (r) => {
-    const clean3 = { what: plain4(r.what, "Make the change yourself"), target: plain4(r.target, ""), reason: refusalReason(r.reason) };
-    if (!normalized2.refused.some((x) => x.what === clean3.what && x.target === clean3.target && x.reason === clean3.reason)) normalized2.refused.push(clean3);
+    const clean4 = { what: plain4(r.what, "Make the change yourself"), target: plain4(r.target, ""), reason: refusalReason(r.reason) };
+    if (!normalized2.refused.some((x) => x.what === clean4.what && x.target === clean4.target && x.reason === clean4.reason)) normalized2.refused.push(clean4);
   };
   for (const r of stored.refused ?? []) addRefusal(r);
   for (const text4 of [...report2.todos ?? [], ...stored.result ? stored.todos ?? [] : []]) {
@@ -57600,14 +58448,14 @@ function normalizeReport(stored) {
     }
     const gate = GATE.test(fact.label.trim());
     const text4 = `${fact.label} ${fact.text}`;
-    if (review && !gate && (CI.test(text4) || VOTE_STATUS.test(text4) || PLUMBING.test(text4) || REVIEWER_STATUS.test(fact.label.trim()) || REVIEWER_STATUS.test(fact.text.trim()))) continue;
-    const clean3 = {
+    if (review && !gate && (CI.test(text4) || VOTE_STATUS.test(text4) || PLUMBING.test(text4) || REVIEW_STATUS_LABEL.test(fact.label.trim()) || /\bThese are CI facts\b/i.test(fact.text) || REVIEWER_STATUS.test(fact.label.trim()) || REVIEWER_STATUS.test(fact.text.trim()))) continue;
+    const clean4 = {
       label: factText(fact.label),
       text: factText(fact.text),
       ...review ? { tone: gate && fact.tone === "warn" ? "warn" : "info" } : fact.tone ? { tone: fact.tone } : {}
     };
-    normalized2.context.push(clean3);
-    if (review && !gate) normalized2.findings.push({ ...clean3 });
+    normalized2.context.push(clean4);
+    if (review && !gate) normalized2.findings.push({ ...clean4 });
   }
   const explicit = stored.runFailed ?? stored.failure;
   const blocker = (report2.goalMet === false ? report2.blocker : void 0) ?? (stored.state === "failed" ? stored.retry?.last : void 0);
@@ -57634,9 +58482,12 @@ function normalizeReport(stored) {
 }
 
 // src/core/card-facts.ts
+init_effects();
 var FIXED = [/It needs the repo https?:/i, /no decoder|encoded binary|base64/i];
 var PERMANENT = /^Couldn't open .*?: (?:no access|too large to open|too much content to open|not a Word, PowerPoint or Excel file)/i;
 var NOT_SENT = /^(?:Not sent: |Not sure it was sent[:.]?\s*|Could not start: )/;
+var SENT_PREFIX = /^(?:Not sent(?: automatically)?: |Not sure it was sent[:;.]?\s*|Could not start(?: the AI run)?[^:]*: |Held: )/;
+var FINISH_PREFIX = /^(?:Not finished|Couldn't finish|The job did not finish|.{1,40} couldn't draft this):\s*/;
 var failureOf = (n) => n.failure ?? (n.refused[0] ? { kind: "content", why: n.refused[0].reason, tried: [] } : void 0);
 function cardFacts(i) {
   const { wf, job, card: card2 } = i;
@@ -57644,6 +58495,9 @@ function cardFacts(i) {
   const fixed = (why2) => FIXED.some((r) => r.test(why2));
   const own3 = (f) => ({ ...f, repeats: i.repeats ?? 0, systemChanged: fixed([f.why, ...f.tried].join(" ")), ...PERMANENT.test(f.why) ? { kind: "content" } : {} });
   const waiting = wf.state === "needs_human";
+  const reason = wf.statusReason?.text === wf.status ? wf.statusReason : void 0;
+  const finishedShort = reason?.kind === "not-finished" || /^Not finished: /.test(wf.status);
+  const finishedWhy = (reason?.kind === "not-finished" ? reason.text.replace(FINISH_PREFIX, "") : wf.status.replace(/^Not finished: /, "")).split(/(?<=[.!?])\s+/)[0];
   const stopped = wf.state === "waiting_on_task" && (!job || job.state === "failed" || job.state === "done");
   const failure2 = waiting || stopped ? currentFailure([
     // Each stored failure is read through the one canonical reader (card-state step 5, SEND's normalizeReport) before the newest one
@@ -57651,19 +58505,40 @@ function cardFacts(i) {
     ((f) => wf.runFailed && waiting && f ? own3({ kind: f.kind, at: wf.runFailed.at, why: f.why, tried: f.tried, job: wf.runFailed.job, review: !!wf.runFailed.job && wf.intent === "pr_review" }) : void 0)(wf.runFailed && waiting ? failureOf(normalizeReport({ runFailed: wf.runFailed })) : void 0),
     ((f) => job?.state === "failed" && f ? own3({ kind: f.kind === "content" ? "content" : "other", at: job.updatedAt, why: f.why, tried: f.tried, job: job.id }) : void 0)(job?.state === "failed" && (waiting || stopped) ? failureOf(normalizeReport({ state: "failed", error: job.error ?? "the work stopped before it finished", updatedAt: job.updatedAt })) : void 0),
     stopped && job?.state !== "failed" ? own3({ kind: "stopped", at: wf.updatedAt, why: wf.status || "the work stopped before it finished", tried: [] }) : void 0,
-    // A run that fell short with nothing to send and no question left only its status (dispatch.ts "Not finished: ", A90).
-    waiting && !wf.runFailed && !card2.draft && card2.question === void 0 && /^Not finished: /.test(wf.status) ? own3({ kind: "content", at: wf.revAt ?? wf.updatedAt, why: wf.status.replace(/^Not finished: /, "").split(/(?<=[.!?])\s+/)[0], tried: [] }) : void 0
+    // A run that fell short with nothing to send and no question left only its status (statusReason 'not-finished'; dispatch.ts
+    // "Not finished: " on an older item, A90).
+    waiting && !wf.runFailed && !card2.draft && card2.question === void 0 && finishedShort && finishedWhy ? own3({ kind: "content", at: reason?.at ?? wf.revAt ?? wf.updatedAt, why: finishedWhy, tried: [] }) : void 0
   ], card2.draft ? draftAt : void 0) : void 0;
   const reasons = waiting && card2.draft ? holdReasons(wf) : [];
   const held = reasons.length ? { digest: wf.holdDigest ?? reasons[0].digest, who: wf.asker?.name?.split(/\s+/)[0] || "They", reasons: reasons.map((r) => r.kind === "no-reply-needed" ? { kind: r.kind, why: r.why } : { kind: r.kind, at: r.at, ...r.changed ? { changed: r.changed } : {}, ...r.kind === "asker-wrote-again" && (r.msgIds?.length ?? 0) > 1 ? { count: r.msgIds.length } : {} }) } : void 0;
-  const notSent = !held && !voteHold(wf) && waiting && !!card2.draft && NOT_SENT.test(wf.status) ? { why: wf.status.replace(NOT_SENT, "").replace(/\s*\((?:Error|error)\b[^)]*\)/g, "").trim() } : void 0;
+  const notSentText = reason && ["not-sent", "not-sure-sent", "could-not-start"].includes(reason.kind) ? reason.text.replace(SENT_PREFIX, "") : NOT_SENT.test(wf.status) ? wf.status.replace(NOT_SENT, "") : void 0;
+  const notSent = !held && !voteHold(wf) && waiting && !!card2.draft && notSentText !== void 0 ? { why: notSentText.replace(/\s*\((?:Error|error)\b[^)]*\)/g, "").trim() } : void 0;
   const claim2 = waiting && card2.draft ? voteHold(wf) : void 0;
   const voteGap = claim2 && wf.statusReason?.text ? { text: wf.statusReason.text, held: true, override: !claim2.automatic && claim2.canOverride !== false, addVote: !!i.voteRecommended } : waiting && card2.draft && i.voteGap ? { text: i.voteGap.why, held: false, override: true, addVote: !!i.voteRecommended } : void 0;
-  const working = wf.state === "running" || wf.state === "waiting_on_task" && (job?.state === "queued" || job?.state === "running") ? { what: wf.status, ...wf.waitingSince ?? wf.updatedAt ? { since: wf.waitingSince ?? wf.updatedAt } : {} } : void 0;
+  const working = wf.state === "running" || wf.state === "waiting_on_task" && (job?.state === "queued" || job?.state === "running") ? { what: wf.status, .../* @__PURE__ */ ((s3) => s3 ? { since: s3 } : {})(wf.workingSince ?? wf.waitingSince ?? wf.updatedAt) } : void 0;
+  const done2 = wf.reviewDone, basis = wf.reviewBasis;
+  const reviewDone = waiting && !card2.draft && done2 && (done2.posted.length > 0 || done2.clean) ? (() => {
+    const head = (() => {
+      try {
+        const read3 = wf.prRead ? JSON.parse(wf.prRead) : void 0;
+        return Array.isArray(read3) && read3[0] === done2.pr && typeof read3[2] === "string" ? read3[2] : void 0;
+      } catch {
+        return void 0;
+      }
+    })();
+    const pending = (wf.effects ?? []).filter((e) => !e.done && !e.off);
+    const vote = pending.some((e) => isVote(e.call) && (voteValue(e.call) ?? 0) >= 5 && !e.error);
+    const reviewed = !!basis && basis.pr === done2.pr && sameHead(basis.head, done2.head);
+    const moved = wf.reviewAgain && wf.reviewAgain.pr === done2.pr ? { at: wf.reviewAgain.at } : head && !sameHead(head, done2.head) ? {} : void 0;
+    return { high: done2.counts.high, approvable: !moved && vote && reviewed && !!head && sameHead(head, basis.head), ...moved ? { moved } : {}, waiting: pending.filter((e) => !isVote(e.call)).length };
+  })() : void 0;
   return {
     state: wf.state,
     ...card2.draft ? { draft: { holding: !!card2.draft.holding, preview: !!card2.draft.preview, at: draftAt } } : {},
-    ...card2.question !== void 0 ? { question: { text: card2.question, reviewAgain: !!card2.reviewAgain } } : {},
+    // Review again (step 6): HOST's reviewAgain {pr, head, at} when there is one, else the view's command text (a writer without a head).
+    ...card2.question !== void 0 ? { question: { text: card2.question, reviewAgain: !!wf.reviewAgain || !!card2.reviewAgain } } : {},
+    // P0-10 (A R27): with no question, HOST's reviewAgain alone makes the card lead with Review again (a review-done card keeps its own).
+    ...waiting && card2.question === void 0 && (!!wf.reviewAgain || !!card2.reviewAgain) ? { reviewAgain: true } : {},
     ...card2.choices ? { choices: { multi: !!card2.choices.multi } } : {},
     changes: i.changes,
     ...i.replyCountsOnRefused ? { replyCountsOnRefused: true } : {},
@@ -57681,7 +58556,10 @@ function cardFacts(i) {
     ...card2.draft?.commitment ? { commitment: /* @__PURE__ */ ((p) => p ? { promise: p } : {})(wf.todos?.find((t2) => !/Not made for you:/.test(t2) && !/^Clone \S+ on \S+ \(git clone /.test(t2))) } : {},
     ...card2.draft && wf.newCount > 0 ? { newMessages: { who: wf.asker?.name?.split(/\s+/)[0] || "They", n: wf.newCount } } : {},
     ...i.warns?.length ? { warns: i.warns } : {},
-    ...voteGap ? { voteGap } : {}
+    ...voteGap ? { voteGap } : {},
+    // Back from his terminal window (step 6): a status line only, until his next action or a new draft clears it.
+    ...waiting && wf.returnedFrom ? { returned: { machine: wf.returnedFrom.machine, at: wf.returnedFrom.at, report: wf.returnedFrom.report } } : {},
+    ...reviewDone ? { reviewDone } : {}
   };
 }
 function cardContext(wf, job, context2 = []) {
@@ -57713,25 +58591,49 @@ init_policy();
 init_ledger();
 init_jobs();
 init_probe();
+init_review_gate();
 init_offrecord();
 
 // src/web/page-text.ts
 var hasCommandHint = (text4) => /\b(?:ok|edit|send|skip|answer|pick|undo|more|close|wait)\s+[A-Z]\d+\b|\b(?:type|say|reply with)\s+["'`]/i.test(text4);
-var CHAT_ID2 = /\d{2}:[^\s@]+@(?:thread\.(?:v2|tacv2|skype)|unq\.gbl\.spaces)/g;
-var leaks = 0;
-function chatIdNet(text4) {
-  return text4.replace(CHAT_ID2, () => {
-    leaks++;
+var CHAT_ID3 = /\d{2}:[^\s@]+@(?:thread\.(?:v2|tacv2|skype)|unq\.gbl\.spaces)/g;
+var GUID2 = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
+var ID_PAIR = /\b(?:(repositoryId|repoId|pullRequestId|projectId|commitId|headCommit)\s*[:=]\s*|(project|head|commit)=)("[^"]*"|'[^']*'|[^\s,;)\]}]+)/gi;
+var COMMIT2 = /\b(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{7,40}\b/gi;
+var leaks = {};
+var caught = (kind) => {
+  leaks[kind] = (leaks[kind] ?? 0) + 1;
+};
+function idNet(text4) {
+  let changed = false;
+  const out = text4.replace(CHAT_ID3, () => {
+    caught("chat-id");
     return "another chat";
+  }).replace(ID_PAIR, (_, idKey, wordKey, value) => {
+    changed = true;
+    caught("key-value");
+    const pr = /^pullRequestId$/i.test(idKey ?? wordKey ?? "") && /^["']?(\d+)["']?$/.exec(value)?.[1];
+    if (/^project$/i.test(wordKey ?? "")) return value.replace(/^["']|["']$/g, "");
+    return pr ? `PR ${pr}` : "";
+  }).replace(GUID2, () => {
+    changed = true;
+    caught("guid");
+    return "";
+  }).replace(COMMIT2, () => {
+    changed = true;
+    caught("commit");
+    return "";
   });
+  return changed ? out.replace(/[([{]\s*(?:[,;]\s*)*[)\]}]/g, "").replace(/\s+([,.;:)\]])/g, "$1").replace(/([,;])(?:\s*[,;])+/g, "$1").replace(/([([{])\s*[,;]\s*/g, "$1").replace(/,\s*([)\]])/g, "$1").replace(/[ \t]{2,}/g, " ").trim() : out;
 }
+var chatIdNet = idNet;
 function takePageTextLeaks() {
   const n = leaks;
-  leaks = 0;
+  leaks = {};
   return n;
 }
 function pageText(text4 = "") {
-  return chatIdNet(forPage(text4).split(/(?<=[.!?])\s+/).filter((sentence2) => !hasCommandHint(sentence2)).join(" ").trim());
+  return idNet(forPage(text4).split(/(?<=[.!?])\s+/).filter((sentence2) => !hasCommandHint(sentence2)).join(" ").trim());
 }
 
 // src/web/react-projection.ts
@@ -57739,6 +58641,25 @@ init_page_revision();
 init_work();
 init_owner_send();
 init_habits();
+var REPAIRED = "The comment format was wrong and is fixed. Post them now?";
+var APPROVE_PR_MEANING = "Approves as you. The PR is unchanged since the review.";
+function scrubFacts(f) {
+  const net = (s3) => s3 === void 0 ? s3 : idNet(s3);
+  return {
+    ...f,
+    ...f.question ? { question: { ...f.question, text: idNet(f.question.text) } } : {},
+    ...f.failure ? { failure: { ...f.failure, why: idNet(f.failure.why), tried: f.failure.tried.map(idNet) } } : {},
+    ...f.hold ? { hold: { ...f.hold, text: idNet(f.hold.text) } } : {},
+    ...f.notSent ? { notSent: { why: idNet(f.notSent.why) } } : {},
+    ...f.working ? { working: { ...f.working, what: idNet(f.working.what) } } : {},
+    ...f.held ? { held: { ...f.held, reasons: f.held.reasons.map((r) => ({ ...r, ...r.changed ? { changed: net(r.changed) } : {}, ...r.why ? { why: net(r.why) } : {} })) } } : {},
+    ...f.yourStep ? { yourStep: { ...f.yourStep, what: idNet(f.yourStep.what) } } : {},
+    ...f.promiseFailed ? { promiseFailed: idNet(f.promiseFailed) } : {},
+    ...f.commitment?.promise ? { commitment: { promise: idNet(f.commitment.promise) } } : {},
+    ...f.warns ? { warns: f.warns.map(idNet) } : {},
+    ...f.voteGap ? { voteGap: { ...f.voteGap, text: idNet(f.voteGap.text) } } : {}
+  };
+}
 var IntentError = class extends Error {
   status;
   constructor(status3, message) {
@@ -57862,13 +58783,13 @@ function reactProjection(store2, query = "", visit2, opts = {}) {
       ...unavailable ? { unavailable } : {}
     });
   }
-  const isCode = (token) => /^[A-Z]\d{1,5}$/.test(token) && byCode.has(token);
+  const isCode2 = (token) => /^[A-Z]\d{1,5}$/.test(token) && byCode.has(token);
   const chatWords = (code) => {
     const w = byCode.get(code);
     return w ? w.chat.group ? w.chat.name : `${(w.asker?.name ?? "").split(/\s+/)[0]} \xB7 1:1` : void 0;
   };
-  const whereWords = (home, where) => !where ? void 0 : !isCode(where) ? where : where === home ? "this chat" : chatWords(where);
-  const plainText = (text4) => text4.replace(/\s*\(([^()]*?),\s*([A-Z]\d{1,5})\)/g, (all, inner, code) => isCode(code) ? ` \xB7 ${inner}` : all).replace(/\s*\(([A-Z]\d{1,5})\)/g, (all, code) => isCode(code) ? "" : all).replace(/\b(?:part|job|sent|owner|completion|row):[^\s,;)]+/g, "").replace(/\b([A-Z]\d{1,5})(:\s|\b)/g, (all, code, tail) => isCode(code) ? tail.trim() ? "" : "" : all).replace(/\s{2,}/g, " ").replace(/\s+([,.;:])/g, "$1").trim();
+  const whereWords = (home, where) => !where ? void 0 : !isCode2(where) ? where : where === home ? "this chat" : chatWords(where);
+  const plainText = (text4) => text4.replace(/\s*\(([^()]*?),\s*([A-Z]\d{1,5})\)/g, (all, inner, code) => isCode2(code) ? ` \xB7 ${inner}` : all).replace(/\s*\(([A-Z]\d{1,5})\)/g, (all, code) => isCode2(code) ? "" : all).replace(/\b(?:part|job|sent|owner|completion|row):[^\s,;)]+/g, "").replace(/\b([A-Z]\d{1,5})(:\s|\b)/g, (all, code, tail) => isCode2(code) ? tail.trim() ? "" : "" : all).replace(/\s{2,}/g, " ").replace(/\s+([,.;:])/g, "$1").trim();
   const escape4 = (n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const ownerFull = base2.owner?.trim(), ownerFirst = ownerFull?.split(/\s+/)[0];
   const ownerRe = ownerFull ? new RegExp([`\\b${escape4(ownerFull)}\\b`, ...ownerFirst && ownerFirst.length > 1 && ownerFirst !== ownerFull ? [`\\b${escape4(ownerFirst)}\\b(?!\\s+[A-Z])(?!['\u2019]s\\b)`] : []].join("|"), "g") : void 0;
@@ -57900,14 +58821,14 @@ function reactProjection(store2, query = "", visit2, opts = {}) {
       prefix
     );
   }
-  function closeWork2(code, kind, prefix = code) {
+  function closeWork2(code, kind, prefix = code, label2 = "Close") {
     const rev = entities.items[code].rev;
     const blocked = byCode.get(code)?.kept?.some((todo) => !todo.done);
     const reason = "Open the item and tick what's left for you first, then close this work.";
-    return offer(code, rev, kind, "Close", () => {
+    return offer(code, rev, kind, label2, () => {
       if (blocked) throw new IntentError(409, reason);
       return { code, verb: "close" };
-    }, { staleness: "exact", expect: rev, ...blocked ? { unavailable: { label: "Close", reason } } : {} }, prefix);
+    }, { staleness: "exact", expect: rev, ...blocked ? { unavailable: { label: label2, reason } } : {} }, prefix);
   }
   function tool(item2, kind, label2, execute, input2, prefix = "page", rev) {
     const id = offer(item2, rev ?? "", kind, label2, () => {
@@ -57931,6 +58852,7 @@ function reactProjection(store2, query = "", visit2, opts = {}) {
   const stoppedCodes = new Set(next2.move.filter((row) => row.kind === "stopped").map((row) => row.act));
   const editable = /* @__PURE__ */ new Set([...workflows.filter((workflow) => workflow.state === "needs_human" || workflow.openOn && workflow.state !== "done").map((workflow) => workflow.code), ...stoppedCodes]);
   const ownerRules = store2.rules();
+  const reviewRows = /* @__PURE__ */ new Map();
   for (const wf of workflows) {
     const c = readyCards.get(wf.code) ?? card(store2, wf, knowledge2), id = c.code, rev = presentationRev(wf, cfg);
     const { who: who2, chat: chat2, draft: draft2, changes, notes: cardNotes, why: why2, work: work2, replyOnly, reviewAgain: reviewAgain2, ...rest2 } = c;
@@ -58047,8 +58969,16 @@ function reactProjection(store2, query = "", visit2, opts = {}) {
     const voteGap = draft2 && wf.state === "needs_human" && !voteHold(wf) && aboutPR() ? voteClaimGap(draft2.text, wf.effects ?? [], lastKnownVote) : void 0;
     const recommended = job?.result?.voteRecommendation?.vote;
     const voteRecommended = !!recommended && recommended !== "none" && !pending.some((effect) => isVote(effect.call));
-    const fx = cardFacts({ wf, job, ...wf.openOn && wf.state !== "done" ? { window: { machine: wf.openOn, ...windowRec?.since ? { since: windowRec.since } : {} } } : {}, card: { question: c.question, draft: draft2, choices: c.choices, ownReply: c.ownReply, promise: c.promise, reviewAgain: reviewAgain2 }, changes: changes.length, agentWait, todos: todoIds.length, warns, ...voteGap ? { voteGap } : {}, voteRecommended });
+    const groupPick = wf.groupAsk && !c.choices && wf.state === "needs_human" ? groupChoices(wf.groupAsk) : void 0;
+    const choices2 = c.choices ?? (groupPick && { prompt: groupPick.prompt, multi: true, other: false, options: groupPick.options.map(({ label: label2 }) => ({ label: label2 })) });
+    const groupAside = !!groupPick && !!draft2;
+    const fx = scrubFacts(cardFacts({ wf, job, ...wf.openOn && wf.state !== "done" ? { window: { machine: wf.openOn, ...windowRec?.since ? { since: windowRec.since } : {} } } : {}, card: { question: groupAside ? groupPick.prompt : groupPick ? void 0 : c.question, draft: draft2, choices: groupAside ? c.choices : choices2, ownReply: c.ownReply, promise: c.promise, reviewAgain: reviewAgain2 }, changes: changes.length, agentWait, todos: todoIds.length, warns, ...voteGap ? { voteGap } : {}, voteRecommended }));
     const cs = cardState(fx);
+    const rd = cs.mode === "review-done" ? wf.reviewDone : void 0;
+    const voteAt = rd ? pending.findIndex((effect) => isVote(effect.call) && (voteValue(effect.call) ?? 0) >= 5 && !effect.error) : -1;
+    const voteN = voteAt >= 0 ? changes[voteAt]?.n : void 0;
+    const voteKs = rd ? pending.flatMap((effect, k) => isVote(effect.call) ? [k] : []) : [];
+    const voteNs = voteKs.map((k) => changes[k]?.n).filter((n) => n !== void 0);
     if (editable.has(id)) {
       const broken = checkCard(fx, cs);
       if (broken.length && !brokenSeen.has(`${id}@${rev}`)) {
@@ -58079,11 +59009,12 @@ function reactProjection(store2, query = "", visit2, opts = {}) {
         }, { effect: changes.length ? "local" : "sends", staleness: "exact", expect, input: "text" })),
         answer: () => actionIds.push(offer(id, rev, "answer", cs.primary === "answer" ? "Draft reply" : "Answer instead", (input2) => ({ code: id, verb: "answer", text: requiredText(input2) }), { input: "text", recovery: failed2 || void 0 })),
         pick: () => {
-          if (c.choices) actionIds.push(offer(id, rev, "pick", "Preview reply", (input2) => {
+          if (choices2) actionIds.push(offer(id, rev, "pick", groupPick ? "Save" : "Preview reply", (input2) => {
             const picks = [...new Set(input2?.picks ?? [])];
-            if (!picks.length || picks.some((n) => n > c.choices.options.length) || !c.choices.multi && picks.length !== 1) throw new IntentError(422, "Pick an offered option.");
+            if (!picks.length || picks.some((n) => n > choices2.options.length) || !choices2.multi && picks.length !== 1) throw new IntentError(422, "Pick an offered option.");
+            if (groupPick && picks.includes(choices2.options.length) && picks.length !== 1) throw new IntentError(422, `"None of these" can't be picked with a group.`);
             return { code: id, verb: "pick", nums: picks };
-          }, { input: "picks", staleness: "exact", expect }));
+          }, { input: "picks", staleness: "exact", expect, ...groupPick ? { meaning: `${NAME} remembers your answer.` } : {} }));
         },
         // A held Send (PE 14:28): the chat's own verbs. "Send anyway" becomes ok past exactly the held reason's digest (apply.ts),
         // so the owner sends only the card he saw; "Redraft" starts over with the new message.
@@ -58108,14 +59039,34 @@ function reactProjection(store2, query = "", visit2, opts = {}) {
           actionIds.push(at3);
         },
         later: () => actionIds.push(offer(id, rev, "later", "Later", () => ({ code: id, verb: "later" }))),
-        dismiss: () => actionIds.push(offer(id, rev, "dismiss", failed2 || c.promise || fx.held?.reasons.some((r) => r.kind === "no-reply-needed") ? "Skip" : "Dismiss", () => ({ code: id, verb: "skip" }))),
+        dismiss: () => actionIds.push(rd ? offer(id, rev, "dismiss", "Not approving it now", () => ({ code: id, verb: "skip" }), { meaning: "I'll handle it in Azure DevOps." }) : offer(id, rev, "dismiss", failed2 || c.promise || fx.held?.reasons.some((r) => r.kind === "no-reply-needed") ? "Skip" : "Dismiss", () => ({ code: id, verb: "skip" }))),
         // A run that gave no result (queue-new #11): Try again re-runs it as it was; a job that ran out of routes is queued again (#17 b).
         "try-again": () => actionIds.push(offer(id, rev, "try-again", "Try again", () => ({ code: id, verb: "answer", text: "try again" }), { staleness: "exact", expect })),
         "write-own": () => actionIds.push(offer(id, rev, "write-own", "Write the reply yourself", (input2) => ({ code: id, verb: "send", text: requiredText(input2) }), { effect: "sends", staleness: "exact", expect, input: "text" })),
         "review-again": () => actionIds.push(offer(id, rev, "review-again", "Review again", () => ({ code: id, verb: "answer", text: "review again" }))),
+        "approve-pr": () => {
+          if (rd && voteN !== void 0) actionIds.push(offer(
+            id,
+            rev,
+            "approve-pr",
+            `Approve PR ${rd.pr}`,
+            () => ({ code: id, verb: "ok", ...((except) => except.length ? { except } : {})(changes.filter((change2) => change2.n !== voteN).map((change2) => change2.n)) }),
+            { effect: "changes-system", staleness: "exact", expect, meaning: APPROVE_PR_MEANING }
+          ));
+        },
+        "post-waiting": () => {
+          if (rd) actionIds.push(offer(id, rev, "post-waiting", "Post them", (input2) => {
+            const asked3 = approval(input2), except = [.../* @__PURE__ */ new Set([...asked3.except ?? [], ...voteNs])];
+            return { ...asked3, ...except.length ? { except } : {} };
+          }, { effect: "changes-system", staleness: "exact", expect, input: "approval" }));
+        },
         "reply-only": () => actionIds.push(offer(id, rev, "reply-only", "Send reply only", () => ({ code: id, verb: "ok", except: changes.map((change2) => change2.n) }), { staleness: "exact", expect, effect: "sends" }))
       };
       const kinds3 = new Set([cs.primary, ...cs.secondary, ...cs.more].filter((k) => !!k));
+      if (groupAside) {
+        kinds3.delete("answer");
+        kinds3.add("pick");
+      }
       if (draft2 && (cs.editor === "reply" || cs.mode === "answer-with-holding")) kinds3.add("send-edit");
       for (const kind of kinds3) make[kind]?.();
     } else if (cs.mode === "working" || wf.job && facts.jobs.get(wf.job)?.state === "queued" && facts.jobs.get(wf.job)?.retry) {
@@ -58161,6 +59112,8 @@ function reactProjection(store2, query = "", visit2, opts = {}) {
       askAt: asksAt.get(id),
       status: pageText(c.status),
       attention,
+      // Step 6: back from his terminal window, a status line only.
+      ...fx.returned ? { returned: fx.returned } : {},
       // L1b: the card draws a vote claim under the reply editor and keeps Send off until the reply changes.
       ...fx.voteGap ? { voteGap: { text: pageText(fx.voteGap.text), held: fx.voteGap.held } } : {},
       attentionKind: replyChanged ? "reply-changed" : cs.mode === "agent-wait" ? "agent-setup" : cs.mode === "failed" || cs.mode === "not-sent" || notSent ? "run-failed" : attention && attention === shownWarn && cs.warnKind === "reason" ? "reason" : void 0,
@@ -58171,8 +59124,63 @@ function reactProjection(store2, query = "", visit2, opts = {}) {
       block3: cs.block3,
       ...cs.strip ? { working: { doing: pageText(cs.strip.doing).replace(/^Working:\s*/i, ""), ...cs.strip.since ? { since: cs.strip.since } : {} } } : {},
       prLabel,
+      // #50 + refused[] (PE 01:00): to-dos he keeps stay in block 3; a change Delegate won't make (normalizeReport's refused[], from
+      // the to-dos and the report's facts) and a comment it couldn't prepare are "Left for you" lines, each with its reason.
+      ...((lines) => ({ todos: lines.todos, ...lines.left.length ? { leftLines: lines.left } : {} }))((() => {
+        const raw = c.todos ?? [], PREPARE = /^Couldn't prepare (comment \d+|change \d+|question for the author)(?: \(option \d+\))?:\s*(.+)$/;
+        const normal2 = normalizeReport({ todos: raw.filter((t2) => !PREPARE.test(t2)), context: c.context ?? [], intent: wf.intent });
+        const left = [
+          ...normal2.refused.map((r) => ({ text: `${r.what.replace(/[.\s]+$/, "")}.`, why: r.reason.replace(/[.\s]+$/, "") })),
+          ...raw.flatMap((t2) => ((m) => m ? [{ text: `Couldn't prepare ${m[1]}.`, why: pageText(m[2]).replace(/[.\s]+$/, "") }] : [])(PREPARE.exec(t2)))
+        ];
+        return { todos: normal2.todos, left };
+      })()),
+      // #50: SEND's repaired comments (its exact status); the card says so above them and offers the post on this revision.
+      ...wf.status === REPAIRED ? { repaired: true } : {},
+      // R10b (PM §2, joint C2): what the review posted, H→M→L (the chip carries the severity, not the "[High]" bracket), five then
+      // "and N more"; the reply sent; the PR link; where Open PR sits; and which change is the vote Approve makes. Closed (HOST's close
+      // on his vote or the PR closing, 02:02 contract): the Done card keeps the Posted list and the reply, read-only, under its status.
+      ...((rd2) => rd2 ? { reviewDone: (() => {
+        const order = { High: 0, Medium: 1, Low: 2 }, closed2 = wf.state === "done";
+        const posted = rd2.posted.toSorted((a, b) => order[a.severity] - order[b.severity]).map((comment) => ({
+          severity: comment.severity,
+          ...comment.file ? { file: comment.file } : {},
+          ...comment.line ? { line: comment.line } : {},
+          text: pageText(comment.text.split("\n")[0].replace(/^\s*\[(?:High|Medium|Low)\]\s*/i, "")),
+          .../* @__PURE__ */ ((url2) => url2 ? { thread: url2 } : {})(safeLink(comment.thread))
+        }));
+        const to = wf.asker?.name?.split(/\s+/)[0] || "them", prUrl = safeLink(prOf(store2, wf)?.url);
+        const n = posted.length, counts = rd2.counts;
+        if (!closed2) reviewRows.set(id, `PR ${rd2.pr} waits for your approval \xB7 ${n ? `posted ${n} comment${n === 1 ? "" : "s"} (${counts.high} high, ${counts.medium} medium, ${counts.low} low)` : "no comments needed"}${rd2.reply ? ` \xB7 replied to ${to}` : ""}`);
+        return {
+          pr: rd2.pr,
+          reviewedAt: rd2.reviewedAt,
+          counts,
+          posted: posted.slice(0, 5),
+          more: Math.max(0, n - 5),
+          to,
+          ...rd2.reply ? { reply: { text: pageText(rd2.reply.text), .../* @__PURE__ */ ((url2) => url2 ? { teams: url2 } : {})(safeLink(rd2.reply.teams)) } } : {},
+          ...rd2.clean ? { clean: true } : {},
+          ...rd2.fallback ? { fallback: pageText(rd2.fallback) } : {},
+          ...prUrl ? { prUrl } : {},
+          ...closed2 ? { closed: true } : { ...cs.openPr ? { openPr: cs.openPr } : {}, ...voteKs.length ? { voteChangeIds: voteKs.map((k) => changeIds[k]) } : {} }
+        };
+      })() } : {})(rd ?? (wf.state === "done" ? wf.reviewDone : void 0)),
+      // #28 (owner A61, SEND eee5639d): what the review found, each new or already an open thread on the PR, and whether a vote was
+      // recommended, so the card can say what Send does on the PR. The PR meaning comes from here, not from effectLine (PE 19:12).
+      ...((pr) => pr && job?.result?.findings ? { prReview: {
+        pr,
+        voteRecommended: !!job.result.voteRecommendation && !["none", "NoVote"].includes(job.result.voteRecommendation.vote),
+        findings: job.result.findings.map((finding) => ({
+          text: pageText(finding.text),
+          ...finding.file ? { file: finding.file } : {},
+          ...finding.line ? { line: finding.line } : {},
+          ...finding.thread ? { thread: { author: finding.thread.author, at: finding.thread.at, .../* @__PURE__ */ ((url2) => url2 ? { url: url2 } : {})(safeLink(finding.thread.url)) } } : {}
+        }))
+      } } : {})(Number(/^PR (\d+)/.exec(prLabel ?? "")?.[1]) || void 0),
       question: c.question === void 0 ? void 0 : (failedJobDirections(wf) ? forPage(c.question) : pageText(c.question)) || void 0,
-      choices: c.choices && { ...c.choices, prompt: forPage(c.choices.prompt), options: c.choices.options.map((option) => ({ ...option, id: pageOptionId(option) })) },
+      choices: choices2 && { ...choices2, prompt: forPage(choices2.prompt), options: choices2.options.map((option) => ({ ...option, id: pageOptionId(option) })), ...groupPick ? { group: true } : {} },
+      ...groupPick ? { question: void 0 } : {},
       sourceIds: sources(id, id, why2.sources),
       noteIds,
       primaryActionId: (editable.has(id) || cs.mode === "todo" ? [cs.primary ?? ""] : c.ownReply ? [] : ["reopen"]).map((kind) => `${id}/${kind}`).find((key) => actionIds.includes(key)),
@@ -58200,6 +59208,9 @@ function reactProjection(store2, query = "", visit2, opts = {}) {
     return { ...row, headline, chips: row.chips.map((chip) => chip.kind === "room" ? { ...chip, text: "Posted to everyone" } : chip) };
   };
   const onDelegate = (row) => row.kind === "waiting-delegate" || row.kind === "working";
+  const firstOf = (names) => names?.trim().split(/[\s,]+/)[0] || void 0;
+  const followTo = (code) => code.startsWith("W") ? firstOf(base2.waiting.find((w) => w.code === code)?.to) : firstOf(byCode.get(code)?.work?.waitingOn?.who ?? byCode.get(code)?.asker?.name);
+  const pageLabel = (label2, code, section) => label2 === "Draft a nudge" ? `Draft a follow-up${((to) => to ? ` to ${to}` : "")(followTo(code))}` : label2 === "Close" && section === "waiting" ? "Stop waiting" : label2;
   const sections = [
     ["move", "Waiting on you", next2.move],
     ["working", `${NAME} is on it`, [...next2.working, ...next2.waiting.filter(onDelegate).map((row) => ({ ...row, section: "working" }))]],
@@ -58224,7 +59235,7 @@ function reactProjection(store2, query = "", visit2, opts = {}) {
         }
         if (offered.verb === "close") {
           if (row.kind === "todo") continue;
-          actionIds.push(closeWork2(code, `row-${n}`, `row:${row.code}`));
+          actionIds.push(closeWork2(code, `row-${n}`, `row:${row.code}`, pageLabel(action2.label, code, row.section)));
           continue;
         }
         const canonical3 = offered.verb === "ok" ? entities.actions[`${code}/approve`] : void 0;
@@ -58240,7 +59251,7 @@ function reactProjection(store2, query = "", visit2, opts = {}) {
         }
         const rev = subject ? presentationRev(subject, cfg) : auto ? automationApprovalRev(auto) : "";
         const item2 = entities.items[code];
-        actionIds.push(offer(code, rev, `row-${n}`, action2.label, (input2) => ({
+        actionIds.push(offer(code, rev, `row-${n}`, pageLabel(action2.label, code, row.section), (input2) => ({
           ...offered,
           code,
           ...offered.text?.includes("{text}") ? { text: offered.text.replace("{text}", () => requiredText(input2)) } : {}
@@ -58279,7 +59290,9 @@ function reactProjection(store2, query = "", visit2, opts = {}) {
       const authoritative = placementOf.get(row.code);
       if (!authoritative) throw new Error(`The row ${row.code} has no authoritative server placement.`);
       const workflow = byCode.get(row.act), askedAt = asksAt.get(row.act);
-      const headline = (failedJobDirections(workflow) && row.kind === "question" ? forPage(row.headline) : pageText(row.kind === "todo" ? todoHeadline(byCode.get(row.act).kept.find((todo) => !todo.done).text) : row.headline)) || "Review this item";
+      const waitEntry = row.act.startsWith("W") ? base2.waiting.find((w) => w.code === row.act) : void 0;
+      const waitLine = waitEntry && `Waiting on ${waitEntry.to.split(/,\s*/).map((name) => firstOf(name)).filter(Boolean).join(", ") || "them"} since ${shortDay(waitEntry.at)} \xB7 asked: "${waitEntry.text.replace(/\s+/g, " ").trim().slice(0, 80)}${waitEntry.text.length > 80 ? "\u2026" : ""}"`;
+      const headline = (failedJobDirections(workflow) && row.kind === "question" ? forPage(row.headline) : pageText(reviewRows.get(row.act) ?? waitLine ?? (row.kind === "todo" ? todoHeadline(byCode.get(row.act).kept.find((todo) => !todo.done).text) : row.headline.replace(/: nudge, wait, or close\?$/, ": follow up, wait, or close?")))) || "Review this item";
       const nextWhat = pageText(row.next?.what).replace(/\s+/g, " ").trim(), owner2 = row.next?.owner;
       const nextText = !owner2 ? void 0 : owner2.kind === "others" ? pageText(owner2.text).replace(/\s+/g, " ").trim() : owner2.kind === "you" ? nextWhat ? `You: ${nextWhat}` : "You" : owner2.kind === "nobody" ? nextWhat || `nobody has started this; Do it now hands it to ${NAME}` : !nextWhat ? NAME : /^(after|back)\b/.test(nextWhat) ? nextWhat : `${NAME} ${nextWhat}`;
       entities.placements[row.code] = {
@@ -58398,8 +59411,9 @@ function reactProjection(store2, query = "", visit2, opts = {}) {
     entities.health[h.key] = { id: h.key, text: h.text, since: h.since, actionIds };
   }
   for (const w of base2.waiting) entities.waiting[w.code] = { ...w, id: w.code, link: safeLink(w.link), actionIds: [
-    offer(w.code, "", "follow-up", "Draft follow-up", () => ({ code: w.code, verb: "ok" })),
-    offer(w.code, "", "dismiss-waiting", "Dismiss", () => ({ code: w.code, verb: "skip" }))
+    // A206 (R11(3)): the follow-up only drafts, for his OK; Stop waiting ends the wait. Nothing here sends.
+    offer(w.code, "", "follow-up", `Draft a follow-up to ${(w.to.split(/,\s*/)[0] ?? "").split(/\s+/)[0] || "them"}`, () => ({ code: w.code, verb: "ok" })),
+    offer(w.code, "", "dismiss-waiting", "Stop waiting", () => ({ code: w.code, verb: "skip" }))
   ] };
   for (const ch of base2.channels) {
     const id = `channel:${hashOf(ch.link)}`;
@@ -58534,14 +59548,16 @@ function reactProjection(store2, query = "", visit2, opts = {}) {
   };
   const kinds2 = classicRunning.map((row) => runKind(row.code));
   const busyNow = kinds2.filter((kind) => kind === "working").length, busyQueued = kinds2.filter((kind) => kind === "queued").length;
-  const busy2 = { now: busyNow, queued: busyQueued, max: maxParallel, ...busyQueued ? { reason: facts.agentWait ? { kind: "ai", ...facts.agentWait.retryAt ? { at: facts.agentWait.retryAt } : {} } : facts.runner === "paused" ? { kind: "paused" } : facts.runner !== "ok" && next2.off ? { kind: "off", text: next2.off.text.replace(/^Daily/, "daily") } : { kind: "slots" } } : {} };
+  const scheduledSends = classicRunning.map((row) => byCode.get(row.code)).filter((w) => !!w && w.state === "scheduled" && !!w.sendAt).sort((a, b) => a.sendAt.localeCompare(b.sendAt));
+  const nextSend = scheduledSends[0];
+  const busy2 = { now: busyNow, queued: busyQueued, max: maxParallel, ...scheduledSends.length ? { scheduled: { n: scheduledSends.length, at: nextSend.sendAt, ...nextSend.asker?.name ? { to: nextSend.asker.name.split(/\s+/)[0] } : {} } } : {}, ...busyQueued ? { reason: facts.agentWait ? { kind: "ai", ...facts.agentWait.retryAt ? { at: facts.agentWait.retryAt } : {} } : facts.runner === "paused" ? { kind: "paused" } : facts.runner !== "ok" && next2.off ? { kind: "off", text: next2.off.text.replace(/^Daily/, "daily") } : { kind: "slots" } } : {} };
   const classic = {
     needsIds: [.../* @__PURE__ */ new Set([...base2.needs.map((item2) => item2.code), ...stoppedCodes, ...workflows.filter((workflow) => workflow.openOn && workflow.state !== "done").map((workflow) => workflow.code), ...workflows.filter((workflow) => workflow.partOf && workflow.state === "needs_human").map((workflow) => workflow.code)])].sort((a, b) => byCode.get(a).createdAt.localeCompare(byCode.get(b).createdAt)),
     tiles: base2.tiles,
-    also: [...base2.also.map((tile) => tile.key === "running" ? { ...tile, count: busyNow + busyQueued } : tile), ...base2.also.some((tile) => tile.key === "running") ? [] : [{ key: "running", count: 0, label: "running" }]],
+    also: [...base2.also.map((tile) => tile.key === "running" ? { ...tile, count: busyNow + busyQueued + scheduledSends.length } : tile), ...base2.also.some((tile) => tile.key === "running") ? [] : [{ key: "running", count: 0, label: "running" }]],
     catchupIds: base2.catchUp.top.map((row) => Object.values(entities.doneEntries).find((entry) => entry.code === row.code && entry.kind === row.kind && entry.at === row.at)?.id).filter((id) => !!id),
-    // Working rows first, then the queued ones (R11(1): the tile opens this list).
-    running: classicRunning.map((row, n) => ({ row, kind: kinds2[n] })).sort((a, b) => (a.kind === "working" ? 0 : 1) - (b.kind === "working" ? 0 : 1)).map(({ row, kind }) => ({
+    // Sends going out by themselves first (R11(1b): with their Undo/Stop), then the working ones, then the queued (R11(1)).
+    running: classicRunning.map((row, n) => ({ row, kind: kinds2[n] })).sort((a, b) => (a.kind === void 0 ? 0 : a.kind === "working" ? 1 : 2) - (b.kind === void 0 ? 0 : b.kind === "working" ? 1 : 2)).map(({ row, kind }) => ({
       ...row,
       ...kind === "queued" ? { queued: true } : {},
       what: pageText(Object.values(entities.placements).find((placement2) => placement2.act === row.code && placement2.kind === "scheduled")?.headline ?? row.what),
@@ -58620,11 +59636,11 @@ function reactProjection(store2, query = "", visit2, opts = {}) {
       link: found.link
     } : void 0
   });
-  const leaks2 = takePageTextLeaks();
-  if (leaks2 && Date.now() - leakLoggedAt > 36e5) {
+  const leaks2 = Object.entries(takePageTextLeaks());
+  if (leaks2.length && Date.now() - leakLoggedAt > 36e5) {
     leakLoggedAt = Date.now();
-    try {
-      store2.log({ event: "page-text-leak", kind: "chat-id", n: leaks2 });
+    for (const [kind, n] of leaks2) try {
+      store2.log({ event: "page-text-leak", kind, n });
     } catch {
     }
   }
@@ -58882,15 +59898,15 @@ function withUi(s3, v, wantNext) {
 function saveSeenFrom(s3, body) {
   const { filters, at: at3 } = body ?? {};
   const now = Date.now(), week = new Date(now - 7 * 864e5).toISOString();
-  const live2 = /* @__PURE__ */ new Set([
+  const live3 = /* @__PURE__ */ new Set([
     ...s3.workflows().filter((w) => w.code && (w.state !== "done" || w.updatedAt > week)).map((w) => w.code),
     ...s3.waiting().filter((w) => w.state === "waiting" || w.at > week).map((w) => w.code),
     ...s3.automations().filter((a) => a.state !== "ended" || a.updatedAt > week).map((a) => a.code)
   ]);
-  const item2 = (f) => /^item:[A-Za-z]+\d+$/.test(f) && live2.has(f.slice(5).toUpperCase());
+  const item2 = (f) => /^item:[A-Za-z]+\d+$/.test(f) && live3.has(f.slice(5).toUpperCase());
   const ok = Array.isArray(filters) ? [...new Set(filters.filter((f) => typeof f === "string" && (SEEN_KEYS.includes(f) || item2(f))).map((f) => f.startsWith("item:") ? `item:${f.slice(5).toUpperCase()}` : f))] : [];
   const iso = new Date(now).toISOString(), t2 = typeof at3 === "string" && !Number.isNaN(Date.parse(at3)) ? new Date(at3).toISOString() : iso;
-  s3.saveSeen(ok, t2 < iso ? t2 : iso, (k) => !k.startsWith("item:") || live2.has(k.slice(5)));
+  s3.saveSeen(ok, t2 < iso ? t2 : iso, (k) => !k.startsWith("item:") || live3.has(k.slice(5)));
 }
 function saveUiFrom(s3, body) {
   const b = body ?? {};
@@ -58957,7 +59973,7 @@ async function serveInbox(get, port = 0, token = randomBytes3(16).toString("hex"
           const store2 = get(), start = performance.now(), snapshot2 = readScope(() => reactProjection(store2, query, reactVisit ?? { since: store2.lastViewed(), fallbackSince: initialSince }).snapshot);
           const body = { ...snapshot2, version: versionFor(store2) };
           const { now: _now, fetchedAt: _fetchedAt, ...content } = body;
-          const etag = `"${createHash9("sha256").update(JSON.stringify(content)).digest("hex")}"`;
+          const etag = `"${createHash10("sha256").update(JSON.stringify(content)).digest("hex")}"`;
           const extra = { etag, "server-timing": `projection;dur=${(performance.now() - start).toFixed(2)}` };
           const priorTag = req.headers["if-none-match"], prior = typeof priorTag === "string" ? reactPages.get(priorTag) : void 0;
           reactPages.delete(etag);
@@ -59232,12 +60248,12 @@ async function serveInbox(get, port = 0, token = randomBytes3(16).toString("hex"
 }
 function writeSnapshot(store2) {
   try {
-    if (!existsSync30(join36(ROOT, SNAPSHOT_TEMPLATE))) throw new Error(`${SNAPSHOT_TEMPLATE} is missing`);
+    if (!existsSync31(join37(ROOT, SNAPSHOT_TEMPLATE))) throw new Error(`${SNAPSHOT_TEMPLATE} is missing`);
     store2.setHealth("snapshot");
     const snapshot2 = readScope(() => reactProjection(store2, "", { since: store2.lastViewed(), fallbackSince: new Date(Date.now() - 864e5).toISOString() }).snapshot);
     const key = hashOf(JSON.stringify({ ...snapshot2, now: "", fetchedAt: "" }));
     if (store2.notify().snapshot === key) return false;
-    writeText(join36(store2.root, "inbox.html"), snapshotPage(snapshot2), store2.machine);
+    writeText(join37(store2.root, "inbox.html"), snapshotPage(snapshot2), store2.machine);
     store2.saveNotify({ ...store2.notify(), snapshot: key });
     return true;
   } catch (error62) {
@@ -59365,7 +60381,7 @@ async function tickInPhases(store2, deps = {}) {
     });
     if (!initial.ok) return initial.result;
     const { commands, jobsEarly, answers: answers2, answered, answerItems, probe } = initial;
-    const jobsMark = Date.now(), jobsNow = answers2 ? await phase("approved-changes", async () => await executeDirect(store2, src, cfg, procs, probe, deps.call ?? hostCaller(store2, cfg)) + startJobs(store2, cfg, procs, ["bootstrap:chats"])) : 0;
+    const jobsMark = Date.now(), jobsNow = answers2 ? await phase("approved-changes", async () => await executeDirect(store2, src, cfg, procs, probe, deps.call ?? hostCaller(store2, cfg)) + await startJobs(store2, cfg, procs, ["bootstrap:chats"], probe)) : 0;
     if (answered.length) {
       for (const w of answered) store2.log({ event: "answer-dispatch", code: w.code, workflowId: w.id, ms: Date.now() - Date.parse(answerItems.get(w.code)), tickMs: Date.now() - t0 });
       earlyRuns = await phase("answer-first", () => dispatch(store2, src, cfg, deps.run ?? hostRunner(store2), probe, answered.map((w) => w.id)));
@@ -59468,7 +60484,7 @@ async function tickInPhases(store2, deps = {}) {
       } finally {
         if (!deps.history) await h?.close();
       }
-      const jobsStarted2 = await direct() + startJobs(store2, cfg, procs, h?.conversations ? ["bootstrap:chats"] : []);
+      const jobsStarted2 = await direct() + await startJobs(store2, cfg, procs, h?.conversations ? ["bootstrap:chats"] : [], deps.probe);
       capHealth(store2, cfg);
       const now = Date.now();
       if (store2.workflows().some((w) => w.state === "scheduled" && w.sendAt && Date.parse(w.sendAt) <= now) || store2.automations().some((a) => a.state === "active" && a.next && Date.parse(a.next) <= now)) {
@@ -59480,7 +60496,7 @@ async function tickInPhases(store2, deps = {}) {
         }
       }
       const lateAnswers = await applyAnswers(store2, src, cfg, procs, true);
-      const jobsLate2 = lateAnswers ? await direct() + startJobs(store2, cfg, procs, ["bootstrap:chats"]) : 0;
+      const jobsLate2 = lateAnswers ? await direct() + await startJobs(store2, cfg, procs, ["bootstrap:chats"], deps.probe) : 0;
       const autoSent2 = await dueSends(store2, src, cfg, deps.probe) + await dueAutomations(store2, src, cfg);
       const nudged2 = await nudge(store2, src, cfg);
       return { handedBack: handedBack2, jobsDone: jobsDone2, jobsStarted: jobsStarted2, jobsLate: jobsLate2, autoSent: autoSent2, nudged: nudged2 };
@@ -59580,66 +60596,6 @@ init_bootstrap();
 init_proposals();
 init_registry();
 init_brand();
-
-// src/core/capabilities.ts
-init_zod();
-var scope = { who: ["accounts", "team", "org", "outside"], chat: true, minConfidence: true };
-var people = (r) => r.who.accounts?.map((p) => p.name).join(", ") || (r.who.group === "org" ? "someone in your org" : r.who.group === "team" ? "someone in your team" : "someone outside your org");
-var empty = external_exports.object({}).strict();
-var CAPABILITIES = {
-  send: { scope, params: empty, readBack: (r) => `Send replies to ${people(r)} when this rule matches.` },
-  ack: { scope, params: empty, readBack: (r) => `Acknowledge requests from ${people(r)} when this rule matches.` },
-  draft: { scope, params: empty, readBack: (r) => `Keep replies to ${people(r)} as drafts for you.` },
-  ignore: { scope, params: empty, readBack: (r) => `Ignore matching requests from ${people(r)}.` },
-  shortcut: { scope, params: external_exports.object({ goal: external_exports.string() }).strict(), readBack: (r) => `Propose this shortcut for ${people(r)}: ${r.shortcut?.goal ?? "not specified"}.` },
-  review: {
-    active: false,
-    scope: { ...scope, intent: "pr_review", minConfidence: false },
-    params: external_exports.object({ comments: external_exports.literal("post"), reply: external_exports.literal("send") }).strict(),
-    readBack: (r) => `When ${people(r)} asks you to review a PR you're a reviewer on${r.when.chat ? r.when.chat === "direct" ? " in a one-to-one chat" : " in the specified chat" : ""}, post the review comments and send the review reply. Approving and voting stay yours.`
-  }
-};
-var kinds = Object.keys(CAPABILITIES);
-var RuleSchema = external_exports.object({
-  id: external_exports.string(),
-  text: external_exports.string(),
-  who: external_exports.object({ accounts: external_exports.array(external_exports.object({ id: external_exports.string().min(1), name: external_exports.string() })).optional(), group: external_exports.enum(["team", "org", "outside"]).optional() }).refine((w) => !!w.accounts?.length || !!w.group, "A rule must name people by account ID, or a group."),
-  when: external_exports.object({ intent: external_exports.string().optional(), chat: external_exports.string().optional(), minConfidence: external_exports.enum(["high", "medium"]).optional() }),
-  then: external_exports.enum(kinds),
-  off: external_exports.literal(true).optional(),
-  review: CAPABILITIES.review.params.optional(),
-  shortcut: CAPABILITIES.shortcut.params.optional()
-}).superRefine((rule, ctx) => {
-  if (rule.then === "review" && (rule.when.intent !== "pr_review" || !rule.review))
-    ctx.addIssue({ code: "custom", message: "A review rule is only for PR review requests and must post comments and send the review reply." });
-  if (rule.then !== "review" && rule.review)
-    ctx.addIssue({ code: "custom", message: "Review permissions belong only to a review rule." });
-});
-var readBack = (rule) => {
-  const capability = CAPABILITIES[rule.then];
-  if ("active" in capability && !capability.active) return "Not active yet: Delegate can't do this in this version. Until then: PR reviews wait for you.";
-  return `${rule.off ? "Off: " : ""}${capability.readBack(rule)}`;
-};
-function voteLimitNotice(text4) {
-  return text4.split(/[.;\n]/).some((line3) => /\b(?:approv\w*|vot\w*)\b/i.test(line3) && !/\b(?:never|not|no|don't|do not)\b/i.test(line3)) ? "Delegate never votes or approves for you; that part was left out." : void 0;
-}
-
-// src/store/rules.ts
-import { createHash as createHash10 } from "node:crypto";
-import { existsSync as existsSync31, readFileSync as readFileSync27, writeFileSync as writeFileSync17 } from "node:fs";
-import { join as join37 } from "node:path";
-init_fs();
-function writeRules(store2, text4, rules) {
-  const grants = rules.map((rule) => ({ ...rule, ...RuleSchema.parse(rule) }));
-  const file4 = join37(store2.root, "rules.md"), source3 = text4.trim() + "\n";
-  assertTestSafe(file4);
-  writeFileSync17(file4, source3);
-  writeJson(join37(store2.root, "rules.compiled.json"), { schema: 1, rules: grants, confirmedAt: (/* @__PURE__ */ new Date()).toISOString(), sourceHash: createHash10("sha256").update(source3).digest("hex") }, store2.machine);
-  store2.saveHeldRules({});
-  return [`${grants.length} confirmed rule(s)`, ...grants.map(readBack), voteLimitNotice(text4)].filter(Boolean).join("\n");
-}
-
-// src/mcp/setup.ts
 var STEPS = ["storage", "source", "agent", "tools", "knowledge", "profile", "rules", "start"];
 var VALUES = {
   storage: external_exports.object({ root: external_exports.string().min(1).optional().describe(`Leave out: the tool picks the work OneDrive, or the folder that already has ${NAME} data`) }),
@@ -60152,8 +61108,8 @@ var LOCAL2 = join40(HOME, "local");
 var ROOT2 = join40(HOME, "root");
 var CHAT = "demo-chat";
 function demoEnv(env2 = process.env) {
-  const clean3 = Object.fromEntries(Object.entries(env2).filter(([k]) => !k.startsWith("DELEGATE_") && k !== "COPILOT_AGENT_SESSION_ID"));
-  return { ...clean3, DELEGATE_LOCAL: LOCAL2, DELEGATE_ROOT: ROOT2, DELEGATE_NO_KICK: "1" };
+  const clean4 = Object.fromEntries(Object.entries(env2).filter(([k]) => !k.startsWith("DELEGATE_") && k !== "COPILOT_AGENT_SESSION_ID"));
+  return { ...clean4, DELEGATE_LOCAL: LOCAL2, DELEGATE_ROOT: ROOT2, DELEGATE_NO_KICK: "1" };
 }
 var run = (args2) => spawnSync6(process.execPath, [CLI, ...args2], { stdio: args2[0] === "tick" ? "ignore" : "inherit", env: { ...demoEnv(), ...args2[0] === "open" ? { DELEGATE_NO_KICK: "" } : {} } });
 function sandboxed() {

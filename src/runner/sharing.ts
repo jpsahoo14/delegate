@@ -5,7 +5,7 @@ import type { Source } from '../adapters/source.ts'
 import type { Knowledge } from '../knowledge/index.ts'
 import { parseMessageLink } from '../adapters/channels.ts'
 import { LEVEL_SAYS, heldLevel, offRecord, shareable } from '../core/levels.ts'
-import { customerDetails, recordOfLink, type ShareHold, type SourceRecord } from '../core/share.ts'
+import { customerDetails, recordOfLink, shareChatName, type ShareHold, type SourceRecord } from '../core/share.ts'
 import { NAME } from '../brand.ts'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -94,7 +94,7 @@ export const sourceChats = (wf: Workflow, k: Knowledge, read: string[] = []): st
 // chat stops a reply already scheduled. Shareable within my org is not a hold.
 export function markedHold(cfg: Config, chats: string[] = []): ShareHold | undefined {
 	const c = chats.find(x => heldLevel(cfg, x))
-	return c ? { kind: 'marked', chat: cfg.chatLevels![c].name, level: heldLevel(cfg, c) } : undefined
+	return c ? { kind: 'marked', chat: shareChatName(cfg.chatLevels![c].name), level: heldLevel(cfg, c) } : undefined
 }
 // Knowledge from a chat kept off the record is not searched or read, even if it was learned before the chat was marked. The owner's own "remember" stays.
 export const fromOffChat = (cfg: Config, src: Src[]) => !src.some(s => s.link.startsWith('delegate:remember')) && src.some(s => offRecord(cfg, parseMessageLink(s.link)?.chatId))
@@ -113,11 +113,11 @@ export async function sharingHold(store: Store, src: Source, wf: Workflow, use: 
 	if (!use.chats.length && !use.records.length && !use.unread.length && !use.labelled && !customer) return undefined
 	const marked = markedHold(cfg, use.chats)
 	if (marked) return marked
-	const chatName = async (c: string) => (await src.chatName?.(c).catch(() => undefined)) ?? cfg.chatLevels?.[c]?.name ?? 'another chat'
+	const chatName = async (c: string) => shareChatName(await src.chatName?.(c).catch(() => undefined)) ?? shareChatName(cfg.chatLevels?.[c]?.name)
 	// 1: a guest or someone from outside here, or members that can't be read, and anything from outside this chat.
 	const here = await membersOf(store, src, wf.chat.id)
 	if (!here) return { kind: 'members', chat: use.chats.length ? await chatName(use.chats[0]) : firstUse }
-	if (guestsIn(store, wf.chat.id) ?? wf.chat.guests) return { kind: 'guest', ...(firstUse ? { record: firstUse } : { record: await chatName(use.chats[0]) }) }
+	if (guestsIn(store, wf.chat.id) ?? wf.chat.guests) return { kind: 'guest', ...(firstUse ? { record: firstUse } : { chat: await chatName(use.chats[0]) }) }
 	// 2: a restricted record (or one whose audience is unknown), or a labelled document.
 	const restricted = use.records.find(r => r.audience === 'restricted')
 	if (restricted) return { kind: 'restricted', record: restricted.label, ...(restricted.why ? { who: restricted.why } : {}) }

@@ -5,7 +5,8 @@
 import { shareHoldText, type ShareHold } from './share.ts'
 
 export type ActionKind = 'take-back' | 'approve' | 'send-anyway' | 'redraft' | 'send-edit' | 'answer' | 'pick' | 'later' | 'dismiss' | 'try-again' | 'write-own' | 'review-again' | 'reply-only' | 'reopen' | 'report' | 'todo-done' | 'add-vote'
-export type Mode = 'in-terminal' | 'agent-wait' | 'own-reply' | 'review-again' | 'failed' | 'working' | 'declined' | 'held' | 'your-step' | 'choices' | 'answer' | 'answer-with-holding'
+	| 'approve-pr' | 'post-waiting'
+export type Mode = 'in-terminal' | 'agent-wait' | 'own-reply' | 'review-again' | 'review-done' | 'failed' | 'working' | 'declined' | 'held' | 'your-step' | 'choices' | 'answer' | 'answer-with-holding'
 	| 'reply-with-question' | 'changes' | 'reply' | 'holding' | 'not-sent' | 'todo' | 'unknown'
 export type HeldReason = { kind: 'ask-edited' | 'asker-wrote-again' | 'no-reply-needed'; changed?: string; why?: string; count?: number; at?: string }
 export type Failure = { kind: 'setup' | 'other' | 'content' | 'tool' | 'stopped'; at: string; why: string; tried: string[]; repeats: number; systemChanged: boolean; job?: string; review?: boolean }
@@ -45,6 +46,14 @@ export type CardFacts = {
 	// a Send on it (statusReason 'vote-claim'); override: ⋯ Send anyway is allowed (never for an automatic hold or canOverride false);
 	// addVote: the review recommended a vote that isn't proposed, so Add the vote can propose it.
 	voteGap?: { text: string; held: boolean; override: boolean; addVote: boolean }
+	// Back from his terminal window (step 6, HOST's returnedFrom): the card says so in a status line; report: a result came back.
+	returned?: { machine: string; at: string; report: boolean }
+	// R10b (PM §2, joint C2): a review posted under his rule and waits for his approval. high: High comments posted; approvable: his
+	// approve vote is proposed and the PR's head read now is the reviewed head (A R20); moved: the head moved past it (since when, if known);
+	// waiting: comments still waiting for his OK.
+	reviewDone?: { high: number; approvable: boolean; moved?: { at?: string }; waiting: number }
+	// P0-10 (A R27): the PR's head moved during the review (wf.reviewAgain) and nothing asks the question; Review again still leads.
+	reviewAgain?: boolean
 }
 export type CardState = {
 	mode: Mode; primary?: ActionKind; secondary: ActionKind[]; more: ActionKind[]
@@ -57,6 +66,8 @@ export type CardState = {
 	strip?: { doing: string; since?: string }
 	// The "Why it waited" line a need-to-know hold gives the card (#36, PE 17:05 point 6).
 	waited?: string
+	// R10b: "Open PR to approve" is a link, not an action; where it sits in the bar.
+	openPr?: 'primary' | 'secondary'
 	block3: 'when-you-send' | 'none'
 }
 
@@ -102,6 +113,7 @@ type Rule = { mode: Mode; when: (f: CardFacts) => boolean; build: (f: CardFacts)
 const asked = (f: CardFacts) => !!f.question || f.yourStep?.kind === 'decision'
 // "since Thu 7:53 PM": the hold's start in this machine's time (a format, not a clock).
 const sinceWords = (at?: string) => at && Number.isFinite(Date.parse(at)) ? ` since ${new Date(at).toLocaleString('en-US', { weekday: 'short', hour: 'numeric', minute: '2-digit' })}` : ''
+const dayTime = (at?: string) => at && Number.isFinite(Date.parse(at)) ? ` · ${new Date(at).toLocaleString('en-US', { weekday: 'short', hour: 'numeric', minute: '2-digit' })}` : ''
 export const RULES: Rule[] = [
 	// Open in a terminal (#43, PE 16:50): Delegate leaves the item alone, so the only page step is taking it back; it beats any state.
 	{ mode: 'in-terminal', when: f => f.hold?.kind === 'window', build: f => ({ primary: 'take-back', secondary: [], more: [], editor: 'none', warn: `Open in a terminal on ${f.hold!.machine ?? 'another machine'}${sinceWords(f.hold!.since)} · Delegate waits until you close it.` }) },
@@ -119,7 +131,16 @@ export const RULES: Rule[] = [
 	// Delegate is working on it (#48, PE 19:40): no button leads, a status strip says what it is doing; Dismiss stays in ⋯. Write the
 	// reply yourself stays visible the whole time (PM 19:50). A terminal hold, an AI-limit wait, his own reply and a failure decide first.
 	{ mode: 'working', when: f => !!f.working, build: f => ({ secondary: ['write-own'], more: ['dismiss'], editor: 'none', strip: { doing: f.working!.what, ...(f.working!.since ? { since: f.working!.since } : {}) } }) },
-	{ mode: 'review-again', when: f => !!f.question?.reviewAgain, build: f => ({ primary: 'review-again', secondary: [...(f.draft ? [f.changes ? 'reply-only' as const : 'approve' as const] : []), 'later'], more: ['dismiss'], editor: 'none' }) },
+	{ mode: 'review-again', when: f => !!f.question?.reviewAgain || !!f.reviewAgain && !f.reviewDone, build: f => ({ primary: 'review-again', secondary: [...(f.draft ? [f.changes ? 'reply-only' as const : 'approve' as const] : []), 'later'], more: ['dismiss'], editor: 'none' }) },
+	// R10b (joint C2, A5.4/A5.5): the bar is chosen by the findings. Any High: Open PR to approve leads, Approve PR <n> beside it; else
+	// Approve leads. Approve only while it is his proposed vote on the reviewed head; on new changes Review again leads, Open PR beside it.
+	{ mode: 'review-done', when: f => !!f.reviewDone && !f.draft, build: f => {
+		const r = f.reviewDone!, post: ActionKind[] = r.waiting ? ['post-waiting'] : []
+		if (r.moved) return { primary: 'review-again', secondary: [...post, 'later'], more: ['dismiss'], editor: 'none', openPr: 'secondary', warn: `New changes since the review${dayTime(r.moved.at)}` }
+		if (!r.approvable) return { secondary: [...post, 'later'], more: ['review-again', 'dismiss'], editor: 'none', openPr: 'primary' }
+		return r.high ? { secondary: ['approve-pr', ...post, 'later'], more: ['review-again', 'dismiss'], editor: 'none', openPr: 'primary' }
+			: { primary: 'approve-pr', secondary: [...post, 'later'], more: ['review-again', 'dismiss'], editor: 'none', openPr: 'secondary' }
+	} },
 	{ mode: 'declined', when: f => !!f.declined, build: f => ({ primary: f.declined!.addMe && f.changes ? 'approve' : undefined, secondary: ['later'], more: ['dismiss'], editor: 'none' }) },
 	// A held Send (#45, PE 17:15): every current reason in one line, newest first; Send anyway passes exactly those (holdDigest).
 	// Redraft leads when the engine found a real change in what is asked of him (a reason with `changed`), because the draft no
@@ -214,5 +235,6 @@ export function checkCard(f: CardFacts, s: CardState): string[] {
 	if (f.working && !['in-terminal', 'agent-wait', 'own-reply', 'failed', 'working'].includes(s.mode)) out.push('a working item has no working card')
 	if (s.warn && LEAK.test(s.warn)) out.push('the warning leaks an id or an error')
 	if (s.editor === 'answer' && s.primary !== 'answer') out.push('an answer box without Answer')
+	if (all.includes('approve-pr') && !(f.reviewDone?.approvable && !f.reviewDone.moved)) out.push('Approve is offered on a PR that changed since the review')
 	return out
 }

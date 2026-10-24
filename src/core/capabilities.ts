@@ -11,10 +11,10 @@ export const CAPABILITIES = {
 	ignore: { scope, params: empty, readBack: (r: Rule) => `Ignore matching requests from ${people(r)}.` },
 	shortcut: { scope, params: z.object({ goal: z.string() }).strict(), readBack: (r: Rule) => `Propose this shortcut for ${people(r)}: ${r.shortcut?.goal ?? 'not specified'}.` },
 	review: {
-		active: false,
+		active: true,
 		scope: { ...scope, intent: 'pr_review', minConfidence: false },
 		params: z.object({ comments: z.literal('post'), reply: z.literal('send') }).strict(),
-		readBack: (r: Rule) => `When ${people(r)} asks you to review a PR you're a reviewer on${r.when.chat ? r.when.chat === 'direct' ? ' in a one-to-one chat' : ' in the specified chat' : ''}, post the review comments and send the review reply. Approving and voting stay yours.`,
+		readBack: (r: Rule) => `When ${people(r)} asks you to review a PR ${r.when.reviewerGroup ? `that ${r.when.reviewerGroup} reviews` : "you're a reviewer on"}${r.when.chat ? r.when.chat === 'direct' ? ' in a one-to-one chat' : ' in the specified chat' : ''}: Delegate reviews it, posts up to 10 comments on the PR (most important first) and replies to whoever asked, without asking you. It never votes or approves; approving stays yours.`,
 	},
 }
 export type Capability = keyof typeof CAPABILITIES
@@ -23,12 +23,14 @@ export const RuleSchema = z.object({
 	id: z.string(), text: z.string(),
 	who: z.object({ accounts: z.array(z.object({ id: z.string().min(1), name: z.string() })).optional(), group: z.enum(['team', 'org', 'outside']).optional() })
 		.refine(w => !!w.accounts?.length || !!w.group, 'A rule must name people by account ID, or a group.'),
-	when: z.object({ intent: z.string().optional(), chat: z.string().optional(), minConfidence: z.enum(['high', 'medium']).optional() }),
+	when: z.object({ intent: z.string().optional(), chat: z.string().optional(), minConfidence: z.enum(['high', 'medium']).optional(), reviewerGroup: z.string().trim().min(1).optional() }),
 	then: z.enum(kinds), off: z.literal(true).optional(),
 	review: CAPABILITIES.review.params.optional(), shortcut: CAPABILITIES.shortcut.params.optional(),
 }).superRefine((rule, ctx) => {
-	if (rule.then === 'review' && (rule.when.intent !== 'pr_review' || !rule.review))
-		ctx.addIssue({ code: 'custom', message: 'A review rule is only for PR review requests and must post comments and send the review reply.' })
+	if (rule.then === 'review' && rule.when.intent !== 'pr_review')
+		ctx.addIssue({ code: 'custom', message: 'A review rule is only for PR review requests.' })
+	if (rule.then === 'review' && !rule.review)
+		ctx.addIssue({ code: 'custom', message: 'A review rule must post comments and send the review reply.' })
 	if (rule.then !== 'review' && rule.review)
 		ctx.addIssue({ code: 'custom', message: 'Review permissions belong only to a review rule.' })
 })
@@ -37,7 +39,7 @@ export const readBack = (rule: Rule) => {
 	if ('active' in capability && !capability.active) return "Not active yet: Delegate can't do this in this version. Until then: PR reviews wait for you."
 	return `${rule.off ? 'Off: ' : ''}${capability.readBack(rule)}`
 }
-export const REVIEW_RULE_TEXT = "When someone in my org asks me to review a PR I'm a reviewer on: review it, post the comments and reply for me. Never approve or vote."
+export const REVIEW_RULE_TEXT = "When someone asks me to review a PR I'm a reviewer on, review it, post your comments on the PR and reply to them, without asking me first. Never vote or approve for me."
 export function voteLimitNotice(text: string): string | undefined {
 	return text.split(/[.;\n]/).some(line => /\b(?:approv\w*|vot\w*)\b/i.test(line) && !/\b(?:never|not|no|don't|do not)\b/i.test(line))
 		? 'Delegate never votes or approves for you; that part was left out.' : undefined

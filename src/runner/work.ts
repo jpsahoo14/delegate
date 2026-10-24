@@ -141,6 +141,7 @@ export function mergePlan(old: PlanStep[], next: NonNullable<WorkReport['plan']>
 export function newTurn(wf: Workflow, keepSent = false) {
 	wf.statusReason = undefined; wf.reviewAgain = undefined; wf.returnedFrom = undefined
 	wf.ownerSend = undefined; clearHold(wf)
+	wf.reviewRun = undefined; wf.reviewDone = undefined; wf.reviewAsk = undefined; wf.reviewAttempt = undefined; wf.reviewBasis = undefined
 	wf.voteClaimRedrafted = undefined
 	Object.assign(wf, { draft: undefined, prDraft: undefined, learnAfter: undefined, closeWorkAfterSend: undefined, choices: undefined, question: undefined, effects: undefined, promised: undefined, decision: undefined, approved: undefined, picked: undefined, sendAt: undefined, correction: undefined, todos: undefined, newCount: 0, ...(keepSent ? {} : { sent: undefined }) })
 }

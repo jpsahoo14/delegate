@@ -21,7 +21,7 @@ const change = z.object({
 })
 const draft = z.object({ id: text, itemId: text, rev: text, text, sendText: optional, marker: optional, commitment: z.boolean(), preview: z.boolean(), holding: z.boolean().optional() })
 const choice = z.object({ id: optional, label: text, note: optional, reply: optional })
-const choices = z.object({ prompt: text, multi: z.boolean().optional(), options: z.array(choice), other: z.boolean().optional() })
+const choices = z.object({ prompt: text, multi: z.boolean().optional(), options: z.array(choice), other: z.boolean().optional(), group: z.boolean().optional() })
 const context = z.object({ label: text, text, tone: z.enum(['info', 'warn']).optional() })
 const thread = z.object({ who: text, text, at: text, owner: z.boolean() })
 const item = z.object({
@@ -30,8 +30,14 @@ const item = z.object({
 	question: optional, draftId: optional, choices: choices.optional(), picked: z.array(z.number()).optional(), context: z.array(context).optional(),
 	meeting: z.object({ subject: text, start: text, minutes: z.number(), attendees: strings }).optional(),
 	changeIds: strings, effectIds: strings.optional(), sourceIds: strings, noteIds: strings, todoIds: strings, actionIds: strings, primaryActionId: optional, workId: optional,
-	job: optional, why, status: text, attention: optional, attentionKind: z.enum(['reply-changed', 'run-failed', 'agent-setup', 'reason']).optional(), voteGap: z.object({ text, held: z.boolean() }).optional(), mode: optional, editor: z.enum(['reply', 'answer', 'none']).optional(), block3: z.enum(['when-you-send', 'none']).optional(), openOn: optional, teams: optional, debug: strings.optional(),
-	promise: z.object({ said: text, failed: optional }).optional(), todos: strings.optional(),
+	job: optional, why, status: text, attention: optional, attentionKind: z.enum(['reply-changed', 'run-failed', 'agent-setup', 'reason']).optional(), voteGap: z.object({ text, held: z.boolean() }).optional(), returned: z.object({ machine: text, at: text, report: z.boolean() }).optional(),
+	prReview: z.object({ pr: z.number(), voteRecommended: z.boolean(), findings: z.array(z.object({ text, file: optional, line: z.number().optional(), thread: z.object({ author: text, at: text, url: optional }).optional() })) }).optional(), mode: optional, editor: z.enum(['reply', 'answer', 'none']).optional(), block3: z.enum(['when-you-send', 'none']).optional(), openOn: optional, teams: optional, debug: strings.optional(),
+	promise: z.object({ said: text, failed: optional }).optional(), todos: strings.optional(), leftLines: z.array(z.object({ text, why: text })).optional(), repaired: z.boolean().optional(),
+	// R10b: a review posted under his rule that waits for his approval (SEND's reviewDone, from receipts).
+	reviewDone: z.object({ pr: z.number(), reviewedAt: text, counts: z.object({ high: z.number(), medium: z.number(), low: z.number() }),
+		posted: z.array(z.object({ severity: z.enum(['High', 'Medium', 'Low']), file: optional, line: z.number().optional(), text, thread: optional })), more: z.number(),
+		to: text, reply: z.object({ text, teams: optional }).optional(), clean: z.boolean().optional(), fallback: optional, prUrl: optional,
+		openPr: z.enum(['primary', 'secondary']).optional(), voteChangeIds: strings.optional(), closed: z.boolean().optional() }).optional(),
 	runFailed: z.object({ at: text, why: text, tried: strings.optional(), review: optional, toolsOff: z.boolean().optional() }).optional(), prLabel: optional,
 	ownReply: z.object({ text, at: text, teams: optional }).optional(), unsent: optional,
 	follow: z.object({ target: text, until: text, everyHours: z.number() }).optional(),
@@ -115,7 +121,7 @@ export const snapshotSchema = z.object({
 	showExperienceNote: z.boolean().optional(),
 	running: z.array(z.object({ what: text, since: text, progress: z.number().optional() })).optional(),
 	// R11(1): what Delegate is on: working now (runs actually going), queued, how many at a time, and why the rest wait.
-	busy: z.object({ now: z.number(), queued: z.number(), max: z.number(), reason: z.object({ kind: z.enum(['ai', 'paused', 'off', 'slots']), at: optional, text: optional }).optional() }).optional(),
+	busy: z.object({ now: z.number(), queued: z.number(), max: z.number(), scheduled: z.object({ n: z.number(), at: text, to: optional }).optional(), reason: z.object({ kind: z.enum(['ai', 'paused', 'off', 'slots']), at: optional, text: optional }).optional() }).optional(),
 	version: z.object({ version: optional, code: optional, fullCode: optional, tag: optional, auto: z.boolean(), channel: text, everyMin: z.number(), checkedAt: optional, failed: optional, last: z.object({ to: text, rolledBack: optional }).optional() }).optional(),
 	sinceLine: z.object({ at: text, parts: z.array(z.object({ text, href: text })) }).optional(),
 	settingsActions: z.record(text, strings).optional(),

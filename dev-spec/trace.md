@@ -7,8 +7,11 @@ correlated runs. It does not start a host, run work, scan session folders,
 repair data, update settings or write logs.
 
 Output is timestamp-ordered JSONL with `source` and `failureStep` on failures.
-Exact trace/run/submission links join the timeline; item codes select all their
-traces within the window. Similar item codes and partial IDs do not match.
+Only item-scoped traces (`<code>:<submission>`), run IDs and submission IDs join
+the timeline; item codes select all their traces within the window. A tick's
+shared trace stays visible but never pulls other items into an item's timeline.
+An explicitly requested tick trace still selects its matching rows.
+Similar item codes and partial IDs do not match.
 Stored run reports contribute counts and blocker status, never prose by default.
 
 The telemetry catalogue classifies events. Content-class events are omitted

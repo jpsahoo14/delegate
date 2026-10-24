@@ -9,6 +9,7 @@ import { MAY_REVIEW, roleOn, roleWhy } from './review-gate.ts'
 import { isDeploy } from '../core/deploy.ts'
 import { callKey, ledgerRec, madeBefore } from './ledger.ts'
 import { staleCatalog } from './catalog.ts'
+import { reviewPostCheck } from './review-autonomy.ts'
 export { madeBefore }
 
 // Calls one tool on one of the owner's tool servers.
@@ -36,7 +37,7 @@ export async function makeChange(store: Store, jobId: string, runId: string, ind
 	if (why) {
 		const error = `Change ${index} cannot be made: ${why}.`
 		// An old invite that cannot be converted is recorded, so the item offers a new draft instead of a retry that cannot work.
-		if (why.startsWith(OLD_INVITE)) store.saveChange(jobId, runId, index, { call: JSON.stringify(e.call), state: 'failed', error, at: new Date().toISOString() })
+		if (job.byRule || why.startsWith(OLD_INVITE)) store.saveChange(jobId, runId, index, { call: JSON.stringify(e.call), state: 'failed', error, at: new Date().toISOString() })
 		return { error }
 	}
 	const key = JSON.stringify(e.call), at = () => new Date().toISOString()
@@ -58,7 +59,7 @@ export async function makeChange(store: Store, jobId: string, runId: string, ind
 	// The ledger: a call made in any run is never made again, whatever the lists say (review 10-21e P1). A vote is a state, so the
 	// PR read right before it decides instead: one the PR shows is never cast, and one reset by hand is cast again (re-review P2-4).
 	const made = isVote(e.call) ? undefined : madeBefore(store, e)
-	if (made) { store.saveChange(jobId, runId, index, { call: JSON.stringify(e.call), state: 'done', ref: made.ref, at: made.at }); return { ref: made.ref } }
+	if (made) { store.saveChange(jobId, runId, index, { call: JSON.stringify(e.call), state: 'done', ref: made.ref, at: made.at, ...(job.byRule ? { skipped: true as const } : {}) }); return { ref: made.ref } }
 	const open = store.callRec(callKey(e.call!))
 	// Recorded in this run too, so the item shows it as may have been made and the owner's "again" can clear it.
 	if (open?.state === 'calling' && !isVote(e.call)) { store.saveChange(jobId, runId, index, { call: key, state: 'calling', at: open.at }); return { error: `Change ${index} may have been made already: an earlier call has no answer. The owner must check, then say to make it again.` } }
@@ -70,12 +71,24 @@ export async function makeChange(store: Store, jobId: string, runId: string, ind
 		return { ref }
 	}
 	if (moved) { store.saveChange(jobId, runId, index, { call: key, state: 'failed', error: moved.error, at: at(), ...(moved.stale ? { stale: true as const } : {}) }); return { error: moved.error } }
+	if (job.byRule) {
+		const check = await reviewPostCheck(store, job, e, call, probe)
+		if (check.error) {
+			store.saveChange(jobId, runId, index, { call: key, state: 'failed', error: check.error, at: at() })
+			return { error: check.error }
+		}
+		if (check.duplicate) {
+			store.saveChange(jobId, runId, index, { call: key, state: 'done', ref: 'Already covered on the PR', skipped: true, at: at() })
+			return { ref: 'Already covered on the PR' }
+		}
+	}
 	const ledger = (r: Omit<CallRec, 'call' | 'head' | 'vote' | 'at'>) => store.saveCallRec(ledgerRec(e, r))
 	store.saveChange(jobId, runId, index, { call: key, state: 'calling', at: at() }); ledger({ state: 'calling' })
 	try {
 		const r = await call(to![0], to![1], toolShape(e.call)!.args) as { id?: unknown } | undefined
-		const ref = String(r?.id ?? 'done')
-		store.saveChange(jobId, runId, index, { call: key, state: 'done', ref, at: at() }); ledger({ state: 'done', ref })
+		const pr = job.byRule ? prOf(store, owner) : undefined
+		const ref = pr?.url && r?.id !== undefined ? `${pr.url}?discussionId=${encodeURIComponent(String(r.id))}` : String(r?.id ?? 'done')
+		store.saveChange(jobId, runId, index, { call: key, state: 'done', ref, at: at(), ...(job.byRule ? { byRule: job.byRule, severity: e.severity } : {}) }); ledger({ state: 'done', ref })
 		return { ref }
 	} catch (err) {
 		// The answer was lost after the call went out: never repeated, never taken as failed. A vote is a state, so the PR read

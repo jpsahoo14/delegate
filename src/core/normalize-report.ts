@@ -26,6 +26,7 @@ export type NormalizedReport = {
 const CI = /\b(?:builds?|CI|pipelines?|checks?|validation)\s+(?:(?:is|are|has|have)\s+)?(?:failed|failing|passed|green|red|pending|running|succeeded|queued)\b|\bcoverage\s+(?:dropped|is below|fell)\b/i
 const VOTE_STATUS = /\b(?:your|my|our|(?:the )?owner's)\s+(?:reviewer\s+)?groups?\b|\bowner\s+(?:has\s+)?(?:approved|voted|is waiting)\b|\b(?:votes?|reviewer status)\s+(?:is|are)\s+(?:(?:still|already)\s+)?(?:present|recorded|approved|pending|waiting)\b/i
 const REVIEWER_STATUS = /^(?:[A-Z][\w'-]*\s+){1,3}(?:has\s+)?(?:approved|voted|(?:is\s+)?waiting)(?=$|[.!;,]|\s+(?:on|for|with|this|the|PR)\b)/
+const REVIEW_STATUS_LABEL = /^(?:live votes?|newest builds?)\b|\bdependency\b.*\bvotes?\b/i
 const PLUMBING = /\b(?:tool discovery|execution calls?|tool schema)\b/i
 const INTERNAL = /[0-9a-f]{8,}|job:|Error:|Not made for you|\bworker\b|\b(?:ado|teams|sharepoint|delegate_worker)[-_][\w-]+/i
 const REFUSAL = /(?:\.\s*)?Not made for you:\s*/i
@@ -107,7 +108,7 @@ export function normalizeReport(stored: StoredReport): NormalizedReport {
 		const gate = GATE.test(fact.label.trim())
 		const text = `${fact.label} ${fact.text}`
 		// Status phrases, not source-code categories: builds, readers and service workers can have real findings.
-		if (review && !gate && (CI.test(text) || VOTE_STATUS.test(text) || PLUMBING.test(text) || REVIEWER_STATUS.test(fact.label.trim()) || REVIEWER_STATUS.test(fact.text.trim()))) continue
+		if (review && !gate && (CI.test(text) || VOTE_STATUS.test(text) || PLUMBING.test(text) || REVIEW_STATUS_LABEL.test(fact.label.trim()) || /\bThese are CI facts\b/i.test(fact.text) || REVIEWER_STATUS.test(fact.label.trim()) || REVIEWER_STATUS.test(fact.text.trim()))) continue
 		const clean: Fact = {
 			label: factText(fact.label),
 			text: factText(fact.text),

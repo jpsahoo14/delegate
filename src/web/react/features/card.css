@@ -79,3 +79,6 @@ a.todo-source:hover{text-decoration:underline}
 .card-details .steps .step-mark{width:16px;text-align:center;flex:none}.card-details .steps small{margin-left:auto;color:var(--text-3);white-space:nowrap;padding-left:8px}
 .card-details .steps li[data-done],.card-details .steps-done li{text-decoration:none}
 .card-details .history li{align-items:baseline}@media(max-width:560px){.card-bubble-wrap{margin-left:0}.card-bubble,.card-thread,.card-earlier,.item-card .warnline,.item-card .warnbox,.card-status,.item-card .card-message>.chip{margin-left:0}.card-actions>[data-primary=true]{width:100%}.card-head-end{margin-left:0}}
+/* R10b (joint C2): severity is a text chip with its own outline, never colour alone; Approve's meaning line sits under the bar. */
+.severity-chip{border:1px solid currentColor;background:transparent;margin-right:4px}.severity-high{border-width:2px;font-weight:600}.severity-medium{border-style:dashed}.severity-low{border-style:dotted}
+.review-posted,.review-waiting ul{margin:4px 0;padding-left:18px}.review-reply{white-space:pre-wrap;margin:4px 0}.approve-meaning{margin:4px 0 0;font-size:12px}

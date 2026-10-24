@@ -30,6 +30,8 @@ export const ReportSchema = {
 		text: z.string().min(1),
 		file: z.string().min(1).optional(),
 		line: z.number().int().positive().optional(),
+		severity: z.enum(['High', 'Medium', 'Low']).optional().describe('Required for a new comment to be eligible for the review rule.'),
+		sources: z.array(SourceSchema).optional().describe('Every source used by this finding, in addition to the PR code itself. Private or unknown audiences stay proposed.'),
 		thread: z.object({
 			author: z.string().min(1),
 			url: z.string().url(),

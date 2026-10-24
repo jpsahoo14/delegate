@@ -20,6 +20,7 @@ import { cachedCatalogs, denied, ignoredServers, listable, readCatalog, remoteSe
 import { HOST_IDLE_MIN, HOST_MEMORY_MB, HOST_WORK_IDLE_MIN, hostOff } from '../host/locate.ts'
 import { hostFile } from '../host/host.ts'
 import { hostDisabledUntil, hostFaultLimit } from '../host/client.ts'
+import { toggleReviewRules } from '../store/rules.ts'
 
 // The settings the page can change, in one table: how each is shown, read, checked, and saved (B13).
 // Each saves to the shared config (or profile.md) in the storage folder, so every machine and the next cycle use it.
@@ -62,6 +63,9 @@ const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/
 const EVERY: [number, string][] = [[10, 'Every 10 minutes'], [60, 'Every hour'], [UPDATE_EVERY_MIN, 'Once a day']]
 
 export const SETTINGS: Spec[] = [
+	{ key: 'reviewRule', label: 'PR reviews: post comments and reply without asking', help: "When someone asks you to review a PR you're a reviewer on, Delegate reviews it, posts its comments and replies to them for you. It never approves; approving stays yours.", kind: 'switch', section: 'you',
+		read: (_c, s) => String(s.rules().some(r => r.then === 'review' && !r.off)),
+		parse: raw => raw !== 'true' && raw !== 'false' ? { ok: false, why: 'Choose On or Off.' } : { ok: true, save: (c, s) => { toggleReviewRules(s, raw === 'true'); return c } } },
 	{ key: 'profile', label: 'About you', help: `A few lines ${NAME} reads before every draft: what you do and how you write.`, kind: 'text', section: 'you',
 		read: (_c, s) => (existsSync(join(s.root, 'profile.md')) ? readFileSync(join(s.root, 'profile.md'), 'utf8') : ''),
 		parse: raw => (raw.trim().length < 20 ? { ok: false, why: 'Write at least a sentence about yourself.' } : { ok: true, save: (cfg, s) => { writeFileSync(join(s.root, 'profile.md'), raw.trim() + '\n'); return cfg } }) },
@@ -255,7 +259,7 @@ export function aboutView(store: Store): AboutView {
 		profile: existsSync(join(store.root, 'profile.md')) ? readFileSync(join(store.root, 'profile.md'), 'utf8').trim() : '',
 		rules: store.rules().map(r => {
 			const h = r.learned ? habits.find(x => x.key === r.learned!.key) : undefined
-			return { text: r.text.replace(/^Learned: /, ''), who: whoOf(r), ...(r.learned ? { learned: `Learned ${r.learned.at.slice(0, 10)} from ${r.learned.evidence}` } : {}), held: !!held[r.id], ...(h ? { code: h.code } : {}),
+			return { text: `${r.off ? 'Off: ' : ''}${r.text.replace(/^Learned: /, '')}`, who: whoOf(r), ...(r.learned ? { learned: `Learned ${r.learned.at.slice(0, 10)} from ${r.learned.evidence}` } : {}), held: !!held[r.id], ...(h ? { code: h.code } : {}),
 				...(r.style ? { style: r.style } : {}), ...(h && habitUndoable(store, h) ? { undoUntil: new Date(Date.parse(h.at) + undoMs(store)).toISOString() } : {}) }
 		}),
 		suggestions: habits.filter(h => h.state === 'suggested').map(h => ({ code: h.code, text: h.text, does: h.does, evidence: h.kind === 'style' ? `${h.evidence.count} edited replies on ${h.evidence.days} day${h.evidence.days === 1 ? '' : 's'}, out of ${h.evidence.total} edited in that time${h.evidence.links.length ? ` (${h.evidence.links.length} linked below)` : ''}` : `${h.evidence.count} unedited replies on ${h.evidence.days} days, out of ${h.evidence.total}`, links: h.evidence.links })),
@@ -305,7 +309,7 @@ export function settingsView(store: Store, experience?: 'classic' | 'new'): { ro
 	const words = (t: string) => (experience ?? experienceOf(store.ui())) !== 'classic' ? t.replace('Waiting on others', 'Waiting').replace('Check for updates on Home', 'Check for updates at the foot of Now') : t
 	return {
 		code: codeFoldersView(store.machine, cfg),
-		rows: specsOf(cfg).map(s => ({ key: s.key, label: words(s.label), help: words(typeof s.help === 'function' ? s.help(cfg) : s.help), kind: s.kind, section: s.section, value: s.read(cfg, store), options: s.options, ...(s.advanced ? { advanced: true as const } : {}), ...(s.group ? { group: s.group } : {}) })),
+		rows: specsOf(cfg).map(s => ({ key: s.key, label: words(s.label), help: words(typeof s.help === 'function' ? s.help(cfg) : s.help) + (s.key === 'reviewRule' && store.rules().filter(r => r.then === 'review').length > 1 ? ` Custom (${store.rules().filter(r => r.then === 'review').length} rules). This switch turns all of them on or off; their text is kept.` : ''), kind: s.kind, section: s.section, value: s.read(cfg, store), options: s.options, ...(s.advanced ? { advanced: true as const } : {}), ...(s.group ? { group: s.group } : {}) })),
 		...((t => (t ? { tools: t } : {}))(toolsView(cfg, { machine: store.machine, root: store.root }))),
 		about: aboutView(store),
 		models: modelsView(store),

@@ -71,6 +71,8 @@ export function usePendingStatus(item: string, rev: string) {
 	useEffect(() => { if (!ui.pending) return; const timer = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(timer) }, [ui.pending?.submissionId])
 	return {
 		slow: !!ui.pending && now - (ui.pending.at ?? now) > 90_000,
+		// #27 poll: after about 10 s still in flight, the line says Delegate will finish it and offers Check now.
+		long: !!ui.pending && now - (ui.pending.at ?? now) > 10_000,
 		check: () => { if (ui.pending) { forceReplay(ui.pending.submissionId); void client.invalidateQueries({ queryKey: ['receipt', ui.pending.submissionId] }) } },
 	}
 }
@@ -110,7 +112,8 @@ export function useCardPresentation(code: string, placementId?: string, fallback
 	const actions = item && entities ? [...new Set([...item.actionIds, ...(placement?.actionIds ?? [])])].map(id => entities.actions[id]).filter(action => action.kind !== 'todo-row-done') : []
 	const draft = item?.draftId && entities ? entities.drafts[item.draftId] : undefined
 	const pickChanged = !!ui.picks && [...ui.picks].sort((a, b) => a - b).join(',') !== [...(item?.picked ?? [])].sort((a, b) => a - b).join(',')
-	const override = ui.editing ? 'send-edit' : ui.other ? 'answer' : pickChanged ? 'pick' : ui.answer?.trim() && item?.question ? 'answer' : undefined
+	// L2b B1: beside a draft the group picker has its own Save; ticking a group never takes Send's place.
+	const override = ui.editing ? 'send-edit' : ui.other ? 'answer' : pickChanged && !(item?.choices?.group && draft) ? 'pick' : ui.answer?.trim() && item?.question ? 'answer' : undefined
 	const rowPrimary = placement?.kind === 'todo' ? entities?.actions[`${code}/todo-done`] :
 		placement && ['track', 'check-date', 'promise', 'nobody', 'waiting-person', 'waiting-others', 'scheduled', 'watch', 'your-step', 'stopped'].includes(placement.kind) && placement.actionIds[0] ? entities?.actions[placement.actionIds[0]] : undefined
 	const declaredPrimary = item?.primaryActionId && entities ? entities.actions[item.primaryActionId] : undefined
@@ -156,7 +159,7 @@ function restorePending(): void {
 // when that replay got a definite 404 or 5xx and the server still has no record; a replay lost on the network waits for Check saved
 // result, which sends it once more, and so does the first poll after 10 minutes.
 const NOT_SAVED = "Not saved. Your click didn't reach Delegate; try again."
-const UNREACHED = 'Your click may not have reached Delegate. Check saved result sends it once more; it is never done twice.'
+const UNREACHED = 'Your click may not have reached Delegate. Check now sends it once more; it is never done twice.'
 const WAITING = { waiting: true } as const
 const replays = new Map<string, { n: number; late?: boolean; forced?: boolean }>()
 // Polls in a row that found the server still working (202) or did not reach it: 2 s, 4 s, 8 s, then every 15 s; any answer
@@ -210,7 +213,7 @@ export function usePendingReceipts() {
 			restorePending()
 		} catch (error) {
 			console.error('Pending actions could not be restored:', error)
-			setStorageError('Pending actions could not be restored. Do not send again until browser tab storage is available.')
+			setStorageError("This tab couldn't read its earlier clicks, so it can't tell what finished. Check Teams before you send again.")
 		}
 	}, [])
 	const pending = useMemo(() => Object.entries(byRevision).flatMap(([key, ui]) => ui.pending ? [{ key, ...ui.pending }] : []), [byRevision])
@@ -220,7 +223,16 @@ export function usePendingReceipts() {
 		queryFn: async (): Promise<Receipt | typeof WAITING> => {
 			// A busy server (202) or a lost poll is not a failure: it is checked again later, slower each time (#27 poll, PE 19:30 #47).
 			const known = await receiptState(entry.submissionId).catch(error => { if (error instanceof ApiError) throw error; return undefined })
-			if (!known || 'working' in known) { busyPolls.set(entry.submissionId, (busyPolls.get(entry.submissionId) ?? 0) + 1); return WAITING }
+			if (!known || 'working' in known) {
+				busyPolls.set(entry.submissionId, (busyPolls.get(entry.submissionId) ?? 0) + 1)
+				// 202: the server has the click, so its outcome is no longer unknown; the card says "Delegate has your click." (P0-03).
+				const current = known ? useData.getState().byRevision[entry.key] : undefined
+				if (current?.pending?.submissionId === entry.submissionId && (current.pending.phase === 'unknown' || current.pending.phase === 'unreached')) {
+					const [item, rev] = [entry.key.slice(0, entry.key.indexOf('@')), entry.key.slice(entry.key.indexOf('@') + 1)]
+					useData.getState().edit(item, rev, { pending: { ...current.pending, phase: 'queued' }, error: undefined })
+				}
+				return WAITING
+			}
 			busyPolls.delete(entry.submissionId)
 			const result = 'receipt' in known ? known.receipt : await replay(entry.submissionId, entry.phase)
 			if ('submissionId' in result && (result.submissionId !== entry.submissionId || revisionKey(result.item, result.rev) !== entry.key)) throw new Error('The saved result does not match this action. Nothing will be retried.')
@@ -242,7 +254,11 @@ export function usePendingReceipts() {
 			void client.invalidateQueries({ queryKey: ['settings'] })
 		}
 	}, [results, client])
-	return storageError ?? (results.some(result => result.error) ? 'Could not check one or more saved results. They remain pending and will be checked again; do not send them again.' : undefined)
+	// A poll that failed is checked again (the backoff above); it is not a failure of the click, so no red line (#27 poll, P0-03):
+	// the grey "Finishing N earlier clicks…" already says Delegate is on them.
+	const pollErrors = results.filter(result => result.error).length
+	useEffect(() => { if (pollErrors) console.error(`${pollErrors} saved result(s) could not be checked yet; they are checked again.`) }, [pollErrors])
+	return storageError
 }
 export function useAction() {
 	const client = useQueryClient()
@@ -285,7 +301,8 @@ export function useAction() {
 			} else {
 				console.error('Submission outcome is not confirmed:', error)
 				const current = useData.getState().byRevision[revisionKey(action.item, action.rev)]
-				if (current?.pending?.submissionId === submissionId) useData.getState().edit(action.item, action.rev, { pending: { ...current.pending, phase: 'unknown' }, error: 'Not sure it went through. Checking the saved submission. Do not send it again.' })
+				// The outcome isn't known yet: the card's line says so in plain words (#27 poll, P0-03), never as an error.
+				if (current?.pending?.submissionId === submissionId) useData.getState().edit(action.item, action.rev, { pending: { ...current.pending, phase: 'unknown' }, error: undefined })
 			}
 		}
 	}, [client])

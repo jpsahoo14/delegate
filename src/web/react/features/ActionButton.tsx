@@ -7,18 +7,34 @@ import { NAME } from '../brand.ts'
 import { actionPresentation, useActionAvailability } from '../data/presentation.ts'
 import { Icon } from '../components/ui/icon.tsx'
 
+// #27 poll (PM copy, P0-03): neutral throughout; the disabled button already stops a second click, so the words never warn. Only a
+// send whose outcome is truly unknown says to check Teams.
+const HAS = `${NAME} has your click.`
+const STILL = `Still working on it. ${NAME} has your click and will finish it; you can leave this page.`
+const UNSURE_SEND = `Couldn't confirm it was sent. Check Teams before you send again.`
 export function ActionState({ item, rev }: { item: string; rev: string }) {
-	const ui = useCardUi(item, rev)
+	const ui = useCardUi(item, rev), snapshot = useSnapshot()
 	const pending = usePendingStatus(item, rev)
+	const sends = !!ui.pending && snapshot?.entities.actions[ui.pending.action]?.effect === 'sends'
+	const line = !ui.pending ? undefined : ui.pending.phase === 'unknown' && sends ? UNSURE_SEND : ui.pending.phase === 'unreached' ? 'Not confirmed yet.' : pending.long ? STILL : HAS
 	return <>
-		{ui.pending && <p role="status">{ui.pending.phase === 'submitting' ? 'Submitting your action...' : ui.pending.phase === 'unknown' ? 'Checking the saved submission. Do not send again.' : ui.pending.phase === 'unreached' ? 'Not confirmed yet.' : `Queued. Waiting for ${NAME}.`}</p>}
+		{line && <p role="status" className="muted">{line}{ui.pending && (pending.long || ui.pending.phase === 'unreached') && <> <button type="button" className="link-button" onClick={pending.check}>Check now</button></>}</p>}
 		{ui.error && <p role="alert" className="error">{ui.error}</p>}
 		{ui.result && <p role={ui.result.refused || ui.result.uncertain ? 'alert' : 'status'}>{ui.result.text}</p>}
-		{ui.pending && (ui.error || pending.slow) && <div><p>Still checking the saved result. It is never done twice.</p><Button variant="outline" onClick={pending.check}>Check saved result</Button></div>}
 	</>
 }
+// The button while its click is in flight (PM #27 poll): "Sending…", "Dismissing…", "Saving…", only for a label that starts with a
+// verb in use (PE 23:42: "Later", "OK", "Not right?" are not verbs); every other label reads "Working…".
+const VERBS: Record<string, string> = {
+	send: 'Sending', approve: 'Approving', answer: 'Answering', dismiss: 'Dismissing', save: 'Saving', try: 'Trying', redraft: 'Redrafting',
+	add: 'Adding', write: 'Writing', mark: 'Marking', stop: 'Stopping', skip: 'Skipping', undo: 'Undoing', open: 'Opening', reply: 'Replying',
+	review: 'Reviewing', post: 'Posting', reopen: 'Reopening', remember: 'Remembering', turn: 'Turning',
+}
+export function verbing(label: string): string {
+	return `${VERBS[(label.trim().split(/\s+/)[0] ?? '').toLowerCase()] ?? 'Working'}…`
+}
 
-export function ActionButton({ action, input, primary = false, disabled = false, ariaLabel, pendingLabel = 'Waiting...', prepareInput, disabledReason, label: shownLabel }: {
+export function ActionButton({ action, input, primary = false, disabled = false, ariaLabel, pendingLabel, prepareInput, disabledReason, label: shownLabel }: {
 	action: Action; input?: Intent['input']; primary?: boolean; disabled?: boolean; ariaLabel?: string; pendingLabel?: string; prepareInput?: () => Intent['input']
 	// A label the card says in its own words, such as "Draft my update to Pat"; the action's own label otherwise.
 	label?: string
@@ -43,7 +59,7 @@ export function ActionButton({ action, input, primary = false, disabled = false,
 	return <><Button variant={primary ? 'default' : 'outline'} data-action-kind={action.kind} title={hover} aria-describedby={hover ? describedBy : undefined} aria-label={ariaLabel ?? (action.kind === 'undo' ? 'Undo' : undefined)} disabled={off} data-primary={primary || undefined}
 		onClick={() => {
 			void act(action, prepareInput ? prepareInput() : input)
-		}}>{action.kind === 'undo' && <Icon name="undo" />}{busy ? pendingLabel : window.expired ? 'Undo window closed' : unavailable?.label ?? `${label}${window.countdown ? ` ${window.countdown}` : ''}`}</Button>{hover && <span id={describedBy} className="sr-only">{hover}</span>}</>
+		}}>{action.kind === 'undo' && <Icon name="undo" />}{busy ? pendingLabel ?? verbing(label) : window.expired ? 'Undo window closed' : unavailable?.label ?? `${label}${window.countdown ? ` ${window.countdown}` : ''}`}</Button>{hover && <span id={describedBy} className="sr-only">{hover}</span>}</>
 }
 
 const onlineEvents = (changed: () => void) => { addEventListener('online', changed); addEventListener('offline', changed); return () => { removeEventListener('online', changed); removeEventListener('offline', changed) } }

@@ -146,7 +146,7 @@ async function tickInPhases(store: Store, deps: Parameters<typeof tick>[1] = {})
 		const { commands, jobsEarly, answers, answered, answerItems, probe } = initial
 		// An approval's change job starts in this pass, before any draft runs, never one pass later (latency a). Jobs run detached.
 		// Approved changes with their exact calls are made in this pass, with no AI run (queue-new #7E).
-		const jobsMark = Date.now(), jobsNow = answers ? await phase('approved-changes', async () => await executeDirect(store, src, cfg, procs, probe, deps.call ?? hostCaller(store, cfg)) + startJobs(store, cfg, procs, ['bootstrap:chats'])) : 0
+		const jobsMark = Date.now(), jobsNow = answers ? await phase('approved-changes', async () => await executeDirect(store, src, cfg, procs, probe, deps.call ?? hostCaller(store, cfg)) + await startJobs(store, cfg, procs, ['bootstrap:chats'], probe)) : 0
 		if (answered.length) {
 			for (const w of answered) store.log({ event: 'answer-dispatch', code: w.code, workflowId: w.id, ms: Date.now() - Date.parse(answerItems.get(w.code)!), tickMs: Date.now() - t0 })
 			earlyRuns = await phase('answer-first', () => dispatch(store, src, cfg, deps.run ?? hostRunner(store), probe, answered.map(w => w.id)))
@@ -213,7 +213,7 @@ async function tickInPhases(store: Store, deps: Parameters<typeof tick>[1] = {})
 			const h = deps.history ?? historyFor(cfg)
 			try { if (!sweeping(store)) await planChats(store, h, new Date()) } catch (e) { store.log({ event: 'harvest-plan-failed', error: String(e).slice(0, 300) }) } finally { if (!deps.history) await h?.close() }
 			// A plan that could not run this time waits for the next cycle; it never falls back to one run over 50 chats.
-			const jobsStarted = await direct() + startJobs(store, cfg, procs, h?.conversations ? ['bootstrap:chats'] : [])
+			const jobsStarted = await direct() + await startJobs(store, cfg, procs, h?.conversations ? ['bootstrap:chats'] : [], deps.probe)
 			capHealth(store, cfg)
 			// A pause or stop typed while drafts were being written applies before anything goes out (review 10-20 R1d).
 			const now = Date.now()
@@ -221,7 +221,7 @@ async function tickInPhases(store: Store, deps: Parameters<typeof tick>[1] = {})
 				try { await readOwnerCommands(store, src, cursors); commitCursors() } catch (e) { store.log({ event: 'controls-reread-failed', error: String(e).slice(0, 200) }) }
 			}
 			const lateAnswers = await applyAnswers(store, src, cfg, procs, true)
-			const jobsLate = lateAnswers ? await direct() + startJobs(store, cfg, procs, ['bootstrap:chats']) : 0
+			const jobsLate = lateAnswers ? await direct() + await startJobs(store, cfg, procs, ['bootstrap:chats'], deps.probe) : 0
 			const autoSent = await dueSends(store, src, cfg, deps.probe) + await dueAutomations(store, src, cfg)
 			const nudged = await nudge(store, src, cfg)
 			return { handedBack, jobsDone, jobsStarted, jobsLate, autoSent, nudged }

@@ -16,7 +16,7 @@ import { LOCAL_DIR, VERSION } from '../paths.ts'
 import { lessonOf, type Lesson } from './feedback.ts'
 import { CMD } from '../brand.ts'
 import { scrubDeep } from '../core/secrets.ts'
-import { visibleCloneTodos } from '../runner/repos.ts'
+import { visibleCloneKept, visibleCloneTodos } from '../runner/repos.ts'
 import type { AgentHold } from '../core/agent-failure.ts'
 import { telemetryBase } from '../core/telemetry.ts'
 import { upgrade } from '../core/upgrades.ts'
@@ -156,9 +156,17 @@ export class Store {
 		if (touch) wf.updatedAt = new Date().toISOString()
 		// A clone task that no longer applies (its clone is cached here, or the review reads the repo through Azure DevOps) goes with
 		// this save, through the one exact-template helper the runner and the card use (#44(1), 3e2). It never scans for clones.
-		if (wf.todos?.length) {
-			const todos = visibleCloneTodos(this.config(), wf, wf.job ? this.job(wf.job) : undefined, this.machine)
-			if (todos?.length !== wf.todos.length) wf.todos = todos
+		// The kept to-dos (SEND 5aff6f1a) go the same way, with the same config, job and machine; one already done stays.
+		if (wf.todos?.length || wf.kept?.length) {
+			const cfg = this.config(), job = wf.job ? this.job(wf.job) : undefined
+			if (wf.todos?.length) {
+				const todos = visibleCloneTodos(cfg, wf, job, this.machine)
+				if (todos?.length !== wf.todos.length) wf.todos = todos
+			}
+			if (wf.kept?.length) {
+				const kept = visibleCloneKept(cfg, wf, job, this.machine)
+				if (kept?.length !== wf.kept.length) wf.kept = kept
+			}
 		}
 		this.w(this.p('state', 'workflows', `${wf.id}.json`), wf)
 		this.noteCode(wf)

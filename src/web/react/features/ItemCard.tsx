@@ -144,6 +144,8 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 			{placement?.chips.some(chip => chip.kind === 'retrying') && <p className="warnline">Retrying{placement.nextText ? `: ${placement.nextText.replace('{at}', placement.next?.at ? when(placement.next.at) : 'soon')}` : ''}</p>}
 		</div>}
 		{item.openOn && item.mode !== 'in-terminal' && <p className="card-status">Open in a terminal on {item.openOn} · {NAME} waits until you close it</p>}
+		{/* Step 6 (HOST's returnedFrom): back from his window, until his next action or a new draft. */}
+		{item.returned && <p className="card-status">Back from your window on {item.returned.machine} · {when(item.returned.at)}{item.returned.report ? '' : ' · nothing decided there'}</p>}
 		{item.before && <Hint text={chipHover('before')}><p className="chip">From before setup</p></Hint>}
 	</section>
 
@@ -190,10 +192,21 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 	const findings = prChanges.filter(change => !isVote(change))
 	const vote = prChanges.find(isVote)
 	const included = (change: Entities['changes'][string]) => !(ui.excluded ?? []).includes(change.n)
-	const review = prChanges.length > 0 && (item.job || findings.length > 0) && <section className="card-block card-review"><h3>{NAME}'s review{prNumber ? ` of PR ${prNumber}` : ''}</h3>
+	// #28 B1 (PE 01:10): what Send does on the PR is read from the changes it will make: included (ticked), pending and not refused.
+	const posting = prChanges.filter(change => included(change) && !change.error && change.state !== 'made' && change.state !== 'left-out')
+	const postsComment = (finding: NonNullable<Item['prReview']>['findings'][number]) => posting.filter(change => !isVote(change)).some(change => {
+		const hay = `${change.target} ${change.summary} ${change.detail ?? ''}`, file = finding.file?.split(/[\\/]/).pop()
+		return file ? hay.includes(file) && (!finding.line || new RegExp(`\\b${finding.line}\\b`).test(hay)) : !!finding.text && hay.toLowerCase().includes(finding.text.slice(0, 40).toLowerCase())
+	})
+	const review = item.mode !== 'review-done' && !item.reviewDone?.closed && (prChanges.length > 0 && (item.job || findings.length > 0) || !!item.prReview?.findings.length) && <section className="card-block card-review"><h3>{NAME}'s review{prNumber ?? item.prReview?.pr ? ` of PR ${prNumber ?? item.prReview?.pr}` : ''}</h3>
 		<p className="verdict"><span className={`verdict-chip ${vote && /approve/i.test(vote.action) ? 'ready' : 'not-ready'}`}>{vote && /approve/i.test(vote.action) ? 'Ready to approve' : 'Not ready'}</span> <span>{item.job ?? item.why.reason}</span></p>
 		{vote?.meaning?.filter(part => !part.warn).map((part, n) => <p key={n} className="muted pr-line">{part.text}</p>)}
-		{findings.map(change => <div className="finding" key={change.id}><span className="finding-loc">{change.target}</span><p>{change.summary}</p></div>)}
+		{/* #28 (owner A61): each finding says whether it is already an open thread on the PR, or Send posts it as a new comment; any other
+		    finding gets no Send tag (its "Left for you" line covers it). */}
+		{item.prReview?.findings.length ? item.prReview.findings.map((finding, n) => <div className="finding" key={n}>{finding.file && <span className="finding-loc">{finding.file}{finding.line ? `:${finding.line}` : ''}</span>}<p>{finding.text}</p>
+			{finding.thread ? <p className="muted finding-where">already on the PR · {finding.thread.author}{finding.thread.url && <> · <a href={finding.thread.url} target="_blank" rel="noopener noreferrer">Thread <Icon name="ext" /></a></>}</p>
+				: postsComment(finding) && <p className="muted finding-where">new comment</p>}</div>)
+			: findings.map(change => <div className="finding" key={change.id}><span className="finding-loc">{change.target}</span><p>{change.summary}</p></div>)}
 	</section>
 	const voteWord = (change: Entities['changes'][string]) => /reject/i.test(change.action) ? 'reject' : /wait/i.test(change.action) ? 'mark it waiting for author' : 'approve'
 	const reviewLabel = draft && prChanges.length > 0 && primary?.kind === 'approve' && changes.every(change => prChanges.includes(change)) ? (() => {
@@ -201,6 +214,21 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 		const parts = ['reply', ...(comments ? [comments === 1 ? 'comment' : `${comments} comments`] : []), ...(voting ? [voteWord(vote!)] : [])]
 		return `Send ${parts.length < 2 ? parts.join('') : `${parts.slice(0, -1).join(', ')} and ${parts.at(-1)}`}`
 	})() : undefined
+	// The choices (and the L2b group picker): one fieldset, drawn as the card's answer, or, beside a draft, in "Delegate also asks".
+	const groupAside = !!item.choices?.group && !!draft
+	const pickAction = actions.find(action => action.kind === 'pick')
+	const choiceSet = item.choices && <fieldset><legend>{item.choices.prompt}</legend>{item.choices.options.map((option, index) => {
+		const n = index + 1, selected = (ui.picks ?? item.picked ?? []).includes(n) && !ui.other
+		return <label className="option" key={n}><input type={item.choices!.multi ? 'checkbox' : 'radio'} name={`choice-${code}`} checked={selected} disabled={busy || newer}
+			onChange={() => {
+				const current = ui.picks ?? item.picked ?? [], last = item.choices!.options.length
+				// L2b: in the group picker "None of these" (the last) clears the others, and any group clears it.
+				const picks = item.choices!.group ? n === last ? selected ? [] : [last] : selected ? current.filter(pick => pick !== n) : [...current.filter(pick => pick !== last), n]
+					: item.choices!.multi ? selected ? current.filter(pick => pick !== n) : [...current, n] : [n]
+				edit({ picks, other: false })
+				if (!item.choices!.multi && pickAction) void act(pickAction, { picks })
+			}} /> <span>{option.label}{option.note && <small>{option.note}</small>}</span></label>
+	})}{item.choices.other && <label className="option"><input type="radio" name={`choice-${code}`} checked={!!ui.other} disabled={busy || newer} onChange={() => edit({ other: true })} />Other answer…</label>}</fieldset>
 	const block2 = <>
 		{review}
 		{item.ownReply && <section className="card-block card-own-reply"><h3>You replied in Teams · <time dateTime={item.ownReply.at}>{when(item.ownReply.at)}</time></h3>
@@ -217,19 +245,11 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 			<p><time dateTime={item.meeting.start}>{when(item.meeting.start)}</time> - <time>{time(new Date(Date.parse(item.meeting.start) + item.meeting.minutes * 60_000))}</time> ({item.meeting.minutes} minutes)</p>
 			<p>{item.meeting.attendees.join(', ')}</p>
 		</section>}
-		{(question || answerBox || item.choices) && <section className="card-block card-answer">
+		{(question || answerBox || item.choices && !groupAside) && <section className="card-block card-answer">
 			{question && <><h3>{NAME} needs to know{item.prLabel ? ` · ${item.prLabel}` : ''}</h3><p className="question">{question}</p></>}
 			{!question && item.question && !draft && <p className="question">{item.question}</p>}
-			{item.choices && <fieldset><legend>{item.choices.prompt}</legend>{item.choices.options.map((option, index) => {
-				const n = index + 1, selected = (ui.picks ?? item.picked ?? []).includes(n) && !ui.other
-				return <label className="option" key={n}><input type={item.choices!.multi ? 'checkbox' : 'radio'} name={`choice-${code}`} checked={selected} disabled={busy || newer}
-					onChange={() => {
-						const picks = item.choices!.multi ? selected ? (ui.picks ?? item.picked ?? []).filter(pick => pick !== n) : [...(ui.picks ?? item.picked ?? []), n] : [n]
-						edit({ picks, other: false })
-						const preview = actions.find(action => action.kind === 'pick')
-						if (!item.choices!.multi && preview) void act(preview, { picks })
-					}} /> <span>{option.label}{option.note && <small>{option.note}</small>}</span></label>
-			})}{item.choices.other && <label className="option"><input type="radio" name={`choice-${code}`} checked={!!ui.other} disabled={busy || newer} onChange={() => edit({ other: true })} />Other answer…</label>}</fieldset>}
+			{!groupAside && choiceSet}
+			{item.choices?.group && !groupAside && <p className="muted">{NAME} remembers your answer.</p>}
 			{answerBox && <><Field code={code} rev={item.rev} field="answer" label="Your answer" placeholder={`only ${NAME} sees it`} value={ui.answer ?? ''} edit={edit} />
 				<p className="muted">{NAME} {draft ? 'writes a new draft from your answer' : 'drafts the reply from your answer'}. Nothing is sent.</p></>}
 		</section>}
@@ -250,18 +270,55 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 			{draft.preview && !ui.editing && <p className="muted"><Icon name="spark" />{' '}{item.picked?.length ? 'The reply for your pick' : 'New draft from your answer'}. Not sent yet.</p>}
 			{boxMode === 'reply' && <p className="also-asks">💬 <strong>{NAME} also asks:</strong> {item.question}{' '}
 				<button type="button" className="link-button" aria-controls={`${code}-${item.rev}-answer`} onClick={() => { edit({ mode: 'answer' }); focusField('answer') }}>Answer instead</button></p>}
+			{/* L2b B1 (PE 00:30): beside a draft, the group picker is "Delegate also asks" with its own Save; Send still leads. */}
+			{groupAside && <div className="also-asks also-asks-choices"><p>💬 <strong>{NAME} also asks:</strong></p>{choiceSet}
+				{pickAction && <ActionButton action={pickAction} input={{ picks: ui.picks ?? [] }} disabled={!ui.picks?.length || newer} disabledReason={newer ? 'stale' : 'pick'} />}
+				<p className="muted">{NAME} remembers your answer.</p></div>}
 		</section>}
 		{both && ui.mode && <p className="sr-only" role="status">{boxMode === 'answer' ? `Answering ${NAME}. The draft is kept.` : 'Editing the draft. Your answer is kept.'}</p>}
 	</>
 
 	// Block 3: what else happens when you send. Changes (each can be left out), to-dos you keep, and a watch.
+	// R10b (PM §2, joint C2): a review posted under his rule that waits for his approval has its own block in its place: one status line
+	// (not a warn), what was posted, the comments still waiting with Post them, and the reply that was sent.
+	// Closed (HOST's close, 02:02): in Done, its status ("You approved PR <n>", "PR <n> closed") is the line, with the list kept, read-only.
+	const reviewed = item.mode === 'review-done' || item.reviewDone?.closed ? item.reviewDone : undefined
+	const approvePr = actions.find(action => action.kind === 'approve-pr'), postWaiting = actions.find(action => action.kind === 'post-waiting')
+	// R10b B1 (PE 02:06): votes of any value are never waiting comments (card-facts' `waiting` counts non-votes only).
+	const waitingComments = reviewed && !reviewed.closed ? changes.filter(change => !reviewed.voteChangeIds?.includes(change.id) && change.state !== 'made' && change.state !== 'left-out') : []
+	const postedN = reviewed ? reviewed.counts.high + reviewed.counts.medium + reviewed.counts.low : 0
+	const reviewBlock = reviewed && <section className="card-block card-review-done" aria-label={`Review of PR ${reviewed.pr}`}>
+		<p className="card-status">{reviewed.closed ? item.status : <>{NAME} reviewed the newest changes ({when(reviewed.reviewedAt)}), {postedN ? `posted ${postedN} comment${postedN === 1 ? '' : 's'}` : 'found nothing to comment on'}{reviewed.reply ? ` and replied to ${reviewed.to}` : ''}.</>}</p>
+		<ReviewPosted review={reviewed} />
+		{waitingComments.length > 0 && <div className="review-waiting"><p>Waiting for your OK: {waitingComments.length} more comment{waitingComments.length === 1 ? '' : 's'}.</p>
+			<ul>{waitingComments.map(change => <li key={change.id}>{change.action}</li>)}</ul>
+			{postWaiting && !readOnly && <ActionButton action={postWaiting} input={{ excluded: [] }} disabled={newer} disabledReason="stale" />}</div>}
+		{reviewed.reply && <><h3>Sent to {reviewed.to}</h3><p className="review-reply">{reviewed.reply.text}</p>
+			{reviewed.reply.teams && <a className="card-teams" href={reviewed.reply.teams} target="_blank" rel="noopener noreferrer">Open in Teams <Icon name="ext" /></a>}</>}
+		{reviewed.fallback && <p className="muted">{reviewed.fallback}</p>}
+	</section>
+	const openPr = (variant: 'default' | 'outline') => reviewed?.prUrl && <Button asChild variant={variant} data-primary={variant === 'default' || undefined}>
+		<a href={reviewed.prUrl} target="_blank" rel="noopener noreferrer" title="Opens the PR in Azure DevOps, where you approve it yourself.">Open PR to approve <Icon name="ext" /></a></Button>
 	const handled = item.effectIds?.filter(id => !item.changeIds.includes(id)) ?? []
 	const keep = draft && (editable || readOnly) ? item.todos ?? [] : []
 	// #28 / L1b: a PR reply with no vote proposed says so, so a reply that reads like an approval can't look like one.
 	const replyPr = prNumber ?? (Number(/^PR (\d+)/.exec(item.prLabel ?? '')?.[1]) || undefined)
 	const noVote = !!draft && editable && !!replyPr && !vote
-	const block3 = (item.changeIds.length > 0 || keep.length > 0 || !!item.follow || noVote) && <section className="card-block card-after">
+	// #28: a review whose Send posts nothing on the PR (no included, pending change left after refusals and unticks) says so in one
+	// plain line; when every finding is already an open thread it also says by whom and since when.
+	const openThreads = item.prReview?.findings.filter(finding => finding.thread) ?? []
+	const allOpen = openThreads.length > 0 && openThreads.length === (item.prReview?.findings.length ?? 0)
+	const nothingPosted = !!draft && editable && !!item.prReview && posting.length === 0 ? (() => {
+		const authors = [...new Set(openThreads.map(finding => finding.thread!.author))].join(', ')
+		const since = openThreads.map(finding => finding.thread!.at).sort()[0]
+		const day = since && Number.isFinite(Date.parse(since)) ? new Date(since).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : ''
+		const what = allOpen ? `: ${openThreads.length === 1 ? 'this finding is already an open thread' : `these ${openThreads.length} findings are already open threads`} (${[authors, day].filter(Boolean).join(', ')})` : ''
+		return `Nothing is posted on PR ${item.prReview!.pr}${what}. Send posts only your reply in ${chat.group ? chat.name : 'your 1:1'}.`
+	})() : undefined
+	const block3 = !reviewed && (item.changeIds.length > 0 || keep.length > 0 || !!item.follow || noVote || !!nothingPosted) && <section className="card-block card-after">
 		<h3>{draft ? `When you send, ${NAME} will also` : item.changeIds.some(id => entities.changes[id].state === 'approved') ? 'Approved changes' : `When you approve, ${NAME} will`}</h3>
+		{/* #50: the comments' format was repaired; the primary posts them on this revision. */}
+		{item.repaired && <p className="card-status">The comment format was wrong and is fixed. Post them now?</p>}
 		{item.changeIds.map((id, index) => {
 			const change = entities.changes[id], excluded = ui.excluded?.includes(change.n) ?? false
 			const group = prChanges.includes(change) && prNumber && (index === 0 || !prChanges.includes(entities.changes[item.changeIds[index - 1]])) ? <p className="after-group">On {item.prLabel?.startsWith(`PR ${prNumber} `) || item.prLabel === `PR ${prNumber}` ? item.prLabel : `PR ${prNumber}`} (Azure DevOps)</p> : null
@@ -276,7 +333,8 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 		})}
 		{keep.map(todo => <p key={todo}><Icon name="check" /> Keep on your to-do list: {todo}</p>)}
 		{item.follow && <p><Icon name="clock" /> Watch {item.follow.target} until {item.follow.until}</p>}
-		{noVote && <p className="no-vote">On PR {replyPr} when you send: No vote</p>}
+		{nothingPosted && <p className="nothing-posted">{nothingPosted}</p>}
+		{noVote && <p className="no-vote">On PR {replyPr} when you send: No vote{item.prReview && !item.prReview.voteRecommended ? ' (not ready)' : ''}</p>}
 	</section>
 	// "Left for you" (#44(2), PM 18:40; designer step 7 §4): the to-dos only he can do. One tick per line, "Tick all" at 2+, and one
 	// "I've done these (N)" that marks exactly the ticked lines after a 6 s Undo; it never closes the work and sends nothing.
@@ -287,12 +345,17 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 			onClick={() => { const picks = [...ticked].sort((a, b) => a - b); markTodos(todoAction, item.rev, picks, picks.map(n => entities.todos[todoIds[n - 1]]?.text ?? ''), act) }}>
 			I've done these{ticked.length ? ` (${ticked.length})` : ''}</Button></Hint>
 	const shownTodos = todoIds.map((id, n) => ({ id, n: n + 1 })).filter(todo => !marking?.picks.includes(todo.n))
-	const earlierTodos = (todoIds.length > 0 || marking) && <section className="card-block card-left-for-you" aria-label="Left for you"><h3>Left for you</h3>
-		<p className="muted">Only you can do these. Ticking one off records it here; Delegate doesn't do it and nothing is sent.</p>
+	// #50 + refused[] (PE 01:00): before Send or approve, what Delegate won't make or couldn't prepare is his too, a line with its reason
+	// (no tick: nothing is recorded until it goes; after it, these are the kept to-dos above). A repaired item may have no draft.
+	const pendingChange = item.changeIds.some(id => ['proposed', 'approved'].includes(entities.changes[id]?.state))
+	const leftLines = draft || item.repaired || pendingChange ? item.leftLines ?? [] : []
+	const earlierTodos = (todoIds.length > 0 || marking || leftLines.length > 0) && <section className="card-block card-left-for-you" aria-label="Left for you"><h3>Left for you</h3>
+		{(todoIds.length > 0 || marking) && <p className="muted">Only you can do these. Ticking one off records it here; Delegate doesn't do it and nothing is sent.</p>}
 		{!readOnly && shownTodos.length >= 2 && <button type="button" className="link-button" onClick={() => edit({ ticked: ticked.length === shownTodos.length ? [] : shownTodos.map(todo => todo.n) })}>Tick all</button>}
 		<ul className="todo-ticks">{shownTodos.map(({ id, n }) => <li key={id}>{readOnly ? entities.todos[id].text : <label><input type="checkbox" checked={ticked.includes(n)} disabled={newer || busy}
 			onChange={event => edit({ ticked: event.currentTarget.checked ? [...ticked, n] : ticked.filter(x => x !== n) })} /> {entities.todos[id].text}</label>}<TodoSource todo={entities.todos[id]} /></li>)}
-			{marking?.texts.map((text, n) => <li key={`done-${n}`} className="todo-done-line" role="status"><Icon name="check" /> Done: {text} · <button type="button" className="link-button" onClick={() => undoMark(code, item.rev)}>Undo</button></li>)}</ul>
+			{marking?.texts.map((text, n) => <li key={`done-${n}`} className="todo-done-line" role="status"><Icon name="check" /> Done: {text} · <button type="button" className="link-button" onClick={() => undoMark(code, item.rev)}>Undo</button></li>)}
+			{leftLines.map((line, n) => <li key={`left-${n}`} className="todo-refused">{line.text}<details className="todo-source todo-why"><summary>{NAME} couldn&apos;t do this · Why?</summary><p>{line.why}.</p></details></li>)}</ul>
 		{primary?.kind !== 'todo-done' && shownTodos.length > 0 && <div className="action-bar">{doneButton(false)}</div>}
 		{todoAction && <ActionState item={todoAction.item} rev={todoAction.rev} />}</section>
 
@@ -317,17 +380,22 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 		{primary && primary.kind !== 'write-own' && primary.kind !== 'todo-done' && <ActionButton primary action={primary} label={primaryLabel} input={report && primary.id === report.id ? { result: ui.resultKind, text: ui.report } : input}
 			disabled={report && primary.id === report.id ? !ui.resultKind : !!invalid || newer || voteBlocked} disabledReason={newer ? 'stale' : voteBlocked ? item.voteGap!.text : report && primary.id === report.id ? 'Pick how it went first.' : primary.kind === 'pick' || item.choices && !ui.other ? 'pick' : 'Type your answer first.'} />}
 		{primary?.kind === 'write-own' && writeButton}
+		{reviewed?.openPr === 'primary' && openPr('default')}
+		{approvePr && approvePr.id !== primary?.id && <ActionButton action={approvePr} disabled={newer} disabledReason="stale" />}
+		{reviewed?.openPr === 'secondary' && openPr('outline')}
 		{primary?.kind === 'todo-done' && doneButton(true)}
 		{report && primary?.id !== report.id && <ActionButton primary action={report} label={`Draft my update to ${first}`} input={{ result: ui.resultKind, text: ui.report }} disabled={!ui.resultKind} disabledReason="Pick how it went first." />}
 		{/* An offered send is never hidden: when another action leads, it sits next to it (#33). */}
 		{actions.filter(action => ['approve', 'approve-again'].includes(action.kind) && action.id !== primary?.id).map(action => action.kind === 'approve' && editedAside ? <ActionButton key={editedAside.id} action={editedAside} label="Send your edited reply" input={{ text: signed(replyText), excluded: ui.excluded }} disabled={newer || !replyText.trim()} disabledReason={newer ? 'stale' : 'Type your reply first.'} /> : <ActionButton key={action.id} action={action} label={draft?.holding && action.kind === 'approve' && !item.changeIds.length ? 'Send holding reply' : undefined} input={{ excluded: ui.excluded }} disabled={newer || action.kind === 'approve' && !!item.voteGap} disabledReason={newer ? 'stale' : item.voteGap?.text ?? 'stale'} />)}
-		{actions.filter(action => ['try-again', 'review-again', 'send-anyway', 'redraft', 'add-vote'].includes(action.kind) && action.id !== primary?.id && !(item.voteGap && action.kind === 'send-anyway')).map(action => <ActionButton key={action.id} action={action} disabled={newer && action.staleness === 'exact'} disabledReason="stale" />)}
+		{actions.filter(action => ['try-again', 'review-again', 'send-anyway', 'redraft', 'add-vote'].includes(action.kind) && action.id !== primary?.id && !(item.voteGap && action.kind === 'send-anyway') && !(reviewed && action.kind === 'review-again')).map(action => <ActionButton key={action.id} action={action} disabled={newer && action.staleness === 'exact'} disabledReason="stale" />)}
 		{primary?.kind !== 'write-own' && writeButton}
 		{item.mode === 'held' && actions.filter(action => action.kind === 'dismiss' && action.label === 'Skip').map(action => <ActionButton key={action.id} action={action} disabled={newer && action.staleness === 'exact'} disabledReason="stale" />)}
 		{actions.filter(action => action.kind === 'later').map(action => <ActionButton key={action.id} action={action} />)}
 		<details className="card-more-menu"><summary aria-label="More" title="More: Edit in Teams, Dismiss, Continue in a terminal"><Icon name="more" /></summary><div className="card-more-content">
 			{item.teams && draft && <Button variant="outline" title="Open Teams with this draft so you can change and send it there. Delegate sees that you replied." onClick={() => void chatEdit.open(ui.editing ? ui.editText ?? draft.text : draft.text, item.teams!)}>Edit in Teams</Button>}
 			{actions.filter(action => ['dismiss', 'reply-only'].includes(action.kind) && !(item.mode === 'held' && action.kind === 'dismiss' && action.label === 'Skip')).map(action => <ActionButton key={action.id} action={action} disabled={newer && action.staleness === 'exact'} disabledReason="stale" />)}
+			{/* R10b: ⋯ Review again, unless new changes made it the primary. */}
+			{reviewed && actions.filter(action => action.kind === 'review-again' && action.id !== primary?.id).map(action => <ActionButton key={action.id} action={action} />)}
 			{/* L1b: past a vote claim, Send anyway is in ⋯ and asks again with the same sentence. */}
 			{item.voteGap && actions.filter(action => action.kind === 'send-anyway' && action.id !== primary?.id).map(action => <ActionButton key={action.id} action={action} disabled={newer} disabledReason="stale" />)}
 			{item.ownReply && reopen && <div className="card-reopen"><Field code={code} rev={item.rev} field="answer" label="Reopen: what should the new reply say?" value={ui.answer ?? ''} edit={edit} rows={2} />
@@ -336,7 +404,7 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 			{item.debug && <><pre>{item.debug.join('\n')}</pre><Button variant="outline" onClick={() => void detailsCopy.copy(item.debug!.join('\n'))}>Copy details</Button>{detailsCopy.message && <p role="status">{detailsCopy.message}</p>}</>}
 		</div></details>
 	</div>
-	const others = actions.filter(action => action.id !== primary?.id && action.id !== report?.id && !(report && action.id === declared?.id) && !['approve', 'approve-again', 'send-edit', 'answer', 'pick', 'ask', 'later', 'dismiss', 'continue', 'todo-done', 'reply-only', 'review-again', 'try-again', 'write-own', 'send-anyway', 'redraft', 'add-vote'].includes(action.kind) && !(item.ownReply && action.kind === 'reopen'))
+	const others = actions.filter(action => action.id !== primary?.id && action.id !== report?.id && !(report && action.id === declared?.id) && !['approve', 'approve-again', 'send-edit', 'answer', 'pick', 'ask', 'later', 'dismiss', 'continue', 'todo-done', 'reply-only', 'review-again', 'try-again', 'write-own', 'send-anyway', 'redraft', 'add-vote', 'approve-pr', 'post-waiting'].includes(action.kind) && !(item.ownReply && action.kind === 'reopen'))
 	// Every action the projection offers is drawn somewhere (engineer-card-state-devspec.md §4, invariant 4); one that isn't is marked.
 	const drawn = (kind: string) => ({ answer: !!answerBox || !!decision || both || primary?.kind === 'answer', pick: !!item.choices, 'send-edit': !!draft && editable, 'todo-done': todoIds.length > 0 } as Record<string, boolean>)[kind] ?? true
 	const undrawn = readOnly ? [] : actions.filter(action => !drawn(action.kind)).map(action => action.kind)
@@ -407,7 +475,9 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 			}
 		}}>
 		{asks ? <AsksList codes={asks.codes} current={code} entities={entities} onOpen={asks.onOpen} /> : placement && placement.subjects.length >= 2 && <AsksList codes={placement.subjects} current={code} entities={entities} />}
-		{block1}{failed}{found}{item.mode === 'working' && writeBox && <section className="card-block card-write-own">{writeBox}</section>}<fieldset className="card-readonly" disabled={readOnly}>{block2}{block3}</fieldset>{earlierTodos}{doneSoFar}{!readOnly && block4}
+		{block1}{failed}{found}{item.mode === 'working' && writeBox && <section className="card-block card-write-own">{writeBox}</section>}<fieldset className="card-readonly" disabled={readOnly}>{block2}{reviewBlock}{block3}</fieldset>{earlierTodos}{doneSoFar}{!readOnly && block4}
+		{/* R10b (joint C2): Approve's meaning line, always visible directly under the bar, whichever role Approve has. */}
+		{!readOnly && approvePr?.meaning && <p className="muted approve-meaning">{approvePr.meaning}</p>}
 		{chatEdit.message && <p role="status">{chatEdit.message}</p>}
 		{others.map(action => <div key={action.id}>{action.meaning && <p>{action.meaning}</p>}<ActionButton action={action} disabled={newer && action.staleness === 'exact' || action.effect !== 'local' && !action.meaning} disabledReason={newer ? 'stale' : undefined} /></div>)}
 		{!readOnly && <ActionState item={code} rev={item.rev} />}
@@ -444,4 +514,14 @@ export function AsksList({ codes, current, entities, onOpen }: { codes: string[]
 			return <li key={item.code}><button type="button" className="ask-line" aria-current={item.code === current || undefined} title={`${person.name}${spread ? ` (${where})` : ''}: ${words} (${item.code})`} onClick={() => onOpen ? onOpen(item.code) : navigate(classic ? `focus/${item.code}` : `now/${item.code}`)}>
 				<span className="card-avatar small" style={{ '--hue': person.hue } as CSSProperties} aria-hidden="true">{person.initials}</span><strong>{firstName(person.name)}</strong>{spread && <span className="ask-where">{where}</span>}<span className="ask-words">{words}</span><SentTime at={at.at} added={at.added} /></button></li>
 		})}</ul></section>
+}
+
+// R10b: what a review posted on the PR, H→M→L, a severity chip (text, its own outline), file:line, the first line and its Thread; five
+// then "and N more". The review-done card, its Done card and Classic's Done row draw the same list.
+export function ReviewPosted({ review }: { review: NonNullable<Item['reviewDone']> }) {
+	return review.posted.length > 0 && <><h3>Posted on PR {review.pr}</h3>
+		<ul className="review-posted">{review.posted.map((comment, n) => <li key={n}><span className={`chip severity-chip severity-${comment.severity.toLowerCase()}`}>{comment.severity}</span>
+			{comment.file && <> · <code>{comment.file}{comment.line ? `:${comment.line}` : ''}</code></>} · {comment.text}
+			{comment.thread && <> · <a href={comment.thread} target="_blank" rel="noopener noreferrer">Thread <Icon name="ext" /></a></>}</li>)}</ul>
+		{review.more > 0 && <p className="muted">and {review.more} more</p>}</>
 }

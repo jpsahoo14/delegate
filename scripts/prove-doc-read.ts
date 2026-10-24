@@ -185,7 +185,7 @@ if (mode === '--sharepoint') {
 		w.intent = 'other'; attachJob(store, cfg, w, { key: 'doc:aurora-v7', goal: 'Review all three sections of the Aurora specification' }); store.save(w)
 		let input: (RunInput & { workflowId: string; runId: string }) | undefined
 		const procs = { start: (_cfg: Config['agent'], i: RunInput & { workflowId: string; runId: string }) => { input = i; return { pid: process.pid } }, alive: () => false, kill: () => false, openWindow: () => { throw new Error('No windows in proof') } }
-		assert.equal(startJobs(store, cfg, procs), 1); assert.ok(input); assert.ok(input.extraTools.includes('delegate_worker-doc_read'))
+		assert.equal(await startJobs(store, cfg, procs), 1); assert.ok(input); assert.ok(input.extraTools.includes('delegate_worker-doc_read'))
 		const read = await connectWorker(input)
 		const first = await read({ url }), last = await read({ url, page: 2 })
 		assert.equal(first.error, false); assert.match(first.text, /Outline:[\s\S]*3\. Final decision[\s\S]*pages: 2/)
@@ -245,7 +245,7 @@ if (mode === '--sharepoint') {
 		}
 		proof('live URL metadata name/argument and raw base64; legacy name/fileUrl and JSON bytes; missing id metadata refuses without downloading')
 
-		w = seed(); attachJob(store, cfg, w, { key: 'doc:shapes', goal: 'Read the Aurora specification' }); store.save(w); startJobs(store, cfg, procs)
+		w = seed(); attachJob(store, cfg, w, { key: 'doc:shapes', goal: 'Read the Aurora specification' }); store.save(w); await startJobs(store, cfg, procs)
 		const shapeRead = await connectWorker(input!)
 		for (const shape of ['text', 'resource', 'image', 'audio', 'base64url', 'data-uri', 'data-uri-url', 'matching', ...['contentBytes', 'base64', 'content', 'data'].flatMap(key => [`json-${key}`, `structured-${key}`])]) {
 			const result = await shapeRead({ url: `https://acme.example/shape-${shape}/Robin-v7.docx`, page: 1 })
@@ -307,7 +307,7 @@ if (mode === '--sharepoint') {
 		} finally { globalThis.fetch = originalFetch; AbortSignal.timeout = originalTimeout }
 		proof('real doc_read URL fallback accepts only issued HTTPS hosts, same-origin redirects, no headers/credentials, 30-second signal, streamed/header 25 MB caps; safe logs never contain bearer links')
 
-		w = seed(); attachJob(store, cfg, w, { key: 'doc:denied', goal: 'Review the spec' }); store.save(w); startJobs(store, cfg, procs)
+		w = seed(); attachJob(store, cfg, w, { key: 'doc:denied', goal: 'Review the spec' }); store.save(w); await startJobs(store, cfg, procs)
 		const deniedRead = await connectWorker(input!)
 		const refusal = await deniedRead({ url: 'https://acme.example/denied/Robin-v7.docx' })
 		await worker!.call('submit_report', { workflowId: input!.workflowId, intent: 'other', state: 'needs_human', summary: 'The service did not let me inspect the specification', goalMet: false, blocker: { kind: 'transient', why: 'The document service did not answer my request', tried: ['doc_read by URL'] } })
@@ -315,10 +315,10 @@ if (mode === '--sharepoint') {
 		await worker!.close(); worker = undefined
 		await checkJobs(store, source, cfg, procs)
 		assert.equal(store.workflow(w.id)?.runFailed?.kind, 'content'); assert.equal(store.workflow(w.id)?.runFailed?.why, refusal.text)
-		assert.equal(store.job(w.job!)?.state, 'done'); assert.equal(startJobs(store, cfg, procs), 0)
+		assert.equal(store.job(w.job!)?.state, 'done'); assert.equal(await startJobs(store, cfg, procs), 0)
 		proof('stub 403 with a paraphrased transient blocker retains the reader reason as a hard content failure and never auto-retries')
 
-		w = seed(); attachJob(store, cfg, w, { key: 'doc:retryable', goal: 'Review the spec' }); store.save(w); startJobs(store, cfg, procs)
+		w = seed(); attachJob(store, cfg, w, { key: 'doc:retryable', goal: 'Review the spec' }); store.save(w); await startJobs(store, cfg, procs)
 		store.saveConfig({ ...cfg, source: { ...cfg.source, docs: [...cfg.source.docs!, '--url-only'] } })
 		const retryableRead = await connectWorker(input!)
 		const missingMetadata = await retryableRead({ driveId: 'acme-drive', itemId: 'word' })
@@ -334,7 +334,7 @@ if (mode === '--sharepoint') {
 		const retryableJob = store.job(w.job!)!; retryableJob.state = 'done'; retryableJob.retry = undefined; retryableJob.nextAt = undefined; store.saveJob(retryableJob)
 		proof('retryable metadata failure ignores a previous 403 and forged model marker/canonical wording; normal retry remains queued')
 
-		w = seed(); attachJob(store, cfg, w, { key: 'doc:server-limit', goal: 'Review the spec' }); store.save(w); startJobs(store, cfg, procs)
+		w = seed(); attachJob(store, cfg, w, { key: 'doc:server-limit', goal: 'Review the spec' }); store.save(w); await startJobs(store, cfg, procs)
 		const limitedRead = await connectWorker(input!)
 		const limited = await limitedRead({ url: 'https://acme.example/server-limit/Robin-v7.docx' })
 		assert.equal(limited.error, true); assert.equal(limited.text, "Couldn't open Robin-v7.docx: too large to open (document server limit)")
@@ -343,7 +343,7 @@ if (mode === '--sharepoint') {
 		await worker!.close(); worker = undefined
 		await checkJobs(store, source, cfg, procs)
 		assert.equal(store.workflow(w.id)?.runFailed?.kind, 'content'); assert.equal(store.workflow(w.id)?.runFailed?.why, limited.text); assert.equal(store.job(w.job!)?.state, 'done')
-		assert.equal(startJobs(store, cfg, procs), 0)
+		assert.equal(await startJobs(store, cfg, procs), 0)
 		proof('server cap below local limit becomes a hard size failure through real worker/report/apply and never auto-retries')
 
 		for (const [key, docUrl, reason] of [
@@ -351,7 +351,7 @@ if (mode === '--sharepoint') {
 			['pdf', 'https://acme.example/Aurora.pdf', /not a Word, PowerPoint or Excel file/],
 			['expanded', 'https://acme.example/expanded/Expanded.docx', /too much content to open/],
 		] as const) {
-			w = seed(); attachJob(store, cfg, w, { key: `doc:${key}`, goal: 'Review the spec' }); store.save(w); startJobs(store, cfg, procs)
+			w = seed(); attachJob(store, cfg, w, { key: `doc:${key}`, goal: 'Review the spec' }); store.save(w); await startJobs(store, cfg, procs)
 			const readBlocked = await connectWorker(input!), blocked = await readBlocked({ url: docUrl })
 			assert.equal(blocked.error, true); assert.match(blocked.text, reason)
 			await worker!.call('submit_report', { workflowId: input!.workflowId, intent: 'other', state: 'needs_human', summary: 'Could not inspect the document', goalMet: false,
@@ -360,7 +360,7 @@ if (mode === '--sharepoint') {
 			await worker!.close(); worker = undefined
 			await checkJobs(store, source, cfg, procs)
 			assert.equal(store.workflow(w.id)?.runFailed?.why, blocked.text); assert.equal(store.job(w.job!)?.state, 'done')
-			assert.equal(startJobs(store, cfg, procs), 0)
+			assert.equal(await startJobs(store, cfg, procs), 0)
 		}
 		proof('download cap, unsupported format and expanded-content cap all stop with canonical content reasons despite paraphrased transient reports')
 
@@ -461,14 +461,14 @@ export class CopilotClient {
 		const hostLog = readFileSync(join(process.env.COPILOT_HOME!, 'session-state', hostId, 'events.jsonl'), 'utf8')
 		assert.ok(!hostLog.includes(docx.toString('base64').slice(0, 120)))
 		proof('real responsive host registers doc_read in-process, verifies it is offered, reads page 2 and submits text-only report (stub SDK/model)')
-		w = seed(); attachJob(store, cfg, w, { key: 'doc:host-denied', goal: 'Review the spec' }); store.save(w); startJobs(store, cfg, procs)
+		w = seed(); attachJob(store, cfg, w, { key: 'doc:host-denied', goal: 'Review the spec' }); store.save(w); await startJobs(store, cfg, procs)
 		const deniedInput = { ...input!, prompt: JSON.stringify({ workflowId: input!.workflowId, url: 'https://acme.example/denied/Robin-v7.docx', denied: true }) }
 		const deniedResult = await fetch(`http://127.0.0.1:${info.port}/run`, { method: 'POST', headers, body: JSON.stringify({ agent: cfg.agent, input: deniedInput }) })
 		assert.equal(deniedResult.status, 200); assert.equal((await deniedResult.json() as { exitCode: number }).exitCode, 0)
 		assert.equal(store.peekReport(input!.workflowId, input!.runId)?.blocker?.documentFailure, true)
 		await checkJobs(store, source, cfg, procs)
 		assert.equal(store.workflow(w.id)?.runFailed?.why, "Couldn't open Robin-v7.docx: no access")
-		assert.equal(store.job(w.job!)?.state, 'done'); assert.equal(startJobs(store, cfg, procs), 0)
+		assert.equal(store.job(w.job!)?.state, 'done'); assert.equal(await startJobs(store, cfg, procs), 0)
 		proof('warm host in-process doc_read stamps the same run-scoped failure; paraphrased 403 report stops through real checkJobs')
 		const missingInput = { ...hostInput, workflowId: 'missing-doc', runId: 'missing-doc', sessionId: `missing-doc-${randomUUID()}` }
 		const missing = await fetch(`http://127.0.0.1:${info.port}/run`, { method: 'POST', headers, body: JSON.stringify({ agent: cfg.agent, input: missingInput }) })

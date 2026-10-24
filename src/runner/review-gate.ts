@@ -1,7 +1,7 @@
 import { stateFields } from '../core/upgrades.ts'
 import { NAME } from '../brand.ts'
-import { allows, isVote } from '../core/effects.ts'
-import type { Config, Effect, PrRole, Workflow } from '../core/types.ts'
+import { allows, isVote, VOTES } from '../core/effects.ts'
+import type { Choices, Config, Effect, PrRole, Workflow } from '../core/types.ts'
 import type { Store } from '../store/state.ts'
 import { prTarget, type BuildProbe, type PrRef, type PrState } from './probe.ts'
 
@@ -11,12 +11,35 @@ import { prTarget, type BuildProbe, type PrRef, type PrState } from './probe.ts'
 export const MAY_REVIEW: PrRole[] = ['reviewer', 'group']
 
 const norm = (s = '') => s.trim().toLowerCase()
-export function ownerRole(cfg: Config, st: PrState, teams?: string[]): PrRole {
+const unescapeGroup = (name: string) => name.replace(/\\([\[\]])/g, '$1').replace(/\\\\/g, '\\')
+export function reviewerGroupLabel(name: string): string {
+	return unescapeGroup(name).trim().replace(/^\[[^\]\r\n]+\]\\+\s*/, '')
+		.replace(/\\([!"#$%&'()*+,\-.\/:;<=>?@\[\]\\^_`{|}~])/g, '$1')
+		.replace(/\s*\([A-Za-z][A-Za-z0-9_-]*\)(?=\s|$)/g, ' ').replace(/\s+/g, ' ').trim()
+}
+export function reviewerGroupMatches(name: string, listed: string): boolean {
+	return norm(listed) === norm(name) || norm(listed) === norm(name.split('\\').at(-1))
+}
+
+const isOwner = (cfg: Config, display?: string, unique?: string) => {
 	const name = norm(cfg.owner.name), upn = norm(cfg.owner.upn)
-	const isMe = (display?: string, unique?: string) => upn && unique ? norm(unique) === upn : !!name && norm(display) === name
-	if (isMe(st.author, st.authorUnique)) return 'author'
+	return upn && unique ? norm(unique) === upn : !!name && norm(display) === name
+}
+export function liveOwnerVote(cfg: Config, st: PrState): number | undefined {
+	const named = st.reviewers ? st.reviewers.filter(r => !r.group && isOwner(cfg, r.name, r.unique))
+		: st.votes.filter(v => isOwner(cfg, v.name))
+	return named.length === 1 && Object.values(VOTES).includes(named[0].vote) ? named[0].vote : undefined
+}
+export function reviewerGroups(st: PrState): string[] | undefined {
+	if (!st.reviewers) return undefined
+	const labels = st.reviewers.filter(r => r.group).map(r => reviewerGroupLabel(r.name)).filter(Boolean)
+	return [...new Map(labels.map(label => [norm(label), label])).values()]
+}
+
+export function ownerRole(cfg: Config, st: PrState, teams?: string[]): PrRole {
+	if (isOwner(cfg, st.author, st.authorUnique)) return 'author'
 	const all = st.reviewers ?? st.votes.map(v => ({ name: v.name, vote: v.vote, required: false, group: false, declined: false } as NonNullable<PrState['reviewers']>[number]))
-	const me = all.filter(r => !r.group && isMe(r.name, r.unique))
+	const me = all.filter(r => !r.group && isOwner(cfg, r.name, r.unique))
 	if (me.length > 1) return 'ambiguous'
 	if (me.length === 1) return me[0].declined ? 'declined' : 'reviewer'
 	const groups = all.filter(r => r.group)
@@ -24,16 +47,15 @@ export function ownerRole(cfg: Config, st: PrState, teams?: string[]): PrRole {
 	// A team reviewer is "[Project]\Team"; the owner's teams are read by name. A group that is not one of them (a security
 	// group, or a team he is not in) cannot be told apart, so it is never taken as his, unless he confirmed it (queue-new #7C).
 	const short = (n: string) => norm(n.split('\\').at(-1))
-	const listed = (g: string, list?: string[]) => !!list?.some(x => norm(x) === norm(g) || norm(x) === short(g))
+	const listed = (g: string, list?: string[]) => !!list?.some(x => reviewerGroupMatches(g, x))
 	const mine = groups.filter(g => listed(g.name, cfg.owner.reviewerGroups) || !!teams?.some(t => norm(t) === short(g.name)))
 	if (!mine.length) return groups.every(g => listed(g.name, cfg.owner.notReviewerGroups)) ? 'none' : 'group-unknown'
 	return mine.some(g => g.vote < 5 && !g.declined) ? 'group' : 'group-approved'
 }
 // The PR's reviewer groups the owner has not said yes or no to: asked about once on the card (queue-new #7C).
 export function unknownGroups(cfg: Config, st: PrState): string[] {
-	const short = (n: string) => norm(n.split('\\').at(-1))
 	const said = [...(cfg.owner.reviewerGroups ?? []), ...(cfg.owner.notReviewerGroups ?? [])]
-	return (st.reviewers ?? []).filter(r => r.group && !said.some(x => norm(x) === norm(r.name) || norm(x) === short(r.name))).map(r => r.name)
+	return (st.reviewers ?? []).filter(r => r.group && !said.some(x => reviewerGroupMatches(r.name, x))).map(r => r.name)
 }
 
 // The owner's teams per project, read at most hourly; a failed read is "not known", never "none".
@@ -129,5 +151,41 @@ export function addMeEffect(cfg: Config, wf: Workflow, ref: PrRef): Effect | und
 	return { system: 'azure devops', action: 'add reviewer', target: `PR ${ref.id}`, summary: `Add you as an optional reviewer on PR ${ref.id}`, call }
 }
 export const isAddMe = (e?: Effect) => e?.call?.args.action === 'update_reviewers' && e.call.args.reviewerAction === 'add'
-// The card's one question about reviewer groups the runner cannot match to the owner (queue-new #7C).
-export const groupQuestion = (ask: { pr: number; groups: string[] }) => `Are you in ${ask.groups.map(g => `"${g}"`).join(' or ')}, the reviewer group${ask.groups.length > 1 ? 's' : ''} on PR ${ask.pr}? Answer "yes" or "no"; ${NAME} remembers it.`
+type GroupAsk = NonNullable<Workflow['groupAsk']>
+export type GroupChoices = Choices & { options: { label: string; value: string }[] }
+export function groupQuestion(ask: GroupAsk): string {
+	const labels = ask.groups.map(reviewerGroupLabel)
+	const names = labels.length > 1 ? `${labels.slice(0, -1).join(', ')} or ${labels.at(-1)}` : labels.join('')
+	return `Which of these review groups on PR ${ask.pr} are you in: ${names}? Say the names, or none.`
+}
+export function groupChoices(ask: GroupAsk): GroupChoices {
+	return { prompt: `Which of these review groups on PR ${ask.pr} are you in?`, multi: true, other: false,
+		options: [...ask.groups.map(value => ({ label: reviewerGroupLabel(value), value })), { label: 'None of these', value: '' }] }
+}
+
+// Values remain full server names. A cleaned-label collision requires a full name or a numbered pick.
+export function groupSelection(ask: GroupAsk, input: { nums?: number[]; text?: string }): string[] | undefined {
+	if (input.nums !== undefined) {
+		const nums = [...new Set(input.nums)], none = ask.groups.length + 1
+		if (!nums.length || nums.some(n => !Number.isInteger(n) || n < 1 || n > none) || nums.includes(none) && nums.length !== 1) return undefined
+		return nums[0] === none ? [] : ask.groups.filter((_, i) => nums.includes(i + 1))
+	}
+	const normalize = (text: string) => unescapeGroup(text).replace(/\r?\n/g, ',').replace(/[ \t]+/g, ' ').trim().toLowerCase()
+	let rest = normalize(input.text ?? '')
+	if (/^(?:none(?: of (?:these|them))?)[.!]?$/.test(rest)) return []
+	const yes = /^(?:yes|yeah|yep|y|i am)[.!]?$/.test(rest), no = /^(?:no|nope|n|i'm not|i am not)[.!]?$/.test(rest)
+	if (yes || no) return ask.groups.length === 1 ? yes ? [...ask.groups] : [] : undefined
+	const aliases = ask.groups.flatMap((value, index) => [...new Set([reviewerGroupLabel(value), unescapeGroup(value)].map(normalize))]
+		.filter(Boolean).flatMap(label => [label, `"${label}"`, `'${label}'`].map(text => ({ text, index }))))
+	const selected = new Set<number>()
+	while (rest) {
+		const matching = aliases.filter(a => rest.startsWith(a.text) && (!rest.slice(a.text.length) || /^(?:\s*[,;]\s*|\s+and\s+|\s*\+\s*)/.test(rest.slice(a.text.length))))
+		const length = Math.max(0, ...matching.map(a => a.text.length)), hits = [...new Set(matching.filter(a => a.text.length === length).map(a => a.index))]
+		if (hits.length !== 1) return undefined
+		selected.add(hits[0]); rest = rest.slice(length)
+		if (!rest) break
+		rest = rest.replace(/^(?:\s*[,;]\s*|\s+and\s+|\s*\+\s*)/, '')
+		if (!rest) return undefined
+	}
+	return selected.size ? ask.groups.filter((_, i) => selected.has(i)) : undefined
+}

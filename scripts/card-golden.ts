@@ -90,7 +90,7 @@ const rows: Row[] = [
 	...([
 		['G63', { kind: 'guest', record: 'Incident 900001' }, 'Waiting for you: this chat has a guest or someone from outside your org, and the reply uses Incident 900001.'],
 		['G64', { kind: 'restricted', record: 'Incident 900002', who: 'a restricted incident' }, 'Waiting for you: Incident 900002 is a restricted incident.'],
-		['G65', { kind: 'conversation', chat: 'Globex war room', who: 'Dev' }, "Waiting for you: it uses Globex war room, and Dev isn't in it."],
+		['G65', { kind: 'conversation', chat: 'Globex war room', who: 'Dev' }, "Waiting for you: uses something from Globex war room, and Dev isn't in it."],
 		['G66', { kind: 'customer', record: 'Incident 900001' }, 'Waiting for you: it names the customer from Incident 900001.'],
 		['G67', { kind: 'unread', record: 'Incident 900003' }, 'Waiting for you: it cites Incident 900003 without having read it.'],
 		['G68', { kind: 'marked', chat: 'Acme leads', level: 'private' }, 'Waiting for you: it uses Acme leads, which you marked private.'],

@@ -68,6 +68,8 @@ const BY_LABEL: Record<string, string> = {
 	'Do it now': `${NAME} starts the next step now, instead of waiting.`,
 	'Try again': 'Run this item again from where it stopped.',
 	'Draft a nudge': `${NAME} drafts a short follow-up[ to {name}] for your OK. Nothing is sent by itself.`,
+	'Draft a follow-up': `${NAME} drafts a short follow-up[ to {name}] for your OK. Nothing is sent by itself.`,
+	'Stop waiting': 'Stop waiting for an answer to this. Nothing is sent.',
 	'Follow up': `${NAME} drafts a short follow-up[ to {name}] for your OK. Nothing is sent by itself.`,
 	'Draft follow-up': `${NAME} drafts a short follow-up[ to {name}] for your OK. Nothing is sent by itself.`,
 	Track: `${NAME} follows this work until it is done and tells you when your step comes.`,
@@ -127,6 +129,8 @@ export function fill(template: string, values: HoverValues = {}): string {
 export function hoverOf(kind: string, label: string, values: HoverValues = {}, meaning?: string): string | undefined {
 	if (meaning?.trim()) return meaning.trim()
 	const row = kind.startsWith('row-') ? 'row' : kind
+	// A206: "Draft a follow-up to Tian" carries the name, so it is looked up by its start.
+	if (/^Draft a follow-up\b/.test(label)) label = 'Draft a follow-up'
 	const template = BY_KIND_LABEL[`${row}|${label}`] ?? (row === 'row' ? undefined : BY_KIND[kind]) ?? (kind === '' || kind === 'toggle' || row === 'row' || kind.startsWith('watch') ? PLAIN.has(label) ? undefined : BY_LABEL[label] : undefined)
 	return template ? fill(template, values) || undefined : undefined
 }

@@ -11,6 +11,11 @@ Proof kinds:
 
 ## Engine crosscheck regressions
 
+Bug 10-24 L2a reviewer-group answers: `review-gate.ts` builds cleaned multi-choice labels with unchanged raw values,
+parses names/None and single-group yes/no, and filters both remembered lists. `apply.ts` intercepts before redraft and saves
+selected/unselected memberships together; `probe.ts` refreshes old questions and invalidates stale group-list revisions.
+Per the owner's no-testing rule, these are code-review locations, not new proof cases; L2b owns the page's checkbox/Save UI.
+
 Bug 10-24 step-6 B1 (manual): `node scripts/prove-workflow-upgrades.mjs` creates real intake, split, waiting-follow-up and
 tracker items. Every item has WORKFLOW_SCHEMA; migrateWorkflows returns zero and leaves bytes, logs and the existing
 completion marker alone. A typed AST guard rejects old schema literals in Workflow factories; Job schema remains 1.

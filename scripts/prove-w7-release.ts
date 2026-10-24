@@ -52,7 +52,8 @@ async function run(name: string, { ageMs, server }: { ageMs: number; server: 404
 			assert.ok(results.filter(s => s === server).length >= 3, `the server answered ${server} repeatedly`)
 			assert.equal(await stored(), 1, 'the click stays pending')
 			assert.equal(await row.locator('p.error', { hasText: NOT_SAVED }).count(), 0, 'not released')
-			await row.getByText('Checking the saved submission. Do not send again.').waitFor()
+			await row.getByText(/has your click|Check Teams before you send again/).first().waitFor()
+			assert.equal(await row.getByText(/not send (it |them )?again/i).count(), 0, 'no "Do not send again" (P0-03)')
 		}
 		assert.deepEqual(posts, [], 'nothing is sent again (the old click kept no request)')
 		assert.equal(store.byCode('A1')!.sent, undefined)

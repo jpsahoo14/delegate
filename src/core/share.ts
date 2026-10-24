@@ -13,6 +13,12 @@ export type SourceRecord = { id: string; label: string; audience: 'org' | 'restr
 //   members: who is in a chat couldn't be read. reads: it searched chats and which ones it read is unknown.
 export type ShareHold = { kind: 'marked' | 'guest' | 'restricted' | 'unread' | 'conversation' | 'customer' | 'members' | 'reads'; record?: string; chat?: string; who?: string; level?: 'private' | 'off' }
 
+const CHAT_ID = /\b\d+:[^\s@]+@(?:thread\.(?:v2|tacv2|skype)|unq\.gbl\.spaces)\b/gi
+export function shareChatName(name: string | undefined): string | undefined {
+	const value = name?.trim()
+	return value && value !== 'another chat' && !/^\d+:\S+$/.test(value) && value.replace(CHAT_ID, 'another chat') === value ? value : undefined
+}
+
 // A record a link points to, or undefined. Only the record number is shown (PM: no ids beyond it).
 export function recordOfLink(link: string): { id: string; label: string } | undefined {
 	// An incident portal link names the incident by number; a link that only looks like one still needs a read of that id to count.
@@ -46,15 +52,16 @@ export const customerDetails = (text: string) => [...new Set([...(text.match(GUI
 // The PM's hold line ("Why it waited"), one reason, the first that applies. A hold stored before #36 is its own words.
 export function shareHoldText(h: ShareHold | string | undefined): string | undefined {
 	if (!h) return undefined
-	if (typeof h === 'string') return `Waiting for you: ${h.replace(/^./, c => c.toLowerCase()).replace(/[.\s]+$/, '')}.`
-	const chat = h.chat ?? 'another chat'
+	if (typeof h === 'string') return `Waiting for you: ${h.replace(CHAT_ID, 'another chat').replace(/^./, c => c.toLowerCase()).replace(/[.\s]+$/, '')}.`
+	const name = shareChatName(h.chat), chat = name ?? 'another chat'
+	const record = h.record?.replace(CHAT_ID, 'another chat'), who = h.who?.replace(CHAT_ID, 'another chat')
 	switch (h.kind) {
 		case 'marked': return `Waiting for you: it uses ${chat}, which you marked ${h.level === 'off' ? 'off the record' : 'private'}.`
-		case 'guest': return `Waiting for you: this chat has ${h.who ? `a guest (${h.who})` : 'a guest or someone from outside your org'}, and the reply uses ${h.record ?? chat}.`
-		case 'restricted': return `Waiting for you: ${h.record ?? 'a record it used'} is ${h.who ?? 'restricted'}.`
-		case 'unread': return `Waiting for you: it cites ${h.record ?? 'a record'} without having read it.`
-		case 'conversation': return `Waiting for you: it uses ${chat}, and ${h.who ? `${h.who} ${/ and /.test(h.who) ? "aren't" : "isn't"} in it` : 'not everyone here is in it'}.`
-		case 'customer': return `Waiting for you: it names the customer from ${h.record ?? 'a record'}.`
+		case 'guest': return `Waiting for you: this chat has ${who ? `a guest (${who})` : 'a guest or someone from outside your org'}, and the reply uses ${record ?? chat}.`
+		case 'restricted': return `Waiting for you: ${record ?? 'a record it used'} is ${who ?? 'restricted'}.`
+		case 'unread': return `Waiting for you: it cites ${record ?? 'a record'} without having read it.`
+		case 'conversation': return name ? `Waiting for you: uses something from ${chat}, and ${who ? `${who} ${/ and /.test(who) ? "aren't" : "isn't"} in it` : 'not everyone here is in it'}.` : "Waiting for you: uses something from another chat you're in, and not everyone here is."
+		case 'customer': return `Waiting for you: it names the customer from ${record ?? 'a record'}.`
 		case 'members': return `Waiting for you: it uses ${chat}, and I couldn't check who is in each chat.`
 		case 'reads': return "Waiting for you: it searched your chats and I couldn't tell which ones it read."
 	}

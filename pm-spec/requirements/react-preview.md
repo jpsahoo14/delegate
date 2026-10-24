@@ -1,5 +1,26 @@
 # React preview requirements
 
+PR review owner-item lifecycle (R10c first slice):
+- Remember cleaned live PR reviewer-group labels; unavailable PR evidence must not retain an old group scope.
+- A finished review's owner item goes to Done only on a non-zero live vote changed from its known review-start baseline,
+  or a PR closing after the ask. Old votes/closures are context; a missing baseline never gains vote-close authority.
+- Keep the posted-comment and sent-reply facts for Done; neither a cached receipt nor a group vote is the owner's live vote.
+- Preserve running reviews, new owner input and the existing generic/compound PR paths. Cast/send nothing while observing.
+- Head-change handling follows the separate SEND reviewBasis handoff; never treat a latest live read as a completed review.
+
+PR review revision evidence (R20 prerequisite):
+- Read and remember the exact PR/head before each review run; replace it on a restart and leave it unknown on read failure.
+- A report-only wrap-up cannot claim findings cover newer commits. SEND verifies the completed review against the start
+  stamp before any autonomous comment/reply; the start stamp alone grants nothing.
+- Preserve cancellation, pause/stop and limits across the added read, and retain normal non-review/execution behavior.
+
+Reviewer-group answers (L2a engine; L2b card separately owned):
+- Ask which listed PR review groups the owner belongs to, with cleaned labels and unchanged full server identities.
+- Save selected and unselected memberships together in one config write; None means every listed group is not theirs.
+- Accept typed group names or none; accept yes/no only for a single group. Invalid answers save nothing and do not redraft.
+- Remember membership across PRs, re-read this PR's role, and confirm "Delegate remembers your answer."
+- Old saved group questions use the same read-time choices and answer handler; known groups in either list are not asked again.
+
 Workflow upgrades (card-state step 6):
 - Every new Workflow is born at WORKFLOW_SCHEMA; the legacy chain never processes a newly constructed item.
 - Pure compatibility reads preserve old msgIds/kept fields and provide structured legacy reasons without writes or log scans.

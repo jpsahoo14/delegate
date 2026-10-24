@@ -141,7 +141,7 @@ try {
 	let wf = seed('A177', review, [cloneTodo(cfg, remote, store.machine), 'Ask Kim about the rollout.'])
 	const starts: { cwd: string; workflowId: string; runId: string }[] = []
 	const fakeProcs: Procs = { ...procs, start: (_cfg, input) => { starts.push(input); return { pid: 987654 } } }
-	assert.equal(startJobs(store, cfg, fakeProcs), 1); assert.equal(starts[0].cwd, clone)
+	assert.equal(await startJobs(store, cfg, fakeProcs), 1); assert.equal(starts[0].cwd, clone)
 	assert.ok(store.logs().some(e => e.event === 'job-start' && e.job === review.id && e.clone === clone))
 	wf = store.workflow(wf.id)!
 	assert.deepEqual(wf.todos, ['Ask Kim about the rollout.'])
@@ -197,7 +197,7 @@ try {
 
 	const noCloneReview = job('180', absent); noCloneReview.state = 'queued'
 	const remoteOnly = seed('A180', noCloneReview)
-	assert.equal(startJobs(store, cfg, fakeProcs), 1)
+	assert.equal(await startJobs(store, cfg, fakeProcs), 1)
 	assert.equal(store.workflow(remoteOnly.id)?.todos?.includes(cloneTodo(cfg, absent, store.machine)), undefined)
 	store.writeReport({ workflowId: noCloneReview.id, intent: 'pr_review', state: 'needs_human', summary: 'Reviewed remotely',
 		reply: { text: 'Aurora is ready for your review.', commitment: false, sources: [] } }, store.job(noCloneReview.id)!.run!.id)
@@ -212,7 +212,7 @@ try {
 	})
 	const requested = store.workflow(localWork.id)!
 	assert.equal(store.job(requested.job!)?.needsCheckout, true)
-	assert.equal(startJobs(store, cfg, fakeProcs), 1)
+	assert.equal(await startJobs(store, cfg, fakeProcs), 1)
 	assert.deepEqual(store.workflow(localWork.id)?.todos, [cloneTodo(cfg, absent, store.machine)])
 	store.writeReport({ workflowId: requested.job!, intent: 'other', state: 'needs_human', summary: 'Local checkout required', question: 'Where is the local build checkout?' }, store.job(requested.job!)!.run!.id)
 	await checkJobs(store, source, cfg, fakeProcs)

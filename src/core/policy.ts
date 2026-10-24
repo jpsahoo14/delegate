@@ -1,5 +1,5 @@
 import { shareHoldText } from './share.ts'
-import { pendingEffects } from './effects.ts'
+import { pendingEffects, sameHead } from './effects.ts'
 import type { Confidence, Config, Job, Person, Rule, Source, Workflow } from './types.ts'
 import { voteMention } from './vote-claims.ts'
 
@@ -33,27 +33,37 @@ export function confidence(sources: Source[]): Confidence {
 }
 
 export type Decision = { action: 'send' | 'ack' | 'draft' | 'ignore'; ruleId?: string; reason: string; confidence: Confidence }
-export type PolicyContext = { autoSend: boolean; autoSendsThisHour: number; maxPerHour: number; never?: Person[]; held?: string[] }
+export type PolicyContext = { autoSend: boolean; autoSendsThisHour: number; maxPerHour: number; never?: Person[]; held?: string[]; paused?: boolean }
 
-// Sender groups cannot be detected from chat messages yet, so only rules that name accounts can match (R-RUL-04, R-RUL-07).
+// Review rules may use verified internal chat membership; other sender groups still need named accounts.
 function matches(r: Rule, wf: Workflow, conf: Confidence): boolean {
 	if (r.off) return false
-	const who = !!wf.asker && !!r.who.accounts?.some(a => a.id === wf.asker!.id)
+	const who = !!wf.asker && (!!r.who.accounts?.some(a => a.id === wf.asker!.id) ||
+		r.then === 'review' && !r.who.accounts?.length && r.who.group === 'org' && wf.chat.guests === false)
 	if (!who) return false
 	if (r.when.intent && r.when.intent !== wf.intent) return false
 	// "direct": any one-to-one chat with these people, so a rule needs no chat ID found in advance (dogfood 10-19).
 	if (r.when.chat === 'direct') { if (wf.chat.group || wf.chat.test || wf.chat.id.startsWith('ch|')) return false }
 	else if (r.when.chat && r.when.chat !== wf.chat.id) return false
-	return !r.when.minConfidence || RANK[conf] >= RANK[r.when.minConfidence]
+	if (r.when.reviewerGroup && !wf.prGroups?.some(g => groupName(g) === groupName(r.when.reviewerGroup!))) return false
+	return r.then === 'review' || !r.when.minConfidence || RANK[conf] >= RANK[r.when.minConfidence]
 }
+const groupName = (name: string) => name.split('\\').at(-1)!.normalize('NFKC').trim().toLowerCase()
+export const reviewRuleFor = (wf: Workflow, rules: Rule[]) => wf.intent === 'pr_review' ? rules.find(r =>
+	r.then === 'review' && r.review?.comments === 'post' && r.review.reply === 'send' && !r.style && matches(r, wf, 'high')) : undefined
 
 // The first matching rule decides; every check that blocks an automatic send names its reason (R-POL-01). A drafting style
 // learned from edits never decides: it would shadow a send, ack or ignore rule for the same people (edit habits guard).
-export function decide(wf: Workflow, rules: Rule[], ctx: PolicyContext): Decision {
+export function decide(wf: Workflow, rules: Rule[], ctx: PolicyContext, mode: 'reply' | 'review-comments' = 'reply'): Decision {
 	const conf = confidence(wf.draft?.sources ?? [])
-	const rule = rules.find(r => !r.style && matches(r, wf, conf))
+	const review = reviewRuleFor(wf, rules)
+	const rule = review ?? rules.find(r => !r.style && matches(r, wf, conf))
+	const reviewReply = !!review && !!wf.reviewBasis && wf.reviewBasis.pr === wf.reviewRun?.pr && sameHead(wf.reviewBasis.head, wf.reviewRun.head) &&
+		wf.reviewRun.rule === review.id && (mode === 'review-comments' ? wf.reviewRun.phase === 'posting' :
+		wf.reviewRun.phase === 'held' && wf.reviewRun.turn === wf.revAt && wf.reviewRun.sendText === wf.draft?.text && wf.reviewDone?.byRule === review.id && (wf.reviewDone.posted.length > 0 || wf.reviewDone.clean === true))
 	const d = (action: Decision['action'], reason: string): Decision => ({ action, ruleId: rule?.id, reason, confidence: conf })
 	if (replyGap(wf.draft?.text)) return d('draft', REPLY_BLANK)
+	if (ctx.paused) return d('draft', 'Paused or stopped')
 	if (wf.before) return d('draft', 'It came before setup; replies to older messages wait for you')
 	if (wf.draft?.holding) return d('draft', 'A holding reply: the work is not finished, so it waits for you')
 	if (ctx.never?.some(p => p.id === wf.asker?.id)) return d('draft', 'This person never gets automatic replies')
@@ -63,8 +73,9 @@ export function decide(wf: Workflow, rules: Rule[], ctx: PolicyContext): Decisio
 	if (wf.startedBy === 'room') return d('draft', 'It was sent to the whole chat; a reply there waits for you')
 	if (wf.work || wf.partOf) return d('draft', 'Replies on open work always wait for you')
 	if (wf.shareHold) return d('draft', shareHoldText(wf.shareHold)!)
-	if (pendingEffects(wf.effects).length || wf.todos?.length || wf.follow) return d('draft', 'It promises changes, a follow-up, or something you must do')
-	if (wf.intent === 'pr_review') return d('draft', 'Pull request review replies always wait for you')
+	if ((!reviewReply && pendingEffects(wf.effects).length) || wf.todos?.length || wf.follow) return d('draft', 'It promises changes, a follow-up, or something you must do')
+	if (wf.intent === 'pr_review' && !review) return d('draft', 'PR reviews wait for you; no review rule covers this.')
+	if (review && wf.reviewRun?.phase === 'replied') return d('draft', 'The review reply was sent; approving stays yours.')
 	if (voteMention(wf.draft?.text ?? '')) return d('draft', 'It speaks of an approval or a vote, so it waits for you')
 	if (!rule) return d('draft', 'No rule covers this sender and ask')
 	if (ctx.held?.includes(rule.id)) return d('draft', `Rule ${rule.id} is on hold: you said one of its replies was not needed`)
@@ -72,12 +83,14 @@ export function decide(wf: Workflow, rules: Rule[], ctx: PolicyContext): Decisio
 	if (rule.then === 'draft') return d('draft', `Rule ${rule.id}: always draft`)
 	if (rule.then === 'shortcut') return d('draft', `Rule ${rule.id}: shortcut actions arrive later`)
 	if (!ctx.autoSend) return d('draft', 'Auto-send is off')
-	if (ctx.autoSendsThisHour >= ctx.maxPerHour) return d('draft', `Already ${ctx.maxPerHour} automatic replies in this chat this hour`)
+	const cap = review ? Math.min(ctx.maxPerHour, DEFAULT_POLICY.maxAutoPerChatHour) : ctx.maxPerHour
+	if (ctx.autoSendsThisHour >= cap) return d('draft', `Already ${cap} automatic replies in this chat this hour`)
 	if (rule.then === 'ack') return d('ack', `Rule ${rule.id}: acknowledge`)
 	if (commits(wf)) return d('draft', 'It commits you to something')
 	if (labeledToGuests(wf)) return d('draft', 'It quotes labeled content, and this chat has guests')
 	if (wf.gaps?.length) return d('draft', `It could not read ${wf.gaps.join(', ')}`)
 	if (wf.draft?.sources.some(s => s.tier === 'private')) return d('draft', 'It uses a private source')
+	if (review) return reviewReply ? d('send', `Review rule ${review.id}: posted comments and receipt-built reply`) : d('draft', 'The review comments must be posted before its rule can send a reply')
 	if (conf === 'low') return d('draft', 'Not enough evidence to send on its own')
 	return d('send', `Rule ${rule.id}, confidence ${conf}`)
 }
@@ -86,6 +99,13 @@ export function decide(wf: Workflow, rules: Rule[], ctx: PolicyContext): Decisio
 // didn't apply (and why), and the safety check that held it. A rule that would have sent it but for one check says so. Any one
 // part alone makes it wait; the checks are the ones decide() and the send gate apply.
 export function whyWaited(wf: Workflow, rules: Rule[], ctx: PolicyContext): string[] {
+	if (wf.intent === 'pr_review') {
+		const review = reviewRuleFor(wf, rules)
+		const off = !review && reviewRuleFor(wf, rules.map(r => ({ ...r, off: undefined })))
+		if (!review) return [off ? `Your PR review rule ${off.id} is off.` : 'PR reviews wait for you; no review rule covers this.']
+		const decision = decide(wf, rules, ctx)
+		return decision.action === 'send' ? [] : [decision.reason]
+	}
 	const conf = confidence(wf.draft?.sources ?? [])
 	const first = wf.asker?.name?.split(/\s+/)[0] || 'this person'
 	const auto = rules.filter(r => !r.off && !r.style && r.then !== 'ignore')
@@ -140,14 +160,18 @@ export const commits = (wf: Workflow): boolean => !!wf.draft?.commitment || wf.i
 // Approved AI replies are signed when the owner asks, or by default once they wrote their own signature (bug 10-20: "(sent via AI)" was missing).
 export const signsApproved = (cfg: Config) => cfg.signApproved ?? !!cfg.signature?.trim()
 export const signatureOf = (cfg: Config) => cfg.signature?.trim() || cfg.policy?.marker || DEFAULT_POLICY.marker
-export function withMarker(text: string, marker: string, ownerName: string): string {
+export function withMarker(text: string, marker: string, ownerName: string, required = true): string {
 	const line = marker.replace('{first}', ownerName.split(/\s+/)[0])
-	// A draft in the owner's voice may already end with their signature, copied from past replies: it is added once.
-	const body = text.trimEnd().toLowerCase().endsWith(line.toLowerCase()) ? text.trimEnd().slice(0, -line.length).trimEnd() : text
-	return `${body}\n\n${line}`
+	let body = text.trimEnd(), marked = false
+	while (line.length && body.toLowerCase().endsWith(line.toLowerCase())) {
+		body = body.slice(0, -line.length).trimEnd()
+		marked = true
+	}
+	// Owner-written words stay unsigned unless they already carry the suffix from the approved preview.
+	return required || marked ? `${body}\n\n${line}` : text
 }
 export const approvedReplyText = (text: string, workflow: Workflow, cfg: Config): string =>
-	text && signsApproved(cfg) && !workflow.learnAfter && !workflow.draft?.byOwner ? withMarker(text, signatureOf(cfg), cfg.owner.name) : text
+	text ? withMarker(text, signatureOf(cfg), cfg.owner.name, signsApproved(cfg) && !workflow.learnAfter && !workflow.draft?.byOwner) : text
 
 export function inQuietHours(now: Date, quiet = { from: '20:00', to: '08:00' }): boolean {
 	const m = now.getHours() * 60 + now.getMinutes()

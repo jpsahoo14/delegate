@@ -7,10 +7,68 @@ and never use the relaxed intent check.
 
 ## PR vote claims (L1)
 
-All PR-review replies, and replies mentioning approvals or votes, always wait for
-the owner, before rule selection. `decide()` and `whyWaited()` use the same
+PR-review replies wait unless an explicit review rule covers them and the reply
+is built from comment receipts. Replies mentioning approvals or votes always
+wait for the owner. `decide()` and `whyWaited()` use the same
 core vote-word detector; the runner re-exports it without a core-to-runner import.
 Scheduled sends re-evaluate this policy before sending.
+
+`aboutPr(store, wf, text?)` is the shared, read-only PR-context test exported
+from `runner/apply.ts` (R18): an engine PR reference, PR-review intent, or a PR
+link in the reply, last ask or asker's stored thread. New can import it instead
+of maintaining a separate projection copy.
+
+## Rule-authorized PR comments and replies (R10a)
+
+`reviewRuleFor()` is the shared matcher for policy, waiting reasons and the
+named `reviewCommentHook` handover in `runner/jobs.ts`. Rules may narrow the PR's
+reviewer groups; live eligibility still comes from `review-gate.ts`, never
+from the rule. Settings writes the standard English line through `writeRules`,
+marks it `source: 'settings'` with a text hash, and preserves its text on Off.
+Multiple review rules are toggled together and shown as Custom.
+
+The hook retains the current ask IDs before attaching the review job, captures
+read provenance, and creates an isolated
+comment-only carrier. Subset approval binds the exact IDs, text and turn; all
+votes, held findings and excess comments remain proposed on the same workflow.
+The executor never starts a model to execute that carrier. Each post rechecks
+the current rule, pause/stop, safety policy, reviewer role, head, audience,
+catalog-built call and existing threads. Unknown provenance stays held for
+sharing; failures and uncertain writes never retry automatically.
+
+At job completion, one live PR read must match HOST's `job.reviewStart` via
+`sameHead` before `finishWork` stores `wf.reviewBasis = { pr, head, at }`.
+A missing stamp, failed read or moved head grants no basis and no automatic
+post/reply; findings stay proposed. `reviewAgain` records a live head only when
+a start stamp exists for the same PR and the heads differ. A missing start is
+not evidence of new changes. The missing-basis status mentions posting by rule
+only for items covered by a review rule; other items retain their report summary.
+A worker-reported commit and a proposed vote are never authority.
+`reviewDone.head` and `reviewDone.reviewedAt` come from that basis. Each post
+rechecks the live head against it, and a new turn clears it.
+
+At most ten new comments post, High first, with deterministic severity tags.
+Actual write receipts carry severity and `byRule`; `reviewDoneFacts` exports
+the posted comments, lowercase severity counts and remaining exact IDs for New.
+The reply frame counts only those receipts. Final failures permit a partial
+count; for proposed findings, no posted comments or an uncertain receipt means
+no automatic reply.
+At most one summary sentence follows the frame, after vote, commitment,
+source and audience checks; otherwise Details records the short-version reason.
+The global auto-send switch stops both review comments and replies, including
+an already queued batch. A verified review with an explicit empty findings list
+and no proposed changes or unanswered question sends the clean-review frame,
+"Reviewed PR <n>; no comments from my side." Its facts carry `clean: true`.
+The engine records `Job.result.reviewClean` only at verified completion on an
+active PR covered by a review rule, with no blocker, unmet goal, sender wait,
+rejected proposal or preparation failure. Without a covering rule, or on a closed
+PR, an empty done report retains the existing Nothing needed behavior per item.
+An empty findings list alone never authorizes a clean-review reply.
+This is distinct from findings that failed or were held: those still send
+nothing when no comment was posted.
+The normal send path rechecks the rule at its write boundary, retains the owner
+item for the vote, and records `byRule` on its send and review events.
+New owns the card/projection wiring; HOST owns close-on-vote and moved-head UX.
 
 Vote sentences are classified in order: requests/future/conditional/withholding,
 another reviewer's approval, then an owner claim for every remaining wording.

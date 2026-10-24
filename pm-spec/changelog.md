@@ -1,5 +1,23 @@
 # Engine fixes
 
+2026-10-24 (R10c PE news correction): Capture the owner's vote at review start and retain it as the comparison baseline.
+Only a changed non-zero vote or a PR closing after the ask completes the review item; old votes and closures stay context.
+Failed reads clear unknown baselines; normal probes and report-only continuations do not fabricate or reset them.
+
+2026-10-24 (R10c first slice): Populate/clear live cleaned PR group scope and close resting review owner items on the
+owner's unique live non-zero vote or PR closure, preserving receipts and sent replies. Generic/compound PR handling and
+exact-head approval checks remain; reviewAgain awaits SEND's completion-basis handoff.
+
+2026-10-24 (R20 prerequisite): Add optional reviewer-group/start-revision types and read the exact PR head before review
+starts/restarts. Awaited start callers preserve lifecycle gates; no completion or auto-post policy is changed.
+
+2026-10-24 (L2a PE B1/B2): Keep the short checkbox prompt separate from the text question, which names every cleaned group.
+Do not consume worker-option picks or existing retry/redraft/vote/send card answers as reviewer-group membership.
+
+2026-10-24 (L2a): Reviewer-group answers now accept named groups, multi-select picks and None, atomically saving both
+membership lists instead of dropping non-yes/no answers into a redraft. A shared read-time choices contract cleans labels
+while preserving exact server names, including on old saved questions. Card rendering is L2b's separate change.
+
 2026-10-24 (step-6 B1): Stamp current workflow schema in the four real constructors, so new data cannot trigger legacy
 rewrites. Actual intake/split/follow-up/track proofs show no migration, upgrade log, item-byte change or marker churn.
 

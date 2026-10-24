@@ -314,7 +314,7 @@ try {
 	store.save(w)
 	assert.equal(w.ownerSend, undefined); assert.equal(w.reason, undefined)
 	assert.equal(store.workflow(w.id)?.state, 'waiting_on_task')
-	assert.equal(startJobs(store, cfg, { start: () => ({ pid: process.pid }), alive: () => false, kill: () => false,
+	assert.equal(await startJobs(store, cfg, { start: () => ({ pid: process.pid }), alive: () => false, kill: () => false,
 		openWindow: () => { throw new Error('Proof must not open a window') } }), 1)
 	assert.equal(store.job(w.job!)?.state, 'running')
 	assert.equal(store.workflow(w.id)?.state, 'waiting_on_task')

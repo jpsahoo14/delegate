@@ -13,7 +13,7 @@ import { stateFields, statusFields } from '../core/upgrades.ts'
 
 const policy = (cfg: Config) => ({ ...DEFAULT_POLICY, ...cfg.policy })
 // What the owner's rules are judged with for this item: the page's "why it waited" uses the same (#33).
-export const policyContext = (store: Store, cfg: Config, wf: Workflow): PolicyContext => ({ autoSend: !!store.control().autoSend, autoSendsThisHour: autoCount(store, wf), maxPerHour: policy(cfg).maxAutoPerChatHour, never: policy(cfg).never, held: Object.keys(store.heldRules()) })
+export const policyContext = (store: Store, cfg: Config, wf: Workflow): PolicyContext => ({ autoSend: !!store.control().autoSend, autoSendsThisHour: autoCount(store, wf), maxPerHour: policy(cfg).maxAutoPerChatHour, never: policy(cfg).never, held: Object.keys(store.heldRules()), paused: !!cfg.paused || store.control().paused || store.control().stopped })
 
 // After a worker drafts, the owner's rules decide: send later, acknowledge now, keep as a draft, or ignore (R-POL-01).
 export async function afterDraft(store: Store, src: Source, cfg: Config, wf: Workflow): Promise<void> {
@@ -56,7 +56,7 @@ async function ack(store: Store, src: Source, cfg: Config, wf: Workflow, ruleId?
 		const { msgId } = await src.send(wf.chat.id, text)
 		store.addSent(msgId, text)
 		store.addAuto(wf.chat.id, 'ack')
-		store.log({ event: 'ack', workflowId: wf.id, code: wf.code, rule: ruleId, msgId })
+		store.log({ event: 'ack', workflowId: wf.id, code: wf.code, rule: ruleId, byRule: ruleId, msgId })
 	}
 }
 
@@ -70,7 +70,7 @@ export function awayLine(first: string, oof: string): string {
 function autoCount(store: Store, wf: Workflow): number {
 	const hourAgo = Date.now() - 3_600_000
 	const done = store.autoLedger().filter(e => e.chat === wf.chat.id && Date.parse(e.at) > hourAgo).length
-	return done + store.workflows().filter(w => w.id !== wf.id && w.chat.id === wf.chat.id && w.state === 'scheduled').length
+	return done + store.workflows().filter(w => w.id !== wf.id && w.chat.id === wf.chat.id && (w.state === 'scheduled' || w.reviewRun?.phase === 'posting')).length
 }
 
 // Owner presence holds automatic sends while the owner is at the keyboard (R-POL-11).

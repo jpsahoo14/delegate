@@ -18,10 +18,12 @@ export type Confidence = 'high' | 'medium' | 'low'
 export type Rule = {
 	id: string; text: string
 	who: { accounts?: Person[]; group?: 'team' | 'org' | 'outside' }
-	when: { intent?: string; chat?: string | 'direct'; minConfidence?: 'high' | 'medium' }
+	when: { intent?: string; chat?: string | 'direct'; minConfidence?: 'high' | 'medium'; reviewerGroup?: string }
 	then: Capability
 	off?: true
 	review?: { comments: 'post'; reply: 'send' }
+	source?: 'settings'
+	textHash?: string
 	// A rule accepted from a habit, with what it was learned from (dev-spec/habits.md).
 	learned?: { key: string; at: string; evidence: string }
 	shortcut?: { goal: string }
@@ -107,7 +109,8 @@ export type WorkReport = {
 // deploy: for a pipeline run, the ring and PR it is for, set by code from the allowlist and the item, never the AI's words.
 // ring: the ring as Azure DevOps showed it before the ok; a late ok compares it with the ring as it is then (owned work).
 // turns: server-owned proposal provenance, separate from the operation's write-ledger identity.
-export type Effect = { system: string; action: string; target: string; summary: string; payload?: unknown; call?: Call; head?: string; pr?: PrFacts; deploy?: { ring: string; pr: number }; ring?: RingFacts; build?: BuildFacts; turns?: string[]; done?: { ref?: string; at: string }; error?: string; off?: boolean; maybe?: true }
+export type ReviewSeverity = 'High' | 'Medium' | 'Low'
+export type Effect = { system: string; action: string; target: string; summary: string; payload?: unknown; call?: Call; head?: string; pr?: PrFacts; deploy?: { ring: string; pr: number }; ring?: RingFacts; build?: BuildFacts; turns?: string[]; byRule?: string; severity?: ReviewSeverity; held?: 'sharing'; done?: { ref?: string; at: string; byRule?: string; severity?: ReviewSeverity }; error?: string; off?: boolean; maybe?: true }
 // A pipeline run as Azure DevOps lists it: who started it, when, and how it stands.
 export type RunFact = { id: number; by: string; at: string; status: string; result?: string }
 export type RingFacts = { last?: RunFact; running: RunFact[]; readAt: string }
@@ -122,7 +125,7 @@ export type Call = { tool: string; args: Record<string, unknown> }
 export type PrFacts = { title: string; author: string; required: string[]; autoComplete: boolean }
 // What make_change did for one change in one change run: "calling" before the call, the result after.
 // stale: a vote refused because its PR changed since the review, so the owner reviews again.
-export type Change = { call: string; state: 'calling' | 'done' | 'failed'; ref?: string; error?: string; at: string; stale?: true }
+export type Change = { call: string; state: 'calling' | 'done' | 'failed'; ref?: string; error?: string; at: string; stale?: true; byRule?: string; severity?: ReviewSeverity; skipped?: true }
 // One record per distinct call ever made, written only by make_change: what was made, whatever any list says (eng-change-lists.md slice 1).
 export type CallRec = { call: string; state: 'calling' | 'done' | 'failed'; head?: string; vote?: string; ref?: string; error?: string; at: string }
 
@@ -137,11 +140,13 @@ export type Job = {
 	session: { agent: string; id: string }
 	state: 'queued' | 'running' | 'done' | 'failed'
 	purpose: 'work' | 'execute'
+	byRule?: string
 	// Set when a work run used up its time without reporting: the next run is one short turn to report what it found.
 	wrapUp?: boolean
 	parents: Id[]
 	asks: string[]
 	intent?: Intent
+	reviewStart?: { pr: number; head: string; at: string }
 	// The repo the work is in, by its remote ("dev.azure.com/org/project/repo"), and the PR's source branch when known (owned work).
 	remote?: string
 	needsCheckout?: boolean
@@ -153,7 +158,7 @@ export type Job = {
 	// sent: asks the session has; from: where the run in flight started; ok: asks the owner let through (review 10-19 #5, #12).
 	relay?: { machine: string; session: string; what: string; sent?: number; from?: number; ok?: number }
 	// at: when a tracker check gave this result, so the page says when the last check really ran.
-	result?: { summary: string; reply?: Draft; effects: Effect[]; context?: Fact[]; at?: string; findings?: ReviewFinding[]; voteRecommendation?: VoteRecommendation }
+	result?: { summary: string; reply?: Draft; effects: Effect[]; context?: Fact[]; at?: string; findings?: ReviewFinding[]; reviewHead?: string; reviewClean?: true; reviewSources?: { unknown: boolean; chats: string[]; restricted: boolean }; voteRecommendation?: VoteRecommendation }
 	error?: string
 	// Trackers (R-TRK-01): run again every N minutes until the condition in words holds.
 	every?: number
@@ -198,6 +203,7 @@ export type Workflow = {
 	prUnknown?: true
 	// The owner's place on the item's PR at the last read, and why a review was not started (PR review gate, owner rule 10-23).
 	prRole?: PrRole
+	prGroups?: string[]
 	// The PR's author at the last read, for a question the review leaves to them (queue-new #10).
 	prAuthor?: string
 	reviewDecline?: { pr: number; role: PrRole | 'unread' | 'not-asked'; at: string; ask?: string }
@@ -209,6 +215,11 @@ export type Workflow = {
 	// The reviewer groups on the PR the card asks about ("Are you in …?"); the answer is remembered in config (queue-new #7C).
 	groupAsk?: { pr: number; groups: string[] }
 	prDraft?: string
+	reviewBasis?: { pr: number; head: string; at: string }
+	reviewAsk?: { job: string; ids: string[]; lastMsgId: string; ownerAnswer?: string }
+	reviewAttempt?: { job: string; resultAt: string }
+	reviewRun?: { job: string; carrier: string; resultAt: string; rule: string; pr: number; head: string; turn?: string; phase: 'posting' | 'held' | 'replied'; reply?: Draft; sendText?: string }
+	reviewDone?: { pr: number; head: string; reviewedAt: string; byRule: string; clean?: true; posted: { severity: ReviewSeverity; file?: string; line?: number; text: string; thread?: string }[]; counts: { high: number; medium: number; low: number }; waiting: string[]; reply?: { text: string; teams: string }; fallback?: string }
 	completionSeen?: string
 	draft?: Draft
 	// Kept independently of worker reports until the owner sends, skips, or explicitly asks for a replacement.
@@ -313,7 +324,7 @@ export type Workflow = {
 	// The owner's own words went out on an item whose PR Delegate can change: one short run maps what they promise to changes held
 	// for ok (Slice 3). pending: waits for the run; checking: the run is going; offered: its changes wait for ok; failed: it could not tell.
 	promise?: { text: string; at: string; state: 'pending' | 'checking' | 'offered' | 'failed'; why?: string }
-	approved?: { text: string; effects: string; at: string; replyDigest?: string; sendReview?: string }
+	approved?: { text: string; effects: string; at: string; replyDigest?: string; sendReview?: string; byRule?: string; effectIds?: string[] }
 	revAt?: string
 	newCount: number
 	// A short summary of this sender's previous, closed item, so a new item starts with that context (R-WF-09).
@@ -324,7 +335,7 @@ export type Workflow = {
 	updatedAt: string
 }
 
-export type ReviewFinding = { text: string; file?: string; line?: number; thread?: { author: string; url: string; at: string } }
+export type ReviewFinding = { text: string; file?: string; line?: number; severity?: ReviewSeverity; sources?: Source[]; thread?: { author: string; url: string; at: string } }
 // A recommendation is evidence only; an approved effect remains the sole authority to cast a vote.
 export type VoteRecommendation = { vote: 'Approved' | 'ApprovedWithSuggestions' | 'NoVote' | 'WaitingForAuthor' | 'Rejected' | 'none'; why: string }
 

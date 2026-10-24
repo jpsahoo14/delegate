@@ -6,7 +6,8 @@ import type { Answer, Config, Effect, Person, Workflow } from '../core/types.ts'
 import { sendGate } from '../core/gate.ts'
 import { classify, contentKey, htmlToText } from '../core/intake.ts'
 import { mdToHtml } from '../core/format.ts'
-import { approvedReplyText, currentDraft, DEFAULT_POLICY, REPLY_BLANK, signatureOf, withMarker, reopenable } from '../core/policy.ts'
+import { approvedReplyText, currentDraft, DEFAULT_POLICY, REPLY_BLANK, signatureOf, withMarker, reopenable, decide, reviewRuleFor } from '../core/policy.ts'
+import { policyContext } from './autosend.ts'
 import { effectLine, effectResultLine, MARK, plain, renderMore, renderPreview } from '../core/render.ts'
 import { SendUncertain, type SendOpts, type Source } from '../adapters/source.ts'
 import type { Store } from '../store/state.ts'
@@ -23,7 +24,7 @@ import { ulid } from '../core/ids.ts'
 import { randomUUID } from 'node:crypto'
 import { answerProposal, knowledgeOf, nextProposal } from './proposals.ts'
 import { CMD, NAME } from '../brand.ts'
-import { MAY_REVIEW } from './review-gate.ts'
+import { groupSelection, MAY_REVIEW, reviewerGroupMatches } from './review-gate.ts'
 import { askAtOf } from '../core/numbers.ts'
 import { FOLLOW_DAYS, startFollow, startWatch, stopWatch, watchCommand } from './track.ts'
 import { adoProbe, prRefOf, probePRs, prTarget, recheckDeploy, recheckPr, voteDropped, type BuildProbe } from './probe.ts'
@@ -129,9 +130,12 @@ async function applyOne(store: Store, src: Source, cfg: Config, wf: Workflow, a:
 		commit(); store.markShown([wf])
 		return reply(store, src, a, `${MARK} ${wf.status}`)
 	}
-	// "Are you in <group>?": yes or no is remembered in config, and the PR's role is read again at once (queue-new #7C).
-	const yesNo = wf.groupAsk && a.verb === 'answer' ? /^\s*(?:(yes|yeah|yep|y|i am)|(no|nope|n|i'm not|i am not))\b/i.exec(a.text ?? '') : undefined
-	if (wf.groupAsk && yesNo) return groupAnswer(store, src, wf, a, !!yesNo[1], probe)
+	const cardAnswer = a.verb === 'answer' && /^(?:try again|redraft|add the vote|send anyway|review again)[.!]?$/i.test(a.text?.trim() ?? '')
+	if (wf.groupAsk && !cardAnswer && (a.verb === 'answer' || a.verb === 'pick' && !wf.choices)) {
+		const selected = groupSelection(wf.groupAsk, a.verb === 'pick' ? { nums: a.nums ?? [] } : { text: a.text })
+		if (!selected) return reply(store, src, a, `${MARK} Say which groups you're in, or none.`)
+		return groupAnswer(store, src, wf, a, selected, probe)
+	}
 	// "Try again" on a run that gave no result: the item runs once more, as it was (queue-new #11). A job that ran out of routes is
 	// queued again with its tries reset and a fresh session, so it is not led by its own conclusion (#17 b).
 	if (wf.runFailed && a.verb === 'answer' && /^\s*try again\s*$/i.test(a.text ?? '')) {
@@ -418,26 +422,33 @@ async function followUp(store: Store, src: Source, cfg: Config, w: Waiting, a: A
 	return `Drafting a follow-up to ${who} as ${wf.code}. You'll see it before anything is sent.`
 }
 
-// The owner's yes or no to "Are you in <group>?". Saved in config for every PR, and this PR is read again: a yes may bring back the
-// vote taken off the card; with no vote held, the review is drafted again so it can propose one (queue-new #7C).
-async function groupAnswer(store: Store, src: Source, wf: Workflow, a: Answer, yes: boolean, probe?: BuildProbe) {
-	const ask = wf.groupAsk!, cfg = store.config(), low = (s: string) => s.toLowerCase()
-	const add = (list: string[] | undefined) => [...(list ?? []).filter(g => !ask.groups.some(x => low(x) === low(g))), ...ask.groups]
-	const drop = (list: string[] | undefined) => { const left = (list ?? []).filter(g => !ask.groups.some(x => low(x) === low(g))); return left.length ? left : undefined }
-	const owner = yes ? { ...cfg.owner, reviewerGroups: add(cfg.owner.reviewerGroups), notReviewerGroups: drop(cfg.owner.notReviewerGroups) }
-		: { ...cfg.owner, notReviewerGroups: add(cfg.owner.notReviewerGroups), reviewerGroups: drop(cfg.owner.reviewerGroups) }
-	store.saveConfig({ ...cfg, owner })
+// Persist the complete answer before the PR read; a failed reader must not bring the same question back.
+async function groupAnswer(store: Store, src: Source, wf: Workflow, a: Answer, selected: string[], probe?: BuildProbe) {
+	const ask = wf.groupAsk!, commit = recordCommit(wf, () => store.workflow(wf.id), store.save.bind(store))
+	const cfg = freshRead(() => {
+		const cfg = store.config()
+		const replace = (list: string[] | undefined, add: string[]) => {
+			const names = [...new Set([...(list ?? []).filter(g => !ask.groups.some(x => reviewerGroupMatches(x, g))), ...add])]
+			return names.length ? names : undefined
+		}
+		const owner = { ...cfg.owner, reviewerGroups: replace(cfg.owner.reviewerGroups, selected),
+			notReviewerGroups: replace(cfg.owner.notReviewerGroups, ask.groups.filter(g => !selected.includes(g))) }
+		const updated = { ...cfg, owner }
+		store.saveConfig(updated)
+		return updated
+	})
 	Object.assign(wf, { groupAsk: undefined, question: undefined, revAt: new Date().toISOString() })
-	store.log({ event: 'group-answer', code: wf.code, pr: ask.pr, yes, groups: ask.groups.length })
-	const live = probe ?? adoProbe(store.config())
-	try { if (live?.pr) await probePRs(store, store.config(), live, Date.now(), true, [wf]) } finally { if (!probe) await live?.close?.() }
-	const named = ask.groups.map(g => `"${g}"`).join(', ')
-	if (yes && wf.prRole && MAY_REVIEW.includes(wf.prRole) && !wf.heldVotes && !pendingEffects(wf.effects).some(e => isVote(e.call)) && wf.todos?.some(t => /Not made for you: /.test(t))) {
-		Object.assign(wf, { ...stateFields(wf, 'running'), todos: wf.todos.filter(t => !/Not made for you: .*group that reviews it/.test(t)), status: `You're in ${named}; reviewing PR ${ask.pr} again so it can propose your vote`, pending: wf.pending.length ? wf.pending : wf.msgIds.slice(-1) })
+	commit()
+	store.log({ event: 'group-answer', code: wf.code, pr: ask.pr, selected: selected.length, groups: ask.groups.length })
+	const live = probe ?? adoProbe(cfg)
+	try { if (live?.pr) await probePRs(store, cfg, live, Date.now(), true, [wf]) } finally { if (!probe) await live?.close?.() }
+	commit.refresh()
+	if (selected.length && wf.state === 'needs_human' && live?.pr && wf.prRead && wf.prRole && MAY_REVIEW.includes(wf.prRole) && !wf.heldVotes && !pendingEffects(wf.effects).some(e => isVote(e.call)) && wf.todos?.some(t => /Not made for you: /.test(t))) {
+		Object.assign(wf, { ...stateFields(wf, 'running'), todos: wf.todos.filter(t => !/Not made for you: .*group that reviews it/.test(t)), status: `Your reviewer groups are saved; reviewing PR ${ask.pr} again so it can propose your vote`, pending: wf.pending.length ? wf.pending : wf.msgIds.slice(-1) })
 		if (!wf.todos?.length) wf.todos = undefined
 	}
-	recordCommit(wf, () => store.workflow(wf.id), store.save.bind(store))()
-	await reply(store, src, a, `${MARK} ${yes ? `Noted: you're in ${named}.` : `Noted: you're not in ${named}.`} ${NAME} remembers it for every PR; change it in Settings › You and your replies › Your reviewer groups.`)
+	commit()
+	await reply(store, src, a, `${MARK} ${NAME} remembers your answer.`)
 }
 
 // pick: an option with a ready reply becomes the draft at once, as a preview; several options, or one without a reply, rewrite like an answer.
@@ -565,8 +576,13 @@ async function threadSince(store: Store, src: Source, cfg: Config, wf: Workflow,
 	return { asker, messages, ours, ownerReplied, ownerAt, ownerUnknown, ownerExact }
 }
 
+export function aboutPr(store: Store, wf: Workflow, text?: string): boolean {
+	return !!prRefOf(store, wf) || wf.intent === 'pr_review' || linksIn([text ?? '', wf.lastAsk ?? '', ...store.thread(wf.id).filter(m => m.from.id === wf.asker?.id).map(m => m.text)].join('\n')).some(l => l.startsWith('pr:'))
+}
+
 export async function send(store: Store, src: Source, cfg: Config, wf: Workflow, text: string | undefined, by: SendBy, probe?: BuildProbe): Promise<boolean> {
 	const commit = recordCommit(wf, () => store.workflow(wf.id), store.save.bind(store))
+	const reviewReply = !!by.ruleId && wf.reviewRun?.rule === by.ruleId && !!wf.reviewDone
 	if (!by.ruleId) rememberSend(store, wf)
 	if (holdReplyGap(store, wf, text, !!by.ruleId)) {
 		if (by.answer) await reply(store, src, by.answer, `${MARK} ${REPLY_BLANK}`, true)
@@ -579,8 +595,7 @@ export async function send(store: Store, src: Source, cfg: Config, wf: Workflow,
 		await reply(store, src, by.answer ?? { id: '', code: wf.code, verb: 'ok', surface: 'chat', at: '' }, `${MARK} The latest turn proposes no reply. Nothing was sent.`, true)
 		return false
 	}
-	const ref = prRefOf(store, wf)
-	const aboutPR = !!ref || wf.intent === 'pr_review' || linksIn([text ?? '', wf.lastAsk ?? '', ...store.thread(wf.id).filter(m => m.from.id === wf.asker?.id).map(m => m.text)].join('\n')).some(l => l.startsWith('pr:'))
+	const aboutPR = aboutPr(store, wf, text)
 	// The owner's own typed words go as written; only one that says an approval is already made is checked against the PR,
 	// and then held with why, never redrafted away (bug 10-23 E35).
 	const owner = !by.ruleId && !!wf.draft?.byOwner && text === wf.draft.text
@@ -690,6 +705,20 @@ export async function send(store: Store, src: Source, cfg: Config, wf: Workflow,
 	const ask = store.thread(wf.id).filter(message => !message.byOwner && message.at <= beforeSend && wf.msgIds.includes(message.id) && (!wf.asker || message.from.id === wf.asker.id))
 		.sort((a, b) => a.at.localeCompare(b.at)).at(-1)
 	let msgId: string
+	if (by.ruleId && (reviewReply || wf.reviewRun)) {
+		const held = freshRead(() => {
+			const latest = store.workflow(wf.id), currentCfg = store.config()
+			const decision = latest && decide(latest, store.rules(), policyContext(store, currentCfg, latest))
+			return !latest || latest.state !== 'needs_human' || latest.pending.length || latest.ownerSend ||
+				latest.reviewRun?.rule !== by.ruleId || latest.reviewRun?.sendText !== text ||
+				reviewRuleFor(latest, store.rules())?.id !== by.ruleId || decision?.action !== 'send' ?
+				decision?.reason ?? 'The review reply changed' : undefined
+		})
+		if (held) {
+			store.log({ event: 'review-autoreply-held', code: wf.code, byRule: by.ruleId, reason: held })
+			return false
+		}
+	}
 	try { ({ msgId } = await src.send(wf.chat.id, out!, replyContext(wf, out!, named, cfg.owner.id))) } catch (e) {
 		if (!(e instanceof SendUncertain)) throw e
 		// May have been posted: held for the owner, never sent again by a rule, a retry or a stale ok (bug 10-23 R4).
@@ -717,6 +746,7 @@ export async function send(store: Store, src: Source, cfg: Config, wf: Workflow,
 	wf.sent = { msgId, at: new Date().toISOString(), text, sendText: out !== text ? out : undefined, byRule: by.ruleId, undoUntil: new Date(Date.now() + p.undoMin * 60_000).toISOString(), ...(askMsgId ? { askMsgId } : {}), ...(sendChecks.length ? { checks: sendChecks } : {}), ...(holding ? { holding: true as const } : {}) }
 	if (wf.approved) wf.approved.replyDigest = undefined
 	commit(false)
+	if (reviewReply) store.addAuto(wf.chat.id, 'send')
 	keepTodos(wf, wf.sent.at)
 	const home = homeOf(store, wf)
 	for (const check of sendChecks) {
@@ -725,6 +755,10 @@ export async function send(store: Store, src: Source, cfg: Config, wf: Workflow,
 	}
 	const first = (wf.asker?.name ?? 'them').split(/\s+/)[0]
 	if (holding) Object.assign(wf, { ...stateFields(wf, 'needs_human'), question: wf.question ?? `What should the full reply to ${first} say?`, approved: undefined, status: `Holding reply sent. ${first} is waiting for the full answer.` })
+	else if (reviewReply) {
+		if (wf.reviewRun?.rule === by.ruleId && wf.reviewDone && !wf.pending.length)
+			Object.assign(wf, { ...stateFields(wf, 'needs_human'), status: `PR ${wf.reviewDone.pr} waits for your approval`, approved: undefined })
+	}
 	else if (home.work) { afterSend(wf, out!, msgId, home, canCloseApproval(store, home), !home.pending.length && !pendingEffects(home.effects).length && !pendingParts(store, home, wf.id)); if (!active(home)) { stopWatch(store, home); closeFamily(store, realProcs, home, home.work.closed?.why ?? 'closed') } if (home !== wf) store.save(home) }
 	else close(wf, by.ruleId ? `Sent by rule ${by.ruleId}: "${text!.slice(0, 70)}"` : `Sent: "${text!.slice(0, 80)}"`)
 	// The owner's own words may promise what the draft did not: a short run checks, after the reply is out (Slice 3).
@@ -732,7 +766,7 @@ export async function send(store: Store, src: Source, cfg: Config, wf: Workflow,
 	wf.sendAt = undefined
 	wf.newCount = 0
 	commit()
-	store.log({ event: 'sent', workflowId: wf.id, code: wf.code, chat: wf.chat.id, asker: wf.asker, intent: wf.intent, unchanged: !by.ruleId && a.verb === 'ok' && !edited, v: 2, edited, ...(changesOff ? { changesOff } : {}), ...(wf.draft?.holding ? { holding: true } : {}), ...(askAt ? { askAt, askMsgId } : {}), msgId, approvedBy: by.ruleId ? `rule:${by.ruleId}` : 'owner', surface: a.surface, verb: a.verb, text: out, draft: wf.learnAfter?.draft, sources: wf.draft?.sources ?? [], confidence: wf.decision?.confidence })
+	store.log({ event: 'sent', workflowId: wf.id, code: wf.code, chat: wf.chat.id, asker: wf.asker, intent: wf.intent, unchanged: !by.ruleId && a.verb === 'ok' && !edited, v: 2, edited, ...(changesOff ? { changesOff } : {}), ...(wf.draft?.holding ? { holding: true } : {}), ...(askAt ? { askAt, askMsgId } : {}), msgId, approvedBy: by.ruleId ? `rule:${by.ruleId}` : 'owner', ...(by.ruleId ? { byRule: by.ruleId } : {}), surface: a.surface, verb: a.verb, text: out, draft: wf.learnAfter?.draft, sources: wf.draft?.sources ?? [], confidence: wf.decision?.confidence })
 	outcome(store, wf, 'sent', { draft: wf.learnAfter?.draft ?? text, sent: text, approvedBy: by.ruleId ? `rule:${by.ruleId}` : 'owner', msgId })
 	// A correction that went out teaches what the first reply got wrong, the same way an edit does.
 	if (wf.correction) { wf.learnAfter = { draft: wf.correction.sent, sent: `${out}${wf.correction.note ? `\n(The owner's note: ${wf.correction.note})` : ''}` }; wf.correction = undefined }
@@ -928,8 +962,9 @@ export function closeFamily(store: Store, procs: Procs, home: Workflow, why: str
 
 async function correct(store: Store, src: Source, wf: Workflow, a: Answer) {
 	if (store.control().paused) return reply(store, src, a, `${MARK} Paused, so the correction for ${wf.code} was not posted. Say "resume", then send it again.`)
-	const { msgId } = await src.send(wf.chat.id, a.text!)
-	store.addSent(msgId, a.text!)
+	const cfg = store.config(), text = withMarker(a.text!, signatureOf(cfg), cfg.owner.name, false)
+	const { msgId } = await src.send(wf.chat.id, text)
+	store.addSent(msgId, text)
 	store.log({ event: 'correction', workflowId: wf.id, code: wf.code, msgId, sentId: wf.sent?.msgId, text: a.text })
 	// A correction is the owner's words too; one sent while the last check waits joins it, so one run reads both (Slice 3).
 	if (prTarget(store, wf)) { notePromise(store, wf, a.text!); store.save(wf) }

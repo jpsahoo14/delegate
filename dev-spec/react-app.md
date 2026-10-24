@@ -1,5 +1,83 @@
 # React preview
 
+## PR review owner-item lifecycle, first slice (R10c)
+
+- Successful PR reads populate `wf.prGroups` using `reviewerGroups` from the review gate: cleaned L2 labels, deduplicated
+  case-insensitively. An omitted reviewer list means unknown, not an empty known list. Missing readers/targets, failed reads
+  and malformed PR responses clear this scope; `recheckPr` and `voteNow` use the same producer. Existing items acquire it
+  on their next normal successful PR read, without a repair or migration.
+- `liveOwnerVote` reads only the live response, sharing the review gate's owner identity rule: unique sign-in when supplied,
+  otherwise an unambiguous display name. Group votes, duplicate matches, unknown enum values and cached receipts do not
+  establish the owner's vote. Existing vote preflight readers use the same helper; exact-head checks are unchanged.
+- A resting standalone `intent: 'pr_review'` item closes into Done only on news: a non-zero live owner vote that differs
+  from its known review-start `prVote`, or the existing `closedNow` (a completed/abandoned PR closed after the ask).
+  An old "Waiting for author" vote and a PR merged before the ask remain context, not completion.
+  Running/queued jobs, pending input, linked unfinished parts and generic/compound PR work stay on their existing paths.
+  Owner commands arriving during the asynchronous role read are deferred instead of being overwritten by a close.
+- The same code-read PR response used for `job.reviewStart` captures each parent's live `prVote` baseline, including zero.
+  A failed/unknown start read clears the old baseline. Ordinary probes do not invent or rebase standalone review baselines;
+  older items with no baseline retain the existing probe paths, never the new vote-news close. Report-only wrap-up retains
+  the original review's baseline, so an owner vote during the review is not swallowed by a later reporting run.
+- New's owner-item contract: `state: 'done'`, `closedBy: 'nothing'`, and exact `status`:
+  - `You approved PR <n>`;
+  - `You voted "Approved with suggestions" on PR <n>`;
+  - `You voted "Waiting for author" on PR <n>` / `You voted "Rejected" on PR <n>`;
+  - `PR <n> closed` for either completed or abandoned.
+  `prRead`/`prReadAt` and `prStatus` come from that read; `prVote` is the start baseline while waiting, the live value on Done.
+  The item retains its sent reply, draft, effects/receipts,
+  sources and job result for Done; it does not start a new turn, rerun a review, send a reply or cast a vote.
+- This slice deliberately does not compare heads with `reviewBasis`: SEND owns that completion-time evidence. The later
+  reviewAgain slice waits for its commit, never guesses a reviewed head from the latest live PR. Only the existing fast
+  checks run; no new test/proof/golden cases or browser/engine proofs. Official PE diff/regression review is pending.
+
+## PR review start stamp (R20 prerequisite)
+
+- Optional `Workflow.prGroups?: string[]` is reserved for R10c's cleaned reviewer-group producer; unknown PR reads clear it.
+  Optional `Job.reviewStart?: {pr, head, at}` is code-read start evidence, not a completed review or permission to post.
+  Old records need no migration. SEND owns the distinct reviewBasis field and its completion-time verification.
+- `startJobs` is now awaited. Before each PR review work run (including retries and relays), it reads the
+  job's single PR through the existing probe, replaces the previous stamp, and then starts the worker.
+  Missing/ambiguous targets, unavailable readers, malformed reads and failures log `pr-check-failed` with phase
+  `review-start` and leave the stamp unset; the review can still run but cannot establish an auto-post basis.
+- Report-only wrap-up runs retain the original stamp only after re-reading the same head; they never relabel older
+  findings as a review of a newer head. Status-only trackers, execution runs and unrelated jobs do not create review-start stamps.
+- After the await, the job and controls are re-read before starting; changed/cancelled jobs, Pause/Stop, the AI hold and
+  run/parallel caps prevent a stale start. Existing cursor, receipt and completion-hook behavior is unchanged.
+  A borrowed probe stays borrowed; a locally opened probe is closed. The late tick start paths do not reopen the probe
+  whose dispatch lifetime has ended.
+- All three production call sites await the start pass. Existing manual-script callers receive mechanical await updates
+  only: no added proof cases, no test-directory edits and no engine/browser proof runs. Validation is build, both app
+  typechecks, existing card/report goldens and clean publish; official PE diff/regression review is pending.
+
+## Reviewer-group answers (L2a)
+
+- `runner/review-gate.ts` exports `groupChoices(groupAsk): GroupChoices`, a pure read-time adapter for both existing
+  and new `Workflow.groupAsk {pr, groups}`. It returns the existing Choices shape with `multi: true`, `other: false`,
+  the prompt "Which of these review groups on PR <n> are you in?", and one `{label, value}` per raw group.
+  Labels drop the leading `[Org]\`, identifier-style parenthetical tags and markdown escapes; values retain the exact
+  server names. The final option is `{label: 'None of these', value: ''}`.
+  Separately, `groupQuestion` lists those cleaned labels in `wf.question` and says "Say the names, or none.",
+  so chat and pre-L2b cards remain answerable without the checkbox UI.
+- L2b consumes that adapter under "Delegate also asks"; it must not overwrite the worker's independent `wf.choices`.
+  Its Save submits the existing `pick` verb with 1-based `nums` in `groupAsk.groups` order, with index `groups.length + 1`
+  reserved for None alone. Group-list changes stamp `revAt`, so an already-open page cannot save indices for a different list.
+  Offer that group pick only when `wf.choices` is absent; otherwise picks retain their existing worker-choice meaning.
+  Card/projection changes remain separately owned; this commit changes no page files.
+- `applyOne` intercepts reviewer-group answers and picks before generic choice/redraft handling, including old saved asks.
+  Existing card answers (Try again, Redraft, Add the vote, Send anyway and Review again) bypass group selection and keep
+  their established retry/redraft/send handling; they never change remembered membership.
+  `groupSelection` accepts case-insensitive cleaned names (comma, semicolon, newline, "and" or "+" separated), full raw
+  names, None, and whole-answer yes/no for exactly one group. Ambiguous cleaned labels require full names or numbered picks.
+  Empty/out-of-range picks, None mixed with groups, unknown names and multi-group yes/no save no config and never redraft;
+  the reply is "Say which groups you're in, or none."
+- `groupAnswer` freshly reads config and saves both membership lists in one synchronous write: selected groups in
+  reviewerGroups, every unselected asked group in notReviewerGroups, unrelated entries retained. It clears and commits the
+  saved question before re-reading the PR, retaining held-vote restoration and review restart only on usable PR evidence.
+  The answer says "Delegate remembers your answer." Full/short-name membership matching remains unchanged.
+- `unknownGroups` checks both lists. Normal PR processing refreshes existing asks, removes already-known groups and updates
+  the prompt without a repair job or schema rewrite. `groupChoices` supplies the new display contract immediately on reads
+  of old asks. No new tests, proof cases or golden rows; only the owner-approved fast checks run, with PE diff review pending.
+
 ## Step-6 PE correction B1: distinguish new data from legacy data
 
 - All four Workflow factories (intake creation/split, waiting follow-up and tracker) stamp WORKFLOW_SCHEMA.
@@ -261,6 +339,14 @@ PM rule `pm-need-to-know-audience.md`, with the PE 17:05 corrections.
   - Customer details are checked deterministically: GUIDs and emails in the draft that this chat's thread doesn't have.
   - Owner sends are unchanged (`gate.ts`).
   - Stored prose holds read as "Waiting for you: …".
+  - Hold text never displays a chat id, including stored prose and record/person fields.
+    `sharingHold` passes only a readable source chat name, not the adapter's id fallback;
+    a saved chat-level name is the next choice. The card displays named conversation holds as
+    "Need to know: uses something from <chat name>, and Kim isn't in it."
+    Without a name they say "Need to know: uses something from another chat you're in,
+    and not everyone here is." The formatter retains its "Waiting for you:" wrapper,
+    which callers replace with the card's "Need to know:" prefix. Other hold kinds
+    use a readable name or "another chat".
 - **Shareable within my org.**
   - A new chat level, for groups and meetings only (a 1:1 is refused).
   - A shareable chat used elsewhere doesn't hold when the target chat has no guest.
@@ -1491,6 +1577,12 @@ shown before); warnings stay at the top. Fictional root, stub worker (quota), st
 findings, "Live votes and dependency", "Newest builds"): the item kept the two code facts as info, was not must-see, and the card
 showed 0 warning lines and "Found on PR 4800001 · Alex Chen" with the two findings in New and Classic at 1280; a watch job kept
 all four, including the build blocker, as warnings.
+
+Read-time `normalizeReport` also removes legacy review facts labelled "Live vote(s)",
+"Newest build(s)", or dependency followed by vote(s), and text saying "These are CI facts".
+This stays within its review-only filter: Not reviewing gate facts and non-review/watch facts
+keep their existing behavior. No state rewrite or new card branch is needed.
+
 ## bug 10-22 Classic Settings chips were reset to the page top
 
 Classic's shell now follows the same screen/sub-route boundary as New. A
@@ -1585,7 +1677,7 @@ when a later read lets him vote. With role "none", Add me is offered. (B) Before
 `makeChange` reads every vote in it (`batchVoteBlocked`); if one cannot be cast, nothing else is made ("Not made: it was
 approved together with …"). (C) `owner.reviewerGroups` / `owner.notReviewerGroups` (full "[Org]\Group" or short name) count in
 `ownerRole`; Settings › You and your replies › "Your reviewer groups" edits them; a PR group in neither list is asked about once
-on the card ("Are you in …? Answer yes or no"), and the answer is saved and the PR read again. (D) Each change made or refused
+on the card using the multi-select/typed-name contract above, and the answer is saved and the PR read again. (D) Each change made or refused
 is a work step ("Made: … (ref)", "Not made: … (why)"), and a card whose approved batch partly ran shows "Done: … Not done: …"
 above the actions. (E) An approved batch whose changes all carry their exact call is made in the same pass through
 `makeChange` (`executeDirect`, run marked `direct`), with no AI run; a batch with any change lacking a call keeps the change run.
@@ -3544,6 +3636,16 @@ not just a threshold assertion. No real-owner data is needed or accessed.
   Manual Edge acceptance at 1280 light and 400 dark: preview equals the actual
   sent text byte for byte, including its signature; one ok sends it once.
   Build only, no tests or shared engine changes.
+
+- L7b (SEND): the shared sender formatter strips every trailing copy of the
+  configured, first-name-expanded signature/automated marker before appending
+  exactly one canonical suffix. Matching is case-insensitive and ignores trailing
+  whitespace; markers inside the reply body are unchanged. Owner/rule replies,
+  acknowledgements, scheduled automations and withdrawal text share this formatter.
+  Owner edits, literal replies and corrections still do not gain a signature,
+  but a suffix already present in their text is normalized the same way. The
+  correction ledger stores the exact normalized text sent. New owns the editor's
+  separate muted suffix preview; no browser or projection change is needed here.
 
 - bug 10-22 E13.classic.real-answer-preview-send (R3): the server already
   supplies a question type, answer action and optional placeholder draft.

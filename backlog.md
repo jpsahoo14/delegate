@@ -5,6 +5,9 @@ Scenario range reserved for this branch: SC-400 through SC-419.
 
 | Milestone | State | Evidence |
 | --- | --- | --- |
+| R10c live groups and owner-item completion | a2cca7df plus PE news correction in this commit; fix review pending | Review-start vote baseline, changed non-zero live vote/close-after-ask only; old context retained, receipts kept; head-change slice follows SEND merge |
+| R20 review type/start-stamp prerequisite | Built in this commit; SEND completion verification and R10c lifecycle follow; PE review pending | Optional data only, code-read start head, failed-read clearing, awaited starts and fresh post-read guards; no new proofs |
+| L2a reviewer-group answer engine | 56dde322 plus PE B1/B2 correction in this commit; fix review pending; L2b card separately owned | Text questions list cleaned groups; worker picks/card verbs preserved; shared groupChoices, one config write and PR re-read |
 | Step-6 PE blocker B1 | Fixed in this commit; PE fix-only re-review pending | Real constructor reproduction and no-op proof; 40 upgrade journeys and schema-literal AST guard |
 | Card-state step 6 | Built in this commit per PE A1/A2; official diff review pending | Pure compatibility + 50-item schema chain, stable workingSince; 35 legacy/lifecycle/concurrency journeys; no card/projection edit |
 | #51 chat effect wording | Built in this commit; official PE diff review pending | 21 copy variants plus real approval receipt; send 26 and sharing 12 preserved |

@@ -95,7 +95,7 @@ export default function Home({ readOnly = false }: { readOnly?: boolean }) {
 			// R11(1): "<N> working now" over "<M> queued · <reason>", never "N running" for queued work; muted "Nothing running" at 0 and 0.
 			const busy = tile.key === 'running' && snapshot.busy ? busyWords(snapshot.busy) : undefined
 			return <a className={`classic-mini${busy?.idle ? ' classic-mini-idle' : ''}`} key={tile.key} href={`#classic/${destinations[tile.key] ?? 'done'}`} title={busy?.title}><span className="classic-tile-icon"><Icon name={icons[tile.key] ?? 'check'} /></span>
-				{busy ? <div><b>{busy.head}</b>{busy.sub && <span>{busy.sub}</span>}</div> : <div><b>{tile.count || !tile.sub ? `${tile.count} ${tile.label}` : tile.sub}</b>{!!tile.count && tile.sub && <span>{tile.sub}</span>}</div>}</a>
+				{busy ? <div><b>{busy.head}</b>{busy.sub && <span>{busy.sub}</span>}{busy.also && <span>{busy.also}</span>}</div> : <div><b>{tile.count || !tile.sub ? `${tile.count} ${tile.label}` : tile.sub}</b>{!!tile.count && tile.sub && <span>{tile.sub}</span>}</div>}</a>
 		})}</div></section>}
 		{!readOnly && <>{missed && <MissedMessage action={missed} />}<div className="classic-home-tools">{versionLabel(version) && <><span title={versionTitle(version)}>{versionLabel(version)}</span><span>{updateTiming}</span><span role={version?.failed || version?.last?.rolledBack ? 'alert' : undefined}>{updateStatus}</span></>}<PageTools kinds={['check-update', 'report-problem']} showDetails={false} title="" /></div></>}
 	</>

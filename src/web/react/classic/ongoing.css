@@ -97,3 +97,5 @@ dialog.classic-ongoing-sheet::backdrop{background:rgba(10,10,20,.36)}
 	.classic-ongoing-sheet .ongoing-sheet-footer>span{flex-basis:100%}
 }
 @media(prefers-reduced-motion:reduce){.classic-ongoing .ongoing-bar .ongoing-indeterminate{animation:none}}
+.ongoing-card-open{cursor:pointer}.ongoing-card-open .row-chevron{margin-left:auto;color:var(--text-3);font-size:18px}
+.ongoing-waiting-card{margin-top:8px}

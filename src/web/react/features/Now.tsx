@@ -49,7 +49,8 @@ const RowFacts = memo(function RowFacts({ row }: { row: Placement; day: string }
 }, (before, after) => before.day === after.day && before.row.facts === after.row.facts && before.row.when === after.row.when)
 function RowControls({ row, open, toggle }: { row: Placement; open: boolean; toggle: () => void }) {
 	const primary = useData(state => (state.pinned[row.act]?.snapshot.entities.actions ?? state.entities.actions)[row.actionIds[0]])
-	if (row.section === 'waiting' && (!primary || primary.effect !== 'local')) return null
+	// A206 (R11(3)): a Waiting-on-others row has no action button; the whole row opens its card, so a stray click starts nothing.
+	if (row.section === 'waiting') return <span className="row-chevron" aria-hidden="true">›</span>
 	if (!primary || primary.effect !== 'local') return <Button variant={row.section === 'move' && !open ? 'default' : 'outline'} onClick={toggle} aria-expanded={open}>{open ? 'Hide' : 'Open'}</Button>
 	return <LocalRowControls row={row} open={open} toggle={toggle} />
 }
@@ -120,7 +121,7 @@ export const NowRow = memo(function NowRow({ id, day }: { id: string; day?: stri
 					: row.kind === 'todo' && item?.todoIds.length && entities?.todos[item.todoIds[0]] ? ['Left for you', `${entities.todos[item.todoIds[0]].text}${item.todoIds.length > 1 ? ` (+${item.todoIds.length - 1} more)` : ''}`] : undefined
 	const who = person?.name ?? row.facts.who
 	return <article className={`now-row${open ? ' row-open' : ''}`} data-code={row.code} data-row-kind={row.kind} title={codeHover(row.act)} onClick={row.kind === 'catchup' ? isolateRowControls : undefined}>
-		<div className="row-content">
+		<div className="row-content" onClick={row.section === 'waiting' ? event => { if (!(event.target instanceof Element && event.target.closest('a, button, input, textarea, select'))) toggle() } : undefined}>
 			{person && !icon ? <span className="row-avatar" style={avatarStyle} aria-hidden="true">{person.initials}</span> : <span className="row-icon"><Icon name={icon ?? 'clock'} /></span>}
 			<div className="row-text">
 				<div className="row-line1">{who && <span className="row-name">{who}</span>}{(chat || row.facts.where) && <span className="row-where">· {chat ? whereOf(chat) : row.facts.where}</span>}
@@ -225,6 +226,7 @@ export default function Now() {
 			return <section key={section.id} className="now-section" data-selected={find || selected === section.id ? 'true' : 'false'} aria-labelledby={`section-${section.id}`}>
 				<h2 id={`section-${section.id}`} title={words?.title}>{section.label}<span className="section-count"> · {words ? words.line : busy ? `${busy.now} now · ${busy.line} in line` : search ? matches : section.total ?? ids.length}{retained > 0 && ` + ${retained} kept`}</span></h2>
 				{words?.sub && <p className="muted section-reason">{words.sub}</p>}
+				{words?.also && <p className="muted section-reason">{words.also}</p>}
 				{section.id === 'working' && snapshot.summary.paused && <p className="warning">Paused: drafts go on, nothing is sent.</p>}
 				{section.id === 'working' && !snapshot.summary.paused && snapshot.summary.off && !ids.length && !runs.length && <p className="muted">{snapshot.summary.off.text}{snapshot.summary.off.since ? ` since ${when(snapshot.summary.off.since)}` : ''}</p>}
 				{ids.length ? <ViewportList className="rows" ids={ids} estimate={112} retained={Object.keys(pinnedPlacements({ pinned: activePins }))} target={ids.includes(sub) ? sub : undefined}

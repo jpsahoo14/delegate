@@ -33,8 +33,10 @@ that part was left out." An `off: true` rule retains its text but does not run.
 For review rules, call the rules step with `{text, compiled, preview: true}` first.
 Show its code-built read-back unchanged, wait for the owner's OK, then save
 the same text and grants without `preview`. Never invent the confirmation words.
-PR-review autonomy is not active in this version. Its read-back says so; keep
-that warning unchanged and do not promise automatic comments or replies.
+Review rules may narrow the PRs by `when.reviewerGroup`, using the reviewer's
+group name. They ignore `minConfidence`: comments require live reviewer, head,
+audience and rule checks; replies count only posted receipts. A generic send
+or acknowledgement rule never authorizes a PR-review reply or any vote.
 
 Show each compiled rule like this, and wait for `ok` or an edit:
 
