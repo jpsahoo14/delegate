@@ -269,7 +269,9 @@ async function applyOne(store: Store, src: Source, cfg: Config, wf: Workflow, a:
 			if (holdReplyGap(store, wf, wf.draft?.text)) return reply(store, src, a, `${MARK} ${REPLY_BLANK}`, true)
 			// ok approves the draft the owner saw; a rewrite in progress has no such draft yet (review P1-1).
 			// A draft with a blank or an open question is not ready to send (persona test P0).
-			if (wf.state === 'needs_human' && wf.question) return reply(store, src, a, `${MARK} ${wf.code} is not ready: ${wf.question}. Reply "${wf.code}: your answer", and I'll show the new draft.`)
+			// The page's own Send, on the exact card the owner saw, sends the draft with a question still open (card state rules 10-11, #34);
+			// a typed ok still waits for the answer.
+			if (wf.state === 'needs_human' && wf.question && !a.page) return reply(store, src, a, `${MARK} ${wf.code} is not ready: ${wf.question}. Reply "${wf.code}: your answer", and I'll show the new draft.`)
 			if (wf.state === 'running') return reply(store, src, a, `${MARK} ${wf.code} is being rewritten with your answer. I'll show the new draft first.`)
 		// falls through
 		case 'send': {

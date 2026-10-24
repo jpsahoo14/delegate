@@ -1,5 +1,60 @@
 # React preview
 
+## Card state from one place, step 3: the projection offers what cardState names (#34)
+
+- **Projection:** `react-projection.ts` builds `cardFacts` for every item and calls `cardState`. For items waiting on the owner it
+  offers exactly the primary, secondary and ⋯ actions the state names, plus Send your version whenever the reply box is the
+  editor, with the same bindings as before. The item gets `mode`, `editor` and `block3`.
+  - **The primary:** `primaryActionId` is the state's primary.
+  - **The warning:** `attention` is the state's warn line; a refused send no longer shows "(Error: …)".
+  - **The failure block:** `runFailed` is the current failure, whichever field recorded it.
+  - **Removed:** `recoveryCodes`, the nested attention ternaries, and the `:257` rule that hid Send whenever a question was open.
+- **Engine:** an `ok` from the page's own Send (`a.page`, the exact card the owner saw) now sends a draft that still has a question
+  open (rules 10 and 11). A typed "ok A48" still answers "A48 is not ready: …".
+- **`ItemCard`:** the card no longer picks its own primary (the old line 80), and it shows no answer box when the editor is the
+  reply. The rest of rendering by mode is step 4.
+- **Found by the inert-copy check, and fixed with golden rows first:**
+  - G43, A57/A61 "the PR approval could not be verified": `not-sent` keeps Send, since the engine re-checks the approval on every
+    Send. This departs from the spec's "no primary", to avoid taking away a Send that works today.
+  - G44, A90, a "Not finished: …" with nothing else: `cardFacts` reads it as a content failure, so it shows the failure card with
+    Write the reply yourself instead of `unknown`.
+
+**Proof**
+- **Golden:** `card-golden: 44/44 pass in 1.5 ms`.
+- **Inert copy:** the real projection over a copy of the owner's root (23 Oct copy, without sessions; no Teams, tool servers or
+  runner). 12 cards wait on the owner; with a draft but no Send: 0; Answer leading over a draft: 0; invariant breaks: none. Before
+  this step, the same copy had A57/A61 (not-sent) and A90 (unknown) unplaced by any rule.
+- **Fictional root, stub model (quota), Edge in New and Classic at 1280 light and New at 400 dark:**
+  - A48 (question + draft): Send is the primary, and it sent once from New.
+  - A179 (question + holding draft): Draft reply leads, with Send holding reply in the bar; that sent once from Classic.
+  - A37 (a job that failed 4 days ago, then a newer holding draft): Send holding reply.
+  - A128 (refused): Send, with "Didn't send: your approval isn't on PR 1732433 yet."
+  - No id or "Error:" leaks, and no invariant breaks.
+
+## Card state from one place, steps 1–2: the rules and their golden cases (#34)
+
+Following `engineer-card-state-devspec.md`. Nothing uses these yet; step 3 wires the projection to them.
+- **`src/core/card-state.ts`:** `cardState(facts)` is the PE's ordered rule list: agent-wait, own-reply, failed, review-again,
+  declined, not-sent, your-step, choices, answer, answer-with-holding, reply-with-question, changes, holding, reply, unknown. The
+  first rule that holds decides the mode, the primary, the secondary and ⋯ actions, the one editable box, block 3, and the single
+  warn line. The action names are the projection's existing kinds.
+  - **`currentFailure`:** the newest candidate wins, and one older than the draft is dropped (the #33 rule, in one place).
+  - **`retryHelps`:** Try again leads for other/tool/stopped failures, or a cause fixed since, and only under 2 repeats.
+  - **`checkCard`:** the invariants. No action twice; a draft can be sent outside the modes that name why not; an older failure
+    never decides; no `unknown`; the warn line never leaks an id or "Error:"; an answer box only with Answer.
+- **`src/core/card-facts.ts`:** `cardFacts()` turns an item, its job and the card view into `CardFacts`. The failure candidates are
+  the item's failed run, its failed job, and a stopped wait. A not-sent reason comes from its status prefix. Also the hold,
+  own reply, declined review and failed promise.
+- **Departures from the spec, noted for the PE:**
+  - A failed promise check stays an approve ("Check again"), since that is what its action does.
+  - When retrying won't help a review, the "Review it yourself" link leads and Try again is secondary.
+- **`scripts/card-golden.ts`:** a proof script, not a test (queue #34). It has 42 rows: G1–G15 one per rule, G16–G30 the past bugs
+  (A37, A50, A57, A61, A76, A120, A128, A129, A177, A178, A179, A88, #15, #18, #22), and G31–G42 edge cases. Run it with
+  `node scripts/card-golden.ts`.
+  - Result: `card-golden: 42/42 pass in 2.5 ms`.
+  - With the "newer draft beats an older failure" rule removed, G16 (A37) fails with exactly that regression, then passes again
+    once the rule is back.
+
 ## Settings stays fast while an action waits for its saved result (#27 b, c, d)
 
 **The blocker, reproduced.** The test root was a fictional one in the OneDrive-synced folder with 400 items. A pending page action

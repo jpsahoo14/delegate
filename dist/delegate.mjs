@@ -32442,11 +32442,11 @@ var require_util = __commonJS({
       return false;
     }
     exports.schemaHasRules = schemaHasRules;
-    function schemaHasRulesButRef(schema, RULES4) {
+    function schemaHasRulesButRef(schema, RULES5) {
       if (typeof schema == "boolean")
         return !schema;
       for (const key in schema)
-        if (key !== "$ref" && RULES4.all[key])
+        if (key !== "$ref" && RULES5.all[key])
           return true;
       return false;
     }
@@ -33840,17 +33840,17 @@ var require_validate = __commonJS({
     }
     function schemaKeywords(it, types, typeErrors, errsCount) {
       const { gen, schema, data, allErrors, opts, self } = it;
-      const { RULES: RULES4 } = self;
-      if (schema.$ref && (opts.ignoreKeywordsWithRef || !(0, util_1.schemaHasRulesButRef)(schema, RULES4))) {
-        gen.block(() => keywordCode(it, "$ref", RULES4.all.$ref.definition));
+      const { RULES: RULES5 } = self;
+      if (schema.$ref && (opts.ignoreKeywordsWithRef || !(0, util_1.schemaHasRulesButRef)(schema, RULES5))) {
+        gen.block(() => keywordCode(it, "$ref", RULES5.all.$ref.definition));
         return;
       }
       if (!opts.jtd)
         checkStrictTypes(it, types);
       gen.block(() => {
-        for (const group2 of RULES4.rules)
+        for (const group2 of RULES5.rules)
           groupKeywords(group2);
-        groupKeywords(RULES4.post);
+        groupKeywords(RULES5.post);
       });
       function groupKeywords(group2) {
         if (!(0, applicability_1.shouldUseGroup)(schema, group2))
@@ -35949,10 +35949,10 @@ var require_core = __commonJS({
       }
       // Remove keyword
       removeKeyword(keyword) {
-        const { RULES: RULES4 } = this;
-        delete RULES4.keywords[keyword];
-        delete RULES4.all[keyword];
-        for (const group2 of RULES4.rules) {
+        const { RULES: RULES5 } = this;
+        delete RULES5.keywords[keyword];
+        delete RULES5.all[keyword];
+        for (const group2 of RULES5.rules) {
           const i = group2.rules.findIndex((rule) => rule.keyword === keyword);
           if (i >= 0)
             group2.rules.splice(i, 1);
@@ -36120,9 +36120,9 @@ var require_core = __commonJS({
     }
     var KEYWORD_NAME = /^[a-z_$][a-z0-9_$:-]*$/i;
     function checkKeyword(keyword, def) {
-      const { RULES: RULES4 } = this;
+      const { RULES: RULES5 } = this;
       (0, util_1.eachItem)(keyword, (kwd) => {
-        if (RULES4.keywords[kwd])
+        if (RULES5.keywords[kwd])
           throw new Error(`Keyword ${kwd} is already defined`);
         if (!KEYWORD_NAME.test(kwd))
           throw new Error(`Keyword ${kwd} has invalid name`);
@@ -36138,13 +36138,13 @@ var require_core = __commonJS({
       const post = definition === null || definition === void 0 ? void 0 : definition.post;
       if (dataType && post)
         throw new Error('keyword with "post" flag cannot have "type"');
-      const { RULES: RULES4 } = this;
-      let ruleGroup = post ? RULES4.post : RULES4.rules.find(({ type: t2 }) => t2 === dataType);
+      const { RULES: RULES5 } = this;
+      let ruleGroup = post ? RULES5.post : RULES5.rules.find(({ type: t2 }) => t2 === dataType);
       if (!ruleGroup) {
         ruleGroup = { type: dataType, rules: [] };
-        RULES4.rules.push(ruleGroup);
+        RULES5.rules.push(ruleGroup);
       }
-      RULES4.keywords[keyword] = true;
+      RULES5.keywords[keyword] = true;
       if (!definition)
         return;
       const rule = {
@@ -36159,7 +36159,7 @@ var require_core = __commonJS({
         addBeforeRule.call(this, ruleGroup, rule, definition.before);
       else
         ruleGroup.rules.push(rule);
-      RULES4.all[keyword] = rule;
+      RULES5.all[keyword] = rule;
       (_a3 = definition.implements) === null || _a3 === void 0 ? void 0 : _a3.forEach((kwd) => this.addKeyword(kwd));
     }
     function addBeforeRule(ruleGroup, rule, before) {
@@ -43159,11 +43159,11 @@ ${res.summary ?? ""}`));
       if (fresh.job) carry(store2, cfg, fresh, []);
       Object.assign(fresh, { effects: void 0, promised: void 0 });
     } else if (fresh.promised) Object.assign(fresh, { effects: void 0, promised: void 0 });
-    const asked = askedVote(store2.thread(wf.id).filter((m) => wf.pending.includes(m.id) && !m.byOwner).map((m) => m.text).join("\n"));
+    const asked2 = askedVote(store2.thread(wf.id).filter((m) => wf.pending.includes(m.id) && !m.byOwner).map((m) => m.text).join("\n"));
     const live2 = fresh.prRead ?? wf.prRead ? JSON.parse(fresh.prRead ?? wf.prRead) : void 0;
-    if (asked !== void 0 && live2 && /^active$/i.test(live2[1]) && typeof live2[3] === "number" && !sameVote(live2[3], asked) && report2.goalMet !== false && !fresh.question && !fresh.choices && !(h.work?.closed && fresh.state === "done") && !(wf.prRole && !MAY_REVIEW.includes(wf.prRole)) && !pendingEffects(fresh.effects).some((e) => isVote(e.call) && voteValue(e.call) === asked)) {
-      Object.assign(fresh, { state: "needs_human", question: `${fresh.asker?.name ?? "They"} asked for your ${voteName(asked)} vote on PR ${live2[0]}, but this draft proposes no vote. Answer ${fresh.code} to redo it with the vote, or skip it` });
-      store2.log({ event: "vote-ask-unmet", workflowId: fresh.id, code: fresh.code, pr: live2[0], asked, live: live2[3] });
+    if (asked2 !== void 0 && live2 && /^active$/i.test(live2[1]) && typeof live2[3] === "number" && !sameVote(live2[3], asked2) && report2.goalMet !== false && !fresh.question && !fresh.choices && !(h.work?.closed && fresh.state === "done") && !(wf.prRole && !MAY_REVIEW.includes(wf.prRole)) && !pendingEffects(fresh.effects).some((e) => isVote(e.call) && voteValue(e.call) === asked2)) {
+      Object.assign(fresh, { state: "needs_human", question: `${fresh.asker?.name ?? "They"} asked for your ${voteName(asked2)} vote on PR ${live2[0]}, but this draft proposes no vote. Answer ${fresh.code} to redo it with the vote, or skip it` });
+      store2.log({ event: "vote-ask-unmet", workflowId: fresh.id, code: fresh.code, pr: live2[0], asked: asked2, live: live2[3] });
     }
     const askText = store2.thread(wf.id).filter((m) => wf.pending.includes(m.id) && !m.byOwner).map((m) => m.text).join("\n");
     const invites = (cfg.agent.effectTools ?? []).some((t2) => /CreateEvent/i.test(t2));
@@ -43761,8 +43761,8 @@ function numbers(raw, items2, now, tz, key = "this") {
     return d >= s3.from && d <= s3.to;
   };
   const all = handledAll(evs, items2);
-  const asked = new Set(evs.filter((e) => e.event === "sent" || e.event === "closed" && e.closedBy !== "nothing").map((e) => e.code));
-  const notAsks = new Set(evs.filter((e) => e.event === "closed" && e.closedBy === "nothing" && !asked.has(e.code)).map((e) => e.code));
+  const asked2 = new Set(evs.filter((e) => e.event === "sent" || e.event === "closed" && e.closedBy !== "nothing").map((e) => e.code));
+  const notAsks = new Set(evs.filter((e) => e.event === "closed" && e.closedBy === "nothing" && !asked2.has(e.code)).map((e) => e.code));
   const counted2 = all.filter(within(span));
   const of = (how) => counted2.filter((c) => c.how === how).map((c) => c.code);
   const prior = key === "this" ? spans.last : key === "last" ? { from: addDays(week, -14), to: addDays(week, -8) } : key === "4w" ? { from: addDays(week, -49), to: addDays(week, -22) } : void 0;
@@ -44426,9 +44426,9 @@ async function intake(store2, src, cfg, cursors, chats = cfg.watch, o = {}) {
       if (groupJudgment && !follows) for (const o2 of open2) appendThread(store2, o2, toMsg(raw, c.from, c.text, false));
       let wf = follows ?? (groupJudgment ? void 0 : route(store2, live2, raw, c.kind === "ask" || c.kind === "context" ? c.from.id : "", c.kind === "ask" && !backlog ? recentItem(store2, chat2.id, c.from.id, hours2, now) : void 0, c.text));
       if (wf && c.kind === "ask") {
-        const asked = linksIn(c.text).filter((l) => l.startsWith("pr:")).map((l) => l.slice(3)), own3 = ownLinks(store2, wf).filter((l) => l.startsWith("pr:")).map((l) => l.split(/[:/]/).at(-1));
-        if (asked.length && own3.length && asked.some((id) => !own3.includes(id))) {
-          store2.log({ event: "join-refused", code: wf.code, by: "intake", reason: `the ask is about PR ${asked.join(", PR ")}, and ${wf.code} is about PR ${own3.join(", PR ")}` });
+        const asked2 = linksIn(c.text).filter((l) => l.startsWith("pr:")).map((l) => l.slice(3)), own3 = ownLinks(store2, wf).filter((l) => l.startsWith("pr:")).map((l) => l.split(/[:/]/).at(-1));
+        if (asked2.length && own3.length && asked2.some((id) => !own3.includes(id))) {
+          store2.log({ event: "join-refused", code: wf.code, by: "intake", reason: `the ask is about PR ${asked2.join(", PR ")}, and ${wf.code} is about PR ${own3.join(", PR ")}` });
           wf = void 0;
         }
       }
@@ -44638,9 +44638,9 @@ function workOfAsk(store2, open2, raw, text3, to) {
     const replied = homes.find((h) => [h, ...store2.workflows().filter((w) => w.partOf === h.id)].some((w) => w.msgIds?.includes(quoted) || w.lastMsgId === quoted));
     if (replied) return replied.code;
   }
-  const asked = { to };
-  const waited = homes.filter((h) => !!h.work.waitingOn?.who && answers(asked, h.work.waitingOn.who));
-  const theirs = homes.filter((h) => waited.includes(h) || !!h.asker?.name && answers(asked, h.asker.name));
+  const asked2 = { to };
+  const waited = homes.filter((h) => !!h.work.waitingOn?.who && answers(asked2, h.work.waitingOn.who));
+  const theirs = homes.filter((h) => waited.includes(h) || !!h.asker?.name && answers(asked2, h.asker.name));
   const named2 = homeNamed(store2, homes, text3);
   const hit = [.../* @__PURE__ */ new Set([...theirs, ...named2 ? [named2] : []])];
   if (hit.length !== 1) return void 0;
@@ -45238,7 +45238,7 @@ async function applyOne(store2, src, cfg, wf, a, procs, probe) {
     }
     case "ok":
       if (holdReplyGap(store2, wf, wf.draft?.text)) return reply(store2, src, a, `${MARK} ${REPLY_BLANK}`, true);
-      if (wf.state === "needs_human" && wf.question) return reply(store2, src, a, `${MARK} ${wf.code} is not ready: ${wf.question}. Reply "${wf.code}: your answer", and I'll show the new draft.`);
+      if (wf.state === "needs_human" && wf.question && !a.page) return reply(store2, src, a, `${MARK} ${wf.code} is not ready: ${wf.question}. Reply "${wf.code}: your answer", and I'll show the new draft.`);
       if (wf.state === "running") return reply(store2, src, a, `${MARK} ${wf.code} is being rewritten with your answer. I'll show the new draft first.`);
     // falls through
     case "send": {
@@ -45587,9 +45587,9 @@ async function send(store2, src, cfg, wf, text3, by, probe) {
     const live2 = probe ?? adoProbe(cfg);
     try {
       if (!live2?.pr) throw new Error("no live PR check is configured");
-      const asked = askPrs(store2, wf), single = prTarget(store2, wf), ids = claimedPrs(text3 ?? "", asked, single);
+      const asked2 = askPrs(store2, wf), single = prTarget(store2, wf), ids = claimedPrs(text3 ?? "", asked2, single);
       const list2 = (ns) => ns.map((n) => `PR ${n}`).join(", ");
-      if (!ids.length) throw new Error(`the reply speaks of an approval but does not say which PR it means; the ask names ${list2(asked) || "no PR"}`);
+      if (!ids.length) throw new Error(`the reply speaks of an approval but does not say which PR it means; the ask names ${list2(asked2) || "no PR"}`);
       const refs = ids.map((id) => ({ id, ref: ref?.id === id ? ref : prRefFor(store2, wf, id) }));
       const lost = refs.find((r) => !r.ref);
       if (lost) {
@@ -46223,8 +46223,8 @@ async function probePRs(store2, cfg, probe, now = Date.now(), force = false, sub
     const receipt = (w.effects ?? []).find((e) => e.done && isVote(e.call) && prIdOf(e.call) === ref.id);
     const madeHere = !!receipt && sameVote(mine ?? 0, voteValue(receipt.call));
     const approvedNow = mine !== void 0 && mine >= 5 && !madeHere && (changed || approvalAsk2(w.lastAsk ?? ""));
-    const asked = Date.parse(store2.thread(w.id).filter((m) => !m.byOwner).at(-1)?.at ?? w.createdAt);
-    const closedNow = /completed|abandoned/i.test(st.status) && (st.closedAt ? Date.parse(st.closedAt) > asked : w.prStatus !== void 0 && !/completed|abandoned/i.test(w.prStatus));
+    const asked2 = Date.parse(store2.thread(w.id).filter((m) => !m.byOwner).at(-1)?.at ?? w.createdAt);
+    const closedNow = /completed|abandoned/i.test(st.status) && (st.closedAt ? Date.parse(st.closedAt) > asked2 : w.prStatus !== void 0 && !/completed|abandoned/i.test(w.prStatus));
     const stale = !!w.draft && w.prDraft !== w.prRead && (!!w.prDraft || !receipt && mine !== void 0 && mine >= 5 && approvalMention2(w.draft.text));
     const ownerWriting = w.draft?.byOwner && mine !== void 0 && mine < 5 && !closedNow && approvalReplyMatches(w.draft.text, mine, ref.id);
     const reason = receipt && !w.sent || w.draft && w.prDraft === w.prRead || ownerWriting ? void 0 : closedNow ? `PR ${ref.id} was ${/completed/i.test(st.status) ? "completed" : "abandoned"}` : approvedNow || changed ? `You ${(VOTE[String(mine)] ?? ((id) => `voted on PR ${id}`))(ref.id)} in Azure DevOps` : stale ? `PR ${ref.id} changed since this draft` : void 0;
@@ -49886,8 +49886,8 @@ var init_demo = __esm({
     demoRun = (store2) => async (_cfg, i) => {
       const ask = i.prompt.split("\n").filter((l) => l.startsWith(">> [id:")).join(" ");
       const answered = i.prompt.match(/The owner answered your question: "([^"]*)"/)?.[1];
-      const asked = i.prompt.match(/The owner asks: "([^"]*)"/)?.[1];
-      const r = asked ? { workflowId: i.workflowId, intent: "other", state: "needs_human", summary: "Answered", answer: /ring|rollout|banner/i.test(asked) ? "Ring 1 started Oct 17 and needs one clean week, so ring 3 can start Oct 24 at the earliest." : "The knowledge says admin policy and sensitivity labels lock those options. Priya's team is under the strict policy since Oct 10.", reply: { text: "", commitment: false, sources: [{ ref: "card:meeting-options/architecture#demo", tier: "card", origin: "extracted" }] } } : /shall we meet|meet at|quick call|sync up/i.test(ask) && !answered ? {
+      const asked2 = i.prompt.match(/The owner asks: "([^"]*)"/)?.[1];
+      const r = asked2 ? { workflowId: i.workflowId, intent: "other", state: "needs_human", summary: "Answered", answer: /ring|rollout|banner/i.test(asked2) ? "Ring 1 started Oct 17 and needs one clean week, so ring 3 can start Oct 24 at the earliest." : "The knowledge says admin policy and sensitivity labels lock those options. Priya's team is under the strict policy since Oct 10.", reply: { text: "", commitment: false, sources: [{ ref: "card:meeting-options/architecture#demo", tier: "card", origin: "extracted" }] } } : /shall we meet|meet at|quick call|sync up/i.test(ask) && !answered ? {
         workflowId: i.workflowId,
         intent: "other",
         state: "needs_human",
@@ -54511,6 +54511,9 @@ var item = external_exports.object({
   status: text2,
   attention: optional2,
   attentionKind: external_exports.enum(["reply-changed", "run-failed", "agent-setup"]).optional(),
+  mode: optional2,
+  editor: external_exports.enum(["reply", "answer", "none"]).optional(),
+  block3: external_exports.enum(["when-you-send", "none"]).optional(),
   openOn: optional2,
   teams: optional2,
   debug: strings.optional(),
@@ -54875,6 +54878,95 @@ function sinceOf(v) {
 init_brand();
 init_catalog();
 init_policy();
+
+// src/core/card-state.ts
+function retryHelps(f) {
+  return (["other", "tool", "stopped"].includes(f.kind) || f.systemChanged) && f.repeats < 2;
+}
+function currentFailure(candidates2, draftAt) {
+  const f = candidates2.filter((c) => !!c).sort((a, b) => Date.parse(b.at) - Date.parse(a.at))[0];
+  return f && draftAt && Date.parse(draftAt) > Date.parse(f.at) ? void 0 : f;
+}
+var failLine = (f) => `${f.kind === "content" ? "Couldn't finish" : "Couldn't draft this"}: ${f.why.replace(/[.\s]+$/, "")}.${f.repeats > 0 ? ` It failed the same way ${f.repeats + 1} times.` : ""}`;
+var asked = (f) => !!f.question || f.yourStep?.kind === "decision";
+var RULES4 = [
+  { mode: "agent-wait", when: (f) => f.hold?.kind === "agent", build: (f) => ({ primary: "write-own", secondary: [], more: ["dismiss"], editor: "none", warn: f.hold.text }) },
+  { mode: "own-reply", when: (f) => !!f.ownReply, build: () => ({ secondary: [], more: ["reopen"], editor: "none" }) },
+  { mode: "failed", when: (f) => !!f.failure || !!f.promiseFailed && !f.draft, build: (f) => {
+    if (!f.failure) return { primary: "approve", secondary: ["later"], more: ["dismiss"], editor: "none", warn: `Couldn't check what your reply promised: ${f.promiseFailed}.` };
+    const fl = f.failure, write = fl.review ? [] : ["write-own"], retry2 = retryHelps(fl);
+    if (!retry2 && fl.review) return { secondary: ["try-again", "later"], more: ["dismiss"], editor: "none", warn: failLine(fl) };
+    const [primary, ...rest2] = retry2 ? ["try-again", ...write] : [...write, "try-again"];
+    return { primary, secondary: [...rest2, "later"], more: ["dismiss"], editor: "none", warn: failLine(fl) };
+  } },
+  { mode: "review-again", when: (f) => !!f.question?.reviewAgain, build: (f) => ({ primary: "review-again", secondary: [...f.draft ? [f.changes ? "reply-only" : "approve"] : [], "later"], more: ["dismiss"], editor: "none" }) },
+  { mode: "declined", when: (f) => !!f.declined, build: (f) => ({ primary: f.declined.addMe && f.changes ? "approve" : void 0, secondary: ["later"], more: ["dismiss"], editor: "none" }) },
+  // Send stays: the engine checks the refused condition again on every Send, so it goes once that holds (A57, A61).
+  { mode: "not-sent", when: (f) => !!f.notSent && !!f.draft, build: (f) => ({ primary: "approve", secondary: ["later"], more: ["dismiss"], editor: "reply", warn: `Didn't send: ${f.notSent.why.replace(/[.\s]+$/, "")}.` }) },
+  { mode: "your-step", when: (f) => f.yourStep?.kind === "report", build: () => ({ primary: "report", secondary: ["later"], more: ["dismiss"], editor: "none" }) },
+  { mode: "choices", when: (f) => !!f.choices && !f.draft?.preview, build: () => ({ primary: "pick", secondary: ["later"], more: ["dismiss"], editor: "none" }) },
+  { mode: "answer", when: (f) => asked(f) && !f.draft, build: () => ({ primary: "answer", secondary: ["later"], more: ["dismiss"], editor: "answer" }) },
+  { mode: "answer-with-holding", when: (f) => asked(f) && !!f.draft?.holding, build: () => ({ primary: "answer", secondary: ["approve", "later"], more: ["dismiss"], editor: "answer" }) },
+  { mode: "reply-with-question", when: (f) => asked(f) && !!f.draft, build: (f) => ({ primary: "approve", secondary: ["later"], more: ["answer", "dismiss"], editor: "reply" }) },
+  { mode: "changes", when: (f) => f.changes > 0, build: (f) => ({ primary: "approve", secondary: [...f.draft ? ["reply-only"] : [], "later"], more: ["dismiss"], editor: f.draft ? "reply" : "none" }) },
+  { mode: "holding", when: (f) => !!f.draft?.holding, build: (f) => ({ primary: "approve", secondary: ["later"], more: ["answer", "dismiss"], editor: "reply" }) },
+  { mode: "reply", when: (f) => !!f.draft, build: (f) => ({ primary: "approve", secondary: ["later"], more: ["answer", "dismiss"], editor: "reply" }) },
+  { mode: "unknown", when: () => true, build: () => ({ primary: "write-own", secondary: ["later"], more: ["dismiss"], editor: "none" }) }
+];
+function cardState(f) {
+  const rule = RULES4.find((r) => r.when(f));
+  const s3 = rule.build(f);
+  const warn = s3.warn ?? (f.replyCountsOnRefused && s3.editor === "reply" ? "Your reply mentions something Delegate won't do. Change the reply first." : void 0);
+  return { mode: rule.mode, ...s3, ...warn ? { warn } : {}, block3: s3.editor === "reply" ? "when-you-send" : "none" };
+}
+var LEAK = /[0-9a-f]{8,}|job:|Error:|Not made for you/;
+function checkCard(f, s3) {
+  const out = [];
+  const all = [s3.primary, ...s3.secondary, ...s3.more].filter(Boolean);
+  if (new Set(all).size !== all.length) out.push("an action is offered twice");
+  if (f.draft && !["not-sent", "failed", "own-reply", "agent-wait", "review-again", "declined", "your-step", "choices"].includes(s3.mode) && !all.includes("approve") && !all.includes("send-edit")) out.push("a draft cannot be sent");
+  if (f.failure && f.draft && Date.parse(f.draft.at) > Date.parse(f.failure.at) && s3.mode === "failed") out.push("a failure older than the draft decided the card");
+  if (s3.mode === "unknown") out.push("no mode fits");
+  if (s3.warn && LEAK.test(s3.warn)) out.push("the warning leaks an id or an error");
+  if (s3.editor === "answer" && s3.primary !== "answer") out.push("an answer box without Answer");
+  return out;
+}
+
+// src/core/card-facts.ts
+var FIXED = [/It needs the repo https?:/i];
+var NOT_SENT = /^(?:Not sent: |Not sure it was sent[:.]?\s*|Could not start: )/;
+function cardFacts(i) {
+  const { wf, job, card: card2 } = i;
+  const draftAt = wf.revAt ?? wf.updatedAt;
+  const fixed = (why2) => FIXED.some((r) => r.test(why2));
+  const own3 = (f) => ({ ...f, repeats: i.repeats ?? 0, systemChanged: fixed(f.why) });
+  const waiting = wf.state === "needs_human";
+  const stopped = wf.state === "waiting_on_task" && (!job || job.state === "failed" || job.state === "done");
+  const failure2 = waiting || stopped ? currentFailure([
+    wf.runFailed && waiting ? own3({ kind: wf.runFailed.kind, at: wf.runFailed.at, why: wf.runFailed.why, tried: wf.runFailed.tried ?? [], job: wf.runFailed.job, review: !!wf.runFailed.job && wf.intent === "pr_review" }) : void 0,
+    job?.state === "failed" && (waiting || stopped) ? own3({ kind: "other", at: job.updatedAt, why: job.error ?? "the work stopped before it finished", tried: [], job: job.id }) : void 0,
+    stopped && job?.state !== "failed" ? own3({ kind: "stopped", at: wf.updatedAt, why: wf.status || "the work stopped before it finished", tried: [] }) : void 0,
+    // A run that fell short with nothing to send and no question left only its status (dispatch.ts "Not finished: ", A90).
+    waiting && !wf.runFailed && !card2.draft && card2.question === void 0 && /^Not finished: /.test(wf.status) ? own3({ kind: "content", at: wf.revAt ?? wf.updatedAt, why: wf.status.replace(/^Not finished: /, "").split(/(?<=[.!?])\s+/)[0], tried: [] }) : void 0
+  ], card2.draft ? draftAt : void 0) : void 0;
+  const notSent = waiting && !!card2.draft && NOT_SENT.test(wf.status) ? { why: wf.status.replace(NOT_SENT, "").replace(/\s*\((?:Error|error)\b[^)]*\)/g, "").trim() } : void 0;
+  return {
+    state: wf.state,
+    ...card2.draft ? { draft: { holding: !!card2.draft.holding, preview: !!card2.draft.preview, at: draftAt } } : {},
+    ...card2.question !== void 0 ? { question: { text: card2.question, reviewAgain: !!card2.reviewAgain } } : {},
+    ...card2.choices ? { choices: { multi: !!card2.choices.multi } } : {},
+    changes: i.changes,
+    ...i.replyCountsOnRefused ? { replyCountsOnRefused: true } : {},
+    ...failure2 ? { failure: failure2 } : {},
+    ...i.agentWait ? { hold: { kind: "agent", text: i.agentWait } } : {},
+    ...notSent ? { notSent } : {},
+    ...card2.ownReply ? { ownReply: { at: card2.ownReply.at } } : {},
+    ...waiting && wf.reviewDecline ? { declined: { pr: wf.reviewDecline.pr, addMe: i.changes > 0 } } : {},
+    ...card2.promise?.failed ? { promiseFailed: card2.promise.failed } : {}
+  };
+}
+
+// src/web/react-projection.ts
 init_autosend();
 init_intake();
 init_page_approval();
@@ -54887,8 +54979,8 @@ init_channels();
 // src/web/model/forms.ts
 var BY = [["", "No date"], ["today", "Today"], ["fri", "Friday"], ["week", "Next week"]];
 var peopleOf = (v) => {
-  const asked = v.needs.map((c) => c.who.name);
-  return v.people.slice().sort((a, b) => (asked.includes(a.name) ? 0 : 1) - (asked.includes(b.name) ? 0 : 1));
+  const asked2 = v.needs.map((c) => c.who.name);
+  return v.people.slice().sort((a, b) => (asked2.includes(a.name) ? 0 : 1) - (asked2.includes(b.name) ? 0 : 1));
 };
 var newReminder = (to) => ({ to, text: "Reminder: please send me an update.", every: "weekday", at: "16:00", someone: false });
 
@@ -54933,6 +55025,7 @@ function knownMessageCode(store2, link2) {
   const message = teamsMessage(link2);
   return message ? store2.workflows().find((item2) => item2.chat.id === message.chat && (item2.msgIds.includes(message.msg) || item2.lastMsgId === message.msg))?.code : void 0;
 }
+var brokenSeen = /* @__PURE__ */ new Set();
 var chatLevelKey = (chatId) => `chat:${hashOf(chatId)}`;
 var chatNormalActionId = (chatId) => `${chatLevelKey(chatId)}/chat-normal`;
 function reactProjection(store2, query = "", visit2) {
@@ -55059,13 +55152,10 @@ ${code} stays ${byCode.get(code)?.state === "done" ? "done" : "open"}. Nothing i
     }, form ? "watch" : void 0, prefix, rev);
   }
   const stoppedCodes = new Set(next2.move.filter((row) => row.kind === "stopped").map((row) => row.act));
-  const staleFailure = (workflow, failedAt) => !!workflow.draft && !!failedAt && Date.parse(workflow.revAt ?? "") > Date.parse(failedAt);
-  const ownerRules = store2.rules();
-  const recoveryCodes = /* @__PURE__ */ new Set([...stoppedCodes, ...workflows.filter((workflow) => workflow.state === "needs_human" && workflow.job && facts.jobs.get(workflow.job)?.state === "failed" && !staleFailure(workflow, facts.jobs.get(workflow.job)?.updatedAt)).map((workflow) => workflow.code)]);
   const editable = /* @__PURE__ */ new Set([...workflows.filter((workflow) => workflow.state === "needs_human").map((workflow) => workflow.code), ...stoppedCodes]);
+  const ownerRules = store2.rules();
   for (const wf of workflows) {
     const c = readyCards.get(wf.code) ?? card(store2, wf, knowledge2), id = c.code, rev = presentationRev(wf, cfg);
-    const recovery = recoveryCodes.has(id);
     const { who: who2, chat: chat2, draft: draft2, changes, notes: cardNotes, why: why2, work: work2, replyOnly, reviewAgain: reviewAgain2, ...rest2 } = c;
     const personId = person2(id, who2), chatId = `chat:${hashOf(wf.chat.id)}`;
     entities.chats[chatId] = { ...chat2, id: chatId };
@@ -55148,37 +55238,57 @@ ${code} stays ${byCode.get(code)?.state === "done" ? "done" : "open"}. Nothing i
       allowEmpty: !!draft2,
       exactSingle: !draft2 && changes.length === 1 ? changes[0].action : void 0
     } : void 0;
-    if (editable.has(id) && wf.runFailed && !draft2) {
-      actionIds.push(offer(id, rev, "try-again", "Try again", () => ({ code: id, verb: "answer", text: "try again" }), { staleness: "exact", expect }));
-      if (!(wf.runFailed.job && wf.intent === "pr_review")) actionIds.push(offer(id, rev, "write-own", "Write the reply yourself", (input2) => ({ code: id, verb: "send", text: requiredText(input2) }), { effect: "sends", staleness: "exact", expect, input: "text" }));
-      actionIds.push(offer(id, rev, "later", "Later", () => ({ code: id, verb: "later" })), offer(id, rev, "dismiss", "Skip", () => ({ code: id, verb: "skip" })));
-    } else if (editable.has(id)) {
-      if (reviewAgain2) actionIds.push(offer(id, rev, "review-again", "Review again", () => ({ code: id, verb: "answer", text: "review again" })));
-      else if ((draft2 && (!c.choices || draft2.preview) || changes.length && !c.question || c.promise?.failed) && !(wf.state === "needs_human" && wf.question && !(c.promise?.failed && !draft2))) {
-        const label2 = c.promise?.failed && !draft2 ? "Check again" : changes.length ? `Approve selected changes${draft2 ? " and reply" : ""}` : draft2?.holding ? "Send holding reply" : "Send";
-        actionIds.push(offer(id, rev, "approve", label2, approval, { effect: c.promise?.failed && !draft2 ? "local" : draft2 && !changes.length ? "sends" : "changes-system", staleness: "exact", expect, input: changes.length ? "approval" : void 0, selection }));
-        if (pending.some((effect) => maybeOf(store2, effect))) actionIds.push(offer(id, rev, "approve-again", "I checked: make the changes once", (input2) => ({ ...approval(input2), again: true }), {
-          effect: "changes-system",
-          staleness: "exact",
-          expect,
-          input: "approval",
-          needsConfirm: true,
-          meaning: "Choose this only after checking the target system and confirming these changes were not made. This permits one new attempt.",
-          selection: selection && { ...selection, verb: "I checked: make", suffix: ` once${draft2 ? " and reply" : ""}`, exactSingle: void 0 }
-        }));
+    const job = wf.job ? facts.jobs.get(wf.job) : void 0;
+    const agentWait = facts.agentWait && (wf.state === "running" || wf.state === "waiting_on_task" && job?.state === "queued" || job?.state === "failed" && job.error === facts.agentWait.text) ? facts.agentWait.text : void 0;
+    const fx = cardFacts({ wf, job, card: { question: c.question, draft: draft2, choices: c.choices, ownReply: c.ownReply, promise: c.promise, reviewAgain: reviewAgain2 }, changes: changes.length, agentWait });
+    const cs = cardState(fx);
+    if (editable.has(id)) {
+      const broken = checkCard(fx, cs);
+      if (broken.length && !brokenSeen.has(`${id}@${rev}`)) {
+        brokenSeen.add(`${id}@${rev}`);
+        try {
+          store2.log({ event: "invariant-broken", code: id, mode: cs.mode, broken });
+        } catch {
+        }
       }
-      if (draft2) actionIds.push(offer(id, rev, "send-edit", changes.length ? "Preview your version with changes" : "Send your version", (input2) => {
-        if (input2?.excluded?.length) throw new IntentError(422, "Change the reply and leave out changes one at a time.");
-        return { code: id, verb: "send", text: requiredText(input2) };
-      }, { effect: changes.length ? "local" : "sends", staleness: "exact", expect, input: "text" }));
-      actionIds.push(offer(id, rev, "answer", "Draft reply", (input2) => ({ code: id, verb: "answer", text: requiredText(input2) }), { input: "text", recovery: recovery || void 0 }));
-      if (c.choices) actionIds.push(offer(id, rev, "pick", "Preview reply", (input2) => {
-        const picks = [...new Set(input2?.picks ?? [])];
-        if (!picks.length || picks.some((n) => n > c.choices.options.length) || !c.choices.multi && picks.length !== 1) throw new IntentError(422, "Pick an offered option.");
-        return { code: id, verb: "pick", nums: picks };
-      }, { input: "picks", staleness: "exact", expect }));
-      actionIds.push(offer(id, rev, "later", "Later", () => ({ code: id, verb: "later" })), offer(id, rev, "dismiss", recovery || c.promise ? "Skip" : "Dismiss", () => ({ code: id, verb: "skip" })));
-      if (replyOnly) actionIds.push(offer(id, rev, "reply-only", "Send reply only", () => ({ code: id, verb: "ok", except: changes.map((change2) => change2.n) }), { staleness: "exact", expect, effect: "sends" }));
+      const failed = cs.mode === "failed";
+      const make = {
+        approve: () => {
+          const label2 = c.promise?.failed && !draft2 ? "Check again" : changes.length ? `Approve selected changes${draft2 ? " and reply" : ""}` : draft2?.holding ? "Send holding reply" : "Send";
+          actionIds.push(offer(id, rev, "approve", label2, approval, { effect: c.promise?.failed && !draft2 ? "local" : draft2 && !changes.length ? "sends" : "changes-system", staleness: "exact", expect, input: changes.length ? "approval" : void 0, selection }));
+          if (pending.some((effect) => maybeOf(store2, effect))) actionIds.push(offer(id, rev, "approve-again", "I checked: make the changes once", (input2) => ({ ...approval(input2), again: true }), {
+            effect: "changes-system",
+            staleness: "exact",
+            expect,
+            input: "approval",
+            needsConfirm: true,
+            meaning: "Choose this only after checking the target system and confirming these changes were not made. This permits one new attempt.",
+            selection: selection && { ...selection, verb: "I checked: make", suffix: ` once${draft2 ? " and reply" : ""}`, exactSingle: void 0 }
+          }));
+        },
+        "send-edit": () => actionIds.push(offer(id, rev, "send-edit", changes.length ? "Preview your version with changes" : "Send your version", (input2) => {
+          if (input2?.excluded?.length) throw new IntentError(422, "Change the reply and leave out changes one at a time.");
+          return { code: id, verb: "send", text: requiredText(input2) };
+        }, { effect: changes.length ? "local" : "sends", staleness: "exact", expect, input: "text" })),
+        answer: () => actionIds.push(offer(id, rev, "answer", cs.primary === "answer" ? "Draft reply" : "Answer instead", (input2) => ({ code: id, verb: "answer", text: requiredText(input2) }), { input: "text", recovery: failed || void 0 })),
+        pick: () => {
+          if (c.choices) actionIds.push(offer(id, rev, "pick", "Preview reply", (input2) => {
+            const picks = [...new Set(input2?.picks ?? [])];
+            if (!picks.length || picks.some((n) => n > c.choices.options.length) || !c.choices.multi && picks.length !== 1) throw new IntentError(422, "Pick an offered option.");
+            return { code: id, verb: "pick", nums: picks };
+          }, { input: "picks", staleness: "exact", expect }));
+        },
+        later: () => actionIds.push(offer(id, rev, "later", "Later", () => ({ code: id, verb: "later" }))),
+        dismiss: () => actionIds.push(offer(id, rev, "dismiss", failed || c.promise ? "Skip" : "Dismiss", () => ({ code: id, verb: "skip" }))),
+        // A run that gave no result (queue-new #11): Try again re-runs it as it was; a job that ran out of routes is queued again (#17 b).
+        "try-again": () => actionIds.push(offer(id, rev, "try-again", "Try again", () => ({ code: id, verb: "answer", text: "try again" }), { staleness: "exact", expect })),
+        "write-own": () => actionIds.push(offer(id, rev, "write-own", "Write the reply yourself", (input2) => ({ code: id, verb: "send", text: requiredText(input2) }), { effect: "sends", staleness: "exact", expect, input: "text" })),
+        "review-again": () => actionIds.push(offer(id, rev, "review-again", "Review again", () => ({ code: id, verb: "answer", text: "review again" }))),
+        "reply-only": () => actionIds.push(offer(id, rev, "reply-only", "Send reply only", () => ({ code: id, verb: "ok", except: changes.map((change2) => change2.n) }), { staleness: "exact", expect, effect: "sends" }))
+      };
+      const kinds = new Set([cs.primary, ...cs.secondary, ...cs.more].filter((k) => !!k));
+      if (cs.editor === "reply" && draft2) kinds.add("send-edit");
+      for (const kind of kinds) make[kind]?.();
     } else if (wf.job && facts.jobs.get(wf.job)?.state === "queued" && facts.jobs.get(wf.job)?.retry) {
       actionIds.push(offer(id, rev, "dismiss", "Dismiss", () => ({ code: id, verb: "skip" }), { staleness: "exact", expect }));
     }
@@ -55198,9 +55308,6 @@ ${code} stays ${byCode.get(code)?.state === "done" ? "done" : "open"}. Nothing i
     if (todoIds.length) {
       actionIds.push(markTodos(id, wf.kept.filter((todo) => !todo.done)));
     }
-    const job = wf.job ? facts.jobs.get(wf.job) : void 0;
-    const agentWait = facts.agentWait && (wf.state === "running" || wf.state === "waiting_on_task" && job?.state === "queued" || job?.state === "failed" && job.error === facts.agentWait.text) ? facts.agentWait.text : void 0;
-    const stopped = wf.state === "waiting_on_task" && (!job || job.state === "failed" || job.state === "done");
     const replyChanged = wf.state === "needs_human" && wf.status === PAGE_REPLY_CHANGED;
     const notSent = !replyChanged && wf.state === "needs_human" && (!!draft2 && /^(?:Not sent: |Not sure it was sent)/.test(wf.status) || /^Could not start: /.test(wf.status));
     const waited = draft2 && wf.state === "needs_human" && !wf.sent ? whyWaited(wf, ownerRules, policyContext(store2, cfg, wf)).map(pageText) : [];
@@ -55218,18 +55325,24 @@ ${code} stays ${byCode.get(code)?.state === "done" ? "done" : "open"}. Nothing i
       actionIds,
       askAt: asksAt.get(id),
       status: pageText(c.status),
-      attention: replyChanged ? PAGE_REPLY_CHANGED : agentWait ?? (wf.runFailed && !draft2 ? void 0 : notSent ? pageText(wf.status) : recovery || stopped || c.draft?.holding ? pageText((recovery ? job?.error : void 0) ?? wf.status) || "The previous run could not finish. Use the available action, ask a question or review the visible holding reply." : !draft2 && job?.state === "done" && job.result && !job.result.reply && wf.status.endsWith(job.result.summary) ? pageText(job.result.summary) : void 0),
-      attentionKind: replyChanged ? "reply-changed" : agentWait ? "agent-setup" : wf.runFailed && !draft2 || recovery || stopped || c.draft?.holding ? "run-failed" : void 0,
-      // A job's failure also carries the routes it tried, the PR to review by hand, and whether some read tools are off (#17 b).
-      runFailed: wf.runFailed && !draft2 ? { at: wf.runFailed.at, why: pageText(wf.runFailed.why), ...wf.runFailed.tried?.length ? { tried: wf.runFailed.tried.map(pageText) } : {}, ...wf.runFailed.job && wf.intent === "pr_review" ? /* @__PURE__ */ ((u) => u ? { review: u } : {})(safeLink(prOf(store2, wf)?.url)) : {}, ...wf.runFailed.job && (cfg.agent.toolsTrimmed || cfg.agent.deny?.length) ? { toolsOff: true } : {} } : void 0,
+      // The card's single warning line comes from its state; a run that started nothing, and a job that ended with nothing to reply,
+      // still say so where no mode names it.
+      attention: replyChanged ? PAGE_REPLY_CHANGED : cs.mode === "failed" && fx.failure ? void 0 : cs.warn ? pageText(cs.warn) : notSent ? pageText(wf.status) : !draft2 && job?.state === "done" && job.result && !job.result.reply && wf.status.endsWith(job.result.summary) ? pageText(job.result.summary) : void 0,
+      attentionKind: replyChanged ? "reply-changed" : cs.mode === "agent-wait" ? "agent-setup" : cs.mode === "failed" || cs.mode === "not-sent" || notSent ? "run-failed" : void 0,
+      // The current failure, whatever recorded it, with the routes it tried, the PR to review by hand, and whether some read tools are off (#17 b).
+      runFailed: cs.mode === "failed" && fx.failure ? { at: fx.failure.at, why: pageText(fx.failure.why), ...fx.failure.tried.length ? { tried: fx.failure.tried.map(pageText) } : {}, ...fx.failure.review ? /* @__PURE__ */ ((u) => u ? { review: u } : {})(safeLink(prOf(store2, wf)?.url)) : {}, ...fx.failure.job && (cfg.agent.toolsTrimmed || cfg.agent.deny?.length) ? { toolsOff: true } : {} } : void 0,
+      mode: cs.mode,
+      editor: cs.editor,
+      block3: cs.block3,
       // The PR a review's question, facts and changes are about, named on the card (queue-new #10 c).
       prLabel: ((pr) => pr ? `PR ${pr}${wf.prAuthor ? ` \xB7 ${wf.prAuthor}` : ""}` : void 0)(Number(/^pr:.*?(\d+)$/i.exec(wf.job && facts.jobs.get(wf.job)?.key || "")?.[1] ?? 0) || (wf.intent === "pr_review" ? prTarget(store2, wf) : void 0)),
       question: c.question === void 0 ? void 0 : (failedJobDirections(wf) ? forPage(c.question) : pageText(c.question)) || void 0,
       choices: c.choices && { ...c.choices, prompt: forPage(c.choices.prompt), options: c.choices.options.map((option) => ({ ...option, id: pageOptionId(option) })) },
       sourceIds: sources(id, id, why2.sources),
       noteIds,
-      primaryActionId: recovery ? `${id}/answer` : ["try-again", "review-again", "approve-again", ...c.choices && !draft2?.preview ? ["pick"] : [], "approve", "answer", ...c.ownReply ? [] : ["reopen"]].map((kind) => `${id}/${kind}`).find((key) => actionIds.includes(key)),
-      why: { reason: why2.reason, confidence: why2.confidence, gaps: why2.gaps, searched: why2.searched, ...waited.length ? { waited: `Why it waited: ${waited.join("; ")}.` } : {} },
+      primaryActionId: (editable.has(id) ? [cs.primary ?? ""] : c.ownReply ? [] : ["reopen"]).map((kind) => `${id}/${kind}`).find((key) => actionIds.includes(key)),
+      // A holding reply's reason is part of Why, not a warning (rule 13).
+      why: { reason: why2.reason ?? (cs.mode === "holding" ? pageText(wf.status) || void 0 : void 0), confidence: why2.confidence, gaps: why2.gaps, searched: why2.searched, ...waited.length ? { waited: `Why it waited: ${waited.join("; ")}.` } : {} },
       teams: safeLink(c.teams)
     };
   }
@@ -56277,8 +56390,8 @@ async function tick(store2, deps = {}) {
   if (!cfg) throw new Error(`No config.json in ${store2.root}. Run "${CMD} init".`);
   const waiting = (store2.answers().length > 0 || store2.missed().length > 0) && !store2.schedule().backoff && !store2.health().source;
   const kicked = store2.kickedAt() > (store2.lease()?.at ?? "");
-  const asked = kicked || waiting;
-  if (!deps.force && !asked && !isDue(store2.schedule(), /* @__PURE__ */ new Date())) return { skipped: "not due", ...empty, ms: Date.now() - t0 };
+  const asked2 = kicked || waiting;
+  if (!deps.force && !asked2 && !isDue(store2.schedule(), /* @__PURE__ */ new Date())) return { skipped: "not due", ...empty, ms: Date.now() - t0 };
   const pinned2 = store2.config().runner;
   if (pinned2 && pinned2 !== store2.machine) {
     const l = store2.lease();

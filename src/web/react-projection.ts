@@ -12,6 +12,8 @@ import { NAME } from '../brand.ts'
 import { toolServerKey, toolsView } from './settings.ts'
 import { ignoreServer, retryServer } from '../runner/catalog.ts'
 import { whyWaited } from '../core/policy.ts'
+import { cardFacts } from '../core/card-facts.ts'
+import { cardState, checkCard, type ActionKind } from '../core/card-state.ts'
 import { policyContext } from '../runner/autosend.ts'
 import { isPersona } from '../core/intake.ts'
 import { PAGE_REPLY_CHANGED, automationApprovalRev, pageChangeId, pageDigest, pageOptionId, proposalApprovalRev, workflowApprovalRev } from '../core/page-approval.ts'
@@ -62,6 +64,8 @@ function knownMessageCode(store: Store, link: string): string | undefined {
 	return message ? store.workflows().find(item => item.chat.id === message.chat && (item.msgIds.includes(message.msg) || item.lastMsgId === message.msg))?.code : undefined
 }
 
+// A card whose state breaks an invariant is logged once per revision in this process (engineer-card-state-devspec.md §4).
+const brokenSeen = new Set<string>()
 export const chatLevelKey = (chatId: string) => `chat:${hashOf(chatId)}`
 export const chatNormalActionId = (chatId: string) => `${chatLevelKey(chatId)}/chat-normal`
 
@@ -174,14 +178,10 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 		}, form ? 'watch' : undefined, prefix, rev)
 	}
 	const stoppedCodes = new Set(next.move.filter(row => row.kind === 'stopped').map(row => row.act))
-	// A failed job puts its item in recovery (answer first) only until a newer run drafted a reply: then the draft is sent as on any card (#33).
-	const staleFailure = (workflow: Workflow, failedAt?: string) => !!workflow.draft && !!failedAt && Date.parse(workflow.revAt ?? '') > Date.parse(failedAt)
-	const ownerRules = store.rules()
-	const recoveryCodes = new Set([...stoppedCodes, ...workflows.filter(workflow => workflow.state === 'needs_human' && workflow.job && facts.jobs.get(workflow.job)?.state === 'failed' && !staleFailure(workflow, facts.jobs.get(workflow.job)?.updatedAt)).map(workflow => workflow.code)])
 	const editable = new Set([...workflows.filter(workflow => workflow.state === 'needs_human').map(workflow => workflow.code), ...stoppedCodes])
+	const ownerRules = store.rules()
 	for (const wf of workflows) {
 		const c = readyCards.get(wf.code) ?? card(store, wf, knowledge), id = c.code, rev = presentationRev(wf, cfg)
-		const recovery = recoveryCodes.has(id)
 		const { who, chat, draft, changes, notes: cardNotes, why, work, replyOnly, reviewAgain, ...rest } = c
 		const personId = person(id, who), chatId = `chat:${hashOf(wf.chat.id)}`
 		entities.chats[chatId] = { ...chat, id: chatId }
@@ -245,39 +245,49 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 			suffix: draft ? ' and reply' : '', empty: draft ? 'Send reply only' : 'Nothing selected', allowEmpty: !!draft,
 			exactSingle: !draft && changes.length === 1 ? changes[0].action : undefined,
 		} : undefined
-		if (editable.has(id) && wf.runFailed && !draft) {
-			// A run that gave no result (queue-new #11): Try again re-runs it as it was; the owner can write the reply instead. No question.
-			actionIds.push(offer(id, rev, 'try-again', 'Try again', () => ({ code: id, verb: 'answer', text: 'try again' }), { staleness: 'exact', expect }))
-			// A review that ran out of routes is reviewed by the owner on the PR itself (the card's link), not answered by a reply (#17 b).
-			if (!(wf.runFailed.job && wf.intent === 'pr_review')) actionIds.push(offer(id, rev, 'write-own', 'Write the reply yourself', input => ({ code: id, verb: 'send', text: requiredText(input) }), { effect: 'sends', staleness: 'exact', expect, input: 'text' }))
-			actionIds.push(offer(id, rev, 'later', 'Later', () => ({ code: id, verb: 'later' })), offer(id, rev, 'dismiss', 'Skip', () => ({ code: id, verb: 'skip' })))
-		}
-		else if (editable.has(id)) {
-			if (reviewAgain) actionIds.push(offer(id, rev, 'review-again', 'Review again', () => ({ code: id, verb: 'answer', text: 'review again' })))
-			else if ((draft && (!c.choices || draft.preview) || changes.length && !c.question || c.promise?.failed) &&
-				!(wf.state === 'needs_human' && wf.question && !(c.promise?.failed && !draft))) {
-				const label = c.promise?.failed && !draft ? 'Check again' : changes.length ? `Approve selected changes${draft ? ' and reply' : ''}` : draft?.holding ? 'Send holding reply' : 'Send'
-				actionIds.push(offer(id, rev, 'approve', label, approval, { effect: c.promise?.failed && !draft ? 'local' : draft && !changes.length ? 'sends' : 'changes-system', staleness: 'exact', expect, input: changes.length ? 'approval' : undefined, selection }))
-				if (pending.some(effect => maybeOf(store, effect))) actionIds.push(offer(id, rev, 'approve-again', 'I checked: make the changes once', input => ({ ...approval(input), again: true }), {
-					effect: 'changes-system', staleness: 'exact', expect, input: 'approval', needsConfirm: true,
-					meaning: 'Choose this only after checking the target system and confirming these changes were not made. This permits one new attempt.',
-					selection: selection && { ...selection, verb: 'I checked: make', suffix: ` once${draft ? ' and reply' : ''}`, exactSingle: undefined },
-				}))
+		// One card state decides what the owner can do (engineer-card-state-devspec.md §2, #34 step 3): the projection offers the
+		// actions it names, and only those (plus Ask, Continue, Reopen and the work tools below).
+		const job = wf.job ? facts.jobs.get(wf.job) : undefined
+		const agentWait = facts.agentWait && (wf.state === 'running' || wf.state === 'waiting_on_task' && job?.state === 'queued' || job?.state === 'failed' && job.error === facts.agentWait.text) ? facts.agentWait.text : undefined
+		const fx = cardFacts({ wf, job, card: { question: c.question, draft, choices: c.choices, ownReply: c.ownReply, promise: c.promise, reviewAgain }, changes: changes.length, agentWait })
+		const cs = cardState(fx)
+		if (editable.has(id)) {
+			const broken = checkCard(fx, cs)
+			if (broken.length && !brokenSeen.has(`${id}@${rev}`)) { brokenSeen.add(`${id}@${rev}`); try { store.log({ event: 'invariant-broken', code: id, mode: cs.mode, broken }) } catch { /* best effort */ } }
+			const failed = cs.mode === 'failed'
+			const make: Partial<Record<ActionKind, () => void>> = {
+				approve: () => {
+					const label = c.promise?.failed && !draft ? 'Check again' : changes.length ? `Approve selected changes${draft ? ' and reply' : ''}` : draft?.holding ? 'Send holding reply' : 'Send'
+					actionIds.push(offer(id, rev, 'approve', label, approval, { effect: c.promise?.failed && !draft ? 'local' : draft && !changes.length ? 'sends' : 'changes-system', staleness: 'exact', expect, input: changes.length ? 'approval' : undefined, selection }))
+					if (pending.some(effect => maybeOf(store, effect))) actionIds.push(offer(id, rev, 'approve-again', 'I checked: make the changes once', input => ({ ...approval(input), again: true }), {
+						effect: 'changes-system', staleness: 'exact', expect, input: 'approval', needsConfirm: true,
+						meaning: 'Choose this only after checking the target system and confirming these changes were not made. This permits one new attempt.',
+						selection: selection && { ...selection, verb: 'I checked: make', suffix: ` once${draft ? ' and reply' : ''}`, exactSingle: undefined },
+					}))
+				},
+				'send-edit': () => actionIds.push(offer(id, rev, 'send-edit', changes.length ? 'Preview your version with changes' : 'Send your version', input => {
+					if (input?.excluded?.length) throw new IntentError(422, 'Change the reply and leave out changes one at a time.')
+					return { code: id, verb: 'send', text: requiredText(input) }
+				}, { effect: changes.length ? 'local' : 'sends', staleness: 'exact', expect, input: 'text' })),
+				answer: () => actionIds.push(offer(id, rev, 'answer', cs.primary === 'answer' ? 'Draft reply' : 'Answer instead', input => ({ code: id, verb: 'answer', text: requiredText(input) }), { input: 'text', recovery: failed || undefined })),
+				pick: () => { if (c.choices) actionIds.push(offer(id, rev, 'pick', 'Preview reply', input => {
+					const picks = [...new Set(input?.picks ?? [])]
+					if (!picks.length || picks.some(n => n > c.choices!.options.length) || !c.choices!.multi && picks.length !== 1) throw new IntentError(422, 'Pick an offered option.')
+					return { code: id, verb: 'pick', nums: picks }
+				}, { input: 'picks', staleness: 'exact', expect })) },
+				later: () => actionIds.push(offer(id, rev, 'later', 'Later', () => ({ code: id, verb: 'later' }))),
+				dismiss: () => actionIds.push(offer(id, rev, 'dismiss', failed || c.promise ? 'Skip' : 'Dismiss', () => ({ code: id, verb: 'skip' }))),
+				// A run that gave no result (queue-new #11): Try again re-runs it as it was; a job that ran out of routes is queued again (#17 b).
+				'try-again': () => actionIds.push(offer(id, rev, 'try-again', 'Try again', () => ({ code: id, verb: 'answer', text: 'try again' }), { staleness: 'exact', expect })),
+				'write-own': () => actionIds.push(offer(id, rev, 'write-own', 'Write the reply yourself', input => ({ code: id, verb: 'send', text: requiredText(input) }), { effect: 'sends', staleness: 'exact', expect, input: 'text' })),
+				'review-again': () => actionIds.push(offer(id, rev, 'review-again', 'Review again', () => ({ code: id, verb: 'answer', text: 'review again' }))),
+				'reply-only': () => actionIds.push(offer(id, rev, 'reply-only', 'Send reply only', () => ({ code: id, verb: 'ok', except: changes.map(change => change.n) }), { staleness: 'exact', expect, effect: 'sends' })),
 			}
-			if (draft) actionIds.push(offer(id, rev, 'send-edit', changes.length ? 'Preview your version with changes' : 'Send your version', input => {
-				if (input?.excluded?.length) throw new IntentError(422, 'Change the reply and leave out changes one at a time.')
-				return { code: id, verb: 'send', text: requiredText(input) }
-			}, { effect: changes.length ? 'local' : 'sends', staleness: 'exact', expect, input: 'text' }))
-			actionIds.push(offer(id, rev, 'answer', 'Draft reply', input => ({ code: id, verb: 'answer', text: requiredText(input) }), { input: 'text', recovery: recovery || undefined }))
-			if (c.choices) actionIds.push(offer(id, rev, 'pick', 'Preview reply', input => {
-				const picks = [...new Set(input?.picks ?? [])]
-				if (!picks.length || picks.some(n => n > c.choices!.options.length) || !c.choices!.multi && picks.length !== 1) throw new IntentError(422, 'Pick an offered option.')
-				return { code: id, verb: 'pick', nums: picks }
-			}, { input: 'picks', staleness: 'exact', expect }))
-			actionIds.push(offer(id, rev, 'later', 'Later', () => ({ code: id, verb: 'later' })), offer(id, rev, 'dismiss', recovery || c.promise ? 'Skip' : 'Dismiss', () => ({ code: id, verb: 'skip' })))
-			if (replyOnly) actionIds.push(offer(id, rev, 'reply-only', 'Send reply only', () => ({ code: id, verb: 'ok', except: changes.map(change => change.n) }), { staleness: 'exact', expect, effect: 'sends' }))
-		}
-		else if (wf.job && facts.jobs.get(wf.job)?.state === 'queued' && facts.jobs.get(wf.job)?.retry) {
+			const kinds = new Set([cs.primary, ...cs.secondary, ...cs.more].filter((k): k is ActionKind => !!k))
+			// The one reply box sends the owner's own version when it is changed.
+			if (cs.editor === 'reply' && draft) kinds.add('send-edit')
+			for (const kind of kinds) make[kind]?.()
+		}		else if (wf.job && facts.jobs.get(wf.job)?.state === 'queued' && facts.jobs.get(wf.job)?.retry) {
 			actionIds.push(offer(id, rev, 'dismiss', 'Dismiss', () => ({ code: id, verb: 'skip' }), { staleness: 'exact', expect }))
 		}
 		actionIds.push(offer(id, rev, 'ask', `Ask ${NAME}`, input => ({ code: id, verb: 'ask', text: requiredText(input) }), { input: 'text' }))
@@ -296,9 +306,6 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 		if (todoIds.length) {
 			actionIds.push(markTodos(id, wf.kept!.filter(todo => !todo.done)))
 		}
-		const job = wf.job ? facts.jobs.get(wf.job) : undefined
-		const agentWait = facts.agentWait && (wf.state === 'running' || wf.state === 'waiting_on_task' && job?.state === 'queued' || job?.state === 'failed' && job.error === facts.agentWait.text) ? facts.agentWait.text : undefined
-		const stopped = wf.state === 'waiting_on_task' && (!job || job.state === 'failed' || job.state === 'done')
 		const replyChanged = wf.state === 'needs_human' && wf.status === PAGE_REPLY_CHANGED
 		// A send the engine refused (owner words claiming an approval the PR does not show, an unverifiable PR) says why on the card (bug 10-23 E35).
 		const notSent = !replyChanged && wf.state === 'needs_human' && (!!draft && /^(?:Not sent: |Not sure it was sent)/.test(wf.status) || /^Could not start: /.test(wf.status))
@@ -308,17 +315,22 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 			...rest, rev, id, personId, chatId, draftId, changeIds, effectIds, todoIds, workId, actionIds,
 			askAt: asksAt.get(id),
 			status: pageText(c.status),
-			attention: replyChanged ? PAGE_REPLY_CHANGED : agentWait ?? (wf.runFailed && !draft ? undefined : notSent ? pageText(wf.status) : recovery || stopped || c.draft?.holding ? pageText((recovery ? job?.error : undefined) ?? wf.status) || 'The previous run could not finish. Use the available action, ask a question or review the visible holding reply.' : !draft && job?.state === 'done' && job.result && !job.result.reply && wf.status.endsWith(job.result.summary) ? pageText(job.result.summary) : undefined),
-			attentionKind: replyChanged ? 'reply-changed' : agentWait ? 'agent-setup' : wf.runFailed && !draft || recovery || stopped || c.draft?.holding ? 'run-failed' : undefined,
-			// A job's failure also carries the routes it tried, the PR to review by hand, and whether some read tools are off (#17 b).
-			runFailed: wf.runFailed && !draft ? { at: wf.runFailed.at, why: pageText(wf.runFailed.why), ...(wf.runFailed.tried?.length ? { tried: wf.runFailed.tried.map(pageText) } : {}), ...(wf.runFailed.job && wf.intent === 'pr_review' ? (u => (u ? { review: u } : {}))(safeLink(prOf(store, wf)?.url)) : {}), ...(wf.runFailed.job && (cfg.agent.toolsTrimmed || cfg.agent.deny?.length) ? { toolsOff: true } : {}) } : undefined,
+			// The card's single warning line comes from its state; a run that started nothing, and a job that ended with nothing to reply,
+			// still say so where no mode names it.
+			attention: replyChanged ? PAGE_REPLY_CHANGED : cs.mode === 'failed' && fx.failure ? undefined : cs.warn ? pageText(cs.warn)
+				: notSent ? pageText(wf.status) : !draft && job?.state === 'done' && job.result && !job.result.reply && wf.status.endsWith(job.result.summary) ? pageText(job.result.summary) : undefined,
+			attentionKind: replyChanged ? 'reply-changed' : cs.mode === 'agent-wait' ? 'agent-setup' : cs.mode === 'failed' || cs.mode === 'not-sent' || notSent ? 'run-failed' : undefined,
+			// The current failure, whatever recorded it, with the routes it tried, the PR to review by hand, and whether some read tools are off (#17 b).
+			runFailed: cs.mode === 'failed' && fx.failure ? { at: fx.failure.at, why: pageText(fx.failure.why), ...(fx.failure.tried.length ? { tried: fx.failure.tried.map(pageText) } : {}), ...(fx.failure.review ? (u => (u ? { review: u } : {}))(safeLink(prOf(store, wf)?.url)) : {}), ...(fx.failure.job && (cfg.agent.toolsTrimmed || cfg.agent.deny?.length) ? { toolsOff: true } : {}) } : undefined,
+			mode: cs.mode, editor: cs.editor, block3: cs.block3,
 			// The PR a review's question, facts and changes are about, named on the card (queue-new #10 c).
 			prLabel: (pr => (pr ? `PR ${pr}${wf.prAuthor ? ` · ${wf.prAuthor}` : ''}` : undefined))(Number(/^pr:.*?(\d+)$/i.exec((wf.job && facts.jobs.get(wf.job)?.key) || '')?.[1] ?? 0) || (wf.intent === 'pr_review' ? prTarget(store, wf) : undefined)),
 			question: c.question === undefined ? undefined : (failedJobDirections(wf) ? forPage(c.question) : pageText(c.question)) || undefined,
 			choices: c.choices && { ...c.choices, prompt: forPage(c.choices.prompt), options: c.choices.options.map(option => ({ ...option, id: pageOptionId(option) })) },
 			sourceIds: sources(id, id, why.sources), noteIds,
-			primaryActionId: recovery ? `${id}/answer` : ['try-again', 'review-again', 'approve-again', ...(c.choices && !draft?.preview ? ['pick'] : []), 'approve', 'answer', ...(c.ownReply ? [] : ['reopen'])].map(kind => `${id}/${kind}`).find(key => actionIds.includes(key)),
-			why: { reason: why.reason, confidence: why.confidence, gaps: why.gaps, searched: why.searched, ...(waited.length ? { waited: `Why it waited: ${waited.join('; ')}.` } : {}) }, teams: safeLink(c.teams),
+			primaryActionId: (editable.has(id) ? [cs.primary ?? ''] : c.ownReply ? [] : ['reopen']).map(kind => `${id}/${kind}`).find(key => actionIds.includes(key)),
+			// A holding reply's reason is part of Why, not a warning (rule 13).
+			why: { reason: why.reason ?? (cs.mode === 'holding' ? pageText(wf.status) || undefined : undefined), confidence: why.confidence, gaps: why.gaps, searched: why.searched, ...(waited.length ? { waited: `Why it waited: ${waited.join('; ')}.` } : {}) }, teams: safeLink(c.teams),
 		}
 	}
 	// Spec S3: the sections say whose move it is, Delegate's queued rows say Delegate does them, and a group message is "Posted to everyone".

@@ -77,7 +77,8 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 	const report = !readOnly && work?.reportActionId ? entities.actions[work.reportActionId] : undefined
 	// Your step (S2): its form is the card's primary; the row's free-text "Tell Delegate" is gone (redirecting is in Details › Ask).
 	const answerAction = actions.find(action => action.kind === 'answer')
-	const primary = report ?? (item.question && answerAction && !work?.yours && !ui.editing ? answerAction : declared)
+	// The projection names the primary from the card state; the card never picks one (#34).
+	const primary = report ?? declared
 	const fold = (key: string, open: boolean) => { if (ui.folds?.[key] !== open) edit({ folds: { ...ui.folds, [key]: open } }) }
 	const editable = !!draft && actions.some(action => action.kind === 'send-edit')
 	const replyText = ui.editText ?? draft?.sendText ?? draft?.text ?? ''
@@ -150,7 +151,7 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 	// A decision the owner must make on his work (S9): its own block and box; the answer path carries it. A test step has the S2 form.
 	const decision = work?.yours && !report && answerAction ? work.yours.what : undefined
 	const question = !item.choices && !report && !decision && item.question
-	const answerBox = !report && !decision && (!!answerAction && (!!item.question || !draft && !item.choices || ui.other) || primary?.input === 'text' && primary.kind !== 'send-edit')
+	const answerBox = !report && !decision && (!!answerAction && item.editor !== 'reply' && (!!item.question || !draft && !item.choices || ui.other) || primary?.input === 'text' && primary.kind !== 'send-edit')
 	// A PR review (S9): Delegate's review in its own block; the comments and vote go to the PR, the reply goes to the chat.
 	const changes = item.changeIds.map(id => entities.changes[id])
 	const prOf = (change: Entities['changes'][string]) => Number(/\bPR (\d+)\b/.exec(`${change.target} ${change.summary}`)?.[1] ?? /pullRequestId: (\d+)/.exec(change.detail ?? '')?.[1] ?? 0) || undefined
