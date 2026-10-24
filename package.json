@@ -12,7 +12,9 @@
   },
   "scripts": {
     "test": "node --env-file-if-exists=.env.local --test --test-concurrency=4 test/*.test.ts && npm run test:react",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p test && tsc --noEmit -p src/web/react",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p src/web/react",
+    "typecheck:test": "tsc --noEmit -p test",
+    "golden": "node scripts/card-golden.ts && node scripts/report-golden.ts",
     "test:react": "vitest run",
     "trace": "node scripts/trace.ts",
     "build": "node scripts/build.ts",
