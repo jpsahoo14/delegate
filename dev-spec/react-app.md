@@ -1,5 +1,31 @@
 # React preview
 
+## Items blocked before #17 get the failed-run card (#26)
+
+A job that ran out of routes before #17 left its item with the retry's stop text as its status, and with no question, no draft and
+no `runFailed`. So `ItemCard` showed the bare "Your answer / Draft reply" card. #17(b) gives that shape only to new blocks, and #11's
+repair covered only setup failures. A76 and three others were left like this on the owner's root.
+
+**The repair** (`repairBlocked` in `dispatch.ts`, once per root via `probeMark.blockedRepairAt`, beside #11's). It picks open
+`needs_human` items with no question, draft or `runFailed`, whose job is done and whose status is a `retry.ts` stop text:
+"Tried N times; ", "Blocked: ", "Needs the asker: " or "Still not ready after N hours; ".
+- Each gets `runFailed: { kind: 'content', why, tried, job }`, read from that text. `why` is its first sentence; `tried` is the list
+  after ". Tried: ". The time is the job's `retry-stopped` log line.
+- The card is then #17(b)'s: "Delegate couldn't draft this at <time>: <why>", "What it tried", **Try again** (it queues the job with
+  a fresh session and, now, every read tool), Write the reply yourself, Later and Skip.
+- It logs `repair-blocked` with the codes once. Nothing runs by itself: a content failure waits for the owner's Try again.
+
+**Proof** (fictional root, stub model (quota)). Item A1 was made into A76's shape: a doc review with "Tried 3 times; Available
+readers return only the v7 prefix ending within Section 5.2 of the Acme spec. … Tried: <3 routes>" and a done job. A2 had the same
+status, but with a question.
+- **Before the check:** A1 had the bare card, with two text boxes and "Draft reply".
+- **After one check:** `repair-blocked ["A1"]`. A1 showed "Delegate couldn't draft this at 11:50 AM: …", "What it tried (3)" with
+  the routes, and Try again as the primary button, with no answer box. A2 was unchanged.
+- **Edge:** New and Classic at 1280 light and 400 dark.
+- **Try again in New:** one `run-retried`; the job was queued with a new session and then started once; A1 went to
+  `waiting_on_task`.
+- **Not repeated:** the next check logged nothing, and running the repair again by hand found nothing.
+
 ## A tool server that can't start: one Settings row, not a banner (#24)
 
 0.2.26 put a top banner on the owner's page for an optional server in his own AI CLI tool settings, one whose program isn't

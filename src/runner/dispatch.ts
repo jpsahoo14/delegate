@@ -119,6 +119,28 @@ export function repairRunFailures(store: Store, days = 14): number {
 	return n
 }
 
+// One-time repair of items an older version left with a retry's stop text as their status and nothing to act on (queue-new #26): a
+// job that ran out of routes before #17 left no question, no draft and no failed run, so the card fell to a bare answer box. They get
+// the shape #17(b) gives new ones: one plain line, the routes tried in Details, and Try again, which queues the job again (now with
+// every read tool). Nothing runs by itself: a content failure waits for the owner.
+const STOP = /^(?:Tried \d+ times; |Blocked: |Needs the asker: |Still not ready after \d+ hours; )/
+export function repairBlocked(store: Store, days = 30): string[] {
+	const old = store.workflows().filter(w => w.state === 'needs_human' && !w.question && !w.draft && !w.runFailed && STOP.test(w.status ?? '') && w.job && store.job(w.job)?.state === 'done')
+	if (!old.length) return []
+	const stopped = new Map<string, string>()
+	for (const e of store.logs(days)) if (e.event === 'retry-stopped' && typeof e.job === 'string') stopped.set(e.job, String(e.at ?? ''))
+	for (const w of old) {
+		// "<why>. Tried: <route>; <route>", as planRetry wrote it; the line shown is the why's first sentence.
+		const rest = w.status.replace(STOP, ''), cut = rest.lastIndexOf('. Tried: ')
+		const why = (cut >= 0 ? rest.slice(0, cut) : rest).split(/(?<=[.!?])\s+/)[0].replace(/[.\s]+$/, '')
+		const tried = cut >= 0 ? rest.slice(cut + '. Tried: '.length).replace(/[.\s]+$/, '').split('; ').map(t => t.trim()).filter(Boolean) : []
+		Object.assign(w, { runFailed: { at: stopped.get(w.job!) || w.updatedAt, kind: 'content' as const, why, ...(tried.length ? { tried } : {}), job: w.job! }, status: `Couldn't finish: ${why}` })
+		store.save(w)
+	}
+	store.log({ event: 'repair-blocked', codes: old.map(w => w.code) })
+	return old.map(w => w.code)
+}
+
 // A person's message to the owner: anything in a 1:1, or in a group the message right after his own (within a day) (queue-new #18).
 const BOT = /\b(?:bot|app|notifications?|alerts?|no-?reply|azure devops|github|jira|pipelines?)\b/i
 export function answersOwner(store: Store, wf: Workflow): boolean {

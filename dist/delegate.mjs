@@ -42752,6 +42752,21 @@ function repairRunFailures(store2, days2 = 14) {
   }
   return n;
 }
+function repairBlocked(store2, days2 = 30) {
+  const old = store2.workflows().filter((w) => w.state === "needs_human" && !w.question && !w.draft && !w.runFailed && STOP2.test(w.status ?? "") && w.job && store2.job(w.job)?.state === "done");
+  if (!old.length) return [];
+  const stopped = /* @__PURE__ */ new Map();
+  for (const e of store2.logs(days2)) if (e.event === "retry-stopped" && typeof e.job === "string") stopped.set(e.job, String(e.at ?? ""));
+  for (const w of old) {
+    const rest2 = w.status.replace(STOP2, ""), cut = rest2.lastIndexOf(". Tried: ");
+    const why2 = (cut >= 0 ? rest2.slice(0, cut) : rest2).split(/(?<=[.!?])\s+/)[0].replace(/[.\s]+$/, "");
+    const tried = cut >= 0 ? rest2.slice(cut + ". Tried: ".length).replace(/[.\s]+$/, "").split("; ").map((t2) => t2.trim()).filter(Boolean) : [];
+    Object.assign(w, { runFailed: { at: stopped.get(w.job) || w.updatedAt, kind: "content", why: why2, ...tried.length ? { tried } : {}, job: w.job }, status: `Couldn't finish: ${why2}` });
+    store2.save(w);
+  }
+  store2.log({ event: "repair-blocked", codes: old.map((w) => w.code) });
+  return old.map((w) => w.code);
+}
 function answersOwner(store2, wf) {
   if (!wf.asker?.name || BOT.test(wf.asker.name) || !wf.lastAsk?.trim()) return false;
   if (!wf.chat.group) return true;
@@ -43143,7 +43158,7 @@ function greetBack(wf, text3) {
   const body = OPENERS.test(text3) ? text3[0].toLowerCase() + text3.slice(1) : text3;
   return `Hi ${first3}, ${body}`;
 }
-var AUTH, CATALOG_CHANGED, OLD_FALLBACK, BOT, failWhy, readDirs, WORKER_SERVER, WORKER_TOOLS, lessonFits, NO_QUESTION, GREETING2, OPENERS;
+var AUTH, CATALOG_CHANGED, OLD_FALLBACK, STOP2, BOT, failWhy, readDirs, WORKER_SERVER, WORKER_TOOLS, lessonFits, NO_QUESTION, GREETING2, OPENERS;
 var init_dispatch = __esm({
   "src/runner/dispatch.ts"() {
     "use strict";
@@ -43190,6 +43205,7 @@ var init_dispatch = __esm({
     AUTH = /bad credentials|not logged in|please run \/login|authenticat|unauthori[sz]ed|sign[ -]?in/i;
     CATALOG_CHANGED = /MCP tool catalog changed/i;
     OLD_FALLBACK = /^(?:Check this item, then answer or skip it|Sign in, then answer or skip this item)$/;
+    STOP2 = /^(?:Tried \d+ times; |Blocked: |Needs the asker: |Still not ready after \d+ hours; )/;
     BOT = /\b(?:bot|app|notifications?|alerts?|no-?reply|azure devops|github|jira|pipelines?)\b/i;
     failWhy = (res) => {
       const first3 = (res.error ?? "").split(/\r?\n/).map((l) => l.trim()).find(Boolean)?.replace(/^Error: /, "");
@@ -48689,7 +48705,7 @@ function newId2(text3) {
 function openKnowledge(root, machine2, team) {
   return team ? new LayeredKnowledge(new FilesKnowledge(root, machine2), new FilesKnowledge(team, machine2)) : new FilesKnowledge(root, machine2);
 }
-var StaleCard, newestSrc, byRank, STOP2, words2, FilesKnowledge, LayeredKnowledge;
+var StaleCard, newestSrc, byRank, STOP3, words2, FilesKnowledge, LayeredKnowledge;
 var init_knowledge = __esm({
   "src/knowledge/index.ts"() {
     "use strict";
@@ -48700,8 +48716,8 @@ var init_knowledge = __esm({
     };
     newestSrc = (h) => h.src.map((s3) => s3.date).sort().at(-1) ?? "";
     byRank = (a, b) => b.score - a.score || Number(a.expired) - Number(b.expired) || newestSrc(b).localeCompare(newestSrc(a));
-    STOP2 = new Set("a an and are as at be by for from has have how in is it its of on or that the this to was what when where which who why will with".split(" "));
-    words2 = (s3) => s3.normalize("NFKC").toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w.length > 1 && !STOP2.has(w));
+    STOP3 = new Set("a an and are as at be by for from has have how in is it its of on or that the this to was what when where which who why will with".split(" "));
+    words2 = (s3) => s3.normalize("NFKC").toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w.length > 1 && !STOP3.has(w));
     FilesKnowledge = class {
       root;
       machine;
@@ -55926,6 +55942,10 @@ async function tick(store2, deps = {}) {
     if (!store2.probeMark().runFailRepairAt) {
       repairRunFailures(store2);
       store2.saveProbeMark({ ...store2.probeMark(), runFailRepairAt: (/* @__PURE__ */ new Date()).toISOString() });
+    }
+    if (!store2.probeMark().blockedRepairAt) {
+      repairBlocked(store2);
+      store2.saveProbeMark({ ...store2.probeMark(), blockedRepairAt: (/* @__PURE__ */ new Date()).toISOString() });
     }
     if (!store2.probeMark().partsRepairAt) {
       repairParts(store2);

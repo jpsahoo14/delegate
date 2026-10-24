@@ -1,7 +1,7 @@
 {
 	"name": "delegate",
 	"description": "Your AI stand-in for chat. Drafts replies from your own knowledge while you are away, and sends only what you approve.",
-	"version": "0.2.27",
+	"version": "0.2.28",
 	"license": "MIT",
 	"keywords": [
 		"teams",
