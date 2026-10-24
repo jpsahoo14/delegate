@@ -1,5 +1,30 @@
 # React preview
 
+## #27 step 1: page actions and receipts read each file once; writes update the read scope
+
+PE spec `engineer-store-read-model.md`, step 1.
+- **Scopes.** `/api/v1/actions` (each synchronous submit attempt) and `/api/v1/result` now run inside `readScope`. It is a
+  writing scope, `{ writes: true }`, so each read hands out its own copy (`structuredClone`): the action path changes what it reads
+  before it saves.
+- **Write-through instead of clearing.**
+  - `writeText`/`writeJson` keep the parsed value they wrote, add the file to its folder's cached listing, and drop that folder's
+    `records:` entry and any `scoped` key derived from a folder above the file.
+  - `appendLine` changes nothing: logs are read from disk.
+  - `moveTo` updates both folders.
+  - New `removeFile` does the same for deletes; the store's receipts and open-window deletes use it.
+- **Measured.** Fictional 235-item root inside the OneDrive folder, 20 clicks of Dismiss, Later and Send, page server in-process,
+  stub model (quota).
+
+  |  | Before | After |
+  |---|---|---|
+  | Reads per action | 58,094–58,329 | 486–487 |
+  | Action p95 | 37.9 s | 0.83 s |
+  | Read, log, read in one scope | 2 disk reads | 1 |
+  | Receipt reads | 238 | 237 (step 2) |
+
+  Unchanged: a stale click gives 409 and a refused receipt; a replay returns the same receipt; a reused id gives 422; Send sent once.
+  The card proofs (held Send, Send anyway, Redraft, send-edit, 2a) still pass.
+
 ## Card state: fixes from the PE review of 0b, the 2a edited reply and #40 document failures
 
 - **B1, his own version on a held card.**

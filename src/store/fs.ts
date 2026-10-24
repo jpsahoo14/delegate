@@ -16,18 +16,23 @@ export function assertTestSafe(path: string): void {
 	if (!inTemp(path)) throw new Error(`A test tried to write outside the temp folder: ${resolve(path)}`)
 }
 
-// Inside one page request each file is read and parsed once, however often the page asks for it (bug 10-23 perf: every
-// proposal was read once per proposal, 7 s a page on the owner's store). Any write clears it. Lists come back as copies,
-// so a caller that sorts one never changes what the next caller sees.
+// Inside one request each file is read and parsed once, however often it is asked for (bug 10-23 perf: every proposal was read
+// once per proposal, 7 s a page on the owner's store). A write updates what it wrote, its folder's listing and records, and drops
+// only what was derived from that folder; it never throws the rest away (#27 step 1: one log line used to clear it all).
+// Lists come back as copies, so a caller that sorts one never changes what the next caller sees.
 let scope: Map<string, unknown> | undefined
+// A scope that writes (a page action, a receipt) hands out its own copy of each value, so a caller that changes what it read
+// without saving it never changes what the next reader sees. A read-only scope (a page view) shares one parsed value.
+let fresh = false
 const MISSING = Symbol('missing')
-export function readScope<T>(fn: () => T): T {
+export function readScope<T>(fn: () => T, opts: { writes?: boolean } = {}): T {
 	if (scope) return fn()
-	scope = new Map()
-	try { return fn() } finally { scope = undefined }
+	scope = new Map(); fresh = !!opts.writes
+	try { return fn() } finally { scope = undefined; fresh = false }
 }
-const copy = <T>(v: T): T => (Array.isArray(v) ? [...v] as T : v)
-// One value per request for anything derived from files (knowledge cards), computed once however often it is asked for.
+const copy = <T>(v: T): T => (fresh && v && typeof v === 'object' ? structuredClone(v) : Array.isArray(v) ? [...v] as T : v)
+// One value per request for anything derived from files (knowledge cards), computed once however often it is asked for. Its key
+// ends with the folder it is derived from ("cards:<dir>"), so a write under that folder drops it.
 export function scoped<T>(key: string, make: () => T): T {
 	if (!scope) return make()
 	if (scope.has(key)) return copy(scope.get(key) as T)
@@ -74,7 +79,6 @@ export function writeJson(path: string, value: unknown, machine: string): void {
 
 export function writeText(path: string, text: string, machine: string): void {
 	assertTestSafe(path)
-	scope?.clear()
 	mkdirSync(dirname(path), { recursive: true })
 	const tmp = `${path}.tmp-${machine}-${process.pid}-${randomUUID()}`, t = performance.now()
 	const fd = openSync(tmp, 'wx')
@@ -85,6 +89,34 @@ export function writeText(path: string, text: string, machine: string): void {
 		rmSync(tmp, { force: true })
 		fsTime.write += since(t); fsTime.writes++
 	}
+	wrote(path, true)
+	// The next read in this scope parses what was written instead of reading it back from disk.
+	if (scope && path.endsWith('.json')) { try { scope.set(path, JSON.parse(text.replace(/^\uFEFF/, ''))) } catch { /* read back when asked */ } }
+}
+
+// What a write, a move or a delete changes in this scope: the file's own value, its folder's listing, the folder's records, and
+// anything derived from that folder or one above it. Other entries stay.
+function wrote(path: string, exists: boolean) {
+	if (!scope) return
+	const dir = dirname(path), name = basename(path)
+	scope.delete(path); scope.delete(`records:${dir}`)
+	const listed = scope.get(`dir:${dir}`) as string[] | undefined
+	if (listed && name.endsWith('.json') && !name.includes('.tmp-')) {
+		const rest = listed.filter(f => f !== path)
+		scope.set(`dir:${dir}`, exists ? [...rest, path].sort() : rest)
+	}
+	for (const key of [...scope.keys()]) {
+		if (typeof key !== 'string' || key.startsWith('dir:') || key.startsWith('records:')) continue
+		const from = /^[a-z]+:(.+)$/.exec(key)?.[1]
+		if (from && (path.startsWith(from + '\\') || path.startsWith(from + '/'))) scope.delete(key)
+	}
+}
+
+// Delete a store file, keeping this scope's view of its folder right.
+export function removeFile(path: string): void {
+	assertTestSafe(path)
+	rmSync(path, { force: true })
+	wrote(path, false)
 }
 
 // On Windows, OneDrive or antivirus can hold a file for a moment, so a rename may fail with EPERM or EBUSY.
@@ -102,9 +134,9 @@ function retry(fn: () => void, tries = 5) {
 
 export function appendLine(path: string, value: unknown): void {
 	assertTestSafe(path)
-	scope?.clear()
 	mkdirSync(dirname(path), { recursive: true })
 	appendFileSync(path, JSON.stringify(value) + '\n')
+	// Logs are read straight from disk, never through the scope, so an append changes nothing cached.
 }
 
 export function listJson(dir: string): string[] {
@@ -121,17 +153,19 @@ export function listJson(dir: string): string[] {
 // "<id>-<machine>.json" or "<id> 2.json" (restart audit R8). strays() lists those files so doctor can show them.
 export function records<T extends { id: string }>(dir: string): T[] {
 	const key = `records:${dir}`
-	if (scope?.has(key)) return [...scope.get(key) as T[]]
+	if (scope?.has(key)) return (scope.get(key) as T[]).map(copy)
 	const out = listJson(dir).flatMap(f => { const r = readJson<T | null>(f, null); return r && `${r.id}.json` === basename(f) ? [r] : [] })
 	scope?.set(key, out)
-	return [...out]
+	return out.map(copy)
 }
 export function strays(dir: string): string[] {
 	return listJson(dir).filter(f => { const r = readJson<{ id?: string } | null>(f, null); return !r || `${r.id}.json` !== basename(f) })
 }
 
 export function moveTo(path: string, dir: string): void {
-	scope?.clear()
 	mkdirSync(dir, { recursive: true })
-	retry(() => renameSync(path, join(dir, basename(path))))
+	const to = join(dir, basename(path)), had = scope?.get(path)
+	retry(() => renameSync(path, to))
+	wrote(path, false); wrote(to, true)
+	if (had !== undefined && had !== MISSING) scope?.set(to, had)
 }

@@ -10,7 +10,7 @@ import { documentKeys, messageDocuments } from '../core/intake.ts'
 import { emptyThreadCache, type ThreadCache } from '../adapters/channels.ts'
 import type { Schedule } from '../core/schedule.ts'
 import type { Habit } from '../runner/habits.ts'
-import { appendLine, assertTestSafe, fsTime, listJson, moveTo, readJson, records, strays, writeJson } from './fs.ts'
+import { appendLine, assertTestSafe, fsTime, listJson, moveTo, readJson, records, removeFile, strays, writeJson } from './fs.ts'
 import { alive, aliveAs } from '../os/process.ts'
 import { VERSION } from '../paths.ts'
 import { lessonOf, type Lesson } from './feedback.ts'
@@ -169,7 +169,7 @@ export class Store {
 	takeReceipts(): { at: string; text: string }[] {
 		const files = listJson(this.p('state')).filter(f => basename(f).startsWith('receipts-'))
 		const all = files.flatMap(f => readJson<{ at: string; text: string }[]>(f, []))
-		for (const f of files) rmSync(f, { force: true })
+		for (const f of files) removeFile(f)
 		return all.sort((a, b) => a.at.localeCompare(b.at))
 	}
 
@@ -411,7 +411,7 @@ export class Store {
 	setOpenWindow(id: string, o: OpenWindow | undefined) {
 		const f = this.p('state', 'open', `${id}.json`)
 		if (o) this.w(f, o)
-		else rmSync(f, { force: true })
+		else removeFile(f)
 	}
 
 	// What make_change did in one change run, one record per change by its index (next action).

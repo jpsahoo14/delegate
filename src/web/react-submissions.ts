@@ -63,9 +63,10 @@ export function submitIntent(store: Store, intent: Intent): { status: number; re
 	return store.withPageSubmission(intent.submissionId, () => submitLocked(store, intent))
 }
 // The page server's submit: it waits for the receipt lock between turns of its thread, so other requests go on meanwhile (#27 b).
-export async function submitIntentWhenFree(store: Store, intent: Intent, waitMs = 10_000): Promise<{ status: number; receipt: Receipt }> {
+// Each attempt is synchronous, so the server runs it in one read scope (around): every file is read once per attempt (#27 step 1).
+export async function submitIntentWhenFree(store: Store, intent: Intent, waitMs = 10_000, around: <T>(fn: () => T) => T = fn => fn()): Promise<{ status: number; receipt: Receipt }> {
 	for (const until = Date.now() + waitMs; ;) {
-		const r = store.withPageSubmissionNow(intent.submissionId, () => submitLocked(store, intent))
+		const r = around(() => store.withPageSubmissionNow(intent.submissionId, () => submitLocked(store, intent)))
 		if (r !== BUSY) return r
 		if (Date.now() >= until) throw new IntentError(503, `Timed out waiting for this action's saved result. Check it again before acting; nothing was sent twice.`)
 		await new Promise(r => setTimeout(r, 50))

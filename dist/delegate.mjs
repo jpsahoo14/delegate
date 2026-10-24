@@ -334,13 +334,15 @@ function assertTestSafe(path) {
   if (!process.env.NODE_TEST_CONTEXT) return;
   if (!inTemp(path)) throw new Error(`A test tried to write outside the temp folder: ${resolve2(path)}`);
 }
-function readScope(fn) {
+function readScope(fn, opts = {}) {
   if (scope) return fn();
   scope = /* @__PURE__ */ new Map();
+  fresh = !!opts.writes;
   try {
     return fn();
   } finally {
     scope = void 0;
+    fresh = false;
   }
 }
 function scoped(key, make) {
@@ -392,7 +394,6 @@ function writeJson(path, value, machine2) {
 }
 function writeText(path, text3, machine2) {
   assertTestSafe(path);
-  scope?.clear();
   mkdirSync(dirname(path), { recursive: true });
   const tmp = `${path}.tmp-${machine2}-${process.pid}-${randomUUID()}`, t2 = performance.now();
   const fd = openSync(tmp, "wx");
@@ -408,6 +409,34 @@ function writeText(path, text3, machine2) {
     fsTime.write += since(t2);
     fsTime.writes++;
   }
+  wrote(path, true);
+  if (scope && path.endsWith(".json")) {
+    try {
+      scope.set(path, JSON.parse(text3.replace(/^\uFEFF/, "")));
+    } catch {
+    }
+  }
+}
+function wrote(path, exists) {
+  if (!scope) return;
+  const dir2 = dirname(path), name = basename(path);
+  scope.delete(path);
+  scope.delete(`records:${dir2}`);
+  const listed2 = scope.get(`dir:${dir2}`);
+  if (listed2 && name.endsWith(".json") && !name.includes(".tmp-")) {
+    const rest2 = listed2.filter((f) => f !== path);
+    scope.set(`dir:${dir2}`, exists ? [...rest2, path].sort() : rest2);
+  }
+  for (const key of [...scope.keys()]) {
+    if (typeof key !== "string" || key.startsWith("dir:") || key.startsWith("records:")) continue;
+    const from = /^[a-z]+:(.+)$/.exec(key)?.[1];
+    if (from && (path.startsWith(from + "\\") || path.startsWith(from + "/"))) scope.delete(key);
+  }
+}
+function removeFile(path) {
+  assertTestSafe(path);
+  rmSync(path, { force: true });
+  wrote(path, false);
 }
 function retry(fn, tries = 5) {
   for (let i = 1; ; i++) {
@@ -424,7 +453,6 @@ function retry(fn, tries = 5) {
 }
 function appendLine(path, value) {
   assertTestSafe(path);
-  scope?.clear();
   mkdirSync(dirname(path), { recursive: true });
   appendFileSync(path, JSON.stringify(value) + "\n");
 }
@@ -439,13 +467,13 @@ function listJson(dir2) {
 }
 function records(dir2) {
   const key = `records:${dir2}`;
-  if (scope?.has(key)) return [...scope.get(key)];
+  if (scope?.has(key)) return scope.get(key).map(copy);
   const out = listJson(dir2).flatMap((f) => {
     const r = readJson(f, null);
     return r && `${r.id}.json` === basename(f) ? [r] : [];
   });
   scope?.set(key, out);
-  return [...out];
+  return out.map(copy);
 }
 function strays(dir2) {
   return listJson(dir2).filter((f) => {
@@ -454,11 +482,14 @@ function strays(dir2) {
   });
 }
 function moveTo(path, dir2) {
-  scope?.clear();
   mkdirSync(dir2, { recursive: true });
-  retry(() => renameSync(path, join2(dir2, basename(path))));
+  const to = join2(dir2, basename(path)), had = scope?.get(path);
+  retry(() => renameSync(path, to));
+  wrote(path, false);
+  wrote(to, true);
+  if (had !== void 0 && had !== MISSING) scope?.set(to, had);
 }
-var fsTime, since, TMP, inTemp, scope, MISSING, copy, texts;
+var fsTime, since, TMP, inTemp, scope, fresh, MISSING, copy, texts;
 var init_fs = __esm({
   "src/store/fs.ts"() {
     "use strict";
@@ -469,8 +500,9 @@ var init_fs = __esm({
       const p = resolve2(path);
       return TMP.some((t2) => p === t2 || p.startsWith(t2 + "/") || p.startsWith(t2 + "\\"));
     };
+    fresh = false;
     MISSING = /* @__PURE__ */ Symbol("missing");
-    copy = (v) => Array.isArray(v) ? [...v] : v;
+    copy = (v) => fresh && v && typeof v === "object" ? structuredClone(v) : Array.isArray(v) ? [...v] : v;
     texts = /* @__PURE__ */ new Map();
   }
 });
@@ -21890,9 +21922,9 @@ function renderItem(wf, mode, now, bold = true) {
   const code = bold ? `**${wf.code}**` : wf.code;
   const who2 = wf.asker?.name ?? "Someone";
   const head = `${code} \xB7 ${who2} \xB7 ${wf.chat.name} \xB7 ${age(wf.createdAt, now)}`;
-  const fresh = wf.newCount > 0 ? ` \xB7 ${wf.newCount} new message${wf.newCount > 1 ? "s" : ""}` : "";
+  const fresh2 = wf.newCount > 0 ? ` \xB7 ${wf.newCount} new message${wf.newCount > 1 ? "s" : ""}` : "";
   if (mode === "line") return `${head} \xB7 ${clip(oneLine(statusLine(wf, now)), 110)}`;
-  const lines = [head + fresh];
+  const lines = [head + fresh2];
   if (wf.lastAsk) lines.push(`> ${clip(oneLine(wf.lastAsk), 140)}`);
   lines.push(statusLine(wf, now));
   lines.push(...cardLines(wf));
@@ -22703,7 +22735,7 @@ var init_state = __esm({
       takeReceipts() {
         const files2 = listJson(this.p("state")).filter((f) => basename4(f).startsWith("receipts-"));
         const all = files2.flatMap((f) => readJson(f, []));
-        for (const f of files2) rmSync3(f, { force: true });
+        for (const f of files2) removeFile(f);
         return all.sort((a, b) => a.at.localeCompare(b.at));
       }
       // Where each bootstrap source stopped reading, so a rerun reads only newer content (R-BOOT-10).
@@ -23061,7 +23093,7 @@ var init_state = __esm({
       setOpenWindow(id, o) {
         const f = this.p("state", "open", `${id}.json`);
         if (o) this.w(f, o);
-        else rmSync3(f, { force: true });
+        else removeFile(f);
       }
       // What make_change did in one change run, one record per change by its index (next action).
       changes(jobId, runId) {
@@ -23104,9 +23136,9 @@ var init_state = __esm({
       // Home's "since you were away" is the start of this visit: looking again within 30 minutes keeps it, so a reload does not zero the counts.
       visitSince(now = /* @__PURE__ */ new Date()) {
         const last2 = this.lastViewed(), v = readJson(this.p("state", "visit.json"), {});
-        const fresh = last2 && now.getTime() - Date.parse(last2) < 30 * 6e4 && v.started;
-        const since2 = fresh ? v.since : last2;
-        this.w(this.p("state", "visit.json"), { since: since2, started: fresh ? v.started : now.toISOString() });
+        const fresh2 = last2 && now.getTime() - Date.parse(last2) < 30 * 6e4 && v.started;
+        const since2 = fresh2 ? v.since : last2;
+        this.w(this.p("state", "visit.json"), { since: since2, started: fresh2 ? v.started : now.toISOString() });
         this.markViewed();
         return since2;
       }
@@ -43056,18 +43088,18 @@ function startFailed(store2, wf, e) {
   }
   const setup = SETUP_REFUSAL.test(raw), why2 = setup ? raw : String(e).slice(0, 160);
   store2.log({ event: "run-failed", workflowId: wf.id, code: wf.code, error: why2 });
-  const fresh = store2.workflow(wf.id);
-  if (fresh && setup) {
+  const fresh2 = store2.workflow(wf.id);
+  if (fresh2 && setup) {
     const why22 = raw.replace(/^Could not start(?: [^\n]*?)?: (?:Error: )?(?=\S)/, "").replace(/^(?:Could not start: )+/, "");
-    Object.assign(fresh, { startFails: void 0, ...fresh.state === "running" ? { state: "needs_human" } : {}, status: `Could not start: ${why22}`, notes: fresh.notes?.map((n2) => n2.a === void 0 ? { ...n2, a: `Not asked: ${why22}` } : n2) });
-    store2.save(fresh);
+    Object.assign(fresh2, { startFails: void 0, ...fresh2.state === "running" ? { state: "needs_human" } : {}, status: `Could not start: ${why22}`, notes: fresh2.notes?.map((n2) => n2.a === void 0 ? { ...n2, a: `Not asked: ${why22}` } : n2) });
+    store2.save(fresh2);
     store2.log({ event: "run-start-refused", workflowId: wf.id, code: wf.code, error: why22 });
     return;
   }
-  if (!fresh || fresh.state !== "running") return;
-  const n = (fresh.startFails ?? 0) + 1;
-  Object.assign(fresh, n < 3 ? { startFails: n, status: `Could not start the AI run: ${why2}. Trying again on the next check.` } : { startFails: void 0, state: "needs_human", status: `Could not start the AI run 3 times: ${why2}. Check the AI CLI with "${CMD} doctor".`, runFailed: { at: (/* @__PURE__ */ new Date()).toISOString(), kind: "other", why: `the AI run could not start 3 times (${why2.slice(0, 120)})` } });
-  store2.save(fresh);
+  if (!fresh2 || fresh2.state !== "running") return;
+  const n = (fresh2.startFails ?? 0) + 1;
+  Object.assign(fresh2, n < 3 ? { startFails: n, status: `Could not start the AI run: ${why2}. Trying again on the next check.` } : { startFails: void 0, state: "needs_human", status: `Could not start the AI run 3 times: ${why2}. Check the AI CLI with "${CMD} doctor".`, runFailed: { at: (/* @__PURE__ */ new Date()).toISOString(), kind: "other", why: `the AI run could not start 3 times (${why2.slice(0, 120)})` } });
+  store2.save(fresh2);
   store2.log({ event: "run-start-failed", workflowId: wf.id, code: wf.code, n, error: why2 });
 }
 async function judgeReply(store2, cfg, a, run2 = runAgent, now = /* @__PURE__ */ new Date()) {
@@ -43096,10 +43128,10 @@ ${res.summary ?? ""}`));
     store2.saveAutomation({ ...store2.automations().find((item2) => item2.id === a.id) ?? a, why: account.text, updatedAt: now.toISOString() });
     return;
   }
-  const fresh = store2.automations().find((x) => x.id === a.id) ?? a, first3 = heard.from.split(/\s+/)[0];
+  const fresh2 = store2.automations().find((x) => x.id === a.id) ?? a, first3 = heard.from.split(/\s+/)[0];
   const later = /^later\s+(\S+)/i.exec(said2), at3 = later ? new Date(later[1]) : void 0;
   const change2 = /^done\b/i.test(said2) ? { state: "ended", next: void 0, why: `${first3} said it is done` } : at3 && !isNaN(at3.getTime()) && at3 > now && at3.getTime() - now.getTime() < 7 * 864e5 ? { next: at3.toISOString(), why: `${first3} said ${at3.toLocaleString(void 0, { weekday: "short", hour: "numeric", minute: "2-digit" })}; the next reminder moved` } : /^keep\b/i.test(said2) ? { why: `${first3} replied; reminders continue` } : { state: "paused", next: void 0, why: `${first3} replied` };
-  store2.saveAutomation({ ...fresh, ...change2, heard: void 0, updatedAt: now.toISOString() });
+  store2.saveAutomation({ ...fresh2, ...change2, heard: void 0, updatedAt: now.toISOString() });
   store2.log({ event: "automation-judged", code: a.code, said: said2.slice(0, 80), ms: res.ms, runId, ...ran("reminder", res.used) });
 }
 function runReads(store2, cfg, session, logStart) {
@@ -43165,157 +43197,157 @@ async function runOne(store2, src, cfg, wf, run2, probe, catalogRetried = false,
   const salvaged = raw && scrubDeep(raw);
   const report2 = store2.peekReport(wf.id, runId) ?? salvaged;
   store2.log({ event: "worker", ...salvaged ? { salvaged: true } : {}, workflowId: wf.id, code: wf.code, runId, exitCode: res.exitCode, ms: res.ms, ...res.via ? { via: res.via } : {}, ...res.via === "host" ? { warm: !!res.warm } : {}, intent: report2?.intent, summary: report2?.summary, sources: report2?.reply?.sources, commitment: report2?.reply?.commitment, error: res.error, ...ran("draft", res.used) });
-  const fresh = store2.workflow(wf.id) ?? wf;
+  const fresh2 = store2.workflow(wf.id) ?? wf;
   const account = !report2 && (res.setup ?? agentSetupFailure(`${res.error ?? ""}
 ${res.summary ?? ""}`));
   if (account) {
     holdAgent(store2, cfg, account);
-    if (fresh.state === "running") {
-      Object.assign(fresh, { status: account.text, startFails: void 0 });
-      store2.save(fresh);
+    if (fresh2.state === "running") {
+      Object.assign(fresh2, { status: account.text, startFails: void 0 });
+      store2.save(fresh2);
     }
     store2.archiveReport(wf.id, runId);
     return;
   }
   if (!report2 && !catalogRetried && cfg.agent.flavor === "copilot" && CATALOG_CHANGED.test(sessionLog(cfg.agent.flavor, wf.session.id).slice(logStart))) {
-    if (fresh.state !== "running" || heldBy(store2, fresh) === "window") return;
+    if (fresh2.state !== "running" || heldBy(store2, fresh2) === "window") return;
     if (store2.runsToday() < (cfg.dailyRuns ?? 200)) {
       const sessionId = randomUUID4();
       store2.log({ event: "worker-catalog-retry", kind: "draft", workflowId: wf.id, code: wf.code, runId, sessionId: wf.session.id, nextSessionId: sessionId });
-      fresh.session = { ...fresh.session, id: sessionId };
-      store2.save(fresh, false);
-      return runOne(store2, src, cfg, fresh, run2, probe, true, separate);
+      fresh2.session = { ...fresh2.session, id: sessionId };
+      store2.save(fresh2, false);
+      return runOne(store2, src, cfg, fresh2, run2, probe, true, separate);
     }
     store2.log({ event: "worker-catalog-retry-blocked", kind: "draft", workflowId: wf.id, code: wf.code, runId, reason: "daily-run-limit" });
   }
-  if (report2) fresh.runFailed = void 0;
-  if (report2 && (fresh.pending.some((id) => !wf.pending.includes(id)) || report2.work?.closed && pendingEffects(fresh.effects).length)) {
-    const newer2 = fresh.pending.some((id) => !wf.pending.includes(id));
-    Object.assign(fresh, { state: newer2 ? "running" : "needs_human", approved: void 0, status: newer2 ? "New asks arrived during this run. Checking them next." : "Earlier changes are still unverified. Review them before closing this work." });
-    store2.log({ event: "report-held", workflowId: fresh.id, reason: newer2 ? "newer-ask" : "unverified-effects" });
-    store2.save(fresh);
+  if (report2) fresh2.runFailed = void 0;
+  if (report2 && (fresh2.pending.some((id) => !wf.pending.includes(id)) || report2.work?.closed && pendingEffects(fresh2.effects).length)) {
+    const newer2 = fresh2.pending.some((id) => !wf.pending.includes(id));
+    Object.assign(fresh2, { state: newer2 ? "running" : "needs_human", approved: void 0, status: newer2 ? "New asks arrived during this run. Checking them next." : "Earlier changes are still unverified. Review them before closing this work." });
+    store2.log({ event: "report-held", workflowId: fresh2.id, reason: newer2 ? "newer-ask" : "unverified-effects" });
+    store2.save(fresh2);
     store2.archiveReport(wf.id, runId);
     return;
   }
-  if (report2 && !report2.reply && fresh.ownerSend && (!fresh.sent || fresh.sent.at < fresh.ownerSend.at)) {
-    keepApprovedDraft(fresh, report2.summary || "No reply needed");
-    fresh.pending = [];
-    store2.save(fresh);
-    store2.log({ event: "approved-draft-kept", code: fresh.code, why: report2.summary });
+  if (report2 && !report2.reply && fresh2.ownerSend && (!fresh2.sent || fresh2.sent.at < fresh2.ownerSend.at)) {
+    keepApprovedDraft(fresh2, report2.summary || "No reply needed");
+    fresh2.pending = [];
+    store2.save(fresh2);
+    store2.log({ event: "approved-draft-kept", code: fresh2.code, why: report2.summary });
     store2.archiveReport(wf.id, runId);
     return;
   }
   const into = report2?.same ? others.find((o) => o.code === report2.same.toUpperCase()) : void 0;
-  if (into && report2?.intent !== "none" && !report2?.fyi && joinInto(store2, fresh, store2.workflow(into.id) ?? into, true)) {
+  if (into && report2?.intent !== "none" && !report2?.fyi && joinInto(store2, fresh2, store2.workflow(into.id) ?? into, true)) {
     store2.archiveReport(wf.id, runId);
     return;
   }
   if (report2?.same && !report2.reply && !report2.job && report2.intent !== "none") {
     store2.archiveReport(wf.id, runId);
-    store2.log({ event: "report-join-refused", code: fresh.code, target: report2.same, reason: "no eligible same-ask target" });
-    if (!separate && store2.runsToday() < (cfg.dailyRuns ?? 200)) return runOne(store2, src, cfg, fresh, run2, probe, catalogRetried, true);
-    Object.assign(fresh, { state: "needs_human", status: "This is a separate ask. The AI did not draft its own answer.", question: "What would you like to reply to this ask?" });
-    store2.save(fresh);
+    store2.log({ event: "report-join-refused", code: fresh2.code, target: report2.same, reason: "no eligible same-ask target" });
+    if (!separate && store2.runsToday() < (cfg.dailyRuns ?? 200)) return runOne(store2, src, cfg, fresh2, run2, probe, catalogRetried, true);
+    Object.assign(fresh2, { state: "needs_human", status: "This is a separate ask. The AI did not draft its own answer.", question: "What would you like to reply to this ask?" });
+    store2.save(fresh2);
     return;
   }
   const auth = !report2 && AUTH.test(res.error ?? "");
   store2.setHealth("agent-auth", auth ? `The AI CLI is not signed in on ${store2.machine}. Run "${cfg.agent.command.join(" ")}" once and sign in.` : void 0);
-  const normal2 = report2 && !report2.reply && !hasDecisions(report2) && (report2.job ?? jobForRecheck(store2, fresh, report2));
-  const forced = report2 && !normal2 ? recheckJob(store2, fresh) : void 0;
+  const normal2 = report2 && !report2.reply && !hasDecisions(report2) && (report2.job ?? jobForRecheck(store2, fresh2, report2));
+  const forced = report2 && !normal2 ? recheckJob(store2, fresh2) : void 0;
   if (forced && report2) {
-    store2.log({ event: "recheck-routed", workflowId: fresh.id, code: fresh.code, key: forced.key, workerIntent: report2.intent, hadReply: !!report2.reply });
+    store2.log({ event: "recheck-routed", workflowId: fresh2.id, code: fresh2.code, key: forced.key, workerIntent: report2.intent, hadReply: !!report2.reply });
     report2.intent = "pr_review";
   }
   const job = normal2 || forced;
-  const reviewRef = job && isReviewJob(job.key, report2?.intent) ? prRefOf(store2, fresh) : void 0;
+  const reviewRef = job && isReviewJob(job.key, report2?.intent) ? prRefOf(store2, fresh2) : void 0;
   const gate = job && isReviewJob(job.key, report2?.intent) ? reviewGate(store2, cfg, wf, reviewRef ?? { project: "", repo: "", id: Number(/(\d+)\s*$/.exec(job.key)?.[1] ?? 0) }, void 0, !!probe?.pr) : void 0;
   const declined = gate && !gate.ok ? gate : void 0;
-  if (!report2) Object.assign(fresh, { state: "needs_human", status: `${NAME} couldn't draft this: ${failWhy(res)}`, question: void 0, runFailed: { at: (/* @__PURE__ */ new Date()).toISOString(), kind: "other", why: failWhy(res) } });
+  if (!report2) Object.assign(fresh2, { state: "needs_human", status: `${NAME} couldn't draft this: ${failWhy(res)}`, question: void 0, runFailed: { at: (/* @__PURE__ */ new Date()).toISOString(), kind: "other", why: failWhy(res) } });
   else if (declined) {
-    fresh.intent = report2.intent;
-    if (declined.addMe) fresh.job = void 0;
-    decline(store2, cfg, fresh, reviewRef, declined);
+    fresh2.intent = report2.intent;
+    if (declined.addMe) fresh2.job = void 0;
+    decline(store2, cfg, fresh2, reviewRef, declined);
     if (declined.addMe) {
-      carry(store2, cfg, fresh, fresh.effects ?? []);
-      const carrier = fresh.job ? store2.job(fresh.job) : void 0;
+      carry(store2, cfg, fresh2, fresh2.effects ?? []);
+      const carrier = fresh2.job ? store2.job(fresh2.job) : void 0;
       if (carrier) {
         carrier.goal = declined.addMe.summary;
         store2.saveJob(carrier);
       }
     }
   } else if (job) {
-    fresh.intent = report2.intent;
-    const h = family(store2, fresh, report2);
-    mergeReportWork(fresh, forced ? { ...report2, work: report2.work && { ...report2.work, step: `Asked to recheck; running the review of ${forced.key}` } } : report2, h, void 0, false);
-    if (h !== fresh) store2.save(h);
-    attachJob(store2, cfg, fresh, job);
+    fresh2.intent = report2.intent;
+    const h = family(store2, fresh2, report2);
+    mergeReportWork(fresh2, forced ? { ...report2, work: report2.work && { ...report2.work, step: `Asked to recheck; running the review of ${forced.key}` } } : report2, h, void 0, false);
+    if (h !== fresh2) store2.save(h);
+    attachJob(store2, cfg, fresh2, job);
   } else {
-    const h = family(store2, fresh, report2);
-    applyReport(fresh, checked(store2, cfg, report2), h, canCloseReport(store2, h, fresh));
-    if (fresh.draft) fresh.prDraft = wf.prRead;
-    if (report2.goalMet === false) store2.log({ event: "short-of-goal", workflowId: fresh.id, code: fresh.code, kind: blockerOf(report2.blocker).kind, why: blockerOf(report2.blocker).why, tried: blockerOf(report2.blocker).tried });
+    const h = family(store2, fresh2, report2);
+    applyReport(fresh2, checked(store2, cfg, report2), h, canCloseReport(store2, h, fresh2));
+    if (fresh2.draft) fresh2.prDraft = wf.prRead;
+    if (report2.goalMet === false) store2.log({ event: "short-of-goal", workflowId: fresh2.id, code: fresh2.code, kind: blockerOf(report2.blocker).kind, why: blockerOf(report2.blocker).why, tried: blockerOf(report2.blocker).tried });
     if (h.work?.closed) {
       stopWatch(store2, h);
-      if (!fresh.draft && !fresh.question) closeFamily(store2, realProcs, h, h.work.closed.why);
+      if (!fresh2.draft && !fresh2.question) closeFamily(store2, realProcs, h, h.work.closed.why);
     }
-    if (h !== fresh) store2.save(h);
-    if (report2.goalMet === false && fresh.draft && !fresh.draft.holding) fresh.draft = { ...fresh.draft, holding: true };
-    const v = vet(cfg, report2.goalMet === false ? [] : report2.effects, prTarget(store2, fresh));
+    if (h !== fresh2) store2.save(h);
+    if (report2.goalMet === false && fresh2.draft && !fresh2.draft.holding) fresh2.draft = { ...fresh2.draft, holding: true };
+    const v = vet(cfg, report2.goalMet === false ? [] : report2.effects, prTarget(store2, fresh2));
     v.effects = voteGate(store2, cfg, wf, v.effects, v.todos);
-    const read4 = v.effects.some((e) => isVote(e.call)) ? await voteNow(store2, cfg, fresh, v.effects, probe) : void 0;
-    const effects = proposalEffects(read4 && !read4.why && !read4.again && read4.effects.length === v.effects.length ? read4.effects : v.effects, [fresh]);
-    if (v.todos.length) Object.assign(fresh, {
-      todos: [.../* @__PURE__ */ new Set([...fresh.todos ?? [], ...v.todos])],
+    const read4 = v.effects.some((e) => isVote(e.call)) ? await voteNow(store2, cfg, fresh2, v.effects, probe) : void 0;
+    const effects = proposalEffects(read4 && !read4.why && !read4.again && read4.effects.length === v.effects.length ? read4.effects : v.effects, [fresh2]);
+    if (v.todos.length) Object.assign(fresh2, {
+      todos: [.../* @__PURE__ */ new Set([...fresh2.todos ?? [], ...v.todos])],
       // "Are you in <group>?" stays the question while it is open: its answer can bring the vote back (queue-new #7C).
-      question: fresh.question ?? (wf.groupAsk ? groupQuestion(wf.groupAsk) : fresh.draft ? refusedAsk(fresh.code, v.todos.length) : `These changes need you: ${v.todos.join("; ")}`)
+      question: fresh2.question ?? (wf.groupAsk ? groupQuestion(wf.groupAsk) : fresh2.draft ? refusedAsk(fresh2.code, v.todos.length) : `These changes need you: ${v.todos.join("; ")}`)
     });
-    if (fresh.kind === "reply" && effects.length) {
-      const made = (fresh.effects ?? []).filter((e) => e.done);
+    if (fresh2.kind === "reply" && effects.length) {
+      const made = (fresh2.effects ?? []).filter((e) => e.done);
       const list2 = () => effects.map((e) => ({ ...e, done: made.find((m) => sameProposal(m, e) && (!isVote(e.call) || read4 !== void 0 && read4.vote !== void 0 && sameVote(read4.vote, voteValue(e.call)) && sameHead(read4.head, e.head)))?.done }));
-      carry(store2, cfg, fresh, list2());
-      Object.assign(fresh, { effects: list2(), promised: !!fresh.draft });
-    } else if (fresh.choices) {
-      if (fresh.job) carry(store2, cfg, fresh, []);
-      Object.assign(fresh, { effects: void 0, promised: void 0 });
-    } else if (fresh.promised) Object.assign(fresh, { effects: void 0, promised: void 0 });
+      carry(store2, cfg, fresh2, list2());
+      Object.assign(fresh2, { effects: list2(), promised: !!fresh2.draft });
+    } else if (fresh2.choices) {
+      if (fresh2.job) carry(store2, cfg, fresh2, []);
+      Object.assign(fresh2, { effects: void 0, promised: void 0 });
+    } else if (fresh2.promised) Object.assign(fresh2, { effects: void 0, promised: void 0 });
     const asked2 = askedVote(store2.thread(wf.id).filter((m) => wf.pending.includes(m.id) && !m.byOwner).map((m) => m.text).join("\n"));
-    const live2 = fresh.prRead ?? wf.prRead ? JSON.parse(fresh.prRead ?? wf.prRead) : void 0;
-    if (asked2 !== void 0 && live2 && /^active$/i.test(live2[1]) && typeof live2[3] === "number" && !sameVote(live2[3], asked2) && report2.goalMet !== false && !fresh.question && !fresh.choices && !(h.work?.closed && fresh.state === "done") && !(wf.prRole && !MAY_REVIEW.includes(wf.prRole)) && !pendingEffects(fresh.effects).some((e) => isVote(e.call) && voteValue(e.call) === asked2)) {
-      Object.assign(fresh, { state: "needs_human", question: `${fresh.asker?.name ?? "They"} asked for your ${voteName(asked2)} vote on PR ${live2[0]}, but this draft proposes no vote. Answer ${fresh.code} to redo it with the vote, or skip it` });
-      store2.log({ event: "vote-ask-unmet", workflowId: fresh.id, code: fresh.code, pr: live2[0], asked: asked2, live: live2[3] });
+    const live2 = fresh2.prRead ?? wf.prRead ? JSON.parse(fresh2.prRead ?? wf.prRead) : void 0;
+    if (asked2 !== void 0 && live2 && /^active$/i.test(live2[1]) && typeof live2[3] === "number" && !sameVote(live2[3], asked2) && report2.goalMet !== false && !fresh2.question && !fresh2.choices && !(h.work?.closed && fresh2.state === "done") && !(wf.prRole && !MAY_REVIEW.includes(wf.prRole)) && !pendingEffects(fresh2.effects).some((e) => isVote(e.call) && voteValue(e.call) === asked2)) {
+      Object.assign(fresh2, { state: "needs_human", question: `${fresh2.asker?.name ?? "They"} asked for your ${voteName(asked2)} vote on PR ${live2[0]}, but this draft proposes no vote. Answer ${fresh2.code} to redo it with the vote, or skip it` });
+      store2.log({ event: "vote-ask-unmet", workflowId: fresh2.id, code: fresh2.code, pr: live2[0], asked: asked2, live: live2[3] });
     }
     const askText = store2.thread(wf.id).filter((m) => wf.pending.includes(m.id) && !m.byOwner).map((m) => m.text).join("\n");
     const invites = (cfg.agent.effectTools ?? []).some((t2) => /CreateEvent/i.test(t2));
-    const offered = pendingEffects(fresh.effects).some(isInvite) || !!fresh.choices?.options.some((o) => o.effects?.some(isInvite));
-    if (invites && fresh.draft && asksInvite(askText) && !offered && report2.goalMet !== false && !fresh.question && !(h.work?.closed && fresh.state === "done")) {
-      Object.assign(fresh, { state: "needs_human", question: `${fresh.asker?.name ?? "They"} asked you to book it, but this draft sends no invite. Answer ${fresh.code} to redo it with the invite, or skip it` });
-      store2.log({ event: "invite-ask-unmet", workflowId: fresh.id, code: fresh.code });
+    const offered = pendingEffects(fresh2.effects).some(isInvite) || !!fresh2.choices?.options.some((o) => o.effects?.some(isInvite));
+    if (invites && fresh2.draft && asksInvite(askText) && !offered && report2.goalMet !== false && !fresh2.question && !(h.work?.closed && fresh2.state === "done")) {
+      Object.assign(fresh2, { state: "needs_human", question: `${fresh2.asker?.name ?? "They"} asked you to book it, but this draft sends no invite. Answer ${fresh2.code} to redo it with the invite, or skip it` });
+      store2.log({ event: "invite-ask-unmet", workflowId: fresh2.id, code: fresh2.code });
     }
   }
-  if (report2?.split?.length) splitOff(store2, cfg, fresh, report2.split);
-  fresh.looked = read3.searches.length ? read3.searches : void 0;
-  const drewOn = report2 && !job && fresh.draft ? sourceChats(fresh, knowledgeOf(store2, cfg), read3.chats) : [];
-  fresh.drewOn = drewOn.length ? drewOn : void 0;
-  fresh.shareHold = report2 && !job && fresh.draft && read3.unknown ? "It searched your chats and I couldn't tell which ones it read" : drewOn.length ? await sharingHold(store2, src, fresh, drewOn) : void 0;
-  if (report2 && !job) await afterDraft(store2, src, cfg, fresh);
-  if (report2 && !job && fresh.state === "done" && fresh.closedBy === "nothing" && !fresh.fyi && answersOwner(store2, fresh)) {
-    const said2 = (fresh.lastAsk ?? "").replace(/^\[as [^\]]+\]\s*/i, "").replace(/\s+/g, " ").trim();
-    const first3 = (fresh.asker?.name ?? "They").split(/\s+/)[0];
-    fresh.fyi = { line: `${first3} replied \xB7 no reply needed`, weight: "normal", at: (/* @__PURE__ */ new Date()).toISOString(), gist: said2.slice(0, 400) };
-    store2.log({ event: "fyi-kept", code: fresh.code, why: fresh.chat.group ? "after the owner" : "1:1" });
+  if (report2?.split?.length) splitOff(store2, cfg, fresh2, report2.split);
+  fresh2.looked = read3.searches.length ? read3.searches : void 0;
+  const drewOn = report2 && !job && fresh2.draft ? sourceChats(fresh2, knowledgeOf(store2, cfg), read3.chats) : [];
+  fresh2.drewOn = drewOn.length ? drewOn : void 0;
+  fresh2.shareHold = report2 && !job && fresh2.draft && read3.unknown ? "It searched your chats and I couldn't tell which ones it read" : drewOn.length ? await sharingHold(store2, src, fresh2, drewOn) : void 0;
+  if (report2 && !job) await afterDraft(store2, src, cfg, fresh2);
+  if (report2 && !job && fresh2.state === "done" && fresh2.closedBy === "nothing" && !fresh2.fyi && answersOwner(store2, fresh2)) {
+    const said2 = (fresh2.lastAsk ?? "").replace(/^\[as [^\]]+\]\s*/i, "").replace(/\s+/g, " ").trim();
+    const first3 = (fresh2.asker?.name ?? "They").split(/\s+/)[0];
+    fresh2.fyi = { line: `${first3} replied \xB7 no reply needed`, weight: "normal", at: (/* @__PURE__ */ new Date()).toISOString(), gist: said2.slice(0, 400) };
+    store2.log({ event: "fyi-kept", code: fresh2.code, why: fresh2.chat.group ? "after the owner" : "1:1" });
   }
-  if (report2 && !job && fresh.state === "done" && fresh.closedBy === "nothing") for (const msgId of wf.pending) auditSkip(store2, wf.chat.id, msgId, fresh.fyi ? "ai-fyi" : "ai-noise", wf.id);
-  if (job && !declined) await ackJob(store2, src, cfg, fresh);
-  store2.save(fresh);
+  if (report2 && !job && fresh2.state === "done" && fresh2.closedBy === "nothing") for (const msgId of wf.pending) auditSkip(store2, wf.chat.id, msgId, fresh2.fyi ? "ai-fyi" : "ai-noise", wf.id);
+  if (job && !declined) await ackJob(store2, src, cfg, fresh2);
+  store2.save(fresh2);
   store2.archiveReport(wf.id, runId);
-  if (report2 && fresh.missed && fresh.startedBy === "owner" && fresh.state === "done") await say(store2, src, `${MARK} ${fresh.code}: ${fresh.status}`);
-  if (report2 && fresh.draft?.preview && fresh.answerSurface) {
+  if (report2 && fresh2.missed && fresh2.startedBy === "owner" && fresh2.state === "done") await say(store2, src, `${MARK} ${fresh2.code}: ${fresh2.status}`);
+  if (report2 && fresh2.draft?.preview && fresh2.answerSurface) {
     const n = store2.notify();
-    const had = n.previews?.[fresh.answerSurface], list2 = Array.isArray(had) ? had : had ? [had] : [];
-    store2.saveNotify({ ...n, previews: { ...n.previews, [fresh.answerSurface]: [...list2, { code: fresh.code, at: (/* @__PURE__ */ new Date()).toISOString() }].slice(-5) } });
-    if (fresh.answerSurface === "self") {
-      await say(store2, src, renderPreview(fresh));
-      store2.markShown([fresh]);
+    const had = n.previews?.[fresh2.answerSurface], list2 = Array.isArray(had) ? had : had ? [had] : [];
+    store2.saveNotify({ ...n, previews: { ...n.previews, [fresh2.answerSurface]: [...list2, { code: fresh2.code, at: (/* @__PURE__ */ new Date()).toISOString() }].slice(-5) } });
+    if (fresh2.answerSurface === "self") {
+      await say(store2, src, renderPreview(fresh2));
+      store2.markShown([fresh2]);
     }
   }
 }
@@ -43333,25 +43365,25 @@ async function runAsk(store2, src, cfg, wf, run2, retrySession) {
   const res = await run2({ ...cfg.agent, tools }, { workflowId: wf.id, runId, sessionId: session, prompt: buildAskPrompt(wf, store2.thread(wf.id), cfg, store2.root), cwd: job?.repo ?? cwd, mcpConfigPath, extraTools: WORKER_TOOLS, dirs: readDirs(store2, cfg) });
   backupSession(store2, session);
   const report2 = store2.peekReport(wf.id, runId);
-  const fresh = store2.workflow(wf.id);
+  const fresh2 = store2.workflow(wf.id);
   const account = !report2 && (res.setup ?? agentSetupFailure(`${res.error ?? ""}
 ${res.summary ?? ""}`));
   if (account) holdAgent(store2, cfg, account);
   if (!report2 && !account && !retrySession && cfg.agent.flavor === "copilot" && CATALOG_CHANGED.test(sessionLog(cfg.agent.flavor, session).slice(logStart))) {
-    if (fresh.state === "running" || heldBy(store2, fresh) === "window" || !fresh.notes?.some((note2) => note2.a === void 0) || fresh.job && store2.job(fresh.job)?.state === "running") return;
+    if (fresh2.state === "running" || heldBy(store2, fresh2) === "window" || !fresh2.notes?.some((note2) => note2.a === void 0) || fresh2.job && store2.job(fresh2.job)?.state === "running") return;
     if (store2.runsToday() < (cfg.dailyRuns ?? 200)) {
       const sessionId = randomUUID4();
       store2.log({ event: "worker-catalog-retry", kind: "ask", workflowId: wf.id, code: wf.code, runId, sessionId: session, nextSessionId: sessionId });
-      return runAsk(store2, src, cfg, fresh, run2, sessionId);
+      return runAsk(store2, src, cfg, fresh2, run2, sessionId);
     }
     store2.log({ event: "worker-catalog-retry-blocked", kind: "ask", workflowId: wf.id, code: wf.code, runId, reason: "daily-run-limit" });
   }
-  const note = fresh.notes?.find((n) => n.a === void 0);
-  if (note) Object.assign(note, report2?.answer ? { a: report2.answer, sources: report2.reply ? checked(store2, cfg, report2).reply.sources : void 0 } : { a: account ? account.text : `I could not answer that${res.error ? ` (${res.error.slice(0, 80)})` : ""}. Ask again, or open ${fresh.code} on your computer.` });
-  store2.save(fresh);
+  const note = fresh2.notes?.find((n) => n.a === void 0);
+  if (note) Object.assign(note, report2?.answer ? { a: report2.answer, sources: report2.reply ? checked(store2, cfg, report2).reply.sources : void 0 } : { a: account ? account.text : `I could not answer that${res.error ? ` (${res.error.slice(0, 80)})` : ""}. Ask again, or open ${fresh2.code} on your computer.` });
+  store2.save(fresh2);
   store2.archiveReport(wf.id, runId);
   store2.log({ event: "ask", workflowId: wf.id, code: wf.code, runId, ms: res.ms, ...ran("ask", res.used) });
-  if (note && fresh.answerSurface === "self") await say(store2, src, plain(`${MARK} ${fresh.code} \xB7 ${note.q}
+  if (note && fresh2.answerSurface === "self") await say(store2, src, plain(`${MARK} ${fresh2.code} \xB7 ${note.q}
 ${note.a}`).slice(0, 1800));
 }
 function checked(store2, cfg, r) {
@@ -43378,9 +43410,9 @@ function applyReport(wf, r, home = wf, allowClose = true) {
   }
   wf.intent = r.intent;
   wf.pending = [];
-  const fresh = !home.work;
+  const fresh2 = !home.work;
   mergeReportWork(wf, r, home, changedAsk, allowClose);
-  if (wf.startedBy === "owner" && fresh && home.work && home === wf) {
+  if (wf.startedBy === "owner" && fresh2 && home.work && home === wf) {
     home.work.proposed = true;
     const plan2 = home.work.plan?.length ? ` Plan: ${home.work.plan.map((p) => p.what).join("; ")}.` : "";
     Object.assign(wf, { state: "needs_human", draft: void 0, status: `Track this as work? ${home.work.goal}`, question: `Track this as work? Goal: ${home.work.goal}. Done when: ${home.work.doneWhen}.${plan2} Say "ok ${wf.code}" to track it, or "skip ${wf.code}".` });
@@ -43425,10 +43457,10 @@ async function nudge(store2, src, cfg) {
   const needs = all.filter((w) => w.state === "needs_human");
   const undoable = all.filter((w) => w.sent?.byRule && w.sent.undoUntil && Date.parse(w.sent.undoUntil) > Date.now());
   const kp = store2.proposals().filter((p) => p.state === "needs_human");
-  const fresh = [...needs, ...undoable, ...kp].filter((w) => !n.lastNudgeAt || w.updatedAt > n.lastNudgeAt);
-  const urgent = undoable.some((w) => fresh.includes(w));
+  const fresh2 = [...needs, ...undoable, ...kp].filter((w) => !n.lastNudgeAt || w.updatedAt > n.lastNudgeAt);
+  const urgent = undoable.some((w) => fresh2.includes(w));
   const due2 = urgent || !n.lastNudgeAt || Date.now() - Date.parse(n.lastNudgeAt) > cfg.nudgeEveryMin * 6e4;
-  if (!fresh.length || !due2) return false;
+  if (!fresh2.length || !due2) return false;
   if ((await src.presence()).availability === "DoNotDisturb" || await ownerActive(store2, src)) return false;
   await say(store2, src, renderNudge(needs, undoable, /* @__PURE__ */ new Date(), kp));
   store2.markShown(needs.slice(0, 6));
@@ -43602,59 +43634,59 @@ async function checkPromise(store2, src, cfg, wf, run2, probe) {
 ${res.summary ?? ""}`));
     if (account) {
       holdAgent(store2, cfg, account);
-      const fresh2 = store2.workflow(wf.id) ?? wf;
-      fresh2.promise = { ...fresh2.promise, text: said2, state: "pending", why: account.text };
-      store2.save(fresh2, false);
+      const fresh3 = store2.workflow(wf.id) ?? wf;
+      fresh3.promise = { ...fresh3.promise, text: said2, state: "pending", why: account.text };
+      store2.save(fresh3, false);
       return;
     }
     error62 = res.error;
   } catch (e) {
     error62 = String(e).replace(/^Error: /, "");
   }
-  const fresh = store2.workflow(wf.id) ?? wf;
+  const fresh2 = store2.workflow(wf.id) ?? wf;
   const again = (why2) => {
-    fresh.promise = { ...fresh.promise, text: said2, state: "pending", why: why2 };
-    store2.save(fresh, false);
+    fresh2.promise = { ...fresh2.promise, text: said2, state: "pending", why: why2 };
+    store2.save(fresh2, false);
   };
-  if (!resting(fresh)) return again();
+  if (!resting(fresh2)) return again();
   if (!report2) {
-    failPromise(store2, fresh, error62, said2);
-    return tell(store2, src, fresh, `${fresh.code} went to ${first(fresh)}, but I could not check what it promised. Nothing was changed. Say "ok ${fresh.code}" to check again, or "skip ${fresh.code}".`);
+    failPromise(store2, fresh2, error62, said2);
+    return tell(store2, src, fresh2, `${fresh2.code} went to ${first(fresh2)}, but I could not check what it promised. Nothing was changed. Say "ok ${fresh2.code}" to check again, or "skip ${fresh2.code}".`);
   }
-  const v = vet(cfg, report2.effects, prTarget(store2, fresh));
-  const decided = (fresh.effects ?? []).filter((e) => e.done || e.off);
+  const v = vet(cfg, report2.effects, prTarget(store2, fresh2));
+  const decided = (fresh2.effects ?? []).filter((e) => e.done || e.off);
   const same2 = (a, b) => isVote(a.call) && isVote(b.call) ? prIdOf(a.call) === prIdOf(b.call) && voteValue(a.call) === voteValue(b.call) && (a.head ?? null) === (b.head ?? null) : JSON.stringify(a.call) === JSON.stringify(b.call);
-  const cast = (e) => isVote(e.call) && fresh.prVote !== void 0 && fresh.prVote !== 0 && fresh.prVote === voteValue(e.call);
-  const wanted = proposalEffects(v.effects.filter((e) => !decided.some((m) => same2(m, e)) && !cast(e)).map((e) => ({ ...e, done: void 0, error: void 0 })), [fresh]);
-  const now = await voteNow(store2, cfg, fresh, wanted, probe);
+  const cast = (e) => isVote(e.call) && fresh2.prVote !== void 0 && fresh2.prVote !== 0 && fresh2.prVote === voteValue(e.call);
+  const wanted = proposalEffects(v.effects.filter((e) => !decided.some((m) => same2(m, e)) && !cast(e)).map((e) => ({ ...e, done: void 0, error: void 0 })), [fresh2]);
+  const now = await voteNow(store2, cfg, fresh2, wanted, probe);
   const left = [...report2.todos ?? [], ...v.todos];
-  store2.log({ event: "promise-checked", workflowId: fresh.id, code: fresh.code, offered: now.effects.length, todos: left.length, ...now.why ? { why: now.why } : {}, ...now.again ? { again: true } : {} });
+  store2.log({ event: "promise-checked", workflowId: fresh2.id, code: fresh2.code, offered: now.effects.length, todos: left.length, ...now.why ? { why: now.why } : {}, ...now.again ? { again: true } : {} });
   const lines = [];
   let shared;
   if (now.again) {
-    newTurn(fresh);
-    Object.assign(fresh, { state: "needs_human", promise: void 0, question: now.again, status: `PR ${prTarget(store2, fresh)} changed since your review`, revAt: (/* @__PURE__ */ new Date()).toISOString() });
-    lines.push(`${fresh.code}: ${now.again}`);
-  } else if (now.effects.length && (shared = carry(store2, cfg, fresh, now.effects)) !== "shared") {
+    newTurn(fresh2);
+    Object.assign(fresh2, { state: "needs_human", promise: void 0, question: now.again, status: `PR ${prTarget(store2, fresh2)} changed since your review`, revAt: (/* @__PURE__ */ new Date()).toISOString() });
+    lines.push(`${fresh2.code}: ${now.again}`);
+  } else if (now.effects.length && (shared = carry(store2, cfg, fresh2, now.effects)) !== "shared") {
     if (shared === "busy") return again();
     const line2 = saidLine(now.effects), meaning = now.effects.map((e) => e.pr).find(Boolean);
-    Object.assign(fresh, { state: "needs_human", draft: void 0, effects: now.effects, promised: void 0, approved: void 0, question: void 0, promise: { ...fresh.promise, text: said2, state: "offered", why: void 0 }, status: line2, revAt: (/* @__PURE__ */ new Date()).toISOString() });
-    lines.push(`${fresh.code}: ${line2.replace(/^You/, "you")}${meaning ? ` ("${meaning.title}" by ${meaning.author}${meaning.autoComplete ? "; autocomplete is on: your approval may complete it" : ""})` : ""}. Say "ok ${fresh.code}" to do it, or "skip ${fresh.code}".`);
+    Object.assign(fresh2, { state: "needs_human", draft: void 0, effects: now.effects, promised: void 0, approved: void 0, question: void 0, promise: { ...fresh2.promise, text: said2, state: "offered", why: void 0 }, status: line2, revAt: (/* @__PURE__ */ new Date()).toISOString() });
+    lines.push(`${fresh2.code}: ${line2.replace(/^You/, "you")}${meaning ? ` ("${meaning.title}" by ${meaning.author}${meaning.autoComplete ? "; autocomplete is on: your approval may complete it" : ""})` : ""}. Say "ok ${fresh2.code}" to do it, or "skip ${fresh2.code}".`);
   } else {
     if (shared) left.push(...now.effects.map((e) => `${e.summary.replace(/[.\s]+$/, "")}. Not made for you: another open item on this review has changes waiting; ok or skip it first, then say it again, or make it by hand`));
-    fresh.promise = void 0;
+    fresh2.promise = void 0;
   }
   if (left.length) {
-    fresh.todos = [.../* @__PURE__ */ new Set([...fresh.todos ?? [], ...left])];
-    keepTodos(fresh, wf.sent?.at ?? wf.promise.at, left);
+    fresh2.todos = [.../* @__PURE__ */ new Set([...fresh2.todos ?? [], ...left])];
+    keepTodos(fresh2, wf.sent?.at ?? wf.promise.at, left);
   }
-  const home = homeOf(store2, fresh);
+  const home = homeOf(store2, fresh2);
   const watching = report2.follow && !now.again ? active(home) ? startWatch(store2, home, report2.follow) : startFollow(store2, report2.follow) : void 0;
-  if (watching && home !== fresh) store2.save(home);
+  if (watching && home !== fresh2) store2.save(home);
   const yours = [left.length ? `still yours to do: ${left.join("; ")}.` : "", watching ? `Watching ${report2.follow.target} every ${report2.follow.everyHours ?? 4} h as ${watching}.` : ""].filter(Boolean);
-  if (yours.length) lines.push(`${fresh.code}: ${yours.join(" ")}`);
-  store2.save(fresh);
-  if (lines.length) await tell(store2, src, fresh, lines.join("\n"));
+  if (yours.length) lines.push(`${fresh2.code}: ${yours.join(" ")}`);
+  store2.save(fresh2);
+  if (lines.length) await tell(store2, src, fresh2, lines.join("\n"));
 }
 var promiseDue, settled, first, resting, busy, promisesDue;
 var init_promise2 = __esm({
@@ -44609,8 +44641,8 @@ function route(store2, open2, raw, senderId, recent, text3 = "") {
 }
 function recentItem(store2, chatId, senderId, quietHours, now = Date.now()) {
   const undoable = (w) => !!w.sent?.byRule && !!w.sent.undoUntil && Date.parse(w.sent.undoUntil) > now;
-  const fresh = (w) => w.job ? now - Date.parse(w.updatedAt) < 7 * 864e5 : !quietFor(store2, w, quietHours, now);
-  return closedBy(store2, chatId, senderId).filter((w) => !undoable(w) && fresh(w)).at(-1);
+  const fresh2 = (w) => w.job ? now - Date.parse(w.updatedAt) < 7 * 864e5 : !quietFor(store2, w, quietHours, now);
+  return closedBy(store2, chatId, senderId).filter((w) => !undoable(w) && fresh2(w)).at(-1);
 }
 function quietFor(store2, w, hours2, now = Date.now()) {
   return now - Date.parse(store2.thread(w.id).at(-1)?.at ?? w.updatedAt) > hours2 * 36e5;
@@ -44951,12 +44983,12 @@ function checkOpen(store2, procs, bootMs = Date.now() - uptime2() * 1e3) {
     const r = store2.peekReport(id, o.runId);
     if (r && job) finishWork(store2, job, r, job.asks.length);
     for (const wf of job ? parentsOf(store2, job) : items2) {
-      const fresh = store2.workflow(wf.id);
-      if (r && !job) applyReport(fresh, r);
-      if (r && fresh.draft) fresh.draft.preview = true;
-      fresh.openOn = void 0;
-      if (!r && !fresh.status.startsWith("Back from")) fresh.status = `Back from your window, nothing decided. ${fresh.status}`.slice(0, 200);
-      store2.save(fresh);
+      const fresh2 = store2.workflow(wf.id);
+      if (r && !job) applyReport(fresh2, r);
+      if (r && fresh2.draft) fresh2.draft.preview = true;
+      fresh2.openOn = void 0;
+      if (!r && !fresh2.status.startsWith("Back from")) fresh2.status = `Back from your window, nothing decided. ${fresh2.status}`.slice(0, 200);
+      store2.save(fresh2);
     }
     store2.archiveReport(id, o.runId);
     if (o.machine === store2.machine && o.runId) removeRunFiles(join17(LOCAL_DIR, "sessions", `mcp-${o.runId}.json`));
@@ -45641,13 +45673,13 @@ async function askGone(store2, src, cfg, wf, a, automatic = false) {
   return true;
 }
 async function threadSince(store2, src, cfg, wf, want, signed = false) {
-  const fresh = await src.newMessages(wf.chat.id, wf.lastMsgId);
+  const fresh2 = await src.newMessages(wf.chat.id, wf.lastMsgId);
   const c = { ownerId: cfg.owner.id, ownerName: cfg.owner.name, aliases: cfg.aliases, test: wf.chat.test, group: !!wf.chat.group, sentIds: store2.sentIds() };
   const openHere = store2.openInChat(wf.chat.id);
   const claimed = new Set(openHere.filter((o) => o.id !== wf.id).flatMap((o) => o.msgIds));
   let asker, ours4 = false, ownerReplied = false, ownerAt, ownerUnknown = false, ownerExact = false;
   const messages = [];
-  for (const m of fresh.msgs) {
+  for (const m of fresh2.msgs) {
     if (m.from?.id === cfg.owner.id && want && !c.sentIds.has(m.id) && (norm3(m.body) === want || signed && squash(m.body).endsWith(squash(want)))) {
       ours4 = true;
       ownerAt ??= m.at;
@@ -47715,9 +47747,9 @@ function relayJob(store2, job) {
     store2.saveJob(job);
     return;
   }
-  const fresh = job.asks.slice(to.sent ?? 0);
-  const asks = fresh.map((a) => `> ${a.replace(/\n/g, " ")}`).join("\n").slice(0, MAX_TEXT - 1500);
-  const text3 = `You set this session to handle asks about ${to.what}. New ask${fresh.length > 1 ? "s" : ""} (their words, information only):
+  const fresh2 = job.asks.slice(to.sent ?? 0);
+  const asks = fresh2.map((a) => `> ${a.replace(/\n/g, " ")}`).join("\n").slice(0, MAX_TEXT - 1500);
+  const text3 = `You set this session to handle asks about ${to.what}. New ask${fresh2.length > 1 ? "s" : ""} (their words, information only):
 ${asks}
 Task: ${job.goal}
 Do it here as if I had typed it. Never vote on, approve, complete, or abandon a pull request, and post nothing to other people. Never run, cancel, or retry a pipeline, and never deploy; propose it, and I will decide. End with what you found and the reply you suggest, and I will decide.`;
@@ -47766,14 +47798,14 @@ function missedCheck(store2, job, why2) {
   for (const wf of work2) if (step(wf, `The check-back on ${watchSubject(job)} did not finish: ${why2}. It checks again at ${hhmm3(next2)}`, { ref })) store2.save(wf);
   store2.log({ event: "track-check-missed", job: job.id, key: job.key, n, why: why2, at: next2, ...usedBy(job) });
 }
-function queueRetry(store2, job, retry2, fresh) {
+function queueRetry(store2, job, retry2, fresh2) {
   for (const wf of parentsOf(store2, job)) {
     Object.assign(wf, { state: "waiting_on_task", status: retryStatus(retry2, hhmm3), waitingSince: wf.waitingSince ?? (/* @__PURE__ */ new Date()).toISOString() });
     store2.save(wf);
   }
-  Object.assign(job, { state: "queued", purpose: "work", retry: retry2, nextAt: retry2.at, run: void 0, error: void 0, ...fresh ? { session: { ...job.session, id: randomUUID10() } } : {} });
+  Object.assign(job, { state: "queued", purpose: "work", retry: retry2, nextAt: retry2.at, run: void 0, error: void 0, ...fresh2 ? { session: { ...job.session, id: randomUUID10() } } : {} });
   store2.saveJob(job);
-  store2.log({ event: "retry-planned", job: job.id, key: job.key, n: retry2.n, kind: retry2.last.kind, why: retry2.last.why, at: retry2.at, fresh, ...usedBy(job) });
+  store2.log({ event: "retry-planned", job: job.id, key: job.key, n: retry2.n, kind: retry2.last.kind, why: retry2.last.why, at: retry2.at, fresh: fresh2, ...usedBy(job) });
 }
 function shortOfGoal(store2, job, r) {
   const p = planRetry(job.retry, r.blocker);
@@ -49472,8 +49504,8 @@ Reply "ok ${p.code}" to save it.`;
     const claims = p.ops.map((o) => ({ topic: p.title, title: p.title, type: o.entry.type, text: o.entry.text, src: o.entry.src, audience: o.entry.audience, tags: o.entry.tags, ...o.was !== void 0 && o.id ? { replaces: [`card:${p.topic}/${o.card}#${o.id}`] } : {} }));
     Object.assign(p, { state: "dropped", status: "Replaced: the card changed" });
     store2.saveProposal(p);
-    const [fresh] = propose2(store2, k, claims, p.from, p.source);
-    return fresh ? `${p.title} changed since ${p.code}. Review ${fresh.code} instead.` : `${p.title} already has everything ${p.code} proposed.`;
+    const [fresh2] = propose2(store2, k, claims, p.from, p.source);
+    return fresh2 ? `${p.title} changed since ${p.code}. Review ${fresh2.code} instead.` : `${p.title} already has everything ${p.code} proposed.`;
   }
 }
 function undoSuperseding(store2, k, link2) {
@@ -49827,8 +49859,8 @@ async function refreshCatalogs(store2, cfg, now = Date.now(), force = false, via
   let n = 0;
   const due2 = (name, spec) => {
     const had = readCatalog(name), key = specKey(spec);
-    const fresh = had && !had.stale && !had.error && had.spec === key && now - Date.parse(had.at) < DAY4;
-    return force || !(fresh || resting2(had, spec, now));
+    const fresh2 = had && !had.stale && !had.error && had.spec === key && now - Date.parse(had.at) < DAY4;
+    return force || !(fresh2 || resting2(had, spec, now));
   };
   const listed2 = (name, spec, info, version3, via) => {
     const had = readCatalog(name), tools = info.map((t2) => ({ name: t2.name, ...classifyTool(name, t2), ...t2.description ? { description: t2.description.split(/(?<=[.!?])\s/)[0].slice(0, 200) } : {}, info: t2 }));
@@ -55185,10 +55217,10 @@ function freshOf2(r, mark2) {
 }
 function sinceOf(v) {
   const at3 = v.since ?? new Date(Date.parse(v.now) - 864e5).toISOString();
-  const fresh = (v.done ?? []).filter((r) => r.at > at3);
-  const replies = fresh.filter((r) => r.kind === "reply" && !r.inTeams), people = new Set(replies.map((r) => r.who.name)).size;
+  const fresh2 = (v.done ?? []).filter((r) => r.at > at3);
+  const replies = fresh2.filter((r) => r.kind === "reply" && !r.inTeams), people = new Set(replies.map((r) => r.who.name)).size;
   const byRule = new Set(replies.filter((r) => r.by.startsWith("by rule")).map((r) => r.who.name)).size;
-  const reviews = fresh.filter((r) => r.kind === "review").length, fyis = fresh.filter((r) => r.kind === "catchup").length, handled = v.next?.handled ?? 0;
+  const reviews = fresh2.filter((r) => r.kind === "review").length, fyis = fresh2.filter((r) => r.kind === "catchup").length, handled = v.next?.handled ?? 0;
   const parts2 = [
     people ? { text: `replied to ${people}${byRule ? ` (${byRule} by rule)` : ""}`, href: "#done/replies" } : void 0,
     reviews ? { text: plural3(reviews, "review"), href: "#done/reviews" } : void 0,
@@ -55767,7 +55799,7 @@ ${code} stays ${byCode.get(code)?.state === "done" ? "done" : "open"}. Nothing i
         const cardWorkId = entities.items[row.act]?.workId, cardWork = cardWorkId ? entities.work[cardWorkId] : void 0;
         entities.work[workId] = { ...cardWork, id: workId, itemId: row.act, goal: work2.goal, due: cardWork?.due ?? false, proposed: cardWork?.proposed ?? false, planIds, stepIds, total: work2.total, yours: work2.yours, then: work2.then, reportActionId };
       }
-      const fresh = freshOf2(row, rowMark(base, row));
+      const fresh2 = freshOf2(row, rowMark(base, row));
       const authoritative = placementOf.get(row.code);
       if (!authoritative) throw new Error(`The row ${row.code} has no authoritative server placement.`);
       const workflow = byCode.get(row.act), askedAt = asksAt.get(row.act);
@@ -55784,7 +55816,7 @@ ${code} stays ${byCode.get(code)?.state === "done" ? "done" : "open"}. Nothing i
           ...row.facts.verb === "asked" && workflow ? { at: askedAt ?? workflow.createdAt, verb: askedAt ? "asked" : "item created" } : {},
           notes: row.facts.notes?.map((note) => ({ ...note, text: pageText(note.text) }))
         },
-        chips: [...row.chips, ...fresh ? [{ kind: fresh, text: fresh === "back" ? "Back to you" : "New" }] : []],
+        chips: [...row.chips, ...fresh2 ? [{ kind: fresh2, text: fresh2 === "back" ? "Back to you" : "New" }] : []],
         id: row.code,
         subjects: authoritative.subjects,
         position,
@@ -56175,9 +56207,9 @@ function readSubmissionReceipt(store2, id, write = true) {
   if (write && applied && !saved.processed) store2.savePageSubmission({ ...saved, processed: true, text: text3, refused, uncertain });
   return { submissionId: saved.id, item: saved.item, rev: saved.rev, ids: saved.ids, accepted: saved.accepted, applied: !!applied, text: text3, refused, uncertain, at: saved.at };
 }
-async function submitIntentWhenFree(store2, intent, waitMs = 1e4) {
+async function submitIntentWhenFree(store2, intent, waitMs = 1e4, around = (fn) => fn()) {
   for (const until = Date.now() + waitMs; ; ) {
-    const r = store2.withPageSubmissionNow(intent.submissionId, () => submitLocked(store2, intent));
+    const r = around(() => store2.withPageSubmissionNow(intent.submissionId, () => submitLocked(store2, intent)));
     if (r !== BUSY) return r;
     if (Date.now() >= until) throw new IntentError(503, `Timed out waiting for this action's saved result. Check it again before acting; nothing was sent twice.`);
     await new Promise((r2) => setTimeout(r2, 50));
@@ -56290,14 +56322,14 @@ function pageDelta(before, after, base) {
     return [key, index];
   }));
   for (const table2 of Object.keys(entities)) {
-    const old = before.entities[table2], fresh = entities[table2];
+    const old = before.entities[table2], fresh2 = entities[table2];
     const changed = /* @__PURE__ */ new Map();
     const change2 = (id, replace, value) => {
       const key = JSON.stringify([replace, value]), group2 = changed.get(key);
       if (group2) group2.ids.push(id);
       else changed.set(key, { ids: [id], replace, value });
     };
-    for (const [id, value] of Object.entries(fresh)) {
+    for (const [id, value] of Object.entries(fresh2)) {
       const prior = old[id];
       if (!prior || Object.keys(prior).some((key) => !(key in value) || Reflect.get(value, key) === void 0 && Reflect.get(prior, key) !== void 0)) {
         change2(id, true, references(value));
@@ -56307,9 +56339,9 @@ function pageDelta(before, after, base) {
       if (Object.keys(patch).length) change2(id, false, references(patch));
     }
     if (changed.size) delta.entities[table2] = [...changed.values()];
-    const removed = Object.keys(old).filter((id) => !(id in fresh));
+    const removed = Object.keys(old).filter((id) => !(id in fresh2));
     if (removed.length) delta.removed[table2] = removed;
-    const merged = [...Object.keys(old).filter((id) => id in fresh), ...Object.keys(fresh).filter((id) => !(id in old))], ids = Object.keys(fresh);
+    const merged = [...Object.keys(old).filter((id) => id in fresh2), ...Object.keys(fresh2).filter((id) => !(id in old))], ids = Object.keys(fresh2);
     if (merged.some((id, i) => id !== ids[i])) (delta.order ??= {})[table2] = ids;
   }
   return delta;
@@ -56479,7 +56511,7 @@ function serveInbox(get, port = 0, token = randomBytes3(16).toString("hex"), pro
           return;
         }
         try {
-          const receipt = submissionReceipt(get(), id);
+          const receipt = readScope(() => submissionReceipt(get(), id), { writes: true });
           json2(receipt ? 200 : 404, receipt ?? { text: "This submission has not been confirmed. Keep checking; do not send it again." });
         } catch (error62) {
           failure2(error62);
@@ -56513,7 +56545,7 @@ function serveInbox(get, port = 0, token = randomBytes3(16).toString("hex"), pro
             return;
           }
           try {
-            const result = await submitIntentWhenFree(get(), parsed.data);
+            const result = await submitIntentWhenFree(get(), parsed.data, void 0, (fn) => readScope(fn, { writes: true }));
             json2(result.status, result.receipt);
           } catch (error62) {
             failure2(error62);
@@ -57056,8 +57088,8 @@ async function save(step2, raw, deps = {}) {
   const summary3 = await apply(step2, v, deps);
   const p = progress();
   const root = readJson(join35(LOCAL_DIR, "local.json"), {}).root;
-  const fresh = step2 === "storage" && p.root !== root;
-  const next2 = { root, done: fresh ? {} : p.done };
+  const fresh2 = step2 === "storage" && p.root !== root;
+  const next2 = { root, done: fresh2 ? {} : p.done };
   next2.done[step2] = summary3;
   writeJson(progressFile(), next2, machine());
   return `${summary3}

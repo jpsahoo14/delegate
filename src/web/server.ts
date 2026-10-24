@@ -169,7 +169,8 @@ export function serveInbox(get: () => Store, port = 0, token = randomBytes(16).t
 				const id = u.searchParams.get('submission') ?? ''
 				if (!/^[a-f0-9-]{36}$/i.test(id)) { json(422, { text: 'A valid submission identity is required.' }); return }
 				try {
-					const receipt = submissionReceipt(get(), id)
+					// A receipt poll reads each file once (#27 step 1), with its own copies because it may save the receipt.
+					const receipt = readScope(() => submissionReceipt(get(), id), { writes: true })
 					json(receipt ? 200 : 404, receipt ?? { text: 'This submission has not been confirmed. Keep checking; do not send it again.' })
 				} catch (error) { failure(error) }
 				return
@@ -189,7 +190,7 @@ export function serveInbox(get: () => Store, port = 0, token = randomBytes(16).t
 					const parsed = intentSchema.safeParse(raw)
 					if (!parsed.success) { json(422, { text: 'That action has invalid fields.' }); return }
 					try {
-						const result = await submitIntentWhenFree(get(), parsed.data)
+						const result = await submitIntentWhenFree(get(), parsed.data, undefined, fn => readScope(fn, { writes: true }))
 						json(result.status, result.receipt)
 					} catch (error) { failure(error) }
 				})
