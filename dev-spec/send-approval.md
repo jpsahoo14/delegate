@@ -5,6 +5,59 @@ Owner intent checks may use only the warm host's optional one-shot `quick` API,
 never a cold CLI or the item's session. Rule sends retain their stricter checks
 and never use the relaxed intent check.
 
+## Stale Send anyway (decision 47)
+
+A page override consents only to the held digest shown on that card. New passes
+the intent's `reviewed` into `Answer.sendReview`; the send dispatcher never
+replaces it with the workflow's current digest. Missing or stale consent cannot
+override a current hold, even when the page revision still matches because
+intake has not yet stored the newer source message.
+
+Editing a held reply restamps only the previously reviewed reasons for the new
+draft. Unreviewed reasons retain their old digests and are not included in the
+edit's new consent digest. Page sends perform a final fresh `threadSince` and
+`heldSend` after all other asynchronous checks, immediately before calling the
+external send. New related messages keep the draft and the updated hold with
+"Not sent: Kim wrote again after you looked. Check and send again."
+An owner reply or a reconciled earlier send also stops this final send.
+The two reads share intent-check results only within that send, keyed by the
+exact before/after messages, editions, draft and owner context. An unchanged read does not
+consume another five-second model budget; any changed input is checked again.
+If a final pass makes a new judgment, read the thread again before sending.
+Continue until a pass uses only cached judgments. If that final recheck phase
+takes five seconds, keep the draft and announce that the chat must be checked
+again; never send on an unsettled or timed-out final pass (CR 02:50 B1).
+
+Typed chat overrides bind to `holdNotice.digest`, the last hold announced by a
+successful non-page refusal notice, never the current workflow digest. The
+notice includes the held messages or edit and records its digest and time only
+after delivery. Without a notice, or when its reasons have changed, Send anyway
+refuses with a fresh notice; another confirmation can send that exact hold.
+Clearing a hold for a new turn or draft also clears its notice. Both page and
+typed chat sends make the final fresh check (PE 06:25 decision-47 addendum).
+That ruling changes the existing fictional proof expectations: a chat override
+after a page-only hold update or an unannounced no-reply result first gets a
+notice, then confirms it. The send proof's automatic-send fixture supplies a
+known internal membership response and checks the writer's active rule ID,
+without bypassing either production authorization check.
+PE 07:10 supersedes the earlier committed-proof request: keep the current-digest
+and late-source reproductions outside the repository in Temp, run them on the
+exact integrated stage, and record the commands, counts and outcomes in the
+private release evidence. Add no proof journeys or P0 scenarios.
+If a source read omits a stored,
+unreviewed hold, that absence cannot clear it or grant consent. Keep the reason
+bound to the current draft and show it again; an exact subsequent confirmation
+can still send. A confirmed source deletion keeps its existing close behavior.
+The E2E report's in-flight-poll explanation is plausible, not an established
+cause. Only the exact integrated 0.2.45 stage can satisfy the browser gate.
+
+This is a 0.2.45 release gate and applies to the same send path shipped in
+0.2.44. Per PE 06:55, do not make a 0.2.44.1 hotfix unless 0.2.45 slips more than
+48 hours. Any such hotfix needs CR review and both the page's reviewed-digest
+transport and the engine checks together. Engine-only deployment fails closed
+for held page overrides without that field. The fixed path is carried into
+0.2.46 by rebasing M3 on 0.2.45, not by a separate port.
+
 ## Unknown membership (R34)
 
 The first successful Teams members response per process records `members-shape`
@@ -24,6 +77,91 @@ One `membership-waiting` health line shows the count without names or ids:
 A clean membership read removes just that chat, including a read that positively
 finds a guest; the last removal clears the line. Cached verified reads also clear
 stale waits. Owner-approved sends and fail-closed authorization are unchanged.
+
+## Forwarded-message shape capture
+
+The first `forwardedMessageReference` attachment converted by a Teams source in
+each process records `forwarded-message-shape` through the source logger.
+It records field paths and value kinds only, including parsed JSON content;
+no message text, sender, ids, timestamps or URL values are logged. The capture
+is bounded to four levels, 32 keys per object, three array entries and 80
+distinct path/kind pairs, with a truncation flag. Invalid JSON is recorded as
+`invalid-json`, never as raw content or a parser error containing that content.
+Keys outside `^[A-Za-z_][A-Za-z0-9_]{0,40}$` become `<key>`, so id-keyed
+maps cannot disclose ids or emails. The once flag is set before inspecting or
+logging the attachment. Capture failures emit a content-free stderr note and
+never stop intake or retry the diagnostic on the next message.
+Chat and channel reads share this capture. Conversion behavior is unchanged;
+preserving forwarded text and links awaits the observed shape and PE plan.
+
+## Vote-claim words
+
+Approval detection matches whole vote words, not `approver` or `approvers`.
+Future, conditional, negated and requested votes retain the existing non-claim
+treatment; named reviewers keep their own classification, including `Kim approves`.
+Remaining vote wording defaults to an owner claim, so unusual claims such as
+`Just approved it` or `Gave my approval` never bypass the vote check.
+Auxiliary/adverb prefixes such as `Have` and `Just` are not reviewer names.
+The page and Send guard share this classification, including on edited drafts.
+`APPROVAL_WORD` exports the non-global pattern from core/vote-claims for page
+highlights; consumers needing global matching clone its source, not its word list.
+
+## Untitled group chat places
+
+Teams listing, lookup and gap-search results never name an untitled group or
+meeting chat after the last sender or its id. Titled chats keep their title;
+untitled groups fall back to `Group chat`. A one-to-one prefers the other
+member's cached name when the owner id is known and exactly one other member is
+cached; otherwise its existing fallback remains. Listing and gap search read one
+cache snapshot each, without extra Teams calls or writes.
+
+`groupChatPeople(store, chatId, ownerId, askerId)` in runner/sharing reads only
+the existing members cache. It returns `{ names, count }` for the other members,
+excluding the owner and asker. Names are first names, with a last initial when
+first names clash; `count` includes cached members whose names are unavailable.
+Unknown names return undefined; no remaining members returns an empty list.
+New owns the card/row/source wording and truncation, not this data helper.
+For these names and sharing's person labels, trailing parenthetical suffixes are
+removed and `Last, First` becomes `First Last` before taking names/initials.
+The shared `personName` export in core/format also normalizes the cached
+one-to-one counterpart name; New can use it before taking headline first names.
+No membership fetch, permission change or stored-title rewrite is performed.
+
+## Rule-governed job results
+
+Catalog version 3 adds optional `when.results: true` to send grants. Ordinary
+send grants do not cover completed review/investigation results. This permission
+requires the existing line confirmation, with a version-3 grant and matching
+text hash; old grants are not reinterpreted or widened. Read-back names review
+and investigation results explicitly. Restrictive draft/ignore/ack/shortcut
+rules still participate in the strictest matching decision; review permissions
+remain in their existing review lane.
+
+SEND exports `decideResult(store, cfg, wf, reply, facts)` from runner/autosend.
+`ResultFacts` is code-owned completion data: destination `chatId`, the current
+workflow `revAt` as `turn`, vetted `effects`, all report/vetting/refusal `todos`,
+optional question/blocker/goalMet/context, and, for reviews,
+`{ review: { pr, head } }`. HOST must first stamp the current turn and verified
+review basis on the workflow, merge current effects/questions/to-dos and work,
+then decide. No rule can override pending effects, unresolved/kept to-dos,
+questions, a blocker, goalMet=false, Not reached context, an unverified review
+basis, another destination or a stale turn.
+
+The existing policy/authorization chain still checks membership, guests/outside,
+caps, holds, confidence, promises, gaps, votes and secrets. Result mode relaxes
+only the blanket open-work hold, not other safeguards. Quiet hours hold results;
+delivery retains dueSends' owner-presence check. An ordinary send grant leaves
+the result with `No rule sends results in this chat`. Ack/ignore decisions retain
+a draft rather than acknowledging or dropping a result.
+
+HOST integration contract: persist these facts per parent workflow as
+`job.result.sendFacts[wf.id]`, beside the exact result reply, before the scheduled
+send can be processed. The existing sendAt/dueSends and final automatic Send
+check re-read the facts and rules through automaticDecision. A changed result
+reply in that turn waits; missing facts on old results fail closed. There is no
+upgrade, repair, scheduling of old results or new sending path. HOST owns
+finishWork's call site, scheduling, persistence, receipt and nudge; New displays
+the policy reason/read-back. SEND's API alone does not enable result sending.
 
 ## Structured failures (R31)
 

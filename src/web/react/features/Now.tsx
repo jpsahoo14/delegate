@@ -1,5 +1,5 @@
 import { Fragment, memo, useEffect, useRef, useState, type ComponentProps, type CSSProperties, type ReactNode } from 'react'
-import { chipHover, codeHover } from '../domain/hover.ts'
+import { chipHover } from '../domain/hover.ts'
 import { Button } from '../components/ui/button.tsx'
 import { useCardPresentation, useCardUi, useEdit, useEntities, useExperienceNote, useItemCard, useNowSections, usePlacement, useSnapshot } from '../data/hooks.ts'
 import { useNavigation } from '../data/navigation.ts'
@@ -13,6 +13,7 @@ import { Icon } from '../components/ui/icon.tsx'
 import { ViewportList } from '../components/ViewportList.tsx'
 import { messageText, sentAt, whereOf } from './ItemCard.tsx'
 import { SentTime } from './SentTime.tsx'
+import { CODE, ItemCode } from './ItemCode.tsx'
 import { busyWords } from '../data/busy.ts'
 import { WaysLink, waysLinkShown } from './Ways.tsx'
 import { isolateRowControls } from './row-navigation.ts'
@@ -123,11 +124,11 @@ export const NowRow = memo(function NowRow({ id, day }: { id: string; day?: stri
 				: item?.question && row.kind === 'question' ? [`${NAME} needs to know`, item.question]
 					: row.kind === 'todo' && item?.todoIds.length && entities?.todos[item.todoIds[0]] ? ['Left for you', `${entities.todos[item.todoIds[0]].text}${item.todoIds.length > 1 ? ` (+${item.todoIds.length - 1} more)` : ''}`] : undefined
 	const who = person?.name ?? row.facts.who
-	return <article className={`now-row${open ? ' row-open' : ''}`} data-code={row.code} data-row-kind={row.kind} title={codeHover(row.act)} onClick={row.kind === 'catchup' ? isolateRowControls : undefined}>
+	return <article className={`now-row${open ? ' row-open' : ''}`} data-code={row.code} data-row-kind={row.kind} onClick={row.kind === 'catchup' ? isolateRowControls : undefined}>
 		<div className="row-content" onClick={row.section === 'waiting' ? event => { if (!(event.target instanceof Element && event.target.closest('a, button, input, textarea, select'))) toggle() } : undefined}>
 			{person && !icon ? <span className="row-avatar" style={avatarStyle} aria-hidden="true">{person.initials}</span> : <span className="row-icon"><Icon name={icon ?? 'clock'} /></span>}
 			<div className="row-text">
-				<div className="row-line1">{who && <span className="row-name">{who}</span>}{(chat || row.facts.where) && <span className="row-where">· {chat ? whereOf(chat) : row.facts.where}</span>}
+				<div className="row-line1">{who && <span className="row-name">{who}</span>}{(chat || row.facts.where) && <span className="row-where">· {chat ? whereOf(chat, 'row') : row.facts.where}</span>}
 					<SentTime at={sent.at} added={sent.added} waiting={row.section === 'move'} />
 					{row.teams && <a className="row-teams" href={row.teams} target="_blank" rel="noopener noreferrer" aria-label="Open in Teams" title="Open this message in Teams, in a new tab."><Icon name="ext" /></a>}
 					{row.chips.map((chip, n) => <span key={`${chip.kind}-${n}`} className={`chip chip-${chip.kind}`} title={chipHover(chip.kind)}>{chip.text}</span>)}</div>
@@ -142,6 +143,7 @@ export const NowRow = memo(function NowRow({ id, day }: { id: string; day?: stri
 			{!(open && hasReport) && <div className="row-controls" data-row-controls>
 				<RowControls row={row} open={open} toggle={toggle} />
 			</div>}
+			{CODE.test(row.act) && <ItemCode code={row.act} />}
 		</div>
 		{open && <div className="inline-expansion">
 			{hasItem ? <ItemCard key={shown} code={shown} placementId={shown === row.act ? row.id : undefined} inline asks={row.subjects.length > 1 ? { codes: row.subjects, onOpen: subject => navigate(`now/${id}/${subject}`) } : undefined} /> : <Standalone id={id} />}</div>}
@@ -164,6 +166,12 @@ export default function Now() {
 	const [input, setInput] = useState(find)
 	const composing = useRef(false)
 	useEffect(() => { if (!find && !composing.current) setInput('') }, [find])
+	// PM A R35 (b): Find on an exact item code ("A48") opens that item's row, once per query, so closing it stays closed.
+	const exact = find.trim(), search0 = find ? snapshot?.search : undefined
+	const exactId = CODE.test(exact) && search0?.query === find ? search0.nowIds.find(id => entities.placements[id]?.act.toUpperCase() === exact.toUpperCase()) : undefined
+	const exactCode = CODE.test(exact) && search0?.query === find ? exact.toUpperCase() : undefined
+	const openedFor = useRef('')
+	useEffect(() => { if (exactId && openedFor.current !== find) { openedFor.current = find; navigate(`now/${exactId}`) } }, [exactId, find, navigate])
 	if (!snapshot || !sections) return <p role="status">Loading your items...</p>
 	const search = find ? snapshot.search : undefined
 	const activePins = Object.fromEntries(Object.entries(pinned).filter(([code, pin]) => dirty(byRevision[revisionKey(code, pin.rev)] ?? {}) || dirty(byRevision[revisionKey(code, pin.actionRev ?? pin.rev)] ?? {})))
@@ -185,6 +193,18 @@ export default function Now() {
 		ownership.nobody && `${ownership.nobody} ${ownership.nobody === 1 ? 'thing has' : 'things have'} nobody on the next step.`,
 		ownership.unknown && `${ownership.unknown} ${ownership.unknown === 1 ? 'thing is' : 'things are'} waiting.`,
 	].filter(Boolean).join(' ')
+	// I2 (PE 02:09): Now › Waiting focused on one row: Find is cleared so the row is listed, then it is scrolled to and flashed by its
+	// data-code, as Your way of working flashes a line.
+	const focusRow = (id: string) => {
+		setFind(''); navigate('now/waiting')
+		let tries = 0
+		const look = () => {
+			const row = document.querySelector<HTMLElement>(`.now-row[data-code="${CSS.escape(id)}"]`)
+			if (row) { row.scrollIntoView({ block: 'center' }); row.classList.add('row-flash'); setTimeout(() => row.classList.remove('row-flash'), 1600) }
+			else if (++tries < 20) setTimeout(look, 100)
+		}
+		setTimeout(look, 100)
+	}
 	const quiet = sections.every(section => !(section.total ?? section.ids.length)) && !running.length && !snapshot.summary.minute.facts && !snapshot.summary.minute.suggestions
 	return <>
 		<h1 className="now-title">Now</h1>
@@ -197,9 +217,31 @@ export default function Now() {
 		{search?.link && !search.link.item && <section className="warning"><p>This message is not an item yet.</p>{snapshot.pageActionIds?.filter(id => entities.actions[id].kind === 'paste-missed').map(id => <ActionButton key={id} action={entities.actions[id]} input={{ text: search.link!.href }} />)}</section>}
 		{search?.doneIds.length ? <section><h2>Already in Done</h2>{search.doneIds.map(id => {
 			const row = entities.doneEntries[id]
-			return <p key={id}><button className="row-title" onClick={() => navigate(`done/${row.kind === 'catchup' ? 'catchup' : 'replies'}`)}>{row.code}: {row.sentence}</button>{row.teams && <> - <a href={row.teams} target="_blank" rel="noopener noreferrer">Open in Teams</a></>}</p>
+			return <p key={id}><button className="row-title" onClick={() => navigate(`done/${row.kind === 'catchup' ? 'catchup' : 'replies'}`)}>{row.sentence}</button>{row.teams && <> - <a href={row.teams} target="_blank" rel="noopener noreferrer">Open in Teams</a></>} <ItemCode code={row.code} /></p>
 		})}</section> : null}
-		{!find && !quiet && <p className="since-line summary-line" aria-label="Now summary">
+		{/* PM A R38 (3): an exact code found only in Ongoing shows under "In Ongoing"; a code found nowhere says so. I2 (PE 02:09): Open
+		    never links to a page that doesn't list it. A Now row opens #now/<placementId>; a waiting ask or an automation New lists in
+		    Now › Waiting opens that section, focused on its row (scroll and flash). New lists no watch, progress or running entry outside
+		    Now (no Watch details), so one with no Now row shows its line without Open. */}
+		{(() => {
+			if (!exactCode) return null
+			const found = (search?.nowIds ?? []).some(id => entities.placements[id]?.act.toUpperCase() === exactCode || id.toUpperCase() === exactCode) || (search?.doneIds ?? []).some(id => entities.doneEntries[id]?.code.toUpperCase() === exactCode)
+			if (found) return null
+			const same = (code?: string) => code?.toUpperCase() === exactCode
+			const listed = (kind: 'waits' | 'item', text: string) => ({ kind, text })
+			const ongoing = [
+				...Object.values(entities.waiting).filter(row => same(row.code)).map(row => listed('waits', `You asked ${row.to}`)),
+				...Object.values(entities.automations).filter(row => same(row.code)).map(row => listed('waits', row.sentence)),
+				...Object.values(entities.watches).filter(watch => same(watch.code)).map(watch => listed('item', watch.what)),
+				...(snapshot.classic?.progress ?? []).filter(row => same(row.code)).map(row => listed('item', row.goal)),
+				...(snapshot.classic?.running ?? []).filter(row => same(row.code)).map(row => listed('item', row.what)),
+			][0]
+			if (!ongoing) return <p role="status">Nothing called {exactCode}.</p>
+			const placementId = Object.keys(entities.placements).find(id => same(entities.placements[id].act) || same(id))
+			const open = !placementId ? undefined : ongoing.kind === 'waits' && sections.some(section => section.id === 'waiting' && section.ids.includes(placementId))
+				? <a href="#now/waiting" onClick={event => { event.preventDefault(); focusRow(placementId) }}>Open</a> : <a href={`#now/${placementId}`} onClick={() => setFind('')}>Open</a>
+			return <section><h2>In Ongoing</h2><p><span>{ongoing.text}</span>{open && <> {open}</>} <ItemCode code={exactCode} /></p></section>
+		})()}		{!find && !quiet && <p className="since-line summary-line" aria-label="Now summary">
 			{snapshot.summary.off && !snapshot.summary.paused && <span className="chip">{snapshot.summary.off.text}{snapshot.summary.off.since ? ` since ${when(snapshot.summary.off.since)}` : ''}</span>}
 			{!!snapshot.sinceLine?.parts.length && <><span className="summary-part">Since {when(snapshot.sinceLine.at)}: </span>{snapshot.sinceLine.parts.map((part, index) => <Fragment key={part.href}>{index > 0 && <span className="summary-separator"> · </span>}<a className="summary-part" href={part.href}>{part.text}{part.href === '#numbers' && <span aria-hidden="true"> ›</span>}</a></Fragment>)}<span className="summary-separator"> · </span></>}
 			{(() => {

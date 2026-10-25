@@ -62,7 +62,7 @@ function post(w: Workflow, text: string, offset = 1) {
 	messages.get(w.chat.id)!.push({ id: String(Number(w.lastMsgId) + offset), at: later, from: w.asker!, body: text, html: false })
 }
 async function approve(w: Workflow, options: { quick?: Quick; review?: string; text?: string; chat?: boolean } = {}) {
-	store.writeAnswer({ code: w.code, verb: options.text ? /^(?:send anyway|redraft)$/.test(options.text) ? 'answer' : 'send' : 'ok', text: options.text, surface: 'panel', sendReview: options.review,
+	store.writeAnswer({ code: w.code, verb: options.text ? /^(?:send anyway|redraft)$/.test(options.text) ? 'answer' : 'send' : 'ok', text: options.text, surface: options.chat ? 'self' : 'panel', sendReview: options.review,
 		...(!options.chat ? { page: { kind: 'send-reply' as const, expect: workflowApprovalRev(w) } } : {}) })
 	await applyAnswers(store, source, cfg, undefined, false, undefined, options.quick)
 	return store.workflow(w.id)!
@@ -235,17 +235,20 @@ try {
 
 	w = await seed(); post(w, `${recurring}\nRobin, can you restart the service now?`)
 	w = await approve(w, { quick: no }); post(w, `${recurring}\nRobin, stop the rollout instead.`, 2)
+	const beforeNotice = sent.length
+	w = await approve(w, { quick: no, text: 'send anyway', chat: true })
+	assert.equal(sent.length, beforeNotice); assert.equal(w.holdNotice?.digest, w.holdDigest)
 	w = await approve(w, { quick: no, text: 'send anyway', chat: true }); assert.ok(w.sent)
-	pass('chat Send anyway reviews the current full reason set')
+	pass('chat Send anyway refuses with a notice first, then confirms exactly the announced hold (PE 06:25 decision 47)')
 
 	w = await seed(); post(w, `${recurring}\nRobin, can you restart the service now?`)
 	w = await approve(w, { quick: no })
 	const kept = w.draft?.text
 	w = await approve(w, { quick: no, text: 'Replacement typed into chat', chat: true })
 	assert.equal(w.sent, undefined); assert.equal(w.draft?.text, kept)
-	w = await approve(w, { quick: no, text: 'Incident 54321 is active; investigating.' })
+	w = await approve(w, { quick: no, text: 'Incident 54321 is active; investigating.', review: w.holdDigest })
 	assert.ok(w.sent); assert.equal(w.sent.text, 'Incident 54321 is active; investigating.')
-	pass('typed chat cannot replace a held draft; page-edited text restamps all shown reasons')
+	pass('typed chat cannot replace a held draft; page-edited text restamps only explicitly reviewed reasons')
 
 	w = await seed()
 	const revision = workflowApprovalRev(w)

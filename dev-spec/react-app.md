@@ -1,5 +1,115 @@
 # React preview
 
+## Joiner follow-ups (PE decision 43(c), 0.2.45)
+
+- Keep candidate scoping by actual prTarget for every named PR. Only multi-PR messages may bypass askRelation;
+  a single-PR message again uses the old quote/subject relation test among scoped candidates, including when its
+  target came only from a job/effect and the old relation would not join. No new permission or family rewrite.
+- pr-anchor-conflict remains fail-closed on every call but emits once per item code per process, not on every
+  prTarget reader. Another code may emit its own event; no durable marker or migration.
+- #54 analysis note: named-PR home selection scopes store.workflows(), so prTarget may read each candidate's thread.
+  Include that cost in Debug's idle/intake/controls timing analysis; no new cache or latency claim in this follow-up.
+- The temporary Also mentions context line can be replaced by the next worker report. Decision 43(d) explicitly
+  schedules its replacement with prAnchor.also + New's rendering for 0.2.46; leave that data/UI work for after M2.
+
+## Fast checks after sent replies only (A R39 / owner fast-poll ruling)
+
+- A successful workflow reply receipt (wf.sent.at, whether owner-approved or rule-sent) is the tick's activity evidence,
+  not command/ask/run/job/probe/nudge/busy counts. Do not use the generic sent ledger: it also includes reminders and self posts.
+- runner/poll records fastUntil from the actual reply time plus the configured window. Existing receipts never extend it
+  again on each tick; old replies outside the window cannot reopen it. A later reply extends it. Partial poll configuration
+  uses the same default merge as the page. No new workflow, schedule or store fields and no old-data repair.
+- Confirmed owner-authored replies use the shared rememberOwnerReply writer, covering intake and the pre-send check.
+  An unconfirmed/unrelated owner message and somebody else's incoming reply do not open it. Incoming text only renews
+  fast checks once Delegate sends its answer. Nudges, reminders, acknowledgements and status posts alone do not qualify.
+- Successful and stopped ticks schedule using that window; a source failure retains its existing backoff/nextAt while
+  recording any already-persisted reply. Pending workflow sendAt deadlines join the earliest reminder/retry deadline:
+  they wake at the due minute without opening a fast window. Kick/answer/local-job wakeups stay unchanged.
+  Previously open windows expire normally and are not renewed by unrelated activity.
+- Cadence change from removing the no-reply busy trigger: relay/host jobs without a local PID and closed
+  Continue windows are noticed at idle cadence unless another wake is due (normally 5 minutes during work hours,
+  15 outside). A stopped runner can retain an existing reply's fast window while supervising without source reads.
+  The sent-receipt workflow scan is cached where scopes permit; include its cost in #54, not a measured-cost claim.
+- The authorized fictional Temp check exercises actual ticks with fake source/procs and a stub worker, an owner-approved
+  send, a rule-tagged persisted receipt, confirmed owner replies, ask/run/job/nudge negatives, replay/expiry, retry and
+  source-backoff preservation. No real source/model calls or new committed proof/test/golden cases.
+- Page copy remains New's A R39/R42 work and must ship with this behavior. This does not consume SEND's blocked
+  key-dependent 0.2.46 merge or future decision-48 prerequisites.
+
+## New-message PR join boundary (0.2.45)
+
+- Scope incoming body text before quote/subject routing. prJoinCandidates uses explicit PR / PR # / pull request words,
+  or validated dev.azure.com / *.visualstudio.com pullrequest URLs. Bare numbers and non-ADO PR links never identify an
+  ADO item; a foreign-only PR link cannot collide with an open ADO target. Attachments/forwarded fields are not new inputs.
+  The existing approval-number parser keeps its old behavior; linksIn, joinWhy and v5 family splitting are unchanged.
+- Existing sender, freshness, quiet/backlog and closed-reopen gates still apply. One matching eligible item wins even
+  when another named PR makes askRelation differ. Several matches require a matching explicit reply target, otherwise
+  take the existing ambiguity/new-item path; a wrong-PR quote/subject cannot override the boundary. No PR means old routing.
+  Named-PR group context is not appended to unrelated items; owner waiting-work links and new cross-chat parts are scoped too.
+- A joined item gets one info fact "Also mentions PR <n>" for additional names. In the sole-match/multi-PR case only,
+  the joiner may record Workflow.prAnchor {pr,msgId,at}: the actual old prTarget, computed before append, among the names.
+  Never from a worker or migration, never overwritten by a later join. prTarget honors it only while the message is owned;
+  a different single computed/lone-ask target fails closed and logs pr-anchor-conflict {code,anchor,computed}.
+- The same prTarget drives existing review/vote/effect guards; this grants no action on another PR. Splitting the anchor
+  message out or replacing it clears the anchor; close clears it through stateFields. Pure compatibility discards a stale,
+  removed, redacted or closed anchor, restoring the old computation. No existing family is rewritten.
+- Authorized fictional %TEMP% checks cover PE P1-P6, multi-PR effect/vote refusal, anchor ownership/conflict/lifecycle,
+  strict providers and unchanged sender/freshness/reopen/no-PR behavior. No committed tests or golden rows.
+- The optional schema-8 nit only suppresses a missing-job skipped log for non-review intent; payload/stamping is unchanged.
+  Forwarded-text preservation, fast polling and A76's result-send call site remain separate queued work.
+
+## Historic review context, schema 8 (A48(a))
+
+- WORKFLOW_SCHEMA is 8; all existing workflow constructors keep using the shared constant. Versions 4-7 are unchanged,
+  and version 8 stays inside the existing 50-per-schema-phase bound, fresh reads, recordCommit and skipped stamping.
+- runner/review-context exports the pure trimReviewContext(job, parents, context, intent?) -> {context, dropped, warns}.
+  Its predicate/regex/filter are the former finishWork #8 policy: PR review, not a recurring job, no author parent;
+  drop reviewNoise facts and make retained tones info. Ineligible inputs pass through unchanged. reviewNoise remains
+  re-exported from jobs for compatibility; report intent is passed explicitly by finishWork.
+- The migration resolves the linked job and parent roles, trims workflow context and the done job's result.context,
+  including a job-only cache when workflow context is empty. Job context commits before the schema stamp, through
+  recordCommit and the standard job writer; other result fields are retained. Missing job evidence leaves context unchanged and logs skipped.
+  A changed trim logs review-context-trimmed with migrated:true and workflow dropped/warns plus separate job counts.
+- Finish and migration use the same helper. When an eligible finish trims every fact, it also clears old workflow
+  context rather than silently retaining the stale facts; non-review/author/recurring behavior is unchanged.
+- The one-time schema pass, not projection, fixes the page, chat/status and worker inputs together. No new repair,
+  per-read mutation, model run, source call, send, vote or job restart.
+- Check wording (owner clarification): drain schema-phase passes on the %TEMP% copy until every workflow is at 8.
+  Author and non-review payloads stay unchanged except for schema (their jobs byte-identical). A second completed
+  phase changes no workflow, job or marker bytes. Show finish-vs-migration helper equality. No full tick is claimed.
+- The authorised copy check must name absent real controls honestly: fictional Temp controls cover author/recurring
+  exclusions and a populated done-job cache when the live copy lacks them. No new committed tests/goldens. Normal
+  E2E fixtures import WORKFLOW_SCHEMA and are born at 8 automatically; no harness API or fixture-shape change is needed.
+
+## Not-finished status metadata hygiene
+
+- The goal-not-met, non-work report path uses statusFields('not-finished', the existing text), not a bare status write.
+  Keep Needs human, why/tried copy, holding draft, question, effects, learnAfter and revAt behavior unchanged.
+  Old records continue through the existing read-time status compatibility; no rewrite or repair.
+- No new AST/proof cases under the current owner rule; the existing status writes get a PE diff scan and allowed gates.
+
+## Tick measurement, warm and cold (#54 step 1)
+
+- Every existing tick-phase gains fsMs/netMs and cold/idleMs. Ten tick-step records cover readOwnerCommands, checkJobs,
+  legacyEffects, migrateWorkflows, cliServers, adoProbe, applyAnswers, discover, intake and retryOwnerReplies, in their
+  existing order and read scopes. Synchronous steps stay synchronous; failure records are emitted before rethrow.
+  A step or phase timing-log failure is reported to stderr, not substituted for the owner's result or original work error.
+- cold is based on time since the existing previous chats.endAt: idleMs >=900,000 is cold, without rounding up shorter
+  idle gaps. Missing/invalid/future end times are cold; valid idleMs is logged so the
+  VM table can audit that classification. No schedule, timestamp, lease, cursor, cache or connection lifetime changes.
+- fsMs is non-overlapping native store-call time (including stat, reads/writes, opens/closes/lists/removes and retry sleeps)
+  plus the existing receipt-lock counter. Existing read/write counters remain unchanged; summing them would double-count
+  nested reads. The native wrappers preserve overloads and current import bindings.
+- netMs is elapsed external-call latency, not wall time minus filesystem time: Source/procs/awaited worker boundaries,
+  MCP connect/list/call/close, host loopback HTTP and synchronous child-process waits. A detached job's lifetime is not
+  charged to the tick. Async-local nesting counts inner boundaries once; receivers and results/errors are preserved.
+- Counters are process-wide completion deltas, not exclusive CPU/network buckets. Concurrent catalog work can overlap
+  other phases, and nested phases/steps are not additive; fsMs+netMs is not a wall-time decomposition.
+- New phase/step payloads contain fixed names, numbers and cold only, in the existing metadata telemetry catalog
+  (shape-only payload; no tool arguments, server identities or message text). Existing ms/allMs meaning is unchanged.
+- This is measurement only. Debug's three idle VM ticks decide optimizations; warm <2 s and cold <5 s are targets,
+  not achieved claims. No new tests/proofs: build, both types, existing goldens, publication scan and PE diff review.
+
 ## Acceptance Undo identity fix (U1)
 
 - Keep acceptedTextHash as the proposal's h.rule.text hash. After unchanged acceptance's writer succeeds, read back
@@ -583,15 +693,29 @@ PE 16:50 corrections, built as written.
 - **Client storage.** A pending click keeps its exact request (`intent`) in tab storage, so it survives a reload.
 - **When a click is sent again.**
   - Only on a 404 from `/result`: never on a 202, and never while the click's own POST is still out.
-  - Once automatically; again from Check saved result; and once more on the first poll after 10 minutes.
+  - Once automatically; again from Check again / Check now; and once more on the first poll after 10 minutes, unless it is `unreached`.
 - **What the replay can get.**
   - A receipt: done.
   - 409: the refused receipt's line.
   - 422: logged, and the click is released.
-  - A definite 404 or 5xx, followed by a `/result` that still says 404: released with "Not saved. Your click didn't reach Delegate;
-    try again."
-  - A network failure: the click waits in `unreached` ("Your click may not have reached Delegate. Check saved result sends it once
-    more; it is never done twice."), without "Do not send again".
+  - A definite 404 or 5xx, followed by a `/result` that still says 404 (decision 49 (a)): released and never sent again; Send is
+    offered again with "Not sent: Delegate didn't get your click. Try again." ("Not saved: …" for an action that sends nothing).
+  - A network failure, or a `/result` that can't be reached: `unreached`, below.
+- **Unknown outcome (decision 49 (b), PE 22:36:38Z, PM 22:43:03Z (A)).** When the receipt can't be reached about a click whose POST
+  failed, or its replay was lost on the network, the click is `unreached`: Send stays disabled, with "Couldn't confirm whether your
+  reply was sent. Check again before sending it again." as its hover and under the bar, with an outline [Check again] (focus moves
+  there; one alert). Nothing is sent again on its own, not even the 10-minute replay. Check again re-polls: a receipt shows its
+  result, a 202 means Delegate has it, and a 404 sends the same request once more. Actions that send nothing keep "Not confirmed
+  yet." with Check now.
+- **The result slot (I28, PE 22:44:56Z / 22:49:23Z).** The owner's click reserves the slot under that card's bar for its largest
+  state at the current width (the "Still working on it" line, the unknown state with its button, the not-sent line), measured
+  before paint. Later states swap in place; it shrinks only on his next click there, or when the card closes or the page changes.
+  Once reserved it is also capped at that height (CR B1 on 7556c674): a receipt's or the server's own words (unbounded, landing
+  later) are clipped there. A clipped slot shows "… Show all" over its last row (PE 01:13:27Z): a button he can tab to or tap (44 px
+  tall hit area), shown lines kept whole. Show all lifts the cap for one layout pass, then fixes the slot at the full words plus a
+  row for Show less (his own change, so nothing later grows it unasked); Show less, his next click there, or unmount returns the
+  reserved height. Each line keeps its full words in its title and whole text node for screen readers. A busy button
+  ("Sending…") keeps the width it took at the click, so the controls beside it don't slide when the label shrinks back.
 - **A new click after a release** uses a new id.
 
 **Proof.** Fictional root, stub model (quota), Edge.
@@ -4660,3 +4784,13 @@ the bounded full run exits cleanly with no skipped tests.
   executable links. The public-content check also caught a coincidental product
   substring in a local history variable; it was renamed for clarity rather than
   weakening the deny list.
+
+## bug 10-25 G3 (decision 52): a Catch up row named an untitled group by its raw chat id
+
+Every group label in page text goes through placeOf, with the existing A120 words: the Catch up attribution (view.ts itemRow,
+'<first> · ' + placeOf(...).row), the In progress row's chat (view.ts, .row), Numbers' reply rows (numbers.ts, ' in ' +
+.sentence) and the page result line (result-line.ts, the projection's chat.place.sentence). A titled group keeps its name; an
+untitled one reads 'in a group with <first> +N' (row) or 'your group with …' (sentence), or 'in a group chat' / 'a group chat'
+with no cached names; never a raw id.
+A receipt that kept an untitled group's raw chat id (stored before 0.2.46's writer fix) loses it on the page: the result line
+reads just the name (decision 52 C(1)). Numbers' label leaves out the send's own asker, as the reply rows do.

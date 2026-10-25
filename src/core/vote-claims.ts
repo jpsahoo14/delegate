@@ -1,4 +1,5 @@
-export const approvalMention = (text: string) => /approv|sign[ -]?off|\blgtm\b/i.test(text)
+export const APPROVAL_WORD = /\bapprov(?:e|es|ed|ing|als?)\b|\bsign(?:ed|ing)?[ -]?off\b|\blgtm\b/i
+export const approvalMention = (text: string) => APPROVAL_WORD.test(text)
 export const voteMention = (text: string) => approvalMention(text) || /\breject(?:ed|ion)?\b|\brequested changes\b|\bwaiting (?:for|on) author\b|\bmy vote\b/i.test(text)
 
 export function voteClaimText(pr: number | undefined, claim: number | 'approval' | 'others', text: string): string {

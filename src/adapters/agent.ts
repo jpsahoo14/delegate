@@ -1,5 +1,6 @@
 import { site } from '../core/site.ts'
-import { spawn, spawnSync } from 'node:child_process'
+import { spawn, spawnSync as spawnProcess } from 'node:child_process'
+import { timedCall } from '../core/io-time.ts'
 import { closeSync, existsSync, openSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
@@ -10,6 +11,7 @@ import { assertTestSafe } from '../store/fs.ts'
 import { ownRunFiles, promptFolder, pruneRunFiles, removeRunFiles } from './run-files.ts'
 import { agentSetupFailure, type AgentSetupFailure } from '../core/agent-failure.ts'
 import { scrub } from '../core/secrets.ts'
+const spawnSync = timedCall(() => spawnProcess)
 
 export type RunInput = { sessionId: string; prompt: string; cwd: string; mcpConfigPath: string; extraTools: string[]; dirs?: string[]; purpose?: 'rule-compile' }
 // used: what the run used and where its time went, when the AI CLI said so (R-SET-14).

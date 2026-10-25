@@ -10,11 +10,11 @@ import { NAME } from '../brand.ts'
 import { useState } from 'react'
 import { MessageBubble } from '../features/ItemCard.tsx'
 import { SentTime } from '../features/SentTime.tsx'
+import { ItemCode } from '../features/ItemCode.tsx'
 import { busyReason } from '../data/busy.ts'
 import { Hint } from '../components/ui/button.tsx'
-import { codeHover, disabledHover, hoverOf } from '../domain/hover.ts'
+import { disabledHover, hoverOf } from '../domain/hover.ts'
 
-const CodeHint = ({ code }: { code: string }) => <Hint text={codeHover(code)}><span className="code">{code}</span></Hint>
 import './ongoing.css'
 
 const INTERVALS: [number, string][] = [[60, '1 h'], [120, '2 h'], [240, '4 h'], [480, '8 h'], [1440, '1 day']]
@@ -56,10 +56,10 @@ function Watch({ watch, actions }: { watch: Entities['watches'][string]; actions
 	const controls = actions.filter(action => action.input !== 'interval' && action.kind !== 'extend-watch' && (watch.update || action.kind !== 'classic-ack-watch'))
 	const timing = <Timing action={interval} every={watch.every} endsAt={watch.endsAt} extend={extend} />
 	return watch.update ? <article className="ongoing-card" data-classic-watch={watch.code} aria-labelledby={`watch-${watch.code}`}>
-		<div className="ongoing-card-head"><span className="ongoing-icon"><Icon name="eye" /></span><div className="ongoing-text"><h3 id={`watch-${watch.code}`}>{watch.what}</h3><span className="ongoing-meta">{[watch.changedAt ? `Changed ${when(watch.changedAt)}` : '', plan].filter(Boolean).join(' · ')}</span></div><CodeHint code={watch.code} /></div>
+		<div className="ongoing-card-head"><span className="ongoing-icon"><Icon name="eye" /></span><div className="ongoing-text"><h3 id={`watch-${watch.code}`}>{watch.what}</h3><span className="ongoing-meta">{[watch.changedAt ? `Changed ${when(watch.changedAt)}` : '', plan].filter(Boolean).join(' · ')}</span></div><ItemCode code={watch.code} /></div>
 		<div className="ongoing-change"><span>{watch.last}</span></div>{timing}<RowActions actions={controls} primary="classic-ack-watch" /><RowState actions={actions} />
 	</article> : <li className="ongoing-row" data-classic-watch={watch.code}><span className="ongoing-icon"><Icon name="eye" /></span>
-		<div className="ongoing-text"><b>{watch.what}</b><span className="ongoing-meta">{watch.last}</span>{plan && <span className="ongoing-meta">{plan}</span>}{timing}<RowState actions={actions} /></div><CodeHint code={watch.code} /><RowActions actions={controls} />
+		<div className="ongoing-text"><b>{watch.what}</b><span className="ongoing-meta">{watch.last}</span>{plan && <span className="ongoing-meta">{plan}</span>}{timing}<RowState actions={actions} /></div><ItemCode code={watch.code} /><RowActions actions={controls} />
 	</li>
 }
 
@@ -77,19 +77,19 @@ export default function Ongoing() {
 			const actions = actionsOf(row.actionIds), person = Object.values(entities.people).find(person => person.name === row.who)
 			return <li className="ongoing-row" key={row.code} data-classic-progress={row.code}>
 				{person ? <Avatar person={person} /> : <span className="ongoing-icon"><Icon name="task" /></span>}
-				<div className="ongoing-text"><b>{row.goal}</b><span className="ongoing-meta">{[row.code, row.who, row.status].join(' · ')}</span>
+				<div className="ongoing-text"><b>{row.goal}</b><span className="ongoing-meta">{[row.who, row.status].filter(Boolean).join(' · ')}</span>
 					{(todoIds => todoIds.length > 0 && entities.todos[todoIds[0]] && <span className="ongoing-meta" data-left-for-you>Left for you: {entities.todos[todoIds[0]].text}{todoIds.length > 1 ? ` (+${todoIds.length - 1} more)` : ''}</span>)(entities.items[row.code]?.todoIds ?? [])}
 					{row.last && <span className="ongoing-meta">Last: {preview(row.last.what, 160)} · {when(row.last.at)}</span>}
 					{row.checkAt && <span className="ongoing-meta">I&apos;ll ask you on {shortDate(row.checkAt)} if nothing happens</span>}
 					<Timing action={actions.find(action => action.input === 'interval')} every={row.every} endsAt={row.endsAt} extend={actions.find(action => action.kind === 'classic-extend')} /><RowState actions={actions} />
-				</div><a href={`#classic/focus/${row.code}`}>Open</a><RowActions actions={actions.filter(action => ['classic-close', 'stop-watch'].includes(action.kind))} />
+				</div><a href={`#classic/focus/${row.code}`}>Open</a><RowActions actions={actions.filter(action => ['classic-close', 'stop-watch'].includes(action.kind))} /><ItemCode code={row.code} />
 			</li>
 		})}</ul></section>}
 		{waiting.length > 0 && <section><h2 className="ongoing-section-title ongoing-first-title">Waiting on others</h2><p className="ongoing-description">No answer for a day. Open one to draft a follow-up for you to check first.</p><div className="ongoing-grid">{waiting.map(row => {
 			const actions = actionsOf(row.actionIds), open = !!cards[row.code]
 			// A206 (R11(3)): no action buttons on the row; it opens its card in place, where the follow-up only drafts and Stop waiting ends it.
 			const toggle = (event: { target: EventTarget }) => { if (!(event.target instanceof Element && event.target.closest('a, button'))) setCards(previous => ({ ...previous, [row.code]: !open })) }
-			return <article className="ongoing-card" key={row.id} data-classic-waiting={row.code} aria-labelledby={`waiting-${row.code}`}><div className="ongoing-card-head ongoing-card-open" tabIndex={0} aria-expanded={open} title="Open" onClick={toggle} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); toggle(event) } }}><span className="ongoing-icon"><Icon name="clock" /></span><div className="ongoing-text"><h3 id={`waiting-${row.code}`}>You asked {row.to}</h3>			<span className="ongoing-meta">{row.chat} · <SentTime at={row.at} code={row.code} />{row.link && <> · <a href={row.link} target="_blank" rel="noopener noreferrer">Open in Teams</a></>}			</span></div><CodeHint code={row.code} /><span className="row-chevron" aria-hidden="true">{open ? '⌄' : '›'}</span></div>
+			return <article className="ongoing-card" key={row.id} data-classic-waiting={row.code} aria-labelledby={`waiting-${row.code}`}><div className="ongoing-card-head ongoing-card-open" tabIndex={0} aria-expanded={open} title="Open" onClick={toggle} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); toggle(event) } }}><span className="ongoing-icon"><Icon name="clock" /></span><div className="ongoing-text"><h3 id={`waiting-${row.code}`}>You asked {row.to}</h3>			<span className="ongoing-meta">{row.chat} · <SentTime at={row.at} />{row.link && <> · <a href={row.link} target="_blank" rel="noopener noreferrer">Open in Teams</a></>}			</span></div><ItemCode code={row.code} /><span className="row-chevron" aria-hidden="true">{open ? '⌄' : '›'}</span></div>
 				<MessageBubble text={row.text} teams={row.link} open={!!opened[row.code]} onToggle={value => setOpened(previous => ({ ...previous, [row.code]: value }))} />
 				{open && <div className="ongoing-waiting-card"><p className="ongoing-meta">No reply from {row.to.split(/,\s*/)[0]?.split(/\s+/)[0] || 'them'} yet</p><RowActions actions={actions} primary="follow-up" /></div>}<RowState actions={actions} />
 			</article>
@@ -105,7 +105,7 @@ export default function Ongoing() {
 			const held = !!row.detail?.startsWith('Held:')
 			// R11(1): a queued row has a clock and why it waits, never a progress bar; the projection lists the working ones first.
 			const queuedWhy = row.queued && snapshot?.busy ? busyReason(snapshot.busy) : undefined
-			return <article className="ongoing-card" key={`${row.code}:${index}`} data-queued={row.queued || undefined}><div className="ongoing-card-head"><span className="ongoing-icon ongoing-accent"><Icon name={row.queued ? 'clock' : row.code ? 'pr' : 'book'} /></span><div className="ongoing-text"><h3>{row.what}</h3><span className="ongoing-meta">{row.who && `For ${row.who} · `}{row.queued ? 'queued' : 'started'} {when(row.since)}</span></div>			{row.code && <CodeHint code={row.code} />}</div>
+			return <article className="ongoing-card" key={`${row.code}:${index}`} data-queued={row.queued || undefined}><div className="ongoing-card-head"><span className="ongoing-icon ongoing-accent"><Icon name={row.queued ? 'clock' : row.code ? 'pr' : 'book'} /></span><div className="ongoing-text"><h3>{row.what}</h3><span className="ongoing-meta">{row.who && `For ${row.who} · `}{row.queued ? 'queued' : 'started'} {when(row.since)}</span></div>			{row.code && <ItemCode code={row.code} />}</div>
 				{row.retry ? <div className="ongoing-description"><p>Retry {row.retry.attempt} scheduled for {when(row.retry.at)}: {row.retry.reason}</p>{row.retry.tried.length > 0 && <p>Tried: {row.retry.tried.join('; ')}</p>}</div> : row.detail && row.detail !== row.what && <p className="ongoing-description">{row.detail}</p>}
 				{row.queued ? queuedWhy && <p className="ongoing-description">Queued · {queuedWhy}</p> : !held && (row.sendAt ? <p className="ongoing-description">Sends at <time dateTime={row.sendAt}>{when(row.sendAt)}</time>. Hold it to review before sending.</p> : <div className="ongoing-bar" role="progressbar" aria-label={row.what} aria-valuemin={0} aria-valuemax={100} aria-valuenow={row.progress === undefined ? undefined : Math.round(row.progress * 100)} aria-valuetext={row.progress === undefined ? 'Running' : undefined}><i className={row.progress === undefined ? 'ongoing-indeterminate' : undefined} style={row.progress === undefined ? undefined : { width: `${Math.max(4, Math.round(row.progress * 100))}%` }} /></div>)}
 				<RowActions actions={actions} className="ongoing-right-actions" /><RowState actions={actions} />
@@ -113,7 +113,7 @@ export default function Ongoing() {
 		})}</div></section>}
 		{automations.length > 0 && <section id="classic-automations"><h2 className="ongoing-section-title">Automations</h2><p className="ongoing-description">Each one carries the assistant marker and stops when {NAME} is paused.</p><ul className="ongoing-rows ongoing-automations">{automations.map(row => {
 			const actions = actionsOf(classic.automationActionIds[row.code] ?? row.actionIds)
-			return <li className={`ongoing-automation${row.state === 'paused' ? ' ongoing-paused' : ''}`} key={row.id} data-classic-automation={row.code}><span className="ongoing-icon"><Icon name="clock" /></span><div className="ongoing-text">{row.sentence}<span className="ongoing-meta">{row.state === 'paused' ? row.why ? `Paused: ${row.why}` : 'Paused' : row.state === 'proposed' ? 'Not started' : row.next ? `Next: ${when(row.next)}` : ''}{row.count > 0 && ` · Sent ${row.count} time${row.count === 1 ? '' : 's'}`}</span><RowState actions={actions} />			</div><CodeHint code={row.code} /><RowActions actions={actions} /></li>
+			return <li className={`ongoing-automation${row.state === 'paused' ? ' ongoing-paused' : ''}`} key={row.id} data-classic-automation={row.code}><span className="ongoing-icon"><Icon name="clock" /></span><div className="ongoing-text">{row.sentence}<span className="ongoing-meta">{row.state === 'paused' ? row.why ? `Paused: ${row.why}` : 'Paused' : row.state === 'proposed' ? 'Not started' : row.next ? `Next: ${when(row.next)}` : ''}{row.count > 0 && ` · Sent ${row.count} time${row.count === 1 ? '' : 's'}`}</span><RowState actions={actions} />			</div><ItemCode code={row.code} /><RowActions actions={actions} /></li>
 		})}</ul></section>}
 		{!classic.progress.length && !waiting.length && !watches.length && !channels.length && !classic.running.length && !automations.length && <p className="empty">Nothing is ongoing. Say &quot;watch PR 1234 until merged&quot;, or &quot;remind Arun every weekday at 4 pm to update the doc&quot;.</p>}
 	</div>

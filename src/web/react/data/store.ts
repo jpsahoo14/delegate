@@ -11,8 +11,11 @@ export type CardUi = {
 	focusedField?: string; feedback?: string; feedbackKind?: string; watchText?: string; watchUntil?: string; watchBy?: string
 	watchByChoice?: '' | 'today' | 'fri' | 'week'
 	other?: boolean; resultKind?: 'Both work' | 'Issues found' | 'Blocked'
-	// unreached: the server had no record, and sending it again failed on the network; Check now sends it once more (#42).
+	// unreached: the outcome is unknown and the server couldn't be reached about it (its receipt, or a replay lost on the network).
+	// Nothing is sent again on its own; Check again re-polls, and a 404 then sends the same request once more (#42, decision 49 (b)).
 	pending?: { submissionId: string; action: string; phase: 'submitting' | 'queued' | 'unknown' | 'unreached'; at?: number }; result?: Receipt; error?: string
+	// G2 (PM A R44): a muted line under the clicked button saying why a click did nothing; Open goes to its Done row.
+	note?: { text: string; open?: 'done' }
 	lastAction?: string; submittedInput?: Intent['input']
 	submittedForm?: SubmittedForm; formConsumed?: string
 	// "Left for you" (#44(2)): the to-dos he ticked, by their place in the list; and the ones he marked done, held here for 6 s so Undo

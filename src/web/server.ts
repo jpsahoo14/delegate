@@ -18,7 +18,7 @@ import { numbersPage } from './numbers.ts'
 import { WINDOWS, type WindowKey } from '../core/numbers.ts'
 import { nextView } from './next.ts'
 import { reactAsset, reactPage, snapshotPage, SNAPSHOT_TEMPLATE } from './react-build.ts'
-import { chatNormalActionId, reactProjection, IntentError } from './react-projection.ts'
+import { chatNormalActionId, reactProjection, IntentError, voteCheck } from './react-projection.ts'
 import { submissionReceipt, submitIntentWhenFree } from './react-submissions.ts'
 import { intentSchema } from './react/domain/contracts.ts'
 import { listsOf, numbersModel, RULES as NUMBER_RULES } from './model/numbers.ts'
@@ -189,6 +189,25 @@ export async function serveInbox(get: () => Store, port = 0, token = randomBytes
 						const result = await submitIntentWhenFree(get(), parsed.data, undefined, fn => readScope(fn, { writes: true }))
 						json(result.status, result.receipt)
 					} catch (error) { failure(error) } finally { if (id) inFlight.delete(id) }
+				})
+				return
+			}
+			// A37 (b) / PM A R37: the live vote-claim re-check on the reply he is editing; read-only, the same rule as the card and Send.
+			if (req.method === 'POST' && u.pathname === '/api/v1/vote-check') {
+				let body = '', tooLarge = false
+				req.setEncoding('utf8')
+				req.on('data', chunk => {
+					if (tooLarge) return
+					body += chunk
+					if (Buffer.byteLength(body) > 20_000) { tooLarge = true; body = ''; json(413, { text: 'That reply is too long to check.' }) }
+				})
+				req.on('end', () => {
+					if (tooLarge) return
+					let raw: { code?: unknown; text?: unknown }
+					try { raw = JSON.parse(body) } catch { json(422, { text: 'Could not read that check.' }); return }
+					if (typeof raw?.code !== 'string' || !/^A\d+$/i.test(raw.code) || typeof raw.text !== 'string') { json(422, { text: 'That check has invalid fields.' }); return }
+					const { code, text } = raw as { code: string; text: string }
+					try { json(200, readScope(() => voteCheck(get(), code.toUpperCase(), text))) } catch (error) { failure(error) }
 				})
 				return
 			}

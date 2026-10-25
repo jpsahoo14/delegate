@@ -1,5 +1,31 @@
 # Engine fixes
 
+2026-10-25 (fast-poll CR B1): Scheduled reply times now participate in the earliest-due calculation, so removing the
+busy-item fast trigger does not delay automatic replies to the next idle tick. A deadline alone opens no fast window.
+
+2026-10-25 (decision 43(c)): Restrict the PR joiner's relation override to multi-PR bodies and deduplicate anchor-conflict
+diagnostics once per item code per process. Candidate PR scoping and fail-closed conflict handling are unchanged.
+
+2026-10-25 (fast checking): Only sent replies and confirmed owner replies open the fast-check window. Receipt rereads,
+asks, runs, queued work, reminders and self-chat nudges do not renew it; retry deadlines and source backoff stay intact.
+
+2026-10-25 (PR body join boundary): New joins are scoped to named ADO PRs before quotes or subject matching. A sole
+matching multi-PR join keeps a code-captured owned-message anchor and an Also mentions line; conflicts fail closed.
+Existing sender/freshness/reopen gates, family/v5 behavior and cross-PR effect/vote refusal remain in force.
+
+2026-10-25 (schema 8): Old PR-review workflow and completed-job context now use the shared finish-time trim policy.
+CI/vote facts are removed and retained tones become info, with author/recurring/non-review exclusions and explicit
+skip logs. An all-noise finish clears stale workflow context as well. Bounded versioned migration is idempotent.
+
+2026-10-25 (#54 PE nits): Cold diagnostics use the exact 900,000 ms boundary instead of rounded minutes. Phase timing
+logging failures now report to stderr without masking owner results or work errors, matching the existing step guard.
+
+2026-10-25 (status metadata hygiene): The incomplete-report path writes its existing Not finished message through the
+shared structured status helper. Wording, state, holding drafts and legacy read compatibility are unchanged.
+
+2026-10-25 (#54 step 1): Tick phases and ten named steps report filesystem/external-call time and auditable warm/cold
+classification. Diagnostic-only counters preserve synchronous work, ordering and existing scheduling/cache behavior.
+
 2026-10-25 (U1): Acceptance Undo keeps separate proposal and stored-line hashes. Read the actual learned line after
 a successful write so generated wording/evidence does not fail immediate Undo, without dropping either identity check.
 

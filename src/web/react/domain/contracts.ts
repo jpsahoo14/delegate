@@ -5,8 +5,9 @@ export const text = z.string()
 export const IMAGE_TOKEN = '🖼 Image'
 const strings = z.array(text)
 const optional = text.optional()
-const person = z.object({ id: text, name: text, initials: text, hue: z.number() })
-const chat = z.object({ id: text, name: text, group: z.boolean(), guests: z.boolean() })
+const person = z.object({ id: text, name: text, initials: text, hue: z.number(), first: optional })
+// A120 / PM A R36: an untitled group chat's words, made on the server (model/place.ts); the page shows them as they are.
+const chat = z.object({ id: text, name: text, group: z.boolean(), guests: z.boolean(), place: z.object({ head: text, row: text, sentence: text, title: optional }).optional() })
 const owner = z.discriminatedUnion('kind', [
 	z.object({ kind: z.literal('you') }), z.object({ kind: z.literal('delegate') }),
 	z.object({ kind: z.literal('nobody') }), z.object({ kind: z.literal('others'), text }),
@@ -27,10 +28,10 @@ const thread = z.object({ who: text, text, at: text, owner: z.boolean() })
 const item = z.object({
 	id: text, code: text, rev: text, type: text,
 	personId: text, chatId: text, at: text, askAt: optional, ask: optional, thread: z.array(thread), newCount: z.number(), earlier: optional, before: optional,
-	question: optional, draftId: optional, choices: choices.optional(), picked: z.array(z.number()).optional(), context: z.array(context).optional(),
+	question: optional, answerChips: z.array(z.object({ label: text, text })).optional(), draftId: optional, choices: choices.optional(), picked: z.array(z.number()).optional(), context: z.array(context).optional(),
 	meeting: z.object({ subject: text, start: text, minutes: z.number(), attendees: strings }).optional(),
 	changeIds: strings, effectIds: strings.optional(), sourceIds: strings, noteIds: strings, todoIds: strings, actionIds: strings, primaryActionId: optional, workId: optional,
-	job: optional, why, status: text, attention: optional, attentionKind: z.enum(['reply-changed', 'run-failed', 'agent-setup', 'reason']).optional(), voteGap: z.object({ text, held: z.boolean() }).optional(), returned: z.object({ machine: text, at: text, report: z.boolean() }).optional(),
+	job: optional, why, status: text, attention: optional, attentionKind: z.enum(['reply-changed', 'run-failed', 'agent-setup', 'reason']).optional(), voteGap: z.object({ text, held: z.boolean(), quote: optional }).optional(), returned: z.object({ machine: text, at: text, report: z.boolean() }).optional(),
 	prReview: z.object({ pr: z.number(), voteRecommended: z.boolean(), findings: z.array(z.object({ text, file: optional, line: z.number().optional(), thread: z.object({ author: text, at: text, url: optional }).optional(), posts: z.boolean().optional(), changeId: optional })) }).optional(), mode: optional, editor: z.enum(['reply', 'answer', 'none']).optional(), block3: z.enum(['when-you-send', 'none']).optional(), openOn: optional, teams: optional, debug: strings.optional(),
 	promise: z.object({ said: text, failed: optional }).optional(), todos: strings.optional(), leftLines: z.array(z.object({ text, why: text })).optional(), repaired: z.boolean().optional(),
 	// R10b: a review posted under his rule that waits for his approval (SEND's reviewDone, from receipts).
@@ -53,6 +54,8 @@ const action = z.object({
 	recovery: z.boolean().optional(),
 	input: optional,
 	needsConfirm: z.boolean().optional(), meaning: optional,
+	// F1 (PE decision 47): Send anyway past a hold carries the held digest THIS card showed; the intent sends it back as reviewed.
+	reviewed: optional,
 	expiresAt: optional,
 	unavailable: z.object({ label: text, reason: text }).optional(),
 	selection: z.object({ total: z.number().int().nonnegative(), verb: text, singular: text, plural: text, suffix: text, empty: text, allowEmpty: z.boolean(), exactSingle: optional }).optional(),
@@ -168,6 +171,8 @@ export const snapshotSchema = z.object({
 })
 export const intentSchema = z.object({
 	submissionId: z.uuid(), action: text.min(1), item: text, rev: text, expect: optional,
+	// F1 (PE decision 47): the hold the owner consented to, exactly as his card showed it; the server never substitutes the current one.
+	reviewed: text.max(200).regex(/^[\w:.-]+$/).optional(),
 	input: z.object({
 		text: text.max(15_000).optional(), picks: z.array(z.number().int().positive()).max(100).optional(),
 		excluded: z.array(z.number().int().positive()).max(100).optional(),
@@ -200,3 +205,7 @@ export const emptyEntities = (): Entities => ({
 	items: {}, people: {}, chats: {}, drafts: {}, changes: {}, sources: {}, notes: {}, work: {}, planSteps: {}, workSteps: {}, todos: {},
 	placements: {}, actions: {}, doneEntries: {}, watches: {}, automations: {}, knowledgeProposals: {}, facts: {}, health: {}, channels: {}, waiting: {},
 })
+
+// A37 (b) / PM A R37: the live vote-claim re-check on edited text (POST /api/v1/vote-check), the same rule as the card and Send.
+export const voteCheckSchema = z.object({ claim: z.object({ line: text, confirm: text, words: text, quote: text, pr: z.number().optional() }).optional() })
+export type VoteCheck = z.infer<typeof voteCheckSchema>

@@ -41,6 +41,8 @@ import { notify } from '../os/notify.ts'
 import { clock, DEFAULT_POLL, isDue, offNotice, plan, validTz } from '../core/schedule.ts'
 import type { Config } from '../core/types.ts'
 import { NAME, CMD } from '../brand.ts'
+import { netTime, timedExternal } from '../core/io-time.ts'
+import { recordSentReplyActivity } from './poll.ts'
 
 export type TickResult = { skipped?: string; commands: number; answers: number; asks: number; runs: number; nudged: boolean; ms: number }
 
@@ -52,15 +54,7 @@ export async function tick(store: Store, deps: { source?: Source; run?: RunWorke
 }
 
 async function tickInPhases(store: Store, deps: Parameters<typeof tick>[1] = {}): Promise<TickResult> {
-	const t0 = Date.now(), fs0 = { ...fsTime }
-	const phase = <T>(name: string, work: () => T | Promise<T>, opts: { writes?: boolean } = {}) => readPhase(name, async () => {
-		const before = { ...fsTime }, started = performance.now()
-		try { return await work() } finally {
-			store.log({ event: 'tick-phase', name, ms: Math.round(performance.now() - started),
-				reads: fsTime.reads - before.reads, stats: fsTime.stats - before.stats, opens: fsTime.opens - before.opens,
-				lists: fsTime.lists - before.lists, hits: fsTime.hits - before.hits })
-		}
-	}, opts)
+	const t0 = Date.now(), fs0 = { ...fsTime }, net0 = netTime.ms
 	// A monotonic clock does not advance while the machine sleeps, so a sleep inside a cycle shows as the difference.
 	const mono = deps.mono ?? (() => performance.now()), p0 = mono()
 	const empty = { commands: 0, answers: 0, asks: 0, runs: 0, nudged: false }
@@ -85,16 +79,47 @@ async function tickInPhases(store: Store, deps: Parameters<typeof tick>[1] = {})
 	if (!store.acquireLease()) return { skipped: 'another machine holds the lease', ...empty, ms: Date.now() - t0 }
 	// The demo swaps in a file chat, a canned worker, and instant jobs through the same interfaces.
 	const demo = kindOf(cfg.source) === 'demo'
-	const src = deps.source ?? sourceFor(cfg.source, cfg.owner.name, store.root, cfg.owner.id, entry => store.log(entry))
+	const src = timedExternal(deps.source ?? sourceFor(cfg.source, cfg.owner.name, store.root, cfg.owner.id, entry => store.log(entry)))
 	if (demo) deps = { ...deps, run: deps.run ?? demoRun(store), procs: deps.procs ?? demoProcs(store) }
+	const run = timedExternal(deps.run ?? hostRunner(store))
 	// Loudly off (Bet 1): the first cycle after the reading machine ran none for a while notes it, to tell after the catch-up.
 	// Measured from the end of the last cycle, so a long cycle, a stop, or a Teams outage is never called asleep.
 	store.setHealth('tz', cfg.tz && !validTz(cfg.tz) ? `The time zone "${cfg.tz}" in Settings is not known, so work hours use ${store.machine}'s clock.` : undefined)
 	const c0 = store.chats()
+	const idleMs = t0 - Date.parse(c0.endAt ?? '')
+	const cold = !Number.isFinite(idleMs) || idleMs < 0 || idleMs >= 900_000
+	const temperature = { cold, ...(Number.isFinite(idleMs) && idleMs >= 0 ? { idleMs: Math.round(idleMs) } : {}) }
 	const off = c0.notice ? undefined : offNotice(c0.endAt, new Date(), store.machine, cfg.tz)
 	if (off) store.saveChats({ ...c0, notice: off })
 	let earlyRuns = 0
 	let result: TickResult | undefined
+	const times = (before: typeof fsTime, net: number) => ({
+		fsMs: Math.round(fsTime.io - before.io + fsTime.lock - before.lock), netMs: Math.round(netTime.ms - net),
+	})
+	const phase = <T>(name: string, work: () => T | Promise<T>, opts: { writes?: boolean } = {}) => readPhase(name, async () => {
+		const before = { ...fsTime }, net = netTime.ms, started = performance.now()
+		try { return await work() } finally {
+			try {
+				store.log({ event: 'tick-phase', name, ms: Math.round(performance.now() - started), ...times(before, net), ...temperature,
+					reads: fsTime.reads - before.reads, stats: fsTime.stats - before.stats, opens: fsTime.opens - before.opens,
+					lists: fsTime.lists - before.lists, hits: fsTime.hits - before.hits })
+			} catch (error) { console.error('Could not log tick phase timing:', error) }
+		}
+	}, opts)
+	function measuredStep<T>(phaseName: string, name: string, work: () => Promise<T>): Promise<T>
+	function measuredStep<T>(phaseName: string, name: string, work: () => T): T
+	function measuredStep(phaseName: string, name: string, work: () => unknown): unknown {
+		const before = { ...fsTime }, net = netTime.ms, started = performance.now()
+		const record = () => {
+			try { store.log({ event: 'tick-step', phase: phaseName, name, ms: Math.round(performance.now() - started), ...times(before, net), ...temperature }) }
+			catch (error) { console.error('Could not log tick step timing:', error) }
+		}
+		let value: unknown
+		try { value = work() } catch (error) { record(); throw error }
+		if (value instanceof Promise) return value.finally(record)
+		record()
+		return value
+	}
 	try {
 		scanCodeFolders(Date.now(), true)
 		for (const wf of store.workflows().filter(w => w.todos?.length)) {
@@ -103,7 +128,7 @@ async function tickInPhases(store: Store, deps: Parameters<typeof tick>[1] = {})
 		}
 		const cursors = store.cursors()
 		const commitCursors = recordCommit(cursors, () => store.cursors(), store.saveCursors.bind(store))
-		const procs = deps.procs ?? realProcs
+		const procs = timedExternal(deps.procs ?? realProcs)
 		// Any source failure, at any stage, backs off the same way and still supervises runs (R-ING-06, final review P1-3).
 		const down = async (e: unknown, answers: boolean) => {
 			const throttled = /\b429\b|throttl|too many requests/i.test(String(e))
@@ -116,29 +141,30 @@ async function tickInPhases(store: Store, deps: Parameters<typeof tick>[1] = {})
 			if (answers) await applyAnswers(store, src, cfg, procs, true)
 			checkOpen(store, procs, procs.bootMs?.())
 			await checkJobs(store, src, cfg, procs, deps.probe)
+			recordSentReplyActivity(store)
 			return { skipped: 'source unavailable', ...empty, ms: Date.now() - t0 }
 		}
 		const initial = await phase('controls-and-answers', async () => {
 			let commands: number
-			try { commands = await readOwnerCommands(store, src, cursors) } catch (e) { return { ok: false as const, result: await down(e, true) } }
+			try { commands = await measuredStep('controls-and-answers', 'readOwnerCommands', () => readOwnerCommands(store, src, cursors)) } catch (e) { return { ok: false as const, result: await down(e, true) } }
 			// Saved at once: answers are queued, so a later failure must not re-read the same commands.
 			commitCursors()
 			// Finished reports land before the owner's answers, so an ok never acts on a turn that news already replaced (review P0.4).
-			const jobsEarly = await checkJobs(store, src, cfg, procs, deps.probe)
-			legacyEffects(store)
-			migrateWorkflows(store)
+			const jobsEarly = await measuredStep('controls-and-answers', 'checkJobs', () => checkJobs(store, src, cfg, procs, deps.probe))
+			measuredStep('controls-and-answers', 'legacyEffects', () => legacyEffects(store))
+			measuredStep('controls-and-answers', 'migrateWorkflows', () => migrateWorkflows(store))
 			retryHostToolFailures(store)
 			// A session history note no open item or job uses any more is cleared (queue-new #16 b).
 			pruneSessionNotes(store)
 			settleCompleted(store, procs)
 			// The owner's ok re-reads a pull request before voting on it, through the same read the PR checks use.
 			// The AI CLI's tool list is read for it; one that cannot be read is named in Health and never stops the cycle (review 10-21b P1).
-			const cli = cliServers(cfg.agent.flavor)
+			const cli = measuredStep('controls-and-answers', 'cliServers', () => cliServers(cfg.agent.flavor))
 			store.setHealth('cli-config', cli.error ? `${NAME} could not read your AI CLI's tool list, ${cli.path} (${cli.error}). Changes through tool servers listed only there wait until it can.` : undefined)
 			let probe: BuildProbe | undefined
-			try { probe = deps.probe ?? adoProbe(cfg) } catch (e) { store.log({ event: 'probe-failed', error: String(e).slice(0, 300) }) }
+			try { probe = measuredStep('controls-and-answers', 'adoProbe', () => deps.probe ?? adoProbe(cfg)) } catch (e) { store.log({ event: 'probe-failed', error: String(e).slice(0, 300) }) }
 			const answerItems = new Map(store.answers().map(({ answer }) => [answer.code, answer.at]))
-			const answers = await applyAnswers(store, src, cfg, procs, false, probe)
+			const answers = await measuredStep('controls-and-answers', 'applyAnswers', () => applyAnswers(store, src, cfg, procs, false, probe))
 			const answered = kicked && !store.control().stopped ? store.workflows().filter(w => w.state === 'running' && w.ownerAnswer && answerItems.has(w.code)) : []
 			return { ok: true as const, commands, jobsEarly, answers, answered, answerItems, probe }
 		})
@@ -149,7 +175,7 @@ async function tickInPhases(store: Store, deps: Parameters<typeof tick>[1] = {})
 		const jobsMark = Date.now(), jobsNow = answers ? await phase('approved-changes', async () => await executeDirect(store, src, cfg, procs, probe, deps.call ?? hostCaller(store, cfg)) + await startJobs(store, cfg, procs, ['bootstrap:chats'], probe)) : 0
 		if (answered.length) {
 			for (const w of answered) store.log({ event: 'answer-dispatch', code: w.code, workflowId: w.id, ms: Date.now() - Date.parse(answerItems.get(w.code)!), tickMs: Date.now() - t0 })
-			earlyRuns = await phase('answer-first', () => dispatch(store, src, cfg, deps.run ?? hostRunner(store), probe, answered.map(w => w.id)))
+			earlyRuns = await phase('answer-first', () => dispatch(store, src, cfg, run, probe, answered.map(w => w.id)))
 		}
 		const closeProbe = () => { if (!deps.probe) void probe?.close?.().catch(() => undefined) }
 		// After the pass's PR reads are closed, a direct change batch opens its own reader for the PR read before a vote.
@@ -159,15 +185,18 @@ async function tickInPhases(store: Store, deps: Parameters<typeof tick>[1] = {})
 			try { return await executeDirect(store, src, cfg, procs, p, deps.call ?? hostCaller(store, cfg)) } finally { if (!deps.probe) await p?.close?.().catch(() => undefined) }
 		}
 		// Stopped means no reading or drafting, but runs already started are still watched and their budgets enforced (tester P1-10).
-		if (store.control().stopped) { closeProbe(); store.setHealth('source'); checkOpen(store, procs, procs.bootMs?.()); await checkJobs(store, src, cfg, procs, deps.probe); reschedule(store, cfg, false, t0); return { skipped: 'stopped', commands, answers, asks: 0, runs: 0, nudged: false, ms: Date.now() - t0 } }
+		if (store.control().stopped) { closeProbe(); store.setHealth('source'); checkOpen(store, procs, procs.bootMs?.()); await checkJobs(store, src, cfg, procs, deps.probe); reschedule(store, cfg, t0); return { skipped: 'stopped', commands, answers, asks: 0, runs: 0, nudged: false, ms: Date.now() - t0 } }
 		const listing = process.env.NODE_TEST_CONTEXT ? Promise.resolve(0) : phase('catalog', () => refreshCatalogs(store, cfg, Date.now(), false, hostOff(cfg) ? undefined : hostLister(store, cfg))).catch(e => { store.log({ event: 'catalog-failed', error: String(e).slice(0, 300) }); return 0 })
 		const ingested = await phase('intake', async () => {
 			planSweep(store)
 			let found: Awaited<ReturnType<typeof discover>>, asks: number
 			const before = store.chats()
 			// Chat cursors are saved only after a whole read, so a failure resumes in order.
-			try { found = await discover(store, src, cfg); asks = await intake(store, src, cfg, cursors, found.chats) } catch (e) { closeProbe(); return { ok: false as const, result: await down(e, false) } }
-			await retryOwnerReplies(store, cfg, t0)
+			try {
+				found = await measuredStep('intake', 'discover', () => discover(store, src, cfg))
+				asks = await measuredStep('intake', 'intake', () => intake(store, src, cfg, cursors, found.chats))
+			} catch (e) { closeProbe(); return { ok: false as const, result: await down(e, false) } }
+			await measuredStep('intake', 'retryOwnerReplies', () => retryOwnerReplies(store, cfg, t0))
 			store.setHealth('source')
 			if (store.schedule().backoff) store.saveSchedule({ ...store.schedule(), backoff: undefined })
 			commitCursors()
@@ -203,7 +232,7 @@ async function tickInPhases(store: Store, deps: Parameters<typeof tick>[1] = {})
 		// The first check of a work day starts the AI host, so the first reply is warm too (#25).
 		await prewarmHost(store, cfg)
 		// Reply runs go to the resident AI host when there can be one; else one process per run, as before (#19).
-		const runs = earlyRuns + await phase('dispatch', () => dispatch(store, src, cfg, deps.run ?? hostRunner(store), probe).finally(closeProbe))
+		const runs = earlyRuns + await phase('dispatch', () => dispatch(store, src, cfg, run, probe).finally(closeProbe))
 		// Jobs run detached: the tick starts and checks them, and never waits (R-LNG-02).
 		const { handedBack, jobsDone, jobsStarted, jobsLate, autoSent, nudged } = await phase('supervision-and-sends', async () => {
 			const handedBack = checkOpen(store, procs, procs.bootMs?.())
@@ -244,8 +273,7 @@ async function tickInPhases(store: Store, deps: Parameters<typeof tick>[1] = {})
 				await say(store, src, up.rolledBack ? `${MARK} A new version (${up.to}: ${up.subject}) did not start on ${store.machine}, so it stayed on ${up.from}. ${up.rolledBack}` : `${MARK} Updated ${store.machine} to ${up.to}: ${up.subject}. Open the page again to see page changes.`)
 			}
 			const r = { commands, answers, asks, runs, nudged, ms: Date.now() - t0 }
-			const busy = store.workflows().some(w => w.state === 'scheduled') || store.jobs().some(j => j.state === 'running' || j.state === 'queued' && !(j.retry && (Date.parse(j.retry.at) > Date.now() || store.control().paused || store.control().stopped))) || store.openWindows().length > 0
-			reschedule(store, cfg, commands + answers + asks + missed + probed + due.length + runs + autoSent + handedBack + jobsEarly + jobsDone + jobsStarted + jobsNow + jobsLate > 0 || nudged || busy, t0)
+			reschedule(store, cfg, t0)
 			// The read-only snapshot is best effort: it records its own health warning and never ends the tick.
 			try { await phase('snapshot', () => writeSnapshot(store), { writes: false }) } catch (error) { console.error('The read-only snapshot could not be written:', error) }
 			// Where an empty tick's time goes on a synced store (#27 d): store reads and writes, and sleeps while OneDrive held a file;
@@ -265,7 +293,7 @@ async function tickInPhases(store: Store, deps: Parameters<typeof tick>[1] = {})
 		})
 		if (result) {
 			const fsd = (k: keyof typeof fsTime) => Math.round(fsTime[k] - fs0[k])
-			store.log({ event: 'tick', ...result, allMs: Date.now() - t0, readMs: fsd('read'), reads: fsd('reads'), stats: fsd('stats'), opens: fsd('opens'), lists: fsd('lists'), hits: fsd('hits'), writeMs: fsd('write'), writes: fsd('writes'), waitMs: fsd('wait') })
+			store.log({ event: 'tick', ...result, ...times(fs0, net0), ...temperature, allMs: Date.now() - t0, readMs: fsd('read'), reads: fsd('reads'), stats: fsd('stats'), opens: fsd('opens'), lists: fsd('lists'), hits: fsd('hits'), writeMs: fsd('write'), writes: fsd('writes'), waitMs: fsd('wait') })
 		}
 	}
 }
@@ -295,13 +323,15 @@ export async function stayAwake(store: Store, until: number, deps: Parameters<ty
 	return ticks
 }
 
-// Activity opens a fast window, so replies to replies are seen within a minute (dev-spec/runner.md#schedule).
+// Only a sent reply opens a fast window; reminders, nudges and unfinished work do not.
 // The cadence is anchored to when the tick started, so a slow worker never skips the next minute.
-function reschedule(store: Store, cfg: Config, activity: boolean, startedMs: number) {
-	const s = plan(store.schedule(), new Date(startedMs), cfg.poll ?? DEFAULT_POLL, activity, cfg.tz)
-	// A reminder is due at its minute, not at the next idle poll.
+function reschedule(store: Store, cfg: Config, startedMs: number) {
+	recordSentReplyActivity(store)
+	const s = plan(store.schedule(), new Date(startedMs), { ...DEFAULT_POLL, ...cfg.poll }, false, cfg.tz)
+	// A scheduled reply or reminder is due at its minute, not at the next idle poll.
 	// So is a retry: "again in 2 minutes" means 2 minutes.
-	const due = [...store.automations().filter(a => a.state === 'active' && a.next).map(a => a.next!), ...store.jobs().filter(j => j.retry && j.state === 'queued' && Date.parse(j.retry.at) > Date.now()).map(j => j.retry!.at)].sort()[0]
+	const due = [...store.workflows().filter(w => w.state === 'scheduled' && w.sendAt && Date.parse(w.sendAt) > Date.now()).map(w => w.sendAt!),
+		...store.automations().filter(a => a.state === 'active' && a.next).map(a => a.next!), ...store.jobs().filter(j => j.retry && j.state === 'queued' && Date.parse(j.retry.at) > Date.now()).map(j => j.retry!.at)].sort()[0]
 	store.saveSchedule(due && s.nextAt && due < s.nextAt ? { ...s, nextAt: due } : s)
 }
 

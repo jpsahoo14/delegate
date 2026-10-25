@@ -1,5 +1,5 @@
 import { useRef, useState, type CSSProperties } from 'react'
-import { chipHover, codeHover } from '../domain/hover.ts'
+import { chipHover } from '../domain/hover.ts'
 import { Button } from '../components/ui/button.tsx'
 import { useActivityCard, useCardUi, useEdit, useEntities, useItemBusy, useShowLatest, useSnapshot } from '../data/hooks.ts'
 import { useScreenNavigation } from '../classic/navigation.tsx'
@@ -7,6 +7,7 @@ import { ActionButton, ActionState } from './ActionButton.tsx'
 import type { Entities } from '../domain/contracts.ts'
 import { ItemCard, messageText } from './ItemCard.tsx'
 import { SentTime } from './SentTime.tsx'
+import { CODE, ItemCode } from './ItemCode.tsx'
 import { useDoneEntries, useDoneLook } from '../data/done.ts'
 import { when } from '../domain/time.ts'
 import { Icon } from '../components/ui/icon.tsx'
@@ -63,6 +64,7 @@ export function Entry({ row: supplied, fresh = false, grouped = false, compact =
 					{actions.some(action => action.kind === 'watch-fyi') && !row.watchedAs && <Button variant="ghost" disabled={blocked} onClick={() => edit({ folds: { ...ui.folds, watch: !watching } })}>Watch</Button>}
 					{actions.filter(action => action.kind === 'needs-me').map(action => <ActionButton key={action.id} action={action} />)}
 				</div>
+				{CODE.test(row.code) && <ItemCode code={row.code} />}
 				{expandable && !actions.some(action => action.kind === 'undo') && <button className="done-expand" aria-label={expanded ? 'Close item details' : 'Open item details'} aria-expanded={expanded} onClick={onToggle}><Icon name="right" /></button>}
 			</div>
 			{expanded && <div className="done-details">
@@ -80,7 +82,7 @@ export function Entry({ row: supplied, fresh = false, grouped = false, compact =
 			{watchForm}<ActionState item={row.code} rev={rev} />
 		</article>
 	}
-	return <article className={`item-card${compact ? ' classic-catchup-row' : ''}`} data-activity-code={row.code} onClick={row.kind === 'catchup' ? isolateRowControls : undefined}>{compact && <span className="classic-catchup-icon"><Icon name={row.high ? 'warn' : 'eye'} /></span>}<header className="card-header"><Heading>{row.kind === 'catchup' && row.teams ? <a href={row.teams} target="_blank" rel="noopener noreferrer">{row.sentence}</a> : <button className="row-title" onClick={onToggle} aria-expanded={open}>{row.sentence}</button>}</Heading><span className="code" title={codeHover(row.code)}>{row.code}</span></header>
+	return <article className={`item-card${compact ? ' classic-catchup-row' : ''}`} data-activity-code={row.code} onClick={row.kind === 'catchup' ? isolateRowControls : undefined}>{compact && <span className="classic-catchup-icon"><Icon name={row.high ? 'warn' : 'eye'} /></span>}<header className="card-header"><Heading>{row.kind === 'catchup' && row.teams ? <a href={row.teams} target="_blank" rel="noopener noreferrer">{row.sentence}</a> : <button className="row-title" onClick={onToggle} aria-expanded={open}>{row.sentence}</button>}</Heading>{CODE.test(row.code) && <ItemCode code={row.code} />}</header>
 		{fresh && <span className="chip" title={chipHover('new')}>New</span>}
 		{(newer || blocked) && <p role="status" className="warning">{blocked ? 'An unsent edit for this item is kept on another version.' : 'This activity changed while you were editing. Your text is kept.'} <Button variant="outline" disabled={busy} onClick={showLatest}>Review current version</Button></p>}
 		{!compact && row.ask && <p>{person.name} asked: {row.ask}</p>}

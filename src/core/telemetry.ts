@@ -34,6 +34,8 @@ export function traceRun<T>(ctx: TraceContext | { runId: string }, action: () =>
 export const telemetryError = (error: unknown): string => scrub(error instanceof Error ? error.message : String(error)).slice(0, 200)
 
 type EventFields = {
+	'tick-phase': { name: string; ms: number; fsMs: number; netMs: number; cold: boolean; idleMs?: number; reads: number; stats: number; opens: number; lists: number; hits: number }
+	'tick-step': { phase: string; name: string; ms: number; fsMs: number; netMs: number; cold: boolean; idleMs?: number }
 	build: { release: string; commit?: string; error?: string }
 	'log-capped': { bytes: number; limit: number }
 	'share-hold': { kind: 'customer'; field: 'ids' | 'owningTenantName' | 'customField' }
@@ -46,9 +48,13 @@ type EventFields = {
 	}
 	'run-tools-invalid': { class: 'invalid-json' | 'inspection-error'; lines?: number }
 	'vote-claim-override': { code: string; pr?: number; claim: number | 'approval' | 'others'; vote?: number }
+	'pr-anchor-conflict': { code: string; anchor: number; computed: number }
 	'members-shape': { memberKeys: string[]; roles: { array: number; undefined: number; other: number }; roleValues: string[]; tenantIdPresent: number }
+	'forwarded-message-shape': { contentStatus: 'json' | 'invalid-json' | 'value'; shape: { path: string; kind: string }[]; truncated: boolean }
 }
 const metadataEvents = {
+	'tick-phase': { privacy: 'metadata', fields: ['name', 'ms', 'fsMs', 'netMs', 'cold', 'idleMs', 'reads', 'stats', 'opens', 'lists', 'hits'] },
+	'tick-step': { privacy: 'metadata', fields: ['phase', 'name', 'ms', 'fsMs', 'netMs', 'cold', 'idleMs'] },
 	build: { privacy: 'metadata', fields: ['release', 'commit', 'error'] },
 	'log-capped': { privacy: 'metadata', fields: ['bytes', 'limit'] },
 	'share-hold': { privacy: 'metadata', fields: ['kind', 'field'] },
@@ -58,7 +64,9 @@ const metadataEvents = {
 	'run-tools': { privacy: 'metadata', fields: ['call', 'tool', 'ok', 'class', 'ms', 'bytes', 'contentTypes', 'keys', 'keysTruncated', 'offloaded'] },
 	'run-tools-invalid': { privacy: 'metadata', fields: ['class', 'lines'] },
 	'vote-claim-override': { privacy: 'metadata', fields: ['code', 'pr', 'claim', 'vote'] },
+	'pr-anchor-conflict': { privacy: 'metadata', fields: ['code', 'anchor', 'computed'] },
 	'members-shape': { privacy: 'metadata', fields: ['memberKeys', 'roles', 'roleValues', 'tenantIdPresent'] },
+	'forwarded-message-shape': { privacy: 'metadata', fields: ['contentStatus', 'shape', 'truncated'] },
 } as const satisfies { [K in keyof EventFields]: { privacy: 'metadata'; fields: readonly (keyof EventFields[K])[] } }
 
 export const TELEMETRY_CATALOG = {

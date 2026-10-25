@@ -3,6 +3,7 @@ import { counted } from '../store/numbers.ts'
 import { numbers, weekOf, addDays, type Numbers, type WindowKey, type Ev } from '../core/numbers.ts'
 import { messageLink } from '../adapters/channels.ts'
 import { listsOf } from './model/numbers.ts'
+import { placeOf } from './model/place.ts'
 import { itemRows, type DoneRow } from './view.ts'
 import { sendContext, sendRecord } from '../store/send-context.ts'
 import { dayIn } from '../core/schedule.ts'
@@ -37,7 +38,7 @@ export function numbersPage(store: Store, key: WindowKey = 'this', now = new Dat
 		const raw = logs.find(row => row.code === e.code && row.at === e.at && (e.msgId ? row.msgId === e.msgId : true))
 		const rawSend = sendRecord(raw ?? {})
 		const context = sendContext({ ...rawSend, at: e.at, code: e.code, msgId: e.msgId, askMsgId: e.askMsgId ?? rawSend?.askMsgId, askAt: e.askAt }, workflow ? store.thread(workflow.id) : [])
-		const person = context.asker?.name ?? 'Someone', where = workflow?.chat.group && workflow.chat.id === context.chat ? ` in ${workflow.chat.name}` : ''
+		const person = context.asker?.name ?? 'Someone', where = workflow?.chat.group && workflow.chat.id === context.chat ? ` in ${placeOf(store, workflow.chat, context.asker)?.sentence ?? workflow.chat.name}` : ''
 		rows[ref(e)] = {
 			code: e.code!, kind: 'reply', who: { name: person, initials: person.split(/\s+/).map(word => word[0]).slice(0, 2).join(''), hue: 210 },
 			sentence: `Replied to ${person}${where}${workflow?.redacted || context.text === undefined ? ' (sent words no longer available)' : ''}`,

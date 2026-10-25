@@ -6,6 +6,7 @@ import type { Store } from '../store/state.ts'
 import { canonicalKey } from './jobs.ts'
 import { isVote, pendingEffects, prIdOf, sameHead, VOTES, voteName, voteValue } from '../core/effects.ts'
 import { approvalMention, voteMention, voteClaimText } from '../core/vote-claims.ts'
+import { adoPrNumber, prTarget } from './probe.ts'
 export { approvalMention, voteMention } from '../core/vote-claims.ts'
 
 // Open work: an item that keeps one code until its work is closed. Every state change for work items is here (dev-spec/work.md).
@@ -68,6 +69,26 @@ export function homeNamed(store: Store, homes: Workflow[], text: string): Workfl
 		return own.some(l => ls.some(x => sameLink(l, x))) && prIds(ls).every(id => prIds(own).includes(id))
 	}) : []
 	return hit.length === 1 ? hit[0] : undefined
+}
+export function prJoinCandidates(store: Store, items: Workflow[], text: string): { prs: number[]; candidates: Workflow[] } {
+	const urls = [...text.matchAll(/https?:\/\/[^\s<>]+/gi)].map(match => match[0].replace(/[.,;:!?'")\]]+$/, ''))
+	const body = text.replace(/https?:\/\/[^\s<>]+/gi, ' ')
+	const named = [...prMentions(body)].flatMap(match => match[1] && !/^pullrequest\//i.test(match[0]) ? [Number(match[1])] : [])
+	const linked = urls.flatMap(url => {
+		const id = adoPrNumber(url)
+		return id === undefined ? [] : [id]
+	})
+	const prs = [...new Set([...named, ...linked].filter(id => Number.isSafeInteger(id) && id > 0))]
+	const nonAdo = urls.some(url => {
+		if (isNonAdoPrLink(url)) return true
+		if (!URL.canParse(url)) return false
+		const link = new URL(url), host = link.hostname.toLowerCase()
+		return host !== 'dev.azure.com' && !host.endsWith('.visualstudio.com') && /\/pullrequest\/[1-9]\d*(?:\/|$)/i.test(link.pathname)
+	})
+	return { prs, candidates: prs.length || nonAdo ? items.filter(item => {
+		const target = prTarget(store, item)
+		return prs.length ? target !== undefined && prs.includes(target) : target === undefined
+	}) : items }
 }
 export function addPart(home: Workflow, part: Workflow) {
 	part.partOf = home.id
@@ -193,7 +214,8 @@ export function afterSend(wf: Workflow, text: string, msgId: string, home = wf, 
 const untagged = (text: string) => text.trim().replace(/\u2019/g, "'").replace(/^(?:\[[^\]\n]{1,120}\]\s*)+/, '')
 const sentencesOf = (text: string) => untagged(text).split(/(?<=[.!?;])\s+|\n+/).map(s => s.trim()).filter(Boolean)
 // Only a number written as a pull request names one ("PR 12", "pull request #12", ".../pullrequest/12"); tags, times and counts never do.
-export const prNumbersIn = (text: string) => [...text.matchAll(/\b(?:PR|pull\s+request|pullrequest\/)\s*#?\s*(\d+)\b|(?:^|\s)#(\d{3,})\b/gi)].map(m => Number(m[1] ?? m[2]))
+function prMentions(text: string) { return text.matchAll(/\b(?:PR|pull\s+request|pullrequest\/)\s*#?\s*(\d+)\b|(?:^|\s)#(\d{3,})\b/gi) }
+export const prNumbersIn = (text: string) => [...prMentions(text)].map(m => Number(m[1] ?? m[2]))
 export function approvalReplyMatches(text: string, vote: number | undefined, pr: number): boolean {
 	if (!voteMention(text)) return true
 	// Every sentence that speaks of approval must be a complete, bounded statement the vote supports; the rest is free.
@@ -227,9 +249,9 @@ const PENDING = /\b(?:approvals?|sign[ -]?offs?)\b.*\b(?:is|are)\s+(?:still\s+)?
 type Kind = { kind: 'named'; who: string } | { kind: 'pending' }
 function othersSentence(sentence: string, owner: string): Kind | undefined {
 	const line = sentence.replace(/[.!;]$/, '')
-	if (FIRST_PERSON.test(line) || /^\W*(?:approved|LGTM)\b/i.test(line)) return undefined
+	if (FIRST_PERSON.test(line) || /^\W*(?:(?:have|had|has|just|already|now|also)\s+)*(?:approved|signed[ -]?off|LGTM)\b/i.test(line)) return undefined
 	const named = NAMED_APPROVED.exec(line), by = APPROVED_BY.exec(line)
-	const simple = /^(@?[\p{Lu}][\p{L}'-]*(?:\s+[\p{Lu}][\p{L}'-]*){0,3})\s+(?:approved|signed[ -]?off)\b/u.exec(line)
+	const simple = /^(@?[\p{Lu}][\p{L}'-]*(?:\s+[\p{Lu}][\p{L}'-]*){0,3})\s+(?:approves|approved|signed[ -]?off)\b/u.exec(line)
 	const who = (named ? line.slice(0, named.index) : by?.[1] ?? simple?.[1] ?? '').replace(/[@*_]/g, ' ').trim()
 	if (who) return owner && who.toLowerCase().includes(owner.toLowerCase()) ? undefined : { kind: 'named', who }
 	return PENDING.test(line) && !/\bapproved\b/i.test(line) ? { kind: 'pending' } : undefined

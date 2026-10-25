@@ -15,7 +15,8 @@ const { serveInbox } = await import('../src/web/server.ts')
 const { reactProjection } = await import('../src/web/react-projection.ts')
 const { seedNext, seedOwned, seedChanges } = await import('../test/fixture.ts')
 
-const NOT_SAVED = "Not saved. Your click didn't reach Delegate; try again."
+// Decision 49 (a), PM 22:43:03Z: send-edit sends, so its release line is the send form.
+const NOT_SAVED = "Not sent: Delegate didn't get your click. Try again."
 const pass = (what: string) => console.log(`PASS ${what}`)
 const browser = await chromium.launch({ channel: 'msedge', headless: true })
 
@@ -52,7 +53,7 @@ async function run(name: string, { ageMs, server }: { ageMs: number; server: 404
 			assert.ok(results.filter(s => s === server).length >= 3, `the server answered ${server} repeatedly`)
 			assert.equal(await stored(), 1, 'the click stays pending')
 			assert.equal(await row.locator('p.error', { hasText: NOT_SAVED }).count(), 0, 'not released')
-			await row.getByText(/has your click|Check Teams before you send again/).first().waitFor()
+			await row.getByText(/has your click|Couldn.t confirm whether/).first().waitFor()
 			assert.equal(await row.getByText(/not send (it |them )?again/i).count(), 0, 'no "Do not send again" (P0-03)')
 		}
 		assert.deepEqual(posts, [], 'nothing is sent again (the old click kept no request)')

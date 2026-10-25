@@ -1,4 +1,4 @@
-import { appendFileSync, closeSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync as fsAppend, closeSync as fsClose, mkdirSync as fsMkdir, openSync as fsOpen, readdirSync as fsReadDir, readFileSync as fsRead, renameSync as fsRename, rmSync as fsRemove, statSync as fsStat, writeFileSync as fsWrite } from 'node:fs'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { randomUUID } from 'node:crypto'
@@ -6,8 +6,18 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 
 // Time this process spent in the store's file calls, for the page server's slow-request log (#27): reads, writes, sleeps while
 // OneDrive or antivirus held a file, and waits for a receipt lock (state.ts). Counted always; read as before-and-after differences.
-export const fsTime = { read: 0, reads: 0, write: 0, writes: 0, wait: 0, lock: 0, stats: 0, opens: 0, lists: 0, hits: 0 }
+export const fsTime = { read: 0, reads: 0, write: 0, writes: 0, wait: 0, lock: 0, stats: 0, opens: 0, lists: 0, hits: 0, io: 0 }
 const since = (t: number) => performance.now() - t
+
+function fileCall<T extends Function>(get: () => T): T {
+	return new Proxy(get(), { apply(_target, receiver, args: unknown[]) {
+		const started = performance.now()
+		try { return Reflect.apply(get(), receiver, args) } finally { fsTime.io += since(started) }
+	} })
+}
+const appendFileSync = fileCall(() => fsAppend), closeSync = fileCall(() => fsClose), mkdirSync = fileCall(() => fsMkdir)
+const openSync = fileCall(() => fsOpen), readdirSync = fileCall(() => fsReadDir), readFileSync = fileCall(() => fsRead)
+const renameSync = fileCall(() => fsRename), rmSync = fileCall(() => fsRemove), statSync = fileCall(() => fsStat), writeFileSync = fileCall(() => fsWrite)
 
 // Under the test runner nothing is written outside the temp folder: on 10-20 a broken test wrote fixture values into the owner's real config.
 const TMP = [tmpdir(), '/tmp', '/private/tmp', '/private/var/folders', '/var/folders'].map(p => resolve(p))
@@ -209,7 +219,8 @@ function retry(fn: () => void, tries = 5) {
 			if (i >= tries || (code !== 'EPERM' && code !== 'EBUSY' && code !== 'EACCES')) throw e
 			const t = performance.now()
 			Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50 * i)
-			fsTime.wait += since(t)
+			const waited = since(t)
+			fsTime.wait += waited; fsTime.io += waited
 		}
 	}
 }

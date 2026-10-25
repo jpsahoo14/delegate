@@ -1,7 +1,9 @@
 // The owner's installed Copilot CLI package, which carries the SDK that speaks its own protocol (copilot-sdk/), so the resident host
 // (#19) needs no SDK of its own: the runtime and the SDK always match. Only the plain `copilot` command uses it; a workplace wrapper
 // (site.json agents) may add sign-in or proxies the host would skip, so it keeps one process per run.
-import { execFileSync } from 'node:child_process'
+import { execFileSync as executeProcess } from 'node:child_process'
+import { timedCall } from '../core/io-time.ts'
+const execFileSync = timedCall(() => executeProcess)
 import { existsSync, readdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'

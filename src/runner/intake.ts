@@ -1,5 +1,5 @@
 import { stateFields, WORKFLOW_SCHEMA } from '../core/upgrades.ts'
-import { active, addPart, homeNamed, homeOf, inWork, linksIn, newTurn, ownerStep, ownLinks, statusOf, step } from './work.ts'
+import { active, addPart, homeNamed, homeOf, inWork, newTurn, ownerStep, prJoinCandidates, statusOf, step } from './work.ts'
 import { reopenPromise } from './promise.ts'
 import { watchCommand } from './track.ts'
 import { askAtOf } from '../core/numbers.ts'
@@ -126,6 +126,8 @@ export async function intake(store: Store, src: Source, cfg: Config, cursors: Re
 			}
 			if (c.kind === 'skip') { auditSkip(store, chat.id, raw.id, 'prefilter'); continue }
 			const open = store.openInChat(chat.id)
+			const joinText = raw.html ? htmlToText(raw.body) : raw.body
+			const namedPrs = prJoinCandidates(store, [], joinText).prs
 			if (c.kind === 'owner') {
 				if (store.wasSentRecently(c.text)) { auditSkip(store, chat.id, raw.id, 'dedupe'); continue }
 				store.saveActivity({ ownerLastAt: raw.at })
@@ -137,7 +139,7 @@ export async function intake(store: Store, src: Source, cfg: Config, cursors: Re
 				const replied = await ownerReplies(store, cfg, raw, c.text, open)
 				for (const o of open) recordOwnerReply(store, o, toMsg(raw, cfg.owner, c.text, true), replied.get(o.id), ownReplyText(raw, c.text))
 				// Naming a link of work that started in another chat makes this chat a part of it (R-WRK-10).
-				const home = open.some(o => inWork(store, o)) ? undefined : homeNamed(store, store.workflows(), c.text)
+				const home = open.some(o => inWork(store, o)) ? undefined : homeNamed(store, prJoinCandidates(store, store.workflows(), joinText).candidates, c.text)
 				if (home && home.chat.id !== chat.id) {
 					const part = await create(store, src, cfg, chat)
 					if (!store.thread(part.id).some(m => m.id === raw.id)) appendThread(store, part, toMsg(raw, cfg.owner, c.text, true))
@@ -167,18 +169,22 @@ export async function intake(store: Store, src: Source, cfg: Config, cursors: Re
 			const hours = cfg.quietHours ?? 48
 			const live = open.filter(w => (w.job || inWork(store, w) || !quietFor(store, w, hours, now)) && (!backlog || w.before))
 			// Sender identity alone is not a follow-up: unresolved cases become visible before the worker's tie-breaker.
-			const follows = groupJudgment ? route(store, live.filter(o => o.asker?.id === c.from.id), raw, c.from.id, undefined, c.text) : undefined
-			if (groupJudgment && !follows) for (const o of open) appendThread(store, o, toMsg(raw, c.from, c.text, false))
-			let wf = follows ?? (groupJudgment ? undefined : route(store, live, raw, c.kind === 'ask' || c.kind === 'context' ? c.from.id : '', c.kind === 'ask' && !backlog ? recentItem(store, chat.id, c.from.id, hours, now) : undefined, c.text))
-			// An ask about a different PR than the open item's own is its own item, with its own goal (queue-new #10 d).
-			if (wf && c.kind === 'ask') {
-				const asked = linksIn(c.text).filter(l => l.startsWith('pr:')).map(l => l.slice(3)), own = ownLinks(store, wf).filter(l => l.startsWith('pr:')).map(l => l.split(/[:/]/).at(-1))
-				if (asked.length && own.length && asked.some(id => !own.includes(id))) { store.log({ event: 'join-refused', code: wf.code, by: 'intake', reason: `the ask is about PR ${asked.join(', PR ')}, and ${wf.code} is about PR ${own.join(', PR ')}` }); wf = undefined }
-			}
+			const follows = groupJudgment ? route(store, live.filter(o => o.asker?.id === c.from.id), raw, c.from.id, undefined, c.text, joinText) : undefined
+			if (groupJudgment && !follows) for (const o of prJoinCandidates(store, open, joinText).candidates) appendThread(store, o, toMsg(raw, c.from, c.text, false))
+			const routed = follows ?? (groupJudgment ? undefined : route(store, live, raw, c.kind === 'ask' || c.kind === 'context' ? c.from.id : '', c.kind === 'ask' && !backlog ? recentItem(store, chat.id, c.from.id, hours, now) : undefined, c.text, joinText))
+			let wf = routed?.item
 			// An ask that names a link of work from another chat goes to that work's part here, or starts one.
-			const named = c.kind === 'ask' && !groupJudgment && !(wf && inWork(store, wf)) ? homeNamed(store, store.workflows(), c.text) : undefined
+			const named = c.kind === 'ask' && !groupJudgment && !(wf && (inWork(store, wf) || namedPrs.length)) ? homeNamed(store, prJoinCandidates(store, store.workflows(), joinText).candidates, c.text) : undefined
 			const elsewhere = named && named.chat.id !== chat.id ? named : undefined
 			if (elsewhere) wf = live.find(o => o.partOf === elsewhere.id && freshAsk(store, o, Date.parse(raw.at)) && askRelation(store, o, c.text) === 'same')
+			if (wf && c.kind === 'ask') {
+				const boundary = prJoinCandidates(store, [wf], joinText)
+				if (!boundary.candidates.length) {
+					store.log({ event: 'join-refused', code: wf.code, by: 'intake', reason: boundary.prs.length ?
+						`the message names PR ${boundary.prs.join(', PR ')} but not this item's PR` : "the message names a non-ADO PR, not this item's PR" })
+					wf = undefined
+				}
+			}
 			// "Fixed, please recheck" reopens the same item, which keeps its code (scenario 04 step 5, tester P2-14).
 			// It reattaches to its job only if the worker says the new ask is about the same entity (review 01-04 P0-2).
 			// How and why it closed last time no longer describes it: a later close says its own.
@@ -193,6 +199,7 @@ export async function intake(store: Store, src: Source, cfg: Config, cursors: Re
 			if (wf?.lastMsgId && BigInt(raw.id) <= BigInt(wf.lastMsgId)) { auditSkip(store, chat.id, raw.id, 'dedupe', wf.id); continue }
 			// The reply already went and its promised change waits, or its check failed: the new ask is a new turn (Slice 3).
 			if (wf && c.kind === 'ask') reopenPromise(store, wf)
+			const joinedPr = wf && prTarget(store, wf)
 			wf ??= await create(store, src, cfg, chat, c.kind === 'ask' ? earlierOf(store, chat.id, c.from.id) : undefined)
 			if (elsewhere && !wf.partOf) { addPart(elsewhere, wf); step(elsewhere, `${c.from.name.split(' ')[0]} (${chat.group ? chat.name : '1:1'}, ${wf.code}): ${c.text}`, { ref: `part:${wf.id}` }); store.save(elsewhere) }
 			appendThread(store, wf, toMsg(raw, c.from, c.text, false))
@@ -201,8 +208,12 @@ export async function intake(store: Store, src: Source, cfg: Config, cursors: Re
 			if (wf.draft) wf.newCount++
 			wf.pending.push(raw.id)
 			wf.msgIds.push(raw.id)
+			if (!wf.prAnchor && routed?.item.id === wf.id && routed.anchor) wf.prAnchor = routed.anchor
 			// A new ask withdraws any ok given before it (tester P0).
 			Object.assign(wf, { asker: c.from, lastAsk: c.text, ...stateFields(wf, 'running'), lastMsgId: raw.id, approved: undefined, needsMe: undefined, intakeDeferred: undefined })
+			const otherPrs = joinedPr ? namedPrs.filter(id => id !== joinedPr) : []
+			if (otherPrs.length) wf.context = [...(wf.context ?? []).filter(f => f.label !== 'Also mentions'),
+				{ label: 'Also mentions', text: otherPrs.map(id => `PR ${id}`).join(', '), tone: 'info' }]
 			// The hold stays once set; only a draft that answers nothing but old messages waits its turn.
 			if (backlog) Object.assign(wf, { before: true, paced: true })
 			else wf.paced = undefined
@@ -227,15 +238,23 @@ function answeredBy(store: Store, msgId: string): string[] {
 	return w?.asker ? [w.asker.id, ...(w.askers ?? []).map(p => p.id)] : []
 }
 
-function route(store: Store, open: Workflow[], raw: RawMsg, senderId: string, recent?: Workflow, text = ''): Workflow | undefined {
-	const candidates = [...open, ...(recent ? [recent] : [])].filter(item =>
+type Routed = { item: Workflow; anchor?: NonNullable<Workflow['prAnchor']> }
+function route(store: Store, open: Workflow[], raw: RawMsg, senderId: string, recent?: Workflow, text = '', joinText = text): Routed | undefined {
+	const eligible = [...open, ...(recent ? [recent] : [])].filter(item =>
 		(item.asker?.id === senderId || !item.asker && !!item.partOf && !item.chat.group && !!senderId) &&
 		freshAsk(store, item, Date.parse(raw.at), item === recent))
+	const { prs, candidates } = prJoinCandidates(store, eligible, joinText)
+	const result = (item: Workflow): Routed => {
+		const pr = prs.length > 1 && candidates.length === 1 ? prTarget(store, item) : undefined
+		return { item, ...(pr !== undefined && prs.includes(pr) ? { anchor: { pr, msgId: raw.id, at: new Date().toISOString() } } : {}) }
+	}
 	const target = replyTarget(raw)
-	const quoted = target && candidates.find(item => item.msgIds.includes(target) && askRelation(store, item, text) !== 'different')
-	if (quoted) return quoted
+	const quoted = target && candidates.find(item => item.msgIds.includes(target) && (prs.length > 1 || askRelation(store, item, text) !== 'different'))
+	if (quoted) return result(quoted)
+	if (prs.length > 1 && candidates.length > 1) return undefined
 	const same = candidates.filter(item => askRelation(store, item, text) === 'same')
-	return same.length === 1 ? same[0] : undefined
+	const selected = same.length === 1 ? same[0] : prs.length > 1 && candidates.length === 1 ? candidates[0] : undefined
+	return selected && result(selected)
 }
 
 // A follow-up continues the sender's closed item while the talk is fresh: a job item for 7 days (its PR is the key, R-WF-11),
@@ -383,7 +402,7 @@ export function recordOwnerReply(store: Store, item: Workflow, message: Msg, ans
 // and exactly one work may match; its asker alone is enough only when the chat has one open topic. An ask about anything else
 // stays its own W entry, with its own follow-up.
 export function workOfAsk(store: Store, open: Workflow[], raw: RawMsg, text: string, to: string[]): string | undefined {
-	const homes = [...new Map(open.filter(o => inWork(store, o)).map(o => { const h = homeOf(store, o); return [h.id, h] as const })).values()]
+	const homes = prJoinCandidates(store, [...new Map(open.filter(o => inWork(store, o)).map(o => { const h = homeOf(store, o); return [h.id, h] as const })).values()], raw.html ? htmlToText(raw.body) : raw.body).candidates
 	if (!homes.length) return undefined
 	const quoted = replyTarget(raw)
 	if (quoted) {
@@ -427,6 +446,7 @@ export function splitOff(store: Store, cfg: Config, from: Workflow, ids: string[
 		...(from.before ? { before: true as const } : {}),
 	}
 	from.msgIds = from.msgIds.filter(id => !moving.has(id))
+	if (from.prAnchor && moving.has(from.prAnchor.msgId)) from.prAnchor = undefined
 	from.pending = from.pending.filter(id => !moving.has(id))
 	const own = thread.filter(m => from.msgIds.includes(m.id))
 	if (own.length) Object.assign(from, { asker: own.at(-1)!.from, lastAsk: own.at(-1)!.text, lastMsgId: own.at(-1)!.id })

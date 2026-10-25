@@ -19,6 +19,7 @@ import { useClassicMarkSeen } from './data.ts'
 import { useScreenNavigation } from './navigation.tsx'
 import { messageText, sentAt } from '../features/ItemCard.tsx'
 import { SentTime } from '../features/SentTime.tsx'
+import { ItemCode } from '../features/ItemCode.tsx'
 import { busyWords } from '../data/busy.ts'
 import { WaysLink, waysLinkShown } from '../features/Ways.tsx'
 
@@ -81,11 +82,14 @@ export default function Home({ readOnly = false }: { readOnly?: boolean }) {
 				<ul>{needs.slice(0, 4).map(item => {
 					const sent = sentAt(item)
 					const person = entities.people[item.personId], avatar: CSSProperties & { '--hue': number } = { '--hue': person.hue }
-					const retry = item.actionIds.some(id => entities.actions[id].kind === 'answer' && entities.actions[id].recovery)
-					const headline = retry ? `Answer ${item.code} to retry with directions, or skip it` : item.question || item.ask || item.job
-					return <li className="classic-needs-row" key={item.id}><a href={`#classic/focus/${item.code}`}><span className="classic-avatar" style={avatar} aria-hidden="true">{person.initials}</span><strong>{person.name.split(' ')[0]}</strong>					<span className="classic-peek-headline">										{messageText(headline ?? '').slice(0, 200)}</span><SentTime at={sent.at} added={sent.added} waiting code={item.code} /></a>{item.teams && <Button asChild variant="ghost" size="icon-xs" aria-label="Open in Teams"><a href={item.teams} target="_blank" rel="noopener noreferrer"><Icon name="ext" /></a></Button>}</li>
+					const retry = item.mode === 'failed' || item.actionIds.some(id => entities.actions[id].kind === 'answer' && entities.actions[id].recovery)
+					// PM A R38 (1) / R40 (a): a failed reply says so without a code, and without the name (it is the bold name before it); the click opens
+					// the card's failure pattern (try again or write it yourself).
+					const first = person.first ?? person.name
+					const headline = retry ? `${NAME} couldn't finish the reply. Open it to try again or write it yourself.` : item.question || item.ask || item.job
+					return <li className="classic-needs-row" key={item.id}><a href={`#classic/focus/${item.code}`}><span className="classic-avatar" style={avatar} aria-hidden="true">{person.initials}</span><strong>{first}</strong>					<span className="classic-peek-headline">										{messageText(headline ?? '').slice(0, 200)}</span><SentTime at={sent.at} added={sent.added} waiting /></a>{item.teams && <Button asChild variant="ghost" size="icon-xs" aria-label="Open in Teams"><a href={item.teams} target="_blank" rel="noopener noreferrer"><Icon name="ext" /></a></Button>}<ItemCode code={item.code} /></li>
 				})}</ul><div className="classic-needs-foot">
-					{!readOnly && <a className="classic-start" href={`#classic/focus/${needs[0].code}`}>Start with {entities.people[needs[0].personId].name.split(' ')[0]} <Icon name="arrow" /></a>}
+					{!readOnly && <a className="classic-start" href={`#classic/focus/${needs[0].code}`}>Start with {(person => person.first ?? person.name)(entities.people[needs[0].personId])} <Icon name="arrow" /></a>}
 					{needs.length > 4 && <span>and {needs.length - 4} more</span>}
 				</div></> : <><span className="classic-tile-icon classic-all-clear"><Icon name="check" /></span><h2 id="classic-needs-title">All clear</h2><p>Nothing needs you.</p></>}
 		</section>{tiles.map(tile => <a className="classic-tile" key={tile.key} href={`#classic/${destinations[tile.key] ?? 'done'}`} aria-label={tile.label}><span className="classic-tile-icon"><Icon name={icons[tile.key] ?? 'check'} /></span><span className="classic-tile-go"><Icon name="arrow" /></span><TileSentence label={tile.label} count={tile.count} />{tile.sub && <span className="classic-tile-sub">{tile.sub}</span>}</a>)}</div>

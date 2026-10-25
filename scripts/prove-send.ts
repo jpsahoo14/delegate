@@ -41,6 +41,7 @@ const source: Source = {
 	newMessages: async (_chat, id) => ({ msgs: live.filter(m => !id || BigInt(m.id) > BigInt(id)), truncated: false }),
 	recentChats: async () => [], send: async (_chat, text) => { onSend?.(); posted.push(text); return { msgId: String(90000 + posted.length) } },
 	sendSelf: async () => ({ msgId: '99000' }), presence: async () => ({ availability: 'Available' }),
+	members: async () => ({ ids: ['robin', 'kim'], names: { robin: 'Robin', kim: 'Kim' }, guests: false, outside: [] }),
 	deleteMessage: async () => {}, editMessage: async () => {}, close: async () => {},
 }
 const at = '2026-10-24T07:00:00.000Z', later = '2026-10-24T07:01:00.000Z'
@@ -70,7 +71,7 @@ async function draftThroughDispatch(w: Workflow) {
 }
 async function approve(w: Workflow, text?: string, page = false) {
 	store.writeAnswer({ code: w.code, verb: text ? 'answer' : 'ok', text, surface: 'panel',
-		...(page ? { page: { kind: 'send-reply' as const, expect: workflowApprovalRev(w) } } : {}) })
+		...(page ? { sendReview: w.holdDigest, page: { kind: 'send-reply' as const, expect: workflowApprovalRev(w) } } : {}) })
 	await applyAnswers(store, source, cfg, undefined, false, undefined, async () => ({ stillAnswers: 'no', changed: 'The requested reply changed.' }))
 	return store.workflow(w.id)!
 }
@@ -133,6 +134,8 @@ try {
 	w = await approve(w, 'send anyway', true)
 	assert.equal(posted.length, beforeNewEdit); assert.equal(w.reason?.kind, 'ask-edited'); assert.notEqual(w.reason?.digest, heldDigest)
 	w = await approve(w, 'send anyway')
+	assert.equal(posted.length, beforeNewEdit); assert.equal(w.holdNotice?.digest, w.holdDigest)
+	w = await approve(w, 'send anyway')
 	assert.ok(w.sent); proof('changed meaning keeps draft and diff; explicit Send anyway sends once')
 
 	w = await draftThroughDispatch(seed('Robin, please send the Aurora status.', at))
@@ -192,6 +195,9 @@ try {
 	assert.match(w.status, /thinks no reply is needed/)
 	proof('real no-reply rerun retains approved draft, with reason and Send anyway/Skip data')
 	live = live.slice(0, 1)
+	const beforeNoReplyNotice = posted.length
+	w = await approve(w, 'send anyway')
+	assert.equal(posted.length, beforeNoReplyNotice); assert.equal(w.holdNotice?.digest, w.holdDigest)
 	w = await approve(w, 'send anyway'); assert.ok(w.sent)
 
 	w = await draftThroughDispatch(seed(undefined, at))
@@ -379,14 +385,15 @@ try {
 		assert.equal(turn.ownerSend, undefined); assert.equal(turn.reason, undefined); assert.equal(turn.draft, undefined)
 	}
 	writeRules(store, '- Reply to Kim\n', [{ id: 'R1', text: 'Reply to Kim', who: { accounts: [w.asker!] }, when: { chat: w.chat.id }, then: 'send' }])
+	const activeRule = store.rules().find(rule => rule.text === 'Reply to Kim')!
 	store.saveControl({ ...store.control(), autoSend: true })
 	await afterDraft(store, source, cfg, w)
-	assert.equal(w.state, 'scheduled', JSON.stringify(w.decision)); assert.equal(w.decision?.ruleId, 'R1')
+	assert.equal(w.state, 'scheduled', JSON.stringify(w.decision)); assert.equal(w.decision?.ruleId, activeRule.id)
 	w.sendAt = new Date(0).toISOString(); store.save(w)
 	const beforeAuto = posted.length
 	assert.equal(await dueSends(store, source, cfg), 1)
 	w = store.workflow(w.id)!
-	assert.equal(w.sent?.byRule, 'R1'); assert.equal(posted.length, beforeAuto + 1)
+	assert.equal(w.sent?.byRule, activeRule.id); assert.equal(posted.length, beforeAuto + 1)
 	proof('B2 new report clears old approval/reason; a rule-covered replacement draft auto-sends')
 
 	w = await draftThroughDispatch(seed(undefined, at))

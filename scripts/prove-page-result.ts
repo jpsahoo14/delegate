@@ -1,5 +1,7 @@
 // Manual #47 proof, outside npm test/CI: the page result line names the person and chat with Open and close, never the bare chat
 // receipt; pending clicks are a grey list, never red for a busy server, polled 2/4/8/15 (scaled); a reload never brings a line back.
+// Decisions 46/49 (PE 07:30 (2); the decision-40 rule for changed expectations): the line and the pending list are no longer in the
+// page; they are header-slot notices, read in the slot's popover. Locators and expectations moved there; no case added or removed.
 // Fictional temp root, real page server in Edge, stub source and runner (no model).
 import assert from 'node:assert/strict'
 import { mkdtempSync } from 'node:fs'
@@ -38,9 +40,12 @@ async function open(hash: string) {
 		assert.deepEqual(errors, [])
 	} }
 }
-const line = (page: Page) => page.locator('.live-result')
+// The slot's popover holds the newest result (decisions 46/49); it opens on a click on the header pill, never by itself.
+async function slot(page: Page) { if (!await page.locator('.notice-popover').count()) await page.locator('button.notice-pill:visible').first().click(); await page.locator('.notice-popover').waitFor() }
+const line = (page: Page) => page.locator('.notice-popover .live-result')
+async function lineText(page: Page) { await slot(page); return await line(page).count() ? (await line(page).locator('p').innerText()).trim() : '' }
 async function cleared(page: Page, ms = 10_000) {
-	for (const until = Date.now() + ms; (await line(page).innerText()) !== '';) { if (Date.now() > until) throw new Error('The result line did not clear'); await page.waitForTimeout(50) }
+	for (const until = Date.now() + ms; (await lineText(page)) !== '';) { if (Date.now() > until) throw new Error('The result line did not clear'); await page.waitForTimeout(50) }
 }
 const red = (page: Page) => page.locator('main [role=alert].error, main .error')
 // The asker writes again after the owner pressed Send: the runner holds it (asker-wrote-again), as live.
@@ -66,13 +71,13 @@ async function held(experience: 'new' | 'classic') {
 		await click(t.page, card.getByRole('button', { name: 'Send', exact: true }))
 		await runner(t.store, wroteAgain(t.store, chat))
 		assert.equal(t.store.byCode('A20')!.reason?.kind, 'asker-wrote-again', 'the runner held the Send')
-		await line(t.page).getByText(/^Your reply to Kim in Spec review wasn't sent: /).waitFor()
-		const shown = (await line(t.page).locator('span').innerText()).trim()
+		await slot(t.page); await line(t.page).getByText(/^Your reply to Kim in Spec review wasn't sent: /).waitFor()
+		const shown = (await line(t.page).locator('p').innerText()).trim()
 		assert.match(shown, /^Your reply to Kim in Spec review wasn't sent: Kim wrote again after you approved: She now asks whether the launch date is fixed\.$/, shown)
 		assert.doesNotMatch(await line(t.page).innerText(), /A20|Not sent/, 'no code and no chat wording on the page')
 		assert.equal(await line(t.page).getAttribute('title') !== null, true, 'the code is in the tooltip')
 		assert.equal(await red(t.page).count(), 0, 'nothing red')
-		await line(t.page).getByRole('button', { name: 'Close this message' }).waitFor()
+		await line(t.page).getByRole('button', { name: 'Close', exact: true }).waitFor()
 		if (process.env.PROOF_SHOTS) { await t.page.evaluate('window.scrollTo(0, 0)'); await t.page.screenshot({ path: join(process.env.PROOF_SHOTS, `47-${experience}-held.png`) }) }
 		pass(`${experience}: a held Send names Kim and the chat with the card's held line, Open and close; no code, nothing red`)
 		// Open goes to the card and clears the line.
@@ -88,12 +93,12 @@ async function held(experience: 'new' | 'classic') {
 		await click(t.page, sendAnyway)
 		await runner(t.store, wroteAgain(t.store, chat))
 		assert.ok(t.store.byCode('A20')!.sent, `Send anyway sent the reply (state ${t.store.byCode('A20')!.state}: ${t.store.byCode('A20')!.status}; outcomes ${JSON.stringify(t.store.answers().length)})`)
-		await line(t.page).getByText('Sent to Kim in Spec review.', { exact: true }).waitFor()
+		await slot(t.page); await line(t.page).getByText('Sent to Kim in Spec review.', { exact: true }).waitFor()
 		pass(`${experience}: after Send anyway the line is "Sent to Kim in Spec review."`)
-		await line(t.page).getByRole('button', { name: 'Close this message' }).click()
-		assert.equal(await line(t.page).innerText(), '')
+		await line(t.page).getByRole('button', { name: 'Close', exact: true }).click()
+		assert.equal(await lineText(t.page), '')
 		await t.page.reload(); await t.page.locator('main').waitFor(); await t.page.waitForTimeout(500)
-		assert.equal(await line(t.page).innerText(), '', 'a reload does not bring the closed line back')
+		assert.equal(await lineText(t.page), '', 'a reload does not bring the closed line back')
 		pass(`${experience}: close clears the line and a reload does not bring it back`)
 	} finally { await t.close() }
 }
@@ -125,16 +130,16 @@ async function everyKind(experience: 'new' | 'classic') {
 				...(k.outcome ? { outcome: k.outcome } : {}), ...(k.who ? { who: k.who } : {}), ...(k.chat ? { chat: k.chat } : {}) })
 			await t.page.evaluate(({ id, rev, item }) => sessionStorage.setItem('delegate-react-pending-v1', JSON.stringify([{ submissionId: id, item, rev, action: `${item}/x`, at: Date.now() }])), { id, rev, item: k.item })
 			await t.page.reload(); await t.page.locator('main').waitFor()
-			if (k.words) await line(t.page).getByText(k.words, { exact: true }).waitFor({ timeout: 10_000 }).catch(async error => { throw new Error(`${k.what}: expected "${k.words}", shown "${await line(t.page).innerText()}"`, { cause: error }) })
+			if (k.words) { await slot(t.page); await line(t.page).getByText(k.words, { exact: true }).waitFor({ timeout: 10_000 }).catch(async error => { throw new Error(`${k.what}: expected "${k.words}", shown "${await lineText(t.page)}"`, { cause: error }) }) }
 			else {
 				for (const until = Date.now() + 3000; await t.page.evaluate<number>("JSON.parse(sessionStorage.getItem('delegate-react-pending-v1') ?? '[]').length") > 0;) { if (Date.now() > until) throw new Error('the old receipt was not completed'); await t.page.waitForTimeout(50) }
 				await t.page.waitForTimeout(300)
-				assert.equal(await line(t.page).innerText(), '', `${k.what}: no line`)
+				assert.equal(await lineText(t.page), '', `${k.what}: no line`)
 			}
-			const shown = await line(t.page).innerText()
+			const shown = await lineText(t.page)
 			assert.doesNotMatch(shown, /A20|A999|Skipped|Not done|chat wording/, `${k.what}: no chat text or code`)
 			if (k.words) assert.equal(await line(t.page).getByRole('link', { name: 'Open', exact: true }).count(), k.open ? 1 : 0, `${k.what}: Open`)
-			assert.equal(await line(t.page).getAttribute('data-tone'), k.tone ?? null, `${k.what}: tone`)
+			assert.equal(await line(t.page).count() ? await line(t.page).getAttribute('data-tone') : null, k.tone ?? null, `${k.what}: tone`)
 			assert.equal(await red(t.page).count(), 0, `${k.what}: nothing red`)
 		}
 		pass(`${experience}: every outcome has its own words (${kinds.length} kinds: queued grey, past tense per action, refused/failed with or without a reason, 1:1 send, pre-outcome receipt hidden); never the chat text or a code`)
@@ -144,7 +149,7 @@ async function everyKind(experience: 'new' | 'classic') {
 		else { await t.page.goto(t.page.url().replace(/#.*$/, '#classic/focus/A20')); await card.waitFor() }
 		await click(t.page, card.getByRole('button', { name: 'Later', exact: true }))
 		await runner(t.store)
-		await line(t.page).getByText("Kim's message is in Later.", { exact: true }).waitFor({ timeout: 10_000 }).catch(async error => { throw new Error(`Later: shown "${await line(t.page).innerText()}"`, { cause: error }) })
+		await slot(t.page); await line(t.page).getByText("Kim's message is in Later.", { exact: true }).waitFor({ timeout: 10_000 }).catch(async error => { throw new Error(`Later: shown "${await lineText(t.page)}"`, { cause: error }) })
 		pass(`${experience}: a real Later through the runner reads "Kim's message is in Later."`)
 	} finally { await t.close() }
 }
@@ -157,7 +162,7 @@ async function closedItem(experience: 'new' | 'classic') {
 			accepted: true, ids: [], text: 'Sent A999 to Lin Brook.', processed: true, status: 200, outcome: { kind: 'sent' }, who: 'Lin', chat: 'Release sync' })
 		await t.page.evaluate(({ id, rev }) => sessionStorage.setItem('delegate-react-pending-v1', JSON.stringify([{ submissionId: id, item: 'A999', rev, action: 'A999/approve', at: Date.now() }])), { id, rev })
 		await t.page.reload()
-		await line(t.page).getByText('Sent to Lin in Release sync.', { exact: true }).waitFor()
+		await slot(t.page); await line(t.page).getByText('Sent to Lin in Release sync.', { exact: true }).waitFor()
 		assert.equal(await line(t.page).getByRole('link', { name: 'Open' }).count(), 0, 'a closed item has no Open')
 		assert.doesNotMatch(await line(t.page).innerText(), /A999/)
 		pass(`${experience}: a closed item's line uses the kept who and chat and has no Open`)
@@ -178,15 +183,18 @@ async function busy(experience: 'new' | 'classic') {
 		})
 		await t.page.evaluate(({ id, rev }) => sessionStorage.setItem('delegate-react-pending-v1', JSON.stringify([{ submissionId: id, item: 'A20', rev, action: 'A20/approve', at: Date.now() }])), { id, rev })
 		await t.page.reload()
-		const toggle = t.page.getByRole('button', { name: 'Finishing 1 earlier click…', exact: true })
-		await toggle.waitFor()
+		// Decisions 46/49: the grey "Finishing 1 earlier click…" is a header-slot notice; it and its list are in the slot's popover.
+		await slot(t.page)
+		const pending = t.page.locator('.notice-popover [data-notice=pending]')
+		await pending.waitFor()
+		assert.match(await pending.innerText(), /Finishing 1 earlier click…/)
 		await t.page.waitForTimeout(POLL * (1 + 2 + 4 + 7.5 + 7.5) + 600)
 		const gaps = times.slice(1).map((at, i) => at - times[i])
 		const want = [2, 4, 7.5, 7.5].map(n => n * POLL)
 		assert.ok(gaps.length >= 4, `polls: ${gaps.join(', ')}`)
 		for (const [i, w] of want.entries()) assert.ok(gaps[i] >= w * 0.85 && gaps[i] <= w + 250, `gap ${i + 1} is ${gaps[i]} ms, want about ${w} (all: ${gaps.join(', ')})`)
 		assert.equal(await red(t.page).count(), 0, 'a busy server (202, a lost poll) shows nothing red')
-		await toggle.click()
+		await slot(t.page)
 		await t.page.locator('#pending-clicks-list').getByText('Kim in Spec review').waitFor()
 		if (process.env.PROOF_SHOTS) await t.page.screenshot({ path: join(process.env.PROOF_SHOTS, `47-${experience}-pending.png`) })
 		assert.equal(await t.page.locator('#pending-clicks-list').getByRole('link', { name: 'Open' }).count(), 1)
@@ -207,9 +215,9 @@ async function revChange() {
 		await card.getByRole('button', { name: 'Open', exact: true }).click(); await card.locator('.item-card').first().waitFor()
 		await click(t.page, card.getByRole('button', { name: 'Send', exact: true }))
 		await runner(t.store, wroteAgain(t.store, t.store.byCode('A20')!.chat.id))
-		await line(t.page).getByText(/^Your reply to Kim/).waitFor()
+		await slot(t.page); await line(t.page).getByText(/^Your reply to Kim/).waitFor()
 		await t.page.waitForTimeout(POLL * 30)
-		assert.notEqual(await line(t.page).innerText(), '', 'the line stays while the card is unchanged')
+		assert.notEqual(await lineText(t.page), '', 'the line stays while the card is unchanged')
 		const wf = t.store.byCode('A20')!
 		t.store.save({ ...wf, draft: { ...wf.draft!, text: 'Yes, the plan is final. Launch moves to Oct 25.' }, revAt: new Date().toISOString() }, false)
 		await cleared(t.page)

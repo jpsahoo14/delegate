@@ -398,6 +398,8 @@ export class Store {
 	saveNotify(n: Notify) { this.w(this.p('state', 'notify.json'), n) }
 
 	writeAnswer(a: Omit<Answer, 'id' | 'at'>, submissionId?: string): Answer {
+		// F1 (PE decision 47): a page Send anyway's consent is the hold digest its card showed (the intent's reviewed), never the current one.
+		if (a.page?.reviewed && a.sendReview === undefined) a = { ...a, sendReview: a.page.reviewed }
 		const id = submissionId ?? ulid()
 		if (!/^[0-9A-HJKMNP-TV-Z]{26}$/.test(id)) throw new Error('An answer identity must preserve time order.')
 		const existing = submissionId ? this.answerById(id) : undefined

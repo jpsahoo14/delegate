@@ -1,5 +1,7 @@
 import { site } from '../core/site.ts'
-import { spawnSync } from 'node:child_process'
+import { spawnSync as spawnProcess } from 'node:child_process'
+import { timedCall } from '../core/io-time.ts'
+const spawnSync = timedCall(() => spawnProcess)
 
 export function alive(pid: number): boolean {
 	try { process.kill(pid, 0); return true } catch (e) { return (e as NodeJS.ErrnoException).code === 'EPERM' }

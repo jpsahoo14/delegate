@@ -13,10 +13,9 @@ import { PageTools } from './features/PageTools.tsx'
 import { useSeen } from './data/seen.ts'
 import { useVersionUpdate } from './data/update.ts'
 import { Header } from './features/Header.tsx'
-import { ActionButton, ActionState } from './features/ActionButton.tsx'
+import { ActionButton, ActionState, useOnline } from './features/ActionButton.tsx'
 import { versionLabel, versionTitle } from './domain/version.ts'
-import { Problems } from './features/Problems.tsx'
-import { PageResult, PendingClicks } from './features/PageResult.tsx'
+import { pageLines, pageNotices, useParkedUpdate, usePendingLines, useResultLine } from './features/PageNotices.tsx'
 
 const Now = preloadable(NEW_VIEWS.now)
 const Done = preloadable(NEW_VIEWS.done)
@@ -39,7 +38,15 @@ function NewApp() {
 	const seenError = useSeen()
 	const actionError = useLatestError()
 	const nowSections = useNowSections()
-	const update = useVersionUpdate()
+	const update = useVersionUpdate(), online = useOnline(), parked = useParkedUpdate(update.available)
+	const pendingLines = usePendingLines('new'), resultLine = useResultLine(updateResult ? undefined : result, 'new')
+	// PE decision 46: the page-level notices live in the header slot; none is inserted above the cards.
+	const notices = pageNotices({ online, health: Object.values(snapshot?.entities.health ?? {}), fetchedAt: snapshot?.fetchedAt,
+		refresh: query.error ? { message: query.error.message, retry: () => void query.refetch() } : undefined,
+		update: update.available ? { version: update.available, reload: update.reload, ...parked } : undefined,
+		refreshWords: message => `Could not refresh your items: ${message}. Your last view is kept.`,
+		// PE 07:20: nothing renders between the header and the route content; these lines are slot notices.
+		errors: pageLines({ storage: pendingError, interface: error, seen: seenError, action: actionError }), pending: pendingLines, result: resultLine })
 	const act = useAction(), prefix = useRef('')
 	const main = useRef<HTMLElement>(null), dialog = useRef<HTMLDialogElement>(null)
 	const helpTrigger = useRef<HTMLElement | null>(null)
@@ -129,17 +136,8 @@ function NewApp() {
 	}, [help])
 	return <>
 		<a className="skip-link" href="#main" onClick={event => { event.preventDefault(); main.current?.focus() }}>Skip to content</a>
-		<Header current={current} move={move} snapshot={snapshot} offline={!!query.error} />
+		<Header current={current} move={move} snapshot={snapshot} offline={!!query.error || !online} notices={notices} />
 		<main id="main" data-ui="new" tabIndex={-1} ref={main}>
-			{error && <p role="alert" className="error">{error}</p>}
-			{pendingError && <p role="alert" className="error">{pendingError}</p>}
-			{seenError && <p role="alert" className="error">{seenError}</p>}
-			{actionError && <p role="alert" className="error">{actionError}</p>}
-			{update.available && <p role="status" className="warning">Updated to {update.available}. Your unsent edits stay here until you choose to reload. <Button variant="outline" onClick={update.reload}>Reload when ready</Button></p>}
-			{query.error && <div role="alert" className="warning"><p>Could not refresh your items: {query.error.message}. Your last view is kept.</p><Button variant="outline" onClick={() => void query.refetch()}>Try again</Button></div>}
-			<PendingClicks experience="new" />
-			<PageResult result={updateResult ? undefined : result} experience="new" />
-			{current !== 'numbers' && <Problems />}
 			{!snapshot ? <p role="status">Loading your items...</p> : <Suspense fallback={<p role="status">Loading this view...</p>}>
 				{current === 'now' ? <Now /> : current === 'done' ? <Done /> : current === 'numbers' ? <Numbers /> : current === 'settings' ? <Settings /> : <Knowledge />}
 			</Suspense>}

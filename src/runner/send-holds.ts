@@ -78,8 +78,15 @@ async function changeForOwner(store: Store, wf: Workflow, before: string, messag
 	return changed
 }
 
-export async function holdCheck(store: Store, src: Source, wf: Workflow, options: { automatic?: boolean; messages?: Message[]; quick?: Quick } = {}): Promise<{ reasons: Reason[]; deleted: boolean }> {
+export async function holdCheck(store: Store, src: Source, wf: Workflow, options: { automatic?: boolean; messages?: Message[]; quick?: Quick; checked?: Map<string, string | undefined> } = {}): Promise<{ reasons: Reason[]; deleted: boolean }> {
 	const cfg = store.config(), previous = holdReasons(wf), reasons: Reason[] = []
+	const change = async (before: string, message: Message, editions = [message.text]) => {
+		const key = JSON.stringify([before, message, editions, wf.draft?.text, cfg.owner, cfg.aliases])
+		if (options.checked?.has(key)) return options.checked.get(key)
+		const changed = await changeForOwner(store, wf, before, message, cfg, options.quick, editions)
+		options.checked?.set(key, changed)
+		return changed
+	}
 	const id = wf.ownerSend?.askMsgId ?? wf.msgIds.at(-1)
 	const raw = id && wf.chat.id ? src.around ? (await src.around(wf.chat.id, id)).msg : (await src.recent(wf.chat.id, 30)).find(m => m.id === id) : undefined
 	if (raw && (raw.deleted || !raw.body.trim())) return { reasons, deleted: true }
@@ -91,13 +98,14 @@ export async function holdCheck(store: Store, src: Source, wf: Workflow, options
 		const same = contentKey(before) === contentKey(now.text) || !held && !!raw.editedAt && raw.editedAt === was.editedAt
 		if (!same) {
 			const message = { id: raw.id, text: now.text, at: raw.editedAt ?? raw.at }
-			const changed = options.automatic ? 'The ask was edited.' : await changeForOwner(store, wf, before, message, cfg, options.quick)
+			const changed = options.automatic ? 'The ask was edited.' : await change(before, message)
 			if (changed) reasons.push({ kind: 'ask-edited', before, ...message, msgId: message.id, digest: reviewDigest(wf, [message]), changed })
 		} else if (was.text !== now.text || was.editedAt !== raw.editedAt) {
 			store.log({ event: 'edit-ignored', code: wf.code, reason: 'render' })
 			if (!options.automatic) store.log({ event: 'owner-send-checked', workflowId: wf.id, code: wf.code, step: 'cosmetic', result: 'same', ms: 0 })
 		}
 		// A rendered thread is not the ask the approved draft answers.
+		if (wf.prAnchor?.msgId === id && (was.text !== now.text || was.editedAt !== raw.editedAt)) wf.prAnchor = undefined
 		store.saveThread(wf.id, thread.map(m => m.id === id ? { ...m, text: now.text, editedAt: raw.editedAt, contentKey: contentKey(now.text) } : m))
 	}
 	let messages = options.messages
@@ -112,7 +120,7 @@ export async function holdCheck(store: Store, src: Source, wf: Workflow, options
 	const newest = ordered.at(-1)
 	if (newest) {
 		const text = ordered.map(message => message.text).join('\n\n')
-		const changed = options.automatic ? 'The asker posted again.' : await changeForOwner(store, wf, wf.lastAsk ?? was?.text ?? '', { ...newest, text }, cfg, options.quick, ordered.map(message => message.text))
+		const changed = options.automatic ? 'The asker posted again.' : await change(wf.lastAsk ?? was?.text ?? '', { ...newest, text }, ordered.map(message => message.text))
 		if (changed) reasons.push({ kind: 'asker-wrote-again', msgId: newest.id, msgIds: ordered.map(message => message.id), messages: ordered,
 			text, at: newest.at, digest: reviewDigest(wf, ordered), changed })
 	}

@@ -1,39 +1,97 @@
-import { useId, useSyncExternalStore } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type PointerEvent } from 'react'
 import type { Action, Intent } from '../domain/contracts.ts'
-import { useAction, useActionWindow, useCardUi, useItemBusy, usePendingStatus, useSnapshot } from '../data/hooks.ts'
+import { NOT_SAVED, NOT_SENT, useAction, useActionWindow, useCardUi, useItemBusy, usePendingStatus, useSnapshot } from '../data/hooks.ts'
 import { disabledHover, hoverOf, hoverValues } from '../domain/hover.ts'
-import { Button } from '../components/ui/button.tsx'
+import { Button, buttonVariants } from '../components/ui/button.tsx'
 import { NAME } from '../brand.ts'
 import { actionPresentation, useActionAvailability } from '../data/presentation.ts'
 import { Icon } from '../components/ui/icon.tsx'
+import { useData, type CardUi } from '../data/store.ts'
+import { verbing } from '../domain/verbing.ts'
+import { useScreenNavigation } from '../classic/navigation.tsx'
 
-// #27 poll (PM copy, P0-03): neutral throughout; the disabled button already stops a second click, so the words never warn. Only a
-// send whose outcome is truly unknown says to check Teams.
+// #27 poll (PM copy, P0-03): neutral throughout; the disabled button already stops a second click, so the words never warn.
 const HAS = `${NAME} has your click.`
 const STILL = `Still working on it. ${NAME} has your click and will finish it; you can leave this page.`
-const UNSURE_SEND = `Couldn't confirm it was sent. Check Teams before you send again.`
+// Decision 49 (b), PM 22:43:03Z (A): a send whose outcome is unknown. Send stays disabled (this is its hover); Check again re-polls.
+export const UNSURE_SEND = `Couldn't confirm whether your reply was sent. Check again before sending it again.`
+const unsureOf = (ui: CardUi, effect?: string) => !!ui.pending && (ui.pending.phase === 'unknown' || ui.pending.phase === 'unreached') && effect === 'sends'
+// PE 00:59:32Z (3): measured only, never shown, so typical refusals aren't clipped: the longest refusal a send's receipt carries today
+// (the runner's not-sent status when the reply check failed). A longer one is clipped, its words in the title.
+const LONGEST_REFUSAL = 'Not sent: I could not check whether you already replied in the chat. Try again after the check succeeds.'
+// I28, PE 22:44:56Z/22:49:23Z: the owner's click reserves this slot for its largest state at the current width (pending, the unknown
+// state with its button, the not-sent line), so a later state swaps in place and no bar below moves. Measured off-screen in the slot
+// before paint and removed at once (no hidden copies stay on the page); it shrinks only on a new click here or when the card unmounts.
+function largestState(slot: HTMLElement, sends: boolean): number {
+	const line = (className: string, text: string, button?: { label: string; className: string; data?: Record<string, string> }) => {
+		const box = document.createElement('div'), p = document.createElement('p')
+		box.style.cssText = 'display:flow-root;visibility:hidden'
+		p.className = className
+		p.append(text)
+		if (button) { const b = document.createElement('button'); b.type = 'button'; b.className = button.className; Object.assign(b.dataset, button.data); b.textContent = button.label; p.append(' ', b) }
+		box.append(p)
+		return box
+	}
+	const ghosts = [line('muted', STILL, { label: 'Check now', className: 'link-button' }), line('error', sends ? NOT_SENT : NOT_SAVED),
+		...(sends ? [line('', LONGEST_REFUSAL), line('muted unsure-line', UNSURE_SEND, { label: 'Check again', className: `${buttonVariants({ variant: 'outline', size: 'sm' })} check-again`, data: { slot: 'button', variant: 'outline', size: 'sm' } })] : [])]
+	const heights = ghosts.map(ghost => { slot.append(ghost); const height = ghost.getBoundingClientRect().height; ghost.remove(); return height })
+	return Math.ceil(Math.max(slot.getBoundingClientRect().height, ...heights))
+}
 export function ActionState({ item, rev }: { item: string; rev: string }) {
 	const ui = useCardUi(item, rev), snapshot = useSnapshot()
-	const pending = usePendingStatus(item, rev)
+	const pending = usePendingStatus(item, rev), { href } = useScreenNavigation()
 	const sends = !!ui.pending && snapshot?.entities.actions[ui.pending.action]?.effect === 'sends'
-	const line = !ui.pending ? undefined : ui.pending.phase === 'unknown' && sends ? UNSURE_SEND : ui.pending.phase === 'unreached' ? 'Not confirmed yet.' : pending.long ? STILL : HAS
-	return <>
+	const unsure = unsureOf(ui, sends ? 'sends' : undefined)
+	const line = !ui.pending || unsure ? undefined : ui.pending.phase === 'unreached' ? 'Not confirmed yet.' : pending.long ? STILL : HAS
+	const slot = useRef<HTMLDivElement>(null), checkAgain = useRef<HTMLButtonElement>(null), toggle = useRef<HTMLButtonElement>(null)
+	const [reserved, setReserved] = useState<{ id: string; sends: boolean; min?: number }>()
+	// PE 01:13:27Z (decision 49, nit 1): a clipped line gets a visible Show all he can focus and tap. Expanding is his own change, to
+	// the height measured at his tap (so nothing later grows it unasked); Show less, his next click here, or unmount returns it.
+	const [expanded, setExpanded] = useState<number>(), [clipped, setClipped] = useState(false)
+	const clicked = ui.pending?.phase === 'submitting' ? ui.pending.submissionId : undefined
+	useLayoutEffect(() => {
+		if (!clicked) return
+		// First the slot becomes a block (the click's own change), then its largest state is measured in it, both before paint.
+		if (reserved?.id !== clicked) { setReserved({ id: clicked, sends }); setExpanded(undefined) }
+		else if (reserved.min === undefined && slot.current) setReserved({ ...reserved, min: largestState(slot.current, reserved.sends) })
+	}, [clicked, reserved, sends])
+	useLayoutEffect(() => { const el = slot.current; setClipped(!!el && !!reserved?.min && el.scrollHeight > el.clientHeight + 1) })
+	// Shown lines stay whole: the band under Show all starts at the top of the first line that doesn't fully fit above it (overlay only).
+	useLayoutEffect(() => {
+		const el = slot.current, button = toggle.current, band = button?.parentElement
+		if (!el || !button || !band) return
+		if (!clipped) { band.style.height = ''; return }
+		const bottom = el.getBoundingClientRect().bottom, room = bottom - button.offsetHeight, range = document.createRange()
+		let cover = room
+		for (const p of el.querySelectorAll(':scope > p')) { range.selectNodeContents(p); for (const r of range.getClientRects()) if (r.bottom > room + 0.5 && r.top < cover) cover = r.top }
+		band.style.height = `${Math.ceil(bottom - cover)}px`
+	})
+	// Show all: for one layout pass before paint the cap is lifted (expanded = 0), the natural height is read, then fixed with a row
+	// for Show less.
+	useLayoutEffect(() => { if (expanded === 0 && slot.current) setExpanded(Math.ceil(slot.current.getBoundingClientRect().height) + (toggle.current?.parentElement?.offsetHeight ?? 0)) }, [expanded])
+	// Focus moves from the disabled Send to Check again when the outcome turns out unknown (Designer 22:43:29Z), without scrolling.
+	useEffect(() => {
+		const focused = document.activeElement as HTMLButtonElement | null
+		if (ui.pending?.phase === 'unreached' && unsure && (!focused || focused === document.body || focused.disabled)) checkAgain.current?.focus({ preventScroll: true })
+	}, [ui.pending?.phase, unsure])
+	// CR B1 on 7556c674 (I28): the receipt's and the server's own words (ui.result, ui.error) land later and have no length bound, so
+	// once reserved the slot is capped at its reserved height too; a longer line is clipped here, with Show all, its full words in its
+	// title and its whole text node for screen readers, and nothing below moves.
+	const height = expanded === 0 ? undefined : expanded ?? reserved?.min
+	const fixed = height ? { minHeight: height, maxHeight: height, overflow: 'clip', overflowClipMargin: 4 } as const : expanded === 0 ? { minHeight: reserved?.min } : undefined
+	const showAll = () => setExpanded(0)
+	return <div ref={slot} className={reserved ? 'action-slot reserved' : 'action-slot'} style={fixed}>
 		{line && <p role="status" className="muted">{line}{ui.pending && (pending.long || ui.pending.phase === 'unreached') && <> <button type="button" className="link-button" onClick={pending.check}>Check now</button></>}</p>}
-		{ui.error && <p role="alert" className="error">{ui.error}</p>}
-		{ui.result && <p role={ui.result.refused || ui.result.uncertain ? 'alert' : 'status'}>{ui.result.text}</p>}
-	</>
+		{unsure && <p key={ui.pending!.phase} role={ui.pending!.phase === 'unreached' ? 'alert' : 'status'} className="muted unsure-line">{UNSURE_SEND} <Button ref={checkAgain} type="button" variant="outline" size="sm" className="check-again" onClick={pending.check}>Check again</Button></p>}
+		{ui.note && <p role="status" className="muted card-note" title={ui.note.text}>{ui.note.text}{ui.note.open && <> <a href={href('done/replies')}>Open</a></>}</p>}
+		{ui.error && <p role="alert" className="error" title={ui.error}>{ui.error}</p>}
+		{ui.result && <p role={ui.result.refused || ui.result.uncertain ? 'alert' : 'status'} title={ui.result.text}>{ui.result.text}</p>}
+		{(clipped || expanded !== undefined) && <div className="slot-toggle-band"><button ref={toggle} type="button" className="link-button slot-toggle" aria-expanded={!clipped}
+			onClick={() => clipped ? showAll() : setExpanded(undefined)}>{clipped ? 'Show all' : 'Show less'}</button></div>}
+	</div>
 }
-// The button while its click is in flight (PM #27 poll): "Sending…", "Dismissing…", "Saving…", only for a label that starts with a
-// verb in use (PE 23:42: "Later", "OK", "Not right?" are not verbs); every other label reads "Working…".
-const VERBS: Record<string, string> = {
-	send: 'Sending', approve: 'Approving', answer: 'Answering', dismiss: 'Dismissing', save: 'Saving', try: 'Trying', redraft: 'Redrafting',
-	add: 'Adding', write: 'Writing', mark: 'Marking', stop: 'Stopping', skip: 'Skipping', undo: 'Undoing', open: 'Opening', reply: 'Replying',
-	review: 'Reviewing', post: 'Posting', reopen: 'Reopening', remember: 'Remembering', turn: 'Turning',
-}
-export function verbing(label: string): string {
-	return `${VERBS[(label.trim().split(/\s+/)[0] ?? '').toLowerCase()] ?? 'Working'}…`
-}
-
+export { verbing } from '../domain/verbing.ts'
+const CHANGED = 'The card changed as you clicked. Nothing was done; check and click again.'
 export function ActionButton({ action, input, primary = false, disabled = false, ariaLabel, pendingLabel, prepareInput, disabledReason, label: shownLabel }: {
 	action: Action; input?: Intent['input']; primary?: boolean; disabled?: boolean; ariaLabel?: string; pendingLabel?: string; prepareInput?: () => Intent['input']
 	// A label the card says in its own words, such as "Draft my update to Pat"; the action's own label otherwise.
@@ -50,17 +108,46 @@ export function ActionButton({ action, input, primary = false, disabled = false,
 	const online = useOnline(), snapshot = useSnapshot(), describedBy = useId()
 	const off = disabled || busy || window.expired || alreadySubmitted || presentation.unavailable || !!unavailable
 	const label = shownLabel ?? presentation.label
+	// I28 (PE 22:49:23Z, found proving the CR B1 fix on 7556c674): a busy button reads "Sending…", wider than "Send"; when the result
+	// lands later the label shrinks back and the controls beside it slide over. It keeps the width it took at the owner's click.
+	const self = useRef<HTMLButtonElement>(null), [minWidth, setMinWidth] = useState<number>()
+	useLayoutEffect(() => {
+		const width = busy && self.current ? Math.ceil(self.current.getBoundingClientRect().width) : 0
+		if (width) setMinWidth(min => min && min >= width ? min : width)
+	}, [busy])
 	// Spec S7: what it does, from the one shared map; a disabled control says why (by default from what it needs).
 	const what = hoverOf(action.kind, label, hoverValues(snapshot, action, { left: window.countdown }), action.meaning)
 	const reason = disabledReason ?? (disabled ? action.kind === 'pick' ? 'pick' : action.kind === 'answer' ? 'Type your answer first.' : action.input === 'text' ? 'Type your text first.' : undefined : undefined)
-	const hover = !online ? disabledHover({ offline: true }, what) : off ? disabledHover({ unavailable: unavailable?.reason, busy, expired: window.expired, submitted: alreadySubmitted,
+	const hover = !online ? disabledHover({ offline: true }, what) : unsureOf(ui, action.effect) && ui.pending?.action === action.id ? UNSURE_SEND : off ? disabledHover({ unavailable: unavailable?.reason, busy, expired: window.expired, submitted: alreadySubmitted,
 		stale: disabled && reason === 'stale', needsPick: disabled && reason === 'pick' },
 		disabled && reason && !['stale', 'pick'].includes(reason) ? reason : what) : what
-	return <><Button variant={primary ? 'default' : 'outline'} data-action-kind={action.kind} title={hover} aria-describedby={hover ? describedBy : undefined} aria-label={ariaLabel ?? (action.kind === 'undo' ? 'Undo' : undefined)} disabled={off} data-primary={primary || undefined}
+	return <><Button ref={self} style={minWidth ? { minWidth } : undefined} variant={primary ? 'default' : 'outline'} data-action-kind={action.kind} title={hover} aria-describedby={hover ? describedBy : undefined} aria-label={ariaLabel ?? (action.kind === 'undo' ? 'Undo' : undefined)} disabled={off} data-primary={primary || undefined}
+		onPointerDown={event => watchPress(event, () => useData.getState().edit(action.item, action.rev, { note: { text: CHANGED } }))}
 		onClick={() => {
 			void act(action, prepareInput ? prepareInput() : input)
 		}}>{action.kind === 'undo' && <Icon name="undo" />}{busy ? pendingLabel ?? verbing(label) : window.expired ? 'Undo window closed' : unavailable?.label ?? `${label}${window.countdown ? ` ${window.countdown}` : ''}`}</Button>{hover && <span id={describedBy} className="sr-only">{hover}</span>}</>
 }
 
-const onlineEvents = (changed: () => void) => { addEventListener('online', changed); addEventListener('offline', changed); return () => { removeEventListener('online', changed); removeEventListener('offline', changed) } }
+// PE decision 46 / PM A R44 (4): a press is never carried over to a button that moved (no keepPress): pointerdown and pointerup on
+// different nodes give no click, as the browser does. When a press ends off the button BECAUSE the button moved during it (its page
+// position changed, not the pointer), the card says so in one muted line; nothing acts. One press is watched at a time, only until it
+// ends (pointercancel, the next pointerdown, 2 s, its own release), and only for the same pointer.
+let watching: AbortController | undefined
+const pageTop = (element: Element) => element.getBoundingClientRect().top + scrollY
+function watchPress(event: PointerEvent<HTMLButtonElement>, moved: () => void) {
+	watching?.abort()
+	if (event.button !== 0 || !event.isPrimary) return
+	const button = event.currentTarget, top = pageTop(button), pointer = event.pointerId
+	const watch = watching = new AbortController(), signal = watch.signal, stop = () => watch.abort()
+	const timer = setTimeout(stop, 2000)
+	signal.addEventListener('abort', () => { clearTimeout(timer); if (watching === watch) watching = undefined })
+	addEventListener('pointercancel', up => { if (up.pointerId === pointer) stop() }, { capture: true, signal })
+	addEventListener('pointerdown', stop, { capture: true, signal })
+	addEventListener('pointerup', up => {
+		if (up.pointerId !== pointer) return
+		stop()
+		if (up.target instanceof Node && button.contains(up.target)) return
+		if (button.isConnected && Math.abs(pageTop(button) - top) > 1) moved()
+	}, { capture: true, signal })
+}const onlineEvents = (changed: () => void) => { addEventListener('online', changed); addEventListener('offline', changed); return () => { removeEventListener('online', changed); removeEventListener('offline', changed) } }
 export const useOnline = () => useSyncExternalStore(onlineEvents, () => navigator.onLine, () => true)

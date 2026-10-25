@@ -129,9 +129,15 @@ export const SETTINGS: Spec[] = [
 	{ key: 'pollIdle', label: 'Check Teams every', help: 'Minutes, when nothing is happening; during work hours at least every 5. Each check is a quick Teams read, no AI.', kind: 'number', section: 'system', advanced: true,
 		read: c => String((c.poll ?? DEFAULT_POLL).idleMin), parse: raw => numTo(raw, 1, 60, (c, n) => ({ ...c, poll: { ...(c.poll ?? DEFAULT_POLL), idleMin: n } })) },
 	// The after-activity pair (owner, 10-23): checking is the owner's to set, never hard-coded.
-	{ key: 'pollFast', label: 'After activity, check every', help: 'Minutes (0.5 to 5), after you or someone in your chats did something. Each check is a quick Teams read, no AI. Shorter means new messages appear sooner but more Teams reads.', kind: 'number', section: 'system', advanced: true,
+	// PM A R39 (ships with HOST's fast-poll change): fast checks start only when a reply goes out; the live values, in his words.
+	{ key: 'pollFast', label: 'After a reply goes out, check every', help: cfg => {
+		const poll = { ...DEFAULT_POLL, ...cfg.poll }, minutes = (n: number) => `${n} minute${n === 1 ? '' : 's'}`
+		return `When a reply goes out (sent by ${NAME} or by you), ${NAME} checks for the answer every ${minutes(poll.fastMin)}, so it can catch it quickly. Each answer it replies to keeps the fast checks going. After ${minutes(poll.fastForMin)} with no new reply, it goes back to checking every ${minutes(poll.idleMin)}. Nothing else starts fast checking.`
+	}, kind: 'number', section: 'system', advanced: true,
 		read: c => String((c.poll ?? DEFAULT_POLL).fastMin), parse: raw => halfTo(raw, 0.5, 5, (c, n) => ({ ...c, poll: { ...(c.poll ?? DEFAULT_POLL), fastMin: n } })) },
-	{ key: 'pollFastFor', label: 'Keep checking that often for', help: 'Minutes (1 to 30) after the last activity, then back to "Check Teams every".', kind: 'number', section: 'system', advanced: true,
+	// PM A R42: the fast window is the clock a reply going out starts (the config file holds poll as saved, with no defaults filled in).
+	{ key: 'pollFastFor', label: 'Keep the fast checks going for', help: cfg => { const idle = { ...DEFAULT_POLL, ...cfg.poll }.idleMin
+		return `Minutes (1 to 30). The clock starts when a reply goes out and starts again each time ${NAME} answers a reply. When it runs out with no new reply, ${NAME} goes back to checking every ${idle} minute${idle === 1 ? '' : 's'}.` }, kind: 'number', section: 'system', advanced: true,
 		read: c => String((c.poll ?? DEFAULT_POLL).fastForMin), parse: raw => numTo(raw, 1, 30, (c, n) => ({ ...c, poll: { ...(c.poll ?? DEFAULT_POLL), fastForMin: n } })) },
 	{ key: 'maxParallel', label: 'AI runs at once', help: 'Drafts and jobs running side by side on the runner machine.', kind: 'number', section: 'system', advanced: true,
 		read: c => String(c.maxParallel ?? 3), parse: raw => num(raw, 1, 6, 'maxParallel') },

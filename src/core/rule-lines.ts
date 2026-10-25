@@ -34,8 +34,8 @@ export type RuleLine = {
 
 export const ruleTextHash = (text: string) => createHash('sha256').update(text).digest('hex')
 export const widening = (rule: Rule) => !rule.style && ['send', 'ack', 'ignore', 'review'].includes(rule.then)
-export const grantConfirmed = (rule: Rule) => !widening(rule) || rule.catalogVersion === undefined ||
-	!!rule.confirmedAt && rule.confirmedHash === ruleTextHash(rule.text)
+export const grantConfirmed = (rule: Rule) => !widening(rule) || !rule.when.results && rule.catalogVersion === undefined ||
+	!!rule.confirmedAt && rule.confirmedHash === ruleTextHash(rule.text) && (!rule.when.results || (rule.catalogVersion ?? 0) >= 3)
 export const lineConfirmed = (line: RuleLine) => !line.unbound && !!line.confirmedAt && line.confirmedHash === ruleTextHash(line.text) &&
 	line.confirmedCatalogVersion === line.catalogVersion
 export const lineNeedsCompile = (line: RuleLine) => !line.compile ||

@@ -3,11 +3,14 @@ import type { RawMsg } from '../core/intake.ts'
 import { LostResponse, McpClient } from './mcp-client.ts'
 import { htmlToText } from '../core/intake.ts'
 import { SendUncertain } from './source.ts'
-import { mdToHtml } from '../core/format.ts'
+import { mdToHtml, personName } from '../core/format.ts'
 import type { ReadOpts, SendOpts, Source } from './source.ts'
 import { isThread, parseThread, Threads, type ThreadCache, type WatchedChannel } from './channels.ts'
 import { NAME } from '../brand.ts'
 import { telemetryEvent } from '../core/telemetry.ts'
+import { readJson } from '../store/fs.ts'
+import type { Store } from '../store/state.ts'
+import { join } from 'node:path'
 
 export type TeamsMsg = { id: string; createdDateTime: string; lastModifiedDateTime?: string; lastEditedDateTime?: string | null; deletedDateTime?: string | null; replyToId?: string | null; from?: { id: string; displayName: string } | null; body?: { contentType: string; content: string }; attachments?: { name?: string | null; contentType?: string; contentUrl?: string | null; content?: string | null; driveId?: string; itemId?: string }[] }
 type Page = { messages?: TeamsMsg[]; nextLink?: string; '@odata.nextLink'?: string }
@@ -19,6 +22,52 @@ const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replac
 
 type Member = { roles?: string[]; userId?: string; displayName?: string; tenantId?: string }
 let membersShapeLogged = false
+let forwardedShapeLogged = false
+
+function captureForwardedShape(m: TeamsMsg, log: (entry: Record<string, unknown>) => void) {
+	if (forwardedShapeLogged) return
+	try {
+		const attachment = m.attachments?.find(a => a.contentType === 'forwardedMessageReference')
+		if (!attachment) return
+		forwardedShapeLogged = true
+		let content: unknown = attachment.content
+		let contentStatus: 'json' | 'invalid-json' | 'value' = 'value'
+		if (typeof content === 'string') {
+			try { content = JSON.parse(content); contentStatus = 'json' }
+			catch { content = undefined; contentStatus = 'invalid-json' }
+		}
+		const shape: { path: string; kind: string }[] = []
+		const seen = new Set<string>()
+		let truncated = false
+		const visit = (value: unknown, path: string, depth: number) => {
+			const kind = value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value
+			const key = JSON.stringify([path, kind])
+			if (!seen.has(key)) {
+				if (shape.length >= 80) { truncated = true; return }
+				seen.add(key)
+				shape.push({ path, kind })
+			}
+			if (!value || typeof value !== 'object') return
+			if (depth >= 4) { truncated = true; return }
+			if (Array.isArray(value)) {
+				if (value.length > 3) truncated = true
+				for (const child of value.slice(0, 3)) visit(child, `${path}[]`, depth + 1)
+			} else {
+				const entries = Object.entries(value)
+				if (entries.length > 32) truncated = true
+				for (const [name, child] of entries.slice(0, 32))
+					visit(child, `${path}.${/^[A-Za-z_][A-Za-z0-9_]{0,40}$/.test(name) ? name : '<key>'}`, depth + 1)
+			}
+		}
+		visit(attachment, 'attachment', 0)
+		visit(content, 'content', 0)
+		log(telemetryEvent('forwarded-message-shape', { contentStatus, shape, truncated }))
+	} catch {
+		forwardedShapeLogged = true
+		try { console.warn('Could not capture forwarded-message shape; message intake continues.') }
+		catch { /* Diagnostics must not stop intake even when stderr is unavailable. */ }
+	}
+}
 
 export class TeamsSource implements Source {
 	private mcp: McpClient
@@ -27,16 +76,34 @@ export class TeamsSource implements Source {
 	private threads: Threads
 	private owner: string
 	private ownerId: string
+	private readonly root?: string
 	private readonly log: (entry: Record<string, unknown>) => void
 	constructor(cfg: Config['source'], mcp = new McpClient(cfg.command), owner = '', ownerId = '',
-		log: (entry: Record<string, unknown>) => void = entry => console.warn(JSON.stringify(entry))) {
+		log: (entry: Record<string, unknown>) => void = entry => console.warn(JSON.stringify(entry)), root?: string) {
 		this.mcp = mcp
 		this.threads = new Threads(mcp, owner)
 		this.owner = owner
 		this.ownerId = ownerId
+		this.root = root
 		this.log = log
 		this.tools = { ...DEFAULT_TOOLS, ...cfg.tools }
 		this.selfChatId = cfg.selfChatId
+	}
+
+	private raw(m: TeamsMsg): RawMsg {
+		captureForwardedShape(m, this.log)
+		return toRaw(m)
+	}
+
+	private cachedMembers(): ReturnType<Store['members']> {
+		return this.root ? readJson(join(this.root, 'state', 'members.json'), {}) : {}
+	}
+
+	private otherName(chatId: string, members: ReturnType<Store['members']>): string | undefined {
+		if (!this.ownerId) return undefined
+		const cached = members[chatId]
+		const others = [...new Set(cached?.ids ?? [])].filter(id => id.toLowerCase() !== this.ownerId.toLowerCase())
+		return others.length === 1 ? personName(cached?.names?.[others[0]]) || undefined : undefined
 	}
 
 	// Messages newer than afterId (or, with no cursor, newer than sinceIso), oldest first.
@@ -61,19 +128,22 @@ export class TeamsSource implements Source {
 			for (const m of r.messages ?? []) {
 				if (isOld(m)) { reached = true; break }
 				out.push(m)
-				if (o.stop?.(toRaw(m))) { reached = true; break }
+				if (o.stop?.(this.raw(m))) { reached = true; break }
 			}
 			nextLink = r.nextLink ?? r['@odata.nextLink']
 			if (reached || !bounded || !nextLink) break
 		}
 		const newest = out[0]?.id ?? afterId
 		if (!bounded) return { msgs: [], newest, truncated: false }
-		return { msgs: out.reverse().map(toRaw), newest, truncated: !reached && !!nextLink }
+		return { msgs: out.reverse().map(m => this.raw(m)), newest, truncated: !reached && !!nextLink }
 	}
 
 	async recentChats(): Promise<{ id: string; name: string; lastAt: string }[]> {
-		const r = await this.mcp.call<{ chats?: { id: string; topic?: string | null; lastMessagePreview?: { createdDateTime?: string; from?: string } }[] }>(this.tools.chats, {})
-		return (r.chats ?? []).map(c => ({ id: c.id, name: c.topic || c.lastMessagePreview?.from || c.id, lastAt: c.lastMessagePreview?.createdDateTime ?? '' }))
+		const r = await this.mcp.call<{ chats?: { id: string; chatType?: string; topic?: string | null; lastMessagePreview?: { createdDateTime?: string; from?: string } }[] }>(this.tools.chats, {})
+		const members = this.cachedMembers()
+		return (r.chats ?? []).map(c => ({ id: c.id, name: c.topic?.trim() ||
+			(c.chatType === 'oneOnOne' || c.id.endsWith('@unq.gbl.spaces') ? this.otherName(c.id, members) || c.lastMessagePreview?.from || 'Chat' : 'Group chat'),
+			lastAt: c.lastMessagePreview?.createdDateTime ?? '' }))
 	}
 
 	// A thread is its start plus its replies, oldest first.
@@ -82,7 +152,7 @@ export class TeamsSource implements Source {
 		const starts = await this.mcp.call<Page>('ListChannelMessages', { teamId: t.teamId, channelId: t.channelId, top: 50, include: 'attachments' })
 		const root = (starts.messages ?? []).find(m => m.id === t.rootId)
 		const { msgs: replies, truncated } = await this.threads.replies(t.teamId, t.channelId, t.rootId)
-		return { msgs: [...(root ? [root] : []), ...replies].map(toRaw).sort((a, b) => (newer(a.id, b.id) ? 1 : -1)), truncated }
+		return { msgs: [...(root ? [root] : []), ...replies].map(m => this.raw(m)).sort((a, b) => (newer(a.id, b.id) ? 1 : -1)), truncated }
 	}
 
 	// Channel threads where the owner started, posted, or was mentioned, for discovery (owner question 2).
@@ -94,7 +164,7 @@ export class TeamsSource implements Source {
 	async recent(chatId: string, n: number): Promise<RawMsg[]> {
 		if (isThread(chatId)) return (await this.thread(chatId)).msgs.slice(-n)
 		const r = await this.mcp.call<Page>(this.tools.list, { chatId, top: n, include: 'attachments' })
-		return (r.messages ?? []).reverse().map(toRaw)
+		return (r.messages ?? []).reverse().map(m => this.raw(m))
 	}
 
 	// One message, even an old one, and the messages after it, oldest first (a missed link from before the install).
@@ -108,11 +178,11 @@ export class TeamsSource implements Source {
 			if (seen.some(m => m.id === msgId) || !next) break
 			p = await this.mcp.call<Page>(this.tools.list, { chatId, top: 50, nextLink: next })
 		}
-		const all = seen.map(toRaw).sort((a, b) => (newer(a.id, b.id) ? 1 : -1))
+		const all = seen.map(m => this.raw(m)).sort((a, b) => (newer(a.id, b.id) ? 1 : -1))
 		const at = all.findIndex(m => m.id === msgId)
 		if (at >= 0) return { msg: all[at], after: all.slice(at + 1) }
 		const one = await this.mcp.call<TeamsMsg>(this.tools.message, { chatId, messageId: msgId }).catch(() => undefined)
-		return { msg: one?.id ? toRaw(one) : undefined, after: all.filter(m => newer(m.id, msgId)) }
+		return { msg: one?.id ? this.raw(one) : undefined, after: all.filter(m => newer(m.id, msgId)) }
 	}
 
 	async send(chatId: string, text: string, o: SendOpts = {}): Promise<{ msgId: string }> {
@@ -190,8 +260,8 @@ export class TeamsSource implements Source {
 	}
 
 	async chatName(chatId: string): Promise<string> {
-		const r = await this.mcp.call<{ topic?: string }>(this.tools.get, { chatId })
-		return r.topic ?? chatId
+		const r = await this.mcp.call<{ topic?: string; chatType?: string }>(this.tools.get, { chatId })
+		return r.topic?.trim() || (r.chatType === 'oneOnOne' || chatId.endsWith('@unq.gbl.spaces') ? this.otherName(chatId, this.cachedMembers()) || 'Chat' : 'Group chat')
 	}
 
 	async close() { await this.mcp.close() }
@@ -199,6 +269,7 @@ export class TeamsSource implements Source {
 	// Search is the only list of chats past the 50 newest (measured 10-20: 49 chats reached back 5 days). Chats only; channels come from channelThreads.
 	async awaiting(sinceIso: string, untilIso: string): Promise<{ id: string; name: string; lastAt: string }[]> {
 		if (!this.owner) return []
+		const members = this.cachedMembers()
 		const out = new Map<string, { id: string; name: string; lastAt: string }>()
 		for (let from = 0; from < 1000; from += 25) {
 			const r = await this.mcp.call<{ rawResponse?: string }>('SearchTeamMessagesQueryParameters', { queryString: `to:"${this.owner}" AND sent>=${sinceIso.slice(0, 10)} AND sent<=${new Date(Date.parse(untilIso) + 86_400_000).toISOString().slice(0, 10)}`, from })
@@ -208,7 +279,8 @@ export class TeamsSource implements Source {
 				// Search days are whole days in the tenant's zone; the exact window is applied here, as times, not text.
 				if (!id || /@thread\.(tacv2|skype)$/.test(id) || !(Date.parse(at) > Date.parse(sinceIso) && Date.parse(at) <= Date.parse(untilIso))) continue
 				const was = out.get(id)
-				if (!was || Date.parse(at) > Date.parse(was.lastAt)) out.set(id, { id, name: was?.name ?? h.resource?.from?.emailAddress?.name ?? id, lastAt: at })
+				if (!was || Date.parse(at) > Date.parse(was.lastAt)) out.set(id, { id, name: was?.name ??
+					(id.endsWith('@unq.gbl.spaces') ? this.otherName(id, members) || h.resource?.from?.emailAddress?.name || 'Chat' : 'Group chat'), lastAt: at })
 			}
 			if (!c?.moreResultsAvailable || !c.hits?.length) break
 		}

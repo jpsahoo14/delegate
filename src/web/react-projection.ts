@@ -67,13 +67,16 @@ import { prOf, prTarget } from '../runner/probe.ts'
 import { aboutPr } from '../runner/apply.ts'
 import { findingFor } from '../runner/review-autonomy.ts'
 import { acceptSuggestion, addLine, answerLine, confirmLine, deleteLine, deleteNote, dismissSuggestion, editLine, limitsCard, linesToCheck, makeNoteLine, needsHim, reconsiderSuggestion, restoreLine, setLineOff, suggestions, undoAcceptSuggestion, undoDismiss, wayLines, wayNotes, type WayWriteResult } from '../core/ways.ts'
-import { voteMention } from '../core/vote-claims.ts'
+import { APPROVAL_WORD, voteMention } from '../core/vote-claims.ts'
+import { personName } from '../core/format.ts'
+import { placeOf } from './model/place.ts'
 import { groupChoices } from '../runner/review-gate.ts'
 import { restoreOffRecord } from '../runner/offrecord.ts'
 import { chatIdNet, idNet, pageText, takePageTextLeaks } from './page-text.ts'
 import { pageManagementRev, workflowManagementRev } from '../store/page-revision.ts'
 import { active, isNonAdoPrLink, pendingParts, voteClaimGap, voteSentences } from '../runner/work.ts'
 import { heldBy } from '../runner/owner.ts'
+import { voteClaimReview } from '../runner/vote-claim.ts'
 import { voteHold } from '../core/owner-send.ts'
 import { habitUndoable, undoMs } from '../runner/habits.ts'
 
@@ -139,6 +142,56 @@ export const chatNormalActionId = (chatId: string) => `${chatLevelKey(chatId)}/c
 // `only` projects one item's thread (its home and parts, which the page places together): the same body, fed only those workflows
 // and their jobs, so a page action reads that thread and not the whole store (#27 step 2). Its item actions match the full projection's;
 // page-wide parts (knowledge, tiles, counts, Done from the logs) are left out.
+// A37 (b) / PM A R37: a vote-claim hold names its words. One rule for the card, the live check on edited text and Send: SEND's
+// shared classifier (voteMention, aboutPr, voteClaimGap over voteSentences). <words> is the first unsupported claim's clause exactly as
+// written (SEND's clause split), at most ~60 characters with "…" at the cut edges; quote is that text without the "…", to highlight.
+export type VoteClaim = { line: string; confirm: string; words: string; quote: string; pr?: number }
+const lastKnownVoteOf = (wf: Workflow) => { try { const read: unknown = wf.prRead ? JSON.parse(wf.prRead) : undefined; return Array.isArray(read) && typeof read[0] === 'number' ? { pr: read[0], ...(typeof read[3] === 'number' ? { vote: read[3] } : {}), ...(typeof read[2] === 'string' ? { head: read[2] } : {}) } : undefined } catch { return undefined } }
+// Centres the quote on the vote word: SEND's APPROVAL_WORD (vote-claims.ts) plus voteMention's other vote words (PE nit, 09:12).
+const VOTE_WORD = new RegExp(String.raw`(?:${APPROVAL_WORD.source})|\breject(?:ed|ion)?\b|\brequested changes\b|\bwaiting (?:for|on) (?:the )?author\b|\bmy vote\b`, 'i')
+function clip(clause: string): { words: string; quote: string } {
+	if (clause.length <= 60) return { words: clause, quote: clause }
+	const at = VOTE_WORD.exec(clause)?.index ?? 0
+	let start = Math.max(0, Math.min(at - 20, clause.length - 60)), end = Math.min(clause.length, start + 60)
+	if (start > 0 && /\S/.test(clause[start - 1])) start = Math.min(at, clause.indexOf(' ', start) + 1 || start)
+	if (end < clause.length && /\S/.test(clause[end])) end = Math.max(clause.lastIndexOf(' ', end), at + 1)
+	const quote = clause.slice(start, end).trim()
+	return { words: `${start > 0 ? '…' : ''}${quote}${end < clause.length ? '…' : ''}`, quote }
+}
+function voteClaimOf(store: Store, wf: Workflow, text: string): VoteClaim | undefined {
+	if (!voteMention(text) || !aboutPr(store, wf, text)) return undefined
+	const effects = wf.effects ?? [], last = lastKnownVoteOf(wf)
+	const gap = voteClaimGap(text, effects, last)
+	if (!gap) return undefined
+	const owner = store.config().owner.name ?? ''
+	const claims = [...new Set(voteSentences(text, owner).filter(said => said.kind === 'owner').map(said => said.sentence))].filter(sentence => voteClaimGap(sentence, effects, last))
+	const sentence = claims[0] ?? text
+	const clause = sentence.split(/[,;\u2014\u2013:]\s*(?:(?:but|and)\s+)?/i).map(part => part.trim()).find(part => voteMention(part) && voteSentences(part, owner).some(said => said.kind === 'owner')) ?? sentence.trim()
+	const { words, quote } = clip(clause), more = claims.length - 1
+	const pr = gap.pr === undefined ? 'this PR' : `PR ${gap.pr}`, also = more > 0 ? ` (and ${more} more place${more === 1 ? '' : 's'})` : ''
+	const approving = gap.claim === 'approval' || gap.claim >= 5
+	const reads = approving ? 'approving' : gap.claim === -10 ? /\brequested changes\b/i.test(clause) ? 'asking for changes' : 'rejecting it' : gap.claim === -5 ? 'waiting for the author' : 'removing your vote'
+	return {
+		line: approving ? `Your reply says "${words}"${also}, which reads as approving ${pr}, but ${NAME} won't approve it. Change those words first.`
+			: `Your reply says "${words}"${also}, which reads as ${reads}, but ${NAME} won't vote on ${pr}. Change those words first.`,
+		confirm: `Send anyway? ${NAME} reads "${words}" as ${approving ? `approving ${pr}` : reads === 'rejecting it' ? `rejecting ${pr}` : `${reads} on ${pr}`}.`,
+		words, quote, ...(gap.pr !== undefined ? { pr: gap.pr } : {}),
+	}
+}
+// PM A R38 (1): an engine question's chat hint ('Answer "A34: nudge them" for a drafted follow-up, "wait A34: 3d", or "close A34".') is
+// chat syntax: the page shows the question without it (forPage drops it), and a quoted answer to this item ("<code>: <answer>", the
+// chat's answer form) becomes a choice chip; commands ("wait A34: 3d", "close A34") are dropped. Until the engine stores the question
+// and its hint separately (PE/SEND).
+const answerChips = (code: string, question?: string) => [...new Set([...(question ?? '').matchAll(new RegExp(`"${code}:\\s*([^"]{1,60})"`, 'gi'))].map(match => match[1].trim()).filter(Boolean))]
+	.map(text => ({ label: text.replace(/^./, first => first.toUpperCase()), text }))
+// The live re-check on edited text (POST /api/v1/vote-check): the same rule, on the text he is typing, for an item waiting on him.
+export function voteCheck(store: Store, code: string, text: string): { claim?: VoteClaim } {
+	const wf = store.byCode(code)
+	if (!wf || wf.state !== 'needs_human') return {}
+	const claim = voteClaimOf(store, wf, text)
+	return claim ? { claim: { ...claim, line: pageText(claim.line), confirm: pageText(claim.confirm) } } : {}
+}
+
 export function reactProjection(store: Store, query = '', visit?: { since?: string; fallbackSince: string }, opts: { only?: string } = {}): { snapshot: Snapshot; bindings: Map<string, Binding> } {
 	const onlyWfs = opts.only && store.byCode(opts.only) ? store.itemThread(opts.only) : undefined
 	const stored = placementSnapshot(store, undefined, onlyWfs)
@@ -158,7 +211,9 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 	}
 	function person(code: string, who: Who): string {
 		const id = `person:${hashOf(byCode.get(code)?.asker?.id ?? code)}`
-		entities.people[id] = { id, ...(byCode.get(code)?.startedBy === 'owner' ? displayWho('You') : who) }
+		// PE nit (09:12): the first name from SEND's personName ("Lane, Kim" is Kim), so the page never splits a name itself.
+		const shown = byCode.get(code)?.startedBy === 'owner' ? displayWho('You') : who
+		entities.people[id] = { id, ...shown, first: personName(shown.name).split(/\s+/)[0] || shown.name }
 		return id
 	}
 	function sources(itemId: string, prefix: string, rows: SourceRow[]): string[] {
@@ -179,7 +234,7 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 			return id
 		})
 	}
-	function offer(item: string, rev: string, kind: string, label: string, resolve: Binding['resolve'], options: Partial<Pick<Action, 'input' | 'effect' | 'staleness' | 'expect' | 'todoIds' | 'unavailable' | 'needsConfirm' | 'meaning' | 'expiresAt' | 'selection' | 'recovery'>> = {}, prefix = item): string {
+	function offer(item: string, rev: string, kind: string, label: string, resolve: Binding['resolve'], options: Partial<Pick<Action, 'input' | 'effect' | 'staleness' | 'expect' | 'todoIds' | 'unavailable' | 'needsConfirm' | 'meaning' | 'expiresAt' | 'selection' | 'recovery' | 'reviewed'>> = {}, prefix = item): string {
 		const id = `${prefix}/${kind}`
 		if (options.staleness === undefined && !managementRevisions.has(item)) {
 			const workflow = byCode.get(item)
@@ -210,7 +265,7 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 	}
 	// Spec S9: where a step happens, and what happened, in words; never an item code or a raw reference (part:, job:, sent:, owner:).
 	const isCode = (token: string) => /^[A-Z]\d{1,5}$/.test(token) && byCode.has(token)
-	const chatWords = (code: string) => { const w = byCode.get(code); return w ? w.chat.group ? w.chat.name : `${(w.asker?.name ?? '').split(/\s+/)[0]} · 1:1` : undefined }
+	const chatWords = (code: string) => { const w = byCode.get(code); return w ? w.chat.group ? placeOf(store, w.chat, w.asker)?.sentence ?? w.chat.name : `${(w.asker?.name ?? '').split(/\s+/)[0]} · 1:1` : undefined }
 	const whereWords = (home: string, where?: string) => !where ? undefined : !isCode(where) ? where : where === home ? 'this chat' : chatWords(where)
 	const plainText = (text: string) => text
 		.replace(/\s*\(([^()]*?),\s*([A-Z]\d{1,5})\)/g, (all, inner, code) => isCode(code) ? ` · ${inner}` : all)
@@ -320,7 +375,7 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 			const [what, why] = todo.text.split(/^\s*Not made for you:\s*|\.\s*Not made for you:\s*/)
 			const teams = wf.sent && wf.sent.at === todo.at && wf.chat.id && (!wf.chat.test || teamsChat(wf.chat.id)) ? safeLink(messageLink(wf.chat.id, wf.sent.msgId)) : undefined
 			entities.todos[key] = { ...todo, id: key, itemId: id, code: id, done: false, ...(why ? { text: `${pageText(what.trim() ? what : why).replace(/[.\s]+$/, '').replace(/^./, c => c.toUpperCase())}.`, why: pageText(why).replace(/[.\s]+$/, '') } : {}),
-				from: { at: todo.at, ...(wf.asker?.name ? { who: wf.asker.name.split(/\s+/)[0] } : {}), ...(wf.chat.group && wf.chat.name ? { chat: wf.chat.name } : {}), ...(teams ? { teams } : {}) } }
+				from: { at: todo.at, ...(wf.asker?.name ? { who: wf.asker.name.split(/\s+/)[0] } : {}), ...(wf.chat.group && wf.chat.name ? { chat: placeOf(store, wf.chat, wf.asker)?.sentence ?? wf.chat.name } : {}), ...(teams ? { teams } : {}) } }
 			return key
 		})
 		const workId = work ? `${id}/work` : undefined
@@ -368,11 +423,14 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 		]
 		// L1b: SEND's pure check on the draft before any Send (a held claim comes from the item itself, in cardFacts). The last-known
 		// vote is the runner's PR read [PR id, status, head, owner vote]; a recommendation is never evidence.
-		const lastKnownVote = (() => { try { const read: unknown = wf.prRead ? JSON.parse(wf.prRead) : undefined; return Array.isArray(read) && typeof read[0] === 'number' ? { pr: read[0], ...(typeof read[3] === 'number' ? { vote: read[3] } : {}), ...(typeof read[2] === 'string' ? { head: read[2] } : {}) } : undefined } catch { return undefined } })()
+		const lastKnownVote = lastKnownVoteOf(wf)
 		// L1b B1 (PE 23:22): only where the engine checks claims at all, SEND's exported aboutPr (apply.ts): a PR ref, a pr_review item, or a
 		// PR link in the draft, the ask or the asker's thread. A non-PR "Approved, enjoy your day off." is left alone, as the engine sends it.
 		// The cheap voteMention check first (PE nit): voteClaimGap only reads sentences that mention a vote, so nothing else changes.
 		const voteGap = draft && wf.state === 'needs_human' && !voteHold(wf) && voteMention(draft.text) && aboutPr(store, wf, draft.text) ? voteClaimGap(draft.text, wf.effects ?? [], lastKnownVote) : undefined
+		// A37 (b) / PM A R37: the hold names its words, the same for a gap seen here and one the engine already held on.
+		const voteClaim = draft && wf.state === 'needs_human' && (voteGap || voteHold(wf)) ? voteClaimOf(store, wf, draft.text) : undefined
+		const logMisread = () => { try { store.log({ event: 'vote-claim-send-anyway', code: id, held: !!voteHold(wf), ...(voteGap ? { claim: voteGap.claim } : {}), ...(voteClaim?.pr ? { pr: voteClaim.pr } : {}) }) } catch { /* best effort */ } }
 		// SEND fa4a5a1d (queue 06:10): his reply says he voted on a PR Delegate can't read votes on (a GitHub/GitLab-style link): a notice
 		// on the card, never a block. Only the owner's own claim sentences count, and only links in them; skipped when the vote-claim line shows.
 		// PE 09:16 B1: a link's trailing punctuation ("…/pull/12.") is not part of it. Nit: a claim that isn't an approval (vote < 5, e.g.
@@ -392,7 +450,10 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 		// L2b B1 (PE 00:30): with a draft the draft decides the card (Send and the editor lead): the group question reaches card-state as
 		// a question, and the picker sits in "Delegate also asks" with its own Save. Without a draft it is the card's choices (Save leads).
 		const groupAside = !!groupPick && !!draft
-		const fx = scrubFacts(cardFacts({ wf, job, ...(wf.openOn && wf.state !== 'done' ? { window: { machine: wf.openOn, ...(windowRec?.since ? { since: windowRec.since } : {}) } } : {}), card: { question: groupAside ? groupPick.prompt : groupPick ? undefined : c.question, draft, choices: groupAside ? c.choices : choices, ownReply: c.ownReply, promise: c.promise, reviewAgain }, changes: changes.length, agentWait, todos: todoIds.length, warns, ...(voteGap ? { voteGap } : {}), voteRecommended }))
+		const fx = scrubFacts(cardFacts({ wf, job, ...(wf.openOn && wf.state !== 'done' ? { window: { machine: wf.openOn, ...(windowRec?.since ? { since: windowRec.since } : {}) } } : {}), card: { question: groupAside ? groupPick.prompt : groupPick ? undefined : c.question, draft, choices: groupAside ? c.choices : choices, ownReply: c.ownReply, promise: c.promise, reviewAgain }, changes: changes.length, agentWait, todos: todoIds.length, warns, ...(voteGap ? { voteGap: { ...voteGap, why: voteClaim?.line ?? voteGap.why } } : {}), voteRecommended }))
+		// F1 (PE decision 47, CR 02:50): the consent a held card's Send anyway or send-edit returns: on a vote-held card exactly what
+		// apply.ts compares (voteClaimReview), else the held digest the card shows.
+		const reviewedHold = voteHold(wf) ? voteClaimReview(wf) : fx.held?.digest
 		const cs = cardState(fx)
 		// R10b: the review-done card. Approve PR <n> makes only his proposed approve vote (every other change left out), on this exact
 		// revision; Post them posts the comments still waiting, never the vote.
@@ -419,7 +480,7 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 				'send-edit': () => actionIds.push(offer(id, rev, 'send-edit', changes.length ? 'Preview your version with changes' : 'Send your version', input => {
 					if (input?.excluded?.length) throw new IntentError(422, 'Change the reply and leave out changes one at a time.')
 					return { code: id, verb: 'send', text: requiredText(input) }
-				}, { effect: changes.length ? 'local' : 'sends', staleness: 'exact', expect, input: 'text' })),
+				}, { effect: changes.length ? 'local' : 'sends', staleness: 'exact', expect, input: 'text', ...(reviewedHold ? { reviewed: reviewedHold } : {}) })),
 				answer: () => actionIds.push(offer(id, rev, 'answer', cs.primary === 'answer' ? 'Draft reply' : 'Answer instead', input => ({ code: id, verb: 'answer', text: requiredText(input) }), { input: 'text', recovery: failed || undefined })),
 				pick: () => { if (choices) actionIds.push(offer(id, rev, 'pick', groupPick ? 'Save' : 'Preview reply', input => {
 					const picks = [...new Set(input?.picks ?? [])]
@@ -430,11 +491,13 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 				}, { input: 'picks', staleness: 'exact', expect, ...(groupPick ? { meaning: `${NAME} remembers your answer.` } : {}) })) },
 				// A held Send (PE 14:28): the chat's own verbs. "Send anyway" becomes ok past exactly the held reason's digest (apply.ts),
 				// so the owner sends only the card he saw; "Redraft" starts over with the new message.
+				// PM A R37: each Send anyway past a vote claim is logged as a possible misread, to tune the detector (no reply text).
+				// F1 (PE decision 47): a Send anyway past a hold carries the held digest this card shows; the intent returns it as reviewed.
 				'send-anyway': () => actionIds.push(fx.voteGap
 					// L1b: past a vote claim, ⋯ Send anyway asks again with the same sentence, on this exact revision. A held claim is overridden
 					// only by the page's "send anyway" (apply.ts); before any hold it is an ordinary Send, which the engine's live check still reads.
-					? offer(id, rev, 'send-anyway', 'Send anyway', fx.voteGap.held ? () => ({ code: id, verb: 'answer', text: 'Send anyway' }) : approval, { effect: 'sends', staleness: 'exact', expect, needsConfirm: true, meaning: fx.voteGap.text })
-					: offer(id, rev, 'send-anyway', 'Send anyway', () => ({ code: id, verb: 'answer', text: 'Send anyway' }), { effect: 'sends', staleness: 'exact', expect })),
+					? offer(id, rev, 'send-anyway', 'Send anyway', (input: Intent['input']) => { logMisread(); return fx.voteGap!.held ? { code: id, verb: 'answer', text: 'Send anyway' } : approval(input) }, { effect: 'sends', staleness: 'exact', expect, needsConfirm: true, meaning: voteClaim ? pageText(voteClaim.confirm) : fx.voteGap.text, ...(reviewedHold ? { reviewed: reviewedHold } : {}) })
+					: offer(id, rev, 'send-anyway', 'Send anyway', () => ({ code: id, verb: 'answer', text: 'Send anyway' }), { effect: 'sends', staleness: 'exact', expect, ...(reviewedHold ? { reviewed: reviewedHold } : {}) })),
 				// L1b: the review recommended a vote that isn't proposed: propose it (nothing is made or sent until he approves).
 				'add-vote': () => actionIds.push(offer(id, rev, 'add-vote', 'Add the vote', () => ({ code: id, verb: 'answer', text: 'add the vote' }), { staleness: 'exact', expect, meaning: 'Adds the recommended vote to what you approve. Nothing is made or sent yet.' })),
 				redraft: () => actionIds.push(offer(id, rev, 'redraft', 'Redraft', () => ({ code: id, verb: 'answer', text: 'Redraft' }), { staleness: 'exact', expect })),
@@ -536,7 +599,7 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 			// Step 6: back from his terminal window, a status line only.
 			...(fx.returned ? { returned: fx.returned } : {}),
 			// L1b: the card draws a vote claim under the reply editor and keeps Send off until the reply changes.
-			...(fx.voteGap ? { voteGap: { text: pageText(fx.voteGap.text), held: fx.voteGap.held } } : {}),
+			...(fx.voteGap ? { voteGap: { text: pageText(fx.voteGap.held && voteClaim ? voteClaim.line : fx.voteGap.text), held: fx.voteGap.held, ...(voteClaim ? { quote: voteClaim.quote } : {}) } } : {}),
 			attentionKind: replyChanged ? 'reply-changed' : cs.mode === 'agent-wait' ? 'agent-setup' : cs.mode === 'failed' || cs.mode === 'not-sent' || notSent ? 'run-failed' : attention && attention === shownWarn && cs.warnKind === 'reason' ? 'reason' : undefined,
 			// The current failure, whatever recorded it, with the routes it tried, the PR to review by hand, and whether some read tools are off (#17 b).
 			// PE A R31: line is the failure words from structured fields only (the PM fallback otherwise); why and tried stay for Details.
@@ -588,6 +651,7 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 					...((k => (k >= 0 ? { posts: !entities.changes[changeIds[k]]?.error, changeId: changeIds[k] } : {}))(pending.findIndex(effect => !isVote(effect.call) && findingFor(effect, [finding]) === finding))),
 					...(finding.thread ? { thread: { author: finding.thread.author, at: finding.thread.at, ...((url => (url ? { url } : {}))(safeLink(finding.thread.url))) } } : {}) })) } } : {})(Number(/^PR (\d+)/.exec(prLabel ?? '')?.[1]) || undefined)),
 			question: c.question === undefined ? undefined : (failedJobDirections(wf) ? forPage(c.question) : pageText(c.question)) || undefined,
+			...((chips => (chips.length && c.question !== undefined && !groupPick ? { answerChips: chips } : {}))(answerChips(id, c.question))),
 			choices: choices && { ...choices, prompt: forPage(choices.prompt), options: choices.options.map(option => ({ ...option, id: pageOptionId(option) })), ...(groupPick ? { group: true } : {}) },
 			...(groupPick ? { question: undefined } : {}),
 			sourceIds: sources(id, id, why.sources), noteIds,
@@ -1083,6 +1147,9 @@ export function resolvePageIntent(store: Store, intent: Intent): { parsed?: Pars
 	if (binding.action.staleness === 'exact' && (binding.action.expect !== intent.expect || !binding.management && binding.action.rev !== intent.rev)) {
 		throw new IntentError(409, 'Changed since you looked. Open the new version first.')
 	}
+	// F1 handoff (decision 47, dispatcher 02:33): a held card's Send anyway or send-edit without the consent its card showed fails closed
+	// here (an old page that predates reviewed), never queued for the engine to send against the current hold.
+	if (binding.action.reviewed && !intent.reviewed) throw new IntentError(409, 'Changed since you looked. Open the new version first.')
 	if (binding.execute) return { execute: () => binding.execute!(intent.input) }
 	const parsed = binding.resolve(intent.input)
 	if (binding.management) return { parsed, page: { kind: 'manage', expect: binding.action.expect! } }
@@ -1100,7 +1167,7 @@ export function resolvePageIntent(store: Store, intent: Intent): { parsed?: Pars
 				workflow?.sent && ['wrong', 'incomplete', 'unneeded'].includes(parsed.verb) ? 'feedback-send' :
 				parsed.verb === 'pick' ? 'pick' : workflow && ['ok', 'send', 'edit'].includes(parsed.verb) && pendingEffects(workflow.effects).length > 0 ? 'make-changes' :
 					workflow?.draft && (parsed.verb === 'ok' || parsed.verb === 'send') ? 'send-reply' : 'approve'
-			page = { kind, expect, ...(kind === 'undo-send' || kind === 'feedback-send' ? { sentMessageId: workflow?.sent?.msgId } : {}), ...(todoIds ? { todoIds } : {}),
+			page = { kind, expect, ...((binding.action.kind === 'send-anyway' || binding.action.kind === 'send-edit') && intent.reviewed ? { reviewed: intent.reviewed } : {}), ...(kind === 'undo-send' || kind === 'feedback-send' ? { sentMessageId: workflow?.sent?.msgId } : {}), ...(todoIds ? { todoIds } : {}),
 				...(parsed.verb === 'ok' && workflow?.draft && (kind === 'send-reply' || kind === 'make-changes') ? { replyDigest: pageDigest(approvedReplyText(workflow.draft.text, workflow, store.config())) } : {}),
 			}
 		}

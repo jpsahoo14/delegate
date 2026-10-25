@@ -9,6 +9,8 @@ import { recordCommit } from './commit.ts'
 import { authorAsk, specChoice } from './jobs.ts'
 import { isReviewJob } from './review-gate.ts'
 import { CHECK_DAYS, joinWhy, lastActivity, ownLinks, statusOf } from './work.ts'
+import { trimReviewContext } from './review-context.ts'
+import { isDeepStrictEqual } from 'node:util'
 
 const LIMIT = 50
 const sameLink = (a: string, b: string) => a.split(':')[0].toLowerCase() === b.split(':')[0].toLowerCase() && a.split(/[:/]/).at(-1) === b.split(/[:/]/).at(-1)
@@ -23,8 +25,9 @@ export function migrateWorkflows(store: Store, now = Date.now()): number {
 		const w = store.workflow(was.id)
 		if (!w || w.schema >= WORKFLOW_SCHEMA) return
 		const commit = recordCommit(w, () => store.workflow(w.id), store.save.bind(store))
-		const events: { event: string; code: string; from?: number; to?: number; step?: number; why?: string }[] = []
-		for (const version of [4, 5, 6, 7]) {
+		const events: { event: string; code: string; from?: number; to?: number; step?: number; why?: string; migrated?: true;
+			job?: string; dropped?: number; warns?: number; jobDropped?: number; jobWarns?: number }[] = []
+		for (const version of [4, 5, 6, 7, 8]) {
 			if (w.schema >= version) continue
 			const candidate = structuredClone(w), from = w.schema
 			let skipped: string | undefined
@@ -77,7 +80,7 @@ export function migrateWorkflows(store: Store, now = Date.now()): number {
 						Object.assign(candidate, { ...stateFields(candidate, 'open'), question: undefined, status: statusOf(w), pending: [] })
 					}
 				}
-			} else {
+			} else if (version === 7) {
 				const job = w.job ? store.job(w.job) : undefined
 				if (w.state !== 'done' && !job && w.intent === 'pr_review' && (specChoice(w.question ?? '') || w.todos?.some(t => /names no exact call/.test(t)))) skipped = 'the review job is unavailable'
 				if (w.state !== 'done' && job && isReviewJob(job.key, w.intent)) {
@@ -119,6 +122,28 @@ export function migrateWorkflows(store: Store, now = Date.now()): number {
 						candidate.approved = undefined
 						candidate.revAt = new Date(now).toISOString()
 					}
+				}
+			} else if (version === 8) {
+				const job = w.job ? store.job(w.job) : undefined
+				if (!job) {
+					if (w.context?.length && w.intent === 'pr_review' && w.prRole !== 'author') skipped = 'the context job is unavailable'
+				} else {
+					const parents = [w, ...job.parents.filter(id => id !== w.id).map(id => store.workflow(id)).filter((p): p is Workflow => !!p)]
+					const intent = w.intent ?? job.intent
+					const trimmed = trimReviewContext(job, parents, w.context, intent)
+					const contextChanged = !isDeepStrictEqual(trimmed.context, w.context)
+					if (contextChanged) candidate.context = trimmed.context
+					const result = job.state === 'done' ? job.result : undefined
+					const jobTrimmed = trimReviewContext(job, parents, result?.context, intent)
+					const jobChanged = !!result && !isDeepStrictEqual(jobTrimmed.context, result.context)
+					if (result && jobChanged) {
+						const saveJob = recordCommit(job, () => store.job(job.id), store.saveJob.bind(store))
+						job.result = { ...result, context: jobTrimmed.context }
+						saveJob()
+					}
+					if (contextChanged || jobChanged) events.push({ event: 'review-context-trimmed', code: w.code, job: job.id,
+						migrated: true, dropped: trimmed.dropped, warns: trimmed.warns,
+						jobDropped: jobTrimmed.dropped, jobWarns: jobTrimmed.warns })
 				}
 			}
 			if (!skipped) Object.assign(w, candidate)

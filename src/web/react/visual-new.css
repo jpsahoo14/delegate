@@ -224,17 +224,6 @@ main[data-ui=new] .tool-sheet h2{font-size:17px;margin:0 0 16px}
 [data-slot=button][data-variant=ghost]:hover{background:var(--surface-2);color:var(--text)}
 [data-slot=button]:disabled{opacity:.45;cursor:not-allowed}
 .header-inner [data-slot=button]{height:34px}
-.health-banner{display:flex;flex-wrap:wrap;align-items:center;gap:12px;padding:12px 14px 12px 16px;border-radius:var(--r-md);background:var(--warn-soft);color:var(--text);margin:0 0 20px;border:1px solid color-mix(in srgb,var(--warn) 30%,transparent);font-size:14px}
-.health-banner .health-icon{width:20px;height:20px;color:var(--warn)}
-.health-details-icon{display:grid;place-items:center;padding:0;border:0;background:none;flex:none;cursor:pointer}
-.health-banner p{flex:1;margin:0}
-.health-banner strong{font-weight:600}
-.health-age,.health-more-toggle{font-weight:400;color:var(--text-2)}
-.health-more-toggle{background:none;border:0;padding:0;margin-left:3px;font:inherit;cursor:pointer}
-.health-more-toggle:hover{text-decoration:underline}
-.health-actions:empty{display:none}
-.health-extra{flex-basis:100%;padding-top:6px}
-.health-extra .health-banner{margin:0;padding:6px;border:0}
 .find-field{display:flex;gap:8px;align-items:center;background:var(--surface);border:1px solid var(--border-strong);border-radius:10px;padding:1px 8px 1px 12px;margin:0 0 8px;font-size:14px}
 .find-field>span{position:absolute!important;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 .find-field #find{flex:1;border:0;box-shadow:none;background:none;padding:6px 0;min-width:0;font:inherit;color:var(--text);border-radius:0;outline:none}
@@ -376,11 +365,6 @@ main[data-ui=new] .tool-sheet h2{font-size:17px;margin:0 0 16px}
 	.inline-simple-card .card-earlier{margin-left:0}
 	.inline-simple-card>.reply-section{margin-left:-16px;margin-right:-16px;padding-left:16px;padding-right:16px}
 	.summary-line{font-size:13.5px;margin-bottom:8px}
-	.health-banner{padding:8px 10px;gap:8px;margin:0 0 8px;font-size:13.5px}
-	.health-age,.health-more-toggle{display:none}
-	.health-banner[data-details-open=true] .health-age{display:inline}
-	.health-banner p{flex:1 1 0}
-	.health-banner .health-actions [data-slot=button]{font-size:13px;padding:0 10px}
 	.find-field kbd{display:none}
 	.undo-main,.experience-note{flex-wrap:nowrap}
 	.undo-quote,.experience-note .note-wide{display:none}

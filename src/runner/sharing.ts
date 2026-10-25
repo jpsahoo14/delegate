@@ -11,6 +11,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import { dirname, join } from 'node:path'
 import { moveOffRecord, restoreOffRecord } from './offrecord.ts'
 import { telemetryEvent } from '../core/telemetry.ts'
+import { personName } from '../core/format.ts'
 
 // Need to know, first slice: a reply may go by itself only when everyone in its chat could already see every other
 // conversation it drew on (dev-spec/sharing.md). Owner-approved sends are not held; the owner sees the sources.
@@ -83,7 +84,24 @@ export async function clearShareable(store: Store, src: Source, chatId: string) 
 	store.log({ event: 'shareable-cleared', chat: chatId })
 	await src.sendSelf?.(`${level.name} has a guest or someone from outside your org now, so it is a normal chat again: ${NAME} won't quote it elsewhere without your ok.`).catch(() => undefined)
 }
-const nameOf = (store: Store, chat: string, id: string) => store.members()[chat]?.names?.[id]?.split(/\s+/)[0]
+export function groupChatPeople(store: Pick<Store, 'members'>, chatId: string, ownerId: string, askerId?: string): { names: string[]; count: number } | undefined {
+	const cached = store.members()[chatId]
+	if (!cached?.names || !cached.ids.length) return undefined
+	const excluded = new Set([ownerId, askerId].filter((id): id is string => !!id).map(id => id.toLowerCase()))
+	const ids = [...new Set(cached.ids)].filter(id => !excluded.has(id.toLowerCase()))
+	const people = ids.flatMap(id => {
+		const name = personName(cached.names?.[id]), words = name.split(/\s+/)
+		return name && words?.length ? [{ name, first: words[0], last: words.length > 1 ? words.at(-1)![0] : '' }] : []
+	}).sort((a, b) => a.name.localeCompare(b.name))
+	if (ids.length && !people.length) return undefined
+	const counts = new Map<string, number>()
+	for (const person of people) {
+		const first = person.first.toLocaleLowerCase()
+		counts.set(first, (counts.get(first) ?? 0) + 1)
+	}
+	return { names: people.map(person => `${person.first}${counts.get(person.first.toLocaleLowerCase())! > 1 && person.last ? ` ${person.last}.` : ''}`), count: ids.length }
+}
+const nameOf = (store: Store, chat: string, id: string) => personName(store.members()[chat]?.names?.[id]).split(/\s+/)[0] || undefined
 
 // What a draft used (#36, PE 17:05 point 3). Records: those it cites and read, plus any restricted one it read (it may have used
 // it without citing). unread: record links it cites without a read of that id, which count as unknown. Chats: those it cites

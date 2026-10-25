@@ -1,5 +1,37 @@
 # React preview requirements
 
+Fast checking:
+- Open or extend fast checking only after a reply goes out, sent by Delegate or by the owner. Measure its window from
+  that reply, not the tick or repeated reads of the same receipt.
+- A new ask, drafting run, job or self-chat nudge alone must not open it. Unrelated owner messages do not count.
+- Keep ordinary idle checks, confirmed-owner-reply detection, source backoff, due reminders/retries and explicit wakeups.
+- A scheduled reply still wakes at sendAt without starting fast checking. Non-local jobs and closed Continue windows
+  otherwise use idle cadence when no explicit wake or earlier due time exists.
+
+New-message PR joins:
+- A message naming a different ADO PR starts its own item instead of joining another PR's open item.
+- With one eligible matching item, join it; with several, honor a matching explicit reply, otherwise keep ambiguity visible.
+- Keep the item's original PR when a multi-PR body joins it and show the other mention. It grants no effects or votes on the
+  other PR. Bare numbers and GitHub/GitLab links must not collide with ADO IDs; existing no-PR and consent gates stay intact.
+- Naming only the current PR preserves the previous quote/subject-relation rules; only multiple named PRs get the
+  sole-match override. Conflicts stay blocked even after their once-per-code diagnostic has already been recorded.
+
+Historic review facts:
+- Old review results must follow the same context policy as new finishes in every surface, including completed-job
+  context used for later replies. Drop CI/vote noise and show retained facts as information, not warnings.
+- Preserve author watches, recurring jobs and non-review payloads. When trim eligibility cannot be established, leave
+  context unchanged and log the missing evidence rather than guessing.
+- Upgrade once through schema 8 in bounded phases; repeat completed migration does not change records or markers.
+
+Incomplete report status:
+- A report short of its goal retains its current Needs human explanation and holding draft, with the matching structured
+  not-finished reason so consumers do not rely on prose alone. Existing saved records remain readable without repair.
+
+Tick diagnostics (#54 step 1):
+- Distinguish idle gaps of at least 15 minutes from warm checks and report actual filesystem/external-call time per step.
+- Add diagnostics without reordering, skipping, caching or changing owner work. Keep warm <2 s and cold <5 s as separate
+  measurement targets; use the VM table before choosing optimizations.
+
 Acceptance Undo identity (U1):
 - Remember the proposal and the learned line as two separate text identities, captured only after successful acceptance.
 - Generated learned wording or an evidence suffix must not block immediate Undo of an unchanged Add it.

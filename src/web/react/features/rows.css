@@ -13,3 +13,5 @@
 @media(max-width:560px){.now-row .row-line3 .row-title{white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}}
 .now-row[data-row-kind] .row-chevron{color:var(--text-3);font-size:18px;align-self:center;padding:0 4px}
 .now-section .now-row:has(.row-chevron) .row-content{cursor:pointer}
+/* I2: a row Find's Open focuses in Now › Waiting flashes once. */
+.now-row.row-flash{background:var(--accent-soft);transition:background .3s}

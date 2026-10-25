@@ -21,6 +21,7 @@ import { hostOff } from './locate.ts'
 import { unavailableTools } from '../core/agent-failure.ts'
 import { reportFromText } from '../core/report.ts'
 import { intents } from '../core/intents.ts'
+import { timedExternal } from '../core/io-time.ts'
 
 const READY_MS = 15_000, BACKOFF = [5_000, 30_000, 120_000]
 const markFile = () => join(LOCAL_DIR, 'host-start.json')
@@ -31,7 +32,7 @@ const readMark = () => readJson<Mark>(markFile(), { at: '', fails: 0 })
 // Until when runs skip the host after it failed again and again; undefined when they may use it.
 export function hostDisabledUntil(now = Date.now()): string | undefined { const u = readMark().disabledUntil; return u && Date.parse(u) > now ? u : undefined }
 
-function call<T>(h: HostInfo, method: string, path: string, body?: unknown, timeoutMs = 3_000, signal?: AbortSignal): Promise<{ status: number; body: T }> {
+function httpCall<T>(h: HostInfo, method: string, path: string, body?: unknown, timeoutMs = 3_000, signal?: AbortSignal): Promise<{ status: number; body: T }> {
 	return new Promise((ok, no) => {
 		const data = body === undefined ? undefined : JSON.stringify(body)
 		const req = request({ host: '127.0.0.1', port: h.port, method, path, signal, headers: { authorization: `Bearer ${h.token}`, ...(data ? { 'content-type': 'application/json', 'content-length': Buffer.byteLength(data) } : {}) } }, res => {
@@ -42,6 +43,7 @@ function call<T>(h: HostInfo, method: string, path: string, body?: unknown, time
 		req.end(data)
 	})
 }
+const call = timedExternal(httpCall)
 const pingOk = (h: HostInfo) => call<{ ok?: boolean }>(h, 'GET', '/ping').then(r => r.status === 200 && !!r.body.ok, () => false)
 const current = () => readJson<HostInfo | undefined>(hostFile(), undefined)
 

@@ -18,7 +18,7 @@ export type Confidence = 'high' | 'medium' | 'low'
 export type Rule = {
 	id: string; text: string
 	who: { accounts?: Person[]; group?: 'team' | 'org' | 'outside' }
-	when: { intent?: string; chat?: string | 'direct'; minConfidence?: 'high' | 'medium'; reviewerGroup?: string }
+	when: { intent?: string; chat?: string | 'direct'; minConfidence?: 'high' | 'medium'; reviewerGroup?: string; results?: true }
 	then: Capability
 	off?: true
 	review?: { comments: 'post'; reply: 'send' }
@@ -46,6 +46,13 @@ export type Source = { ref: string; tier: 'card' | 'live' | 'private'; origin: '
 // byOwner: the owner typed or edited these words, so they are never signed.
 // ownWords: the owner's words differ from Delegate's draft, or there was none, so they may promise what the draft did not (Slice 3).
 export type Draft = { text: string; commitment: boolean; sources: Source[]; preview?: boolean; holding?: true; byOwner?: true; ownWords?: true }
+export type ResultFacts = Pick<Report, 'question' | 'blocker' | 'goalMet' | 'context'> & {
+	chatId: string
+	turn: string
+	effects: Effect[]
+	todos: string[]
+	review?: { pr: number; head?: string }
+}
 
 // A standing instruction, such as a reminder at a fixed time (design-spec/automations.md).
 // The text is approved once, when the owner starts it, and always goes out with the assistant marker.
@@ -162,7 +169,7 @@ export type Job = {
 	// sent: asks the session has; from: where the run in flight started; ok: asks the owner let through (review 10-19 #5, #12).
 	relay?: { machine: string; session: string; what: string; sent?: number; from?: number; ok?: number }
 	// at: when a tracker check gave this result, so the page says when the last check really ran.
-	result?: { summary: string; reply?: Draft; effects: Effect[]; context?: Fact[]; at?: string; findings?: ReviewFinding[]; reviewHead?: string; reviewClean?: true; reviewSources?: { unknown: boolean; chats: string[]; restricted: boolean }; voteRecommendation?: VoteRecommendation }
+	result?: { summary: string; reply?: Draft; effects: Effect[]; context?: Fact[]; at?: string; findings?: ReviewFinding[]; reviewHead?: string; reviewClean?: true; reviewSources?: { unknown: boolean; chats: string[]; restricted: boolean }; voteRecommendation?: VoteRecommendation; sendFacts?: Record<string, ResultFacts> }
 	error?: string
 	// Trackers (R-TRK-01): run again every N minutes until the condition in words holds.
 	every?: number
@@ -205,6 +212,7 @@ export type Workflow = {
 	prRead?: string
 	prReadAt?: string
 	prUnknown?: true
+	prAnchor?: { pr: number; msgId: string; at: string }
 	// The owner's place on the item's PR at the last read, and why a review was not started (PR review gate, owner rule 10-23).
 	prRole?: PrRole
 	prGroups?: string[]
@@ -233,6 +241,7 @@ export type Workflow = {
 		| { kind: 'no-reply-needed'; why: string; digest: string }
 	reasons?: NonNullable<Workflow['reason']>[]
 	holdDigest?: string
+	holdNotice?: { digest: string; at: string }
 	holdCheckPending?: boolean
 	voteClaim?: { why: string; pr?: number; claim: number | 'approval' | 'others'; vote?: number; digest: string; automatic?: boolean; canOverride?: false }
 	voteClaimRedrafted?: true
@@ -392,7 +401,7 @@ export const CONTROL_VERBS = ['pause', 'resume', 'stop', 'auto-on', 'auto-off'] 
 // nums: 1-based option numbers for pick, or the only changes an ok approves.
 // again: "ok A1 again", the owner checked that a change which may have been made was not, so it is made once more.
 // todos: on a close from the page, the open to-dos the owner saw, so Mark done marks only those (review N2 P2-1).
-export type PageApproval = { kind: 'send-reply' | 'make-changes' | 'pick' | 'undo-send' | 'feedback-send' | 'mark-todos' | 'approve' | 'manage'; expect: string; sentMessageId?: string; todoIds?: string[]; replyDigest?: string }
+export type PageApproval = { kind: 'send-reply' | 'make-changes' | 'pick' | 'undo-send' | 'feedback-send' | 'mark-todos' | 'approve' | 'manage'; expect: string; sentMessageId?: string; todoIds?: string[]; replyDigest?: string; reviewed?: string }
 export type Answer = { id: Id; code: Code; verb: Verb; text?: string; nums?: number[]; except?: number[]; again?: true; sendReview?: string; surface: 'chat' | 'self' | 'panel'; at: string; seenAt?: string; todos?: string[]; page?: PageApproval; pageSubmissionId?: string }
 
 export type WatchedChat = { id: string; name: string; test?: boolean; group?: boolean; since?: string }

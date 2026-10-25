@@ -12,6 +12,8 @@ import { when, time } from '../domain/time.ts'
 import { Icon } from '../components/ui/icon.tsx'
 import { Field, Sources } from './CardFields.tsx'
 import { SentTime } from './SentTime.tsx'
+import { ItemCode } from './ItemCode.tsx'
+import { useLiveVoteCheck } from './vote-check.ts'
 import './card.css'
 import { useScreenNavigation } from '../classic/navigation.tsx'
 import { useSetting } from '../data/screens.ts'
@@ -20,7 +22,8 @@ import { markTodos, undoMark } from '../data/todo-marks.ts'
 // The card (spec S1, design-spec/mockups/card-redesign.html): the same blocks in New's opened row and Classic's Needs-you card.
 // 1 their message · 2 what you'll send · 3 what happens when you send · 4 actions · 5 Details.
 export const firstName = (name: string) => name.split(/\s+/)[0] || name
-export const whereOf = (chat: Entities['chats'][string]) => chat.group ? `in ${chat.name}` : '1:1 chat'
+// A120 / PM A R36: an untitled group is named by its other members, in the server's words (head: 2 names, row: 1 name).
+export const whereOf = (chat: Entities['chats'][string], form: 'head' | 'row' = 'head') => chat.group ? chat.place?.[form] ?? `in ${chat.name}` : '1:1 chat'
 // The time the person wrote: their newest message after the draft when they wrote again, else the ask; never Delegate's own times.
 export function sentAt(item: Item): { at: string; added: boolean } {
 	const theirs = item.newCount > 0 ? [...item.thread].reverse().find(message => !message.owner)?.at : undefined
@@ -32,6 +35,8 @@ export function sentAt(item: Item): { at: string; added: boolean } {
 // The row shows up to 200 of its characters, so the page never holds more than 2,000 of a huge message.
 const HUGE = 20_000, SHOWN = 2_000, HUGE_SHOWN = 1_800
 export const messageText = (text: string) => text.replace(/(\[image[^\]\n]*?)\s+inline:[0-9a-f]{16,40}(?=\])/gi, '$1')
+// A37 (b) / PM A R37: the words a vote-claim line quotes, highlighted where they stand in the draft.
+const marked = (text: string, quote?: string) => { const at = quote ? text.indexOf(quote) : -1; return at < 0 ? text : <>{text.slice(0, at)}<mark className="vote-mark">{quote}</mark>{text.slice(at + quote!.length)}</> }
 // An image in their message is a chip (L3c): "🖼 Image · Open in Teams ↗", opening that message in Teams when there is a link.
 function withImages(text: string, teams?: string) {
 	const parts = text.split(IMAGE_TOKEN)
@@ -84,6 +89,8 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 	}, [code, inline, readOnly])
 	// Details opens by itself while an Ask answer is pending, and stays open until the owner closes it.
 	useEffect(() => { if (pendingAsk && ui.folds?.details === undefined) edit({ folds: { ...ui.folds, details: true } }) }, [pendingAsk, ui.folds, edit])
+	// A37 (b): the vote-claim check again on his edited reply, as he types (PM A R37).
+	const live = useLiveVoteCheck(code, !readOnly && ui.editing && ui.editText !== undefined ? ui.editText : undefined, !!item?.voteGap)
 	if (!item || !entities) return <p role="status">This item is no longer open. Refresh the list to see where it moved.</p>
 	const person = entities.people[item.personId], chat = entities.chats[item.chatId], first = firstName(person.name)
 	const placement = placementId ? entities.placements[placementId] : undefined
@@ -115,10 +122,14 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 	const invalid = primary?.input === 'text' && primary.kind !== 'send-edit' && !ui.answer?.trim() || primary?.kind === 'pick' && !input.picks?.length ||
 		primary?.kind === 'send-edit' && !replyText.trim()
 	// L1b: Send stays off until he changes the reply (editing makes Send your version the primary); the line's sentence is its hover.
-	const voteBlocked = !!item.voteGap && primary?.kind === 'approve'
+	// A37 (b): Send your version stays off while his edited text still makes a claim, or while that check is due (PM A R37).
+	const editedHeld = ui.editing && (!!live.claim || live.pending)
+	const voteLine = ui.editing ? live.claim?.line ?? (live.pending ? item.voteGap?.text : undefined) : item.voteGap?.text
+	const voteReason = live.claim?.line ?? (editedHeld ? 'Checking your reply for a vote claim...' : item.voteGap?.text)
+	const voteBlocked = !!item.voteGap && primary?.kind === 'approve' || primary?.kind === 'send-edit' && editedHeld
 	// Answering on 2a after editing the reply: the send next to Answer sends the edit, never the original draft.
 	const editedAside = boxMode === 'answer' && ui.editing && sendEdit ? sendEdit : undefined
-	const sent = sentAt(item), replyWhere = chat.group ? `in ${chat.name}` : 'in your 1:1'
+	const sent = sentAt(item), replyWhere = chat.group ? `in ${chat.place?.sentence ?? chat.name}` : 'in your 1:1'
 	const avatar: CSSProperties & { '--hue': number } = { '--hue': person.hue }
 	const continueAction = actions.find(action => action.kind === 'continue')
 
@@ -128,8 +139,8 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 	const earlier = item.thread.length
 	const block1 = <section className="card-block card-message" aria-label={`${person.name}'s message`}>
 		<div className="card-head"><span className="card-avatar" style={avatar} aria-hidden="true">{person.initials}</span>
-			<h2 id={`card-title-${code}`} className="card-who">{person.name}</h2><span className="card-where">· {whereOf(chat)} ·</span>
-			<SentTime at={sent.at} added={sent.added} full code={code} />
+			<h2 id={`card-title-${code}`} className="card-who">{person.name}</h2><span className="card-where" title={chat.place?.title}>· {whereOf(chat)} ·</span>
+			<SentTime at={sent.at} added={sent.added} full /><span className="card-sep" aria-hidden="true">·</span><ItemCode code={code} />
 			{chat.guests && <Hint text={chipHover('guests')}><span className="chip">Guests in chat</span></Hint>}
 			<span className="card-head-end">{item.teams && <Hint text="Open this message in Teams, in a new tab."><a className="card-teams" href={item.teams} target="_blank" rel="noopener noreferrer">Open in Teams <Icon name="ext" /></a></Hint>}</span>
 		</div>
@@ -260,6 +271,9 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 			{!question && item.question && !draft && <p className="question">{item.question}</p>}
 			{!groupAside && choiceSet}
 			{item.choices?.group && !groupAside && <p className="muted">{NAME} remembers your answer.</p>}
+			{/* PM A R38 (1): the engine's suggested answer (its chat hint) as a choice chip; it fills the answer, and nothing goes until he answers. */}
+			{answerBox && !!item.answerChips?.length && <div className="answer-chips" role="group" aria-label="Suggested answers">{item.answerChips.map(chip => <button type="button" key={chip.text} className="chip answer-chip" aria-pressed={ui.answer === chip.text}
+				onClick={() => { edit({ answer: chip.text }); focusField('answer') }}>{chip.label}</button>)}</div>}
 			{answerBox && <><Field code={code} rev={item.rev} field="answer" label="Your answer" placeholder={`only ${NAME} sees it`} value={ui.answer ?? ''} edit={edit} />
 				<p className="muted">{NAME} {draft ? 'writes a new draft from your answer' : 'drafts the reply from your answer'}. Nothing is sent.</p></>}
 		</section>}
@@ -271,11 +285,13 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 		{draft && boxMode !== 'answer' && <section className="card-block reply-section">
 			{editable ? <Field code={code} rev={item.rev} field="editText" rows={Math.min(14, Math.max(3, Math.ceil(replyText.length / 70) + replyText.split('\n').length))}
 				label={draft.holding ? `Holding reply to ${first}, ${replyWhere} · says you are on it; not the answer yet` : `Your reply to ${first}, ${replyWhere}`}
-				value={replyText} edit={edit} patch={value => ({ editText: value, editing: value !== body })} />
-				: <><h3>{draft.holding ? `Holding reply to ${first}` : `Your reply to ${first}, ${replyWhere}`}</h3><div className="draft">{draft.sendText ?? draft.text}</div></>}
+				value={replyText} edit={edit} patch={value => ({ editText: value, editing: value !== body })} mark={ui.editing ? live.claim?.quote : item.voteGap?.quote} />
+				: <><h3>{draft.holding ? `Holding reply to ${first}` : `Your reply to ${first}, ${replyWhere}`}</h3><div className="draft">{marked(draft.sendText ?? draft.text, item.voteGap?.quote)}</div></>}
 			{editable && marker && <p className="muted card-marker">Teams will show: {marker}</p>}
 			{/* L1b (joint C2): the vote-claim line is about his text, so it sits right under the editor, not in block 1. */}
-			{item.voteGap && <p className="warnline card-vote-claim" role="note"><Icon name="warn" /> {item.voteGap.text}</p>}
+			{/* A37 (b): live while he edits; once no claim is left the line says so, muted, and Send enables (PM A R37). */}
+			<div aria-live="polite">{voteLine ? <p className="warnline card-vote-claim" role="note"><Icon name="warn" /> {voteLine}</p>
+				: ui.editing && live.cleared && <p className="muted card-vote-claim card-vote-cleared">✓ The reply no longer mentions a vote.</p>}</div>
 			{replyText.length > 400 && <p className="muted reply-count">{replyText.length.toLocaleString()} characters · the whole reply is shown above before you send</p>}
 			{draft.preview && !ui.editing && <p className="muted"><Icon name="spark" />{' '}{item.picked?.length ? 'The reply for your pick' : 'New draft from your answer'}. Not sent yet.</p>}
 			{boxMode === 'reply' && <p className="also-asks">💬 <strong>{NAME} also asks:</strong> {item.question}{' '}
@@ -323,7 +339,7 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 		const since = openThreads.map(finding => finding.thread!.at).sort()[0]
 		const day = since && Number.isFinite(Date.parse(since)) ? new Date(since).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : ''
 		const what = allOpen ? `: ${openThreads.length === 1 ? 'this finding is already an open thread' : `these ${openThreads.length} findings are already open threads`} (${[authors, day].filter(Boolean).join(', ')})` : ''
-		return `Nothing is posted on PR ${item.prReview!.pr}${what}. Send posts only your reply in ${chat.group ? chat.name : 'your 1:1'}.`
+		return `Nothing is posted on PR ${item.prReview!.pr}${what}. Send posts only your reply in ${chat.group ? chat.place?.sentence ?? chat.name : 'your 1:1'}.`
 	})() : undefined
 	const block3 = !reviewed && (item.changeIds.length > 0 || keep.length > 0 || !!item.follow || noVote || !!nothingPosted) && <section className="card-block card-after">
 		<h3>{draft ? `When you send, ${NAME} will also` : item.changeIds.some(id => entities.changes[id].state === 'approved') ? 'Approved changes' : `When you approve, ${NAME} will`}</h3>
@@ -392,7 +408,7 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 			: <span><strong>{NAME} is working on it</strong> · back to you when there's something to send
 				<small className="card-working-what">{[item.working.doing, item.working.since && `started ${when(item.working.since)}`].filter(Boolean).join(' · ')}</small></span>}</div>}
 		{primary && primary.kind !== 'write-own' && primary.kind !== 'todo-done' && <ActionButton primary action={primary} label={primaryLabel} input={report && primary.id === report.id ? { result: ui.resultKind, text: ui.report } : input}
-			disabled={report && primary.id === report.id ? !ui.resultKind : !!invalid || newer || voteBlocked} disabledReason={newer ? 'stale' : voteBlocked ? item.voteGap!.text : report && primary.id === report.id ? 'Pick how it went first.' : primary.kind === 'pick' || item.choices && !ui.other ? 'pick' : 'Type your answer first.'} />}
+			disabled={report && primary.id === report.id ? !ui.resultKind : !!invalid || newer || voteBlocked} disabledReason={newer ? 'stale' : voteBlocked ? voteReason : report && primary.id === report.id ? 'Pick how it went first.' : primary.kind === 'pick' || item.choices && !ui.other ? 'pick' : 'Type your answer first.'} />}
 		{primary?.kind === 'write-own' && writeButton}
 		{reviewed?.openPr === 'primary' && openPr('default')}
 		{approvePr && approvePr.id !== primary?.id && <ActionButton action={approvePr} disabled={newer} disabledReason="stale" />}
@@ -400,8 +416,8 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 		{primary?.kind === 'todo-done' && doneButton(true)}
 		{report && primary?.id !== report.id && <ActionButton primary action={report} label={`Draft my update to ${first}`} input={{ result: ui.resultKind, text: ui.report }} disabled={!ui.resultKind} disabledReason="Pick how it went first." />}
 		{/* An offered send is never hidden: when another action leads, it sits next to it (#33). */}
-		{actions.filter(action => ['approve', 'approve-again'].includes(action.kind) && action.id !== primary?.id).map(action => action.kind === 'approve' && editedAside ? <ActionButton key={editedAside.id} action={editedAside} label="Send your edited reply" input={{ text: signed(replyText), excluded: ui.excluded }} disabled={newer || !replyText.trim()} disabledReason={newer ? 'stale' : 'Type your reply first.'} /> : <ActionButton key={action.id} action={action} label={draft?.holding && action.kind === 'approve' && !item.changeIds.length ? 'Send holding reply' : undefined} input={{ excluded: ui.excluded }} disabled={newer || action.kind === 'approve' && !!item.voteGap} disabledReason={newer ? 'stale' : item.voteGap?.text ?? 'stale'} />)}
-		{actions.filter(action => ['try-again', 'review-again', 'send-anyway', 'redraft', 'add-vote', 'keep-waiting'].includes(action.kind) && action.id !== primary?.id && !(item.voteGap && action.kind === 'send-anyway') && !(reviewed && action.kind === 'review-again')).map(action => <ActionButton key={action.id} action={action} disabled={newer && action.staleness === 'exact'} disabledReason="stale" />)}
+		{actions.filter(action => ['approve', 'approve-again'].includes(action.kind) && action.id !== primary?.id).map(action => action.kind === 'approve' && editedAside ? <ActionButton key={editedAside.id} action={editedAside} label="Send your edited reply" input={{ text: signed(replyText), excluded: ui.excluded }} disabled={newer || !replyText.trim() || editedHeld} disabledReason={newer ? 'stale' : editedHeld ? voteReason : 'Type your reply first.'} /> : <ActionButton key={action.id} action={action} label={draft?.holding && action.kind === 'approve' && !item.changeIds.length ? 'Send holding reply' : undefined} input={{ excluded: ui.excluded }} disabled={newer || action.kind === 'approve' && !!item.voteGap} disabledReason={newer ? 'stale' : item.voteGap?.text ?? 'stale'} />)}
+		{actions.filter(action => ['try-again', 'review-again', 'send-anyway', 'redraft', 'add-vote', 'keep-waiting'].includes(action.kind) && action.id !== primary?.id && !((item.voteGap || ui.editing) && action.kind === 'send-anyway') && !(reviewed && action.kind === 'review-again')).map(action => <ActionButton key={action.id} action={action} disabled={newer && action.staleness === 'exact'} disabledReason="stale" />)}
 		{primary?.kind !== 'write-own' && writeButton}
 		{item.mode === 'held' && actions.filter(action => action.kind === 'dismiss' && action.label === 'Skip').map(action => <ActionButton key={action.id} action={action} disabled={newer && action.staleness === 'exact'} disabledReason="stale" />)}
 		{actions.filter(action => action.kind === 'later').map(action => <ActionButton key={action.id} action={action} />)}
@@ -411,7 +427,8 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 			{/* R10b: ⋯ Review again, unless new changes made it the primary. */}
 			{reviewed && actions.filter(action => action.kind === 'review-again' && action.id !== primary?.id).map(action => <ActionButton key={action.id} action={action} />)}
 			{/* L1b: past a vote claim, Send anyway is in ⋯ and asks again with the same sentence. */}
-			{item.voteGap && actions.filter(action => action.kind === 'send-anyway' && action.id !== primary?.id).map(action => <ActionButton key={action.id} action={action} disabled={newer} disabledReason="stale" />)}
+			{/* V1 (PE 01:56): never while the editor differs from the draft; it would send the words he just removed. */}
+			{item.voteGap && !ui.editing && actions.filter(action => action.kind === 'send-anyway' && action.id !== primary?.id).map(action => <ActionButton key={action.id} action={action} disabled={newer} disabledReason="stale" />)}
 			{item.ownReply && reopen && <div className="card-reopen"><Field code={code} rev={item.rev} field="answer" label="Reopen: what should the new reply say?" value={ui.answer ?? ''} edit={edit} rows={2} />
 				<ActionButton action={reopen} input={{ text: ui.answer ?? '' }} disabled={!ui.answer?.trim()} disabledReason="Write what the reply should say first." /></div>}
 			{continueAction && <ActionButton action={continueAction} />}
@@ -524,7 +541,7 @@ export function AsksList({ codes, current, entities, onOpen }: { codes: string[]
 	return <section className="card-block card-asks" aria-label={heading}><h3>{heading}</h3>
 		<ul>{items.map(item => {
 			const person = entities.people[item.personId], 			words = messageText(item.ask ?? item.status).replace(/\s+/g, ' ').slice(0, 60), at = sentAt(item)
-			const chat = entities.chats[item.chatId], where = chat?.group ? `in ${chat.name}` : '1:1'
+			const chat = entities.chats[item.chatId], where = chat?.group ? chat.place?.row ?? `in ${chat.name}` : '1:1'
 			return <li key={item.code}><button type="button" className="ask-line" aria-current={item.code === current || undefined} title={`${person.name}${spread ? ` (${where})` : ''}: ${words} (${item.code})`} onClick={() => onOpen ? onOpen(item.code) : navigate(classic ? `focus/${item.code}` : `now/${item.code}`)}>
 				<span className="card-avatar small" style={{ '--hue': person.hue } as CSSProperties} aria-hidden="true">{person.initials}</span><strong>{firstName(person.name)}</strong>{spread && <span className="ask-where">{where}</span>}<span className="ask-words">{words}</span><SentTime at={at.at} added={at.added} /></button></li>
 		})}</ul></section>

@@ -63,10 +63,12 @@ function matchesScope(r: Rule, wf: Workflow, conf: Confidence): boolean {
 	return r.then === 'review' || !r.when.minConfidence || RANK[conf] >= RANK[r.when.minConfidence]
 }
 const groupName = (name: string) => name.split('\\').at(-1)!.normalize('NFKC').trim().toLowerCase()
-const inLane = (r: Rule, wf: Workflow) => (wf.intent === 'pr_review' ? r.then !== 'send' && r.then !== 'ack' : r.then !== 'review') &&
+const inLane = (r: Rule, wf: Workflow, mode: 'reply' | 'result' = 'reply') => (mode === 'result' ?
+	r.then !== 'review' && (r.then !== 'send' || !!r.when.results) :
+	wf.intent === 'pr_review' ? r.then !== 'send' && r.then !== 'ack' : r.then !== 'review') &&
 	(r.then !== 'review' || r.review?.comments === 'post' && r.review.reply === 'send')
-export function ruleFor(wf: Workflow, rules: Rule[], conf = confidence(wf.draft?.sources ?? [])): Rule | undefined {
-	return rules.filter(r => !r.off && grantConfirmed(r) && !r.style && matchesScope(r, wf, conf) && inLane(r, wf))
+export function ruleFor(wf: Workflow, rules: Rule[], conf = confidence(wf.draft?.sources ?? []), mode: 'reply' | 'result' = 'reply'): Rule | undefined {
+	return rules.filter(r => !r.off && grantConfirmed(r) && !r.style && matchesScope(r, wf, conf) && inLane(r, wf, mode))
 		.sort(compareGrants)[0]
 }
 export const reviewRuleFor = (wf: Workflow, rules: Rule[]) => {
@@ -76,17 +78,18 @@ export const reviewRuleFor = (wf: Workflow, rules: Rule[]) => {
 
 // The strictest matching rule decides; every check that blocks an automatic send names its reason (R-POL-01). A drafting style
 // learned from edits never decides: it would shadow a send, ack or ignore rule for the same people (edit habits guard).
-export function decide(wf: Workflow, rules: Rule[], ctx: PolicyContext, mode: 'reply' | 'review-comments' = 'reply'): Decision {
+export function decide(wf: Workflow, rules: Rule[], ctx: PolicyContext, mode: 'reply' | 'review-comments' | 'result' = 'reply'): Decision {
 	const conf = confidence(wf.draft?.sources ?? [])
 	const current = 'guests' in ctx ? { ...wf, chat: { ...wf.chat, guests: ctx.guests } } : wf
-	const rule = ruleFor(current, rules, conf)
+	const lane = mode === 'result' ? 'result' : 'reply'
+	const rule = ruleFor(current, rules, conf, lane)
 	const review = rule?.then === 'review' ? rule : undefined
 	const reviewReply = !!review && !!wf.reviewBasis && wf.reviewBasis.pr === wf.reviewRun?.pr && sameHead(wf.reviewBasis.head, wf.reviewRun.head) &&
 		wf.reviewRun.rule === review.id && (mode === 'review-comments' ? wf.reviewRun.phase === 'posting' :
 		wf.reviewRun.phase === 'held' && wf.reviewRun.turn === wf.revAt && wf.reviewRun.sendText === wf.draft?.text && wf.reviewDone?.byRule === review.id && (wf.reviewDone.posted.length > 0 || wf.reviewDone.clean === true))
 	const d = (action: Decision['action'], reason: string): Decision => ({ action, ruleId: rule?.id, reason, confidence: conf })
 	if (!rule) {
-		const pending = rules.filter(r => !r.style && !grantConfirmed(r) && matchesScope(r, current, conf) && inLane(r, current)).sort(compareGrants)[0]
+		const pending = rules.filter(r => !r.style && !grantConfirmed(r) && matchesScope(r, current, conf) && inLane(r, current, lane)).sort(compareGrants)[0]
 		if (pending) return { ...d('draft', `Waiting for your OK: "${pending.text}".`), ruleId: pending.id }
 	}
 	if (ctx.autoSend && rule && (rule.then === 'send' || rule.then === 'ack' || rule.then === 'review')) {
@@ -102,13 +105,13 @@ export function decide(wf: Workflow, rules: Rule[], ctx: PolicyContext, mode: 'r
 	if (wf.correction) return d('draft', 'A correction always waits for you')
 	if (wf.needsMe) return d('draft', 'You said this one needs you')
 	if (wf.startedBy === 'room') return d('draft', 'It was sent to the whole chat; a reply there waits for you')
-	if (wf.work || wf.partOf) return d('draft', 'Replies on open work always wait for you')
+	if (mode !== 'result' && (wf.work || wf.partOf)) return d('draft', 'Replies on open work always wait for you')
 	if (wf.shareHold) return d('draft', shareHoldText(wf.shareHold)!)
 	if ((!reviewReply && pendingEffects(wf.effects).length) || wf.todos?.length || wf.follow) return d('draft', 'It promises changes, a follow-up, or something you must do')
-	if (wf.intent === 'pr_review' && !review && !rule) return d('draft', 'PR reviews wait for you; no review rule covers this.')
+	if (mode !== 'result' && wf.intent === 'pr_review' && !review && !rule) return d('draft', 'PR reviews wait for you; no review rule covers this.')
 	if (review && wf.reviewRun?.phase === 'replied') return d('draft', 'The review reply was sent; approving stays yours.')
 	if (voteMention(wf.draft?.text ?? '')) return d('draft', 'It speaks of an approval or a vote, so it waits for you')
-	if (!rule) return d('draft', 'No rule covers this sender and ask')
+	if (!rule) return d('draft', mode === 'result' ? 'No rule sends results in this chat' : 'No rule covers this sender and ask')
 	if (ctx.held?.includes(rule.id)) return d('draft', `Rule ${rule.id} is on hold: you said one of its replies was not needed`)
 	if (rule.then === 'ignore') return d('ignore', `Rule ${rule.id}: ignore`)
 	if (rule.then === 'draft') return d('draft', `Rule ${rule.id}: always draft`)

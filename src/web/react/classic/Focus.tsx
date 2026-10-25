@@ -11,7 +11,7 @@ import type { Entities, Snapshot } from '../domain/contracts.ts'
 import { ViewportList } from '../components/ViewportList.tsx'
 import { messageText, sentAt } from '../features/ItemCard.tsx'
 import { SentTime } from '../features/SentTime.tsx'
-import { codeHover } from '../domain/hover.ts'
+import { ItemCode } from '../features/ItemCode.tsx'
 import { NAME } from '../brand.ts'
 
 // A row the owner acted on stays in the queue; how it looks comes from the item now (#48, PE 19:40): ticked and struck only when it is
@@ -19,9 +19,9 @@ import { NAME } from '../brand.ts'
 type Look = 'live' | 'working' | 'done' | 'moved'
 const QueueItem = memo(function QueueItem({ item, person, chat, look, current }: { item: Entities['items'][string]; person: Entities['people'][string]; chat: Entities['chats'][string]; look: Look; current: boolean }) {
 	const sent = sentAt(item), active = look === 'live'
-	return <div className="classic-queue-row"><a className={look === 'done' ? 'classic-queue-handled' : look === 'live' ? undefined : `classic-queue-${look}`} href={`#classic/focus/${item.code}`} title={codeHover(item.code)} aria-current={current ? 'step' : undefined} data-classic-code={item.code} data-classic-live={active} data-look={look}>
-		{look === 'done' ? <span className="classic-queue-check"><Icon name="check" /></span> : look === 'working' ? <span className="classic-queue-clock"><Icon name="clock" /></span> : <Avatar person={person} />}<span className="classic-queue-text"><span className="classic-queue-name"><span>{person.name.split(/[\s,(]+/)[0]}</span><SentTime at={sent.at} added={sent.added} waiting={active} code={item.code} /></span><span className="classic-queue-preview">				{look === 'working' && item.working?.kind ? <><span className="muted">{item.working.kind === 'redraft' ? 'Redrafting' : 'Trying again'} · </span>{messageText(item.ask || item.question || '').slice(0, 200)}</> : look === 'working' ? `${NAME} is working on it · back to you when there's something to send` : messageText(item.question || item.ask || '').slice(0, 200)}</span><span className="classic-queue-chat">{chat.group ? `in ${chat.name}` : '1:1 chat'}</span></span>
-	</a>{item.teams && <Button asChild variant="ghost" size="icon-xs" aria-label="Open in Teams"><a href={item.teams} target="_blank" rel="noopener noreferrer"><Icon name="ext" /></a></Button>}</div>
+	return <div className="classic-queue-row"><a className={look === 'done' ? 'classic-queue-handled' : look === 'live' ? undefined : `classic-queue-${look}`} href={`#classic/focus/${item.code}`} aria-current={current ? 'step' : undefined} data-classic-code={item.code} data-classic-live={active} data-look={look}>
+		{look === 'done' ? <span className="classic-queue-check"><Icon name="check" /></span> : look === 'working' ? <span className="classic-queue-clock"><Icon name="clock" /></span> : <Avatar person={person} />}<span className="classic-queue-text"><span className="classic-queue-name"><span>{person.first ?? person.name}</span><SentTime at={sent.at} added={sent.added} waiting={active} /></span><span className="classic-queue-preview">				{look === 'working' && item.working?.kind ? <><span className="muted">{item.working.kind === 'redraft' ? 'Redrafting' : 'Trying again'} · </span>{messageText(item.ask || item.question || '').slice(0, 200)}</> : look === 'working' ? `${NAME} is working on it · back to you when there's something to send` : messageText(item.question || item.ask || '').slice(0, 200)}</span><span className="classic-queue-chat">{chat.group ? chat.place?.row ?? `in ${chat.name}` : '1:1 chat'}</span></span>
+	</a>{item.teams && <Button asChild variant="ghost" size="icon-xs" aria-label="Open in Teams"><a href={item.teams} target="_blank" rel="noopener noreferrer"><Icon name="ext" /></a></Button>}<ItemCode code={item.code} /></div>
 })
 
 export default function Focus() {

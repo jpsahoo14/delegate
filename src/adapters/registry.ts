@@ -16,7 +16,7 @@ const beside = (s: Config['source'], server: string) => (s.command.at(-1) === 't
 const docsCommand = (s: Config['source']) => s.docs ?? beside(s, 'sharepoint')
 
 const ADAPTERS: Record<string, Adapter> = {
-	teams: { source: (c, owner, _root, ownerId, log) => new TeamsSource(c, undefined, owner, ownerId, log), history: cfg => new TeamsHistory(cfg), docs: cfg => { const c = docsCommand(cfg.source); return c && new SharePointDocs(c) }, images: cfg => { const im = site().images, c = im && beside(cfg.source, im.server); return c && new HostedImages(c, im!.tool) } },
+	teams: { source: (c, owner, root, ownerId, log) => new TeamsSource(c, undefined, owner, ownerId, log, root), history: cfg => new TeamsHistory(cfg), docs: cfg => { const c = docsCommand(cfg.source); return c && new SharePointDocs(c) }, images: cfg => { const im = site().images, c = im && beside(cfg.source, im.server); return c && new HostedImages(c, im!.tool) } },
 	demo: { source: (_c, _o, root) => new DemoSource(root) },
 }
 

@@ -10,7 +10,7 @@ import { Button, Hint } from '../components/ui/button.tsx'
 import { chipHover } from '../domain/hover.ts'
 import { Icon } from '../components/ui/icon.tsx'
 import { ActionButton } from '../features/ActionButton.tsx'
-import { PageResult, PendingClicks } from '../features/PageResult.tsx'
+import { NoticeAnnouncer, NoticeSlot, pageLines, pageNotices, useParkedUpdate, usePendingLines, useResultLine } from '../features/PageNotices.tsx'
 import { staticSnapshot } from '../services/api.ts'
 import { NAME } from '../brand.ts'
 import { nextCheck, when } from '../domain/time.ts'
@@ -44,7 +44,6 @@ export default function Classic() {
 	const seenError = useClassicSeen(), update = useVersionUpdate(), offline = useClassicOffline()
 	const main = useRef<HTMLElement>(null), dialog = useRef<HTMLDialogElement>(null)
 	const previousScreen = useRef<string | undefined>(undefined)
-	const [healthOpen, setHealthOpen] = useState(false)
 	useHashNavigation()
 	useClassicKeyboard(offline)
 	const screen = route.split('/')[0] === 'automations' ? 'ongoing' : route.split('/')[0], readOnly = screen === 'snapshot'
@@ -77,7 +76,15 @@ export default function Classic() {
 		addEventListener('pointerdown', outside)
 		return () => removeEventListener('pointerdown', outside)
 	}, [menu, setMenu])
-	const health = Object.values(entities.health), first = health[0]
+	const health = Object.values(entities.health), parked = useParkedUpdate(update.available)
+	const pendingLines = usePendingLines('classic'), resultLine = useResultLine(result, 'classic', reopenedQuestion ? 'Nothing is sent yet. You will see the reply first.' : undefined)
+	// PE decision 46 / Designer: Classic's health banner, offline and refresh alerts and "Updated to…" are the header slot's state now.
+	const notices = pageNotices({ online: !offline, health, fetchedAt: snapshot?.fetchedAt,
+		refresh: query.error ? { message: query.error.message, retry: () => void query.refetch() } : undefined,
+		update: update.available ? { version: update.available, reload: update.reload, ...parked } : undefined,
+		refreshWords: message => `Offline or unable to refresh: ${message}. Your last view is kept.`,
+		// PE 07:20: nothing renders between the header and the route content; these lines are slot notices.
+		errors: pageLines({ storage: pendingError, interface: error, seen: seenError, action: actionError }), pending: pendingLines, result: resultLine })
 	const disconnected = offline || !!query.error
 	const reading = snapshot?.status.reading
 	const status = disconnected ? 'Offline' : !snapshot ? 'Connecting' : snapshot.status.state === 'paused' ? 'Paused' : snapshot.status.state === 'stopped' ? 'Stopped' :
@@ -87,27 +94,20 @@ export default function Classic() {
 	const themeLabel = THEME_LABEL[themeChoice]
 	return <div className="classic-experience">
 		<a className="skip-link" href="#main" onClick={event => { event.preventDefault(); main.current?.focus() }}>Skip to content</a>
-		<header className="preview-header" data-menu-open={menu || undefined}><div className="header-inner">
+		<header className="preview-header" data-menu-open={menu || undefined}><NoticeAnnouncer notices={notices} /><div className="header-inner">
 			<a className="brand" href="#classic/home" aria-label={`${NAME} home`}><span className="brand-mark"><Icon name="logo" /></span><span className="brand-name">{NAME}</span></a>
 			<div className="header-controls" id="classic-view-menu">
 				<nav aria-label="Views">{tabs.map(([id, label, count]) => <a key={id} href={`#classic/${id}`} aria-current={screen === id ? 'page' : undefined} onClick={() => setMenu(false)}>{label}{count > 0 && <Hint text={chipHover(id === 'focus' ? 'count-needs' : id === 'ongoing' ? 'count-ongoing' : id === 'knowledge' ? 'count-knowledge' : 'count-done', { n: count })}><span className={`count${id === 'focus' ? '' : ' count-muted'}`} aria-label={`${count}${id === 'done' || id === 'ongoing' ? ' new' : ''}`}>{count}</span></Hint>}</a>)}</nav>
 				{!readOnly && <div className="version-controls"><ExperienceToggle disabled={disconnected} /></div>}
 			</div>
 			<span className="classic-view-title">{tabs.find(([id]) => id === screen)?.[1] ?? 'Home'}</span>
-			<span className={`classic-status status-pill${bad ? ' status-warn' : ''}`} role="img" tabIndex={0} aria-label={fullStatus} title={fullStatus}><i aria-hidden="true" /><span>{status}</span></span>
+			<NoticeSlot className="classic-status" base={{ text: status, compact: status, full: fullStatus, bad }} notices={notices} />
 			{!readOnly && <div className="classic-desktop-experience"><ExperienceToggle disabled={disconnected} /></div>}
 			<Button variant="ghost" className="theme-button" aria-label={`Theme: ${themeLabel}`} title={`Theme: ${themeLabel}`} onClick={() => setThemeChoice(themeChoice === 'auto' ? 'light' : themeChoice === 'light' ? 'dark' : 'auto')}><Icon name={themeChoice === 'auto' ? 'auto' : themeChoice === 'light' ? 'sun' : 'moon'} /></Button>
 			<Button variant="ghost" className="mobile-view-button" aria-label="Views" aria-expanded={menu} aria-controls="classic-view-menu" onClick={() => setMenu(!menu)}><Icon name="menu" /></Button>
 		</div></header>
 		<main id="main" tabIndex={-1} ref={main}>
-			{offline && <p role="alert" className="warning">Offline. Your last view and unsent edits are kept. Reconnect to act.</p>}
 			<fieldset disabled={offline} className="classic-connection">
-			{[error, pendingError, seenError, actionError].filter(Boolean).map((message, index) => <p role="alert" className="error" key={index}>{message}</p>)}
-			{query.error && <div role="alert" className="warning"><p>Offline or unable to refresh: {query.error.message}. Your last view is kept.</p><Button variant="outline" onClick={() => void query.refetch()}>Try again</Button></div>}
-			{first && screen !== 'numbers' && <section className="classic-health" aria-label="Source health"><Icon name="warn" className="classic-health-icon" /><p><strong>{first.text}</strong>{first.since && <span> Since {when(first.since)}.</span>}{health.length > 1 && <> <button className="classic-health-more" aria-expanded={healthOpen} aria-controls="classic-health-extra" onClick={() => setHealthOpen(!healthOpen)}>And {health.length - 1} more problem{health.length === 2 ? '' : 's'}.</button></>}</p>{!readOnly && first.actionIds.map(id => <ActionButton key={id} action={entities.actions[id]} />)}{health.length > 1 && <div id="classic-health-extra" className="classic-health-extra" hidden={!healthOpen}>{health.slice(1).map(row => <div key={row.id}><p><strong>{row.text}</strong>{row.since && <span> Since {when(row.since)}.</span>}</p>{!readOnly && row.actionIds.map(id => <ActionButton key={id} action={entities.actions[id]} />)}</div>)}</div>}</section>}
-			<PendingClicks experience="classic" />
-			<PageResult result={result} experience="classic" override={reopenedQuestion ? 'Nothing is sent yet. You will see the reply first.' : undefined} />
-			{update.available && <p role="status" className="warning">Updated to {update.available}. Your unsent edits stay here until you choose to reload. <Button variant="outline" onClick={update.reload}>Reload when ready</Button></p>}
 			{!snapshot ? <p role="status">Loading your items...</p> : <Suspense fallback={<p role="status">Loading this view...</p>}>{screen === 'home' ? <Home /> : screen === 'focus' ? <Focus /> : screen === 'ongoing' ? <Ongoing /> : screen === 'done' ? <Done /> : screen === 'numbers' ? <Numbers /> : screen === 'settings' ? <Settings /> : screen === 'knowledge' ? <Knowledge /> : readOnly ? <Snapshot /> : <><h1>View not found</h1><Button onClick={() => navigate('home')}>Home</Button></>}</Suspense>}
 			</fieldset>
 		</main>

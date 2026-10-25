@@ -7,7 +7,7 @@
 .card-avatar{width:32px;height:32px;border-radius:50%;display:inline-grid;place-items:center;font-size:12px;font-weight:700;color:#fff;background:hsl(var(--hue) 55% 45%);flex:none}
 .card-avatar.small{width:24px;height:24px;font-size:10px}
 .item-card .card-who{font-size:15px;font-weight:600;margin:0;letter-spacing:0;text-transform:none;color:var(--text)}
-.card-where{color:var(--text-2)}
+.card-where{color:var(--text-2)}.card-sep{color:var(--text-3)}
 .card-head-end{margin-left:auto}
 .card-teams{display:inline-flex;gap:4px;align-items:center;border:1px solid var(--border-strong);border-radius:8px;padding:4px 10px;color:var(--text);text-decoration:none;white-space:nowrap}
 .card-teams:hover{background:var(--surface-2)}
@@ -85,3 +85,10 @@ a.todo-source:hover{text-decoration:underline}
 
 /* #48b: his answer as his own bubble while Delegate redrafts from it; the draft it replaces folded under it. */
 .card-answered .my-bubble{margin-left:auto;max-width:80%;padding:8px 12px;border-radius:12px;background:var(--surface-2,rgba(127,127,127,.12))}.card-answered .my-bubble p{margin:2px 0}.card-answered .previous-draft{margin:6px 0 0 auto;max-width:80%}
+
+/* A37 (b) / PM A R37: the quoted vote-claim words, highlighted in the draft and in the editor (a mirror over the textarea). */
+.vote-mark,.field-mark mark{background:color-mix(in srgb,var(--warn) 28%,transparent);color:inherit;border-radius:2px}
+.field-mark{position:absolute;z-index:1;margin:0;pointer-events:none;overflow:hidden;white-space:pre-wrap;overflow-wrap:break-word;color:transparent;background:transparent;border-style:solid;border-color:transparent}
+.field-mark mark{color:transparent}.card-vote-cleared{margin:4px 0 0}
+/* PM A R38 (1): suggested answers from the engine's question hint. */
+.answer-chips{display:flex;flex-wrap:wrap;gap:6px;margin:4px 0 8px}.answer-chip{cursor:pointer;border:1px solid var(--border-strong);background:var(--surface)}.answer-chip[aria-pressed=true]{border-color:var(--accent);color:var(--accent)}

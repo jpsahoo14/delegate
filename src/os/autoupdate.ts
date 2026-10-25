@@ -1,4 +1,6 @@
-import { execFile, execFileSync, type ChildProcess } from 'node:child_process'
+import { execFile, execFileSync as executeProcess, type ChildProcess } from 'node:child_process'
+import { timedCall } from '../core/io-time.ts'
+const execFileSync = timedCall(() => executeProcess)
 import { assertTestSafe } from '../store/fs.ts'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'

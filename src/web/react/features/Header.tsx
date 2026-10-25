@@ -6,8 +6,9 @@ import { when, nextCheck } from '../domain/time.ts'
 import type { Snapshot } from '../domain/contracts.ts'
 import { NAME } from '../brand.ts'
 import { ExperienceToggle } from '../classic/navigation.tsx'
+import { NoticeAnnouncer, NoticeSlot, type PageNotice } from './PageNotices.tsx'
 
-export function Header({ current, move, snapshot, offline }: { current: string; move: number; snapshot?: Snapshot; offline: boolean }) {
+export function Header({ current, move, snapshot, offline, notices = [] }: { current: string; move: number; snapshot?: Snapshot; offline: boolean; notices?: PageNotice[] }) {
 	const { themeChoice, setThemeChoice } = useInterface()
 	const { menu, setMenu } = useNavigation()
 	const reading = snapshot?.status.reading
@@ -25,13 +26,10 @@ export function Header({ current, move, snapshot, offline }: { current: string; 
 	const themeLabel = THEME_LABEL[themeChoice]
 	const themeIcon = themeChoice === 'auto' ? 'auto' : themeChoice === 'light' ? 'sun' : 'moon'
 	const changeTheme = () => setThemeChoice(themeChoice === 'auto' ? 'light' : themeChoice === 'light' ? 'dark' : 'auto')
-	const pill = <Tooltip.Provider><Tooltip.Root><Tooltip.Trigger asChild>
-		<span className={`reading-status status-pill${bad ? ' status-warn' : ''}`} tabIndex={0} role="img" aria-label={fullStatus} title={fullStatus}>
-			<i aria-hidden="true" /><span className="status-full">{status}</span><span className="status-compact">{shortStatus}</span>
-		</span>
-	</Tooltip.Trigger><Tooltip.Portal><Tooltip.Content className="status-tooltip" sideOffset={8} collisionPadding={12}>{fullStatus}</Tooltip.Content></Tooltip.Portal></Tooltip.Root></Tooltip.Provider>
+	// PE decision 46: every page-level notice is this slot's state (reserved space); nothing is inserted above the cards.
+	const pill = (where: string) => <NoticeSlot className={`reading-status ${where}`} base={{ text: status, compact: shortStatus, full: fullStatus, bad }} notices={notices} />
 	const views = [['now', 'Now'], ['done', 'Done'], ['numbers', 'Numbers'], ['settings', 'Settings']]
-	return <header className="preview-header" data-menu-open={menu || undefined}><div className="header-inner">
+	return <header className="preview-header" data-menu-open={menu || undefined}><NoticeAnnouncer notices={notices} /><div className="header-inner">
 		<a className="brand" href="#now" aria-label={`${NAME}, Now`}><span className="brand-mark"><Icon name="logo" /></span><span className="brand-name">{NAME}</span></a>
 		<div className="header-controls" id="react-view-menu">
 			<nav aria-label="Views">{views.map(([id, label]) => <a href={`#${id}`} aria-current={current === id ? 'page' : undefined} key={id} onClick={() => setMenu(false)}>{label}
@@ -40,13 +38,12 @@ export function Header({ current, move, snapshot, offline }: { current: string; 
 				{/* R12b (C1): lines that need him, from SEND's needsHim. */}
 				{id === 'settings' && !!snapshot?.ways?.needsHim && <span className="count" aria-label={`${snapshot.ways.needsHim} to check`}>{snapshot.ways.needsHim}</span>}
 			</a>)}</nav>
-			<div className="desktop-status">{pill}</div>
+			<div className="desktop-status">{pill('notice-desktop')}</div>
 			<div className="version-controls"><ExperienceToggle />
 			</div>
 			<Button variant="ghost" className="theme-button" onClick={changeTheme} aria-label={`Theme: ${themeLabel}`} title={`Theme: ${themeLabel}`}><Icon name={themeIcon} /><span>Theme: {themeLabel}</span></Button>
 		</div>
-		<span className="narrow-title">{views.find(([id]) => id === current)?.[1] ?? 'To learn'}</span><div className="narrow-status">{pill}</div>
+		<span className="narrow-title">{views.find(([id]) => id === current)?.[1] ?? 'To learn'}</span><div className="narrow-status">{pill('notice-narrow')}</div>
 		<Button variant="ghost" className="mobile-view-button" aria-label={snapshot?.doneNew ? `Menu, ${snapshot.doneNew} new in Done` : 'Menu'} aria-expanded={menu} aria-controls="react-view-menu" onClick={() => setMenu(!menu)}><Icon name="more" />{snapshot?.doneNew ? <span className="count count-muted">{snapshot.doneNew}</span> : null}</Button>
 	</div></header>
 }
-import { Tooltip } from 'radix-ui'

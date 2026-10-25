@@ -13,6 +13,7 @@ import { handledThisWeek } from '../store/numbers.ts'
 import { openTodos } from '../runner/work.ts'
 import { htmlToText } from '../core/intake.ts'
 import { activeAgentHold, type AgentSetupFailure } from '../core/agent-failure.ts'
+import { placeOf } from './model/place.ts'
 
 // The new experience's placement (dev-spec/new-experience.md §0, phase N0): one thread per home code, in one section, with its Next owner.
 export type Owner = { kind: 'you' } | { kind: 'delegate' } | { kind: 'others'; text: string } | { kind: 'nobody' }
@@ -31,6 +32,8 @@ type Subject = { kind: 'item'; wf: Workflow } | { kind: 'waiting'; w: Waiting } 
 export type Snap = {
 	workflows: Workflow[]; jobs: Map<string, Job>; waiting: Waiting[]; automations: Automation[]
 	runner: Facts['runner']; queue: Map<string, NonNullable<Facts['queue']>>; slots: Set<string>; catchupSeen: string; me: string[]; tz?: string; now: number; agentWait?: AgentSetupFailure
+	// A120 (PE 02:52): an untitled group chat's row words ("in a group with Ana +3"); undefined for titled chats and 1:1s.
+	place?: (chat: { id: string; name: string; group?: boolean }, asker?: { id?: string; name?: string }) => string | undefined
 }
 
 // One thread's placement reads only its items and their jobs (#27 step 2): the page's action path places one card, not the store.
@@ -64,6 +67,7 @@ export function snapshot(store: Store, now = Date.now(), only?: Workflow[]): Sna
 		agentWait: activeAgentHold(store.agentHold(), cfg.agent, now),
 		catchupSeen: store.seen().catchup ?? new Date(now - 86_400_000).toISOString(),
 		me: [cfg.owner.name, first, ...(cfg.aliases ?? [])].filter(Boolean).map(s => s.toLowerCase()), tz: cfg.tz, now,
+		place: (chat, asker) => placeOf(store, chat, asker)?.row,
 	}
 }
 
@@ -127,8 +131,8 @@ export function place(s: Snap): Placed[] {
 	const byId = new Map(s.workflows.map(w => [w.id, w])), byCode = new Map(s.workflows.map(w => [w.code, w]))
 	const homeOf = (w: Workflow) => (w.partOf && byId.get(w.partOf)) || w
 	const subjects: { home: string; sub: Subject; at: string; who?: string; chat?: string }[] = [
-		...s.workflows.filter(w => w.code).map(wf => ({ home: homeOf(wf).code, sub: { kind: 'item' as const, wf }, at: wf.changedAt ?? wf.updatedAt, who: wf.asker?.name, chat: wf.chat.name })),
-		...s.waiting.filter(w => w.state === 'waiting').map(w => ({ home: (w.item && byCode.get(w.item) && homeOf(byCode.get(w.item)!).code) || w.code, sub: { kind: 'waiting' as const, w }, at: w.at, who: w.to.join(', '), chat: w.chat.name })),
+		...s.workflows.filter(w => w.code).map(wf => ({ home: homeOf(wf).code, sub: { kind: 'item' as const, wf }, at: wf.changedAt ?? wf.updatedAt, who: wf.asker?.name, chat: s.place?.(wf.chat, wf.asker) ?? wf.chat.name })),
+		...s.waiting.filter(w => w.state === 'waiting').map(w => ({ home: (w.item && byCode.get(w.item) && homeOf(byCode.get(w.item)!).code) || w.code, sub: { kind: 'waiting' as const, w }, at: w.at, who: w.to.join(', '), chat: s.place?.(w.chat, { name: w.to[0] }) ?? w.chat.name })),
 		...s.automations.filter(a => a.state !== 'ended').map(a => ({ home: a.code, sub: { kind: 'reminder' as const, a }, at: a.updatedAt, who: a.to.name })),
 	]
 	const threads = new Map<string, Placed>()
@@ -342,7 +346,7 @@ type Body = Omit<NextRow, 'code' | 'act' | 'section' | 'rule'>
 function itemRow(s: Snap, p: Placed, w: Workflow): Body {
 	const j = w.job ? s.jobs.get(w.job) : undefined, name = first(w.asker?.name), c = w.code
 	// The chat's name is dropped when it is the person (a 1:1).
-	const where = w.chat.name && w.chat.name !== w.asker?.name && w.chat.name !== name ? w.chat.name : undefined
+	const where = s.place?.(w.chat, w.asker) ?? (w.chat.name && w.chat.name !== w.asker?.name && w.chat.name !== name ? w.chat.name : undefined)
 	// "+1 chat": parts of this work in other chats (U37). The owner's own folded ask is not one.
 	const chats = new Set(p.subjects.map(c => s.workflows.find(x => x.code === c)).filter(x => x && x.partOf === w.id && x.chat.id !== w.chat.id).map(x => x!.chat.id)).size
 	const ask: Quote | undefined = w.lastAsk ? { by: w.asker?.name ?? 'They', verb: 'asked', text: clip(w.lastAsk, 200) } : undefined
@@ -427,7 +431,7 @@ const REFUSED = /\.\s*Not made for you:\s*/, CLONE = /^Clone \S+ on \S+ \(git cl
 export const todoHeadline = (text: string, remaining = 0) => clip(`To do: ${text.split(REFUSED)[0].replace(/[.\s]+$/, '')}${remaining ? ` (+${remaining} more)` : ''}`, 160)
 function todoRow(s: Snap, base: Omit<Body, 'kind' | 'headline'>, w: Workflow): Body {
 	const open = openTodos(w), t = open[0], [, why] = t.text.split(REFUSED)
-	const where = w.chat.name && w.chat.name !== w.asker?.name ? w.chat.name : undefined
+	const where = s.place?.(w.chat, w.asker) ?? (w.chat.name && w.chat.name !== w.asker?.name ? w.chat.name : undefined)
 	const to = !why && !CLONE.test(t.text) && w.asker?.name && !isMe(s, w.asker.name) && !isMe(s, w.asker.name.split(/\s+/)[0]) ? first(w.asker.name) : undefined
 	const promise: Promise_ = { ...(to ? { to } : {}), at: t.at, ...(why ? { why: clip(why, 140) } : CLONE.test(t.text) ? {} : { why: 'no tool can do it' }) }
 	// Its rev is the newest to-do it shows, so Mark done marks no to-do kept after the page drew it (re-review N2 P2-C).
@@ -461,9 +465,9 @@ function workOf(s: Snap, p: Placed, w: Workflow, home: Workflow): NextWork | und
 	}
 }
 
-function waitRow(w: Waiting): Body {
+function waitRow(s: Snap, w: Waiting): Body {
 	const to = firsts(w.to)
-	return { kind: 'waiting-person', headline: clip(`You asked ${to}: "${w.text}"`, 160), who: whoOf(w.to[0]), facts: { where: w.chat.name, at: w.at, verb: 'asked' }, chips: [], primary: { label: 'Draft a nudge', command: `ok ${w.code}` }, more: [{ label: 'Close', command: `skip ${w.code}` }], teams: w.msgId ? messageLink(w.chat.id, w.msgId) : undefined }
+	return { kind: 'waiting-person', headline: clip(`You asked ${to}: "${w.text}"`, 160), who: whoOf(w.to[0]), facts: { where: s.place?.(w.chat, { name: w.to[0] }) ?? w.chat.name, at: w.at, verb: 'asked' }, chips: [], primary: { label: 'Draft a nudge', command: `ok ${w.code}` }, more: [{ label: 'Close', command: `skip ${w.code}` }], teams: w.msgId ? messageLink(w.chat.id, w.msgId) : undefined }
 }
 
 function reminderRow(p: Placed, a: Automation): Body {
@@ -488,7 +492,7 @@ export function rowsOf(s: Snap, placed: Placed[]): NextRow[] {
 	const items = new Map(s.workflows.map(w => [w.code, w])), waits = new Map(s.waiting.map(w => [w.code, w])), autos = new Map(s.automations.map(a => [a.code, a]))
 	return placed.filter(p => p.section !== 'done').map(p => {
 		const w = items.get(p.act), wt = waits.get(p.act), a = autos.get(p.act)
-		const body = w ? itemRow(s, p, w) : wt ? waitRow(wt) : reminderRow(p, a!)
+		const body = w ? itemRow(s, p, w) : wt ? waitRow(s, wt) : reminderRow(p, a!)
 		const home = w && ((w.partOf && s.workflows.find(x => x.id === w.partOf)) || w), work = w && workOf(s, p, w, home!)
 		// Every item's open to-dos in the thread, the home's and its parts', each with its own code (review N2 P1-1).
 		const todos = p.subjects.map(c => items.get(c)).filter((x): x is Workflow => !!x).flatMap(x => openTodos(x).map(t => ({ id: t.id, text: htmlToText(t.text), at: t.at, code: x.code })))

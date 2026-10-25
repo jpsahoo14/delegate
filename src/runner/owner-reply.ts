@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { recordReplyActivity } from './poll.ts'
 import type { Config, Msg, Workflow } from '../core/types.ts'
 import { htmlToText, replyTarget, type RawMsg } from '../core/intake.ts'
 import { mdToHtml } from '../core/format.ts'
@@ -36,6 +37,7 @@ export function rememberOwnerReply(store: Store, item: Workflow, message: Msg, a
 	if (index < 0) thread.push(checked)
 	else thread[index] = checked
 	store.saveThread(item.id, thread)
+	if (answered && message.byOwner) recordReplyActivity(store, message.at)
 }
 
 export async function ownerReplies(store: Store, cfg: Config, raw: RawMsg, text: string, items: Workflow[], options: { ai?: boolean } = {}): Promise<Map<string, boolean>> {

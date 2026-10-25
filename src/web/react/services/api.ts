@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { receiptSchema, snapshotSchema, type Intent, type Receipt, type Snapshot } from '../domain/contracts.ts'
+import { receiptSchema, snapshotSchema, voteCheckSchema, type Intent, type Receipt, type Snapshot } from '../domain/contracts.ts'
 import { readPageDelta } from './validation.ts'
 import { numbersSchema, saveResultSchema, settingsSchema } from '../domain/screens.ts'
 import { NAME } from '../brand.ts'
@@ -71,6 +71,8 @@ export function takeEarlySnapshot(find: string): Promise<Snapshot> | undefined {
 	return taken
 }
 export const submit = (intent: Intent) => request('/api/v1/actions', receiptSchema, { method: 'POST', body: JSON.stringify(intent) })
+// A37 (b): the live vote-claim re-check on the reply he is editing (read-only; the same rule as the card and Send).
+export const checkVoteClaim = (code: string, text: string, signal?: AbortSignal) => request('/api/v1/vote-check', voteCheckSchema, { method: 'POST', body: JSON.stringify({ code, text }), signal })
 export const receipt = (submissionId: string) => request(`/api/v1/result?submission=${encodeURIComponent(submissionId)}`, receiptSchema)
 // What the server knows of a click (#42): its saved result, still being handled (202), or nothing saved under this id (404).
 export async function receiptState(submissionId: string): Promise<{ receipt: Receipt } | { working: true } | { missing: true }> {

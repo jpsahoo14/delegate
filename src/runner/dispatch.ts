@@ -664,7 +664,7 @@ export function applyReport(wf: Workflow, r: Report, home = wf, allowClose = tru
 	// Short of the goal: never closed as "no reply needed", never offered as the answer. The owner sees why and what was tried (design-spec/goal-retry.md).
 	if (r.goalMet === false && !home.work) {
 		const b = blockerOf(r.blocker)
-		Object.assign(wf, { ...stateFields(wf, 'needs_human'), status: `Not finished: ${b.why}${b.tried.length ? `. Tried: ${b.tried.join('; ')}` : ''}`, learnAfter: r.reply ? undefined : wf.learnAfter, draft: r.reply ? { ...r.reply, text: greetBack(wf, r.reply.text), holding: true as const } : undefined, question: r.question, effects: undefined, revAt: new Date().toISOString() })
+		Object.assign(wf, { ...stateFields(wf, 'needs_human'), ...statusFields('not-finished', `Not finished: ${b.why}${b.tried.length ? `. Tried: ${b.tried.join('; ')}` : ''}`), learnAfter: r.reply ? undefined : wf.learnAfter, draft: r.reply ? { ...r.reply, text: greetBack(wf, r.reply.text), holding: true as const } : undefined, question: r.question, effects: undefined, revAt: new Date().toISOString() })
 		return
 	}
 	if ((!home.work && (r.intent === 'none' || r.state === 'done') || !r.reply && !r.question) && !hasDecisions(r)) {

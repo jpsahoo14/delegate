@@ -7,6 +7,7 @@ import { inTemp, readJson } from '../store/fs.ts'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { ToolListChangedNotificationSchema } from '@modelcontextprotocol/sdk/types.js'
 import { classifyTool, type ToolInfo } from '../core/tool-class.ts'
+import { timeExternal } from '../core/io-time.ts'
 
 const sessionLost = (error: unknown) => {
 	if (typeof error === 'object' && error !== null && 'code' in error && error.code === -32001) return true
@@ -66,7 +67,7 @@ export class McpClient {
 		if (!this.connecting) {
 			const transport = new StdioClientTransport({ command: cmd, args: rest, stderr: 'pipe', ...(this.env ? { env: this.env } : {}) })
 			transport.stderr?.on('data', (d: Buffer) => { this.err = (this.err + d.toString('utf8')).slice(-2000) })
-			this.connecting = this.client.connect(transport).catch(e => { this.connecting = undefined; throw e })
+			this.connecting = timeExternal(() => this.client.connect(transport)).catch(e => { this.connecting = undefined; throw e })
 		}
 		return this.connecting
 	}
@@ -83,7 +84,7 @@ export class McpClient {
 		let result: Awaited<ReturnType<Client['callTool']>>
 		try {
 			await this.connect()
-			result = await client.callTool({ name: tool, arguments: args })
+			result = await timeExternal(() => client.callTool({ name: tool, arguments: args }))
 		} catch (error) {
 			if (!retry || !sessionLost(error)) throw error
 			await this.reconnect(client)
@@ -123,7 +124,7 @@ export class McpClient {
 	// The tool's own input schema, read once: a change whose arguments it would reject is never called (bug 10-23 E16).
 	private schemas?: Promise<Map<string, { properties?: Record<string, unknown>; required?: string[] }>>
 	async argsProblem(tool: string, args: Record<string, unknown>): Promise<string | undefined> {
-		this.schemas ??= this.connect().then(() => this.client.listTools()).then(r => new Map(r.tools.map(t => [t.name, t.inputSchema as { properties?: Record<string, unknown>; required?: string[] }])), e => { this.schemas = undefined; throw e })
+		this.schemas ??= this.connect().then(() => timeExternal(() => this.client.listTools())).then(r => new Map(r.tools.map(t => [t.name, t.inputSchema as { properties?: Record<string, unknown>; required?: string[] }])), e => { this.schemas = undefined; throw e })
 		const schema = (await this.schemas).get(tool)
 		if (!schema) return `the tool server has no tool ${tool}`
 		const known = Object.keys(schema.properties ?? {}), unknown = known.length ? Object.keys(args).filter(k => !known.includes(k)) : []
@@ -138,7 +139,7 @@ export class McpClient {
 		const tools: ToolInfo[] = []
 		let cursor: string | undefined
 		do {
-			const page = await this.client.listTools(cursor ? { cursor } : undefined)
+			const page = await timeExternal(() => this.client.listTools(cursor ? { cursor } : undefined))
 			tools.push(...page.tools.map(t => ({ name: t.name, description: t.description, annotations: t.annotations as ToolInfo['annotations'], inputSchema: t.inputSchema as ToolInfo['inputSchema'] })))
 			cursor = page.nextCursor
 		} while (cursor)
@@ -198,7 +199,7 @@ export class McpClient {
 		const client = this.client, connecting = this.connecting
 		this.client = new Client({ name: 'delegate', version: '0.1.0' })
 		this.connecting = undefined
-		if (connecting) await client.close()
+		if (connecting) await timeExternal(() => client.close())
 	}
 }
 

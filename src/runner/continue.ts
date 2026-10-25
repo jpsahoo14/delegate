@@ -1,5 +1,6 @@
 import { pendingEffects, shown } from '../core/effects.ts'
-import { spawnSync } from 'node:child_process'
+import { spawnSync as spawnProcess } from 'node:child_process'
+import { timedCall } from '../core/io-time.ts'
 import { uptime } from 'node:os'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
@@ -21,6 +22,7 @@ import { freshRead } from '../store/fs.ts'
 import { recordCommit } from './commit.ts'
 import { alive, commandOf, ours } from '../os/process.ts'
 import { stateFields, statusFields } from '../core/upgrades.ts'
+const spawnSync = timedCall(() => spawnProcess)
 
 
 // Old items keep their job target; a newer reply run becomes the continuation target.

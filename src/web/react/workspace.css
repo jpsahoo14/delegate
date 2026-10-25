@@ -22,6 +22,9 @@ small{display:block}
 .count,.chip{display:inline-block;background:var(--surface-2);color:var(--text-2);border-radius:12px;padding:1px 7px;font-size:12px;font-weight:500}
 .chips{display:flex;gap:6px;flex-wrap:wrap}
 .code{font:12px Consolas,monospace;color:var(--text-3);white-space:nowrap;flex:none}
+/* PM A R35 (b): the visible, copyable item code (features/ItemCode.tsx), the same in New and Classic. */
+.item-code{font:12px var(--mono,Consolas),monospace;color:var(--text-3);white-space:nowrap;flex:none;background:none;border:0;border-radius:4px;padding:1px 4px;margin:0;cursor:copy;line-height:1.4}.item-code:hover{color:var(--text-2);text-decoration:underline dotted}.item-code:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.now-row .row-content>.item-code,.done-row>.item-code{align-self:flex-start;margin-top:2px}
 [data-variant=default] small{color:inherit}
 .find-field,.field-label{display:grid;gap:6px;font-size:13px;margin:10px 0}
 input:not([type=radio]):not([type=checkbox]),textarea{min-width:0;width:100%;border:1px solid var(--border-strong);border-radius:8px;background:var(--surface);color:var(--text);padding:9px 12px;font:inherit}
@@ -69,22 +72,11 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px}
 a{color:var(--accent)}
 .empty{color:var(--text-2);padding:12px 0}
 .undo-strip{background:var(--surface);border:1px solid var(--border);padding:12px;border-radius:10px;margin:12px 0}
-.health-main,.undo-main{display:flex;gap:10px;align-items:center;justify-content:space-between}
-.health-main p,.undo-main p{margin:0;min-width:0}
-.health-main>div,.undo-main>button{flex:none}
-.health-since{margin:4px 0 0}
+.undo-main{display:flex;gap:10px;align-items:center;justify-content:space-between}
+.undo-main p{margin:0;min-width:0}
+.undo-main>button{flex:none}
 footer{display:flex;gap:16px;flex-wrap:wrap;align-items:center;margin-top:32px;border-top:1px solid var(--border);padding-top:16px}
-.live-result:empty{display:none}
 .card-why-waited{white-space:pre-line}
-.live-result{padding:10px;background:var(--surface-2);border-radius:8px;margin-bottom:12px;display:flex;gap:10px;align-items:center}
-.live-result>span{flex:1;min-width:0}
-.live-result[data-tone=muted]{color:var(--text-2)}
-.live-result[data-tone=warn]{background:var(--warn-soft);color:var(--warn)}
-.live-result-open,.live-result-close{flex:none}
-.live-result-close svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round}
-.pending-clicks{color:var(--text-2);margin-bottom:8px}
-.pending-clicks-toggle{background:none;border:0;padding:0;font:inherit;color:inherit;text-decoration:underline dotted;cursor:pointer}
-.pending-clicks ul{margin:6px 0 0;padding-left:18px}
 @media(max-width:559px){
 	main h1{font-size:22px;margin-bottom:10px}
 	.now-title{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
@@ -92,10 +84,6 @@ footer{display:flex;gap:16px;flex-wrap:wrap;align-items:center;margin-top:32px;b
 	.find-field>span{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 	.find-field input{padding:6px 10px;font-size:14px}
 	.since-line,.section-links{font-size:12px;line-height:1.4;margin:6px 0}
-	.health-banner{padding:8px 10px;margin:8px 0}
-	.health-main p{font-size:12.5px;line-height:1.4}
-	.health-since summary{font-size:11px}
-	.health-more{margin:4px 0;font-size:12px}
 	.undo-strip{padding:8px 10px;margin:8px 0}
 	.undo-main p{font-size:12px;line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 	.undo-strip small{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
@@ -132,3 +120,29 @@ dialog dd{margin:0}
 @media(max-width:700px){.reading-status{width:100%}.preview-header{gap:8px}.preview-header nav{order:3;width:100%;flex:none}.version-controls{margin-left:auto}.version-controls button{padding:6px 9px}}
 @media(max-width:560px){.preview-header{justify-content:space-between;min-height:56px}.mobile-view-button{display:inline-flex}.header-controls{display:none}.preview-header[data-menu-open=true] .header-controls{display:flex;position:absolute;top:100%;left:14px;right:14px;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:12px;flex-direction:column;gap:10px}.preview-header[data-menu-open=true] nav{order:0;flex-direction:column;align-items:stretch}.preview-header[data-menu-open=true] .version-controls{margin:0;width:100%;justify-content:flex-start}.preview-header[data-menu-open=true] nav a{justify-content:flex-start}}
 @media(max-width:560px){.preview-header .version-controls{width:auto}.preview-header nav a{flex:1;justify-content:center;padding:7px 4px}.now-section[data-selected=false]{display:none}.row-content{gap:8px;padding:14px;flex-wrap:wrap}.row-controls{flex-direction:row;align-items:center;flex-wrap:wrap;width:100%}.row-controls .code{margin-right:auto}.item-card{padding:16px}.number-grid{grid-template-columns:1fr}.action-bar>[data-primary=true]{min-height:42px;width:100%}.checklist small{display:block;margin:3px 0}.setting-row select{width:100%}.number-bars{gap:4px}.item-navigation{padding:10px;gap:8px;font-size:12px}}
+.item-code[data-copied=no]{color:var(--warn)}
+/* PE decision 46 / Designer designer-page-notices.md: page-level notices live in the header's status slot (reserved space; the header
+   height never changes) and open on demand in a popover under the header, out of the layout flow. */
+button.notice-pill{border:0;font:inherit;font-size:12px;cursor:pointer;max-width:min(34ch,40vw);min-width:0;line-height:1.3}
+.notice-pill .notice-text{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.notice-pill .notice-glyph{display:inline-flex;flex:none;color:var(--warn)}.notice-pill .notice-glyph svg{width:14px;height:14px}
+.notice-pill.status-warn[data-notice]{background:var(--warn-soft);color:var(--text)}
+.notice-pill.status-info{background:var(--accent-soft);color:var(--text)}.notice-pill.status-info .notice-glyph{color:var(--accent)}
+.notice-more,.notice-parked{flex:none;font-size:11px;padding:0 6px;border-radius:999px;background:var(--surface);color:var(--text-2)}
+.classic-status>.notice-glyph,.classic-status>.notice-more,.classic-status>.notice-parked{display:inline-flex}
+.notice-popover{z-index:60;width:min(420px,calc(100vw - 16px));overflow:auto;background:var(--surface);color:var(--text);border:1px solid var(--border-strong);border-radius:12px;box-shadow:var(--shadow-2,0 8px 24px rgba(0,0,0,.18));padding:6px;font-size:14px}
+.notice-popover:focus{outline:none}.notice-popover:focus-visible{outline:2px solid var(--accent)}
+.notice-line{padding:8px 10px;border-radius:8px}.notice-line p{margin:0}.notice-line+.notice-line{border-top:1px solid var(--border)}
+.notice-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+.card-note{margin:4px 0 0}
+.action-slot{display:contents}.action-slot.reserved{display:flow-root;position:relative}
+.action-slot.reserved .slot-toggle-band{position:absolute;left:0;right:0;bottom:0;display:flex;justify-content:flex-end;align-items:flex-end;line-height:1.5;background:var(--surface,Canvas)}
+.action-slot.reserved .slot-toggle{position:relative;padding:0 2px 0 8px;border:0;background:none;color:var(--accent,LinkText);font:inherit;cursor:pointer;line-height:1.5}
+.action-slot.reserved .slot-toggle::before{content:'… ' / '';color:var(--text-2,CanvasText)}
+.action-slot.reserved .slot-toggle[aria-expanded=true]::before{content:none}
+.action-slot.reserved .slot-toggle::after{content:'';position:absolute;inset:-23px -8px 0 -8px}
+.unsure-line .check-again{margin-left:4px}
+@media(max-width:480px){.unsure-line .check-again{min-height:44px}}
+@media(max-width:600px){.notice-narrow .notice-text{display:none}button.notice-pill{max-width:none}}
+@media (forced-colors:active){.notice-pill.status-warn[data-notice],.notice-pill.status-info{background:Mark;color:CanvasText}}
+.notice-list{margin:6px 0 0;padding-left:18px}

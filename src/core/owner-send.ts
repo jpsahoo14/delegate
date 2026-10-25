@@ -14,8 +14,15 @@ export function setHoldReasons(wf: Workflow, reasons: Reason[]) {
 	wf.reason = reasons[0]
 	wf.holdDigest = reasons.length ? holdDigest(reasons) : undefined
 }
-export function restampReasons(wf: Workflow) {
-	setHoldReasons(wf, holdReasons(wf).map(reason => ({ ...reason, digest: reviewDigest(wf, reasonMessages(reason)) })))
+export function restampReasons(wf: Workflow, reviewed: string[]): string | undefined {
+	const restamped: Reason[] = []
+	setHoldReasons(wf, holdReasons(wf).map(reason => {
+		if (!reviewed.includes(reason.digest)) return reason
+		const next = { ...reason, digest: reviewDigest(wf, reasonMessages(reason)) }
+		restamped.push(next)
+		return next
+	}))
+	return restamped.length ? holdDigest(restamped) : undefined
 }
 export function reviewedReasons(wf: Workflow, reviewed?: string): string[] {
 	const reasons = holdReasons(wf), vote = voteHold(wf)
@@ -27,7 +34,7 @@ export function clearVoteHold(wf: Workflow) {
 	if (wf.statusReason?.kind === 'vote-claim') wf.statusReason = undefined
 	wf.voteClaim = undefined
 }
-export function clearHold(wf: Workflow) { setHoldReasons(wf, []); wf.holdCheckPending = undefined; clearVoteHold(wf) }
+export function clearHold(wf: Workflow) { setHoldReasons(wf, []); wf.holdNotice = undefined; wf.holdCheckPending = undefined; clearVoteHold(wf) }
 
 export function keepApprovedDraft(wf: Workflow, reason: string) {
 	if (!wf.ownerSend || wf.sent && !wf.sent.holding && wf.sent.at >= wf.ownerSend.at) return

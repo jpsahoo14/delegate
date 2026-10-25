@@ -5,6 +5,12 @@ Scenario range reserved for this branch: SC-400 through SC-419.
 
 | Milestone | State | Evidence |
 | --- | --- | --- |
+| Decision 43(c) joiner follow-ups | Built in this commit; CR review pending | Multi-PR-only relation bypass, conflict log once per code/process, #54 lookup-cost note; anchor.also remains 0.2.46 after M2 |
+| Sent-reply-only fast checking | 19713589 plus scheduled-deadline B1 fix in this commit; CR re-review pending, New ced57df3/2b854c30 copy paired | Actual reply-time window, confirmed owner replies, no busy trigger; sendAt/reminder/retry due times retained without a fast window |
+| PR body join boundary + anchor | Built in this commit; PE diff review pending | Strict ADO/body identity, sole match or matching quote/ambiguity, code-only owned anchor and lifecycle, no cross-PR effects; authorized fictional Temp P1-P6 |
+| A48(a) schema-8 review context | Built in this commit; authorised Temp-copy check and PE review gate | One shared finish/migration helper, bounded version 8, workflow and done-job cache trim, scope exclusions, skip logs and idempotency; E2E fixtures inherit constant |
+| Not-finished status metadata hygiene | Fixed in this commit; PE diff scan pending | Existing goal-not-met copy/state and holding draft retained, shared structured reason emitted; no repair or new proof cases |
+| #54 step 1 measurement | 0be5d5d8 PE ok for 0.2.45; exact cold-boundary/phase-log nits in this follow-up; Debug's idle rows pending | Per-phase and ten-step fsMs/netMs, cold plus actual idle gap; counters only, no cache/lifetime optimization or new proof cases |
 | U1 acceptance Undo hashes | Fixed in this commit on 319b2c06; PE fix review pending | Original proposal hash retained; actual stored learned-line hash read back after success; each compares like with like, all other gates unchanged |
 | A R33 undoAcceptHabit | Built in this commit; PE diff review pending, SEND facade follows | Exact prior-state snapshot, latest/hash/window gates under the existing writer lock, rules-first restore, no dismissal; stop-style/edited/unsnapshotted legacy refuse |
 | Edited suggestion acceptance | Built in this commit on exact SEND 3fad10e3; PE diff review pending | Trusted provenance, unconfirmed Reading line, refusal before habit state/Undo, no original-first grant; SEND facade follows |

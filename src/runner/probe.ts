@@ -123,6 +123,13 @@ export async function probeBuilds(store: Store, probe: BuildProbe | undefined, n
 
 // A pull request link in an item: its project, repository, and number (Azure DevOps needs all three to read it).
 const PR_LINK = /https?:\/\/(?:[\w-]+\.visualstudio\.com|dev\.azure\.com\/[\w-]+)\/([^/\s]+)\/_git\/([^/\s?#]+)\/pullrequest\/(\d+)/i
+const anchorConflicts = new Set<string>()
+export function adoPrNumber(url: string): number | undefined {
+	if (!URL.canParse(url)) return undefined
+	const link = new URL(url), host = link.hostname.toLowerCase()
+	if (!/^https?:$/.test(link.protocol) || host !== 'dev.azure.com' && !host.endsWith('.visualstudio.com')) return undefined
+	return Number(/\/pullrequest\/(\d+)(?:\/|$)/i.exec(link.pathname)?.[1]) || undefined
+}
 // remote: the repo by its remote, from the PR's own link, never the AI's key (owned work).
 // url: the PR's own web link, as the item has it.
 export type PrRef = { project: string; repo: string; id: number; remote?: string; url?: string }
@@ -134,8 +141,21 @@ export function prTarget(store: Store, w: Workflow): number | undefined {
 	const thread = store.thread(w.id), ask = inText(w.lastAsk), owned = new Set(thread.filter(m => !m.byOwner && w.msgIds.includes(m.id)).flatMap(m => inText(m.text)))
 	const prior = inText(thread.filter(m => !m.byOwner && m.from.id === w.asker?.id && inText(m.text).length).at(-1)?.text)
 	const effects = [...new Set((w.effects ?? []).filter(e => !e.off && isVote(e.call)).map(e => prIdOf(e.call)).filter((id): id is number => id !== undefined))]
-	if (ask.length > 1 || owned.size > 1 || !ask.length && !owned.size && prior.length > 1) return undefined
-	return Number(ask[0] ?? [...owned][0] ?? /^pr:.*?(\d+)$/.exec(job?.key ?? '')?.[1] ?? (linked.length === 1 ? linked[0] : undefined) ?? prior[0] ?? (effects.length === 1 ? effects[0] : 0)) || undefined
+	const computed = ask.length > 1 || owned.size > 1 || !ask.length && !owned.size && prior.length > 1 ? undefined :
+		Number(ask[0] ?? [...owned][0] ?? /^pr:.*?(\d+)$/.exec(job?.key ?? '')?.[1] ?? (linked.length === 1 ? linked[0] : undefined) ?? prior[0] ?? (effects.length === 1 ? effects[0] : 0)) || undefined
+	const anchor = w.prAnchor
+	if (anchor && w.state !== 'done' && !w.redacted && w.msgIds.includes(anchor.msgId)) {
+		const single = ask.length === 1 ? Number(ask[0]) : computed
+		if (single !== undefined && single !== anchor.pr) {
+			if (!anchorConflicts.has(w.code)) {
+				anchorConflicts.add(w.code)
+				store.log({ event: 'pr-anchor-conflict', code: w.code, anchor: anchor.pr, computed: single })
+			}
+			return undefined
+		}
+		return anchor.pr
+	}
+	return computed
 }
 
 export function prOf(store: Store, w: Workflow): PrRef | undefined {

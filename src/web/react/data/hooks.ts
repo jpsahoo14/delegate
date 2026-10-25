@@ -7,6 +7,9 @@ import { IDLE, pinnedPlacements, useData, type CardUi } from './store.ts'
 import { useNavigation } from './navigation.ts'
 import { useNowLook } from './look.ts'
 import { capturePageForm, consumePageForm } from './forms.ts'
+import { verbing } from '../domain/verbing.ts'
+import { time } from '../domain/time.ts'
+import { NAME } from '../brand.ts'
 
 declare global { interface Window { DELEGATE_POLL_MS?: number } }
 
@@ -143,7 +146,7 @@ function complete(result: Receipt): void {
 	if (state.byRevision[revisionKey(result.item, result.rev)]?.pending?.submissionId !== result.submissionId) return
 	const form = state.byRevision[revisionKey(result.item, result.rev)]?.submittedForm
 	const consumed = result.accepted && !result.refused && !result.uncertain && !!form && consumePageForm(form)
-	state.edit(result.item, result.rev, { pending: undefined, result, error: undefined, formConsumed: consumed ? result.submissionId : undefined })
+	state.edit(result.item, result.rev, { pending: undefined, result, error: undefined, note: undefined, formConsumed: consumed ? result.submissionId : undefined })
 	const fresh = state.snapshot?.entities.items[result.item]
 	if (fresh && fresh.rev !== result.rev && result.accepted && state.snapshot) state.ingest(state.snapshot)
 }
@@ -156,10 +159,13 @@ function restorePending(): void {
 }
 // A click the server has no record of (#42, PE 16:40). The server says 202 while it handles a click, so a 404 means it never got
 // it: the exact request is sent once more (same id, rev and input; the server keeps one result per id). The click is released only
-// when that replay got a definite 404 or 5xx and the server still has no record; a replay lost on the network waits for Check saved
-// result, which sends it once more, and so does the first poll after 10 minutes.
-const NOT_SAVED = "Not saved. Your click didn't reach Delegate; try again."
-const UNREACHED = 'Your click may not have reached Delegate. Check now sends it once more; it is never done twice.'
+// when that replay got a definite 404 or 5xx and the server still has no record (decision 49 (a): Send is offered again).
+// Decision 49 (b), PE 22:36:38Z: when the receipt itself can't be reached, or a replay was lost on the network, the outcome is unknown:
+// the click becomes 'unreached', its button stays disabled, and nothing is sent again on its own (no late replay either); only Check
+// again re-polls, and a 404 then sends the same request once more.
+export const NOT_SENT = `Not sent: ${NAME} didn't get your click. Try again.`
+export const NOT_SAVED = `Not saved: ${NAME} didn't get your click. Try again.`
+const notDone = (saved: Pending) => useData.getState().entities.actions[saved.action]?.effect === 'sends' ? NOT_SENT : NOT_SAVED
 const WAITING = { waiting: true } as const
 const replays = new Map<string, { n: number; late?: boolean; forced?: boolean }>()
 // Polls in a row that found the server still working (202) or did not reach it: 2 s, 4 s, 8 s, then every 15 s; any answer
@@ -175,31 +181,35 @@ function release(saved: Pending, text: string) {
 	const state = useData.getState()
 	if (state.byRevision[revisionKey(saved.item, saved.rev)]?.pending?.submissionId === saved.submissionId) state.edit(saved.item, saved.rev, { pending: undefined, error: text })
 }
-async function replay(id: string, phase: string): Promise<Receipt | typeof WAITING> {
+function unreach(key: string, id: string) {
+	const state = useData.getState(), current = state.byRevision[key]?.pending, at = key.indexOf('@')
+	if (current?.submissionId === id && (current.phase === 'unknown' || current.phase === 'unreached')) state.edit(key.slice(0, at), key.slice(at + 1), { pending: { ...current, phase: 'unreached' }, error: undefined })
+}
+async function replay(id: string, queued: string): Promise<Receipt | typeof WAITING> {
 	const saved = pendingSubmissions().find(entry => entry.submissionId === id)
+	const phase = (saved && useData.getState().byRevision[revisionKey(saved.item, saved.rev)]?.pending?.phase) ?? queued
 	// Its own POST is still on its way: keep checking.
 	if (phase === 'submitting') return WAITING
 	// A click saved before #42 kept no request to send again (W7, PE on db06346e). Called only after /result said 404, not 202:
 	// once it is a minute old the server never got it, so it is released and the owner can click again.
 	if (!saved?.intent) {
 		if (saved && !firstSeen.has(id)) firstSeen.set(id, Date.now())
-		if (saved && Date.now() - (saved.at ?? firstSeen.get(id)!) >= 60_000) release(saved, NOT_SAVED)
+		if (saved && Date.now() - (saved.at ?? firstSeen.get(id)!) >= 60_000) release(saved, notDone(saved))
 		return WAITING
 	}
 	const r = replays.get(id) ?? { n: 0 }, late = Date.now() - (saved.at ?? Date.now()) > 10 * 60_000
+	if (phase === 'unreached' && !r.forced) return WAITING
 	if (!(r.n === 0 || r.forced || late && !r.late)) return WAITING
 	replays.set(id, { n: r.n + 1, late: r.late || late })
+	const key = revisionKey(saved.item, saved.rev)
 	try { return await submit(saved.intent) } catch (error) {
-		if (!(error instanceof ApiError)) {
-			const state = useData.getState(), current = state.byRevision[revisionKey(saved.item, saved.rev)]
-			if (current?.pending?.submissionId === id) state.edit(saved.item, saved.rev, { pending: { ...current.pending, phase: 'unreached' }, error: UNREACHED })
-			return WAITING
-		}
+		if (!(error instanceof ApiError)) { unreach(key, id); return WAITING }
 		const after = await receiptState(id).catch(() => undefined)
 		if (after && 'receipt' in after) return after.receipt
 		if (after && 'working' in after) return WAITING
-		if (error.status === 422) { console.error('A click sent again was refused as invalid:', error.message); release(saved, NOT_SAVED) }
-		else if (error.status === 404 || error.status >= 500) { if (after && 'missing' in after) release(saved, NOT_SAVED) }
+		if (!after) { unreach(key, id); return WAITING }
+		if (error.status === 422) { console.error('A click sent again was refused as invalid:', error.message); release(saved, notDone(saved)) }
+		else if (error.status === 404 || error.status >= 500) release(saved, notDone(saved))
 		else release(saved, error.message)
 		return WAITING
 	}
@@ -222,7 +232,8 @@ export function usePendingReceipts() {
 		queryKey: ['receipt', entry.submissionId],
 		queryFn: async (): Promise<Receipt | typeof WAITING> => {
 			// A busy server (202) or a lost poll is not a failure: it is checked again later, slower each time (#27 poll, PE 19:30 #47).
-			const known = await receiptState(entry.submissionId).catch(error => { if (error instanceof ApiError) throw error; return undefined })
+			// Decision 49 (b): a click whose outcome is unknown and whose receipt can't be reached is not sent again on its own.
+			const known = await receiptState(entry.submissionId).catch(error => { unreach(entry.key, entry.submissionId); if (error instanceof ApiError) throw error; return undefined })
 			if (!known || 'working' in known) {
 				busyPolls.set(entry.submissionId, (busyPolls.get(entry.submissionId) ?? 0) + 1)
 				// 202: the server has the click, so its outcome is no longer unknown; the card says "Delegate has your click." (P0-03).
@@ -260,6 +271,15 @@ export function usePendingReceipts() {
 	useEffect(() => { if (pollErrors) console.error(`${pollErrors} saved result(s) could not be checked yet; they are checked again.`) }, [pollErrors])
 	return storageError
 }
+// PM A R44 (2): the action IN PROGRESS, named for "Wait a moment: Delegate is still …". The PM's three phrases; any other action reads
+// "working on your last click" (to the PM for words).
+function inProgress(action?: Action): string {
+	if (!action) return 'working on your last click'
+	if (action.effect === 'sends' || ['approve', 'approve-again', 'send-edit', 'send-anyway'].includes(action.kind)) return 'sending your reply'
+	if (action.kind === 'dismiss') return 'dismissing it'
+	if (action.kind === 'answer' || action.kind === 'pick') return 'saving your answer'
+	return 'working on your last click'
+}
 export function useAction() {
 	const client = useQueryClient()
 	return useCallback(async (action: Action, input?: Intent['input']) => {
@@ -269,20 +289,34 @@ export function useAction() {
 			return
 		}
 		const state = useData.getState()
-		if (Object.entries(state.byRevision).some(([key, ui]) => key.startsWith(`${action.item}@`) && ui.pending)) return
+		// G2 (PE 03:08) in the PM's A R44 words: a click is never dropped without a word. One muted line under the clicked button says
+		// why, and the log names the guard. Never "Already sent" unless a send really happened.
+		const refuse = (reason: string, note: CardUi['note']) => { console.info('[act] not sent:', reason, action.id); state.edit(action.item, action.rev, { note, error: undefined }) }
+		const busy = Object.values(Object.fromEntries(Object.entries(state.byRevision).filter(([key, ui]) => key.startsWith(`${action.item}@`) && ui.pending))).map(ui => ui.pending!)[0]
+		if (busy) {
+			if (busy.action === action.id) return refuse('pending-same', { text: `${verbing(action.label)} ${NAME} already has this click.` })
+			const doing = state.entities.actions[busy.action]
+			return refuse('pending-other', { text: `Wait a moment: ${NAME} is still ${inProgress(doing)}. Try again when it's done.` })
+		}
 		const prior = state.byRevision[revisionKey(action.item, action.rev)]
-		if (action.input && prior?.result && (prior.result.uncertain || prior.result.accepted && !prior.result.refused) && prior.lastAction === action.id && JSON.stringify(prior.submittedInput ?? {}) === JSON.stringify(input ?? {})) return
-		if (action.needsConfirm && !window.confirm(action.meaning ?? 'Make this change?')) return
+		if (action.input && prior?.result && (prior.result.uncertain || prior.result.accepted && !prior.result.refused) && prior.lastAction === action.id && JSON.stringify(prior.submittedInput ?? {}) === JSON.stringify(input ?? {})) {
+			const done = prior.result
+			if (done.uncertain) return refuse('already-submitted', { text: `${verbing(action.label)} ${NAME} already has this click.` })
+			const sent = done.outcome?.kind === 'sent'
+			// CR nit (a), I29: Open only where it lands on a list that holds the item: a sent reply is in Done › Replies; nothing else is promised.
+			return refuse('already-done', { text: sent ? `Already done: sent${done.who ? ` to ${done.who}` : ''}${done.at ? ` at ${time(new Date(done.at))}` : ''}.` : 'Already done.', ...(sent ? { open: 'done' as const } : {}) })
+		}		if (action.needsConfirm && !window.confirm(action.meaning ?? 'Make this change?')) return
 		const submissionId = crypto.randomUUID()
 		const at = Date.now()
 		// The exact request, kept with the pending click so a lost one is sent again unchanged (#42).
-		const intent: Intent = { submissionId, action: action.id, item: action.item, rev: action.rev, expect: action.expect, input }
+		// F1 (PE decision 47): Send anyway returns the held digest its card showed.
+		const intent: Intent = { submissionId, action: action.id, item: action.item, rev: action.rev, expect: action.expect, ...(action.reviewed ? { reviewed: action.reviewed } : {}), input }
 		try { rememberSubmission({ submissionId, item: action.item, rev: action.rev, action: action.id, at, intent }) } catch (error) {
 			console.error('Could not remember the submission:', error)
 			state.edit(action.item, action.rev, { error: 'This browser cannot remember pending actions. Enable tab storage before sending.' })
 			return
 		}
-		state.edit(action.item, action.rev, { pending: { submissionId, action: action.id, phase: 'submitting', at }, lastAction: action.id, submittedInput: input, submittedForm: capturePageForm(action), formConsumed: undefined, error: undefined, result: undefined })
+		state.edit(action.item, action.rev, { pending: { submissionId, action: action.id, phase: 'submitting', at }, lastAction: action.id, submittedInput: input, submittedForm: capturePageForm(action), formConsumed: undefined, error: undefined, note: undefined, result: undefined })
 		try {
 			const result = await submit(intent)
 			if (result.submissionId !== submissionId || result.item !== action.item || result.rev !== action.rev) throw new Error('The server returned a result for another action.')

@@ -8,3 +8,9 @@ export function mdToHtml(md: string): string {
 		.replace(/`([^`]+)`/g, '<code>$1</code>')
 		.replace(/\n/g, '<br>')
 }
+
+export function personName(name = ''): string {
+	const clean = name.replace(/(?:\s*\([^()]*\))+\s*$/, '').trim()
+	const parts = clean.split(',').map(part => part.trim())
+	return (parts.length === 2 ? `${parts[1]} ${parts[0]}` : clean).trim()
+}

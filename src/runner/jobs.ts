@@ -52,6 +52,8 @@ import { makeChange, mcpCaller, serverOf, type Caller } from './change.ts'
 import { builtEffectProblem, prepareReportCalls, repairPendingEffectCalls } from './effect-preparation.ts'
 import { checkReviewCompletion, reviewCommentHook, type ReviewCompletion } from './review-autonomy.ts'
 import { pageChangeId } from '../core/page-approval.ts'
+import { trimReviewContext } from './review-context.ts'
+export { reviewNoise } from './review-context.ts'
 
 export type Procs = {
 	start: (cfg: Config['agent'], i: RunInput & { workflowId: string; runId: string }) => { pid: number }
@@ -428,9 +430,6 @@ function readUse(store: Store, job: Job): Record<string, unknown> {
 	return Object.keys(out).length ? { ...out, runId: run.id, ...(lastAt !== undefined && lastAt >= started ? { ms: lastAt - started } : {}) } : {}
 }
 
-// A review fact about builds, pipelines, checks or CI, or about votes (the owner's, his group's, or the PR's tally) (queue-new #8).
-export const reviewNoise = (text: string) => /\b(?:builds?|pipelines?|CI|checks? (?:failed|passed|pending|running)|validation runs?)\b/i.test(text) || /\b(?:votes?|voted)\b/i.test(text)
-
 // A choice between options that is not the owner's own (no "approve", "vote", "you"): a spec or product question (queue-new #10).
 export const specChoice = (q: string) => /\?/.test(q) && /\b(?:or|versus|vs\.?)\b/i.test(q) && !/\b(?:you|your|approv\w*|vote|review it|sign[ -]?off|merge)\b/i.test(q)
 // The question as a comment to the PR's author, on the review's PR; undefined when the PR cannot be placed.
@@ -478,11 +477,10 @@ export function finishWork(store: Store, job: Job, r: Report, asksAtStart: numbe
 	}
 	// A review of someone else's PR shows the code facts only, never as warnings: no builds, checks or CI, and no vote of the owner
 	// or his reviewer group, which is what he is about to decide (queue-new #8). A watch on his own PR keeps them.
-	if (r.context?.length && isReviewJob(job.key, r.intent) && !job.every && !parents.some(w => w.prRole === 'author')) {
-		const kept = r.context.filter(f => !reviewNoise(`${f.label} ${f.text}`)).map(f => ({ ...f, tone: 'info' as const }))
-		if (kept.length !== r.context.length || r.context.some(f => f.tone === 'warn')) store.log({ event: 'review-context-trimmed', job: job.id, dropped: r.context.length - kept.length, warns: r.context.filter(f => f.tone === 'warn').length })
-		r = { ...r, context: kept.length ? kept : undefined }
-	}
+	const trimmed = trimReviewContext(job, parents, r.context, r.intent)
+	const contextTrimmed = trimmed.context !== r.context
+	if (trimmed.dropped || trimmed.warns) store.log({ event: 'review-context-trimmed', job: job.id, dropped: trimmed.dropped, warns: trimmed.warns })
+	if (contextTrimmed) r = { ...r, context: trimmed.context }
 	const v = vet(cfg, r.effects, parents.map(w => prTarget(store, w)).find(Boolean))
 	v.todos.push(...prepared.problems)
 	// A review's vote only while the owner may review the PR, at its last read (review gate G7).
@@ -532,7 +530,7 @@ export function finishWork(store: Store, job: Job, r: Report, asksAtStart: numbe
 		if (wf.sent) reopenPromise(store, wf)
 		// Rules never send a review's or an investigation's result; the card says so, so the owner is not left guessing (dogfood 10-20, A34).
 		const decision = r.reply ? { action: 'draft', reason: 'A review or investigation result always waits for you', confidence: confidence(r.reply.sources ?? []) } : wf.decision
-		Object.assign(wf, { ...stateFields(wf, nothing ? (wf.work || wf.partOf ? 'open' : 'done') : 'needs_human'), closedBy: nothing && !(wf.work || wf.partOf) ? 'job' : undefined, learnAfter: undefined, status: nothing ? `Nothing needed: ${r.summary}` : r.summary, question: r.question, draft: r.reply ? { ...r.reply } : undefined, effects, decision, waitingSince: undefined, approved: undefined, newCount: 0, revAt: new Date().toISOString(), ...(r.context ? { context: r.context } : {}) })
+		Object.assign(wf, { ...stateFields(wf, nothing ? (wf.work || wf.partOf ? 'open' : 'done') : 'needs_human'), closedBy: nothing && !(wf.work || wf.partOf) ? 'job' : undefined, learnAfter: undefined, status: nothing ? `Nothing needed: ${r.summary}` : r.summary, question: r.question, draft: r.reply ? { ...r.reply } : undefined, effects, decision, waitingSince: undefined, approved: undefined, newCount: 0, revAt: new Date().toISOString(), ...(r.context || contextTrimmed ? { context: r.context } : {}) })
 		if (wf.intent === 'pr_review') {
 			const current = review?.pr === prTarget(store, wf) ? review : undefined
 			wf.reviewBasis = current?.basis

@@ -1,6 +1,7 @@
-import type { Config, Workflow } from '../core/types.ts'
+import type { Config, Draft, ResultFacts, Workflow } from '../core/types.ts'
 import { markedHold, membersOf, membershipUnknown, membershipWait } from './sharing.ts'
-import { authorizeReply, DEFAULT_POLICY, decide, REPLY_BLANK, replyGap, ruleFor, signatureOf, withMarker, type PolicyContext } from '../core/policy.ts'
+import { authorizeReply, confidence, DEFAULT_POLICY, decide, inQuietHours, REPLY_BLANK, replyGap, ruleFor, signatureOf, withMarker, type Decision, type PolicyContext } from '../core/policy.ts'
+import { pendingEffects, sameHead } from '../core/effects.ts'
 import type { Source } from '../adapters/source.ts'
 import type { Store } from '../store/state.ts'
 import { send } from './apply.ts'
@@ -22,6 +23,16 @@ export const policyContext = (store: Store, cfg: Config, wf: Workflow): PolicyCo
 }
 
 export function automaticDecision(store: Store, cfg: Config, wf: Workflow, ctx = policyContext(store, cfg, wf)) {
+	const job = wf.job ? store.job(wf.job) : undefined
+	if (!wf.reviewRun && job?.state === 'done' && job.purpose === 'work' && job.result?.reply && wf.draft) {
+		const facts = job.result.sendFacts?.[wf.id]
+		if (wf.draft.text === job.result.reply.text || !!facts?.turn && facts.turn === wf.revAt) {
+			if (wf.draft.text !== job.result.reply.text)
+				return { action: 'draft' as const, reason: 'The result reply changed; it waits for you', confidence: confidence(wf.draft.sources) }
+			return facts ? decideResult(store, cfg, wf, wf.draft, facts, ctx) :
+				{ action: 'draft' as const, reason: 'The result has no verified send facts; it waits for you', confidence: confidence(wf.draft.sources) }
+		}
+	}
 	const rules = store.rules(), decision = decide(wf, rules, ctx)
 	if (membershipUnknown(store, wf.chat.id) && ctx.autoSend) {
 		// Organization rules cannot match an unknown audience; this comparison records a wait, never permission.
@@ -29,6 +40,32 @@ export function automaticDecision(store: Store, cfg: Config, wf: Workflow, ctx =
 		if (decision.blockedBy === 'sharing' || known?.action === 'send' || known?.action === 'ack') membershipWait(store, wf.chat.id)
 	}
 	return decision
+}
+
+export function decideResult(store: Store, cfg: Config, wf: Workflow, reply: Draft, facts: ResultFacts, ctx = policyContext(store, cfg, wf)): Decision {
+	const hold = (reason: string): Decision => ({ action: 'draft', reason, confidence: confidence(reply.sources) })
+	if (facts.chatId !== wf.chat.id) return hold("A result can only reply in the item's own chat or thread")
+	if (!facts.turn || facts.turn !== wf.revAt) return hold('The result changed; it waits for you')
+	if (!Array.isArray(facts.effects) || !Array.isArray(facts.todos)) return hold('The result has no verified send facts; it waits for you')
+	if (pendingEffects([...facts.effects, ...(wf.effects ?? [])]).length) return hold('Result changes are awaiting your OK')
+	if (facts.todos.length || wf.todos?.length || wf.kept?.some(todo => !todo.done)) return hold('The result still has things left for you')
+	if (facts.question || wf.question) return hold('The result has a question for you')
+	if (facts.blocker) return hold('The result is blocked')
+	if (facts.goalMet === false || [...(facts.context ?? []), ...(wf.context ?? [])].some(f => /^not reached$/i.test(f.label.trim())))
+		return hold('The result did not reach its goal')
+	if (wf.intent === 'pr_review' || facts.review) {
+		const basis = wf.reviewBasis
+		if (wf.reviewAgain || !basis || !facts.review || facts.review.pr !== basis.pr || !sameHead(facts.review.head, basis.head))
+			return hold('The reviewed revision could not be verified')
+	}
+	const current = { ...wf, draft: reply }, rules = store.rules()
+	const decision = decide(current, rules, ctx, 'result')
+	if (membershipUnknown(store, wf.chat.id) && ctx.autoSend) {
+		const known = decision.blockedBy === 'sharing' ? undefined : decide(current, rules, { ...ctx, guests: false }, 'result')
+		if (decision.blockedBy === 'sharing' || known?.action === 'send') membershipWait(store, wf.chat.id)
+	}
+	if (decision.action !== 'send') return { ...decision, action: 'draft' }
+	return inQuietHours(new Date(), cfg.quiet) ? hold('Quiet hours; the result waits for you') : decision
 }
 
 // After a worker drafts, the owner's rules decide: send later, acknowledge now, keep as a draft, or ignore (R-POL-01).

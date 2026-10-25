@@ -4,7 +4,7 @@ import type { Rule } from './types.ts'
 const scope = { who: ['accounts', 'team', 'org', 'outside'], chat: true, minConfidence: true } as const
 const people = (r: Rule) => r.who.accounts?.map(p => p.name).join(', ') || (r.who.group === 'org' ? 'someone in your org' : r.who.group === 'team' ? 'someone in your team' : 'someone outside your org')
 const empty = z.object({}).strict()
-export const CAPABILITY_VERSION = 2
+export const CAPABILITY_VERSION = 3
 const conditions = (r: Rule) => [
 	r.when.intent && `about ${r.when.intent.replace(/_/g, ' ')}`,
 	r.when.chat && (r.when.chat === 'direct' ? 'in a one-to-one chat' : 'in the specified chat'),
@@ -15,7 +15,7 @@ const GRANT_RANK: Record<Rule['then'], number> = { draft: 4, shortcut: 4, ignore
 export const compareGrants = (a: Rule, b: Rule) => GRANT_RANK[b.then] - GRANT_RANK[a.then] ||
 	Number(!!b.who.accounts?.length) - Number(!!a.who.accounts?.length)
 export const CAPABILITIES = {
-	send: { scope, params: empty, readBack: (r: Rule) => `Send replies to ${scopedPeople(r)} without asking you.` },
+	send: { scope: { ...scope, results: true }, params: empty, readBack: (r: Rule) => `Send replies${r.when.results ? ', including review and investigation results,' : ''} to ${scopedPeople(r)} without asking you.` },
 	ack: { scope, params: empty, readBack: (r: Rule) => `Acknowledge requests from ${scopedPeople(r)} without asking you.` },
 	draft: { scope, params: empty, readBack: (r: Rule) => `Keep replies to ${scopedPeople(r)} as drafts for you.` },
 	ignore: { scope, params: empty, readBack: (r: Rule) => `Ignore requests from ${scopedPeople(r)} without asking you.` },
@@ -33,7 +33,7 @@ export const RuleSchema = z.object({
 	id: z.string(), text: z.string(),
 	who: z.object({ accounts: z.array(z.object({ id: z.string().min(1), name: z.string() })).optional(), group: z.enum(['team', 'org', 'outside']).optional() })
 		.refine(w => !!w.accounts?.length || !!w.group, 'A rule must name people by account ID, or a group.'),
-	when: z.object({ intent: z.string().optional(), chat: z.string().optional(), minConfidence: z.enum(['high', 'medium']).optional(), reviewerGroup: z.string().trim().min(1).optional() }),
+	when: z.object({ intent: z.string().optional(), chat: z.string().optional(), minConfidence: z.enum(['high', 'medium']).optional(), reviewerGroup: z.string().trim().min(1).optional(), results: z.literal(true).optional() }),
 	then: z.enum(kinds), off: z.literal(true).optional(),
 	review: CAPABILITIES.review.params.optional(), shortcut: CAPABILITIES.shortcut.params.optional(),
 }).superRefine((rule, ctx) => {
@@ -43,6 +43,8 @@ export const RuleSchema = z.object({
 		ctx.addIssue({ code: 'custom', message: 'A review rule must post comments and send the review reply.' })
 	if (rule.then !== 'review' && rule.review)
 		ctx.addIssue({ code: 'custom', message: 'Review permissions belong only to a review rule.' })
+	if (rule.when.results && rule.then !== 'send')
+		ctx.addIssue({ code: 'custom', message: 'Results scope belongs only to a send rule.' })
 })
 export const readBack = (rule: Rule) => {
 	const capability = CAPABILITIES[rule.then]

@@ -36,7 +36,7 @@ import { isDeploy } from '../core/deploy.ts'
 import { PAGE_REPLY_CHANGED, pageAnswerRefusal, pageDigest } from '../core/page-approval.ts'
 import { pageManagementRev } from '../store/page-revision.ts'
 import { holdReplyGap } from './reply-gap.ts'
-import { clearHold, clearVoteHold, holdReasons, reasonMessages, restampReasons, reviewedReasons, voteHold } from '../core/owner-send.ts'
+import { clearHold, clearVoteHold, holdDigest, holdReasons, reasonMessages, restampReasons, reviewDigest, reviewedReasons, setHoldReasons, voteHold } from '../core/owner-send.ts'
 import { holdCheck, type Quick } from './send-holds.ts'
 import { freshRead } from '../store/fs.ts'
 import { recordCommit } from './commit.ts'
@@ -112,8 +112,7 @@ async function applyOne(store: Store, src: Source, cfg: Config, wf: Workflow, a:
 	if (a.verb === 'answer' && /^send anyway[.!]?$/i.test(a.text?.trim() ?? '') && (holdReasons(wf).length || voteHold(wf))) {
 		const vote = voteHold(wf)
 		if (vote && (!a.page || vote.automatic || vote.canOverride === false)) return reply(store, src, a, `${MARK} Not sent ${wf.code}: ${wf.statusReason!.text}`, true)
-		if (!a.page) await holdCheck(store, src, wf, { quick })
-		a = { ...a, verb: 'ok', text: undefined, sendReview: vote ? voteClaimReview(wf) : wf.holdDigest }
+		a = { ...a, verb: 'ok', text: undefined, sendReview: a.page ? a.sendReview : wf.holdNotice?.digest }
 	}
 	if (a.verb === 'answer' && /^add (?:the )?vote[.!]?$/i.test(a.text?.trim() ?? '')) {
 		const ref = prRefOf(store, wf), vote = (wf.job ? store.job(wf.job)?.result?.voteRecommendation : undefined)?.vote
@@ -329,13 +328,12 @@ async function applyOne(store: Store, src: Source, cfg: Config, wf: Workflow, a:
 			if (a.verb === 'send' && a.text) {
 				// A typed chat "send" on a held item is refused before his text replaces the draft the hold is about (PE 0b review, B1).
 				if (holdReasons(wf).length && !a.page && await heldSend(store, src, wf, a, { quick })) return
+				const reviewed = reviewedReasons(wf, a.sendReview)
 				const original = wf.learnAfter?.draft ?? wf.draft?.text
 				if (original && original.trim() !== a.text.trim()) wf.learnAfter = { draft: original, sent: a.text }
 				wf.draft = { ...(wf.draft ?? { commitment: false, sources: [] }), text: a.text, byOwner: true, ownWords: ownWords(wf, a.text) }
-				// His own words typed on the page's held card (its exact rev hashes the reason he was shown) go past that hold: the
-				// digest is restamped for his text, so the later checks pass for the same message too. A typed chat "send" stays held
-				// (PE 0b review, B1).
-				if (a.page && holdReasons(wf).length) { restampReasons(wf); a = { ...a, sendReview: wf.holdDigest } }
+				// Editing rebinds only the reasons this intent actually reviewed, never a newly discovered hold.
+				if (a.page && holdReasons(wf).length) a = { ...a, sendReview: restampReasons(wf, reviewed) }
 			}
 			if (holdReplyGap(store, wf, wf.draft?.text)) return reply(store, src, a, `${MARK} ${REPLY_BLANK}`, true)
 			rememberSend(store, wf)
@@ -614,6 +612,7 @@ function rememberSend(store: Store, wf: Workflow) {
 
 async function heldSend(store: Store, src: Source, wf: Workflow, a: Answer, options: Parameters<typeof holdCheck>[3] = {}): Promise<boolean> {
 	const commit = recordCommit(wf, () => store.workflow(wf.id), store.save.bind(store))
+	const previous = holdReasons(wf)
 	const reviewed = reviewedReasons(wf, a.sendReview)
 	const checked = await holdCheck(store, src, wf, options)
 	if (checked.deleted) {
@@ -621,16 +620,31 @@ async function heldSend(store: Store, src: Source, wf: Workflow, a: Answer, opti
 		await reply(store, src, a, `${MARK} Not sent ${wf.code}: ${wf.asker?.name ?? 'they'} deleted the message.`)
 		return true
 	}
+	// An incomplete source read cannot withdraw a stored hold the owner has not reviewed.
+	const missing = previous.filter(reason => !reviewed.includes(reason.digest) && !checked.reasons.some(current => current.kind === reason.kind))
+	if (missing.length) {
+		checked.reasons.push(...missing.map(reason => ({ ...reason, digest: reviewDigest(wf, reasonMessages(reason)) })))
+		setHoldReasons(wf, checked.reasons)
+	}
 	if (!checked.reasons.some(reason => !reviewed.includes(reason.digest))) return false
 	const edited = checked.reasons.find(reason => reason.kind === 'ask-edited')
 	const newer = checked.reasons.find(reason => reason.kind === 'asker-wrote-again')
 	Object.assign(wf, { ...stateFields(wf, options.automatic && (edited || newer) ? 'running' : 'needs_human'), approved: undefined, sendAt: undefined,
-		status: options.automatic && (edited || newer) ? 'The message changed. Redrafting.' : 'Your approved draft is kept. Send anyway or Redraft.' })
+		status: options.automatic && (edited || newer) ? 'The message changed. Redrafting.'
+			: a.page && newer ? `Not sent: ${wf.asker?.name ?? 'They'} wrote again after you looked. Check and send again.`
+			: 'Your approved draft is kept. Send anyway or Redraft.' })
 	if (options.automatic && edited?.kind === 'ask-edited') { wf.lastAsk = edited.text; wf.pending = [edited.msgId] }
 	if (options.automatic && newer?.kind === 'asker-wrote-again') { wf.lastAsk = newer.text; wf.pending = newer.msgIds ?? [newer.msgId] }
 	commit()
 	store.log({ event: 'owner-send-held', code: wf.code, kind: checked.reasons[0].kind, reasons: checked.reasons.map(r => r.kind) })
-	await reply(store, src, a, `${MARK} Not sent ${wf.code}: ${wf.status}`, true)
+	const details = a.page ? '' : checked.reasons.map(reason => reason.kind === 'no-reply-needed' ? reason.why
+		: reason.kind === 'ask-edited' ? `Before: ${reason.before}\nNow: ${reason.text}`
+		: `${wf.asker?.name ?? 'They'} wrote:\n${reason.text}`).join('\n\n')
+	const digest = holdDigest(checked.reasons)
+	if (await reply(store, src, a, `${MARK} Not sent ${wf.code}: ${wf.status}${details ? `\n\n${details}` : ''}`, true) && !a.page) {
+		wf.holdNotice = { digest, at: new Date().toISOString() }
+		commit(false)
+	}
 	return true
 }
 
@@ -765,7 +779,8 @@ export async function send(store: Store, src: Source, cfg: Config, wf: Workflow,
 		await reply(store, src, a, `${MARK} Not sent ${wf.code}: you already replied in the chat.`)
 		return false
 	}
-	if (!ours && await heldSend(store, src, wf, a, { messages, automatic: !!by.ruleId, quick: by.quick })) return false
+	const checked = !by.ruleId || a.page ? new Map<string, string | undefined>() : undefined
+	if (!ours && await heldSend(store, src, wf, a, { messages, automatic: !!by.ruleId, quick: by.quick, checked })) return false
 	// Every automatic send rechecks membership; a failed read must not reuse an earlier safe audience.
 	if (by.ruleId) {
 		await membersOf(store, src, wf.chat.id, true)
@@ -819,6 +834,40 @@ export async function send(store: Store, src: Source, cfg: Config, wf: Workflow,
 			return false
 		}
 	} else out = authorize({ automatic: false, text: out }).text
+	if (checked) {
+		const until = Date.now() + 5000
+		let stable = false
+		while (Date.now() < until) {
+			const judgments = checked.size
+			const latest = await threadSince(store, src, cfg, wf, out ? norm(mdToHtml(out)) : '', !!out && out !== text)
+			if (latest.ownerReplied || latest.ours) {
+				if (inWork(store, wf)) {
+					const home = homeOf(store, wf)
+					Object.assign(wf, { ...stateFields(wf, 'open'), status: statusOf(home), pending: [] })
+					step(home, `${wf === home ? '' : `${wf.code}: `}You replied in the chat yourself`)
+					newTurn(wf, !!wf.sent)
+					if (home !== wf) store.save(home)
+				} else {
+					close(wf, latest.ownerExact || latest.ours ? 'You sent it yourself' : 'You replied yourself')
+					wf.closedBy = 'replied'
+				}
+				commit(true, { askAt: askAtOf(store.thread(wf.id), wf.msgIds), replyAt: latest.ownerAt })
+				await reply(store, src, a, `${MARK} Not sent ${wf.code}: you already replied in the chat.`)
+				return false
+			}
+			if (await heldSend(store, src, wf, a, { messages: latest.messages, automatic: !!by.ruleId, quick: by.quick, checked })) return false
+			if (Date.now() >= until) break
+			if (checked.size === judgments) { stable = true; break }
+		}
+		if (!stable) {
+			const why = "Delegate couldn't finish checking the chat in time. Check the chat and Send again."
+			Object.assign(wf, { ...stateFields(wf, 'needs_human'), approved: undefined, sendAt: undefined, ...statusFields('not-sent', `Not sent: ${why}`) })
+			commit()
+			store.log({ event: 'owner-send-held', code: wf.code, kind: 'thread-not-settled' })
+			await reply(store, src, a, `${MARK} Not sent ${wf.code}: ${why}`, true)
+			return false
+		}
+	}
 	try { ({ msgId } = await src.send(wf.chat.id, out!, replyContext(wf, out!, named, cfg.owner.id))) } catch (e) {
 		if (!(e instanceof SendUncertain)) throw e
 		// May have been posted: held for the owner, never sent again by a rule, a retry or a stale ok (bug 10-23 R4).
@@ -912,9 +961,9 @@ function recordAnswerResult(store: Store, a: Answer, text: string, refused = fal
 async function reply(store: Store, src: Source, a: Answer, text: string, refused = false) {
 	// The surface that acted reads its own result, so a refusal is never shown as success (final review P1-2).
 	const detail = recordAnswerResult(store, a, text, refused)
-	if (a.surface === 'chat' || a.surface === 'panel') return store.addReceipt(detail)
+	if (a.surface === 'chat' || a.surface === 'panel') { store.addReceipt(detail); return true }
 	if (a.surface !== 'self') return
-	try { await say(store, src, text) } catch (e) { store.log({ event: 'ack-failed', code: a.code, error: String(e) }) }
+	try { await say(store, src, text); return true } catch (e) { store.log({ event: 'ack-failed', code: a.code, error: String(e) }); return false }
 }
 
 const CONTROL_REPLY = {

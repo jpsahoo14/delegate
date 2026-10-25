@@ -10,10 +10,13 @@ export const useResultLine = create<LineState>(() => ({}))
 export const closeResultLine = (id: string) => useResultLine.setState({ closed: id })
 
 // Who and where, from the projection's item while it is there, else from what the receipt kept when it completed.
+// Decision 52 C(1) (PE 06:09:01Z): a receipt saved before the fix may keep an untitled group's raw chat id; it is dropped, so the
+// line reads just the name. The writer stores the place label from 0.2.46.
+const RAW_CHAT = /^19:|@thread(\.v2|\.tacv2|\.skype)?$/i
 export function whoAndChat(entities: Entities, code: string, kept?: { who?: string; chat?: string }): string {
 	const item = entities.items[code], chat = item && entities.chats[item.chatId]
 	const who = item ? entities.people[item.personId]?.name.split(/\s+/)[0] : kept?.who
-	const where = item ? chat?.group ? chat.name : undefined : kept?.chat
+	const where = item ? chat?.group ? chat.place?.sentence ?? chat.name : undefined : kept?.chat && !RAW_CHAT.test(kept.chat) ? kept.chat : undefined
 	return [who, where].filter(Boolean).join(' in ')
 }
 

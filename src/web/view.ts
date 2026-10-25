@@ -18,6 +18,7 @@ import type { UiChoice } from '../store/state.ts'
 import { place, snapshot, type NextView, type Snap } from './next.ts'
 import { currentDraft } from '../core/policy.ts'
 import { htmlToText, isPersona } from '../core/intake.ts'
+import { placeOf, type Place } from './model/place.ts'
 
 // The one shape every surface renders: the browser page, the chat panel, and the synced snapshot (design-spec/data.md).
 // Only what the owner should see: no ids, paths, or raw citations.
@@ -31,7 +32,7 @@ export type Change = { n: number; summary: string; target: string; system: strin
 export type CardType = 'reply' | 'question' | 'choice' | 'meeting' | 'review'
 
 export type ItemCard = {
-	code: string; type: CardType; rev: string; who: Who; chat: { name: string; group: boolean; guests: boolean }; at: string
+	code: string; type: CardType; rev: string; who: Who; chat: { name: string; group: boolean; guests: boolean; place?: Place }; at: string
 	ask?: string; thread: { who: string; text: string; at: string; owner: boolean }[]; newCount: number; earlier?: string
 	// From the first-setup read: when the ask was sent.
 	before?: string
@@ -190,7 +191,7 @@ export function card(store: Store, w: Workflow, k = knowledgeOf(store, store.con
 	const draft = replied ? undefined : currentDraft(w, job)
 	return {
 		code: w.code, type: cardType(w), rev: w.revAt ?? w.updatedAt, who: who(w.startedBy === 'owner' ? 'You' : w.asker?.name), at: w.createdAt,
-		chat: { name: w.chat.name, group: !!w.chat.group, guests: !!w.chat.guests },
+		chat: { name: w.chat.name, group: !!w.chat.group, guests: !!w.chat.guests, ...(placed => (placed ? { place: placed } : {}))(placeOf(store, w.chat, w.asker)) },
 		ask: w.lastAsk === undefined ? undefined : htmlToText(w.lastAsk), newCount: w.newCount, earlier: w.earlier === undefined ? undefined : htmlToText(w.earlier), before: w.before ? store.thread(w.id).find(m => m.id === w.lastMsgId)?.at ?? w.createdAt : undefined,
 		thread: thread.slice(-12).map(m => ({ who: m.from.name, text: htmlToText(m.text).slice(0, 600), at: m.at, owner: !!m.byOwner })),
 		question: w.question === undefined || replied ? undefined : htmlToText(w.question), draft: draft?.text && !/^_{3,}$/.test(draft.text.trim()) ? { text: draft.text, commitment: draft.commitment, preview: !!draft.preview, ...(draft.holding ? { holding: true } : {}) } : undefined,
@@ -231,12 +232,12 @@ export const msgKeys = (w: Pick<Workflow, 'chat' | 'msgIds'>) => { const c = isT
 
 // An item's own Done row: its reply, its Catch up line, the owner's reply in Teams, or how it closed. Skipped items have none.
 function itemRow(store: Store, w: Workflow): DoneRow | undefined {
-	const name = w.asker?.name ?? 'Someone', where = w.chat.group ? ` in ${w.chat.name}` : '', first = name.split(/[\s,(]+/)[0]
+	const name = w.asker?.name ?? 'Someone', where = w.chat.group ? ` in ${placeOf(store, w.chat, w.asker)?.sentence ?? w.chat.name}` : '', first = name.split(/[\s,(]+/)[0]
 	const made = (w.effects ?? []).filter(e => e.done)
 	const sent = w.sent?.text ?? w.draft?.text
 	const base = { code: w.code, who: who(name), teams: teamsOf(w), ask: w.redacted ? undefined : askLine(w.lastAsk) || undefined, ...(w.msgIds.length ? { msgs: msgKeys(w) } : {}) }
 	if (w.sent) return { ...base, kind: made.length && w.intent === 'pr_review' ? 'review' : 'reply', sentence: made.length && w.intent === 'pr_review' ? `Reviewed for ${name} and replied${where}` : `Replied to ${name}${where}`, by: w.sent.byRule ? `by rule ${w.sent.byRule}` : 'by you', ...(w.sent.byRule ? { rule: w.sent.byRule } : {}), at: w.sent.at, text: w.redacted || sent === undefined ? undefined : htmlToText(sent), said: w.redacted ? undefined : short(sent), own: !w.sent.byRule, notes: w.notes ?? [], why: { reason: w.decision?.reason, confidence: w.decision?.confidence, sources: (w.draft?.sources ?? []).map(s => source(s.ref, s.tier, s.stale, s.label)), gaps: w.gaps ?? [] }, rule: w.sent.byRule, undoUntil: w.sent.undoUntil, work: workLine(homeOf(store, w)) }
-	if (w.fyi) return { ...base, kind: 'catchup', sentence: htmlToText(w.fyi.line), gist: w.fyi.gist === undefined ? base.ask : htmlToText(w.fyi.gist), watch: w.fyi.watch, watchedAs: w.watchedAs, by: `${first}${w.chat.group ? ` · ${w.chat.name}` : ''}`, at: w.fyi.at ?? w.updatedAt, high: w.fyi.weight === 'high' }
+	if (w.fyi) return { ...base, kind: 'catchup', sentence: htmlToText(w.fyi.line), gist: w.fyi.gist === undefined ? base.ask : htmlToText(w.fyi.gist), watch: w.fyi.watch, watchedAs: w.watchedAs, by: `${first}${w.chat.group ? ` · ${placeOf(store, w.chat, w.asker)?.row ?? w.chat.name}` : ''}`, at: w.fyi.at ?? w.updatedAt, high: w.fyi.weight === 'high' }
 	if (closedHow(w) === 'replied') {
 		// Answered in Teams by the owner: a reply like any other, with their own words from the thread.
 		const mine = store.thread(w.id).filter(m => m.byOwner).at(-1)
@@ -270,7 +271,7 @@ function doneRows(store: Store, since: string, workflows = store.workflows(), it
 		const w = byCode.get(String(e.code)), asker = e.asker as { name?: string } | undefined, name = asker?.name ?? w?.asker?.name ?? 'Someone'
 		const rule = String(e.approvedBy ?? '').startsWith('rule:') ? String(e.approvedBy).slice(5) : undefined, chat = typeof e.chat === 'string' ? e.chat : w?.chat.id
 		listed.add(String(e.msgId))
-		rows.push({ code: String(e.code), kind: 'reply', who: who(name), sentence: `Replied to ${name}${w?.chat.group ? ` in ${w.chat.name}` : ''}`, by: rule ? `by rule ${rule}` : 'by you', at: String(e.at), text: typeof e.text === 'string' && !w?.redacted ? htmlToText(e.text) : undefined, said: typeof e.text === 'string' && !w?.redacted ? short(e.text) : undefined, own: !rule, rule, sentId: String(e.msgId), earlier: true, teams: chat && (!w?.chat.test || teamsChat(chat)) ? messageLink(chat, String(e.msgId)) : undefined })
+		rows.push({ code: String(e.code), kind: 'reply', who: who(name), sentence: `Replied to ${name}${w?.chat.group ? ` in ${placeOf(store, w.chat, w.asker)?.sentence ?? w.chat.name}` : ''}`, by: rule ? `by rule ${rule}` : 'by you', at: String(e.at), text: typeof e.text === 'string' && !w?.redacted ? htmlToText(e.text) : undefined, said: typeof e.text === 'string' && !w?.redacted ? short(e.text) : undefined, own: !rule, rule, sentId: String(e.msgId), earlier: true, teams: chat && (!w?.chat.test || teamsChat(chat)) ? messageLink(chat, String(e.msgId)) : undefined })
 	}
 	for (const e of store.logs(7).filter(e => e.event === 'sent' && String(e.approvedBy ?? '').startsWith('automation:') && String(e.at) > since)) {
 		const name = (e.asker as { name?: string })?.name ?? 'someone'
@@ -330,7 +331,7 @@ export function view(store: Store, since: string | undefined, now = new Date(), 
 	const progress = wfs.filter(w => represented.has(w.code) && (todos.has(w.code) || w.state === 'open' || w.state === 'waiting_on_sender')).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map(w => {
 		const k = homeOf(store, w).work, job = k?.watch ? store.job(k.watch) : undefined, last = k?.steps.at(-1)
 		const next = todos.has(w.code) ? `You: ${openTodos(w).map(t => t.text).join('; ')}` : k ? nextOf(k) : undefined
-		return { code: w.code, who: who(w.asker?.name), chat: w.chat.name, goal: htmlToText(k?.goal ?? w.lastAsk ?? w.status), status: htmlToText(w.status), last: last && { at: last.at, what: htmlToText(last.what) }, next: next === undefined ? undefined : htmlToText(next), checkAt: k?.checkAt, every: job?.every, endsAt: job?.every ? job.endsAt : undefined, rev: w.updatedAt }
+		return { code: w.code, who: who(w.asker?.name), chat: placeOf(store, w.chat, w.asker)?.row ?? w.chat.name, goal: htmlToText(k?.goal ?? w.lastAsk ?? w.status), status: htmlToText(w.status), last: last && { at: last.at, what: htmlToText(last.what) }, next: next === undefined ? undefined : htmlToText(next), checkAt: k?.checkAt, every: job?.every, endsAt: job?.every ? job.endsAt : undefined, rev: w.updatedAt }
 	})
 	// An item open in a terminal is not running: Delegate waits for the window (#43).
 	const running = [...g.running.filter(w => represented.has(w.code) && !todos.has(w.code) && !w.openOn).map(w => ({ code: w.code, what: htmlToText(w.status), who: w.asker?.name, since: w.waitingSince ?? w.updatedAt })), ...(snap ? [] : bootLines(store)).map(b => ({ code: '', what: htmlToText(b.what), since: b.since, ...(b.total ? { progress: (b.done ?? 0) / b.total } : {}) }))]
@@ -340,12 +341,12 @@ export function view(store: Store, since: string | undefined, now = new Date(), 
 	if (state !== 'on') health.unshift({ key: 'paused', text: state === 'stopped' ? `${NAME} is stopped. It is not reading your chats.` : `${NAME} is paused. It keeps drafting, and sends nothing.`, since: '', fix: { label: 'Resume', command: 'resume' } })
 	const people = new Map<string, { chat: string; group: boolean }>()
 	// A test chat is a real chat: its group, or a real person in it, can get a reminder; a "[as Name]" persona never can.
-	for (const w of wfs) if (w.asker && !isThread(w.chat.id) && (w.chat.group || !(w.chat.test && isPersona(w.asker.id)))) people.set(w.chat.group ? w.chat.name : w.asker.name, { chat: w.chat.id, group: !!w.chat.group })
+	for (const w of wfs) if (w.asker && !isThread(w.chat.id) && (w.chat.group || !(w.chat.test && isPersona(w.asker.id)))) people.set(w.chat.group ? placeOf(store, w.chat, w.asker)?.sentence ?? w.chat.name : w.asker.name, { chat: w.chat.id, group: !!w.chat.group })
 	// The owner's asks nobody answered for followUpHours (default 24) (design: Waiting on others).
 	const due = now.getTime() - (cfg.followUpHours ?? 24) * 3_600_000
 	// A wait with an open follow-up item is shown as that item; once the item closes, it returns after another followUpHours.
 	const quietSince = (w: ReturnType<Store['waiting']>[number]) => { const f = w.item ? store.byCode(w.item) : undefined; return f ? (f.state === 'done' ? Date.parse(f.updatedAt) : Infinity) : Date.parse(w.at) }
-	const waiting = store.waiting().filter(w => w.state === 'waiting' && quietSince(w) < due).map(w => ({ code: w.code, to: w.to.join(', '), chat: w.chat.name, text: htmlToText(w.text), at: w.at, link: w.msgId ? messageLink(w.chat.id, w.msgId) : undefined }))
+	const waiting = store.waiting().filter(w => w.state === 'waiting' && quietSince(w) < due).map(w => ({ code: w.code, to: w.to.join(', '), chat: placeOf(store, w.chat, { name: w.to[0] })?.row ?? w.chat.name, text: htmlToText(w.text), at: w.at, link: w.msgId ? messageLink(w.chat.id, w.msgId) : undefined }))
 	const updates = watching.filter(w => w.update).length
 	return {
 		now: now.toISOString(), since, owner: cfg.owner.name,
