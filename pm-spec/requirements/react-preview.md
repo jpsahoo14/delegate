@@ -1,5 +1,39 @@
 # React preview requirements
 
+Measurable AI usage (0.2.47):
+- Count a logged run even when it reported no usage. Unknown calls/tokens/time stay unknown, not zero.
+- Include checking the owner's replies, checking promises and reading rules as distinct run kinds.
+  Do not attribute owner-reply judgments to an item; they can cover several items.
+- The paired view shows measurable totals/over-time/model breakdown from launch, with truthful
+  coverage and partial earlier windows. Never backfill missing history or convert tokens to money.
+- HOST logging and New's view ship together; the separate WDD/Undo and rule-covered result bundles stay out.
+
+Settings interval and watches (0.2.47):
+- Choosing a longer quiet check interval must not stretch an active watch's configured schedule.
+  Eligible future watch deadlines may wake the runner before the next quiet poll.
+- While the runner is stopped, watches do not add wake deadlines; past-due blocked watches return to
+  ordinary idle cadence instead of causing repeated immediate wakes. Existing pause behavior and health stay unchanged.
+- The runner companion and New's Settings range/help/save-note changes ship together. No live setting,
+  watch default, read scope or AI budget is changed by this companion.
+
+Cross-item chat news (0.2.47):
+- When the same 1:1 counterpart, or a known asker in a group, writes in another item in that chat,
+  record that fact on the other active work item. Its existing no-news check may wait from that news.
+- Count one news step per other work/target item, at the actual message time. Do not treat an unrelated
+  group member as the asker, guess from names or claim the message answered the other work.
+- Keep pending work, state and any existing question untouched; this does not wake a run or close anything.
+
+Question hints (0.2.47):
+- Keep suggested answers beside the question that produced them, with at most three short, sanitised answers.
+  Never reuse an earlier question's answers for a new question, preview, retry or engine-made request.
+- Preserve existing questions, choices and approval/send behavior. Older items without typed hints remain
+  readable without a rewrite; HOST application and New's typed chips/legacy-only fallback ship together.
+
+Owner-wait questions (0.2.47):
+- When the existing work check asks about the owner's own step, offer Report how it went, Remind me in 3 days,
+  and Close it, not a follow-up draft to the asker. Use the stored step and waiting-since day.
+- Preserve the existing trigger/timing and all other-person, send, closure, placement and schema behavior.
+
 Text inbox/details:
 - Use the same cached place labels as the page for untitled groups, excluding the item's asker and owner.
   Keep titled-chat and 1:1 wording unchanged; do not show a raw chat id as a place label.
@@ -30,6 +64,9 @@ New-message PR joins:
 - With one eligible matching item, join it; with several, honor a matching explicit reply, otherwise keep ambiguity visible.
 - Keep the item's original PR when a multi-PR body joins it and show the other mention. It grants no effects or votes on the
   other PR. Bare numbers and GitHub/GitLab links must not collide with ADO IDs; existing no-PR and consent gates stay intact.
+- Keep the other named PR numbers with the original anchor, not in replaceable report context. Later joins do not
+  change that list, and clearing the anchor clears it. Old anchors without a list are not guessed or backfilled.
+  HOST's stored-data producer and New's valid-anchor rendering ship together in .47; the PR-target guards do not change.
 - Naming only the current PR preserves the previous quote/subject-relation rules; only multiple named PRs get the
   sole-match override. Conflicts stay blocked even after their once-per-code diagnostic has already been recorded.
 

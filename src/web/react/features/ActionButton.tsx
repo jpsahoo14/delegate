@@ -94,7 +94,7 @@ export { verbing } from '../domain/verbing.ts'
 const CHANGED = 'The card changed as you clicked. Nothing was done; check and click again.'
 export function ActionButton({ action, input, primary = false, disabled = false, ariaLabel, pendingLabel, prepareInput, disabledReason, label: shownLabel }: {
 	action: Action; input?: Intent['input']; primary?: boolean; disabled?: boolean; ariaLabel?: string; pendingLabel?: string; prepareInput?: () => Intent['input']
-	// A label the card says in its own words, such as "Draft my update to Pat"; the action's own label otherwise.
+	// A label the card says in its own words, such as "Draft the update to Pat"; the action's own label otherwise.
 	label?: string
 	// Why the caller disabled it, for the hover text: 'stale' (changed since you looked), 'pick' (no option picked), or words.
 	disabledReason?: 'stale' | 'pick' | string

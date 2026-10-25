@@ -68,7 +68,7 @@ export function okSendGate(store: Store, cfg: Config, wf: Workflow, a: Answer): 
 	if (denied) {
 		wf.status = `${shown(denied.effect).line} cannot be made: ${denied.why}.`
 		// An old invite cannot be retried as it is: the owner is offered a new draft (legacy E16).
-		if (denied.why!.startsWith(OLD_INVITE)) { wf.status += ' Nothing was created, and the reply was not sent.'; wf.question = OLD_INVITE_ASK; wf.revAt = new Date().toISOString() }
+		if (denied.why!.startsWith(OLD_INVITE)) { wf.status += ' Nothing was created, and the reply was not sent.'; Object.assign(wf, { question: OLD_INVITE_ASK, questionHint: undefined, revAt: new Date().toISOString() }) }
 		wf.statusReason = { kind: 'refused', text: wf.status, at: new Date().toISOString() }
 		commit(); store.markShown([wf])
 		return { refuse: { text: `${MARK} Not done ${wf.code}: ${wf.status} Nothing was changed.`, refused: true }, voteChecks }
@@ -420,7 +420,7 @@ export async function send(store: Store, src: Source, cfg: Config, wf: Workflow,
 		store.log({ event: 'owner-send-history', workflowId: wf.id, code: wf.code, text: `Sent. ${check}` })
 	}
 	const first = (wf.asker?.name ?? 'them').split(/\s+/)[0]
-	if (holding) Object.assign(wf, { ...stateFields(wf, 'needs_human'), question: wf.question ?? `What should the full reply to ${first} say?`, approved: undefined, status: `Holding reply sent. ${first} is waiting for the full answer.` })
+	if (holding) Object.assign(wf, { ...stateFields(wf, 'needs_human'), question: wf.question ?? `What should the full reply to ${first} say?`, questionHint: wf.question != null ? wf.questionHint : undefined, approved: undefined, status: `Holding reply sent. ${first} is waiting for the full answer.` })
 	else if (reviewReply) {
 		if (wf.reviewRun?.rule === by.ruleId && wf.reviewDone && !wf.pending.length)
 			Object.assign(wf, { ...stateFields(wf, 'needs_human'), status: `PR ${wf.reviewDone.pr} waits for your approval`, approved: undefined })

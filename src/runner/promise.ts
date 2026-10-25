@@ -14,6 +14,7 @@ import type { Store } from '../store/state.ts'
 import { buildPromisePrompt } from '../worker/prompt.ts'
 import { readDirs, WORKER_TOOLS, workerMcp, type RunWorker } from './dispatch.ts'
 import { agentSetupFailure } from '../core/agent-failure.ts'
+import { ran } from '../core/runinfo.ts'
 import { blockedAgent, holdAgent } from './agent-health.ts'
 import { prTarget, voteNow, type BuildProbe } from './probe.ts'
 import { carry, executing } from './jobs.ts'
@@ -43,7 +44,7 @@ export function rest(store: Store, wf: Workflow, status?: string) {
 	const home = homeOf(store, wf)
 	if (active(home)) Object.assign(wf, { ...stateFields(wf, 'open'), status: status ?? statusOf(home), pending: [] })
 	else close(wf, status ?? `Sent: "${(wf.sent?.text ?? '').slice(0, 80)}"`)
-	Object.assign(wf, { promise: undefined, question: undefined })
+	Object.assign(wf, { promise: undefined, question: undefined, questionHint: undefined })
 }
 
 // The offered changes are withdrawn, on the item and on its job, unless a change run is already making them.
@@ -71,7 +72,7 @@ export function reopenPromise(store: Store, wf: Workflow) {
 }
 // The check could not finish: the reply already went; nothing is made. The owner sees that it failed and can run it again.
 export function failPromise(store: Store, wf: Workflow, error?: string, said = wf.promise?.text ?? '') {
-	Object.assign(wf, { ...stateFields(wf, 'needs_human'), draft: undefined, promise: { ...wf.promise!, text: said, state: 'failed', why: error?.slice(0, 160) }, status: `Sent. Could not check what your reply promised${error ? `: ${error.slice(0, 120)}` : ''}`, question: undefined, revAt: new Date().toISOString() })
+	Object.assign(wf, { ...stateFields(wf, 'needs_human'), draft: undefined, promise: { ...wf.promise!, text: said, state: 'failed', why: error?.slice(0, 160) }, status: `Sent. Could not check what your reply promised${error ? `: ${error.slice(0, 120)}` : ''}`, question: undefined, questionHint: undefined, revAt: new Date().toISOString() })
 	store.save(wf)
 	store.log({ event: 'promise-failed', workflowId: wf.id, code: wf.code, error: error?.slice(0, 200) })
 }
@@ -118,6 +119,7 @@ export async function checkPromise(store: Store, src: Source, cfg: Config, wf: W
 		store.addRun()
 		restoreSession(store, session)
 		const res = await run({ ...cfg.agent, tools }, { workflowId: wf.id, runId, sessionId: session, prompt: buildPromisePrompt(wf, store.thread(wf.id), cfg, store.root, prTarget(store, wf)), cwd: job?.repo ?? cwd, mcpConfigPath, extraTools: WORKER_TOOLS, dirs: readDirs(store, cfg) })
+		store.log({ event: 'promise-run', workflowId: wf.id, runId, ms: res.ms, ...ran('promise', res.used) })
 		backupSession(store, session)
 		report = store.peekReport(wf.id, runId)
 		store.archiveReport(wf.id, runId)
@@ -159,13 +161,13 @@ export async function checkPromise(store: Store, src: Source, cfg: Config, wf: W
 		newTurn(fresh)
 		const pr = prTarget(store, fresh)
 		if (pr && now.head) fresh.reviewAgain = { pr, head: now.head, at: new Date().toISOString() }
-		Object.assign(fresh, { ...stateFields(fresh, 'needs_human'), promise: undefined, question: now.again, status: `PR ${prTarget(store, fresh)} changed since your review`, revAt: new Date().toISOString() })
+		Object.assign(fresh, { ...stateFields(fresh, 'needs_human'), promise: undefined, question: now.again, questionHint: undefined, status: `PR ${prTarget(store, fresh)} changed since your review`, revAt: new Date().toISOString() })
 		lines.push(`${fresh.code}: ${now.again}`)
 	} else if (now.effects.length && (shared = carry(store, cfg, fresh, now.effects)) !== 'shared') {
 		// A change run is making the list the owner already approved: this one is checked again after it.
 		if (shared === 'busy') return again()
 		const line = saidLine(now.effects), meaning = now.effects.map(e => e.pr).find(Boolean)
-		Object.assign(fresh, { ...stateFields(fresh, 'needs_human'), draft: undefined, effects: now.effects, promised: undefined, approved: undefined, question: undefined, promise: { ...fresh.promise!, text: said, state: 'offered', why: undefined }, status: line, revAt: new Date().toISOString() })
+		Object.assign(fresh, { ...stateFields(fresh, 'needs_human'), draft: undefined, effects: now.effects, promised: undefined, approved: undefined, question: undefined, questionHint: undefined, promise: { ...fresh.promise!, text: said, state: 'offered', why: undefined }, status: line, revAt: new Date().toISOString() })
 		allowLeft(fresh, now.effects)
 		lines.push(`${fresh.code}: ${line.replace(/^You/, 'you')}${meaning ? ` ("${meaning.title}" by ${meaning.author}${meaning.autoComplete ? '; autocomplete is on: your approval may complete it' : ''})` : ''}. Say "ok ${fresh.code}" to do it, or "skip ${fresh.code}".`)
 	} else {

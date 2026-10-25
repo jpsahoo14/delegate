@@ -9,6 +9,7 @@ import { Avatar } from './Avatar.tsx'
 import { useScreenNavigation } from './navigation.tsx'
 import { useSnapshot } from '../data/hooks.ts'
 import { ActivityRow } from './Done.tsx'
+import { AiUse } from '../features/AiUse.tsx'
 import './tools.css'
 
 type NumberLink = NumbersData['model']['handled']['main']
@@ -66,7 +67,7 @@ export default function Numbers() {
 				<p>{line(data.model.handled.kinds)}</p><div className="ct-num-row">{data.model.handled.check && link(data.model.handled.check)}{data.model.handled.all && <span className="ct-num-all">{link(data.model.handled.all)} <Icon name="right" /></span>}</div>{data.model.handled.check && how('check')}
 			</section>
 			<div className="ct-num-cards">{data.model.cards.map(card => <section className="ct-num-card" key={card.rule}><h2 className="ct-num-title">{card.title}</h2><p className="ct-num-main">{link(card.main)}</p>{card.meter && <div className="ct-num-meter" role="img" aria-label={`${card.meter.n} of ${card.meter.of} as drafted`}><i style={{ width: `${card.meter.of ? card.meter.n / card.meter.of * 100 : 0}%` }} /></div>}<ul className="ct-num-lines">{card.lines.map((parts, i) => <li key={i}>{line(parts)}</li>)}<li className="ct-muted">{link(card.four)}</li></ul>{how(card.rule)}</section>)}</div>
-			<section className="ct-num-card" aria-label="Guardrails"><p><strong>Corrections:</strong> {data.model.corrections.map((part, i) => <Fragment key={i}>{link(part)}</Fragment>)}</p>{how('corrections')}{data.model.unknown && <><p>{link(data.model.unknown)}</p>{how('unknown')}</>}<p>{data.model.promises}</p>{how('promises')}<div className="ct-tool-actions"><Button variant="outline" onClick={() => void copy(data.model.summary)}>Copy a summary</Button><span className="ct-muted">numbers only, no names and no message text</span></div>{message && <p role="status">{message}</p>}<details className="ct-num-how"><summary>See what is copied</summary><pre className="ct-num-summary">{data.model.summary}</pre></details></section>
+			<section className="ct-num-card" aria-label="Guardrails"><p><strong>Corrections:</strong> {data.model.corrections.map((part, i) => <Fragment key={i}>{link(part)}</Fragment>)}</p>{how('corrections')}{data.model.unknown && <><p>{link(data.model.unknown)}</p>{how('unknown')}</>}<p>{data.model.promises}</p>{how('promises')}{data.usage && <AiUse usage={data.usage} how={how('usage')} />}<div className="ct-tool-actions"><Button variant="outline" onClick={() => void copy(data.model.summary)}>Copy a summary</Button><span className="ct-muted">numbers only, no names and no message text</span></div>{message && <p role="status">{message}</p>}<details className="ct-num-how"><summary>See what is copied</summary><pre className="ct-num-summary">{data.model.summary}</pre></details></section>
 		</>}
 	</div>
 }

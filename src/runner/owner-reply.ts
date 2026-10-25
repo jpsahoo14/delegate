@@ -13,6 +13,7 @@ import { workerMcp, WORKER_SERVER } from './dispatch.ts'
 import { backupSession } from './own.ts'
 import { recordOwnerReply } from './intake.ts'
 import { agentSetupFailure } from '../core/agent-failure.ts'
+import { ran } from '../core/runinfo.ts'
 import { blockedAgent, holdAgent } from './agent-health.ts'
 
 export const OWNER_REPLY_UNCHECKED = `${NAME} couldn't check with the AI whether you already replied; it found no reply of yours in the chat.`
@@ -87,6 +88,7 @@ export async function ownerReplies(store: Store, cfg: Config, raw: RawMsg, text:
 	try {
 		store.addRun()
 		const run = await runAgent({ ...cfg.agent, tools: [] }, { sessionId, prompt, cwd, mcpConfigPath, extraTools: [`${WORKER_SERVER}-submit_report`] }, 90_000)
+		store.log({ event: 'owner-reply-run', chat: items[0].chat.id, msgId: raw.id, runId, ms: run.ms, ...ran('owner-reply', run.used) })
 		backupSession(store, sessionId)
 		const report = store.peekReport(id, runId) ?? reportFromText(run.summary, id, ['other'])
 		const selected = report?.answeredItems

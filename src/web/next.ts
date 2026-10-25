@@ -10,7 +10,7 @@ import { DELAYS, MAX_TRIES } from '../runner/retry.ts'
 import { cardType, msgKeys, readingOf, who as whoOf, type Who } from './view.ts'
 import { NAME } from '../brand.ts'
 import { handledThisWeek } from '../store/numbers.ts'
-import { openLeft, openTodos } from '../runner/work.ts'
+import { openLeft, openTodos, waitsOnOwner } from '../runner/work.ts'
 import { leftWords } from './model/left-words.ts'
 import { htmlToText } from '../core/intake.ts'
 import { activeAgentHold, type AgentSetupFailure } from '../core/agent-failure.ts'
@@ -191,7 +191,7 @@ export type RowKind =
 const CARD_MORE = 'ok <code> except <every change> (Send reply only) | <code>: review again (Review again)'
 export const COMMANDS: Record<RowKind, string> = {
 	reply: `ok <code> (whole draft on the row) | card | ${CARD_MORE}`, holding: `ok <code> (whole draft on the row) | card | ${CARD_MORE}`, question: `card | ${CARD_MORE}`, choice: `card | ${CARD_MORE}`, meeting: `card | ${CARD_MORE}`, review: `card | ${CARD_MORE}`, promise: 'ok <code>',
-	'check-date': '<code>: nudge them', track: 'ok <code>', stopped: '<code>: try again', 'reminder-new': 'ok <code>',
+	'check-date': '<code>: nudge them | <code>: {text} (Report, when it waits on you)', track: 'ok <code>', stopped: '<code>: try again', 'reminder-new': 'ok <code>',
 	// N2: Report in the opened item ("<code>: Issues found: 403 on checkout"), and Mark done, which is close with a new meaning
 	// on an item with open to-dos: it marks them done and changes nothing else (R-NEX-05, R-NEX-07).
 	'your-step': '<code>: {text} | <code>: {result}: {text} (Report)', todo: 'close <code> (Mark done)',
@@ -242,7 +242,7 @@ export type WorkStep = { what: string; owner: Owner; done: boolean; now: boolean
 export type NextWork = {
 	goal: string; steps: WorkStep[]
 	// The owner's step, and the newest step a build check saw done: "Deploy done 10:05 (build 991)".
-	yours?: { what: string; check?: { what: 'Deploy' | 'Build'; at: string; build: number } }
+	yours?: { what: string; since?: string; check?: { what: 'Deploy' | 'Build'; at: string; build: number } }
 	// Someone else's step, or Delegate's: who, in the AI's words, and the owner's step after it.
 	then?: { owner: Owner; what: string; you?: string }
 	// Report your result: the command, with {result} and {text} filled from the form. Only when the next step is the owner's.
@@ -360,6 +360,8 @@ function itemRow(s: Snap, p: Placed, w: Workflow): Body {
 	const base = { who: whoOf(w.asker?.name), facts, chips: chipsOf(w, j), teams: teamsLink(w), rev: w.revAt ?? w.updatedAt }
 	const open: RowAction = { label: 'Open' }
 	const goal = (t?: string): Note[] => t ? [{ label: 'Goal', text: clip(t, 200) }] : []
+// C4: "Tue 20 Oct" in his time zone, the day the work began waiting on him (work.waitingOn.since).
+const ownerDay = (s: Snap, at: string) => Number.isFinite(Date.parse(at)) ? new Date(at).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', ...(s.tz ? { timeZone: s.tz } : {}) }).replace(',', '') : at.slice(0, 10)
 	// A rule send, minutes before it goes. While paused a rule never schedules one (runner/autosend.ts), so nothing here
 	// promises a send after resume (PM verification of N1a).
 	if (w.state === 'scheduled') {
@@ -387,7 +389,11 @@ function itemRow(s: Snap, p: Placed, w: Workflow): Body {
 			case 'choice': return { ...base, kind, headline: `Pick for ${name}: ${clip(pickPrompt(w.choices?.prompt ?? w.lastAsk), 110)}`, primary: open }
 			case 'meeting': return { ...base, kind, headline: `Meet ${name}: ${clip(w.meeting?.subject ?? w.lastAsk, 90)}?`, when: w.meeting?.start, ...(clash ? { warn: htmlToText(`${clash.label}: ${clash.text}`) } : {}), primary: open }
 			case 'review': return { ...base, kind, headline: `Approve ${commentsOrChanges(w)}${d ? `, then reply to ${name}` : ''}`, next: { owner: { kind: 'delegate' }, what: `after your ok, ${NAME} ${/comment/.test(commentsOrChanges(w)) ? 'posts them' : 'makes them'}${d ? ' and replies' : ''}` }, primary: open }
-			case 'check-date': return { ...base, kind, headline: `No news on "${clip(w.work?.goal, 80)}": nudge, wait, or close?`, facts: { ...facts, quote: undefined, verb: undefined, at: w.work?.steps.at(-1)?.at ?? w.createdAt, notes: w.work?.waitingOn ? [{ label: 'Waiting on', text: clip(w.work.waitingOn.who, 60), since: w.work.waitingOn.since }] : [] }, primary: { label: 'Draft a nudge', command: `${c}: nudge them` }, more: [{ label: 'Wait 3 days', command: `wait ${c}: 3d` }, { label: 'Close', command: `close ${c}` }] }
+			// C4 (PE 09:25:25Z part (2); PM round 3/4 words): when the open work waits on HIM (HOST's shared waitsOnOwner), no nudge to the
+			// asker: report how it went (the your-step form, the same answer verb), remind me in 3 days (wait), close it (close). Other-person
+			// rows below are unchanged.
+			case 'check-date': if (waitsOnOwner(w, s.me)) return { ...base, kind, headline: `Still on your list since ${ownerDay(s, w.work!.waitingOn!.since)}: ${clip(w.work?.next?.what ?? w.work?.goal, 120).replace(/[.\s]+$/, '')}.`, facts: { ...facts, quote: undefined, verb: undefined, at: w.work!.waitingOn!.since, notes: goal(w.work?.goal) }, primary: { label: 'Report how it went', command: `${c}: {text}` }, more: [{ label: 'Remind me in 3 days', command: `wait ${c}: 3d` }, { label: 'Close it', command: `close ${c}` }] }
+				return { ...base, kind, headline: `No news on "${clip(w.work?.goal, 80)}": nudge, wait, or close?`, facts: { ...facts, quote: undefined, verb: undefined, at: w.work?.steps.at(-1)?.at ?? w.createdAt, notes: w.work?.waitingOn ? [{ label: 'Waiting on', text: clip(w.work.waitingOn.who, 60), since: w.work.waitingOn.since }] : [] }, primary: { label: 'Draft a nudge', command: `${c}: nudge them` }, more: [{ label: 'Wait 3 days', command: `wait ${c}: 3d` }, { label: 'Close', command: `close ${c}` }] }
 			// The reply already went in the owner's words; one button makes the change it promised, its meaning on the row (Slice 3).
 			case 'promise': {
 				const quote: Quote = { by: 'You', verb: 'said', text: clip(w.promise!.text.replace(/\n/g, ' '), 200) }
@@ -468,9 +474,11 @@ function workOf(s: Snap, p: Placed, w: Workflow, home: Workflow): NextWork | und
 	const then = who && who !== 'you' && k.next ? { owner: who === 'me' ? { kind: 'delegate' } as Owner : { kind: 'others', text: htmlToText(on ?? 'Someone else') } as Owner, what: htmlToText(k.next.what), ...(yourNext ? { you: htmlToText(yourNext.what) } : {}) } : undefined
 	return {
 		goal: htmlToText(k.goal), steps,
-		...(who === 'you' && k.next ? { yours: { what: htmlToText(k.next.what), ...(check ? { check } : {}) } } : {}),
+		// DD4-C1 (PE R4): since is when the work began waiting on him (waitingOn.since), only when he is the one waited on.
+		...(who === 'you' && k.next ? { yours: { what: htmlToText(k.next.what), ...(k.waitingOn && isMe(s, k.waitingOn.who) ? { since: k.waitingOn.since } : {}), ...(check ? { check } : {}) } } : {}),
 		...(then ? { then } : {}),
-		...(p.rule === 'your-step' && w === home ? { report: `${home.code}: {result}: {text}` } : {}),
+		// C4: the owner-wait check-date row (moveKind, as itemRow picks it) opens the same report form as a your-step row.
+		...((p.rule === 'your-step' || p.section === 'move' && moveKind(w) === 'check-date' && waitsOnOwner(home, s.me)) && w === home ? { report: `${home.code}: {result}: {text}` } : {}),
 		happened: k.steps.slice(-6).reverse().map(x => ({ at: x.at, what: htmlToText(x.what), news: !!x.news })), total: k.steps.length,
 	}
 }

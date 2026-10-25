@@ -6,7 +6,8 @@ import type { Job, Workflow } from '../core/types.ts'
 export const workflowManagementRev = (workflow: Workflow, job?: Job): string => pageDigest({
 	id: workflow.id, kind: workflow.kind, state: workflow.state,
 	chat: workflow.chat, asker: workflow.asker, askers: workflow.askers, status: workflow.status,
-	lastAsk: workflow.lastAsk, question: workflow.question, draft: workflow.draft,
+	// Decision 57: a same-words question with new suggested answers refreshes the chips.
+	lastAsk: workflow.lastAsk, question: workflow.question, questionHint: workflow.questionHint, draft: workflow.draft,
 	choices: workflow.choices, context: workflow.context, meeting: workflow.meeting,
 	fyi: workflow.fyi, todos: workflow.todos,
 	kept: workflow.kept?.filter(todo => !todo.done),

@@ -14,6 +14,7 @@ import { ignoreServer, retryServer } from '../runner/catalog.ts'
 import { whyWaited } from '../core/policy.ts'
 import { cardContext, cardFacts } from '../core/card-facts.ts'
 import { normalizeReport } from '../core/normalize-report.ts'
+import { usedLines } from './numbers.ts'
 // #50 (SEND 7533bea1): the status an item gets when its comments were repaired and wait to be posted.
 const REPAIRED = 'The comment format was wrong and is fixed. Post them now?'
 // R12b: ways.ts's stubs throw exactly "not yet" until the engine lands; anything else is a real failure, logged by its shape (its error
@@ -185,6 +186,11 @@ function voteClaimOf(store: Store, wf: Workflow, text: string): VoteClaim | unde
 // and its hint separately (PE/SEND).
 const answerChips = (code: string, question?: string) => [...new Set([...(question ?? '').matchAll(new RegExp(`"${code}:\\s*([^"]{1,60})"`, 'gi'))].map(match => match[1].trim()).filter(Boolean))]
 	.map(text => ({ label: text.replace(/^./, first => first.toUpperCase()), text }))
+// H1 (decision 57): the engine now stores the suggested answers apart from the question (wf.questionHint); a record that has the field
+// gets its chips from it, and only while its question is non-empty (CR 10:17:09Z: a hint left after a cleared question stays inert). The
+// quote match above is kept only for older records written before the split (no questionHint field at all).
+const hintChips = (wf: Workflow, code: string, question?: string) => wf.questionHint === undefined ? answerChips(code, question)
+	: wf.question?.trim() ? [...new Set((wf.questionHint.answers ?? []).map(text => text.trim()).filter(Boolean))].map(text => ({ label: text.replace(/^./, first => first.toUpperCase()), text })) : []
 // The live re-check on edited text (POST /api/v1/vote-check): the same rule, on the text he is typing, for an item waiting on him.
 export function voteCheck(store: Store, code: string, text: string): { claim?: VoteClaim } {
 	const wf = store.byCode(code)
@@ -196,6 +202,7 @@ export function voteCheck(store: Store, code: string, text: string): { claim?: V
 export function reactProjection(store: Store, query = '', visit?: { since?: string; fallbackSince: string }, opts: { only?: string } = {}): { snapshot: Snapshot; bindings: Map<string, Binding> } {
 	const onlyWfs = opts.only && store.byCode(opts.only) ? store.itemThread(opts.only) : undefined
 	const stored = placementSnapshot(store, undefined, onlyWfs)
+	const usedOf = usedLines(store)
 	const facts = { ...stored, workflows: stored.workflows.map(workflow => currentDraft(workflow, workflow.job ? stored.jobs.get(workflow.job) : undefined) === workflow.draft ? workflow : { ...workflow, draft: undefined }) }
 	const placed = place(facts), placementOf = new Map(placed.map(placement => [placement.code, placement])), cfg = store.config()
 	// A first visit has no cursor; its newly written lastViewed mark is not one.
@@ -452,7 +459,14 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 		// The PR a review's question, facts and changes are about, named on the card (queue-new #10 c).
 		const prLabel = (pr => (pr ? `PR ${pr}${wf.prAuthor ? ` · ${wf.prAuthor}` : ''}` : undefined))(Number(/^pr:.*?(\d+)$/i.exec((wf.job && facts.jobs.get(wf.job)?.key) || '')?.[1] ?? 0) || (wf.intent === 'pr_review' ? prTarget(store, wf) : undefined))
 		// The report's facts through the one canonical reader (card-state step 5), so old and new items show the same.
-		const context = cardContext(wf, job, c.context).map(fact => ({ ...fact, text: chatIdNet(fact.text) }))
+		// prAnchor.also (architecture 43(d), HOST 4d0cbf6b): "Also mentions PR <n>" comes from the anchor's structured list, only while the
+		// anchor holds as prTarget honours it (probe.ts: not done, not redacted, its message still owned, no conflict). An old item may still
+		// carry the retired context line of that label until its report is replaced; the structured line replaces it, never both (CR 09:58:46Z).
+		const anchor = wf.prAnchor, also = anchor?.also?.length && wf.state !== 'done' && !wf.redacted && wf.msgIds.includes(anchor.msgId) && prTarget(store, wf) === anchor.pr ? anchor.also : undefined
+		const context = [
+			...cardContext(wf, job, c.context).filter(fact => !(also && fact.label === 'Also mentions')),
+			...(also ? [{ label: 'Also mentions', text: also.map(id => `PR ${id}`).join(', '), tone: 'info' as const }] : []),
+		].map(fact => ({ ...fact, text: chatIdNet(fact.text) }))
 		// L4: the other warnings go to card-state, which picks the one warn line; need to know comes from wf.shareHold itself.
 		const warns = [
 			...context.filter(fact => fact.tone === 'warn' && fact.label !== 'Need to know').map(fact => `${prLabel ? `${prLabel} · ` : ''}${fact.label}: ${fact.text}`),
@@ -631,6 +645,13 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 			context,
 			earlier: earlierLine(rest.earlier, id),
 			askAt: asksAt.get(id),
+			// COST-USAGE AU4: what this item's attributed runs used (web/numbers.ts usedLines); none when no run was attributed.
+			...((used => (used ? { used } : {}))(usedOf.get(wf.id))),
+			// A76 sent history (decision 55): the reply that actually went, once its Undo window is over and no newer turn replaced it.
+			// Only from wf.sent's typed fields, never from read-only status, copy or status text; otherwise omitted and today's card stays.
+			...((sent => sent && sent.msgId && !(sent.undoUntil && Date.parse(sent.undoUntil) > Date.now()) && (sent.sendText ?? sent.text) && (!wf.revAt || wf.revAt <= sent.at)
+				? { sent: { at: sent.at, text: (sent.sendText ?? sent.text)!, by: sent.byRule ? 'rule' as const : 'you' as const, ...(sent.holding ? { holding: true } : {}),
+					...((teams => (teams ? { teams } : {}))(wf.chat.id && (!wf.chat.test || teamsChat(wf.chat.id)) ? safeLink(messageLink(wf.chat.id, sent.msgId)) : undefined)) } } : {})(wf.sent)),
 			status: pageText(c.status),
 			attention,
 			// Step 6: back from his terminal window, a status line only.
@@ -681,7 +702,7 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 					...((k => (k >= 0 ? { posts: !entities.changes[changeIds[k]]?.error, changeId: changeIds[k] } : {}))(pending.findIndex(effect => !isVote(effect.call) && findingFor(effect, [finding]) === finding))),
 					...(finding.thread ? { thread: { author: finding.thread.author, at: finding.thread.at, ...((url => (url ? { url } : {}))(safeLink(finding.thread.url))) } } : {}) })) } } : {})(Number(/^PR (\d+)/.exec(prLabel ?? '')?.[1]) || undefined)),
 			question: c.question === undefined ? undefined : (failedJobDirections(wf) ? forPage(c.question) : pageText(c.question)) || undefined,
-			...((chips => (chips.length && c.question !== undefined && !groupPick ? { answerChips: chips } : {}))(answerChips(id, c.question))),
+			...((chips => (chips.length && c.question !== undefined && !groupPick ? { answerChips: chips } : {}))(hintChips(wf, id, c.question))),
 			choices: choices && { ...choices, prompt: forPage(choices.prompt), options: choices.options.map(option => ({ ...option, id: pageOptionId(option) })), ...(groupPick ? { group: true } : {}) },
 			...(groupPick ? { question: undefined } : {}),
 			sourceIds: sources(id, id, why.sources), noteIds,
@@ -835,7 +856,7 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 			}))
 		}
 		const current = wf?.sent?.at === row.at && (row.kind === 'reply' || row.kind === 'review'), checks = current ? wf!.sent!.checks?.map(check => pageText(`Sent. ${check}`)).filter(Boolean) : undefined
-		entities.doneEntries[id] = { ...rest, text: current ? wf!.sent!.sendText ?? rest.text : rest.text, ...(checks?.length ? { checks } : {}), fresh: isNew(row, seenIn(base), itemSeen(base)), id, personId: person(row.code, who), actionIds, sourceIds: sources(row.code, id, why?.sources ?? []), noteIds: notes(row.code, id, historyNotes ?? []), why: why && { reason: why.reason, confidence: why.confidence, gaps: why.gaps, searched: why.searched }, teams: safeLink(row.teams), href: safeLink(row.href) }
+		entities.doneEntries[id] = { ...rest, text: current ? wf!.sent!.sendText ?? rest.text : rest.text, ...(checks?.length ? { checks } : {}), fresh: isNew(row, seenIn(base), itemSeen(base)), ...((used => (used ? { used } : {}))(wf ? usedOf.get(wf.id) : undefined)), id, personId: person(row.code, who), actionIds, sourceIds: sources(row.code, id, why?.sources ?? []), noteIds: notes(row.code, id, historyNotes ?? []), why: why && { reason: why.reason, confidence: why.confidence, gaps: why.gaps, searched: why.searched }, teams: safeLink(row.teams), href: safeLink(row.href) }
 	}
 	for (const w of base.watching) entities.watches[w.code] = {
 		...w, id: w.code, actionIds: [

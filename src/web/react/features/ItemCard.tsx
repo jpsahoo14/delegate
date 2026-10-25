@@ -59,15 +59,19 @@ function MarkerState({ id, marker, edited }: { id: string; marker: string; edite
 		<span className="sr-only" aria-live="polite">{said}</span>
 	</>
 }
-export function MessageBubble({ text: raw, teams, open, onToggle }: { text: string; teams?: string; open: boolean; onToggle: (open: boolean) => void }) {
+// label/controlsId/noun (A76, designer-sent-reply SR3/SR5): a sent reply reuses this same S9 clamp with its own accessible name, a toggle
+// that names its count and points at the bubble, and "reply" for "message". Their message passes none, so its markup is unchanged.
+export function MessageBubble({ text: raw, teams, open, onToggle, label, controlsId, noun = 'message' }: { text: string; teams?: string; open: boolean; onToggle: (open: boolean) => void; label?: string; controlsId?: string; noun?: 'message' | 'reply' }) {
 	// L7c: a run of blank lines reads as one before the clamp, so a short message isn't cut to two visible lines.
 	const text = messageText(raw).replace(/\n[ \t]*(?:\n[ \t]*)+\n/g, '\n\n')
-	if (text.length > HUGE) return <div className="card-bubble-wrap"><blockquote className="card-bubble scroll">{withImages(text.slice(0, HUGE_SHOWN), teams)}…</blockquote>
+	const named = label ? { 'aria-label': label, id: controlsId } : {}
+	if (text.length > HUGE) return <div className="card-bubble-wrap"><blockquote className="card-bubble scroll" {...named}>{withImages(text.slice(0, HUGE_SHOWN), teams)}…</blockquote>
 		<p className="muted">The rest is too long to show here ({text.length.toLocaleString()} characters).{teams && <> <a href={teams} target="_blank" rel="noopener noreferrer">Open in Teams <Icon name="ext" /></a></>}</p></div>
 	const long = text.length > 600 || text.split('\n').length > 6
-	if (!long) return <blockquote className="card-bubble">{withImages(text, teams)}</blockquote>
-	return <div className="card-bubble-wrap"><blockquote className={`card-bubble ${open ? 'scroll' : 'clamp'}`}>{withImages(text, teams)}</blockquote>
-		<button type="button" className="link-button" onClick={() => onToggle(!open)} aria-expanded={open}>{open ? 'Show less' : `Show the whole message (${text.length.toLocaleString()} characters)`}</button></div>
+	if (!long) return <blockquote className="card-bubble" {...named}>{withImages(text, teams)}</blockquote>
+	const count = text.length.toLocaleString()
+	return <div className="card-bubble-wrap"><blockquote className={`card-bubble ${open ? 'scroll' : 'clamp'}`} {...named} {...(label && open ? { tabIndex: 0 } : {})}>{withImages(text, teams)}</blockquote>
+		<button type="button" className="link-button" onClick={() => onToggle(!open)} aria-expanded={open} {...(controlsId ? { 'aria-controls': controlsId } : {})} {...(label && !open ? { 'aria-label': `Show the whole ${noun}, ${count} characters` } : {})}>{open ? 'Show less' : `Show the whole ${noun} (${count} characters)`}</button></div>
 }
 const clip = (text: string) => text.length > SHOWN ? `${text.slice(0, SHOWN)}…` : text
 const compact = (iso: string) => <SentTime at={iso} />
@@ -208,12 +212,14 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 		<ul>{infoFacts.map((fact, n) => <li key={n}><strong>{fact.label}:</strong> {fact.text}</li>)}</ul></section>
 
 	// Block 2: what you'll send. Your step (S2), a decision or question, choices and a meeting, or the reply, editable in place.
+	// DD4-C1 (PE R4, PM decision 4): the context line "Your step (from <day>): <step>." leads, normal weight with a bold lead-in; S2's
+	// "Then Delegate shares the result…" line is gone, and the bar says what the button does.
+	const stepSince = work?.yours?.since && Number.isFinite(Date.parse(work.yours.since)) ? new Date(work.yours.since).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }).replace(',', '') : undefined
 	const yourStep = work?.yours && report && <section className="card-block card-step">
-		<h3>Your step: {work.yours.what.replace(/[.\s]+$/, '')}</h3>
-		<p className="muted">Then {NAME} shares the result with {first}, after your OK.{work.yours.check && <> {work.yours.check.what} done <time dateTime={work.yours.check.at}>{when(work.yours.check.at)}</time> (build {work.yours.check.build}).</>}</p>
+		<h3 className="step-context"><strong>Your step{stepSince ? ` (from ${stepSince})` : ''}:</strong> {work.yours.what.replace(/[.\s]+$/, '')}.</h3>
+		{work.yours.check && <p className="muted">{work.yours.check.what} done <time dateTime={work.yours.check.at}>{when(work.yours.check.at)}</time> (build {work.yours.check.build}).</p>}
 		<fieldset className="report-form"><legend>How did it go?</legend>{([['Both work', 'Worked'], ['Issues found', 'Issues found'], ['Blocked', 'Blocked']] as const).map(([result, label]) => <label className="option" key={result}><input type="radio" name={`report-${code}`} checked={ui.resultKind === result} onChange={() => edit({ resultKind: result })} />{label}</label>)}</fieldset>
 		<Field code={code} rev={item.rev} field="report" label="What you saw: errors, IDs, links (optional)" value={ui.report ?? ''} edit={edit} rows={2} />
-		<p className="muted">Nothing is sent. You see the draft first.</p>
 	</section>
 	// A decision the owner must make on his work (S9): its own block and box; the answer path carries it. A test step has the S2 form.
 	const decision = work?.yours && !report && answerAction ? work.yours.what : undefined
@@ -294,12 +300,21 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 			{answerBox && <><Field code={code} rev={item.rev} field="answer" label="Your answer" placeholder={`only ${NAME} sees it`} value={ui.answer ?? ''} edit={edit} />
 				<p className="muted">{NAME} {draft ? 'writes a new draft from your answer' : 'drafts the reply from your answer'}. Nothing is sent.</p></>}
 		</section>}
-		{draft && boxMode === 'answer' && <section className="card-block reply-section">
+		{/* A76 (decision 55; designer-sent-reply SR2-SR4): the reply that went, in the reply slot, as the same S9 bubble with the PM's head
+		    line. No "Your reply to" heading and no pre-send count; the delivered text shows as sent, marker included. Unsent drafts are
+		    unchanged (never clamped). The rule's "because you wrote…" line has no frozen source yet, so it is omitted. */}
+		{item.sent && <section className="card-block reply-section card-sent">
+			<h3 className="sent-head"><strong>{item.sent.by === 'rule' ? `${NAME} replied to ${first} by itself` : item.sent.holding ? `You sent a holding reply to ${first}` : `You replied to ${first}`}</strong>
+				{' · '}<time dateTime={item.sent.at}>{when(item.sent.at)}</time>{item.sent.teams && <> <a href={item.sent.teams} target="_blank" rel="noopener noreferrer" title="Open this reply in Teams, in a new tab." aria-label="Open this reply in Teams">↗</a></>}</h3>
+			<MessageBubble text={item.sent.text} open={ui.folds?.sent ?? false} onToggle={open => fold('sent', open)} noun="reply" controlsId={`${code}-sent`}
+				label={`${item.sent.by === 'rule' ? `${NAME} replied to ${first} by itself` : item.sent.holding ? `You sent a holding reply to ${first}` : `You replied to ${first}`}, sent ${when(item.sent.at)}`} />
+		</section>}
+		{!item.sent && draft && boxMode === 'answer' && <section className="card-block reply-section">
 			{/* The owner's edit stays what this fold shows and what the bar sends, while he answers (PE step-4 review, 2). */}
 			<details className="card-draft-fold"><summary>{ui.editing ? 'Your edited reply · not sent' : `${NAME}'s draft so far · not sent`}</summary><div className="draft">{ui.editing ? replyText : draft.sendText ?? draft.text}</div></details>
 			<button type="button" className="link-button" aria-controls={`${code}-${item.rev}-editText`} onClick={() => { edit({ mode: 'reply' }); focusField('editText') }}>Edit and send the draft instead</button>
 		</section>}
-		{draft && boxMode !== 'answer' && <section className="card-block reply-section">
+		{!item.sent && draft && boxMode !== 'answer' && <section className="card-block reply-section">
 			{editable ? <Field code={code} rev={item.rev} field="editText" rows={Math.min(14, Math.max(3, Math.ceil(replyText.length / 70) + replyText.split('\n').length))}
 				label={draft.holding ? `Holding reply to ${first}, ${replyWhere} · says you are on it; not the answer yet` : `Your reply to ${first}, ${replyWhere}`}
 				value={replyText} edit={edit} patch={value => ({ editText: value, editing: value.trimEnd() !== body.trimEnd() })} mark={ui.editing ? live.claim?.quote : item.voteGap?.quote}
@@ -414,7 +429,7 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 		<strong>Done:</strong> {made.map(change => change.action).join('; ')}. <strong>Not done:</strong> {notDone.map(change => `${change.action}, ${change.error!.replace(/\.$/, '').replace(/^Error: /, '')}`).join('; ')}.</p>
 
 	// Block 4: one primary that says its result, Later, and ⋯ (Edit in Teams, Dismiss, Continue in a terminal).
-	const primaryLabel = report && primary?.id === report.id ? `Draft my update to ${first}` : reviewLabel ?? (draft?.holding && primary?.kind === 'approve' && !item.changeIds.length ? 'Send holding reply' : decision && primary?.kind === 'answer' ? 'Send decision'
+	const primaryLabel = report && primary?.id === report.id ? `Draft the update to ${first}` : reviewLabel ?? (draft?.holding && primary?.kind === 'approve' && !item.changeIds.length ? 'Send holding reply' : decision && primary?.kind === 'answer' ? 'Send decision'
 		: primary?.kind === 'answer' && answerBox ? draft ? 'Answer and redraft' : 'Answer and draft reply' : undefined)
 	// Write the reply yourself opens an empty box first; the box's own button sends it (designer failure pattern, check 4).
 	// #48b (PM A R21): during a redraft it appears at 3 minutes (a retry after a failure shows it throughout); it opens the editor with the
@@ -436,7 +451,7 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 		{approvePr && approvePr.id !== primary?.id && <ActionButton action={approvePr} disabled={newer} disabledReason="stale" />}
 		{reviewed?.openPr === 'secondary' && openPr('outline')}
 		{primary?.kind === 'todo-done' && doneButton(true)}
-		{report && primary?.id !== report.id && <ActionButton primary action={report} label={`Draft my update to ${first}`} input={{ result: ui.resultKind, text: ui.report }} disabled={!ui.resultKind} disabledReason="Pick how it went first." />}
+		{report && primary?.id !== report.id && <ActionButton primary action={report} label={`Draft the update to ${first}`} input={{ result: ui.resultKind, text: ui.report }} disabled={!ui.resultKind} disabledReason="Pick how it went first." />}
 		{/* An offered send is never hidden: when another action leads, it sits next to it (#33). */}
 		{actions.filter(action => ['approve', 'approve-again'].includes(action.kind) && action.id !== primary?.id).map(action => action.kind === 'approve' && editedAside ? <ActionButton key={editedAside.id} action={editedAside} label="Send your edited reply" input={{ text: replyText, excluded: ui.excluded }} disabled={newer || !replyText.trim() || editedHeld} disabledReason={newer ? 'stale' : editedHeld ? voteReason : 'Type your reply first.'} /> : <ActionButton key={action.id} action={action} label={draft?.holding && action.kind === 'approve' && !item.changeIds.length ? 'Send holding reply' : undefined} input={{ excluded: ui.excluded }} disabled={newer || action.kind === 'approve' && !!item.voteGap} disabledReason={newer ? 'stale' : item.voteGap?.text ?? 'stale'} />)}
 		{actions.filter(action => ['try-again', 'review-again', 'send-anyway', 'redraft', 'add-vote', 'keep-waiting'].includes(action.kind) && action.id !== primary?.id && !((item.voteGap || ui.editing) && action.kind === 'send-anyway') && !(reviewed && action.kind === 'review-again')).map(action => <ActionButton key={action.id} action={action} disabled={newer && action.staleness === 'exact'} disabledReason="stale" />)}
@@ -456,6 +471,8 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 			{continueAction && <ActionButton action={continueAction} />}
 			{item.debug && <><pre>{item.debug.join('\n')}</pre><Button variant="outline" onClick={() => void detailsCopy.copy(item.debug!.join('\n'))}>Copy details</Button>{detailsCopy.message && <p role="status">{detailsCopy.message}</p>}</>}
 		</div></details>
+		{/* DD4-C1: under the report form's button, on its own row in the bar; it wraps at 400 px. */}
+		{report && <p className="muted bar-note">{NAME} drafts it from your result. Nothing is sent until you press Send.</p>}
 	</div>
 	const others = actions.filter(action => action.id !== primary?.id && action.id !== report?.id && !(report && action.id === declared?.id) && !['approve', 'approve-again', 'send-edit', 'answer', 'pick', 'ask', 'later', 'dismiss', 'continue', 'todo-done', 'reply-only', 'review-again', 'try-again', 'write-own', 'send-anyway', 'redraft', 'add-vote', 'approve-pr', 'post-waiting', 'keep-waiting'].includes(action.kind) && !(item.ownReply && action.kind === 'reopen'))
 	// Every action the projection offers is drawn somewhere (engineer-card-state-devspec.md §4, invariant 4); one that isn't is marked.
@@ -507,6 +524,7 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 		})}</ul></>}
 		{item.unsent && <><h4>{NAME}'s draft (not sent)</h4><p className="muted">{item.unsent}</p></>}
 		{item.job && <p className="muted">{item.job}</p>}
+		{item.used && <p className="muted card-used">{item.used}</p>}
 		<section className="ask-thread"><h4>Ask {NAME}</h4>{item.noteIds.map(id => {
 			const note = entities.notes[id]
 			return <div key={id}><p><strong>You:</strong> {note.question}</p><p>{note.answer === '' ? 'The answer contained only chat instructions. Review the item using its available buttons, or ask a follow-up.' : note.answer ?? 'Waiting for an answer...'}</p><Sources ids={note.sourceIds} entities={entities} />

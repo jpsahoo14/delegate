@@ -4,6 +4,7 @@ import { active, addPart, canCloseReport, hasDecisions, homeOf, joinWhy, mergeRe
 import { assertTestSafe, freshRead, readPhase } from '../store/fs.ts'
 import { recordCommit } from './commit.ts'
 import { stateFields, statusFields } from '../core/upgrades.ts'
+import { normalizeQuestionHint } from '../core/normalize-report.ts'
 import { closeFamily } from './apply.ts'
 import { realProcs } from './jobs.ts'
 import { stopWatch } from './track.ts'
@@ -216,7 +217,7 @@ export function retryHostToolFailures(store: Store): number {
 		} catch (error) { store.log({ event: 'host-tools-history-unreadable', workflowId: w.id, runId: e.runId, error: String(error).slice(0, 200) }); continue }
 		const missing = unavailableTools(answer ?? '', [...WORKER_TOOLS, ...workerTools(store.config(), 'reply')])
 		if (!missing.length) continue
-		Object.assign(w, { ...stateFields(w, 'running'), question: undefined, runFailed: undefined, status: 'Running again: the earlier AI host did not provide its tools.', pending: w.pending.length ? w.pending : w.msgIds.slice(-1) })
+		Object.assign(w, { ...stateFields(w, 'running'), question: undefined, questionHint: undefined, runFailed: undefined, status: 'Running again: the earlier AI host did not provide its tools.', pending: w.pending.length ? w.pending : w.msgIds.slice(-1) })
 		store.save(w)
 		store.log({ event: 'host-tools-requeued', workflowId: w.id, code: w.code, runId: e.runId, missing })
 		n++
@@ -227,7 +228,7 @@ export function retryHostToolFailures(store: Store): number {
 }
 
 // A person's message to the owner: anything in a 1:1, or in a group the message right after his own (within a day) (queue-new #18).
-const BOT = /\b(?:bot|app|notifications?|alerts?|no-?reply|azure devops|github|jira|pipelines?)\b/i
+export const BOT = /\b(?:bot|app|notifications?|alerts?|no-?reply|azure devops|github|jira|pipelines?)\b/i
 export function answersOwner(store: Store, wf: Workflow): boolean {
 	if (!wf.asker?.name || BOT.test(wf.asker.name) || !wf.lastAsk?.trim()) return false
 	if (!wf.chat.group) return true
@@ -454,7 +455,7 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 		store.archiveReport(wf.id, runId)
 		store.log({ event: 'report-join-refused', code: fresh.code, target: report.same, reason: 'no eligible same-ask target' })
 		if (!separate && store.runsToday() < (cfg.dailyRuns ?? 200)) return runOne(store, src, cfg, fresh, run, probe, catalogRetried, true)
-		Object.assign(fresh, { ...stateFields(fresh, 'needs_human'), status: 'This is a separate ask. The AI did not draft its own answer.', question: 'What would you like to reply to this ask?' })
+		Object.assign(fresh, { ...stateFields(fresh, 'needs_human'), status: 'This is a separate ask. The AI did not draft its own answer.', question: 'What would you like to reply to this ask?', questionHint: undefined })
 		commit()
 		return
 	}
@@ -470,7 +471,7 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 	const gate = job && isReviewJob(job.key, report?.intent) ? reviewGate(store, cfg, wf, reviewRef ?? { project: '', repo: '', id: Number(/(\d+)\s*$/.exec(job.key)?.[1] ?? 0) }, undefined, !!probe?.pr) : undefined
 	const declined = gate && !gate.ok ? gate : undefined
 	// A run with no result is an error shown as one, with its time and reason, never a question to answer (queue-new #11).
-	if (!report) Object.assign(fresh, { ...stateFields(fresh, 'needs_human'), ...statusFields('not-finished', `${NAME} couldn't draft this: ${failWhy(res)}`), question: undefined, runFailed: { at: new Date().toISOString(), kind: 'other', why: failWhy(res) } })
+	if (!report) Object.assign(fresh, { ...stateFields(fresh, 'needs_human'), ...statusFields('not-finished', `${NAME} couldn't draft this: ${failWhy(res)}`), question: undefined, questionHint: undefined, runFailed: { at: new Date().toISOString(), kind: 'other', why: failWhy(res) } })
 	else if (declined) {
 		fresh.intent = report.intent
 		if (declined.addMe) fresh.job = undefined
@@ -514,7 +515,8 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 		leaveForYou(store, fresh, v.left)
 		if (v.todos.length) Object.assign(fresh, {
 			// "Are you in <group>?" stays the question while it is open: its answer can bring the vote back (queue-new #7C).
-			question: fresh.question ?? (wf.groupAsk ? groupQuestion(wf.groupAsk) : fresh.draft ? refusedAsk(fresh.code, v.todos.length) : `These changes need you: ${v.todos.join('; ')}`) })
+			question: fresh.question ?? (wf.groupAsk ? groupQuestion(wf.groupAsk) : fresh.draft ? refusedAsk(fresh.code, v.todos.length) : `These changes need you: ${v.todos.join('; ')}`),
+			questionHint: fresh.question ? fresh.questionHint : undefined })
 		if (fresh.kind === 'reply' && effects.length) {
 			// Only this turn's unfinished proposal can keep a receipt; a live reset invalidates a vote receipt.
 			const made = (fresh.effects ?? []).filter(e => e.done)
@@ -537,7 +539,7 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 		if (asked !== undefined && live && /^active$/i.test(live[1]) && typeof live[3] === 'number' && !sameVote(live[3], asked) && report.goalMet !== false && !fresh.question && !fresh.choices && !(h.work?.closed && fresh.state === 'done')
 			&& !(wf.prRole && !MAY_REVIEW.includes(wf.prRole))
 			&& !pendingEffects(fresh.effects).some(e => isVote(e.call) && voteValue(e.call) === asked)) {
-			Object.assign(fresh, { ...stateFields(fresh, 'needs_human'), question: `${fresh.asker?.name ?? 'They'} asked for your ${voteName(asked)} vote on PR ${live[0]}, but this draft proposes no vote. Answer ${fresh.code} to redo it with the vote, or skip it` })
+			Object.assign(fresh, { ...stateFields(fresh, 'needs_human'), question: `${fresh.asker?.name ?? 'They'} asked for your ${voteName(asked)} vote on PR ${live[0]}, but this draft proposes no vote. Answer ${fresh.code} to redo it with the vote, or skip it`, questionHint: undefined })
 			store.log({ event: 'vote-ask-unmet', workflowId: fresh.id, code: fresh.code, pr: live[0], asked, live: live[3] })
 		}
 		// An explicit ask to book a meeting or send an invite, which the owner lets Delegate make, never ends with a reply that
@@ -546,7 +548,7 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 		const invites = (cfg.agent.effectTools ?? []).some(t => /CreateEvent/i.test(t))
 		const offered = pendingEffects(fresh.effects).some(isInvite) || !!fresh.choices?.options.some(o => o.effects?.some(isInvite))
 		if (invites && fresh.draft && asksInvite(askText) && !offered && report.goalMet !== false && !fresh.question && !(h.work?.closed && fresh.state === 'done')) {
-			Object.assign(fresh, { ...stateFields(fresh, 'needs_human'), question: `${fresh.asker?.name ?? 'They'} asked you to book it, but this draft sends no invite. Answer ${fresh.code} to redo it with the invite, or skip it` })
+			Object.assign(fresh, { ...stateFields(fresh, 'needs_human'), question: `${fresh.asker?.name ?? 'They'} asked you to book it, but this draft sends no invite. Answer ${fresh.code} to redo it with the invite, or skip it`, questionHint: undefined })
 			store.log({ event: 'invite-ask-unmet', workflowId: fresh.id, code: fresh.code })
 		}
 	}
@@ -637,7 +639,7 @@ async function runAsk(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 // A question that says there is none ("None.", "N/A") is no question: it would turn the card into one and hide Send (bug 10-23 E11).
 const NO_QUESTION = /^\s*(?:none|n\/?a|no(?:ne)?\s*(?:question|questions)?|nothing|-+|—)\s*[.!]?\s*$/i
 export function checked(store: Store, cfg: Config, r: Report): Report {
-	const q = r.question !== undefined && NO_QUESTION.test(r.question) ? { ...r, question: undefined } : r
+	const q = !r.question?.trim() || NO_QUESTION.test(r.question) ? { ...r, question: undefined, questionHint: undefined } : r
 	return q.reply ? { ...q, reply: { ...q.reply, sources: resolveEvidence(knowledgeOf(store, cfg), cfg, q.reply.sources, store.root) } } : q
 }
 
@@ -667,17 +669,17 @@ export function applyReport(wf: Workflow, r: Report, home = wf, allowClose = tru
 	if (wf.startedBy === 'owner' && fresh && home.work && home === wf) {
 		home.work.proposed = true
 		const plan = home.work.plan?.length ? ` Plan: ${home.work.plan.map(p => p.what).join('; ')}.` : ''
-		Object.assign(wf, { ...stateFields(wf, 'needs_human'), draft: undefined, status: `Track this as work? ${home.work.goal}`, question: `Track this as work? Goal: ${home.work.goal}. Done when: ${home.work.doneWhen}.${plan} Say "ok ${wf.code}" to track it, or "skip ${wf.code}".` })
+		Object.assign(wf, { ...stateFields(wf, 'needs_human'), draft: undefined, status: `Track this as work? ${home.work.goal}`, question: `Track this as work? Goal: ${home.work.goal}. Done when: ${home.work.doneWhen}.${plan} Say "ok ${wf.code}" to track it, or "skip ${wf.code}".`, questionHint: undefined })
 		return
 	}
 	if (wf.startedBy === 'owner' && !home.work) { Object.assign(wf, { ...stateFields(wf, 'done'), status: wf.missed ? `Nothing to track: ${r.summary || 'it did not start work'}` : r.summary || 'Nothing to track', intent: 'none' }); return }
 	// "Needs me" never quietly closes again: with nothing drafted, the owner is asked what to say (review 10-20).
-	if (wf.needsMe && !home.work && !r.reply && !r.question && !hasDecisions(r)) { Object.assign(wf, { ...stateFields(wf, 'needs_human'), question: 'You said this needs you. What should I say?', status: r.summary || 'Waiting for what you want to say' }); return }
+	if (wf.needsMe && !home.work && !r.reply && !r.question && !hasDecisions(r)) { Object.assign(wf, { ...stateFields(wf, 'needs_human'), question: 'You said this needs you. What should I say?', questionHint: undefined, status: r.summary || 'Waiting for what you want to say' }); return }
 	if (settle(wf, r, home)) return
 	// Short of the goal: never closed as "no reply needed", never offered as the answer. The owner sees why and what was tried (design-spec/goal-retry.md).
 	if (r.goalMet === false && !home.work) {
 		const b = blockerOf(r.blocker)
-		Object.assign(wf, { ...stateFields(wf, 'needs_human'), ...statusFields('not-finished', `Not finished: ${b.why}${b.tried.length ? `. Tried: ${b.tried.join('; ')}` : ''}`), learnAfter: r.reply ? undefined : wf.learnAfter, draft: r.reply ? { ...r.reply, text: greetBack(wf, r.reply.text), holding: true as const } : undefined, question: r.question, effects: undefined, revAt: new Date().toISOString() })
+		Object.assign(wf, { ...stateFields(wf, 'needs_human'), ...statusFields('not-finished', `Not finished: ${b.why}${b.tried.length ? `. Tried: ${b.tried.join('; ')}` : ''}`), learnAfter: r.reply ? undefined : wf.learnAfter, draft: r.reply ? { ...r.reply, text: greetBack(wf, r.reply.text), holding: true as const } : undefined, question: r.question, questionHint: r.question?.trim() && r.questionHint ? normalizeQuestionHint(r.questionHint) : undefined, effects: undefined, revAt: new Date().toISOString() })
 		return
 	}
 	if ((!home.work && (r.intent === 'none' || r.state === 'done') || !r.reply && !r.question) && !hasDecisions(r)) {
@@ -692,6 +694,7 @@ export function applyReport(wf: Workflow, r: Report, home = wf, allowClose = tru
 	if (r.reply) wf.newCount = 0
 	wf.revAt = new Date().toISOString()
 	wf.question = preview ? undefined : r.question
+	wf.questionHint = !preview && r.question?.trim() && r.questionHint ? normalizeQuestionHint(r.questionHint) : undefined
 	wf.gaps = r.gaps?.length ? r.gaps : undefined
 	// A run short of its goal promises nothing that something then does: no to-dos, no watch.
 	wf.todos = r.todos?.length && r.goalMet !== false ? r.todos : undefined
@@ -711,6 +714,7 @@ export function applyReport(wf: Workflow, r: Report, home = wf, allowClose = tru
 		leaveForYou(store, wf, v.left)
 		if (wf.effects.length) carry(store, cfg, wf, wf.effects)
 		if (v.todos.length) {
+			if (!wf.question) wf.questionHint = undefined
 			wf.question ??= wf.draft ? refusedAsk(wf.code, v.todos.length) : v.todos.join('\n')
 		}
 	}

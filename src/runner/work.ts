@@ -156,7 +156,7 @@ export function newTurn(wf: Workflow, keepSent = false) {
 	wf.ownerSend = undefined; clearHold(wf)
 	wf.reviewRun = undefined; wf.reviewDone = undefined; wf.reviewAsk = undefined; wf.reviewAttempt = undefined; wf.reviewBasis = undefined
 	wf.voteClaimRedrafted = undefined
-	Object.assign(wf, { draft: undefined, prDraft: undefined, learnAfter: undefined, closeWorkAfterSend: undefined, choices: undefined, question: undefined, effects: undefined, promised: undefined, decision: undefined, approved: undefined, picked: undefined, sendAt: undefined, correction: undefined, todos: undefined, newCount: 0, ...(keepSent ? {} : { sent: undefined }) })
+	Object.assign(wf, { draft: undefined, prDraft: undefined, learnAfter: undefined, closeWorkAfterSend: undefined, choices: undefined, question: undefined, questionHint: undefined, effects: undefined, promised: undefined, decision: undefined, approved: undefined, picked: undefined, sendAt: undefined, correction: undefined, todos: undefined, newCount: 0, ...(keepSent ? {} : { sent: undefined }) })
 }
 
 // When a reply goes out, what it promised the owner would do becomes theirs to keep, once per open text (R-NEX-07).
@@ -242,7 +242,7 @@ export function closeWork(wf: Workflow, why: string) {
 export const CHECK_DAYS = 3
 export function lastActivity(store: Store, wf: Workflow): string | undefined {
 	const parts = (wf.work?.parts ?? []).map(id => store.workflow(id)).filter((p): p is Workflow => !!p)
-	return [wf.work?.steps.at(-1)?.at, ...[wf, ...parts].map(w => store.thread(w.id).at(-1)?.at)].filter((x): x is string => !!x).sort().at(-1)
+	return [...(wf.work?.steps.map(s => s.at) ?? []), ...[wf, ...parts].map(w => store.thread(w.id).at(-1)?.at)].filter((x): x is string => !!x).sort().at(-1)
 }
 export function due(wf: Workflow, now = Date.now(), store?: Store): boolean {
 	if (!(wf.state === 'open' && active(wf) && !!wf.work!.checkAt && Date.parse(wf.work!.checkAt) <= now)) return false
@@ -254,14 +254,24 @@ export function due(wf: Workflow, now = Date.now(), store?: Store): boolean {
 	}
 	return true
 }
+export function waitsOnOwner(wf: Workflow, me: string[]): boolean {
+	const on = wf.work?.waitingOn?.who.trim().toLowerCase()
+	return !!on && me.some(name => name.trim().toLowerCase() === on)
+}
+
 export function askWhatNext(wf: Workflow, store?: Store) {
 	const k = wf.work!
 	const since = (store && lastActivity(store, wf) || k.steps.at(-1)?.at || '').slice(0, 10)
+	const waiting = k.waitingOn, cfg = waiting ? store?.config() : undefined
+	const ownerWait = waitsOnOwner(wf, cfg ? [cfg.owner.name, cfg.owner.name.split(/\s+/)[0], ...(cfg.aliases ?? [])] : [])
+	const question = ownerWait && waiting
+		? `Still on your list since ${waiting.since.slice(0, 10)}: ${(k.next?.what ?? k.goal).replace(/[.\s]+$/, '')}. Report how it went with "${wf.code}: what happened". Remind me in 3 days with "wait ${wf.code}: 3d", or Close it with "close ${wf.code}".`
+		: `No news on "${k.goal}" since ${since}${k.waitingOn ? `; waiting on ${k.waitingOn.who}` : ''}. Answer "${wf.code}: nudge them" for a drafted follow-up, "wait ${wf.code}: 3d", or "close ${wf.code}".`
 	newTurn(wf, true)
 	Object.assign(wf, {
 		...stateFields(wf, 'needs_human'),
 		status: `No news since ${since}`,
-		question: `No news on "${k.goal}" since ${since}${k.waitingOn ? `; waiting on ${k.waitingOn.who}` : ''}. Answer "${wf.code}: nudge them" for a drafted follow-up, "wait ${wf.code}: 3d", or "close ${wf.code}".`,
+		question,
 	})
 }
 export function wait(wf: Workflow, days: number) {
@@ -288,9 +298,9 @@ export function watchNews(wf: Workflow, r: Report, ref: string, first: boolean):
 	wake(wf, `News: ${r.summary}`)
 	return true
 }
-export function watchEnded(wf: Workflow, what: string) {
+export function watchEnded(wf: Workflow, what: string, store?: Store) {
 	step(wf, what)
-	if (wf.state === 'open') askWhatNext(wf)
+	if (wf.state === 'open') askWhatNext(wf, store)
 }
 // News on an item: open work starts a new turn; a waiting draft is withdrawn and redrafted with it.
 export function wake(wf: Workflow, status: string) {

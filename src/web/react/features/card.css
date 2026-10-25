@@ -114,3 +114,11 @@ a.left-button:hover{background:var(--surface-2)}
 .left-main .left-tick{display:flex;gap:8px;align-items:flex-start;cursor:pointer;flex:1 1 auto}
 .left-main .left-tick input{margin-top:3px}
 .left-line .todo-source,.left-line .left-quote{margin-left:24px}
+/* DD4-C1: the report form's context line (normal weight, bold lead-in) and the muted line on its own row in the bar. */
+.item-card .card-step>h3.step-context{font-size:14px;font-weight:400;letter-spacing:normal;text-transform:none;color:var(--text);margin:0 0 8px}
+.card-actions>.bar-note{flex-basis:100%;margin:0;font-size:13px}
+/* A76 (designer-sent-reply SR2): the sent reply's head line reads as a sentence, and its bubble has the own-message tint. */
+.item-card .card-sent>h3.sent-head{font-size:13.5px;font-weight:400;letter-spacing:normal;text-transform:none;color:var(--text-2);margin:0}
+.item-card .card-sent>h3.sent-head strong{color:var(--text);font-weight:600}
+.item-card .card-sent>h3.sent-head a{text-decoration:none;color:var(--accent)}
+.card-sent .card-bubble{background:var(--accent-soft);margin-top:6px}

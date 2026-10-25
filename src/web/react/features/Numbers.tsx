@@ -8,6 +8,7 @@ import { when } from '../domain/time.ts'
 import { NAME } from '../brand.ts'
 import { useSnapshot } from '../data/hooks.ts'
 import { Entry } from './Done.tsx'
+import { AiUse } from './AiUse.tsx'
 
 type NumberLink = NumbersData['model']['handled']['main']
 const number = (value: NumberLink, all = false) => value.key ? <a className={`num-link${all ? ' num-all' : ''}`} href={`#numbers/${value.key}`}>{value.text}{all && <Icon name="right" />}</a> : <span>{value.text}</span>
@@ -68,6 +69,7 @@ export default function Numbers() {
 					</section>
 					<div className="num-cards">{data.model.cards.map(card => <section className="num-card" key={card.rule}><h3 className="num-t">{card.title}</h3><p className="num-main">{number(card.main)}</p>{card.meter && <div className="num-meter" role="img" aria-label={`${card.meter.n} of ${card.meter.of} as drafted`}><i style={{ width: `${Math.round(card.meter.n / card.meter.of * 100)}%` }} /></div>}<ul className="num-lines">{card.lines.map((parts, index) => <li key={index}>{line(parts)}</li>)}<li className="num-four">{number(card.four)}</li></ul>{how(card.rule)}</section>)}</div>
 					<section className="num-card num-foot" aria-label="Guardrails"><p><strong>Corrections:</strong> {data.model.corrections.map((value, index) => <span key={index}>{number(value)}</span>)}</p>{how('corrections')}{data.model.unknown && <><p>{number(data.model.unknown)}</p>{how('unknown')}</>}<p>{data.model.promises}</p>{how('promises')}
+						{data.usage && <AiUse usage={data.usage} how={how('usage')} />}
 						<div className="num-copy"><Button variant="outline" onClick={() => void copy(data.model.summary)}>Copy a summary</Button><span>numbers only, no names and no message text</span></div>{message && <p role="status">{message}</p>}<details className="num-how" data-how="copy"><summary>See what is copied</summary><pre className="num-sum">{data.model.summary}</pre></details>
 					</section>
 				</>}

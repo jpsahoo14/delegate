@@ -6,11 +6,13 @@ import { NAME } from '../brand.ts'
 
 // One counted line: codes, chat ids, and times only. No message text and no names, so a week's file holds nothing private.
 export type Ev = {
-	at: string; event: 'tick' | 'sent' | 'closed' | 'made' | 'applied' | 'undo' | 'marked' | 'notfyi' | 'correction' | 'missed'
+	at: string; event: 'tick' | 'sent' | 'closed' | 'made' | 'applied' | 'undo' | 'marked' | 'notfyi' | 'correction' | 'missed' | 'run' | 'version'
 	// asDrafted on a send: true, false, or absent when the line can no longer prove which (an old line after the 30-day redaction).
 	// target: the message id of the send a correction is about.
 	// changesOff: changes left out before a send (removed by the owner, or dropped as no longer needed).
 	code?: string; asDrafted?: boolean; holding?: true; changesOff?: number; askAt?: string; askMsgId?: string; replyAt?: string; closedBy?: string; items?: string[]; kept?: number; removed?: number; left?: number; kind?: string; chat?: string; msgId?: string; target?: string
+	// COST-USAGE: an AI run (run), and the first line a machine wrote with a release (version: v and machine).
+	run?: Run; v?: string; machine?: string
 }
 export type Item = { code: string; kind?: string; chat: { id: string }; msgIds: string[] }
 export type WindowKey = 'this' | 'last' | '4w' | 'all'
@@ -45,10 +47,14 @@ const legacyClose = (status: string, prMoved: boolean) => /^You replied yourself
 // whatever the owner's zone, a day that had a read keeps one, so a week's lines do not depend on a zone.
 export function slim(raw: Record<string, unknown>[]): Ev[] {
 	const moved = new Set(raw.filter(e => e.event === 'pr-moved').map(e => str(e.code)))
-	const hours = new Map<string, [string, string]>(), out: Ev[] = []
+	const hours = new Map<string, [string, string]>(), out: Ev[] = [], versions = new Map<string, Ev>()
 	for (const e of raw) {
 		const at = str(e.at), code = str(e.code)
 		if (!at || Number.isNaN(Date.parse(at))) continue
+		// COST-USAGE: every run the log names a kind for, and each machine's first line of each release (coverageSince).
+		if (str(e.runKind)) out.push({ at, event: 'run', run: runOf(e) })
+		const v = str(e.v), m = str(e.machine), had = v && m ? versions.get(`${m}|${v}`) : undefined
+		if (v && m && (!had || at < had.at)) versions.set(`${m}|${v}`, { at, event: 'version', v, machine: m })
 		const opt = (k: 'askAt' | 'replyAt') => (str(e[k]) ? { [k]: str(e[k]) } : {})
 		switch (e.event) {
 			case 'tick': { const h = hours.get(at.slice(0, 13)); if (!h) hours.set(at.slice(0, 13), [at, at]); else if (at < h[0]) h[0] = at; else if (at > h[1]) h[1] = at; break }
@@ -71,7 +77,7 @@ export function slim(raw: Record<string, unknown>[]): Ev[] {
 			case 'missed': if (str(e.chat)) out.push({ at, event: 'missed', chat: str(e.chat), msgId: str(e.msgId) }); break
 		}
 	}
-	return [...out, ...[...hours.values()].flatMap(([a, b]) => (a === b ? [a] : [a, b]).map(at => ({ at, event: 'tick' as const })))]
+	return [...out, ...versions.values(), ...[...hours.values()].flatMap(([a, b]) => (a === b ? [a] : [a, b]).map(at => ({ at, event: 'tick' as const })))]
 }
 
 // When the ask a reply answers was sent: the item's first message since the owner last spoke in the thread.
@@ -257,4 +263,116 @@ export function weekLine(n: Numbers): string | undefined {
 	const r = n.now.replies, m = n.now.missed
 	if (!n.handled.n && !r.of && !m.n) return undefined
 	return `This week: ${n.handled.n} handled for you · ${r.n} of ${r.of} replies as drafted · ${m.n} missed.`
+}
+
+// COST-USAGE (pm-usage-cost.md: PM FINAL, Designer AU1-AU5, PE 11:28:00Z and 12:23:15Z). What Delegate's AI runs used, counted from the
+// same log lines on all machines. Metadata only: a run's kind, models, counts and times, and the item or job it served; no prompt or
+// message text. reported: the run said what it used (any usage field). A run that didn't is counted (Y), but its cells stay unknown, never 0.
+export type Run = { kind: string; reported: boolean; models: { id: string; name?: string }[]; runId?: string; modelCalls?: number; tokensIn?: number; tokensOut?: number; toolCalls?: number; ms?: number; workflowId?: string; job?: string; machine?: string }
+const USED = ['models', 'modelCalls', 'modelMs', 'tokensIn', 'tokensOut', 'toolCalls', 'toolMs', 'startMs']
+function runOf(e: Record<string, unknown>): Run {
+	const models = (Array.isArray(e.models) ? e.models : []).flatMap((m: unknown) => {
+		const o = m && typeof m === 'object' ? m as Record<string, unknown> : {}
+		return typeof o.id === 'string' ? [{ id: o.id, ...(typeof o.name === 'string' ? { name: o.name } : {}) }] : []
+	})
+	const pick = (...ks: ('runId' | 'workflowId' | 'job' | 'machine')[]) => Object.fromEntries(ks.flatMap(k => (str(e[k]) ? [[k, str(e[k])]] : [])))
+	const count = (...ks: ('modelCalls' | 'tokensIn' | 'tokensOut' | 'toolCalls' | 'ms')[]) => Object.fromEntries(ks.flatMap(k => (num(e[k]) !== undefined ? [[k, num(e[k])]] : [])))
+	return { kind: str(e.runKind)!, reported: USED.some(k => (k === 'models' ? models.length > 0 : num(e[k]) !== undefined)), models, ...pick('runId', 'workflowId', 'job', 'machine'), ...count('modelCalls', 'tokensIn', 'tokensOut', 'toolCalls', 'ms') }
+}
+
+// The PM's rows, in order, by the run kinds the log names (PE 11:28). A kind not listed is Other.
+export const USAGE_KINDS: { label: string; kinds: string[] }[] = [
+	{ label: 'Drafting replies', kinds: ['draft'] }, { label: 'Reviews and investigations', kinds: ['review', 'job'] }, { label: `Asking ${NAME}`, kinds: ['ask'] },
+	{ label: 'Reminder checks', kinds: ['reminder'] }, { label: 'Reading your rules', kinds: ['rule'] }, { label: 'Checking your own replies', kinds: ['owner-reply'] },
+	{ label: 'Checking promises', kinds: ['promise'] }, { label: 'Other', kinds: ['change'] },
+]
+const rowOfKind = (kind: string) => { const i = USAGE_KINDS.findIndex(r => r.kinds.includes(kind)); return i < 0 ? USAGE_KINDS.length - 1 : i }
+
+export type Use = { runs: number; reported: number; modelCalls?: number; tokensIn?: number; tokensOut?: number; toolCalls?: number; ms?: number }
+const FIELDS = ['modelCalls', 'tokensIn', 'tokensOut', 'toolCalls', 'ms'] as const
+// Each field sums the runs that measured it; one no run measured stays unknown. Nothing ran: every field is a measured 0.
+export function useOf(runs: Run[]): Use {
+	const use: Use = { runs: runs.length, reported: runs.filter(r => r.reported).length }
+	for (const f of FIELDS) { const vs = runs.map(r => r[f]).filter((v): v is number => v !== undefined); if (vs.length || !runs.length) use[f] = vs.reduce((a, b) => a + b, 0) }
+	return use
+}
+
+export type TimedRun = Run & { at: string }
+// A run counts once, whatever machine's file or synced copy holds its line.
+export function usageRuns(evs: Ev[]): TimedRun[] {
+	const out = new Map<string, TimedRun>()
+	for (const e of evs) if (e.event === 'run' && e.run) { const k = e.run.runId ?? `${e.run.machine ?? ''}|${e.at}|${e.run.kind}`; if (!out.has(k)) out.set(k, { ...e.run, at: e.at }) }
+	return [...out.values()]
+}
+
+const atLeast = (v: string, min = [0, 2, 47]) => {
+	const r = v.split('+')[0].split('.').map(Number)
+	for (let i = 0; i < min.length; i++) if ((r[i] ?? 0) !== min[i]) return (r[i] ?? 0) > min[i]
+	return true
+}
+// PE 12:23:15Z: counting is complete from the LATEST, across the machines that ran something, of each one's first line from 0.2.47 on.
+// Undefined while one of them has no such line (its runs come from an older version). Derived, never stored.
+export function coverageSince(evs: Ev[], ran: TimedRun[]): string | undefined {
+	const first = new Map<string, string>()
+	for (const e of evs) if (e.event === 'version' && e.v && e.machine && atLeast(e.v)) { const f = first.get(e.machine); if (!f || e.at < f) first.set(e.machine, e.at) }
+	const machines = [...new Set(ran.map(r => r.machine).filter((m): m is string => !!m))]
+	const ats = machines.length ? machines.map(m => first.get(m)) : [...first.values()].sort().slice(0, 1)
+	return ats.length && ats.every(Boolean) ? (ats as string[]).sort().at(-1) : undefined
+}
+
+export type UsageKindRow = { label: string; kinds: string[]; use: Use; counted: boolean }
+export type UsageModelRow = { label: string; use: Use }
+export type UsageBar = { week: string; use?: Use; since?: string }
+// One window of the AI USE section (PE 12:29:36Z FINAL launch-window rule; PM CLOSE 12:35Z). after: the window ends after coverageSince;
+// totals, models and X of Y are over [max(start, coverageSince), end] only, and clipped says since is inside it. before: it ends
+// earlier, or a machine in it runs an older release: no totals, and every breakdown cell is not counted. missing: the PM's rows
+// whose runs didn't report usage, for the coverage hover. A bar has no use for a week wholly before since; since's own week is clipped.
+export type UsageWindow = { state: 'before' | 'after'; since?: string; clipped: boolean; kinds: UsageKindRow[]; models: UsageModelRow[]; total: Use; missing: string[]; bars: UsageBar[] }
+
+function breakdown(runs: TimedRun[], before: boolean) {
+	const kinds = USAGE_KINDS.map((row, i) => ({ ...row, use: useOf(runs.filter(r => rowOfKind(r.kind) === i)), counted: !before }))
+	// A run's model is the one it used most (the log lists them most-used first); a run that reported none is only in the Total.
+	const byModel = new Map<string, { label: string; runs: TimedRun[] }>()
+	for (const r of runs) { const m = r.models[0]; if (!m) continue; const had = byModel.get(m.id) ?? { label: m.name ?? m.id, runs: [] }; if (m.name) had.label = m.name; had.runs.push(r); byModel.set(m.id, had) }
+	const models = before ? [] : [...byModel.values()].map(m => ({ label: m.label, use: useOf(m.runs) })).sort((a, b) => b.use.runs - a.use.runs || a.label.localeCompare(b.label))
+	const missing = kinds.filter(k => k.use.reported < k.use.runs).map(k => k.label)
+	return { kinds, models, total: useOf(runs), missing }
+}
+
+export function usageWindow(evs: Ev[], span: { from: string; to: string }, weeks: string[], tz?: string): UsageWindow {
+	const all = usageRuns(evs), day = (at: string) => dayIn(at, tz)
+	const inDays = (from: string, to: string) => (r: TimedRun) => { const d = day(r.at); return d >= from && d <= to }
+	// The machines that ran something are read from every run line, before the dedupe: a run two machines both logged keeps only one copy,
+	// and the other machine must still hold the window back until its own first 0.2.47 line (7-case proof, case 6b).
+	const lines = (from: string, to: string) => evs.flatMap(e => (e.event === 'run' && e.run && day(e.at) >= from && day(e.at) <= to ? [{ ...e.run, at: e.at }] : []))
+	const here = all.filter(inDays(span.from, span.to)), since = coverageSince(evs, lines(span.from, span.to))
+	const after = since !== undefined && day(since) <= span.to
+	const clipped = after && day(since!) >= span.from
+	const counted = after ? here.filter(r => r.at >= since!) : here
+	// The bars: one week each; a week wholly before counting was complete has no value, and the week it became complete counts from then.
+	const barRuns = all.filter(inDays(weeks[0], addDays(weeks.at(-1)!, 6))), barSince = coverageSince(evs, lines(weeks[0], addDays(weeks.at(-1)!, 6)))
+	const bars = weeks.map(w => {
+		const end = addDays(w, 6)
+		if (barSince === undefined || day(barSince) > end) return { week: w }
+		return { week: w, use: useOf(barRuns.filter(inDays(w, end)).filter(r => r.at >= barSince)), ...(day(barSince) >= w ? { since: barSince } : {}) }
+	})
+	return { state: after ? 'after' : 'before', ...(since ? { since } : {}), clipped, ...breakdown(counted, !after), bars }
+}
+
+// AU4: what one item used, over all its runs. A run counts for the item it names; a job's run only when that job serves exactly one
+// item (a shared job is never split); checking his own replies belongs to no item.
+export function usageByItem(evs: Ev[], itemOfJob: (job: string) => string | undefined): Map<string, Use & { models: string[] }> {
+	const by = new Map<string, TimedRun[]>()
+	for (const r of usageRuns(evs)) {
+		if (r.kind === 'owner-reply') continue
+		const id = r.workflowId ?? (r.job ? itemOfJob(r.job) : undefined)
+		if (id) by.set(id, [...(by.get(id) ?? []), r])
+	}
+	return new Map([...by].map(([id, runs]) => {
+		const n = new Map<string, number>()
+		for (const r of runs) { const m = r.models[0]; if (m) n.set(m.name ?? m.id, (n.get(m.name ?? m.id) ?? 0) + 1) }
+		// Its counts are only what its reporting runs reported (PM 12:49:18Z); runs and reported keep the whole count.
+		const told = runs.filter(r => r.reported)
+		return [id, { ...useOf(told), runs: runs.length, reported: told.length, models: [...n].sort((a, b) => b[1] - a[1]).map(([m]) => m) }]
+	}))
 }

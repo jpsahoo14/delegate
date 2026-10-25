@@ -1,5 +1,130 @@
 # React preview
 
+## Measurable usage logging (0.2.47 HOST, usage-first cut)
+
+- Build from reviewed Settings input 6c7a04f3 on the clean usage line, not the deferred WDD merge.
+  Coordinator 2026-10-25T12:17:26Z places HOST GAP-1/2/3 plus New's measurable view in the SAME .47 cut.
+  Logging alone is not completion of the requested view. Introduce no deferred WDD/action/Undo or
+  A76 result commits into this line; the final release manifest verifies every selected ancestry.
+- PE 2026-10-25T11:28:00Z: ran(kind, use) always returns runKind, including when usage is missing
+  or empty. Report only supplied usage fields; do not fill missing models/calls/tokens/time with zero.
+  This keeps an unmeasured run in the new view's denominator without inventing measurements.
+- RunKind adds owner-reply, promise and rule. Existing model-summary helpers recognise those kinds
+  when a model was reported; their model-only behavior stays. New's usageOf owns unknown values and X/Y.
+- owner-reply-run records runId, ms, chat/msg ids and ran(owner-reply, used), but NO workflow/item ids.
+  The judgment may cover multiple items, so the run is never assigned to one item or split among them.
+- promise-run records workflowId, runId, ms and ran(promise, used). Rule compilation uses ran(rule, used)
+  in its existing event. Log after the run returns, before report/setup validation, so failed/no-report
+  results retain their run identity too. Add no prompt, answer, person name or message text to usage events.
+- Preserve model execution, sessions, reports, setup holds, retries, approvals and actual effects.
+  No old-log rewrite or migration. Legacy events without runKind remain outside the new view's counts;
+  New supplies honest counted-since/partial-window text and unknown cells, not retroactive estimates.
+  PE's launch amendment derives coverage from existing release/machine log metadata, not the first
+  occasional owner-reply/promise event; HOST adds no stored coverage flag or new version marker.
+- New owns all-machine/runId deduplication, aggregation, totals/over-time/model breakdown, item
+  attribution and the ONE PE seven-case fictional-Temp aggregation proof plus Designer checks.
+  HOST hands off the actual reviewed metadata/RunKind commit. No credit/money conversion or promise.
+
+## Settings interval: active-watch scheduling companion (0.2.47 HOST)
+
+- Coordinator 2026-10-25T12:02:38Z and PE 2026-10-25T12:09:15Z: keep configured watch
+  deadlines in tick.reschedule's existing earliest-due calculation, independent of a longer quiet idle.
+  The pure track.watchDeadline(store, cfg, job, now) returns nextAt only for every/state=done jobs
+  with no relay/retry and a finite timestamp strictly after now. Reuse dueTrackers' FIRST non-Done
+  parent: it must watch this job or be waiting_on_task; do not pick a later eligible parent instead.
+- Suppress only this new deadline addition while stopped, at the daily run cap, or under the pure
+  activeAgentHold check. Never call the mutating blockedAgent here. Paused still includes watches.
+  Running, queued, relay and failed jobs add no watch deadline; existing queued retry scheduling stays.
+  endsAt is not a separate deadline: dueTrackers still handles expiry when nextAt falls due.
+- Past-due or invalid nextAt never pulls the schedule to now. A watch blocked by a cap or hold returns
+  to ordinary idle cadence after its deadline passes, rather than spinning the resident runner.
+- Keep scheduled sends, automations, retries, reply-only fast windows, work-hours policy and health
+  unchanged. Reuse the same jobs read; do not change watch cadence/defaults, read scope or AI budget.
+- New owns the paired Settings 1-240 validator, final help and save note in both UIs. Both reviewed
+  halves ship in the same .47 cut. No live config rewrite, schema change, backfill or migration:
+  existing configured intervals stay valid. The runnerSilent recommendation is explicitly excluded.
+- Validation is build, both typechecks and existing goldens, with normal OWN CR's explicit
+  240-minute-idle/hourly-watch deadline, paused inclusion and no-parent/ineligible-parent/stopped/
+  held/capped/past-due exclusion check. No new unit test or proof file.
+
+## Decision 56: bounded cross-item chat news (0.2.47 HOST)
+
+- After the existing person's routed appendThread only, add a news step to each other active item in
+  that same chat, excluding the target, its home and its parts. Do not add hooks to ownerStep, group
+  context fan-out or missed-message appends. Keep all routing and PR-join/target guards unchanged.
+- Require a nonempty sender id that is not the owner and does not match the existing BOT sender filter.
+  Reuse that filter unchanged. In groups the id must equal the other item's asker or an askers entry;
+  in a 1:1 the counterpart counts. Never match waitingOn.who, names, aliases or message/topic similarity.
+- Store only step text "<first> wrote in this chat (now in <target code>)", news=true, at=raw.at and
+  ref=xnews:<target id>; save only when step adds it. This dedupes to one step per waiting item/target.
+  It states where the person wrote, not that the message answered the waiting item's question.
+- Existing due() defers checkAt using lastActivity and CHECK_DAYS. Take the maximum stored step time,
+  not append order: a backlog news step can be older than the previous last step. Threads/parts and
+  existing timing stay otherwise unchanged. An unrelated topic can defer the check by at most
+  CHECK_DAYS from that activity; a long side conversation on one target adds no further step.
+- No pending, state, question, closure, wake/run, verb or AI-field changes. An already visible no-news
+  question stays as it is. No classifier, model, repair, owner-step reset or live-data action.
+- Old records use the ordinary intake/due path for newly read messages. No migration, backfill or
+  restoration. Normal OWN review; preserve the isolated .47 chain and all earlier-release artifacts.
+
+## H1: applying typed question hints (0.2.47 HOST)
+
+- PE 2026-10-25T09:32:55Z / Coordinator 2026-10-25T09:49:20Z: apply the existing optional
+  Report.questionHint beside its own question in finishWork, shortOfGoal and applyReport, including
+  the ordinary reply and short-of-goal branches. Call the reviewed normalizeQuestionHint before storage.
+  A missing/blank question or absent hint stores no hint; an explicitly supplied empty/sanitised-empty
+  hint stays empty. Do not parse question prose to create answers or copy hints from an earlier report.
+- Previews and new turns clear both fields. Engine-made replacement questions, failures, retry starts,
+  reviewer/group transitions and owner edits clear the previous hint; preserving the same question
+  preserves its hint. A question moved into an author comment drops its owner-answer hints.
+  The no-question sentinel clears both fields even on a report without a reply.
+- No question wording, state/timing, choices, send/approval, PR-target, Left-for-you or schema contract
+  changes. The existing normaliser remains SEND-owned and unchanged; HOST changes only its runner files.
+- Old records without hints remain optional/legacy data until an ordinary report or question transition.
+  No schema bump, repair, backfill, copy parser or live-root rewrite. New's typed chips and legacy-only
+  fallback are a separately reviewed companion in the SAME .47 cut; this producer is not page completion.
+- Other owners retain their question writers: SEND's keepApprovedDraft, send and effect-call repair;
+  New's retention/redaction. Their clear/replace pairing must be retained with the typed consumer.
+
+## Structured other-PR mentions (decision 43(d), 0.2.47 HOST producer)
+
+- At the existing first sole-match multi-PR join only, the code-built prAnchor stores also as the other
+  named PR numbers. Use the same strict, deduplicated PR set and the same original target computed BEFORE
+  appending the message. Never overwrite an existing anchor or extend its original also list on later joins.
+- Stop writing the Also mentions context finding. New reports may replace context without losing the
+  structured mention. No join/PR-target check, guard, routing condition or action/vote authority changes.
+- Clear also with the whole anchor through the existing split, edited/replaced/removed message, redaction
+  and done transitions. No independent lifetime, new state, event or formatter.
+- Old anchors have optional also absent: render no structured mention rather than guessing/backfilling.
+  Existing legacy context facts retain their ordinary lifetime until a normal report replaces them.
+  No schema bump, copy parsing, repair, restoration or live-data rewrite.
+- Coordinator 2026-10-25T09:49:20Z: HOST producer now, then its OWN review and exact named handoff to New;
+  New renders from valid anchor facts after its C4 safe boundary. Both reviewed halves share the same .47
+  cut, neither alone. Preserve reviewed C4/.46 b2 and leave .46 candidates/frozen artifacts unchanged.
+- H1 questionHint application follows this own step/review and its normal pull; the consumer pairing is
+  not a global coding stop. No unreviewed helper/branch merge or held feature expansion is included.
+
+## C4: owner-wait question (0.2.47, HOST)
+
+- Build on a separate .47 branch from reviewed b2ace3f7; leave the .46 candidate/ref unchanged.
+  The pure work.waitsOnOwner(wf, me: string[]): boolean predicate compares waitingOn.who with the supplied
+  names/aliases using trimmed, case-insensitive exact matching. askWhatNext supplies the configured owner's
+  full name, first name and aliases; New supplies its existing s.me. Both halves use this one predicate.
+- For that owner wait, use the PM's Still on your list since <day>: <step> line and Report how it went /
+  Remind me in 3 days / Close it wording. Reporting is the existing owner answer with the actual result;
+  waiting and closing keep their existing commands. Never offer a nudge to the asker for the owner's step.
+- The date comes from waitingOn.since; the step comes from the stored next step, or the work goal if none.
+  This is display data, not a new clock. The ordinary No news status, due/lastActivity/CHECK_DAYS logic,
+  state, placement, send/closure behavior and schemas are unchanged. Other-person questions stay exact.
+- Forward the existing Store through the two watch-ended callers as well as the ordinary tick, so owner
+  identity is available at every production question writer. No new poll, job or external action is scheduled.
+- Old work uses the same fields and normal question-generation path: no schema migration, one-shot repair,
+  restoration or live-data rewrite. No age-policy, stale-step trigger, Reopen, menu or placement redesign.
+- PE 2026-10-25T09:25:25Z confirms a SAME .47 CUT pairing: HOST's question/shared predicate plus New's
+  owner-only check-date actions and existing report-form exposure. Other-person rows stay exact; New uses
+  workflowApprovalRev, not leftRev. New's companion is scheduled by Coordinator and edited by New only.
+  Neither half ships alone; do not claim whole-page C4 completion or edit New's files under this HOST slice.
+
 ## A120 text-render caller pairing (HOST)
 
 - Merge only the reviewed optional-Place renderer API and MCP caller at SEND df5ec00e / 5bf331e.
@@ -17,6 +142,14 @@
   After a reminder's successful send and addSent, emit it as auto/marked. This is the named SEND handoff.
 - No message text, user or target enters the event. No new await, change to send order, marker policy, final
   consent check or retry behavior. The existing SEND catalogue/markerFor and New preview remain paired.
+
+## Suggested-answer hint ownership (SEND, decision 57)
+
+- Clearing or replacing a question in the approved-draft backstop, old-invite refusal or effect-call preparation/repair
+  clears `questionHint` in the same assignment. A holding reply preserves the hint only when it preserves the question;
+  creating its fallback question clears any old hint. Send and repair behavior is otherwise unchanged.
+- These adjacent clears ship in the same .47 cut as New's hint consumer and page-revision digest. The producer's separate
+  privacy pairing with New's retention clear remains mandatory; this slice adds no parser, schema, helper or merge.
 
 ## Left-for-you tasks, verbs and certain-signal probe (HOST)
 
@@ -112,8 +245,8 @@
   prTarget reader. Another code may emit its own event; no durable marker or migration.
 - #54 analysis note: named-PR home selection scopes store.workflows(), so prTarget may read each candidate's thread.
   Include that cost in Debug's idle/intake/controls timing analysis; no new cache or latency claim in this follow-up.
-- The temporary Also mentions context line can be replaced by the next worker report. Decision 43(d) explicitly
-  schedules its replacement with prAnchor.also + New's rendering for 0.2.46; leave that data/UI work for after M2.
+- The temporary Also mentions context line can be replaced by the next worker report. Decision 43(d)'s producer
+  is now the .47 slice above, paired with New's rendering under the explicit cut; .46 PR-target guards stay unchanged.
 
 ## Fast checks after sent replies only (A R39 / owner fast-poll ruling)
 
@@ -5014,3 +5147,100 @@ New (Now) and Classic (Focus): k moves to the next item and j to the previous on
 ← previous; no Up/Down (they scroll the page). Copy, as the PM wrote it: Classic's hint bar "k next · j previous"; both help dialogs
 "k or →: Next item" and "j or ←: Previous item". The send hint is unchanged (the OS-specific hint is not in this scope). With no item
 open, j still opens the first one (the index clamps), as before.
+
+## 0.2.47 DD4-C1: the report form says whose step it is and what the button does (PE R4; PM decision 4; Designer DD4)
+
+Same contract, copy only. The your-step report form (New and Classic, one ItemCard) leads with the context line "**Your step (from
+<day>):** <step>." (normal weight, bold lead-in), where <day> is work.waitingOn.since, carried as the read-only yours.since only when
+the work waits on him; without it the line reads "Your step: <step>.". S2's "Then Delegate shares the result with <asker>, after your
+OK." is removed (a build check line, when there is one, stays on its own). The primary is "Draft the update to <first>", still
+disabled until a result is picked. Under it, on its own row in the bar (it wraps at 400 px): "Delegate drafts it from your result.
+Nothing is sent until you press Send."; the form's old "Nothing is sent. You see the draft first." goes, so the card says it once. The
+S7 hover for that button: "Delegate drafts your update to {name} from your result. Nothing is sent until you press Send." No engine or
+schema change; card goldens unchanged (none named this text). Not in scope: C2a, C3, Stop tracking, the Dismiss menu, re-checks.
+
+## 0.2.47 C4, the page half: an owner-wait "no news" row offers his own step, not a nudge (PE 09:25:25Z (2); PM round 3/4)
+
+Paired with HOST 492f22b6 + 46c19ee6 (the question words and the shared waitsOnOwner); neither half ships alone. When the open work
+waits on HIM (runner/work.ts waitsOnOwner(wf, s.me), the same identity set askWhatNext uses), the check-date row reads "Still on your
+list since <Tue 20 Oct>: <his step>." (waitingOn.since in his time zone; next.what, else the goal) and offers, with existing verbs only:
+[Report how it went] (the row's {text} primary, which opens the card with the existing your-step report form, the same answer verb),
+[Remind me in 3 days] (wait <code>: 3d) and [Close it] (close <code>). No follow-up draft to the asker. The report form is exposed for
+that row exactly as for a your-step row. Every other check-date row (waiting on other people) is unchanged, as are the trigger, status,
+placement and consent (workflowApprovalRev). The row button's hover is the Designer's S7 line for Report how it went.
+
+## 0.2.47 prAnchor.also: "Also mentions PR <n>" from the anchor (architecture 43(d); pairs with HOST 4d0cbf6b)
+
+HOST stores the other PRs a multi-PR ask named on the item's first anchor (prAnchor.also, frozen) and no longer writes an
+"Also mentions" context line. The card shows the info fact "Also mentions: PR <a>, PR <b>" from that list, only while the anchor holds
+as prTarget honours it: the item isn't done or redacted, the anchor's message is still among its messages, and prTarget returns the
+anchor's PR (no conflict). An older item may still carry the retired context line of that label until its report is replaced; when
+the structured line shows, it replaces that one, so the card never shows both. An anchor without also (older data) shows nothing; no
+backfill or guessing. Guards still use prTarget, not this line.
+
+## 0.2.47 H1 consumer: chips from the stored suggested answers; redaction and the page digest include them (decision 57)
+
+HOST 23ea9d40 stores a question's suggested answers apart from its words (wf.questionHint {answers}). The card's answer chips come
+from it when the record has that field, and only while wf.question is non-empty, so a hint left after a question was cleared stays
+inert (CR 10:17:09Z). The quote match on the question text ('"<code>: <answer>"') is kept only for older records with no questionHint
+field. store/retention.ts's redaction sweep clears questionHint with question (privacy-mandatory: its field list is explicit), and
+store/page-revision.ts's page digest includes questionHint, so a same-words question with new suggested answers refreshes the chips. No
+parser, schema or send/repair behaviour change; SEND's own question writers clear it in their commit (same cut).
+
+## 0.2.47 A76: the reply that went, as a sent bubble (decision 55; designer-sent-reply SR2-SR6, PM 09:58:23Z)
+
+The projection adds Item.sent = {at, teams?, text, by: you|rule, holding?}, only when wf.sent.msgId is present, its Undo window is
+over (undoUntil absent or past), sendText ?? text is present, and no newer turn exists (!revAt || revAt <= sent.at). Otherwise it is
+omitted and today's card stays; it is never inferred from read-only status, copy or status text. teams is the sent message's Teams
+link (messageLink, test-chat guarded); without it the ↗ is dropped. With item.sent, the reply slot shows the head line "You replied to
+<first> · <time> ↗" ("Delegate replied to <first> by itself", "You sent a holding reply to <first>") and the delivered text, marker
+included, in the same MessageBubble as their message (the S9 six-line clamp, "Show the whole reply (N characters)", opened up to
+360 px, keyboard-scrollable, the toggle naming its count and controlling the bubble), with the own-message tint. No "Your reply to"
+heading and no pre-send count line. MessageBubble's new label/controlsId/noun props default to today's, so their-message markup is
+unchanged. The rule-sent "because you wrote…" line is omitted: the history row carries only the rule id, no frozen words. Unsent
+drafts (editable or read-only) are unchanged and never clamped. One ItemCard serves New and Classic.
+
+## 0.2.47 SETTINGS-IDLE-180: Check Teams every, 1 to 240 (Coordinator 11:59:02Z/12:02:38Z, PE 11:53:23Z, PM 12:02:02Z final words)
+
+web/settings.ts pollIdle: the validator takes a whole number from 1 to 240 (was 60; PE found no technical cap, PM chose 240), error
+"Give a whole number from 1 to 240.". The help, now a function of the saved value, says what the interval paces and what wakes sooner:
+"How often Delegate does its routine checks (new messages, PR changes, follow-ups) when nothing is going on: about every <N> minutes
+(1 to 240). Some work wakes it sooner: what you approve here, scheduled sends and your watches, and it checks more often for a while
+after a reply goes out. If you choose 15 minutes or less, it checks about every 5 minutes during your work hours." Above 60, the
+existing save-result line reads "Saved. When things are quiet, Delegate may take up to about <N/60> hours to notice new messages or PR
+changes. What you approve here and scheduled sends aren't delayed, and your watches keep their own schedule." (N/60 to the nearest
+half hour, "1 hour" singular) as the whole save line, the PM's words exactly with no "It applies from the next cycle" suffix
+(spec.savedLine; PE 12:04:54Z); at 60 or less the save
+line is unchanged. Both UIs draw these rows and save results from settings.ts, so New and Classic match with no layout change. The
+watch clause is true only with HOST's same-cut due-tracker companion (tick.ts reschedule); the runnerSilent health formula is
+excluded. Old data: none, every saved value stays valid.
+
+## 0.2.47 COST-USAGE, New half: Numbers › AI USE and the per-item "What it used" line (pm-usage-cost.md; PE 11:28:00Z, PE FINAL launch-window rule 12:29:36Z / PM CLOSE 12:35Z; Coordinator 12:17:26Z)
+
+core/numbers.ts: slim() keeps, for every log line with a runKind, a compact run event (kind, models, modelCalls, tokensIn/out,
+toolCalls, ms, runId, workflowId, job, machine; no text), and each machine's first line of each release (v), so week files and the
+live log feed usage like the other numbers. usageRuns dedupes by runId across machines and copies. useOf sums each field over the
+runs that measured it and leaves it undefined (shown "unknown", never 0) when none did; a row with no runs is a measured 0.
+reported = the run logged any usage field; X of Y = reported of runs. The PM's 8 rows map runKind: draft; review+job; ask;
+reminder; rule; owner-reply; promise; change and any unknown kind = Other (runKind is read as the logged string; RunKind is HOST's).
+A run's model is its first (most-used) model; a run that reported none is only in the Total. coverageSince (PE 12:23:15Z): the
+latest, across the machines that ran something in the window (read from every run line, before the runId dedupe), of each one's first line with release >= 0.2.47; undefined while
+one has none. FINAL launch-window rule: a window ending after coverageSince is AFTER, with totals, models and X of Y over
+[max(start, coverageSince), end] and AU2's "Counted since <date>" when clipped; a window ending before, or with an older-release
+machine, is BEFORE: the AU2 subline "Owner-reply and promise checks not included before <date>." ("…not included." without a
+date; with no 0.2.47 machine yet, PM 12:49:18Z: "Not fully counted yet: checks of your own replies and promises are included after
+Delegate's next update."), no totals, no X of Y, no bars, and every breakdown cell "not counted". Bars: weeks wholly before have no value and the text
+"not counted" (never 0); the coverageSince week counts from it, its hover "Counted since <date>". No "Fully counted since",
+"partial" or "lower than" words.
+web/numbers.ts usageModel: the words and cells, the same for both UIs. Credits line (PM 11:40Z), the headline "<window>: N AI
+runs · T tokens", "Usage reported for X of Y AI runs", "<Y−X> runs didn't report usage" with the kinds as its hover, k/M with the
+full number as abbr title, and the column hovers (Tokens is the PM's; the other four PM-confirmed 12:49:18Z). Numbers are
+not links (PM rule-2 exception); "How is this counted?" carries USAGE_RULE. Copy a summary is unchanged.
+features/AiUse.tsx + ai-use.css, mounted in New and Classic Numbers between Promises and Copy a summary: the tab's window select
+drives it; Details is a disclosure (aria-expanded, collapsed after, the breakdown open before); real tables with th scope; under
+560 px of section width each row stacks as a block, no horizontal scroll.
+AU4: usedLines(store) maps an item to "What it used: N AI runs · T tokens · <time> · <model>", counting only what its reporting runs
+reported, plus "(<k> run(s) didn't report usage)" when some didn't; "What it used: N AI runs · usage unknown" only when none did (PM 12:49:18Z); a run counts for its workflowId, a job run only when that job serves exactly one item, owner-reply never. Cached:
+older weeks are counted once until one of their files changes, this week and last on each log change. Projection: Item.used and
+DoneEntry.used; ItemCard draws it last in Details, just before Ask (Classic's pane is the same card); New and Classic Done draw it
+last in the expanded row. Old data: none migrated; pre-0.2.47 windows stay BEFORE.

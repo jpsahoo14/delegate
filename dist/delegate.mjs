@@ -316,7 +316,7 @@ function readRun(out, startedAt, env2 = process.env, session = "", until) {
   }
 }
 function ran(kind, use) {
-  return use && Object.keys(use).length ? { ...use, runKind: kind } : {};
+  return { ...use, runKind: kind };
 }
 function runsOf(events) {
   const out = /* @__PURE__ */ new Map();
@@ -375,7 +375,7 @@ var init_runinfo = __esm({
     };
     obj = (v) => v && typeof v === "object" && !Array.isArray(v) ? v : {};
     WANTED = /"type":"(session\.(start|resume|usage_record)|assistant\.usage|tool\.execution_(start|complete))"/;
-    KINDS = [["draft", "Drafts"], ["review", "Reviews"], ["ask", "Asks"], ["change", "Changes you approved"], ["job", "Tracking and other jobs"], ["reminder", "Replies to your reminders"]];
+    KINDS = [["draft", "Drafts"], ["review", "Reviews"], ["ask", "Asks"], ["change", "Changes you approved"], ["job", "Tracking and other jobs"], ["reminder", "Replies to your reminders"], ["owner-reply", "Checking your own replies"], ["promise", "Checking promises"], ["rule", "Reading your rules"]];
     median = (ns) => {
       const s3 = ns.filter((n) => n !== void 0).sort((a, b) => a - b);
       return s3.length ? s3.length % 2 ? s3[(s3.length - 1) / 2] : (s3[s3.length / 2 - 1] + s3[s3.length / 2]) / 2 : void 0;
@@ -38419,7 +38419,7 @@ var require_formats = __commonJS({
     }
     var TIME = /^(\d\d):(\d\d):(\d\d(?:\.\d+)?)(z|([+-])(\d\d)(?::?(\d\d))?)?$/i;
     function getTime(strictTimeZone) {
-      return function time4(str3) {
+      return function time5(str3) {
         const matches2 = TIME.exec(str3);
         if (!matches2)
           return false;
@@ -38465,10 +38465,10 @@ var require_formats = __commonJS({
     }
     var DATE_TIME_SEPARATOR = /t|\s/i;
     function getDateTime(strictTimeZone) {
-      const time4 = getTime(strictTimeZone);
+      const time5 = getTime(strictTimeZone);
       return function date_time(str3) {
         const dateTime = str3.split(DATE_TIME_SEPARATOR);
-        return dateTime.length === 2 && date5(dateTime[0]) && time4(dateTime[1]);
+        return dateTime.length === 2 && date5(dateTime[0]) && time5(dateTime[1]);
       };
     }
     function compareDateTime(dt1, dt2) {
@@ -40804,8 +40804,8 @@ ${statusLine(wf, now, location)}`;
   const work2 = wf.work ? ["", `This work: ${wf.work.goal}. Done when ${wf.work.doneWhen}.`, ...(wf.work.plan ?? []).map((p) => `${p.done ? "[x]" : "[ ]"} ${p.what} (${p.who}${p.in ? `, ${p.in}` : ""}${p.probe ? `, build ${p.probe.build}${p.seen ? ` ${p.seen}` : ""}` : ""})`), ...wf.work.steps.slice(-8).map((x) => `- ${x.at.slice(5, 16).replace("T", " ")} ${clip(oneLine(x.what), 160)}`)] : [];
   return [head, ...work2, "", ...card2.length ? card2 : ["Draft: none"], ...notes.length ? ["", "You asked:", ...notes] : [], ...changes.length ? ["", okWill(wf), ...changes] : [], "", "Sources:", ...src.length ? src : ["- none"], ...wf.looked?.length ? ["", "Looked up:", ...wf.looked.map((x) => `- ${lookLine(x)}`)] : [], "", "Thread:", ...t2].join("\n");
 }
-function plain2(md3) {
-  return md3.replace(/\*\*/g, "").replace(/^### /gm, "");
+function plain2(md4) {
+  return md4.replace(/\*\*/g, "").replace(/^### /gm, "");
 }
 var MARK, clip, oneLine, hhmm2, hitCount, lookLine;
 var init_render = __esm({
@@ -42667,6 +42667,7 @@ function keepApprovedDraft(wf, reason) {
   Object.assign(wf, {
     ...stateFields(wf, "needs_human"),
     question: void 0,
+    questionHint: void 0,
     choices: void 0,
     sendAt: void 0,
     approved: void 0,
@@ -42724,9 +42725,9 @@ var init_retry = __esm({
     MIN = 6e4;
     capOf = (r) => r.last.kind === "not_ready" ? void 0 : DELAYS[r.last.kind]?.length;
     retryNote = (r) => `The last attempt fell short of the goal: ${r.last.why}.${r.tried.length ? ` Already tried, do not repeat: ${r.tried.join("; ")}.` : ""} Take a different route; search for tools by what they do before you decide one is missing.${r.last.waitFor ? ` It was waiting for ${r.last.waitFor}; check it first.` : ""}`;
-    retryStatus = (r, time4) => {
+    retryStatus = (r, time5) => {
       const cap2 = capOf(r);
-      return r.last.kind === "not_ready" ? `Waiting${r.last.waitFor ? ` for ${r.last.waitFor}` : ""}; checking again at ${time4(r.at)}: ${r.last.why}` : `Retrying (${r.n} of ${cap2}) at ${time4(r.at)}: ${r.last.why}`;
+      return r.last.kind === "not_ready" ? `Waiting${r.last.waitFor ? ` for ${r.last.waitFor}` : ""}; checking again at ${time5(r.at)}: ${r.last.why}` : `Retrying (${r.n} of ${cap2}) at ${time5(r.at)}: ${r.last.why}`;
     };
   }
 });
@@ -43332,8 +43333,8 @@ var init_gate = __esm({
 });
 
 // src/core/format.ts
-function mdToHtml(md3) {
-  return esc2(md3).replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2">$1</a>').replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>").replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\n/g, "<br>");
+function mdToHtml(md4) {
+  return esc2(md4).replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2">$1</a>').replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>").replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\n/g, "<br>");
 }
 function personName(name = "") {
   const clean4 = name.replace(/(?:\s*\([^()]*\))+\s*$/, "").trim();
@@ -44497,6 +44498,14 @@ function stopWatch(store2, wf) {
     store2.saveJob(job);
   }
 }
+function watchDeadline(store2, cfg, job, now) {
+  const at3 = Date.parse(job.nextAt ?? "");
+  if (!job.every || job.state !== "done" || job.relay || job.retry || !Number.isFinite(at3) || at3 <= now) return void 0;
+  const item2 = job.parents.map((id) => store2.workflow(id)).find((w) => w && w.state !== "done");
+  if (!item2 || item2.work?.watch !== job.id && item2.state !== "waiting_on_task") return void 0;
+  if (store2.control().stopped || activeAgentHold(store2.agentHold(), cfg.agent, now) || store2.runsToday() >= (cfg.dailyRuns ?? 200)) return void 0;
+  return job.nextAt;
+}
 function dueTrackers(store2, now = Date.now()) {
   for (const job of store2.jobs().filter((j) => j.every && j.state === "done" && j.nextAt && Date.parse(j.nextAt) <= now)) {
     const item2 = job.parents.map((id) => store2.workflow(id)).find((w) => w && w.state !== "done");
@@ -44510,7 +44519,7 @@ function dueTrackers(store2, now = Date.now()) {
       Object.assign(job, { every: void 0, nextAt: void 0 });
       store2.saveJob(job);
       if (work2) {
-        watchEnded(item2, `The watch on ${watchSubject(job)} ended after ${FOLLOW_DAYS} days`);
+        watchEnded(item2, `The watch on ${watchSubject(job)} ended after ${FOLLOW_DAYS} days`, store2);
         store2.save(item2);
         continue;
       }
@@ -44528,6 +44537,7 @@ var init_track = __esm({
   "src/runner/track.ts"() {
     "use strict";
     init_upgrades();
+    init_agent_failure();
     init_ids();
     init_format2();
     init_own();
@@ -45015,13 +45025,14 @@ function decline(store2, cfg, wf, ref, gate) {
   store2.log({ event: "review-declined", workflowId: wf.id, code: wf.code, pr, role: gate.role });
   const quiet = wf.startedBy === "room" && gate.role !== "unread";
   if (quiet) {
-    Object.assign(wf, { ...stateFields(wf, "done"), closedBy: "nothing", status: gate.status, pending: [], question: void 0, draft: void 0, effects: void 0, promised: void 0, job: void 0, reviewDecline: { pr, role: gate.role, at: at3, ask: wf.lastAsk } });
+    Object.assign(wf, { ...stateFields(wf, "done"), closedBy: "nothing", status: gate.status, pending: [], question: void 0, questionHint: void 0, draft: void 0, effects: void 0, promised: void 0, job: void 0, reviewDecline: { pr, role: gate.role, at: at3, ask: wf.lastAsk } });
     return;
   }
   Object.assign(wf, {
     ...stateFields(wf, "needs_human"),
     status: gate.status,
     question: gate.question || void 0,
+    questionHint: void 0,
     pending: [],
     draft: void 0,
     promised: void 0,
@@ -45618,6 +45629,7 @@ function prepareReportCalls(store2, cfg, items2, report2) {
     ...problems.length ? {
       state: "needs_human",
       question: report2.question ?? problems.join("\n"),
+      questionHint: void 0,
       todos: [.../* @__PURE__ */ new Set([...report2.todos ?? [], ...problems])],
       work: report2.work ? { ...report2.work, closed: void 0 } : void 0
     } : {}
@@ -45663,6 +45675,7 @@ function repairPendingEffectCalls(store2, consume) {
       sendAt: void 0,
       waitingSince: void 0,
       question: effects.some((e) => !e.done && !e.off) ? void 0 : problems.join("\n") || void 0,
+      questionHint: void 0,
       status: updates.some((u) => u.after) ? "The comment format was wrong and is fixed. Post them now?" : problems.join("\n"),
       todos: consume ? wf.todos : [.../* @__PURE__ */ new Set([...wf.todos ?? [], ...problems])],
       revAt: new Date(Math.max(Date.now(), (Date.parse(wf.revAt ?? wf.updatedAt) || 0) + 1)).toISOString()
@@ -45784,7 +45797,7 @@ async function compileRule(store2, cfg, line3, run2) {
       via: result2.via,
       warm: result2.warm,
       error: result2.error,
-      ...result2.used
+      ...ran("rule", result2.used)
     });
     const setupRefusal = () => {
       const setup = result2.setup ?? agentSetupFailure(`${result2.error ?? ""}
@@ -45815,6 +45828,7 @@ var init_rule_compile = __esm({
   "src/runner/rule-compile.ts"() {
     "use strict";
     init_agent_failure();
+    init_runinfo();
     init_ids();
     init_rule_lines();
     init_run_files();
@@ -46001,7 +46015,7 @@ function retryHostToolFailures(store2) {
     }
     const missing = unavailableTools(answer ?? "", [...WORKER_TOOLS, ...workerTools(store2.config(), "reply")]);
     if (!missing.length) continue;
-    Object.assign(w, { ...stateFields(w, "running"), question: void 0, runFailed: void 0, status: "Running again: the earlier AI host did not provide its tools.", pending: w.pending.length ? w.pending : w.msgIds.slice(-1) });
+    Object.assign(w, { ...stateFields(w, "running"), question: void 0, questionHint: void 0, runFailed: void 0, status: "Running again: the earlier AI host did not provide its tools.", pending: w.pending.length ? w.pending : w.msgIds.slice(-1) });
     store2.save(w);
     store2.log({ event: "host-tools-requeued", workflowId: w.id, code: w.code, runId: e.runId, missing });
     n++;
@@ -46217,7 +46231,7 @@ ${res.summary ?? ""}`));
     store2.archiveReport(wf.id, runId);
     store2.log({ event: "report-join-refused", code: fresh.code, target: report2.same, reason: "no eligible same-ask target" });
     if (!separate && store2.runsToday() < (cfg.dailyRuns ?? 200)) return runOne(store2, src, cfg, fresh, run2, probe, catalogRetried, true);
-    Object.assign(fresh, { ...stateFields(fresh, "needs_human"), status: "This is a separate ask. The AI did not draft its own answer.", question: "What would you like to reply to this ask?" });
+    Object.assign(fresh, { ...stateFields(fresh, "needs_human"), status: "This is a separate ask. The AI did not draft its own answer.", question: "What would you like to reply to this ask?", questionHint: void 0 });
     commit();
     return;
   }
@@ -46233,7 +46247,7 @@ ${res.summary ?? ""}`));
   const reviewRef = job && isReviewJob(job.key, report2?.intent) ? prRefOf(store2, fresh) : void 0;
   const gate = job && isReviewJob(job.key, report2?.intent) ? reviewGate(store2, cfg, wf, reviewRef ?? { project: "", repo: "", id: Number(/(\d+)\s*$/.exec(job.key)?.[1] ?? 0) }, void 0, !!probe?.pr) : void 0;
   const declined = gate && !gate.ok ? gate : void 0;
-  if (!report2) Object.assign(fresh, { ...stateFields(fresh, "needs_human"), ...statusFields("not-finished", `${NAME} couldn't draft this: ${failWhy(res)}`), question: void 0, runFailed: { at: (/* @__PURE__ */ new Date()).toISOString(), kind: "other", why: failWhy(res) } });
+  if (!report2) Object.assign(fresh, { ...stateFields(fresh, "needs_human"), ...statusFields("not-finished", `${NAME} couldn't draft this: ${failWhy(res)}`), question: void 0, questionHint: void 0, runFailed: { at: (/* @__PURE__ */ new Date()).toISOString(), kind: "other", why: failWhy(res) } });
   else if (declined) {
     fresh.intent = report2.intent;
     if (declined.addMe) fresh.job = void 0;
@@ -46278,7 +46292,8 @@ ${res.summary ?? ""}`));
     leaveForYou(store2, fresh, v.left);
     if (v.todos.length) Object.assign(fresh, {
       // "Are you in <group>?" stays the question while it is open: its answer can bring the vote back (queue-new #7C).
-      question: fresh.question ?? (wf.groupAsk ? groupQuestion(wf.groupAsk) : fresh.draft ? refusedAsk(fresh.code, v.todos.length) : `These changes need you: ${v.todos.join("; ")}`)
+      question: fresh.question ?? (wf.groupAsk ? groupQuestion(wf.groupAsk) : fresh.draft ? refusedAsk(fresh.code, v.todos.length) : `These changes need you: ${v.todos.join("; ")}`),
+      questionHint: fresh.question ? fresh.questionHint : void 0
     });
     if (fresh.kind === "reply" && effects.length) {
       const made = (fresh.effects ?? []).filter((e) => e.done);
@@ -46292,14 +46307,14 @@ ${res.summary ?? ""}`));
     const asked3 = askedVote(store2.thread(wf.id).filter((m) => wf.pending.includes(m.id) && !m.byOwner).map((m) => m.text).join("\n"));
     const live3 = fresh.prRead ?? wf.prRead ? JSON.parse(fresh.prRead ?? wf.prRead) : void 0;
     if (asked3 !== void 0 && live3 && /^active$/i.test(live3[1]) && typeof live3[3] === "number" && !sameVote(live3[3], asked3) && report2.goalMet !== false && !fresh.question && !fresh.choices && !(h.work?.closed && fresh.state === "done") && !(wf.prRole && !MAY_REVIEW.includes(wf.prRole)) && !pendingEffects(fresh.effects).some((e) => isVote(e.call) && voteValue(e.call) === asked3)) {
-      Object.assign(fresh, { ...stateFields(fresh, "needs_human"), question: `${fresh.asker?.name ?? "They"} asked for your ${voteName(asked3)} vote on PR ${live3[0]}, but this draft proposes no vote. Answer ${fresh.code} to redo it with the vote, or skip it` });
+      Object.assign(fresh, { ...stateFields(fresh, "needs_human"), question: `${fresh.asker?.name ?? "They"} asked for your ${voteName(asked3)} vote on PR ${live3[0]}, but this draft proposes no vote. Answer ${fresh.code} to redo it with the vote, or skip it`, questionHint: void 0 });
       store2.log({ event: "vote-ask-unmet", workflowId: fresh.id, code: fresh.code, pr: live3[0], asked: asked3, live: live3[3] });
     }
     const askText = store2.thread(wf.id).filter((m) => wf.pending.includes(m.id) && !m.byOwner).map((m) => m.text).join("\n");
     const invites = (cfg.agent.effectTools ?? []).some((t2) => /CreateEvent/i.test(t2));
     const offered = pendingEffects(fresh.effects).some(isInvite) || !!fresh.choices?.options.some((o) => o.effects?.some(isInvite));
     if (invites && fresh.draft && asksInvite(askText) && !offered && report2.goalMet !== false && !fresh.question && !(h.work?.closed && fresh.state === "done")) {
-      Object.assign(fresh, { ...stateFields(fresh, "needs_human"), question: `${fresh.asker?.name ?? "They"} asked you to book it, but this draft sends no invite. Answer ${fresh.code} to redo it with the invite, or skip it` });
+      Object.assign(fresh, { ...stateFields(fresh, "needs_human"), question: `${fresh.asker?.name ?? "They"} asked you to book it, but this draft sends no invite. Answer ${fresh.code} to redo it with the invite, or skip it`, questionHint: void 0 });
       store2.log({ event: "invite-ask-unmet", workflowId: fresh.id, code: fresh.code });
     }
   }
@@ -46382,7 +46397,7 @@ ${res.summary ?? ""}`));
 ${note.a}`).slice(0, 1800));
 }
 function checked(store2, cfg, r) {
-  const q2 = r.question !== void 0 && NO_QUESTION.test(r.question) ? { ...r, question: void 0 } : r;
+  const q2 = !r.question?.trim() || NO_QUESTION.test(r.question) ? { ...r, question: void 0, questionHint: void 0 } : r;
   return q2.reply ? { ...q2, reply: { ...q2.reply, sources: resolveEvidence(knowledgeOf(store2, cfg), cfg, q2.reply.sources, store2.root) } } : q2;
 }
 function applyReport(wf, r, home = wf, allowClose = true, store2) {
@@ -46419,7 +46434,7 @@ function applyReport(wf, r, home = wf, allowClose = true, store2) {
   if (wf.startedBy === "owner" && fresh && home.work && home === wf) {
     home.work.proposed = true;
     const plan2 = home.work.plan?.length ? ` Plan: ${home.work.plan.map((p) => p.what).join("; ")}.` : "";
-    Object.assign(wf, { ...stateFields(wf, "needs_human"), draft: void 0, status: `Track this as work? ${home.work.goal}`, question: `Track this as work? Goal: ${home.work.goal}. Done when: ${home.work.doneWhen}.${plan2} Say "ok ${wf.code}" to track it, or "skip ${wf.code}".` });
+    Object.assign(wf, { ...stateFields(wf, "needs_human"), draft: void 0, status: `Track this as work? ${home.work.goal}`, question: `Track this as work? Goal: ${home.work.goal}. Done when: ${home.work.doneWhen}.${plan2} Say "ok ${wf.code}" to track it, or "skip ${wf.code}".`, questionHint: void 0 });
     return;
   }
   if (wf.startedBy === "owner" && !home.work) {
@@ -46427,13 +46442,13 @@ function applyReport(wf, r, home = wf, allowClose = true, store2) {
     return;
   }
   if (wf.needsMe && !home.work && !r.reply && !r.question && !hasDecisions(r)) {
-    Object.assign(wf, { ...stateFields(wf, "needs_human"), question: "You said this needs you. What should I say?", status: r.summary || "Waiting for what you want to say" });
+    Object.assign(wf, { ...stateFields(wf, "needs_human"), question: "You said this needs you. What should I say?", questionHint: void 0, status: r.summary || "Waiting for what you want to say" });
     return;
   }
   if (settle3(wf, r, home)) return;
   if (r.goalMet === false && !home.work) {
     const b = blockerOf(r.blocker);
-    Object.assign(wf, { ...stateFields(wf, "needs_human"), ...statusFields("not-finished", `Not finished: ${b.why}${b.tried.length ? `. Tried: ${b.tried.join("; ")}` : ""}`), learnAfter: r.reply ? void 0 : wf.learnAfter, draft: r.reply ? { ...r.reply, text: greetBack(wf, r.reply.text), holding: true } : void 0, question: r.question, effects: void 0, revAt: (/* @__PURE__ */ new Date()).toISOString() });
+    Object.assign(wf, { ...stateFields(wf, "needs_human"), ...statusFields("not-finished", `Not finished: ${b.why}${b.tried.length ? `. Tried: ${b.tried.join("; ")}` : ""}`), learnAfter: r.reply ? void 0 : wf.learnAfter, draft: r.reply ? { ...r.reply, text: greetBack(wf, r.reply.text), holding: true } : void 0, question: r.question, questionHint: r.question?.trim() && r.questionHint ? normalizeQuestionHint(r.questionHint) : void 0, effects: void 0, revAt: (/* @__PURE__ */ new Date()).toISOString() });
     return;
   }
   if ((!home.work && (r.intent === "none" || r.state === "done") || !r.reply && !r.question) && !hasDecisions(r)) {
@@ -46446,6 +46461,7 @@ function applyReport(wf, r, home = wf, allowClose = true, store2) {
   if (r.reply) wf.newCount = 0;
   wf.revAt = (/* @__PURE__ */ new Date()).toISOString();
   wf.question = preview ? void 0 : r.question;
+  wf.questionHint = !preview && r.question?.trim() && r.questionHint ? normalizeQuestionHint(r.questionHint) : void 0;
   wf.gaps = r.gaps?.length ? r.gaps : void 0;
   wf.todos = r.todos?.length && r.goalMet !== false ? r.todos : void 0;
   wf.follow = r.goalMet === false ? wf.follow : r.follow && wf.follow?.code && wf.follow.target === r.follow.target ? { ...r.follow, code: wf.follow.code } : r.follow;
@@ -46462,6 +46478,7 @@ function applyReport(wf, r, home = wf, allowClose = true, store2) {
     leaveForYou(store2, wf, v.left);
     if (wf.effects.length) carry(store2, cfg, wf, wf.effects);
     if (v.todos.length) {
+      if (!wf.question) wf.questionHint = void 0;
       wf.question ??= wf.draft ? refusedAsk(wf.code, v.todos.length) : v.todos.join("\n");
     }
   }
@@ -46517,6 +46534,7 @@ var init_dispatch = __esm({
     init_fs();
     init_commit();
     init_upgrades();
+    init_normalize_report();
     init_apply();
     init_jobs();
     init_track();
@@ -46592,7 +46610,7 @@ function rest(store2, wf, status3) {
   const home = homeOf(store2, wf);
   if (active2(home)) Object.assign(wf, { ...stateFields(wf, "open"), status: status3 ?? statusOf(home), pending: [] });
   else close(wf, status3 ?? `Sent: "${(wf.sent?.text ?? "").slice(0, 80)}"`);
-  Object.assign(wf, { promise: void 0, question: void 0 });
+  Object.assign(wf, { promise: void 0, question: void 0, questionHint: void 0 });
 }
 function withdrawOffer(store2, wf) {
   const off = (es = []) => es.map((e) => e.done || e.off ? e : { ...e, off: true });
@@ -46616,7 +46634,7 @@ function reopenPromise(store2, wf) {
   wf.promise = { ...p, state: "pending", why: void 0 };
 }
 function failPromise(store2, wf, error62, said2 = wf.promise?.text ?? "") {
-  Object.assign(wf, { ...stateFields(wf, "needs_human"), draft: void 0, promise: { ...wf.promise, text: said2, state: "failed", why: error62?.slice(0, 160) }, status: `Sent. Could not check what your reply promised${error62 ? `: ${error62.slice(0, 120)}` : ""}`, question: void 0, revAt: (/* @__PURE__ */ new Date()).toISOString() });
+  Object.assign(wf, { ...stateFields(wf, "needs_human"), draft: void 0, promise: { ...wf.promise, text: said2, state: "failed", why: error62?.slice(0, 160) }, status: `Sent. Could not check what your reply promised${error62 ? `: ${error62.slice(0, 120)}` : ""}`, question: void 0, questionHint: void 0, revAt: (/* @__PURE__ */ new Date()).toISOString() });
   store2.save(wf);
   store2.log({ event: "promise-failed", workflowId: wf.id, code: wf.code, error: error62?.slice(0, 200) });
 }
@@ -46651,6 +46669,7 @@ async function checkPromise(store2, src, cfg, wf, run2, probe) {
     store2.addRun();
     restoreSession(store2, session);
     const res = await run2({ ...cfg.agent, tools }, { workflowId: wf.id, runId, sessionId: session, prompt: buildPromisePrompt(wf, store2.thread(wf.id), cfg, store2.root, prTarget(store2, wf)), cwd: job?.repo ?? cwd, mcpConfigPath, extraTools: WORKER_TOOLS, dirs: readDirs(store2, cfg) });
+    store2.log({ event: "promise-run", workflowId: wf.id, runId, ms: res.ms, ...ran("promise", res.used) });
     backupSession(store2, session);
     report2 = store2.peekReport(wf.id, runId);
     store2.archiveReport(wf.id, runId);
@@ -46692,12 +46711,12 @@ ${res.summary ?? ""}`));
     newTurn(fresh);
     const pr = prTarget(store2, fresh);
     if (pr && now.head) fresh.reviewAgain = { pr, head: now.head, at: (/* @__PURE__ */ new Date()).toISOString() };
-    Object.assign(fresh, { ...stateFields(fresh, "needs_human"), promise: void 0, question: now.again, status: `PR ${prTarget(store2, fresh)} changed since your review`, revAt: (/* @__PURE__ */ new Date()).toISOString() });
+    Object.assign(fresh, { ...stateFields(fresh, "needs_human"), promise: void 0, question: now.again, questionHint: void 0, status: `PR ${prTarget(store2, fresh)} changed since your review`, revAt: (/* @__PURE__ */ new Date()).toISOString() });
     lines.push(`${fresh.code}: ${now.again}`);
   } else if (now.effects.length && (shared = carry(store2, cfg, fresh, now.effects)) !== "shared") {
     if (shared === "busy") return again();
     const line3 = saidLine(now.effects), meaning = now.effects.map((e) => e.pr).find(Boolean);
-    Object.assign(fresh, { ...stateFields(fresh, "needs_human"), draft: void 0, effects: now.effects, promised: void 0, approved: void 0, question: void 0, promise: { ...fresh.promise, text: said2, state: "offered", why: void 0 }, status: line3, revAt: (/* @__PURE__ */ new Date()).toISOString() });
+    Object.assign(fresh, { ...stateFields(fresh, "needs_human"), draft: void 0, effects: now.effects, promised: void 0, approved: void 0, question: void 0, questionHint: void 0, promise: { ...fresh.promise, text: said2, state: "offered", why: void 0 }, status: line3, revAt: (/* @__PURE__ */ new Date()).toISOString() });
     allowLeft(fresh, now.effects);
     lines.push(`${fresh.code}: ${line3.replace(/^You/, "you")}${meaning ? ` ("${meaning.title}" by ${meaning.author}${meaning.autoComplete ? "; autocomplete is on: your approval may complete it" : ""})` : ""}. Say "ok ${fresh.code}" to do it, or "skip ${fresh.code}".`);
   } else {
@@ -46734,6 +46753,7 @@ var init_promise2 = __esm({
     init_prompt();
     init_dispatch();
     init_agent_failure();
+    init_runinfo();
     init_agent_health();
     init_probe();
     init_jobs();
@@ -46767,10 +46787,13 @@ function drafted(e) {
 }
 function slim(raw) {
   const moved = new Set(raw.filter((e) => e.event === "pr-moved").map((e) => str2(e.code)));
-  const hours2 = /* @__PURE__ */ new Map(), out = [];
+  const hours2 = /* @__PURE__ */ new Map(), out = [], versions2 = /* @__PURE__ */ new Map();
   for (const e of raw) {
     const at3 = str2(e.at), code = str2(e.code);
     if (!at3 || Number.isNaN(Date.parse(at3))) continue;
+    if (str2(e.runKind)) out.push({ at: at3, event: "run", run: runOf(e) });
+    const v = str2(e.v), m = str2(e.machine), had = v && m ? versions2.get(`${m}|${v}`) : void 0;
+    if (v && m && (!had || at3 < had.at)) versions2.set(`${m}|${v}`, { at: at3, event: "version", v, machine: m });
     const opt = (k) => str2(e[k]) ? { [k]: str2(e[k]) } : {};
     switch (e.event) {
       case "tick": {
@@ -46813,7 +46836,7 @@ function slim(raw) {
         break;
     }
   }
-  return [...out, ...[...hours2.values()].flatMap(([a, b]) => (a === b ? [a] : [a, b]).map((at3) => ({ at: at3, event: "tick" })))];
+  return [...out, ...versions2.values(), ...[...hours2.values()].flatMap(([a, b]) => (a === b ? [a] : [a, b]).map((at3) => ({ at: at3, event: "tick" })))];
 }
 function askAtOf(thread2, ids) {
   const last2 = thread2.findLastIndex((m) => m.byOwner && (m.ownerReply ? m.ownerReply.answered === true : true));
@@ -46948,7 +46971,93 @@ function weekLine(n) {
   if (!n.handled.n && !r.of && !m.n) return void 0;
   return `This week: ${n.handled.n} handled for you \xB7 ${r.n} of ${r.of} replies as drafted \xB7 ${m.n} missed.`;
 }
-var WINDOWS, DAY2, SMALL, str2, num2, addDays, weekday, weekOf, isFriday, legacyClose, CORRECTS, pct, uniq, push, median2, MONTHS, DAYS3, md, dmd, LABEL, ratio, short, dur, BLOCKS, WHEN;
+function runOf(e) {
+  const models = (Array.isArray(e.models) ? e.models : []).flatMap((m) => {
+    const o = m && typeof m === "object" ? m : {};
+    return typeof o.id === "string" ? [{ id: o.id, ...typeof o.name === "string" ? { name: o.name } : {} }] : [];
+  });
+  const pick3 = (...ks) => Object.fromEntries(ks.flatMap((k) => str2(e[k]) ? [[k, str2(e[k])]] : []));
+  const count = (...ks) => Object.fromEntries(ks.flatMap((k) => num2(e[k]) !== void 0 ? [[k, num2(e[k])]] : []));
+  return { kind: str2(e.runKind), reported: USED.some((k) => k === "models" ? models.length > 0 : num2(e[k]) !== void 0), models, ...pick3("runId", "workflowId", "job", "machine"), ...count("modelCalls", "tokensIn", "tokensOut", "toolCalls", "ms") };
+}
+function useOf(runs) {
+  const use = { runs: runs.length, reported: runs.filter((r) => r.reported).length };
+  for (const f of FIELDS) {
+    const vs = runs.map((r) => r[f]).filter((v) => v !== void 0);
+    if (vs.length || !runs.length) use[f] = vs.reduce((a, b) => a + b, 0);
+  }
+  return use;
+}
+function usageRuns(evs) {
+  const out = /* @__PURE__ */ new Map();
+  for (const e of evs) if (e.event === "run" && e.run) {
+    const k = e.run.runId ?? `${e.run.machine ?? ""}|${e.at}|${e.run.kind}`;
+    if (!out.has(k)) out.set(k, { ...e.run, at: e.at });
+  }
+  return [...out.values()];
+}
+function coverageSince(evs, ran2) {
+  const first3 = /* @__PURE__ */ new Map();
+  for (const e of evs) if (e.event === "version" && e.v && e.machine && atLeast(e.v)) {
+    const f = first3.get(e.machine);
+    if (!f || e.at < f) first3.set(e.machine, e.at);
+  }
+  const machines = [...new Set(ran2.map((r) => r.machine).filter((m) => !!m))];
+  const ats = machines.length ? machines.map((m) => first3.get(m)) : [...first3.values()].sort().slice(0, 1);
+  return ats.length && ats.every(Boolean) ? ats.sort().at(-1) : void 0;
+}
+function breakdown(runs, before) {
+  const kinds2 = USAGE_KINDS.map((row, i) => ({ ...row, use: useOf(runs.filter((r) => rowOfKind(r.kind) === i)), counted: !before }));
+  const byModel = /* @__PURE__ */ new Map();
+  for (const r of runs) {
+    const m = r.models[0];
+    if (!m) continue;
+    const had = byModel.get(m.id) ?? { label: m.name ?? m.id, runs: [] };
+    if (m.name) had.label = m.name;
+    had.runs.push(r);
+    byModel.set(m.id, had);
+  }
+  const models = before ? [] : [...byModel.values()].map((m) => ({ label: m.label, use: useOf(m.runs) })).sort((a, b) => b.use.runs - a.use.runs || a.label.localeCompare(b.label));
+  const missing = kinds2.filter((k) => k.use.reported < k.use.runs).map((k) => k.label);
+  return { kinds: kinds2, models, total: useOf(runs), missing };
+}
+function usageWindow(evs, span, weeks, tz) {
+  const all = usageRuns(evs), day3 = (at3) => dayIn(at3, tz);
+  const inDays = (from, to) => (r) => {
+    const d = day3(r.at);
+    return d >= from && d <= to;
+  };
+  const lines = (from, to) => evs.flatMap((e) => e.event === "run" && e.run && day3(e.at) >= from && day3(e.at) <= to ? [{ ...e.run, at: e.at }] : []);
+  const here3 = all.filter(inDays(span.from, span.to)), since2 = coverageSince(evs, lines(span.from, span.to));
+  const after = since2 !== void 0 && day3(since2) <= span.to;
+  const clipped = after && day3(since2) >= span.from;
+  const counted2 = after ? here3.filter((r) => r.at >= since2) : here3;
+  const barRuns = all.filter(inDays(weeks[0], addDays(weeks.at(-1), 6))), barSince = coverageSince(evs, lines(weeks[0], addDays(weeks.at(-1), 6)));
+  const bars = weeks.map((w) => {
+    const end = addDays(w, 6);
+    if (barSince === void 0 || day3(barSince) > end) return { week: w };
+    return { week: w, use: useOf(barRuns.filter(inDays(w, end)).filter((r) => r.at >= barSince)), ...day3(barSince) >= w ? { since: barSince } : {} };
+  });
+  return { state: after ? "after" : "before", ...since2 ? { since: since2 } : {}, clipped, ...breakdown(counted2, !after), bars };
+}
+function usageByItem(evs, itemOfJob) {
+  const by = /* @__PURE__ */ new Map();
+  for (const r of usageRuns(evs)) {
+    if (r.kind === "owner-reply") continue;
+    const id = r.workflowId ?? (r.job ? itemOfJob(r.job) : void 0);
+    if (id) by.set(id, [...by.get(id) ?? [], r]);
+  }
+  return new Map([...by].map(([id, runs]) => {
+    const n = /* @__PURE__ */ new Map();
+    for (const r of runs) {
+      const m = r.models[0];
+      if (m) n.set(m.name ?? m.id, (n.get(m.name ?? m.id) ?? 0) + 1);
+    }
+    const told = runs.filter((r) => r.reported);
+    return [id, { ...useOf(told), runs: runs.length, reported: told.length, models: [...n].sort((a, b) => b[1] - a[1]).map(([m]) => m) }];
+  }));
+}
+var WINDOWS, DAY2, SMALL, str2, num2, addDays, weekday, weekOf, isFriday, legacyClose, CORRECTS, pct, uniq, push, median2, MONTHS, DAYS3, md, dmd, LABEL, ratio, short, dur, BLOCKS, WHEN, USED, USAGE_KINDS, rowOfKind, FIELDS, atLeast;
 var init_numbers = __esm({
   "src/core/numbers.ts"() {
     "use strict";
@@ -46983,6 +47092,27 @@ var init_numbers = __esm({
     dur = (min) => min < 60 ? `${min} min` : min < 48 * 60 ? `${Math.round(min / 60)} h` : `${Math.round(min / 1440)} d`;
     BLOCKS = "\u2581\u2582\u2583\u2584\u2585\u2586\u2587\u2588";
     WHEN = { this: "this week", last: "last week", "4w": "in 4 weeks", all: "since you started" };
+    USED = ["models", "modelCalls", "modelMs", "tokensIn", "tokensOut", "toolCalls", "toolMs", "startMs"];
+    USAGE_KINDS = [
+      { label: "Drafting replies", kinds: ["draft"] },
+      { label: "Reviews and investigations", kinds: ["review", "job"] },
+      { label: `Asking ${NAME}`, kinds: ["ask"] },
+      { label: "Reminder checks", kinds: ["reminder"] },
+      { label: "Reading your rules", kinds: ["rule"] },
+      { label: "Checking your own replies", kinds: ["owner-reply"] },
+      { label: "Checking promises", kinds: ["promise"] },
+      { label: "Other", kinds: ["change"] }
+    ];
+    rowOfKind = (kind) => {
+      const i = USAGE_KINDS.findIndex((r) => r.kinds.includes(kind));
+      return i < 0 ? USAGE_KINDS.length - 1 : i;
+    };
+    FIELDS = ["modelCalls", "tokensIn", "tokensOut", "toolCalls", "ms"];
+    atLeast = (v, min = [0, 2, 47]) => {
+      const r = v.split("+")[0].split(".").map(Number);
+      for (let i = 0; i < min.length; i++) if ((r[i] ?? 0) !== min[i]) return (r[i] ?? 0) > min[i];
+      return true;
+    };
   }
 });
 
@@ -47111,6 +47241,7 @@ async function ownerReplies(store2, cfg, raw, text4, items2, options = {}) {
   try {
     store2.addRun();
     const run2 = await runAgent({ ...cfg.agent, tools: [] }, { sessionId, prompt, cwd, mcpConfigPath, extraTools: [`${WORKER_SERVER}-submit_report`] }, 9e4);
+    store2.log({ event: "owner-reply-run", chat: items2[0].chat.id, msgId: raw.id, runId, ms: run2.ms, ...ran("owner-reply", run2.used) });
     backupSession(store2, sessionId);
     const report2 = store2.peekReport(id, runId) ?? reportFromText(run2.summary, id, ["other"]);
     const selected = report2?.answeredItems;
@@ -47184,6 +47315,7 @@ var init_owner_reply = __esm({
     init_own();
     init_intake2();
     init_agent_failure();
+    init_runinfo();
     init_agent_health();
     OWNER_REPLY_UNCHECKED = `${NAME} couldn't check with the AI whether you already replied; it found no reply of yours in the chat.`;
     normalized2 = (text4) => htmlToText(mdToHtml(text4)).normalize("NFKC").replace(/\s+/g, " ").trim().toLowerCase();
@@ -47606,7 +47738,6 @@ async function intake(store2, src, cfg, cursors, chats = cfg.watch, o = {}) {
         continue;
       }
       if (wf && c.kind === "ask") reopenPromise(store2, wf);
-      const joinedPr = wf && prTarget(store2, wf);
       wf ??= await create(store2, src, cfg, chat2, c.kind === "ask" ? earlierOf(store2, chat2.id, c.from.id) : void 0);
       if (elsewhere && !wf.partOf) {
         addPart(elsewhere, wf);
@@ -47614,17 +47745,20 @@ async function intake(store2, src, cfg, cursors, chats = cfg.watch, o = {}) {
         store2.save(elsewhere);
       }
       appendThread(store2, wf, toMsg(raw, c.from, c.text, false));
+      if (sender.id && sender.id !== cfg.owner.id && !BOT.test(sender.name)) {
+        const home = homeOf(store2, wf);
+        for (const other of store2.workflows()) {
+          if (other.chat.id !== chat2.id || !active2(other) || other.id === wf.id || other.id === home.id || other.partOf === wf.id) continue;
+          if (chat2.group && other.asker?.id !== sender.id && !other.askers?.some((person2) => person2.id === sender.id)) continue;
+          if (step(other, `${sender.name.split(" ")[0]} wrote in this chat (now in ${wf.code})`, { ref: `xnews:${wf.id}`, news: true, at: raw.at })) store2.save(other);
+        }
+      }
       if (backlog) store2.saveThread(wf.id, store2.thread(wf.id).sort((a, b) => a.at.localeCompare(b.at)));
       if (wf.draft) wf.newCount++;
       wf.pending.push(raw.id);
       wf.msgIds.push(raw.id);
       if (!wf.prAnchor && routed?.item.id === wf.id && routed.anchor) wf.prAnchor = routed.anchor;
       Object.assign(wf, { asker: c.from, lastAsk: c.text, ...stateFields(wf, "running"), lastMsgId: raw.id, approved: void 0, needsMe: void 0, intakeDeferred: void 0 });
-      const otherPrs = joinedPr ? namedPrs.filter((id) => id !== joinedPr) : [];
-      if (otherPrs.length) wf.context = [
-        ...(wf.context ?? []).filter((f) => f.label !== "Also mentions"),
-        { label: "Also mentions", text: otherPrs.map((id) => `PR ${id}`).join(", "), tone: "info" }
-      ];
       if (backlog) Object.assign(wf, { before: true, paced: true });
       else wf.paced = void 0;
       if (room) wf.paced = true;
@@ -47648,7 +47782,7 @@ function route(store2, open2, raw, senderId, recent, text4 = "", joinText = text
   const { prs, candidates: candidates2 } = prJoinCandidates(store2, eligible, joinText);
   const result2 = (item2) => {
     const pr = prs.length > 1 && candidates2.length === 1 ? prTarget(store2, item2) : void 0;
-    return { item: item2, ...pr !== void 0 && prs.includes(pr) ? { anchor: { pr, msgId: raw.id, at: (/* @__PURE__ */ new Date()).toISOString() } } : {} };
+    return { item: item2, ...pr !== void 0 && prs.includes(pr) ? { anchor: { pr, msgId: raw.id, at: (/* @__PURE__ */ new Date()).toISOString(), also: prs.filter((id) => id !== pr) } } : {} };
   };
   const target2 = replyTarget(raw);
   const quoted2 = target2 && candidates2.find((item2) => item2.msgIds.includes(target2) && (prs.length > 1 || askRelation(store2, item2, text4) !== "different"));
@@ -47919,6 +48053,7 @@ var init_intake2 = __esm({
     init_brand();
     init_probe();
     init_same_ask();
+    init_dispatch();
     isControl = (v) => CONTROL_VERBS.includes(v);
     toMsg = (r, from, text4, byOwner) => ({ id: r.id, at: r.at, editedAt: r.editedAt, contentKey: contentKey(text4), from, text: text4, byOwner, ...r.attachments?.length ? { attachments: r.attachments } : {} });
     COMMIT = /\b(I(?:'|’)ll|I will|I(?:'|’)d be|I would be|I can take|I(?:'|’)m on it|let me (?:check|take|look|handle|test|try|do))\b/i;
@@ -47931,7 +48066,7 @@ var init_intake2 = __esm({
 // src/runner/reply-gap.ts
 function holdReplyGap(store2, item2, text4, automatic = false) {
   if (!replyGap(text4)) return false;
-  Object.assign(item2, { ...stateFields(item2, "needs_human"), approved: void 0, sendAt: void 0, ...statusFields("not-sent", `Not sent: ${REPLY_BLANK}`), question: item2.question || "What goes in the blank?" });
+  Object.assign(item2, { ...stateFields(item2, "needs_human"), approved: void 0, sendAt: void 0, ...statusFields("not-sent", `Not sent: ${REPLY_BLANK}`), question: item2.question || "What goes in the blank?", questionHint: item2.question ? item2.questionHint : void 0 });
   store2.save(item2);
   store2.log({ event: automatic ? "rule-held-gap" : "reply-held-gap", code: item2.code, workflowId: item2.id, reason: REPLY_BLANK });
   return true;
@@ -48359,8 +48494,7 @@ function okSendGate(store2, cfg, wf, a) {
     wf.status = `${shown(denied2.effect).line} cannot be made: ${denied2.why}.`;
     if (denied2.why.startsWith(OLD_INVITE)) {
       wf.status += " Nothing was created, and the reply was not sent.";
-      wf.question = OLD_INVITE_ASK;
-      wf.revAt = (/* @__PURE__ */ new Date()).toISOString();
+      Object.assign(wf, { question: OLD_INVITE_ASK, questionHint: void 0, revAt: (/* @__PURE__ */ new Date()).toISOString() });
     }
     wf.statusReason = { kind: "refused", text: wf.status, at: (/* @__PURE__ */ new Date()).toISOString() };
     commit();
@@ -48730,7 +48864,7 @@ async function send(store2, src, cfg, wf, text4, by, probe) {
     store2.log({ event: "owner-send-history", workflowId: wf.id, code: wf.code, text: `Sent. ${check2}` });
   }
   const first3 = (wf.asker?.name ?? "them").split(/\s+/)[0];
-  if (holding) Object.assign(wf, { ...stateFields(wf, "needs_human"), question: wf.question ?? `What should the full reply to ${first3} say?`, approved: void 0, status: `Holding reply sent. ${first3} is waiting for the full answer.` });
+  if (holding) Object.assign(wf, { ...stateFields(wf, "needs_human"), question: wf.question ?? `What should the full reply to ${first3} say?`, questionHint: wf.question != null ? wf.questionHint : void 0, approved: void 0, status: `Holding reply sent. ${first3} is waiting for the full answer.` });
   else if (reviewReply) {
     if (wf.reviewRun?.rule === by.ruleId && wf.reviewDone && !wf.pending.length)
       Object.assign(wf, { ...stateFields(wf, "needs_human"), status: `PR ${wf.reviewDone.pr} waits for your approval`, approved: void 0 });
@@ -49022,8 +49156,10 @@ var init_page_revision = __esm({
       asker: workflow.asker,
       askers: workflow.askers,
       status: workflow.status,
+      // Decision 57: a same-words question with new suggested answers refreshes the chips.
       lastAsk: workflow.lastAsk,
       question: workflow.question,
+      questionHint: workflow.questionHint,
       draft: workflow.draft,
       choices: workflow.choices,
       context: workflow.context,
@@ -49197,11 +49333,11 @@ async function applyOne(store2, src, cfg, wf, a, procs, probe, quick2) {
     if (job) {
       Object.assign(job, { state: "queued", purpose: "work", retry: void 0, nextAt: void 0, error: void 0, run: void 0, session: { ...job.session, id: randomUUID11() } });
       store2.saveJob(job);
-      Object.assign(wf, { job: job.id, ...stateFields(wf, "waiting_on_task"), runFailed: void 0, statusReason: void 0, reviewAgain: void 0, question: void 0, status: `Working: ${job.goal}`, waitingSince: (/* @__PURE__ */ new Date()).toISOString() });
+      Object.assign(wf, { job: job.id, ...stateFields(wf, "waiting_on_task"), runFailed: void 0, statusReason: void 0, reviewAgain: void 0, question: void 0, questionHint: void 0, status: `Working: ${job.goal}`, waitingSince: (/* @__PURE__ */ new Date()).toISOString() });
       commit();
       return reply(store2, src, a, `${MARK} Trying ${wf.code} again. You'll see what it finds first.`);
     }
-    Object.assign(wf, { ...stateFields(wf, "running"), runFailed: void 0, statusReason: void 0, reviewAgain: void 0, question: void 0, status: "Trying again", pending: wf.pending.length ? wf.pending : wf.msgIds.slice(-1) });
+    Object.assign(wf, { ...stateFields(wf, "running"), runFailed: void 0, statusReason: void 0, reviewAgain: void 0, question: void 0, questionHint: void 0, status: "Trying again", pending: wf.pending.length ? wf.pending : wf.msgIds.slice(-1) });
     commit();
     return reply(store2, src, a, `${MARK} Trying ${wf.code} again. You'll see the draft first.`);
   }
@@ -49346,14 +49482,14 @@ async function applyOne(store2, src, cfg, wf, a, procs, probe, quick2) {
         const job = store2.job(wf.job);
         Object.assign(job, { asks: [...job.asks, `Owner: ${a.text}`], ...job.state === "running" ? {} : { state: "queued", purpose: "work" } });
         store2.saveJob(job);
-        Object.assign(wf, { ...stateFields(wf, "waiting_on_task"), statusReason: void 0, reviewAgain: void 0, question: void 0, status: "Checking again with your answer", waitingSince: (/* @__PURE__ */ new Date()).toISOString() });
+        Object.assign(wf, { ...stateFields(wf, "waiting_on_task"), statusReason: void 0, reviewAgain: void 0, question: void 0, questionHint: void 0, status: "Checking again with your answer", waitingSince: (/* @__PURE__ */ new Date()).toISOString() });
         break;
       }
       if (wf.job && store2.job(wf.job) && isValidate(store2.job(wf.job), wf) && (saysTested(a.text) || reportsResult(a.text))) {
         const job = store2.job(wf.job);
         Object.assign(job, { asks: [...job.asks, testedAsk(homeOf(store2, wf), a.text)], ...job.state === "running" ? {} : { state: "queued", purpose: "work", error: void 0 } });
         store2.saveJob(job);
-        Object.assign(wf, { ...stateFields(wf, "waiting_on_task"), statusReason: void 0, reviewAgain: void 0, question: void 0, status: "Reading the results of your test and drafting the report", waitingSince: (/* @__PURE__ */ new Date()).toISOString() });
+        Object.assign(wf, { ...stateFields(wf, "waiting_on_task"), statusReason: void 0, reviewAgain: void 0, question: void 0, questionHint: void 0, status: "Reading the results of your test and drafting the report", waitingSince: (/* @__PURE__ */ new Date()).toISOString() });
         break;
       }
       Object.assign(wf, { ownerAnswer: a.text, ...stateFields(wf, "running"), statusReason: void 0, reviewAgain: void 0, status: "Redrafting with your answer" });
@@ -49365,7 +49501,7 @@ async function applyOne(store2, src, cfg, wf, a, procs, probe, quick2) {
       const original = wf.learnAfter?.draft ?? wf.draft?.text;
       wf.ownerSend = void 0;
       clearHold(wf);
-      Object.assign(wf, { ...stateFields(wf, "needs_human"), sendAt: void 0, approved: void 0, runFailed: void 0, statusReason: void 0, reviewAgain: void 0, draft: { ...wf.draft ?? { commitment: false, sources: [] }, text: a.text, preview: true, byOwner: true, ownWords: ownWords(wf, a.text) }, question: void 0, revAt: (/* @__PURE__ */ new Date()).toISOString(), status: "Edited by you", learnAfter: original ? { draft: original, sent: a.text } : void 0 });
+      Object.assign(wf, { ...stateFields(wf, "needs_human"), sendAt: void 0, approved: void 0, runFailed: void 0, statusReason: void 0, reviewAgain: void 0, draft: { ...wf.draft ?? { commitment: false, sources: [] }, text: a.text, preview: true, byOwner: true, ownWords: ownWords(wf, a.text) }, question: void 0, questionHint: void 0, revAt: (/* @__PURE__ */ new Date()).toISOString(), status: "Edited by you", learnAfter: original ? { draft: original, sent: a.text } : void 0 });
       commit();
       store2.markShown([wf]);
       const left = pendingEffects(wf.effects);
@@ -49424,7 +49560,7 @@ async function applyOne(store2, src, cfg, wf, a, procs, probe, quick2) {
           return reply(store2, src, a, `${MARK} Not done ${wf.code}: ${why2}. Nothing was changed; its reply already went.`);
         }
         if (wf.reviewAgain) {
-          const keep = { question: wf.question, status: wf.status, reviewAgain: wf.reviewAgain };
+          const keep = { question: wf.question, questionHint: wf.questionHint, status: wf.status, reviewAgain: wf.reviewAgain };
           newTurn(wf);
           Object.assign(wf, { ...keep, promise: void 0, ...stateFields(wf, "needs_human"), revAt: (/* @__PURE__ */ new Date()).toISOString() });
         }
@@ -49566,7 +49702,7 @@ async function groupAnswer(store2, src, wf, a, selected, probe) {
     store2.saveConfig(updated);
     return updated;
   });
-  Object.assign(wf, { groupAsk: void 0, question: void 0, revAt: (/* @__PURE__ */ new Date()).toISOString() });
+  Object.assign(wf, { groupAsk: void 0, question: void 0, questionHint: void 0, revAt: (/* @__PURE__ */ new Date()).toISOString() });
   commit();
   store2.log({ event: "group-answer", code: wf.code, pr: ask.pr, selected: selected.length, groups: ask.groups.length });
   const live3 = probe ?? adoProbe(cfg);
@@ -49610,6 +49746,7 @@ function pick2(store2, cfg, wf, a) {
       learnAfter: void 0,
       effects,
       question: v?.todos.length ? refusedAsk(wf.code, v.todos.length) : void 0,
+      questionHint: void 0,
       picked: nums,
       revAt: now,
       status: `You picked "${o.label}"`
@@ -50121,6 +50258,7 @@ async function probePRs(store2, cfg, probe, now = Date.now(), force = false, sub
         status: MAY_REVIEW.includes(w.prRole) ? `You're a reviewer on PR ${ref.id} now; starting the review` : `PR ${ref.id} can be read again; checking whether you are a reviewer`,
         reviewDecline: void 0,
         question: void 0,
+        questionHint: void 0,
         context: w.context?.filter((c) => c.label !== "Not reviewing"),
         effects: (w.effects ?? []).filter((e) => !isAddMe(e)),
         pending: w.pending.length ? w.pending : w.msgIds.slice(-1)
@@ -50174,6 +50312,7 @@ function closeReviewItem(store2, w, reason, now) {
   Object.assign(w, {
     closedBy: "nothing",
     question: void 0,
+    questionHint: void 0,
     groupAsk: void 0,
     heldVotes: void 0,
     reviewDecline: void 0,
@@ -50219,6 +50358,7 @@ function regateVotes(store2, cfg, w, ref, st) {
     }
     w.groupAsk = groups2.length ? { pr: ref.id, groups: groups2 } : void 0;
     w.question = w.groupAsk ? groupQuestion(w.groupAsk) : void 0;
+    w.questionHint = void 0;
   }
   const ours4 = (e) => !!pendingEffects([e]).length && isVote(e.call) && prIdOf(e.call) === ref.id;
   const votes = (w.effects ?? []).filter(ours4);
@@ -50241,6 +50381,7 @@ function regateVotes(store2, cfg, w, ref, st) {
     if (ask) {
       w.groupAsk = { pr: ref.id, groups: groups2 };
       w.question = groupQuestion(w.groupAsk);
+      w.questionHint = void 0;
     }
     if (votes.length || ask) store2.log({ event: "vote-regated", code: w.code, pr: ref.id, role: w.prRole, votes: votes.length, asked: ask ? groups2.length : 0 });
     return;
@@ -50252,6 +50393,7 @@ function regateVotes(store2, cfg, w, ref, st) {
   if (w.groupAsk?.pr === ref.id) {
     w.groupAsk = void 0;
     w.question = void 0;
+    w.questionHint = void 0;
   }
   w.heldVotes = void 0;
   store2.log({ event: "vote-restored", code: w.code, pr: ref.id, role: w.prRole, votes: held.effects.length });
@@ -50303,7 +50445,7 @@ async function recheckPr(store2, w, probe) {
   }
   const head = left.find((e) => isVote(e.call))?.head;
   if (head && !sameHead(st.head, head)) {
-    Object.assign(w, { question: reviewAgain(code, `PR ${id} changed since your review (new commits).`), status: `PR ${id} changed since your review`, reviewAgain: { pr: id, head: st.head ?? head, at: (/* @__PURE__ */ new Date()).toISOString() }, revAt: (/* @__PURE__ */ new Date()).toISOString() });
+    Object.assign(w, { question: reviewAgain(code, `PR ${id} changed since your review (new commits).`), questionHint: void 0, status: `PR ${id} changed since your review`, reviewAgain: { pr: id, head: st.head ?? head, at: (/* @__PURE__ */ new Date()).toISOString() }, revAt: (/* @__PURE__ */ new Date()).toISOString() });
     return `Not done ${code}: ${reviewAgain(code, `PR ${id} changed since your review (new commits).`)} Nothing was changed or sent.`;
   }
   if (!before.length) {
@@ -51331,12 +51473,12 @@ function officeText(files2) {
           append("[Only the first 2,000 rows of this sheet are shown.]");
           break;
         }
-        const cells = [...row[0].matchAll(/<c\b[^>]*(?<!\/)>[\s\S]*?<\/c>/g)].map((c) => {
+        const cells2 = [...row[0].matchAll(/<c\b[^>]*(?<!\/)>[\s\S]*?<\/c>/g)].map((c) => {
           const value = texts2(c[0], "v"), type = attr(c[0].split(">")[0], "t");
           if (type === "s" && (!/^\d+$/.test(value) || strings2[Number(value)] === void 0)) throw new Error("Incomplete sheet text");
           return `${attr(c[0].split(">")[0], "r")}: ${type === "s" ? strings2[Number(value)] : type === "inlineStr" ? texts2(c[0], "t") : value}`;
         });
-        append(cells.join("	"));
+        append(cells2.join("	"));
       }
     }
   } else throw new Error("Not a Word, PowerPoint or Excel file");
@@ -53097,20 +53239,20 @@ function attachJob(store2, cfg, wf, raw) {
     wf.effects = effects;
   }
   if (wf.intent === "pr_review") wf.reviewAsk = { job: job.id, ids: [...wf.pending], lastMsgId: wf.lastMsgId, ownerAnswer: wf.ownerAnswer };
-  Object.assign(wf, { job: job.id, ...stateFields(wf, "waiting_on_task"), status: `Working: ${want.goal}${job.label ? ` (${job.label})` : ""}`, waitingSince: now, pending: [], question: void 0, draft: void 0, learnAfter: void 0, approved: void 0 });
+  Object.assign(wf, { job: job.id, ...stateFields(wf, "waiting_on_task"), status: `Working: ${want.goal}${job.label ? ` (${job.label})` : ""}`, waitingSince: now, pending: [], question: void 0, questionHint: void 0, draft: void 0, learnAfter: void 0, approved: void 0 });
   const trusted = !!wf.asker && !wf.chat.guests && !NEVER_RELAY.includes(wf.intent ?? "") && store2.rules().some((r) => !r.off && r.then === "send" && r.who.accounts?.some((a) => a.id === wf.asker.id));
   if (job.relay && trusted) {
     job.relay = { ...job.relay, ok: job.asks.length };
     store2.saveJob(job);
   }
-  if (job.relay && (job.relay.ok ?? 0) < job.asks.length) Object.assign(wf, { ...stateFields(wf, "needs_human"), status: `Waiting for your ok to send it to your open session for ${job.relay.what} on ${job.relay.machine}`, question: `This goes to your open session for ${job.relay.what} on ${job.relay.machine}, which works with your own tools. Say "ok ${wf.code}" to send it there, or "skip ${wf.code}".` });
+  if (job.relay && (job.relay.ok ?? 0) < job.asks.length) Object.assign(wf, { ...stateFields(wf, "needs_human"), status: `Waiting for your ok to send it to your open session for ${job.relay.what} on ${job.relay.machine}`, question: `This goes to your open session for ${job.relay.what} on ${job.relay.machine}, which works with your own tools. Say "ok ${wf.code}" to send it there, or "skip ${wf.code}".`, questionHint: void 0 });
 }
 function okRelay(store2, wf) {
   const job = wf.job ? store2.job(wf.job) : void 0;
   if (!job?.relay || (job.relay.ok ?? 0) >= job.asks.length || wf.state !== "needs_human") return void 0;
   job.relay = { ...job.relay, ok: job.asks.length };
   store2.saveJob(job);
-  Object.assign(wf, { ...stateFields(wf, "waiting_on_task"), question: void 0, status: `Working in your open session for ${job.relay.what} on ${job.relay.machine}`, waitingSince: (/* @__PURE__ */ new Date()).toISOString() });
+  Object.assign(wf, { ...stateFields(wf, "waiting_on_task"), question: void 0, questionHint: void 0, status: `Working in your open session for ${job.relay.what} on ${job.relay.machine}`, waitingSince: (/* @__PURE__ */ new Date()).toISOString() });
   return `Sending ${wf.code} to your open session for ${job.relay.what} on ${job.relay.machine}. Its answer comes back here.`;
 }
 async function startJobs(store2, cfg, procs, hold = [], probe) {
@@ -53422,7 +53564,7 @@ function finishWork(store2, job, r, asksAtStart, review) {
     r = telemetryNote(store2.config(), r);
   }
   const cfg = store2.config();
-  if (r.reply) r = checked(store2, cfg, r);
+  r = checked(store2, cfg, r);
   const parents = parentsOf(store2, job);
   const todos = r.todos, extra = [];
   const prepared = prepareReportCalls(store2, cfg, parents, r);
@@ -53435,10 +53577,10 @@ function finishWork(store2, job, r, asksAtStart, review) {
         const why2 = `Couldn't prepare question for the author: ${problem}`;
         prepared.problems.push(why2);
         extra.push(leftRefusal(effectLeftAction(ask), "incomplete", { why: why2 }));
-        r = { ...r, question: why2 };
+        r = { ...r, question: why2, questionHint: void 0 };
         store2.log({ event: "effect-call-repaired", from: "rebuilt", ok: false });
       } else {
-        r = { ...r, question: void 0, effects: [...r.effects ?? [], ask] };
+        r = { ...r, question: void 0, questionHint: void 0, effects: [...r.effects ?? [], ask] };
         store2.log({ event: "question-to-author", job: job.id, key: job.key, pr: ask.call?.args.pullRequestId });
       }
     }
@@ -53500,7 +53642,7 @@ function finishWork(store2, job, r, asksAtStart, review) {
     }
     if (wf.sent) reopenPromise(store2, wf);
     const decision = r.reply ? { action: "draft", reason: "A review or investigation result always waits for you", confidence: confidence(r.reply.sources ?? []) } : wf.decision;
-    Object.assign(wf, { ...stateFields(wf, nothing ? wf.work || wf.partOf ? "open" : "done" : "needs_human"), closedBy: nothing && !(wf.work || wf.partOf) ? "job" : void 0, learnAfter: void 0, status: nothing ? `Nothing needed: ${r.summary}` : r.summary, question: r.question, draft: r.reply ? { ...r.reply } : void 0, effects, decision, waitingSince: void 0, approved: void 0, newCount: 0, revAt: (/* @__PURE__ */ new Date()).toISOString(), ...r.context || contextTrimmed ? { context: r.context } : {} });
+    Object.assign(wf, { ...stateFields(wf, nothing ? wf.work || wf.partOf ? "open" : "done" : "needs_human"), closedBy: nothing && !(wf.work || wf.partOf) ? "job" : void 0, learnAfter: void 0, status: nothing ? `Nothing needed: ${r.summary}` : r.summary, question: r.question, questionHint: r.question?.trim() && r.questionHint ? normalizeQuestionHint(r.questionHint) : void 0, draft: r.reply ? { ...r.reply } : void 0, effects, decision, waitingSince: void 0, approved: void 0, newCount: 0, revAt: (/* @__PURE__ */ new Date()).toISOString(), ...r.context || contextTrimmed ? { context: r.context } : {} });
     if (r.reply) wf.todos = r.todos;
     if (wf.intent === "pr_review") {
       const current3 = currentReview;
@@ -53651,7 +53793,7 @@ async function finishExecute(store2, src, cfg, job, procs, probe) {
     if (stale?.error) {
       const changed = effects.find((e) => isVote(e.call) && e.head), pr = changed && prTarget(store2, wf);
       if (changed?.head && pr) wf.reviewAgain = { pr, head: changed.head, at: (/* @__PURE__ */ new Date()).toISOString() };
-      Object.assign(wf, { ...stateFields(wf, "needs_human"), waitingSince: void 0, question: reviewAgain(wf.code, stale.error), status: stale.error.replace(/\.$/, "") });
+      Object.assign(wf, { ...stateFields(wf, "needs_human"), waitingSince: void 0, question: reviewAgain(wf.code, stale.error), questionHint: void 0, status: stale.error.replace(/\.$/, "") });
       commit();
       continue;
     }
@@ -53665,7 +53807,8 @@ async function finishExecute(store2, src, cfg, job, procs, probe) {
           ...stateFields(wf, "needs_human"),
           waitingSince: void 0,
           status: `Not made: ${changeText(effect)}. ${why2.replace(/^./, (c) => c.toUpperCase())} Nothing was created, and the reply was not sent`,
-          question: OLD_INVITE_ASK
+          question: OLD_INVITE_ASK,
+          questionHint: void 0
         });
         commit();
         continue;
@@ -53678,7 +53821,7 @@ async function finishExecute(store2, src, cfg, job, procs, probe) {
     }
     const added = effects.find((e) => e.done && isAddMe(e));
     if (added && wf.reviewDecline) {
-      Object.assign(wf, { ...stateFields(wf, "running"), waitingSince: void 0, question: void 0, reviewDecline: void 0, context: wf.context?.filter((c) => c.label !== "Not reviewing"), status: `Added you as an optional reviewer on PR ${wf.reviewDecline.pr}; starting the review`, pending: wf.msgIds.slice(-1) });
+      Object.assign(wf, { ...stateFields(wf, "running"), waitingSince: void 0, question: void 0, questionHint: void 0, reviewDecline: void 0, context: wf.context?.filter((c) => c.label !== "Not reviewing"), status: `Added you as an optional reviewer on PR ${wf.reviewDecline.pr}; starting the review`, pending: wf.msgIds.slice(-1) });
       store2.log({ event: "review-gate-added", code: wf.code, pr: added.call?.args.pullRequestId });
       commit();
       continue;
@@ -53829,7 +53972,7 @@ function legacyEffects(store2) {
     }
     const why2 = "it was proposed before this update, without the exact call needed to make it";
     leaveForYou(store2, wf, old.map((effect) => leftRefusal(effectLeftAction(effect, prTarget(store2, wf)), "incomplete", { why: why2 })));
-    Object.assign(wf, { effects: keep(wf.effects), question: wf.question ?? (wf.draft ? refusedAsk(wf.code, old.length) : void 0), revAt: (/* @__PURE__ */ new Date()).toISOString() });
+    Object.assign(wf, { effects: keep(wf.effects), question: wf.question ?? (wf.draft ? refusedAsk(wf.code, old.length) : void 0), questionHint: wf.question ? wf.questionHint : void 0, revAt: (/* @__PURE__ */ new Date()).toISOString() });
     store2.save(wf);
     store2.log({ event: "legacy-changes", code: wf.code, n: old.length });
   }
@@ -53994,7 +54137,7 @@ function missedCheck(store2, job, why2) {
     const reason = `${why2} (${n} checks in a row)`;
     if (work2.length < parentsOf(store2, job).length) return fail(store2, job, reason);
     for (const wf of work2) {
-      watchEnded(wf, `The check-back on ${watchSubject(job)} stopped: ${reason}. Promise a check-back again to restart it`);
+      watchEnded(wf, `The check-back on ${watchSubject(job)} stopped: ${reason}. Promise a check-back again to restart it`, store2);
       store2.save(wf);
     }
     Object.assign(job, { state: "failed", error: reason, run: void 0, every: void 0, nextAt: void 0, missed: void 0, retry: void 0 });
@@ -54045,7 +54188,7 @@ function shortOfGoal(store2, job, r) {
       continue;
     }
     const failed2 = !r.question && !draft2 ? { at: now, kind: "content", why: b.why.replace(/[.\s]+$/, ""), ...tried.length ? { tried } : {}, job: job.id } : void 0;
-    Object.assign(wf, { ...stateFields(wf, "needs_human"), waitingSince: void 0, ...statusFields("not-finished", failed2 ? `Couldn't finish: ${failed2.why}` : p.stop), question: r.question, draft: draft2, runFailed: failed2, learnAfter: void 0, effects: [], approved: void 0, newCount: 0, revAt: now, decision: { action: "draft", reason: "The work is not finished", confidence: "low" } });
+    Object.assign(wf, { ...stateFields(wf, "needs_human"), waitingSince: void 0, ...statusFields("not-finished", failed2 ? `Couldn't finish: ${failed2.why}` : p.stop), question: r.question, questionHint: r.question?.trim() && r.questionHint ? normalizeQuestionHint(r.questionHint) : void 0, draft: draft2, runFailed: failed2, learnAfter: void 0, effects: [], approved: void 0, newCount: 0, revAt: now, decision: { action: "draft", reason: "The work is not finished", confidence: "low" } });
     const home = homeOf(store2, wf);
     if (home.work && step(home, `${home === wf ? "" : `${wf.code}: `}Not finished: ${p.stop}`, { ref: `job:${job.id}:${hashOf(p.stop)}` }) && home !== wf) store2.save(home);
     store2.save(wf);
@@ -54056,7 +54199,7 @@ function shortOfGoal(store2, job, r) {
 }
 function fail(store2, job, why2) {
   for (const wf of parentsOf(store2, job)) {
-    Object.assign(wf, { ...stateFields(wf, "needs_human"), waitingSince: void 0, approved: void 0, ...statusFields("not-finished", `The job did not finish: ${why2}`), question: `Answer ${wf.code} to retry with directions, or skip it` });
+    Object.assign(wf, { ...stateFields(wf, "needs_human"), waitingSince: void 0, approved: void 0, ...statusFields("not-finished", `The job did not finish: ${why2}`), question: `Answer ${wf.code} to retry with directions, or skip it`, questionHint: void 0 });
     store2.save(wf);
   }
   Object.assign(job, { state: "failed", error: why2, run: void 0, purpose: "work", retry: void 0, nextAt: void 0 });
@@ -54099,6 +54242,7 @@ var init_jobs = __esm({
     init_fs();
     init_commit();
     init_upgrades();
+    init_normalize_report();
     init_ids();
     init_runinfo();
     init_agent();
@@ -54303,7 +54447,7 @@ function newTurn(wf, keepSent = false) {
   wf.reviewAttempt = void 0;
   wf.reviewBasis = void 0;
   wf.voteClaimRedrafted = void 0;
-  Object.assign(wf, { draft: void 0, prDraft: void 0, learnAfter: void 0, closeWorkAfterSend: void 0, choices: void 0, question: void 0, effects: void 0, promised: void 0, decision: void 0, approved: void 0, picked: void 0, sendAt: void 0, correction: void 0, todos: void 0, newCount: 0, ...keepSent ? {} : { sent: void 0 } });
+  Object.assign(wf, { draft: void 0, prDraft: void 0, learnAfter: void 0, closeWorkAfterSend: void 0, choices: void 0, question: void 0, questionHint: void 0, effects: void 0, promised: void 0, decision: void 0, approved: void 0, picked: void 0, sendAt: void 0, correction: void 0, todos: void 0, newCount: 0, ...keepSent ? {} : { sent: void 0 } });
 }
 function keepTodos(wf, at3, todos = wf.todos) {
   const msgId = wf.sent?.at === at3 ? wf.sent.msgId : wf.promise?.at === at3 ? wf.promise.msgId : void 0;
@@ -54384,7 +54528,7 @@ function closeWork(wf, why2) {
 }
 function lastActivity(store2, wf) {
   const parts2 = (wf.work?.parts ?? []).map((id) => store2.workflow(id)).filter((p) => !!p);
-  return [wf.work?.steps.at(-1)?.at, ...[wf, ...parts2].map((w) => store2.thread(w.id).at(-1)?.at)].filter((x) => !!x).sort().at(-1);
+  return [...wf.work?.steps.map((s3) => s3.at) ?? [], ...[wf, ...parts2].map((w) => store2.thread(w.id).at(-1)?.at)].filter((x) => !!x).sort().at(-1);
 }
 function due(wf, now = Date.now(), store2) {
   if (!(wf.state === "open" && active2(wf) && !!wf.work.checkAt && Date.parse(wf.work.checkAt) <= now)) return false;
@@ -54396,14 +54540,21 @@ function due(wf, now = Date.now(), store2) {
   }
   return true;
 }
+function waitsOnOwner(wf, me) {
+  const on = wf.work?.waitingOn?.who.trim().toLowerCase();
+  return !!on && me.some((name) => name.trim().toLowerCase() === on);
+}
 function askWhatNext(wf, store2) {
   const k = wf.work;
   const since2 = (store2 && lastActivity(store2, wf) || k.steps.at(-1)?.at || "").slice(0, 10);
+  const waiting = k.waitingOn, cfg = waiting ? store2?.config() : void 0;
+  const ownerWait = waitsOnOwner(wf, cfg ? [cfg.owner.name, cfg.owner.name.split(/\s+/)[0], ...cfg.aliases ?? []] : []);
+  const question = ownerWait && waiting ? `Still on your list since ${waiting.since.slice(0, 10)}: ${(k.next?.what ?? k.goal).replace(/[.\s]+$/, "")}. Report how it went with "${wf.code}: what happened". Remind me in 3 days with "wait ${wf.code}: 3d", or Close it with "close ${wf.code}".` : `No news on "${k.goal}" since ${since2}${k.waitingOn ? `; waiting on ${k.waitingOn.who}` : ""}. Answer "${wf.code}: nudge them" for a drafted follow-up, "wait ${wf.code}: 3d", or "close ${wf.code}".`;
   newTurn(wf, true);
   Object.assign(wf, {
     ...stateFields(wf, "needs_human"),
     status: `No news since ${since2}`,
-    question: `No news on "${k.goal}" since ${since2}${k.waitingOn ? `; waiting on ${k.waitingOn.who}` : ""}. Answer "${wf.code}: nudge them" for a drafted follow-up, "wait ${wf.code}: 3d", or "close ${wf.code}".`
+    question
   });
 }
 function wait(wf, days2) {
@@ -54423,9 +54574,9 @@ function watchNews(wf, r, ref, first3) {
   wake(wf, `News: ${r.summary}`);
   return true;
 }
-function watchEnded(wf, what) {
+function watchEnded(wf, what, store2) {
   step(wf, what);
-  if (wf.state === "open") askWhatNext(wf);
+  if (wf.state === "open") askWhatNext(wf, store2);
 }
 function wake(wf, status3) {
   if (wf.state === "waiting_on_task") return;
@@ -54829,6 +54980,7 @@ function itemRow(s3, p, w) {
   const base2 = { who: who(w.asker?.name), facts, chips: chipsOf(w, j), teams: teamsLink2(w), rev: w.revAt ?? w.updatedAt };
   const open2 = { label: "Open" };
   const goal = (t2) => t2 ? [{ label: "Goal", text: clip2(t2, 200) }] : [];
+  const ownerDay = (s4, at3) => Number.isFinite(Date.parse(at3)) ? new Date(at3).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", ...s4.tz ? { timeZone: s4.tz } : {} }).replace(",", "") : at3.slice(0, 10);
   if (w.state === "scheduled") {
     const rule = w.decision?.ruleId ? ` (rule ${w.decision.ruleId})` : "";
     const held = /^Held: you are active in Teams/.test(w.status);
@@ -54858,7 +55010,11 @@ function itemRow(s3, p, w) {
         return { ...base2, kind, headline: `Meet ${name}: ${clip2(w.meeting?.subject ?? w.lastAsk, 90)}?`, when: w.meeting?.start, ...clash ? { warn: htmlToText(`${clash.label}: ${clash.text}`) } : {}, primary: open2 };
       case "review":
         return { ...base2, kind, headline: `Approve ${commentsOrChanges(w)}${d ? `, then reply to ${name}` : ""}`, next: { owner: { kind: "delegate" }, what: `after your ok, ${NAME} ${/comment/.test(commentsOrChanges(w)) ? "posts them" : "makes them"}${d ? " and replies" : ""}` }, primary: open2 };
+      // C4 (PE 09:25:25Z part (2); PM round 3/4 words): when the open work waits on HIM (HOST's shared waitsOnOwner), no nudge to the
+      // asker: report how it went (the your-step form, the same answer verb), remind me in 3 days (wait), close it (close). Other-person
+      // rows below are unchanged.
       case "check-date":
+        if (waitsOnOwner(w, s3.me)) return { ...base2, kind, headline: `Still on your list since ${ownerDay(s3, w.work.waitingOn.since)}: ${clip2(w.work?.next?.what ?? w.work?.goal, 120).replace(/[.\s]+$/, "")}.`, facts: { ...facts, quote: void 0, verb: void 0, at: w.work.waitingOn.since, notes: goal(w.work?.goal) }, primary: { label: "Report how it went", command: `${c}: {text}` }, more: [{ label: "Remind me in 3 days", command: `wait ${c}: 3d` }, { label: "Close it", command: `close ${c}` }] };
         return { ...base2, kind, headline: `No news on "${clip2(w.work?.goal, 80)}": nudge, wait, or close?`, facts: { ...facts, quote: void 0, verb: void 0, at: w.work?.steps.at(-1)?.at ?? w.createdAt, notes: w.work?.waitingOn ? [{ label: "Waiting on", text: clip2(w.work.waitingOn.who, 60), since: w.work.waitingOn.since }] : [] }, primary: { label: "Draft a nudge", command: `${c}: nudge them` }, more: [{ label: "Wait 3 days", command: `wait ${c}: 3d` }, { label: "Close", command: `close ${c}` }] };
       // The reply already went in the owner's words; one button makes the change it promised, its meaning on the row (Slice 3).
       case "promise": {
@@ -54929,9 +55085,11 @@ function workOf(s3, p, w, home) {
   return {
     goal: htmlToText(k.goal),
     steps,
-    ...who2 === "you" && k.next ? { yours: { what: htmlToText(k.next.what), ...check2 ? { check: check2 } : {} } } : {},
+    // DD4-C1 (PE R4): since is when the work began waiting on him (waitingOn.since), only when he is the one waited on.
+    ...who2 === "you" && k.next ? { yours: { what: htmlToText(k.next.what), ...k.waitingOn && isMe(s3, k.waitingOn.who) ? { since: k.waitingOn.since } : {}, ...check2 ? { check: check2 } : {} } } : {},
     ...then ? { then } : {},
-    ...p.rule === "your-step" && w === home ? { report: `${home.code}: {result}: {text}` } : {},
+    // C4: the owner-wait check-date row (moveKind, as itemRow picks it) opens the same report form as a your-step row.
+    ...(p.rule === "your-step" || p.section === "move" && moveKind(w) === "check-date" && waitsOnOwner(home, s3.me)) && w === home ? { report: `${home.code}: {result}: {text}` } : {},
     happened: k.steps.slice(-6).reverse().map((x) => ({ at: x.at, what: htmlToText(x.what), news: !!x.news })),
     total: k.steps.length
   };
@@ -55018,7 +55176,7 @@ var init_next = __esm({
       meeting: `card | ${CARD_MORE}`,
       review: `card | ${CARD_MORE}`,
       promise: "ok <code>",
-      "check-date": "<code>: nudge them",
+      "check-date": "<code>: nudge them | <code>: {text} (Report, when it waits on you)",
       track: "ok <code>",
       stopped: "<code>: try again",
       "reminder-new": "ok <code>",
@@ -56506,7 +56664,7 @@ init_mcp_client();
 init_catalog();
 import { spawnSync as spawnSync4 } from "node:child_process";
 import { randomUUID as randomUUID15 } from "node:crypto";
-import { existsSync as existsSync31, mkdirSync as mkdirSync13, readdirSync as readdirSync11, statSync as statSync13, writeFileSync as writeFileSync16 } from "node:fs";
+import { existsSync as existsSync31, mkdirSync as mkdirSync13, readdirSync as readdirSync11, statSync as statSync14, writeFileSync as writeFileSync16 } from "node:fs";
 import { homedir as homedir11, hostname as hostname4 } from "node:os";
 import { join as join41 } from "node:path";
 
@@ -57100,6 +57258,7 @@ function sweep2(store2, days2 = 30, now = Date.now()) {
       fyi: void 0,
       lastAsk: void 0,
       question: void 0,
+      questionHint: void 0,
       ownerAnswer: void 0,
       learnAfter: void 0,
       earlier: void 0,
@@ -57235,6 +57394,7 @@ async function daily(store2, src, cfg, now = /* @__PURE__ */ new Date()) {
 // src/runner/tick.ts
 init_automations();
 init_jobs();
+init_track();
 init_continue();
 init_own();
 init_left();
@@ -59028,6 +59188,9 @@ var halfTo = (raw, min, max, save2) => {
   const n = Number(raw.trim().replace(",", "."));
   return Number.isFinite(n) && Number.isInteger(n * 2) && n >= min && n <= max ? { ok: true, save: (cfg) => save2(cfg, n) } : { ok: false, why: `Give a number of minutes from ${min} to ${max}, in steps of 0.5.` };
 };
+var IDLE_MAX = 240;
+var minutesOf = (n) => `${n} minute${n === 1 ? "" : "s"}`;
+var hoursOf = (min) => ((h) => `${h} hour${h === 1 ? "" : "s"}`)(Math.round(min / 30) / 2);
 var HHMM2 = /^([01]\d|2[0-3]):[0-5]\d$/;
 var EVERY = [[10, "Every 10 minutes"], [60, "Every hour"], [UPDATE_EVERY_MIN, "Once a day"]];
 var SETTINGS = [
@@ -59260,15 +59423,18 @@ var SETTINGS = [
     read: (c) => c.tz ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
     parse: (raw) => validTz(raw.trim()) ? set2({ tz: raw.trim() }) : { ok: false, why: "Give a time zone name, such as Asia/Kolkata or Europe/London." }
   },
+  // SETTINGS-IDLE-180 (PM 12:02:02Z final words, PE 11:53:23Z): 1 to 240. The idle interval paces the whole runner's routine work, so the
+  // help says what it paces and what wakes sooner; above 60 the save says what may slow. The watch clause holds with HOST's due-watch companion.
   {
     key: "pollIdle",
     label: "Check Teams every",
-    help: "Minutes, when nothing is happening; during work hours at least every 5. Each check is a quick Teams read, no AI.",
+    help: (c) => `How often ${NAME} does its routine checks (new messages, PR changes, follow-ups) when nothing is going on: about every ${minutesOf((c.poll ?? DEFAULT_POLL).idleMin)} (1 to 240). Some work wakes it sooner: what you approve here, scheduled sends and your watches, and it checks more often for a while after a reply goes out. If you choose 15 minutes or less, it checks about every 5 minutes during your work hours.`,
     kind: "number",
     section: "system",
     advanced: true,
     read: (c) => String((c.poll ?? DEFAULT_POLL).idleMin),
-    parse: (raw) => numTo(raw, 1, 60, (c, n) => ({ ...c, poll: { ...c.poll ?? DEFAULT_POLL, idleMin: n } }))
+    parse: (raw) => numTo(raw, 1, IDLE_MAX, (c, n) => ({ ...c, poll: { ...c.poll ?? DEFAULT_POLL, idleMin: n } })),
+    savedLine: (raw) => ((n) => n > 60 ? `Saved. When things are quiet, ${NAME} may take up to about ${hoursOf(n)} to notice new messages or PR changes. What you approve here and scheduled sends aren't delayed, and your watches keep their own schedule.` : void 0)(Number(raw.trim()))
   },
   // The after-activity pair (owner, 10-23): checking is the owner's to set, never hard-coded.
   // PM A R39 (ships with HOST's fast-poll change): fast checks start only when a reply goes out; the live values, in his words.
@@ -59626,7 +59792,7 @@ async function saveSetting(store2, key, raw, deps = {}) {
   if (!r.ok) return { ok: false, text: r.why };
   store2.saveConfig(r.save(store2.config(), store2));
   store2.log({ event: "setting", key });
-  return { ok: true, text: `${spec.saved ? spec.saved(String(raw)) : `Saved ${spec.label.toLowerCase()}.`} It applies from the next cycle, on every machine.` };
+  return { ok: true, text: spec.savedLine?.(String(raw)) ?? `${spec.saved ? spec.saved(String(raw)) : `Saved ${spec.label.toLowerCase()}.`} It applies from the next cycle, on every machine.` };
 }
 async function checkTargets(raw, store2, { probe }) {
   const r = parseTargets(raw, store2.config());
@@ -60065,7 +60231,9 @@ init_probe();
 // src/web/numbers.ts
 init_numbers2();
 init_numbers();
+init_brand();
 init_channels();
+import { statSync as statSync12 } from "node:fs";
 
 // src/web/model/numbers.ts
 var SMALL2 = 10;
@@ -60337,7 +60505,89 @@ function numbersPage(store2, key = "this", now = /* @__PURE__ */ new Date()) {
     const e = correction && sends.filter((e2) => e2.code === code && (correction.target ? e2.msgId === correction.target : e2.at <= correction.at)).sort((a, b) => b.at.localeCompare(a.at))[0];
     return e ? ref(e) : code;
   })];
-  return { ...n, rows, missed, sendKeys };
+  return { ...n, rows, missed, sendKeys, usage: usageWindow(evs, n.window, n.bars.map((b) => b.week), tz) };
+}
+var MONTHS3 = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+var md3 = (day3) => `${MONTHS3[Number(day3.slice(5, 7)) - 1]} ${Number(day3.slice(8, 10))}`;
+var runsWord = (n) => `${n} AI run${n === 1 ? "" : "s"}`;
+var big = (n) => n < 1e3 ? { text: String(n) } : { text: n < 1e6 ? `${n < 1e4 ? +(n / 1e3).toFixed(1) : Math.round(n / 1e3)} k` : `${+(n / 1e6).toFixed(1)} M`, title: n.toLocaleString("en-US") };
+var time3 = (ms) => ms < 6e4 ? `${Math.round(ms / 1e3)} s` : ms < 36e5 ? `${Math.round(ms / 6e4)} min` : `${+(ms / 36e5).toFixed(1)} h`;
+var UNKNOWN = { text: "unknown", unknown: true };
+var NOT_COUNTED = { text: "not counted", unknown: true };
+var tokensOf = (u) => u.tokensIn !== void 0 && u.tokensOut !== void 0 ? u.tokensIn + u.tokensOut : void 0;
+var cells = (u, counted2 = true) => !counted2 ? Array.from({ length: 6 }, () => NOT_COUNTED) : [{ text: String(u.runs) }, ...[u.modelCalls, u.tokensIn, u.tokensOut, u.toolCalls].map((v) => v === void 0 ? UNKNOWN : big(v)), u.ms === void 0 ? UNKNOWN : { text: time3(u.ms) }];
+var COVERAGE = (u) => `Usage reported for ${u.reported} of ${runsWord(u.runs)}`;
+var USAGE_RULE = `Each AI run ${NAME} started, from its own log on all your machines, counted once. A run that didn't report what it used counts as a run, and its numbers read "unknown", never 0. These numbers don't open a list: to see what one item used, open it: it's in its Details.`;
+var COLUMNS = [
+  { text: "AI runs", title: `AI runs: each time ${NAME} started the AI for a piece of work.` },
+  { text: "model calls", title: "Model calls: the requests the AI sent to its model in those runs." },
+  { text: "input tokens", title: "Tokens: the amount of text the AI read (input) and wrote (output)." },
+  { text: "output tokens", title: "Tokens: the amount of text the AI read (input) and wrote (output)." },
+  { text: "tool calls", title: "Tool calls: the tools the AI used, such as reading a file or a PR." },
+  { text: "time", title: "Time: how long the runs took, start to finish." }
+];
+function usageModel(u, key, tz) {
+  const t2 = tokensOf(u.total), label2 = { this: "This week", last: "Last week", "4w": "Last 4 weeks", all: "Since you started" }[key];
+  const sinceDay = u.since ? dayIn(u.since, tz) : void 0;
+  const top = Math.max(1, ...u.bars.map((b) => b.use?.runs ?? 0));
+  const missing = u.total.runs - u.total.reported;
+  return {
+    credits: `Credits aren't shown: your AI tool doesn't report them. ${NAME} shows the runs and tokens it can count.`,
+    state: u.state,
+    ...u.state === "before" ? { note: sinceDay ? `Owner-reply and promise checks not included before ${md3(sinceDay)}.` : `Not fully counted yet: checks of your own replies and promises are included after ${NAME}'s next update.` } : {
+      ...u.clipped && sinceDay ? { note: `Counted since ${md3(sinceDay)}` } : {},
+      headline: `${label2}: ${runsWord(u.total.runs)} \xB7 ${t2 === void 0 ? "unknown" : big(t2).text} tokens`,
+      coverage: COVERAGE(u.total),
+      ...missing > 0 ? { unreported: { text: `${missing} run${missing === 1 ? "" : "s"} didn't report usage`, title: `Not reported: ${u.missing.join(", ")}.` } } : {},
+      bars: u.bars.map((b) => {
+        const tokens = b.use ? tokensOf(b.use) : void 0;
+        return {
+          week: b.week,
+          label: md3(b.week),
+          ...b.use ? { n: b.use.runs } : {},
+          height: b.use ? Math.round(b.use.runs / top * 100) : 0,
+          since: !!b.since,
+          alt: b.use ? `Week of ${md3(b.week)}: ${runsWord(b.use.runs)}, ${tokens === void 0 ? "tokens unknown" : `${big(tokens).text} tokens`}, usage reported for ${b.use.reported} of ${b.use.runs}${b.since ? `. Counted since ${md3(dayIn(b.since, tz))}` : ""}` : `Week of ${md3(b.week)}: not counted`
+        };
+      })
+    },
+    columns: COLUMNS,
+    kinds: u.kinds.map((k) => ({ label: k.label, cells: cells(k.use, k.counted) })),
+    models: u.models.map((m) => ({ label: m.label, cells: cells(m.use) })),
+    total: { cells: cells(u.total, u.state === "after"), ...u.state === "after" ? { note: COVERAGE(u.total) } : {} }
+  };
+}
+function usedLine(u) {
+  if (!u.runs) return void 0;
+  if (!u.reported) return `What it used: ${runsWord(u.runs)} \xB7 usage unknown`;
+  const t2 = tokensOf(u), missing = u.runs - u.reported;
+  return `What it used: ${[runsWord(u.runs), ...t2 !== void 0 ? [`${big(t2).text} tokens`] : [], ...u.ms !== void 0 ? [time3(u.ms)] : [], ...u.models.slice(0, 1)].join(" \xB7 ")}${missing ? ` (${missing} run${missing === 1 ? "" : "s"} didn't report usage)` : ""}`;
+}
+var usedCache = /* @__PURE__ */ new Map();
+function usedLines(store2, now = /* @__PURE__ */ new Date()) {
+  const wfs = store2.workflows(), from = addDays(weekOf(now.toISOString().slice(0, 10)), -7), files2 = store2.logFiles();
+  const stat = (file4) => {
+    try {
+      const st = statSync12(file4);
+      return `${file4}:${st.size}:${st.mtimeMs}`;
+    } catch {
+      return file4;
+    }
+  };
+  const keyOf3 = (recent) => [...store2.numberWeeks().filter((w) => w.week >= from === recent).map((w) => w.file), ...files2.filter((f) => weekOf(f.day) >= from === recent).map((f) => stat(f.file))].join("|");
+  const old = keyOf3(false), key = [old, keyOf3(true), ...wfs.map((w) => `${w.id}:${w.job ?? ""}`)].join("|");
+  const had = usedCache.get(store2.root);
+  if (had?.key === key) return had.lines;
+  const oldEvs = had?.old === old ? had.oldEvs : counted(store2).filter((e) => e.event === "run" && weekOf(e.at.slice(0, 10)) < from);
+  const byJob = /* @__PURE__ */ new Map();
+  for (const w of wfs) if (w.job) byJob.set(w.job, [...byJob.get(w.job) ?? [], w.id]);
+  const evs = [...oldEvs, ...counted(store2, from).filter((e) => e.event === "run")];
+  const lines = new Map([...usageByItem(evs, (job) => byJob.get(job)?.length === 1 ? byJob.get(job)[0] : void 0)].flatMap(([id, u]) => {
+    const l = usedLine(u);
+    return l ? [[id, l]] : [];
+  }));
+  usedCache.set(store2.root, { old, oldEvs, key, lines });
+  return lines;
 }
 
 // src/web/server.ts
@@ -60346,7 +60596,7 @@ init_next();
 
 // src/web/react-build.ts
 init_paths();
-import { readFileSync as readFileSync25, statSync as statSync12 } from "node:fs";
+import { readFileSync as readFileSync25, statSync as statSync13 } from "node:fs";
 import { join as join38, basename as basename6 } from "node:path";
 import { deflateRawSync } from "node:zlib";
 var directory = (root) => join38(root, "dist", "web-react");
@@ -60358,7 +60608,7 @@ var packed = (id, text4) => `<script id="${id}" type="application/octet-stream">
 var LOADER = `<script>(async()=>{const read=async id=>new Response(new Blob([Uint8Array.from(atob(document.getElementById(id).textContent),c=>c.charCodeAt(0))]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).text();try{const[app,style,data]=await Promise.all(['delegate-snapshot-app','delegate-snapshot-style','delegate-snapshot'].map(read));const s=document.createElement('style');s.textContent=style;document.head.append(s);window.DELEGATE_SNAPSHOT=JSON.parse(data);history.replaceState(null,'',location.pathname+location.search+'#classic/snapshot');await import(URL.createObjectURL(new Blob([app],{type:'text/javascript'})))}catch(e){document.getElementById('react-root').textContent='This snapshot could not be opened in this browser: '+e}})()</script>`;
 var shell;
 function snapshotPage(snapshot2, root = ROOT) {
-  const file4 = join38(root, SNAPSHOT_TEMPLATE), key = `${file4}:${statSync12(file4).mtimeMs}`;
+  const file4 = join38(root, SNAPSHOT_TEMPLATE), key = `${file4}:${statSync13(file4).mtimeMs}`;
   if (shell?.key !== key) {
     const template = readFileSync25(file4, "utf8"), app = APP.exec(template), style = STYLE.exec(template), end = template.lastIndexOf("</body>");
     if (!app || !style || end < 0 || !template.includes(SNAPSHOT_DATA)) throw new Error(`${SNAPSHOT_TEMPLATE} is not a snapshot page template.`);
@@ -60493,6 +60743,10 @@ var item = external_exports.object({
   todos: strings.optional(),
   leftLines: external_exports.array(leftLine).optional(),
   repaired: external_exports.boolean().optional(),
+  // A76 (decision 55): the delivered reply, from wf.sent only; absent before delivery, during Undo, or once a newer turn exists.
+  sent: external_exports.object({ at: text3, teams: optional2, text: text3, by: external_exports.enum(["you", "rule"]), holding: external_exports.boolean().optional() }).optional(),
+  // COST-USAGE AU4: "What it used: …", from the runs attributed to this item; absent when none were.
+  used: optional2,
   // R10b: a review posted under his rule that waits for his approval (SEND's reviewDone, from receipts).
   reviewDone: external_exports.object({
     pr: external_exports.number(),
@@ -60550,7 +60804,7 @@ var work = external_exports.object({
   stepIds: strings,
   planIds: strings,
   reportActionId: optional2,
-  yours: external_exports.object({ what: text3, check: external_exports.object({ what: external_exports.enum(["Deploy", "Build"]), at: text3, build: external_exports.number() }).optional() }).optional(),
+  yours: external_exports.object({ what: text3, since: optional2, check: external_exports.object({ what: external_exports.enum(["Deploy", "Build"]), at: text3, build: external_exports.number() }).optional() }).optional(),
   then: external_exports.object({ owner, what: text3, you: optional2 }).optional(),
   total: external_exports.number()
 });
@@ -60619,7 +60873,8 @@ var done = external_exports.object({
   why: why.optional(),
   msgs: strings.optional(),
   // What Delegate checked before this reply went (#45 sent.checks), as history lines: "Sent. Kim posted again at 8:52 AM; …".
-  checks: strings.optional()
+  checks: strings.optional(),
+  used: optional2
 });
 var watch = external_exports.object({ id: text3, code: text3, what: text3, last: text3, changedAt: optional2, update: external_exports.boolean(), rev: text3, every: external_exports.number().optional(), endsAt: optional2, by: optional2, nextAt: optional2, from: optional2, actionIds: strings });
 var automation = external_exports.object({ id: text3, code: text3, sentence: text3, to: text3, text: text3, when: text3, state: text3, why: optional2, next: optional2, count: external_exports.number(), rev: text3, actionIds: strings });
@@ -61537,6 +61792,7 @@ function voteClaimOf(store2, wf, text4) {
   };
 }
 var answerChips = (code, question) => [...new Set([...(question ?? "").matchAll(new RegExp(`"${code}:\\s*([^"]{1,60})"`, "gi"))].map((match) => match[1].trim()).filter(Boolean))].map((text4) => ({ label: text4.replace(/^./, (first3) => first3.toUpperCase()), text: text4 }));
+var hintChips = (wf, code, question) => wf.questionHint === void 0 ? answerChips(code, question) : wf.question?.trim() ? [...new Set((wf.questionHint.answers ?? []).map((text4) => text4.trim()).filter(Boolean))].map((text4) => ({ label: text4.replace(/^./, (first3) => first3.toUpperCase()), text: text4 })) : [];
 function voteCheck(store2, code, text4) {
   const wf = store2.byCode(code);
   if (!wf || wf.state !== "needs_human") return {};
@@ -61546,6 +61802,7 @@ function voteCheck(store2, code, text4) {
 function reactProjection(store2, query = "", visit2, opts = {}) {
   const onlyWfs = opts.only && store2.byCode(opts.only) ? store2.itemThread(opts.only) : void 0;
   const stored = snapshot(store2, void 0, onlyWfs);
+  const usedOf = usedLines(store2);
   const facts = { ...stored, workflows: stored.workflows.map((workflow) => currentDraft(workflow, workflow.job ? stored.jobs.get(workflow.job) : void 0) === workflow.draft ? workflow : { ...workflow, draft: void 0 }) };
   const placed = place(facts), placementOf = new Map(placed.map((placement2) => [placement2.code, placement2])), cfg = store2.config();
   const since2 = visit2 ? visit2.since : store2.lastViewed();
@@ -61806,7 +62063,11 @@ function reactProjection(store2, query = "", visit2, opts = {}) {
     const agentWait = facts.agentWait && (wf.state === "running" || wf.state === "waiting_on_task" && job?.state === "queued" || job?.state === "failed" && job.error === facts.agentWait.text) ? facts.agentWait.text : void 0;
     const windowRec = wf.openOn ? store2.openWindow(wf.id) ?? (wf.job ? store2.openWindow(wf.job) : void 0) : void 0;
     const prLabel = ((pr) => pr ? `PR ${pr}${wf.prAuthor ? ` \xB7 ${wf.prAuthor}` : ""}` : void 0)(Number(/^pr:.*?(\d+)$/i.exec(wf.job && facts.jobs.get(wf.job)?.key || "")?.[1] ?? 0) || (wf.intent === "pr_review" ? prTarget(store2, wf) : void 0));
-    const context2 = cardContext(wf, job, c.context).map((fact) => ({ ...fact, text: chatIdNet(fact.text) }));
+    const anchor2 = wf.prAnchor, also = anchor2?.also?.length && wf.state !== "done" && !wf.redacted && wf.msgIds.includes(anchor2.msgId) && prTarget(store2, wf) === anchor2.pr ? anchor2.also : void 0;
+    const context2 = [
+      ...cardContext(wf, job, c.context).filter((fact) => !(also && fact.label === "Also mentions")),
+      ...also ? [{ label: "Also mentions", text: also.map((id2) => `PR ${id2}`).join(", "), tone: "info" }] : []
+    ].map((fact) => ({ ...fact, text: chatIdNet(fact.text) }));
     const warns = [
       ...context2.filter((fact) => fact.tone === "warn" && fact.label !== "Need to know").map((fact) => `${prLabel ? `${prLabel} \xB7 ` : ""}${fact.label}: ${fact.text}`),
       ...changeIds.flatMap((key) => entities.changes[key].meaning?.filter((part) => part.warn).map((part) => part.text) ?? [])
@@ -61989,6 +62250,17 @@ function reactProjection(store2, query = "", visit2, opts = {}) {
       context: context2,
       earlier: earlierLine(rest2.earlier, id),
       askAt: asksAt.get(id),
+      // COST-USAGE AU4: what this item's attributed runs used (web/numbers.ts usedLines); none when no run was attributed.
+      .../* @__PURE__ */ ((used) => used ? { used } : {})(usedOf.get(wf.id)),
+      // A76 sent history (decision 55): the reply that actually went, once its Undo window is over and no newer turn replaced it.
+      // Only from wf.sent's typed fields, never from read-only status, copy or status text; otherwise omitted and today's card stays.
+      ...((sent) => sent && sent.msgId && !(sent.undoUntil && Date.parse(sent.undoUntil) > Date.now()) && (sent.sendText ?? sent.text) && (!wf.revAt || wf.revAt <= sent.at) ? { sent: {
+        at: sent.at,
+        text: sent.sendText ?? sent.text,
+        by: sent.byRule ? "rule" : "you",
+        ...sent.holding ? { holding: true } : {},
+        .../* @__PURE__ */ ((teams) => teams ? { teams } : {})(wf.chat.id && (!wf.chat.test || teamsChat(wf.chat.id)) ? safeLink(messageLink(wf.chat.id, sent.msgId)) : void 0)
+      } } : {})(wf.sent),
       status: pageText(c.status),
       attention,
       // Step 6: back from his terminal window, a status line only.
@@ -62065,7 +62337,7 @@ function reactProjection(store2, query = "", visit2, opts = {}) {
         }))
       } } : {})(Number(/^PR (\d+)/.exec(prLabel ?? "")?.[1]) || void 0),
       question: c.question === void 0 ? void 0 : (failedJobDirections(wf) ? forPage(c.question) : pageText(c.question)) || void 0,
-      ...((chips) => chips.length && c.question !== void 0 && !groupPick ? { answerChips: chips } : {})(answerChips(id, c.question)),
+      ...((chips) => chips.length && c.question !== void 0 && !groupPick ? { answerChips: chips } : {})(hintChips(wf, id, c.question)),
       choices: choices2 && { ...choices2, prompt: forPage(choices2.prompt), options: choices2.options.map((option) => ({ ...option, id: pageOptionId(option) })), ...groupPick ? { group: true } : {} },
       ...groupPick ? { question: void 0 } : {},
       sourceIds: sources(id, id, why2.sources),
@@ -62254,7 +62526,7 @@ function reactProjection(store2, query = "", visit2, opts = {}) {
       }));
     }
     const current3 = wf?.sent?.at === row.at && (row.kind === "reply" || row.kind === "review"), checks = current3 ? wf.sent.checks?.map((check2) => pageText(`Sent. ${check2}`)).filter(Boolean) : void 0;
-    entities.doneEntries[id] = { ...rest2, text: current3 ? wf.sent.sendText ?? rest2.text : rest2.text, ...checks?.length ? { checks } : {}, fresh: isNew(row, seenIn(base2), itemSeen(base2)), id, personId: person2(row.code, who2), actionIds, sourceIds: sources(row.code, id, why2?.sources ?? []), noteIds: notes(row.code, id, historyNotes ?? []), why: why2 && { reason: why2.reason, confidence: why2.confidence, gaps: why2.gaps, searched: why2.searched }, teams: safeLink(row.teams), href: safeLink(row.href) };
+    entities.doneEntries[id] = { ...rest2, text: current3 ? wf.sent.sendText ?? rest2.text : rest2.text, ...checks?.length ? { checks } : {}, fresh: isNew(row, seenIn(base2), itemSeen(base2)), .../* @__PURE__ */ ((used) => used ? { used } : {})(wf ? usedOf.get(wf.id) : void 0), id, personId: person2(row.code, who2), actionIds, sourceIds: sources(row.code, id, why2?.sources ?? []), noteIds: notes(row.code, id, historyNotes ?? []), why: why2 && { reason: why2.reason, confidence: why2.confidence, gaps: why2.gaps, searched: why2.searched }, teams: safeLink(row.teams), href: safeLink(row.href) };
   }
   for (const w of base2.watching) entities.watches[w.code] = {
     ...w,
@@ -63009,7 +63281,7 @@ async function serveInbox(get, port = 0, token = randomBytes3(16).toString("hex"
         }
         try {
           const page2 = readScope(() => numbersPage(get(), key));
-          json2(200, { model: numbersModel(page2, NAME), lists: listsOf(page2), rows: page2.rows, missed: page2.missed, rules: RULES3(NAME) });
+          json2(200, { model: numbersModel(page2, NAME), lists: listsOf(page2), rows: page2.rows, missed: page2.missed, rules: { ...RULES3(NAME), usage: USAGE_RULE }, ...page2.usage ? { usage: usageModel(page2.usage, key, get().config()?.tz) } : {} });
         } catch (error62) {
           failure2(error62);
         }
@@ -63658,10 +63930,12 @@ async function stayAwake(store2, until, deps = {}, everyMs = 1e3) {
 function reschedule(store2, cfg, startedMs) {
   recordSentReplyActivity(store2);
   const s3 = plan(store2.schedule(), new Date(startedMs), { ...DEFAULT_POLL, ...cfg.poll }, false, cfg.tz);
+  const jobs = store2.jobs(), now = Date.now();
   const due2 = [
     ...store2.workflows().filter((w) => w.state === "scheduled" && w.sendAt && Date.parse(w.sendAt) > Date.now()).map((w) => w.sendAt),
     ...store2.automations().filter((a) => a.state === "active" && a.next).map((a) => a.next),
-    ...store2.jobs().filter((j) => j.retry && j.state === "queued" && Date.parse(j.retry.at) > Date.now()).map((j) => j.retry.at)
+    ...jobs.filter((j) => j.retry && j.state === "queued" && Date.parse(j.retry.at) > Date.now()).map((j) => j.retry.at),
+    ...jobs.map((j) => watchDeadline(store2, cfg, j, now)).filter((at3) => at3 !== void 0)
   ].sort()[0];
   store2.saveSchedule(due2 && s3.nextAt && due2 < s3.nextAt ? { ...s3, nextAt: due2 } : s3);
 }
@@ -63828,21 +64102,21 @@ Fix the first one you use (for most people: run it once and type /login), then r
         return `${cfg.knowledge.length} knowledge folder(s), kept`;
       }
       const folders = k.folders ?? [];
-      const missing = folders.filter((f) => !existsSync31(here2(store2.root, f)) || !statSync13(here2(store2.root, f)).isDirectory());
+      const missing = folders.filter((f) => !existsSync31(here2(store2.root, f)) || !statSync14(here2(store2.root, f)).isDirectory());
       if (missing.length) throw new Error(`Not a folder: ${missing.join(", ")}`);
       cfg.knowledge = folders.map((f) => portable(store2.root, here2(store2.root, f)));
       store2.saveConfig(cfg);
       return `${folders.length} knowledge folder(s)`;
     }
     case "profile": {
-      const { markdown: md3, aliases } = v;
+      const { markdown: md4, aliases } = v;
       if (aliases?.length) store2.saveConfig({ ...store2.config(), aliases });
       const called = aliases?.length ? `; people also call you ${aliases.join(", ")}` : "";
-      if (!md3) {
+      if (!md4) {
         if (existsSync31(join41(store2.root, "profile.md"))) return `profile kept${called}`;
         throw new Error("Draft the profile yourself instead of asking: the owner's name and job title (from Teams or the company directory), and how they write (greeting, length, tone) from a few of their own recent messages. Leave out other people and any facts. Save it as markdown; the owner can change it in Settings. Add aliases only if the owner tells you one.");
       }
-      writeFileSync16(join41(store2.root, "profile.md"), md3);
+      writeFileSync16(join41(store2.root, "profile.md"), md4);
       return `profile saved${called}`;
     }
     case "rules": {

@@ -25,6 +25,7 @@ import { REPORT, report } from '../store/feedback.ts'
 import { NAME } from '../brand.ts'
 import { prTarget } from './probe.ts'
 import { askRelation, freshAsk } from './same-ask.ts'
+import { BOT } from './dispatch.ts'
 
 const toMsg = (r: RawMsg, from: { id: string; name: string }, text: string, byOwner: boolean): Msg =>
 	({ id: r.id, at: r.at, editedAt: r.editedAt, contentKey: contentKey(text), from, text, byOwner, ...(r.attachments?.length ? { attachments: r.attachments } : {}) })
@@ -199,10 +200,17 @@ export async function intake(store: Store, src: Source, cfg: Config, cursors: Re
 			if (wf?.lastMsgId && BigInt(raw.id) <= BigInt(wf.lastMsgId)) { auditSkip(store, chat.id, raw.id, 'dedupe', wf.id); continue }
 			// The reply already went and its promised change waits, or its check failed: the new ask is a new turn (Slice 3).
 			if (wf && c.kind === 'ask') reopenPromise(store, wf)
-			const joinedPr = wf && prTarget(store, wf)
 			wf ??= await create(store, src, cfg, chat, c.kind === 'ask' ? earlierOf(store, chat.id, c.from.id) : undefined)
 			if (elsewhere && !wf.partOf) { addPart(elsewhere, wf); step(elsewhere, `${c.from.name.split(' ')[0]} (${chat.group ? chat.name : '1:1'}, ${wf.code}): ${c.text}`, { ref: `part:${wf.id}` }); store.save(elsewhere) }
 			appendThread(store, wf, toMsg(raw, c.from, c.text, false))
+			if (sender.id && sender.id !== cfg.owner.id && !BOT.test(sender.name)) {
+				const home = homeOf(store, wf)
+				for (const other of store.workflows()) {
+					if (other.chat.id !== chat.id || !active(other) || other.id === wf.id || other.id === home.id || other.partOf === wf.id) continue
+					if (chat.group && other.asker?.id !== sender.id && !other.askers?.some(person => person.id === sender.id)) continue
+					if (step(other, `${sender.name.split(' ')[0]} wrote in this chat (now in ${wf.code})`, { ref: `xnews:${wf.id}`, news: true, at: raw.at })) store.save(other)
+				}
+			}
 			// An old ask goes in its place among the newest lines the item started with.
 			if (backlog) store.saveThread(wf.id, store.thread(wf.id).sort((a, b) => a.at.localeCompare(b.at)))
 			if (wf.draft) wf.newCount++
@@ -211,9 +219,6 @@ export async function intake(store: Store, src: Source, cfg: Config, cursors: Re
 			if (!wf.prAnchor && routed?.item.id === wf.id && routed.anchor) wf.prAnchor = routed.anchor
 			// A new ask withdraws any ok given before it (tester P0).
 			Object.assign(wf, { asker: c.from, lastAsk: c.text, ...stateFields(wf, 'running'), lastMsgId: raw.id, approved: undefined, needsMe: undefined, intakeDeferred: undefined })
-			const otherPrs = joinedPr ? namedPrs.filter(id => id !== joinedPr) : []
-			if (otherPrs.length) wf.context = [...(wf.context ?? []).filter(f => f.label !== 'Also mentions'),
-				{ label: 'Also mentions', text: otherPrs.map(id => `PR ${id}`).join(', '), tone: 'info' }]
 			// The hold stays once set; only a draft that answers nothing but old messages waits its turn.
 			if (backlog) Object.assign(wf, { before: true, paced: true })
 			else wf.paced = undefined
@@ -246,7 +251,7 @@ function route(store: Store, open: Workflow[], raw: RawMsg, senderId: string, re
 	const { prs, candidates } = prJoinCandidates(store, eligible, joinText)
 	const result = (item: Workflow): Routed => {
 		const pr = prs.length > 1 && candidates.length === 1 ? prTarget(store, item) : undefined
-		return { item, ...(pr !== undefined && prs.includes(pr) ? { anchor: { pr, msgId: raw.id, at: new Date().toISOString() } } : {}) }
+		return { item, ...(pr !== undefined && prs.includes(pr) ? { anchor: { pr, msgId: raw.id, at: new Date().toISOString(), also: prs.filter(id => id !== pr) } } : {}) }
 	}
 	const target = replyTarget(raw)
 	const quoted = target && candidates.find(item => item.msgIds.includes(target) && (prs.length > 1 || askRelation(store, item, text) !== 'different'))

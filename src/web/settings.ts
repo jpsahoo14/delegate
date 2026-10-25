@@ -41,6 +41,8 @@ type Spec = {
 	check?: (raw: string, store: Store, deps: SaveDeps) => Promise<Parsed>
 	// What a save says, when the label alone does not (a switch says whether it is on).
 	saved?: (raw: string) => string
+	// A whole save line in the PM's words, in place of the default one and its "It applies from the next cycle" suffix; undefined keeps the default.
+	savedLine?: (raw: string) => string | undefined
 }
 type Parsed = { ok: true; save: (cfg: Config, store: Store) => Config } | { ok: false; why: string }
 export type SaveDeps = { probe?: BuildProbe }
@@ -63,6 +65,10 @@ const halfTo = (raw: string, min: number, max: number, save: (cfg: Config, n: nu
 	const n = Number(raw.trim().replace(',', '.'))
 	return Number.isFinite(n) && Number.isInteger(n * 2) && n >= min && n <= max ? { ok: true as const, save: (cfg: Config) => save(cfg, n) } : { ok: false as const, why: `Give a number of minutes from ${min} to ${max}, in steps of 0.5.` }
 }
+const IDLE_MAX = 240
+const minutesOf = (n: number) => `${n} minute${n === 1 ? '' : 's'}`
+// <N/60> hours, to the nearest half hour ("about").
+const hoursOf = (min: number) => (h => `${h} hour${h === 1 ? '' : 's'}`)(Math.round(min / 30) / 2)
 const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/
 const EVERY: [number, string][] = [[10, 'Every 10 minutes'], [60, 'Every hour'], [UPDATE_EVERY_MIN, 'Once a day']]
 
@@ -129,8 +135,11 @@ export const SETTINGS: Spec[] = [
 		parse: raw => { const [from, to] = raw.trim().split(/\s*-\s*/); return HHMM.test(from ?? '') && HHMM.test(to ?? '') ? set({ quiet: { from, to } }) : { ok: false, why: 'Give two times, such as 20:00-08:00.' } } },
 	{ key: 'tz', label: 'Your time zone', help: 'For work hours (Monday to Friday, 9:00 to 18:00) and the times in notices. Such as Asia/Kolkata.', kind: 'line', section: 'timing',
 		read: c => c.tz ?? Intl.DateTimeFormat().resolvedOptions().timeZone, parse: raw => (validTz(raw.trim()) ? set({ tz: raw.trim() }) : { ok: false, why: 'Give a time zone name, such as Asia/Kolkata or Europe/London.' }) },
-	{ key: 'pollIdle', label: 'Check Teams every', help: 'Minutes, when nothing is happening; during work hours at least every 5. Each check is a quick Teams read, no AI.', kind: 'number', section: 'system', advanced: true,
-		read: c => String((c.poll ?? DEFAULT_POLL).idleMin), parse: raw => numTo(raw, 1, 60, (c, n) => ({ ...c, poll: { ...(c.poll ?? DEFAULT_POLL), idleMin: n } })) },
+	// SETTINGS-IDLE-180 (PM 12:02:02Z final words, PE 11:53:23Z): 1 to 240. The idle interval paces the whole runner's routine work, so the
+	// help says what it paces and what wakes sooner; above 60 the save says what may slow. The watch clause holds with HOST's due-watch companion.
+	{ key: 'pollIdle', label: 'Check Teams every', help: c => `How often ${NAME} does its routine checks (new messages, PR changes, follow-ups) when nothing is going on: about every ${minutesOf((c.poll ?? DEFAULT_POLL).idleMin)} (1 to 240). Some work wakes it sooner: what you approve here, scheduled sends and your watches, and it checks more often for a while after a reply goes out. If you choose 15 minutes or less, it checks about every 5 minutes during your work hours.`, kind: 'number', section: 'system', advanced: true,
+		read: c => String((c.poll ?? DEFAULT_POLL).idleMin), parse: raw => numTo(raw, 1, IDLE_MAX, (c, n) => ({ ...c, poll: { ...(c.poll ?? DEFAULT_POLL), idleMin: n } })),
+		savedLine: raw => (n => n > 60 ? `Saved. When things are quiet, ${NAME} may take up to about ${hoursOf(n)} to notice new messages or PR changes. What you approve here and scheduled sends aren't delayed, and your watches keep their own schedule.` : undefined)(Number(raw.trim())) },
 	// The after-activity pair (owner, 10-23): checking is the owner's to set, never hard-coded.
 	// PM A R39 (ships with HOST's fast-poll change): fast checks start only when a reply goes out; the live values, in his words.
 	{ key: 'pollFast', label: 'After a reply goes out, check every', help: cfg => {
@@ -397,7 +406,7 @@ export async function saveSetting(store: Store, key: string, raw: string, deps: 
 	if (!r.ok) return { ok: false, text: r.why }
 	store.saveConfig(r.save(store.config(), store))
 	store.log({ event: 'setting', key })
-	return { ok: true, text: `${spec.saved ? spec.saved(String(raw)) : `Saved ${spec.label.toLowerCase()}.`} It applies from the next cycle, on every machine.` }
+	return { ok: true, text: spec.savedLine?.(String(raw)) ?? `${spec.saved ? spec.saved(String(raw)) : `Saved ${spec.label.toLowerCase()}.`} It applies from the next cycle, on every machine.` }
 }
 
 // Each target is read from Azure DevOps before it is saved: its project must hold that pipeline ID, and its real name must not be

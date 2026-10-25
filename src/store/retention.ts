@@ -12,7 +12,7 @@ export function sweep(store: Store, days = 30, now = Date.now()): number {
 	for (const wf of store.workflows().filter(w => w.state === 'done' && w.updatedAt < cutoff && !w.redacted)) {
 		rmSync(join(store.root, 'state', 'threads', `${wf.id}.json`), { force: true })
 		Object.assign(wf, {
-			redacted: true, fyi: undefined, lastAsk: undefined, question: undefined, ownerAnswer: undefined, learnAfter: undefined, earlier: undefined, approved: undefined,
+			redacted: true, fyi: undefined, lastAsk: undefined, question: undefined, questionHint: undefined, ownerAnswer: undefined, learnAfter: undefined, earlier: undefined, approved: undefined,
 			draft: wf.draft && { ...wf.draft, text: '' }, status: wf.status.replace(/: ".*$/s, ''),
 			effects: wf.effects?.map(e => ({ ...e, payload: undefined })),
 			sent: wf.sent && { ...wf.sent, text: undefined, sendText: undefined },

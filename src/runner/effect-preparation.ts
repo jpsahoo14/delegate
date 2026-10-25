@@ -36,7 +36,7 @@ export function prepareReportCalls(store: Store, cfg: Config, items: Workflow[],
 	}) }
 	return { report: { ...report, effects: main.effects, ...(choices ? { choices } : {}),
 		...(left.length ? { refused: [...(report.refused ?? []), ...left.filter(draft => draft.type === 'refusal')] } : {}),
-		...(problems.length ? { state: 'needs_human' as const, question: report.question ?? problems.join('\n'),
+		...(problems.length ? { state: 'needs_human' as const, question: report.question ?? problems.join('\n'), questionHint: undefined,
 			todos: [...new Set([...(report.todos ?? []), ...problems])],
 			work: report.work ? { ...report.work, closed: undefined } : undefined } : {}) }, problems, left }
 }
@@ -79,7 +79,7 @@ export function repairPendingEffectCalls(store: Store, consume?: (wf: Workflow, 
 		const commit = recordCommit(wf, () => store.workflow(wf.id), store.save.bind(store))
 		if (wf.job) changes.set(wf.job, [...(changes.get(wf.job) ?? []), ...updates])
 		Object.assign(wf, { effects, ...stateFields(wf, 'needs_human'), approved: undefined, sendAt: undefined, waitingSince: undefined,
-			question: effects.some(e => !e.done && !e.off) ? undefined : problems.join('\n') || undefined,
+			question: effects.some(e => !e.done && !e.off) ? undefined : problems.join('\n') || undefined, questionHint: undefined,
 			status: updates.some(u => u.after) ? 'The comment format was wrong and is fixed. Post them now?' : problems.join('\n'),
 			todos: consume ? wf.todos : [...new Set([...(wf.todos ?? []), ...problems])],
 			revAt: new Date(Math.max(Date.now(), (Date.parse(wf.revAt ?? wf.updatedAt) || 0) + 1)).toISOString() })

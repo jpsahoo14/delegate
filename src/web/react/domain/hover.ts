@@ -29,7 +29,7 @@ const BY_KIND: Record<string, string> = {
 	'approve-again': 'Make the approved changes one more time. Use only if they did not happen the first time.',
 	'todo-done': 'Tick off [{todo}|this to-do]. The work stays open, and nothing is sent.',
 	'todo-row-done': 'Tick off [{todo}|this to-do]. The work stays open, and nothing is sent.',
-	report: `${NAME} drafts your update[ to {name}] from your result. Nothing is sent until you OK it.`,
+	report: `${NAME} drafts your update[ to {name}] from your result. Nothing is sent until you press Send.`,
 	'follow-up': `${NAME} drafts a short follow-up[ to {name}] for your OK. Nothing is sent by itself.`,
 	'classic-work-wait': `Stop asking you about this for 3 days.[ ${NAME} checks again on {date}.]`,
 	'classic-work-close': `End this work. ${NAME} stops following it and closes its parts. Nothing is sent.`,

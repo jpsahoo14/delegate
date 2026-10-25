@@ -1,6 +1,8 @@
 import type { Store } from '../store/state.ts'
 import { counted } from '../store/numbers.ts'
-import { numbers, weekOf, addDays, type Numbers, type WindowKey, type Ev } from '../core/numbers.ts'
+import { statSync } from 'node:fs'
+import { numbers, weekOf, addDays, usageWindow, usageByItem, type Numbers, type WindowKey, type Ev, type UsageWindow, type Use } from '../core/numbers.ts'
+import { NAME } from '../brand.ts'
 import { messageLink } from '../adapters/channels.ts'
 import { listsOf } from './model/numbers.ts'
 import { placeOf } from './model/place.ts'
@@ -14,7 +16,7 @@ import { dayIn } from '../core/schedule.ts'
 // the owner pointed at that never became an item (code missed:<msgId>), with when, and where it is in Teams.
 export type NumbersRow = Omit<DoneRow, 'text' | 'why' | 'notes'>
 export type MissedLink = { at: string; teams?: string }
-export type NumbersPage = Numbers & { rows: Record<string, NumbersRow>; missed: Record<string, MissedLink>; sendKeys?: Record<string, string[][]> }
+export type NumbersPage = Numbers & { rows: Record<string, NumbersRow>; missed: Record<string, MissedLink>; sendKeys?: Record<string, string[][]>; usage?: UsageWindow }
 
 const link = messageLink
 
@@ -87,5 +89,90 @@ export function numbersPage(store: Store, key: WindowKey = 'this', now = new Dat
 		const e = correction && sends.filter(e => e.code === code && (correction.target ? e.msgId === correction.target : e.at <= correction.at)).sort((a, b) => b.at.localeCompare(a.at))[0]
 		return e ? ref(e) : code
 	})]
-	return { ...n, rows, missed, sendKeys }
+	return { ...n, rows, missed, sendKeys, usage: usageWindow(evs, n.window, n.bars.map(b => b.week), tz) }
+}
+
+// COST-USAGE: the AI USE section's words and cells, the same for New and Classic (PM FINAL wording; Designer AU1-AU5).
+// Unknown is a word, never 0; no credit or money figure; the numbers open no rows (PM rule-2 exception).
+export type UsageCell = { text: string; title?: string; unknown?: true }
+export type UsageBarModel = { week: string; label: string; n?: number; height: number; since: boolean; alt: string }
+export type UsageModel = {
+	credits: string; state: 'before' | 'after'; note?: string
+	headline?: string; coverage?: string; unreported?: { text: string; title: string }; bars?: UsageBarModel[]
+	columns: { text: string; title: string }[]; kinds: { label: string; cells: UsageCell[] }[]; models: { label: string; cells: UsageCell[] }[]; total: { cells: UsageCell[]; note?: string }
+}
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+const md = (day: string) => `${MONTHS[Number(day.slice(5, 7)) - 1]} ${Number(day.slice(8, 10))}`
+const runsWord = (n: number) => `${n} AI run${n === 1 ? '' : 's'}`
+const big = (n: number): UsageCell => (n < 1000 ? { text: String(n) } : { text: n < 1e6 ? `${n < 10_000 ? +(n / 1000).toFixed(1) : Math.round(n / 1000)} k` : `${+(n / 1e6).toFixed(1)} M`, title: n.toLocaleString('en-US') })
+const time = (ms: number) => (ms < 60_000 ? `${Math.round(ms / 1000)} s` : ms < 3_600_000 ? `${Math.round(ms / 60_000)} min` : `${+(ms / 3_600_000).toFixed(1)} h`)
+const UNKNOWN: UsageCell = { text: 'unknown', unknown: true }, NOT_COUNTED: UsageCell = { text: 'not counted', unknown: true }
+const tokensOf = (u: Use) => (u.tokensIn !== undefined && u.tokensOut !== undefined ? u.tokensIn + u.tokensOut : undefined)
+const cells = (u: Use, counted = true): UsageCell[] => !counted ? Array.from({ length: 6 }, () => NOT_COUNTED)
+	: [{ text: String(u.runs) }, ...([u.modelCalls, u.tokensIn, u.tokensOut, u.toolCalls].map(v => (v === undefined ? UNKNOWN : big(v)))), u.ms === undefined ? UNKNOWN : { text: time(u.ms) }]
+const COVERAGE = (u: Use) => `Usage reported for ${u.reported} of ${runsWord(u.runs)}`
+export const USAGE_RULE = `Each AI run ${NAME} started, from its own log on all your machines, counted once. A run that didn't report what it used counts as a run, and its numbers read "unknown", never 0. These numbers don't open a list: to see what one item used, open it: it's in its Details.`
+const COLUMNS = [
+	{ text: 'AI runs', title: `AI runs: each time ${NAME} started the AI for a piece of work.` },
+	{ text: 'model calls', title: 'Model calls: the requests the AI sent to its model in those runs.' },
+	{ text: 'input tokens', title: 'Tokens: the amount of text the AI read (input) and wrote (output).' },
+	{ text: 'output tokens', title: 'Tokens: the amount of text the AI read (input) and wrote (output).' },
+	{ text: 'tool calls', title: 'Tool calls: the tools the AI used, such as reading a file or a PR.' },
+	{ text: 'time', title: 'Time: how long the runs took, start to finish.' },
+]
+
+export function usageModel(u: UsageWindow, key: WindowKey, tz?: string): UsageModel {
+	const t = tokensOf(u.total), label = { this: 'This week', last: 'Last week', '4w': 'Last 4 weeks', all: 'Since you started' }[key]
+	const sinceDay = u.since ? dayIn(u.since, tz) : undefined
+	const top = Math.max(1, ...u.bars.map(b => b.use?.runs ?? 0))
+	const missing = u.total.runs - u.total.reported
+	return {
+		credits: `Credits aren't shown: your AI tool doesn't report them. ${NAME} shows the runs and tokens it can count.`,
+		state: u.state,
+		...(u.state === 'before'
+			? { note: sinceDay ? `Owner-reply and promise checks not included before ${md(sinceDay)}.` : `Not fully counted yet: checks of your own replies and promises are included after ${NAME}'s next update.` }
+			: {
+				...(u.clipped && sinceDay ? { note: `Counted since ${md(sinceDay)}` } : {}),
+				headline: `${label}: ${runsWord(u.total.runs)} · ${t === undefined ? 'unknown' : big(t).text} tokens`,
+				coverage: COVERAGE(u.total),
+				...(missing > 0 ? { unreported: { text: `${missing} run${missing === 1 ? '' : 's'} didn't report usage`, title: `Not reported: ${u.missing.join(', ')}.` } } : {}),
+				bars: u.bars.map(b => {
+					const tokens = b.use ? tokensOf(b.use) : undefined
+					return { week: b.week, label: md(b.week), ...(b.use ? { n: b.use.runs } : {}), height: b.use ? Math.round((b.use.runs / top) * 100) : 0, since: !!b.since,
+						alt: b.use ? `Week of ${md(b.week)}: ${runsWord(b.use.runs)}, ${tokens === undefined ? 'tokens unknown' : `${big(tokens).text} tokens`}, usage reported for ${b.use.reported} of ${b.use.runs}${b.since ? `. Counted since ${md(dayIn(b.since, tz))}` : ''}` : `Week of ${md(b.week)}: not counted` }
+				}),
+			}),
+		columns: COLUMNS,
+		kinds: u.kinds.map(k => ({ label: k.label, cells: cells(k.use, k.counted) })),
+		models: u.models.map(m => ({ label: m.label, cells: cells(m.use) })),
+		total: { cells: cells(u.total, u.state === 'after'), ...(u.state === 'after' ? { note: COVERAGE(u.total) } : {}) },
+	}
+}
+
+// AU4 (PM 12:49:18Z): "What it used: <N> AI runs · <tokens> tokens · <time> · <model>" from the runs that reported, with "(<k> runs didn't
+// report usage)" when some didn't; "· usage unknown" only when none did. Never one "unknown" for a partly counted item.
+// None for an item with no attributed runs. Counted once per log change: the snapshot asks every 20 seconds.
+export function usedLine(u: Use & { models: string[] }): string | undefined {
+	if (!u.runs) return undefined
+	if (!u.reported) return `What it used: ${runsWord(u.runs)} · usage unknown`
+	const t = tokensOf(u), missing = u.runs - u.reported
+	return `What it used: ${[runsWord(u.runs), ...(t !== undefined ? [`${big(t).text} tokens`] : []), ...(u.ms !== undefined ? [time(u.ms)] : []), ...u.models.slice(0, 1)].join(' · ')}${missing ? ` (${missing} run${missing === 1 ? '' : 's'} didn't report usage)` : ''}`
+}
+// The snapshot asks every 20 seconds and today's log grows all day, so only this week and last are counted again (review P2-4); the
+// older weeks' runs are kept until one of their files changes (a late sync from another machine).
+const usedCache = new Map<string, { old: string; oldEvs: Ev[]; key: string; lines: Map<string, string> }>()
+export function usedLines(store: Store, now = new Date()): Map<string, string> {
+	const wfs = store.workflows(), from = addDays(weekOf(now.toISOString().slice(0, 10)), -7), files = store.logFiles()
+	const stat = (file: string) => { try { const st = statSync(file); return `${file}:${st.size}:${st.mtimeMs}` } catch { return file } }
+	const keyOf = (recent: boolean) => [...store.numberWeeks().filter(w => (w.week >= from) === recent).map(w => w.file), ...files.filter(f => (weekOf(f.day) >= from) === recent).map(f => stat(f.file))].join('|')
+	const old = keyOf(false), key = [old, keyOf(true), ...wfs.map(w => `${w.id}:${w.job ?? ''}`)].join('|')
+	const had = usedCache.get(store.root)
+	if (had?.key === key) return had.lines
+	const oldEvs = had?.old === old ? had.oldEvs : counted(store).filter(e => e.event === 'run' && weekOf(e.at.slice(0, 10)) < from)
+	const byJob = new Map<string, string[]>()
+	for (const w of wfs) if (w.job) byJob.set(w.job, [...(byJob.get(w.job) ?? []), w.id])
+	const evs = [...oldEvs, ...counted(store, from).filter(e => e.event === 'run')]
+	const lines = new Map([...usageByItem(evs, job => (byJob.get(job)?.length === 1 ? byJob.get(job)![0] : undefined))].flatMap(([id, u]) => { const l = usedLine(u); return l ? [[id, l] as const] : [] }))
+	usedCache.set(store.root, { old, oldEvs, key, lines })
+	return lines
 }

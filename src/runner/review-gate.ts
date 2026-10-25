@@ -122,11 +122,11 @@ export function decline(store: Store, cfg: Config, wf: Workflow, ref: PrRef | un
 	store.log({ event: 'review-declined', workflowId: wf.id, code: wf.code, pr, role: gate.role })
 	const quiet = wf.startedBy === 'room' && gate.role !== 'unread'
 	if (quiet) {
-		Object.assign(wf, { ...stateFields(wf, 'done'), closedBy: 'nothing', status: gate.status, pending: [], question: undefined, draft: undefined, effects: undefined, promised: undefined, job: undefined, reviewDecline: { pr, role: gate.role, at, ask: wf.lastAsk } })
+		Object.assign(wf, { ...stateFields(wf, 'done'), closedBy: 'nothing', status: gate.status, pending: [], question: undefined, questionHint: undefined, draft: undefined, effects: undefined, promised: undefined, job: undefined, reviewDecline: { pr, role: gate.role, at, ask: wf.lastAsk } })
 		return
 	}
 	// With Add me there is no open question: ok makes that one change (an open question would hold ok back).
-	Object.assign(wf, { ...stateFields(wf, 'needs_human'), status: gate.status, question: gate.question || undefined, pending: [], draft: undefined, promised: undefined, effects: gate.addMe ? [gate.addMe] : undefined, reviewDecline: { pr, role: gate.role, at, ask: wf.lastAsk }, revAt: at, newCount: 0,
+	Object.assign(wf, { ...stateFields(wf, 'needs_human'), status: gate.status, question: gate.question || undefined, questionHint: undefined, pending: [], draft: undefined, promised: undefined, effects: gate.addMe ? [gate.addMe] : undefined, reviewDecline: { pr, role: gate.role, at, ask: wf.lastAsk }, revAt: at, newCount: 0,
 		context: gate.note ? [{ label: 'Not reviewing', text: gate.note, tone: 'warn' as const }] : undefined })
 }
 

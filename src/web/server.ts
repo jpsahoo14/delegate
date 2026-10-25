@@ -14,7 +14,7 @@ import { onUpdateApplied, versionInfoLater, versionStatus } from '../os/autoupda
 import { saveSetting, settingsView } from './settings.ts'
 import { adoProbe, type BuildProbe } from '../runner/probe.ts'
 import type { Config } from '../core/types.ts'
-import { numbersPage } from './numbers.ts'
+import { numbersPage, usageModel, USAGE_RULE } from './numbers.ts'
 import { WINDOWS, type WindowKey } from '../core/numbers.ts'
 import { nextView } from './next.ts'
 import { reactAsset, reactPage, snapshotPage, SNAPSHOT_TEMPLATE } from './react-build.ts'
@@ -154,7 +154,7 @@ export async function serveInbox(get: () => Store, port = 0, token = randomBytes
 				if (!(WINDOWS as string[]).includes(key)) { json(422, { text: 'Choose a supported Numbers window.' }); return }
 				try {
 					const page = readScope(() => numbersPage(get(), key as WindowKey))
-					json(200, { model: numbersModel(page, NAME), lists: listsOf(page), rows: page.rows, missed: page.missed, rules: NUMBER_RULES(NAME) })
+					json(200, { model: numbersModel(page, NAME), lists: listsOf(page), rows: page.rows, missed: page.missed, rules: { ...NUMBER_RULES(NAME), usage: USAGE_RULE }, ...(page.usage ? { usage: usageModel(page.usage, key as WindowKey, get().config()?.tz) } : {}) })
 				} catch (error) { failure(error) }
 				return
 			}

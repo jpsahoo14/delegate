@@ -173,11 +173,11 @@ async function applyOne(store: Store, src: Source, cfg: Config, wf: Workflow, a:
 		if (job) {
 			Object.assign(job, { state: 'queued', purpose: 'work', retry: undefined, nextAt: undefined, error: undefined, run: undefined, session: { ...job.session, id: randomUUID() } })
 			store.saveJob(job)
-			Object.assign(wf, { job: job.id, ...stateFields(wf, 'waiting_on_task'), runFailed: undefined, statusReason: undefined, reviewAgain: undefined, question: undefined, status: `Working: ${job.goal}`, waitingSince: new Date().toISOString() })
+			Object.assign(wf, { job: job.id, ...stateFields(wf, 'waiting_on_task'), runFailed: undefined, statusReason: undefined, reviewAgain: undefined, question: undefined, questionHint: undefined, status: `Working: ${job.goal}`, waitingSince: new Date().toISOString() })
 			commit()
 			return reply(store, src, a, `${MARK} Trying ${wf.code} again. You'll see what it finds first.`)
 		}
-		Object.assign(wf, { ...stateFields(wf, 'running'), runFailed: undefined, statusReason: undefined, reviewAgain: undefined, question: undefined, status: 'Trying again', pending: wf.pending.length ? wf.pending : wf.msgIds.slice(-1) })
+		Object.assign(wf, { ...stateFields(wf, 'running'), runFailed: undefined, statusReason: undefined, reviewAgain: undefined, question: undefined, questionHint: undefined, status: 'Trying again', pending: wf.pending.length ? wf.pending : wf.msgIds.slice(-1) })
 		commit()
 		return reply(store, src, a, `${MARK} Trying ${wf.code} again. You'll see the draft first.`)
 	}
@@ -311,7 +311,7 @@ async function applyOne(store: Store, src: Source, cfg: Config, wf: Workflow, a:
 				// A live check keeps running; the answer is picked up by one more run right after it (tester 06-07 P1-3).
 				Object.assign(job, { asks: [...job.asks, `Owner: ${a.text}`], ...(job.state === 'running' ? {} : { state: 'queued', purpose: 'work' }) })
 				store.saveJob(job)
-				Object.assign(wf, { ...stateFields(wf, 'waiting_on_task'), statusReason: undefined, reviewAgain: undefined, question: undefined, status: 'Checking again with your answer', waitingSince: new Date().toISOString() })
+				Object.assign(wf, { ...stateFields(wf, 'waiting_on_task'), statusReason: undefined, reviewAgain: undefined, question: undefined, questionHint: undefined, status: 'Checking again with your answer', waitingSince: new Date().toISOString() })
 				break
 			}
 			// "tested" (or a time window), or a result from Report, on validate work: its job reads the results for that window and drafts
@@ -320,7 +320,7 @@ async function applyOne(store: Store, src: Source, cfg: Config, wf: Workflow, a:
 				const job = store.job(wf.job)!
 				Object.assign(job, { asks: [...job.asks, testedAsk(homeOf(store, wf), a.text!)], ...(job.state === 'running' ? {} : { state: 'queued', purpose: 'work', error: undefined }) })
 				store.saveJob(job)
-				Object.assign(wf, { ...stateFields(wf, 'waiting_on_task'), statusReason: undefined, reviewAgain: undefined, question: undefined, status: 'Reading the results of your test and drafting the report', waitingSince: new Date().toISOString() })
+				Object.assign(wf, { ...stateFields(wf, 'waiting_on_task'), statusReason: undefined, reviewAgain: undefined, question: undefined, questionHint: undefined, status: 'Reading the results of your test and drafting the report', waitingSince: new Date().toISOString() })
 				break
 			}
 			Object.assign(wf, { ownerAnswer: a.text, ...stateFields(wf, 'running'), statusReason: undefined, reviewAgain: undefined, status: 'Redrafting with your answer' })
@@ -333,7 +333,7 @@ async function applyOne(store: Store, src: Source, cfg: Config, wf: Workflow, a:
 			const original = wf.learnAfter?.draft ?? wf.draft?.text
 			wf.ownerSend = undefined; clearHold(wf)
 			// An edit is never approved: a scheduled automatic send is cancelled and waits for ok (final review P0-3).
-			Object.assign(wf, { ...stateFields(wf, 'needs_human'), sendAt: undefined, approved: undefined, runFailed: undefined, statusReason: undefined, reviewAgain: undefined, draft: { ...(wf.draft ?? { commitment: false, sources: [] }), text: a.text!, preview: true, byOwner: true, ownWords: ownWords(wf, a.text!) }, question: undefined, revAt: new Date().toISOString(), status: 'Edited by you', learnAfter: original ? { draft: original, sent: a.text! } : undefined })
+			Object.assign(wf, { ...stateFields(wf, 'needs_human'), sendAt: undefined, approved: undefined, runFailed: undefined, statusReason: undefined, reviewAgain: undefined, draft: { ...(wf.draft ?? { commitment: false, sources: [] }), text: a.text!, preview: true, byOwner: true, ownWords: ownWords(wf, a.text!) }, question: undefined, questionHint: undefined, revAt: new Date().toISOString(), status: 'Edited by you', learnAfter: original ? { draft: original, sent: a.text! } : undefined })
 			commit()
 			store.markShown([wf])
 			const left = pendingEffects(wf.effects)
@@ -402,7 +402,7 @@ async function applyOne(store: Store, src: Source, cfg: Config, wf: Workflow, a:
 				// The owner's own words already went (Slice 3). A closed PR leaves nothing to make, so the item rests; a PR that moved
 				// asks to review again, as a new turn whose vote and reply both wait for ok (re-review P1-3, P2-2).
 				if (!pendingEffects(wf.effects).length) { const why = wf.status; rest(store, wf); commit(); return reply(store, src, a, `${MARK} Not done ${wf.code}: ${why}. Nothing was changed; its reply already went.`) }
-				if (wf.reviewAgain) { const keep = { question: wf.question, status: wf.status, reviewAgain: wf.reviewAgain }; newTurn(wf); Object.assign(wf, { ...keep, promise: undefined, ...stateFields(wf, 'needs_human'), revAt: new Date().toISOString() }) }
+				if (wf.reviewAgain) { const keep = { question: wf.question, questionHint: wf.questionHint, status: wf.status, reviewAgain: wf.reviewAgain }; newTurn(wf); Object.assign(wf, { ...keep, promise: undefined, ...stateFields(wf, 'needs_human'), revAt: new Date().toISOString() }) }
 			}
 			if (stale) { commit(); store.markShown([wf]); return reply(store, src, a, `${MARK} ${stale}`, true) }
 			const held = approveEffects(store, cfg, wf, !!a.again)
@@ -506,7 +506,7 @@ async function groupAnswer(store: Store, src: Source, wf: Workflow, a: Answer, s
 		store.saveConfig(updated)
 		return updated
 	})
-	Object.assign(wf, { groupAsk: undefined, question: undefined, revAt: new Date().toISOString() })
+	Object.assign(wf, { groupAsk: undefined, question: undefined, questionHint: undefined, revAt: new Date().toISOString() })
 	commit()
 	store.log({ event: 'group-answer', code: wf.code, pr: ask.pr, selected: selected.length, groups: ask.groups.length })
 	const live = probe ?? adoProbe(cfg)
@@ -546,7 +546,7 @@ function pick(store: Store, cfg: Config, wf: Workflow, a: Answer): string | unde
 		}
 		const effects = v ? proposalEffects(v.effects.filter(e => !busy || !isDeploy(e.call)), [wf]) : own ? undefined : wf.effects
 		const candidate: Workflow = { ...wf, draft: { ...(wf.draft ?? { commitment: false, sources: [] }), text: o.reply ?? '', preview: true, byOwner: undefined, ownWords: undefined },
-			learnAfter: undefined, effects, question: v?.todos.length ? refusedAsk(wf.code, v.todos.length) : undefined,
+			learnAfter: undefined, effects, question: v?.todos.length ? refusedAsk(wf.code, v.todos.length) : undefined, questionHint: undefined,
 			picked: nums, revAt: now, status: `You picked "${o.label}"` }
 		if (job && effects !== wf.effects || !job && effects?.length) {
 			const held = carry(store, cfg, candidate, effects ?? [])

@@ -41,6 +41,15 @@ export const numbersSchema = z.object({
 	rules: z.record(text, text),
 	lists: z.record(text, z.object({ title: text, groups: z.array(z.object({ title: optional, codes: strings, keys: strings.optional() })) })),
 	rows: z.record(text, numberRow), missed: z.record(text, z.object({ at: text, teams: optional })),
+	usage: z.object({
+		credits: text, state: z.enum(['before', 'after']), note: optional, headline: optional, coverage: optional,
+		unreported: z.object({ text, title: text }).optional(),
+		bars: z.array(z.object({ week: text, label: text, n: z.number().optional(), height: z.number(), since: z.boolean(), alt: text })).optional(),
+		columns: z.array(z.object({ text, title: text })),
+		kinds: z.array(z.object({ label: text, cells: z.array(z.object({ text, title: optional, unknown: z.literal(true).optional() })) })),
+		models: z.array(z.object({ label: text, cells: z.array(z.object({ text, title: optional, unknown: z.literal(true).optional() })) })),
+		total: z.object({ cells: z.array(z.object({ text, title: optional, unknown: z.literal(true).optional() })), note: optional }),
+	}).optional(),
 })
 export type Settings = z.infer<typeof settingsSchema>
 export type Numbers = z.infer<typeof numbersSchema>

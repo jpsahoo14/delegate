@@ -47,7 +47,7 @@ export function Entry({ row: supplied, fresh = false, grouped = false, compact =
 		const expanded = open || row.noteIds.some(id => entities.notes[id].answer === undefined)
 		const item = entities.items[row.code], ask = item?.actionIds.map(id => entities.actions[id]).find(action => action.kind === 'ask')
 		const reopen = row.kind === 'closed' ? item?.actionIds.map(id => entities.actions[id]).find(action => action.kind === 'reopen') : undefined
-		const expandable = !!row.text || !!reopen
+		const expandable = !!row.text || !!reopen || !!row.used
 		const searched = row.why?.searched ?? item?.why.searched ?? []
 		const where = row.sentence.match(/ in (.+)$/)?.[1]
 		const exchange = reply && (row.ask || row.said) ? <>{row.ask ? <span className="qa"><strong>{person.name.split(' ')[0]} asked:</strong> 		{messageText(row.ask)}</span> : <strong>{row.sentence}</strong>}{row.said && <span className="qa you"><strong>You{row.inTeams ? ' (in Teams)' : ''}:</strong> {row.said}</span>}</> : <><strong>{row.sentence}</strong>{(row.gist || row.said) && <span className="gist">{row.gist ?? `“${row.said}”`}</span>}</>
@@ -78,6 +78,7 @@ export function Entry({ row: supplied, fresh = false, grouped = false, compact =
 					const note = entities.notes[id]
 					return <div key={id}><p><strong>You:</strong> {note.question}</p><p>{note.answer === '' ? 'The answer contained only chat instructions. Review the item or ask a follow-up.' : note.answer ?? 'Waiting for an answer...'}</p><Sources ids={note.sourceIds} entities={entities} /><Button variant="ghost" disabled={newer || blocked || busy} onClick={() => askThread.current?.querySelector<HTMLElement>('[data-field=ask]')?.focus()}>Ask more</Button></div>
 				})}<Field code={row.code} rev={rev} field="ask" label={`Ask ${NAME} about ${row.code}`} value={ui.ask ?? ''} edit={edit} rows={2} /><ActionButton action={ask} input={{ text: ui.ask }} disabled={!ui.ask?.trim() || newer || blocked} /></section>}
+				{row.used && <p className="muted done-used">{row.used}</p>}
 			</div>}
 			{watchForm}<ActionState item={row.code} rev={rev} />
 		</article>
@@ -101,7 +102,7 @@ export function Entry({ row: supplied, fresh = false, grouped = false, compact =
 		{actions.length > 0 && <ActionState item={actions[0].item} rev={actions[0].rev} />}
 		{open && <><div className="draft">{row.text ?? row.said ?? row.sentence}</div>
 			{row.why && <details><summary>Why</summary><p>{row.why.reason}</p>{row.sourceIds.map(id => <p key={id}>{entities.sources[id].kind}: {entities.sources[id].label}</p>)}</details>}
-			{entities.items[row.code] && <ItemCard code={row.code} />}
+			{entities.items[row.code] ? <ItemCard code={row.code} /> : row.used && <p className="muted">{row.used}</p>}
 		</>}
 	</article>
 }

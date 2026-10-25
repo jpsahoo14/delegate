@@ -85,6 +85,7 @@ export function ActivityRow({ supplied, first = false, last = false }: { supplie
 					</fieldset>}
 				</section>}
 				{askActions.some(action => action.kind === 'ask') || notes.length ? <Conversation code={row.code} rev={rev} ui={ui} edit={edit} notes={notes} entities={noteEntities} actions={askActions} blocked={blocked || newer} sent allowUse={false} /> : null}
+				{row.used && <p className="classic-activity-meta classic-used">{row.used}</p>}
 			</div>
 		</details> : <><div className="classic-activity-row">{header}</div>{row.checks?.map((check, index) => <p key={index} className="classic-activity-meta classic-check">{check}</p>)}{posted}</>}
 		{(newer || blocked) && <div className="classic-activity-notice" role="status">This activity changed. Your text is kept. <Button variant="outline" disabled={busy} onClick={showLatest}>Review current version</Button></div>}

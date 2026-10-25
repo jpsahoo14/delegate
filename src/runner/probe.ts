@@ -296,7 +296,7 @@ export async function probePRs(store: Store, cfg: Config, probe: BuildProbe | un
 		const declined = w.reviewDecline
 		if (!subjects && declined && declined.pr === ref.id && declined.role !== 'not-asked' && (MAY_REVIEW.includes(w.prRole) || declined.role === 'unread') && /^active$/i.test(st.status) && now - Date.parse(declined.at) < 7 * 86_400_000) {
 			Object.assign(w, { ...stateFields(w, 'running'), status: MAY_REVIEW.includes(w.prRole) ? `You're a reviewer on PR ${ref.id} now; starting the review` : `PR ${ref.id} can be read again; checking whether you are a reviewer`,
-				reviewDecline: undefined, question: undefined, context: w.context?.filter(c => c.label !== 'Not reviewing'), effects: (w.effects ?? []).filter(e => !isAddMe(e)), pending: w.pending.length ? w.pending : w.msgIds.slice(-1) })
+				reviewDecline: undefined, question: undefined, questionHint: undefined, context: w.context?.filter(c => c.label !== 'Not reviewing'), effects: (w.effects ?? []).filter(e => !isAddMe(e)), pending: w.pending.length ? w.pending : w.msgIds.slice(-1) })
 			store.log({ event: 'review-gate-reopened', code: w.code, pr: ref.id, role: w.prRole, was: declined.role })
 			commitFor(w)()
 			n++
@@ -343,7 +343,7 @@ function closeReviewItem(store: Store, w: Workflow, reason: string, now: number)
 	}
 	// Keep the sent reply, comment receipts and proposal history for the Done card.
 	close(w, reason)
-	Object.assign(w, { closedBy: 'nothing', question: undefined, groupAsk: undefined, heldVotes: undefined, reviewDecline: undefined,
+	Object.assign(w, { closedBy: 'nothing', question: undefined, questionHint: undefined, groupAsk: undefined, heldVotes: undefined, reviewDecline: undefined,
 		reviewAgain: undefined, statusReason: undefined, approved: undefined, sendAt: undefined, waitingSince: undefined,
 		runFailed: undefined, promise: undefined, revAt: at })
 }
@@ -389,6 +389,7 @@ function regateVotes(store: Store, cfg: Config, w: Workflow, ref: PrRef, st: PrS
 		}
 		w.groupAsk = groups.length ? { pr: ref.id, groups } : undefined
 		w.question = w.groupAsk ? groupQuestion(w.groupAsk) : undefined
+		w.questionHint = undefined
 	}
 	const ours = (e: Effect) => !!pendingEffects([e]).length && isVote(e.call) && prIdOf(e.call) === ref.id
 	const votes = (w.effects ?? []).filter(ours)
@@ -409,6 +410,7 @@ function regateVotes(store: Store, cfg: Config, w: Workflow, ref: PrRef, st: PrS
 		if (ask) {
 			w.groupAsk = { pr: ref.id, groups }
 			w.question = groupQuestion(w.groupAsk)
+			w.questionHint = undefined
 		}
 		if (votes.length || ask) store.log({ event: 'vote-regated', code: w.code, pr: ref.id, role: w.prRole, votes: votes.length, asked: ask ? groups.length : 0 })
 		return
@@ -418,7 +420,7 @@ function regateVotes(store: Store, cfg: Config, w: Workflow, ref: PrRef, st: PrS
 	if (held?.pr !== ref.id) return
 	setEffects(store, w, es => [...(es ?? []).filter(e => !isAddMe(e) && !ours(e)), ...held.effects])
 	allowLeft(w, held.effects)
-	if (w.groupAsk?.pr === ref.id) { w.groupAsk = undefined; w.question = undefined }
+	if (w.groupAsk?.pr === ref.id) { w.groupAsk = undefined; w.question = undefined; w.questionHint = undefined }
 	w.heldVotes = undefined
 	store.log({ event: 'vote-restored', code: w.code, pr: ref.id, role: w.prRole, votes: held.effects.length })
 }
@@ -465,7 +467,7 @@ export async function recheckPr(store: Store, w: Workflow, probe?: BuildProbe): 
 	}
 	const head = left.find(e => isVote(e.call))?.head
 	if (head && !sameHead(st.head, head)) {
-		Object.assign(w, { question: reviewAgain(code, `PR ${id} changed since your review (new commits).`), status: `PR ${id} changed since your review`, reviewAgain: { pr: id, head: st.head ?? head, at: new Date().toISOString() }, revAt: new Date().toISOString() })
+		Object.assign(w, { question: reviewAgain(code, `PR ${id} changed since your review (new commits).`), questionHint: undefined, status: `PR ${id} changed since your review`, reviewAgain: { pr: id, head: st.head ?? head, at: new Date().toISOString() }, revAt: new Date().toISOString() })
 		return `Not done ${code}: ${reviewAgain(code, `PR ${id} changed since your review (new commits).`)} Nothing was changed or sent.`
 	}
 	if (!before.length) {

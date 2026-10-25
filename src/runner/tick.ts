@@ -25,6 +25,7 @@ import { dueSends } from './autosend.ts'
 import { daily } from './daily.ts'
 import { dueAutomations } from './automations.ts'
 import { checkJobs, executeDirect, legacyEffects, realProcs, settleCompleted, startJobs, type Procs } from './jobs.ts'
+import { watchDeadline } from './track.ts'
 import type { Caller } from './change.ts'
 import { checkOpen } from './continue.ts'
 import { pruneSessionNotes } from './own.ts'
@@ -342,10 +343,12 @@ export async function stayAwake(store: Store, until: number, deps: Parameters<ty
 function reschedule(store: Store, cfg: Config, startedMs: number) {
 	recordSentReplyActivity(store)
 	const s = plan(store.schedule(), new Date(startedMs), { ...DEFAULT_POLL, ...cfg.poll }, false, cfg.tz)
-	// A scheduled reply or reminder is due at its minute, not at the next idle poll.
+	const jobs = store.jobs(), now = Date.now()
+	// A scheduled reply, reminder or active watch is due at its minute, not at the next idle poll.
 	// So is a retry: "again in 2 minutes" means 2 minutes.
 	const due = [...store.workflows().filter(w => w.state === 'scheduled' && w.sendAt && Date.parse(w.sendAt) > Date.now()).map(w => w.sendAt!),
-		...store.automations().filter(a => a.state === 'active' && a.next).map(a => a.next!), ...store.jobs().filter(j => j.retry && j.state === 'queued' && Date.parse(j.retry.at) > Date.now()).map(j => j.retry!.at)].sort()[0]
+		...store.automations().filter(a => a.state === 'active' && a.next).map(a => a.next!), ...jobs.filter(j => j.retry && j.state === 'queued' && Date.parse(j.retry.at) > Date.now()).map(j => j.retry!.at),
+		...jobs.map(j => watchDeadline(store, cfg, j, now)).filter((at): at is string => at !== undefined)].sort()[0]
 	store.saveSchedule(due && s.nextAt && due < s.nextAt ? { ...s, nextAt: due } : s)
 }
 

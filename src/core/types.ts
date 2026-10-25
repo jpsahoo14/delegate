@@ -214,7 +214,7 @@ export type Workflow = {
 	prRead?: string
 	prReadAt?: string
 	prUnknown?: true
-	prAnchor?: { pr: number; msgId: string; at: string }
+	prAnchor?: { pr: number; msgId: string; at: string; also?: number[] }
 	// The owner's place on the item's PR at the last read, and why a review was not started (PR review gate, owner rule 10-23).
 	prRole?: PrRole
 	prGroups?: string[]

@@ -1,5 +1,28 @@
 # Engine fixes
 
+2026-10-25 (measurable usage logging, 0.2.47 HOST): Keep a run kind even without reported usage;
+record owner-reply and promise checks, and classify rule compilation. Missing measurements stay absent.
+The clean usage-first line excludes deferred WDD work; New's aggregated view is the required same-cut companion.
+
+2026-10-25 (Settings idle/watch companion, 0.2.47 HOST): Future active watch deadlines participate
+in the existing earliest-due runner schedule, so a longer quiet interval does not stretch the watch.
+Stopped and past-due/blocked guards prevent extra wake loops; cadence and health policy stay unchanged.
+
+2026-10-25 (decision 56, 0.2.47 HOST): The existing no-news check can see a known asker's activity routed
+to another item in the same chat. One id-matched news step per target, at the actual message time;
+no wake, pending/state/question change, automatic closure or old-data repair.
+
+2026-10-25 (H1 question-hint application, 0.2.47 HOST): Persist sanitised answer hints with their own report
+question in reply, work-result and short-of-goal paths. Clear stale hints on owned question transitions,
+previews and no-question results. No old-data rewrite; New's typed-answer consumer remains a same-cut pair.
+
+2026-10-25 (structured other-PR data, 0.2.47 HOST): Freeze other named PR numbers in the original join anchor
+instead of replaceable report context. Existing whole-anchor clearing removes them; no target/guard or old-data rewrite.
+New's paired renderer is required in the same cut.
+
+2026-10-25 (C4, 0.2.47 engine): A work check waiting on the owner offers reporting the result, the existing
+three-day wait, or closure instead of nudging the asker. Other-person questions and all trigger/timing rules stay unchanged.
+
 2026-10-25 (Left-for-you skip correction): Dismissing only a reply on open work keeps its tasks. Tasks clear only
 on the skip path that actually closes the item or stops its tracker; no stored history or UI behavior is rewritten.
 

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { agentSetupFailure } from '../core/agent-failure.ts'
+import { ran } from '../core/runinfo.ts'
 import { ulid } from '../core/ids.ts'
 import { RuleCompileSchema, ruleTextHash, type RuleLine } from '../core/rule-lines.ts'
 import type { Config } from '../core/types.ts'
@@ -29,7 +30,7 @@ export async function compileRule(store: Store, cfg: Config, line: RuleLine, run
 			prompt: buildRulePrompt(line, cfg, accounts), cwd, mcpConfigPath, extraTools: [], dirs: [],
 		})
 		store.log({ event: 'rule-compile-run', id: line.id, runId, sessionId: result.sessionId ?? sessionId, textHash: expectedTextHash,
-			exitCode: result.exitCode, ms: result.ms, via: result.via, warm: result.warm, error: result.error, ...result.used })
+			exitCode: result.exitCode, ms: result.ms, via: result.via, warm: result.warm, error: result.error, ...ran('rule', result.used) })
 		const setupRefusal = (): RuleWriteResult | undefined => {
 			const setup = result.setup ?? agentSetupFailure(`${result.error ?? ''}\n${result.summary ?? ''}`)
 			if (!setup) return undefined

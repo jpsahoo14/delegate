@@ -6,7 +6,7 @@ import { scrub } from './secrets.ts'
 
 export type Model = { id: string; name?: string }
 export type RunUse = { models?: Model[]; modelCalls?: number; modelMs?: number; tokensIn?: number; tokensOut?: number; toolCalls?: number; toolMs?: number; startMs?: number }
-export type RunKind = 'draft' | 'review' | 'ask' | 'change' | 'job' | 'reminder'
+export type RunKind = 'draft' | 'review' | 'ask' | 'change' | 'job' | 'reminder' | 'owner-reply' | 'promise' | 'rule'
 
 // A model ID has no spaces; a display name is a few words. Anything else is not a model name, whatever field it came in.
 const ID = /^[A-Za-z0-9][\w.:/@+-]{0,79}$/
@@ -119,12 +119,12 @@ export function readRun(out: string, startedAt?: number, env: NodeJS.ProcessEnv 
 	} catch { return { use: {} } }
 }
 
-/** The fields for a run's log event: none when the run said nothing. */
-export function ran(kind: RunKind, use?: RunUse): Record<string, unknown> {
-	return use && Object.keys(use).length ? { ...use, runKind: kind } : {}
+/** The run kind is always recorded; usage fields stay absent when the run reported none. */
+export function ran(kind: RunKind, use?: RunUse): RunUse & { runKind: RunKind } {
+	return { ...use, runKind: kind }
 }
 
-const KINDS: [RunKind, string][] = [['draft', 'Drafts'], ['review', 'Reviews'], ['ask', 'Asks'], ['change', 'Changes you approved'], ['job', 'Tracking and other jobs'], ['reminder', 'Replies to your reminders']]
+const KINDS: [RunKind, string][] = [['draft', 'Drafts'], ['review', 'Reviews'], ['ask', 'Asks'], ['change', 'Changes you approved'], ['job', 'Tracking and other jobs'], ['reminder', 'Replies to your reminders'], ['owner-reply', 'Checking your own replies'], ['promise', 'Checking promises'], ['rule', 'Reading your rules']]
 type Run = { runId?: string; kind: RunKind; models: Model[]; ms?: number; modelMs?: number; toolMs?: number; startMs?: number }
 
 // The runs among log events that recorded a model. Old events, without the fields, are not runs here.

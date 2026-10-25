@@ -42,6 +42,6 @@ export function keepApprovedDraft(wf: Workflow, reason: string) {
 	const messages: { id: string; text: string; at: string }[] = []
 	setHoldReasons(wf, [...holdReasons(wf).filter(r => r.kind !== 'no-reply-needed'), { kind: 'no-reply-needed', why: reason, digest: reviewDigest(wf, messages) }])
 	wf.holdCheckPending = true
-	Object.assign(wf, { ...stateFields(wf, 'needs_human'), question: undefined, choices: undefined, sendAt: undefined, approved: undefined,
+	Object.assign(wf, { ...stateFields(wf, 'needs_human'), question: undefined, questionHint: undefined, choices: undefined, sendAt: undefined, approved: undefined,
 		closedBy: undefined, status: `Delegate thinks no reply is needed now: ${reason}. Your approved draft is kept. Send anyway or Skip.` })
 }

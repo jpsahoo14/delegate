@@ -11,7 +11,7 @@ import { when, time } from '../domain/time.ts'
 import { revisionKey, type Entities, type Placement } from '../domain/contracts.ts'
 import { Icon } from '../components/ui/icon.tsx'
 import { ViewportList } from '../components/ViewportList.tsx'
-import { messageText, sentAt, whereOf } from './ItemCard.tsx'
+import { firstName, messageText, sentAt, whereOf } from './ItemCard.tsx'
 import { SentTime } from './SentTime.tsx'
 import { CODE, ItemCode } from './ItemCode.tsx'
 import { busyWords } from '../data/busy.ts'
@@ -68,7 +68,8 @@ function LocalRowControls({ row, open, toggle }: { row: Placement; open: boolean
 	if (!primary || primary.effect !== 'local') return <Button variant={row.section === 'move' && !open ? 'default' : 'outline'} onClick={toggle} aria-expanded={open}>{open ? 'Hide' : 'Open'}</Button>
 	return <>
 		{/* No free text on a row (spec S2): Update opens the card, whose form says what happened. */}
-		{primary.input === 'text' ? <Button variant={open ? 'outline' : 'default'} onClick={toggle} aria-expanded={open} title={row.kind === 'your-step' ? 'Open the form to say how your step went. Nothing is sent.' : undefined}>{open ? 'Hide' : row.kind === 'your-step' ? 'Update' : 'Open'}</Button>
+		{/* C4: an owner-wait check-date row's form button says what it does (PM round 3/4), with the Designer's S7 hover. */}
+		{primary.input === 'text' ? <Button variant={open ? 'outline' : 'default'} onClick={toggle} aria-expanded={open} title={row.kind === 'your-step' ? 'Open the form to say how your step went. Nothing is sent.' : row.kind === 'check-date' ? `Opens a short form: how it went and what you saw. ${NAME} then drafts your update${card.item && card.entities ? ` to ${firstName(card.entities.people[card.item.personId]?.name ?? '')}` : ''}.` : undefined}>{open ? 'Hide' : row.kind === 'your-step' ? 'Update' : row.kind === 'check-date' ? primary.label : 'Open'}</Button>
 			: <ActionButton action={primary} primary={row.section === 'move'} disabled={card.newer && primary.staleness === 'exact'} />}
 		{actions.filter(action => action.id !== primary.id && !action.input).map(action => <ActionButton key={action.id} action={action} disabled={card.newer && action.staleness === 'exact'} />)}
 		{card.newer && <Button variant="outline" onClick={toggle}>Review newer version</Button>}

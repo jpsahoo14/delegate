@@ -1,6 +1,7 @@
 import { stateFields, WORKFLOW_SCHEMA } from '../core/upgrades.ts'
 import { randomUUID } from 'node:crypto'
-import type { Follow, Job, Workflow } from '../core/types.ts'
+import type { Config, Follow, Job, Workflow } from '../core/types.ts'
+import { activeAgentHold } from '../core/agent-failure.ts'
 import { ulid } from '../core/ids.ts'
 import type { Store } from '../store/state.ts'
 import { slug } from '../knowledge/format.ts'
@@ -157,6 +158,15 @@ export function stopWatch(store: Store, wf: Workflow) {
 
 export const isTracker = (job: Job) => !!job.every
 
+export function watchDeadline(store: Store, cfg: Config, job: Job, now: number): string | undefined {
+	const at = Date.parse(job.nextAt ?? '')
+	if (!job.every || job.state !== 'done' || job.relay || job.retry || !Number.isFinite(at) || at <= now) return undefined
+	const item = job.parents.map(id => store.workflow(id)).find(w => w && w.state !== 'done')
+	if (!item || item.work?.watch !== job.id && item.state !== 'waiting_on_task') return undefined
+	if (store.control().stopped || activeAgentHold(store.agentHold(), cfg.agent, now) || store.runsToday() >= (cfg.dailyRuns ?? 200)) return undefined
+	return job.nextAt
+}
+
 // Trackers whose next check is due go back in the queue; a tracker nobody watches any more stops (R-TRK-01).
 export function dueTrackers(store: Store, now = Date.now()) {
 	for (const job of store.jobs().filter(j => j.every && j.state === 'done' && j.nextAt && Date.parse(j.nextAt) <= now)) {
@@ -166,7 +176,7 @@ export function dueTrackers(store: Store, now = Date.now()) {
 		if (job.endsAt && Date.parse(job.endsAt) <= now) {
 			Object.assign(job, { every: undefined, nextAt: undefined }); store.saveJob(job)
 			// The end of a watch is not the end of the work: the owner decides what next (review P0.2).
-			if (work) { watchEnded(item, `The watch on ${watchSubject(job)} ended after ${FOLLOW_DAYS} days`); store.save(item); continue }
+			if (work) { watchEnded(item, `The watch on ${watchSubject(job)} ended after ${FOLLOW_DAYS} days`, store); store.save(item); continue }
 			Object.assign(item, { ...stateFields(item, 'done'), status: item.watchBy ? `Stopped watching: it was due by ${item.watchBy}. Say "watch …" to start again.` : `Stopped watching after ${FOLLOW_DAYS} days. Say "watch …" to start again.` }); store.save(item)
 			continue
 		}
