@@ -12,6 +12,7 @@ import { freshRead } from '../store/fs.ts'
 import { recordCommit } from './commit.ts'
 import { stateFields, statusFields } from '../core/upgrades.ts'
 import { hourlyCap } from '../core/limits.ts'
+import { telemetryEvent } from '../core/telemetry.ts'
 
 const policy = (cfg: Config) => ({ ...DEFAULT_POLICY, ...cfg.policy })
 // What the owner's rules are judged with for this item: the page's "why it waited" uses the same (#33).
@@ -131,6 +132,7 @@ async function ack(store: Store, src: Source, cfg: Config, wf: Workflow, ruleId?
 		const { msgId } = await src.send(wf.chat.id, text)
 		store.addSent(msgId, text)
 		store.addAuto(wf.chat.id, 'ack')
+		store.log(telemetryEvent('marker', { code: wf.code, applied: true, why: 'auto' }))
 		store.log({ event: 'ack', workflowId: wf.id, code: wf.code, rule: ruleId, byRule: ruleId, msgId })
 	}
 }

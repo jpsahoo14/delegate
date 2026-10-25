@@ -69,7 +69,7 @@ export default function Focus() {
 					<span className="classic-pager-spacer" /><Button variant="ghost" aria-label="Keyboard shortcuts" onClick={() => setHelp(true)}><Icon name="key" /></Button>
 				</div>
 				<ClassicCard key={code} code={code} fallback={visit.snapshots[code]} />
-				{incoming.includes(code) && <div className="classic-key-hints"><span><kbd>j</kbd> next</span><span><kbd>k</kbd> previous</span><span><kbd>⌘</kbd><kbd>↵</kbd> {primary?.label.toLowerCase() ?? 'send'}</span><span><kbd>a</kbd> ask</span><span><kbd>l</kbd> later</span><span><kbd>?</kbd> all keys</span></div>}
+				{incoming.includes(code) && <div className="classic-key-hints"><span><kbd>k</kbd> next</span><span><kbd>j</kbd> previous</span><span><kbd>⌘</kbd><kbd>↵</kbd> {primary?.label.toLowerCase() ?? 'send'}</span><span><kbd>a</kbd> ask</span><span><kbd>l</kbd> later</span><span><kbd>?</kbd> all keys</span></div>}
 			</section></div>}
 	</>
 }

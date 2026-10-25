@@ -108,6 +108,9 @@ export function ActionButton({ action, input, primary = false, disabled = false,
 	const online = useOnline(), snapshot = useSnapshot(), describedBy = useId()
 	const off = disabled || busy || window.expired || alreadySubmitted || presentation.unavailable || !!unavailable
 	const label = shownLabel ?? presentation.label
+	// PE 01:13:27Z nit 4 (0.2.46): a countdown's label changes on a timer ("Undo 0:42", then "Undo window closed"), so the button
+	// reserves its widest label at mount (tabular digits, the closed wording) and later relabels swap in place, moving nothing beside it.
+	const [sizers] = useState(() => action.expiresAt ? ['Undo window closed', `${label}${window.countdown ? ` ${window.countdown.replace(/\d/g, '0')}` : ''}`] : undefined)
 	// I28 (PE 22:49:23Z, found proving the CR B1 fix on 7556c674): a busy button reads "Sending…", wider than "Send"; when the result
 	// lands later the label shrinks back and the controls beside it slide over. It keeps the width it took at the owner's click.
 	const self = useRef<HTMLButtonElement>(null), [minWidth, setMinWidth] = useState<number>()
@@ -115,6 +118,7 @@ export function ActionButton({ action, input, primary = false, disabled = false,
 		const width = busy && self.current ? Math.ceil(self.current.getBoundingClientRect().width) : 0
 		if (width) setMinWidth(min => min && min >= width ? min : width)
 	}, [busy])
+	useEffect(() => { const el = self.current; if (el) return track(el) }, [])
 	// Spec S7: what it does, from the one shared map; a disabled control says why (by default from what it needs).
 	const what = hoverOf(action.kind, label, hoverValues(snapshot, action, { left: window.countdown }), action.meaning)
 	const reason = disabledReason ?? (disabled ? action.kind === 'pick' ? 'pick' : action.kind === 'answer' ? 'Type your answer first.' : action.input === 'text' ? 'Type your text first.' : undefined : undefined)
@@ -122,10 +126,75 @@ export function ActionButton({ action, input, primary = false, disabled = false,
 		stale: disabled && reason === 'stale', needsPick: disabled && reason === 'pick' },
 		disabled && reason && !['stale', 'pick'].includes(reason) ? reason : what) : what
 	return <><Button ref={self} style={minWidth ? { minWidth } : undefined} variant={primary ? 'default' : 'outline'} data-action-kind={action.kind} title={hover} aria-describedby={hover ? describedBy : undefined} aria-label={ariaLabel ?? (action.kind === 'undo' ? 'Undo' : undefined)} disabled={off} data-primary={primary || undefined}
-		onPointerDown={event => watchPress(event, () => useData.getState().edit(action.item, action.rev, { note: { text: CHANGED } }))}
-		onClick={() => {
+		onPointerDown={event => { shiftedBeforePress(event); watchPress(event, () => useData.getState().edit(action.item, action.rev, { note: { text: CHANGED } })) }}
+		onClick={event => {
+			// Decision 46 (3), the 600 ms shift-then-press guard: a pointer press on a button that moved just before it does nothing.
+			// Only a pointer click (detail > 0) is judged; a keyboard click (Enter or Space, detail 0) is never refused (CR 06:40:30Z B1).
+			if (refusedPress(event.currentTarget) && event.detail > 0) {
+				console.info('[guard] refused', action.kind)
+				return useData.getState().edit(action.item, action.rev, { note: { text: CHANGED } })
+			}
 			void act(action, prepareInput ? prepareInput() : input)
-		}}>{action.kind === 'undo' && <Icon name="undo" />}{busy ? pendingLabel ?? verbing(label) : window.expired ? 'Undo window closed' : unavailable?.label ?? `${label}${window.countdown ? ` ${window.countdown}` : ''}`}</Button>{hover && <span id={describedBy} className="sr-only">{hover}</span>}</>
+		}}>{action.kind === 'undo' && <Icon name="undo" />}{(text => sizers ? <span className="label-stack"><span>{text}</span>{sizers.map(sizer => <span key={sizer} className="label-sizer" aria-hidden="true">{sizer}</span>)}</span> : text)(busy ? pendingLabel ?? verbing(label) : window.expired ? 'Undo window closed' : unavailable?.label ?? `${label}${window.countdown ? ` ${window.countdown}` : ''}`)}</Button>{hover && <span id={describedBy} className="sr-only">{hover}</span>}</>
+}
+
+// Decision 46 (3)-(4), PE 06:23:42Z B: the 600 ms shift-then-press guard (0.2.46). A pointer press is refused when the button's
+// VIEWPORT position (top or left, PE 06:39:54Z A (a)) changed within the 600 ms before it, unless the change was his own: wheel, touchmove, scroll keys, a pointerdown
+// outside any control (the scrollbar), opening or closing a card, or input in the same card (a scroll that continues his own counts
+// too). App-initiated moves (scrollIntoView, Find's Open, anchoring, late content) are not excepted. Enter or Space is never refused,
+// and a refusal shows the muted line and never synthesises a click. Event-driven: idle, nothing runs; a DOM change, resize or
+// scroll schedules one measurement of the mounted buttons in the next frame.
+const GUARD_MS = 600, MIN_SHIFT = 4, CARD = '.item-card, .classic-open-card, .now-row'
+const SCROLL_KEYS = new Set(['PageUp', 'PageDown', 'Home', 'End', 'ArrowUp', 'ArrowDown', ' '])
+const spots = new Map<Element, { top: number, left: number }>(), movedAt = new WeakMap<Element, number>(), cardInput = new WeakMap<Element, number>(), refused = new WeakMap<Element, number>()
+let ownerAt = -Infinity, scheduled = false, installed = false
+const now = () => performance.now()
+function measure() {
+	scheduled = false
+	const at = now(), owner = at - ownerAt < GUARD_MS
+	for (const [el, spot] of spots) {
+		// A settle of under 4 px on both axes (fonts, a scrollbar) can't put another control under the pointer; drift still adds up from
+		// the last recorded spot. A sideways slide within a bar counts the same as a vertical one.
+		const { top, left } = el.getBoundingClientRect()
+		if (Math.abs(top - spot.top) < MIN_SHIFT && Math.abs(left - spot.left) < MIN_SHIFT) continue
+		spots.set(el, { top, left })
+		const card = el.closest(CARD)
+		if (!owner && !(card && at - (cardInput.get(card) ?? -Infinity) < GUARD_MS)) movedAt.set(el, at)
+	}
+}
+const schedule = () => { if (!scheduled) { scheduled = true; requestAnimationFrame(measure) } }
+function install() {
+	installed = true
+	const owner = () => { ownerAt = now() }, opts = { capture: true, passive: true } as const
+	addEventListener('wheel', owner, opts)
+	addEventListener('touchmove', owner, opts)
+	addEventListener('keydown', event => { const field = (event.target as Element | null)?.closest?.('input, textarea, select, [contenteditable=true]'); if (!field && SCROLL_KEYS.has(event.key)) owner() }, opts)
+	addEventListener('pointerdown', event => { const target = event.target as Element | null; if (!target?.closest?.('button, a[href], [role=button], input, textarea, select, label, summary') || target.closest('[aria-expanded], summary')) owner() }, opts)
+	addEventListener('input', event => { const card = (event.target as Element | null)?.closest?.(CARD); if (card) cardInput.set(card, now()) }, opts)
+	addEventListener('scroll', () => { if (now() - ownerAt < GUARD_MS) owner(); schedule() }, opts)
+	addEventListener('resize', schedule, opts)
+	new MutationObserver(schedule).observe(document.body, { subtree: true, childList: true, characterData: true, attributes: true })
+}
+function track(el: Element) {
+	if (!installed) install()
+	const { top, left } = el.getBoundingClientRect()
+	spots.set(el, { top, left })
+	return () => { spots.delete(el) }
+}
+// At pointerdown: clear any earlier press's flag first, so every press is judged on its own (a refused press released off the
+// button leaves no click to consume it); settle any move not yet measured; then mark this press refused when the button moved,
+// not by him, under 600 ms ago.
+function shiftedBeforePress(event: PointerEvent<HTMLButtonElement>) {
+	refused.delete(event.currentTarget)
+	if (event.button !== 0 || !event.isPrimary) return
+	measure()
+	if (now() - (movedAt.get(event.currentTarget) ?? -Infinity) < GUARD_MS) refused.set(event.currentTarget, now())
+}
+// The click that follows a refused press (within 2 s). Always consumes the flag; the caller judges only pointer clicks.
+function refusedPress(el: Element) {
+	const at = refused.get(el)
+	refused.delete(el)
+	return at !== undefined && now() - at < 2000
 }
 
 // PE decision 46 / PM A R44 (4): a press is never carried over to a button that moved (no keepPress): pointerdown and pointerup on

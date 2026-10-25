@@ -3,6 +3,8 @@ import { classifyTool, type ToolInfo } from './tool-class.ts'
 import type { Call, Config, Effect, PrFacts, Workflow } from './types.ts'
 import { NAME } from '../brand.ts'
 import { DEPLOY, deployLine, deployRefusal, isDeploy, isPipelineTool, pipelineOf, ringParts, targetOf } from './deploy.ts'
+import { leftActionKey, leftQuote, leftRefusal, type LeftAction, type LeftDraft, type LeftKind, type LeftRefusal } from './left-lines.ts'
+import { settingKey, type SettingKey } from './setting-keys.ts'
 
 // The changes still to make: not done, and not unchecked by the owner (design-spec S6).
 export const pendingEffects = (es: Effect[] = []): Effect[] => es.filter(e => !e.done && !e.off)
@@ -86,30 +88,64 @@ export const asksInvite = (text: string) => text.split(/(?<=[.!?;])\s+|\n+/).som
 // Words that say an invite already went ("I've sent an invite", "the invite is sent"); true only once the invite exists.
 export const claimsInvite = (text: string) => /\b(?:I(?:'|’)ve|I have|I(?:'|’)ve just|we(?:'|’)ve|we have)\s+(?:just\s+)?(?:sent|booked|scheduled|set up)\b[^.!?]{0,80}\b(?:invite|invitation|meeting|call|sync)\b|\b(?:invite|invitation)\b[^.!?]{0,40}\b(?:is|was|has been)\s+(?:sent|booked)\b|\bsent (?:you |them |everyone )?(?:an? |the )?(?:invite|invitation)\b/i.test(text)
 
+export function effectLeftAction(e: Effect, pr?: number): LeftAction {
+	const c = e.call, action = String(c?.args.action ?? e.action).toLowerCase()
+	const status = String(c?.args.status ?? '').toLowerCase()
+	const lifecycle = (['merge', 'complete', 'abandon', 'delete'] as const).find(verb => verb === action)
+	const verb: LeftAction['verb'] = isDeploy(c) || c && isPipelineTool(c) ? 'deploy'
+		: isVote(c) || /^(vote|approve)$/.test(e.action) ? 'vote'
+		: lifecycle ? lifecycle
+		: c && prTool(c) && !/thread/i.test(c.tool) && /^(completed|3)$/.test(status) ? 'complete'
+		: c && prTool(c) && !/thread/i.test(c.tool) && /^(abandoned|2)$/.test(status) ? 'abandon'
+		: /delete/i.test(c?.tool ?? '') ? 'delete'
+		: action === 'update_reviewers' ? 'reviewer'
+		: /pull_request_thread/i.test(c?.tool ?? '') || /^(?:post[_ -]?)?(?:pr[_ -]?)?comment$/i.test(e.action) ? 'comment'
+		: isInvite(e) ? 'invite' : 'change'
+	const id = prIdOf(c) ?? e.deploy?.pr ?? (['comment', 'vote', 'reviewer', 'deploy', 'merge', 'complete', 'abandon'].includes(verb) ? pr : undefined)
+	const payload = e.payload && typeof e.payload === 'object' && 'text' in e.payload ? e.payload.text : undefined
+	const comment = [c?.args.content, c?.args.text, c?.args.body, payload].find((value): value is string => typeof value === 'string')
+	const base = { key: leftActionKey(c, e.summary), verb, ...(id ? { pr: id } : {}), ...(e.deploy?.ring ? { target: e.deploy.ring } : {}) }
+	return verb === 'comment' && comment !== undefined ? { ...base, ...leftQuote(comment.split(/\r?\n/, 1)[0], 'delegate') } : base
+}
+
 // Why a proposed change cannot be made, or undefined when it can. pr: the item's own pull request.
-export function refusal(cfg: Config, e: Effect, pr?: number): string | undefined {
+export function effectRefusal(cfg: Config, e: Effect, pr?: number): LeftRefusal | undefined {
 	const c = e.call
-	if (!c) return 'it names no exact call'
+	const deny = (kind: LeftKind, why: string, setting?: SettingKey) => leftRefusal(effectLeftAction(e, pr), kind, { why, ...(setting ? { setting } : {}) })
+	if (!c) return deny('incomplete', 'it names no exact call')
 	// A pipeline is only ever run: never created, renamed, or changed, and its stages never cancelled or retried (owned work).
-	if (isPipelineTool(c) && !isDeploy(c)) return `${NAME} never creates, renames, or changes a pipeline, or cancels or retries its stages`
-	if (forbidden(c)) return `${NAME} never completes, merges, abandons, bypasses, or deletes`
+	if (isPipelineTool(c) && !isDeploy(c)) return deny('deploy', `${NAME} never creates, renames, or changes a pipeline, or cancels or retries its stages`)
+	if (forbidden(c)) return deny(prTool(c) ? 'pr-lifecycle' : 'other', `${NAME} never completes, merges, abandons, bypasses, or deletes`)
 	// A deploy is allowed by its pipeline's ID on "Where Delegate may deploy", never by the tool alone.
-	if (isDeploy(c)) return deployRefusal(cfg, e, pr)
-	if (!allows(cfg.agent.effectTools, c)) return `${c.tool}${c.args.action ? `:${String(c.args.action)}` : ''} is not one of the changes you allow`
+	if (isDeploy(c)) {
+		const why = deployRefusal(cfg, e, pr)
+		return why ? deny('deploy', why, settingKey('deployTo')) : undefined
+	}
+	if (!allows(cfg.agent.effectTools, c)) {
+		const entry = `${c.tool}${c.args.action ? `:${String(c.args.action)}` : ''}`
+		const setting = settingKey(LINES[entry] || site().actions?.[entry] ? entry : c.tool)
+		return deny('setting-off', `${entry} is not one of the changes you allow`, setting)
+	}
 	const id = prIdOf(c)
-	if (id === undefined && (prTool(c) || isVote(c))) return 'a pull request change must name its PR by number in pullRequestId'
-	if (id !== undefined && id !== pr) return `PR ${id} is not this item's PR${pr ? ` (${pr})` : ''}`
-	if (isVote(c) && voteValue(c) === undefined) return 'a vote must be Approved, ApprovedWithSuggestions, WaitingForAuthor, Rejected, or NoVote'
-	if (isVote(c) && !e.head) return 'a vote must name the commit the review read'
+	if (id === undefined && (prTool(c) || isVote(c))) return deny('incomplete', 'a pull request change must name its PR by number in pullRequestId')
+	if (id !== undefined && id !== pr) return deny('other-pr', `PR ${id} is not this item's PR${pr ? ` (${pr})` : ''}`)
+	if (isVote(c) && voteValue(c) === undefined) return deny('incomplete', 'a vote must be Approved, ApprovedWithSuggestions, WaitingForAuthor, Rejected, or NoVote')
+	if (isVote(c) && !e.head) return deny('incomplete', 'a vote must name the commit the review read')
 	// A reviewer change may only add the owner, alone, to this item's PR (review gate, owner rule 10-23).
 	if (prTool(c) && String(c.args.action ?? '').toLowerCase() === 'update_reviewers') {
 		const ids = Array.isArray(c.args.reviewerIds) ? c.args.reviewerIds.map(String) : []
 		const upn = (cfg.owner.upn ?? '').trim().toLowerCase()
-		if (!(String(c.args.reviewerAction ?? '').toLowerCase() === 'add' && ids.length === 1 && upn && ids[0].trim().toLowerCase() === upn)) return `${NAME} may only add you as a reviewer, never remove anyone or add someone else`
+		if (!(String(c.args.reviewerAction ?? '').toLowerCase() === 'add' && ids.length === 1 && upn && ids[0].trim().toLowerCase() === upn)) return deny('other', `${NAME} may only add you as a reviewer, never remove anyone or add someone else`)
 	}
 	const invite = inviteShapeProblem(c)
-	if (invite) return invite
+	if (invite) return deny('old-invite', invite)
 	return undefined
+}
+
+export const refusal = (cfg: Config, e: Effect, pr?: number): string | undefined => effectRefusal(cfg, e, pr)?.why
+
+export function deployBusyLeft(e: Effect, why: string, pr?: number): LeftRefusal {
+	return leftRefusal({ ...effectLeftAction(e, pr), verb: 'deploy' }, 'deploy', { why })
 }
 
 // A stored invite from before calendar calls were converted is converted when it is made; one that cannot be converted
@@ -143,22 +179,28 @@ export function toolShape(c?: Call): Call | undefined {
 
 // When a report lands: a change that cannot be made becomes a to-do with the reason; it never vanishes (next action).
 // A deploy goes alone: one pending change per work item at a time, so a run never stacks changes on a ring (owned work).
-export function vet(cfg: Config, effects: Effect[] = [], pr?: number): { effects: Effect[]; todos: string[] } {
-	const ok: Effect[] = [], todos: string[] = []
-	const todo = (e: Effect, why: string) => todos.push(`${e.summary.replace(/[.\s]+$/, '')}. Not made for you: ${why}`)
+export function vet(cfg: Config, effects: Effect[] = [], pr?: number): { effects: Effect[]; todos: string[]; left: LeftDraft[] } {
+	const ok: Effect[] = [], left: LeftDraft[] = [], todos: string[] = []
 	for (const raw of effects) {
 		const [tool, action] = parts(raw.call?.tool ?? '')
 		const split = raw.call && action && action.toLowerCase() === String(raw.call.args.action ?? '').toLowerCase()
 			? { ...raw, call: { ...raw.call, tool } } : raw
 		const e = split.call ? { ...split, call: toolShape(split.call) } : split
-		const why = refusal(cfg, e, pr)
-		if (why) todo(e, why)
+		const denied = effectRefusal(cfg, e, pr)
+		if (denied) {
+			left.push(denied)
+			todos.push(`${e.summary.replace(/[.\s]+$/, '')}. Not made for you: ${denied.why}`)
+		}
 		else ok.push(isDeploy(e.call) ? { ...e, deploy: { ring: targetOf(cfg, pipelineOf(e.call))!.ring, pr: pr! } } : e)
 	}
 	const first = ok.find(e => isDeploy(e.call))
-	if (!first) return { effects: ok, todos }
-	for (const e of ok.filter(x => x !== first)) todo(e, `one change at a time with a deploy; propose it again after the deploy to ${first.deploy!.ring} is made`)
-	return { effects: [first], todos }
+	if (!first) return { effects: ok, left, todos }
+	for (const e of ok.filter(x => x !== first)) {
+		const why = `one change at a time with a deploy; propose it again after the deploy to ${first.deploy!.ring} is made`
+		left.push(leftRefusal(effectLeftAction(e, pr), 'deploy', { why }))
+		todos.push(`${e.summary.replace(/[.\s]+$/, '')}. Not made for you: ${why}`)
+	}
+	return { effects: [first], left, todos }
 }
 
 // A PR that changed since the review: the owner reviews again before any vote. The page's "Review again" sends the same words.

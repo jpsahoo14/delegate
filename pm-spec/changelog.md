@@ -1,5 +1,31 @@
 # Engine fixes
 
+2026-10-25 (Left-for-you skip correction): Dismissing only a reply on open work keeps its tasks. Tasks clear only
+on the skip path that actually closes the item or stops its tracker; no stored history or UI behavior is rewritten.
+
+2026-10-25 (A120 HOST caller pairing): The text inbox, self-chat details and effect-result receipts use cached
+place labels for untitled groups. Titled chats, 1:1s, stored names and all action/send/consent behavior are unchanged.
+
+2026-10-25 (I34 HOST hooks): Successful correction and reminder sends now record the existing content-free marker
+decision event. Signature policy, message text, consent checks and retry behavior are unchanged.
+
+2026-10-25 (Left-for-you repair consumer, HOST): Pending comment/effect-call repair now hands its unchanged structured
+refusals to the shared source/id merge in the same fresh save, rather than duplicating generated to-do prose.
+
+2026-10-25 (Left-for-you task engine, HOST): Reply promises and remaining owned refusal paths now create typed tasks;
+line-bound ask-again/invite verbs prepare drafts only. Certain later PR-thread replies/closures clear their lines.
+Existing task marking accepts typed ids; page/MCP receipt/admission and repair-bridge integrations remain paired work.
+
+2026-10-25 (Left-for-you first producer slice, HOST): Report, vet, reviewer-role and picked/deploy-busy refusals
+now write structured lines with code-derived sources and filtered links. Jobs keep the raw report refusals.
+Automatic reply completion keeps those tasks; only explicit owner closure clears them. Remaining producers/verbs/UI are separate.
+
+2026-10-25 (Left-for-you foundation, HOST): Stable structured-line merge/clear helpers and bounded cleared-id
+retention are prepared for the queued consumers. This foundation is not the complete card/producer/verb feature.
+
+2026-10-25 (M2, 0.2.46): Pure PR/link parsing moves to core/pr-refs with compatibility exports. Parser bodies and
+existing behavior stay unchanged; the vote classifier no longer imports its parsers from the runner.
+
 2026-10-25 (fast-poll CR B1): Scheduled reply times now participate in the earliest-due calculation, so removing the
 busy-item fast trigger does not delay automatic replies to the next idle tick. A deadline alone opens no fast window.
 

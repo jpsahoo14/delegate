@@ -5,6 +5,14 @@ Scenario range reserved for this branch: SC-400 through SC-419.
 
 | Milestone | State | Evidence |
 | --- | --- | --- |
+| PE existing-contract skip correction | Fixed in this commit; OWN CR required before the 0.2.46 stage | Move closeLeft after the reply-only inWork branch; preserve typed tasks on open-work skip, keep actual item/tracker closure unchanged; no dismissal redesign |
+| A120 HOST caller pairing | Built in this merge/change commit on exact reviewed SEND df5ec00e/5bf331e; own CR pending | Inbox renderList resolver and apply more/effect-result pass cached placeOf; no action/send/consent or stored-name change |
+| I34 HOST marker hooks | Built in this commit; own CR pending | Existing named correction/reminder telemetry after successful addSent; no send semantics or consent change, New/SEND pairing retained |
+| Decision 44 pending repair consumer | Built in this commit after exact reviewed eb63 bridge integration; own CR pending | Named callback passes unchanged drafts to code-owned source/hash merge before the repair's existing commit; no duplicate generated todos |
+| Decision 44 task engine | Built in this commit; own CR pending | Typed promises/remaining owned producers, task ticking, line-bound draft-only verbs and certain PR seen-done; paired MCP/page/bridge handoffs still required |
+| Decision 44 report/vet consumers | Built in this commit; own CR pending, not whole-feature completion | First wf.left producer, raw job refusals and normalized placement, source/head binding, role/pick/deploy gates, explicit-only owner closure; remaining producer/verb/probe/UI handoffs pending |
+| Decision 44 wf.left foundation | 3e7c9074 CR ok; prerequisite merge 35c147ed and SettingKey merge 6129640b also own CR ok | Pure typed merge/id/clear helpers, review-head identity and PE-authorised tombstone retention; first consumers above, remaining lifecycle/verbs still pending |
+| M2 PR/link parsing move | Built in this commit on separate 0.2.46 branch; CR review pending | Five identical parsing declarations in core/pr-refs, old paths re-exported, M1 classifier import points to core; no behavior or data change |
 | Decision 43(c) joiner follow-ups | Built in this commit; CR review pending | Multi-PR-only relation bypass, conflict log once per code/process, #54 lookup-cost note; anchor.also remains 0.2.46 after M2 |
 | Sent-reply-only fast checking | 19713589 plus scheduled-deadline B1 fix in this commit; CR re-review pending, New ced57df3/2b854c30 copy paired | Actual reply-time window, confirmed owner replies, no busy trigger; sendAt/reminder/retry due times retained without a fast window |
 | PR body join boundary + anchor | Built in this commit; PE diff review pending | Strict ADO/body identity, sole match or matching quote/ambiguity, code-only owned anchor and lifecycle, no cross-PR effects; authorized fictional Temp P1-P6 |

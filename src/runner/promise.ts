@@ -4,7 +4,10 @@ import { stateFields } from '../core/upgrades.ts'
 // item, through the same vet, ok, and make_change as every other change. Nothing is made without that ok.
 import { ulid } from '../core/ids.ts'
 import { MARK } from '../core/render.ts'
-import { isVote, prIdOf, proposalEffects, saidLine, vet, voteValue } from '../core/effects.ts'
+import { effectLeftAction, isVote, prIdOf, proposalEffects, saidLine, vet, voteValue } from '../core/effects.ts'
+import { leftPromise, leftRefusal } from '../core/left-lines.ts'
+import { allowLeft } from './left.ts'
+import { leaveForYou, leftContext } from './left-source.ts'
 import type { Config, Effect, Workflow } from '../core/types.ts'
 import type { Source } from '../adapters/source.ts'
 import type { Store } from '../store/state.ts'
@@ -14,7 +17,7 @@ import { agentSetupFailure } from '../core/agent-failure.ts'
 import { blockedAgent, holdAgent } from './agent-health.ts'
 import { prTarget, voteNow, type BuildProbe } from './probe.ts'
 import { carry, executing } from './jobs.ts'
-import { active, homeOf, keepTodos, newTurn, statusOf } from './work.ts'
+import { active, homeOf, newTurn, statusOf } from './work.ts'
 import { close, say } from './intake.ts'
 import { backupSession, restoreSession } from './own.ts'
 import { startFollow, startWatch } from './track.ts'
@@ -30,9 +33,9 @@ type By = { ruleId?: string }
 export const promiseDue = (store: Store, wf: Workflow, by: By) => !by.ruleId && !!wf.draft?.ownWords && !!prTarget(store, wf)
 
 // The owner's words went out: the check waits for the next dispatch. A second send while it waits joins it, so one run reads both.
-export function notePromise(store: Store, wf: Workflow, text: string) {
+export function notePromise(store: Store, wf: Workflow, text: string, source = wf.sent && { msgId: wf.sent.msgId, at: wf.sent.at }) {
 	const p = wf.promise
-	wf.promise = p && (p.state === 'pending' || p.state === 'checking') ? { ...p, text: `${p.text}\n${text}`, state: 'pending' } : { text, at: new Date().toISOString(), state: 'pending' }
+	wf.promise = p && (p.state === 'pending' || p.state === 'checking') ? { ...p, text: `${p.text}\n${text}`, at: source?.at ?? p.at, state: 'pending', msgId: source?.msgId ?? p.msgId } : { text, at: source?.at ?? new Date().toISOString(), msgId: source?.msgId, state: 'pending' }
 }
 
 // Where a sent reply leaves its item: open work stays in progress; anything else is done.
@@ -145,7 +148,8 @@ export async function checkPromise(store: Store, src: Source, cfg: Config, wf: W
 	const wanted = proposalEffects(v.effects.filter(e => !decided.some(m => same(m, e)) && !cast(e)).map(e => ({ ...e, done: undefined, error: undefined })), [fresh])
 	// A vote is checked against the PR as it is now, as at ok.
 	const now = await voteNow(store, cfg, fresh, wanted, probe)
-	const left = [...(report.todos ?? []), ...v.todos]
+	const left = [...(report.todos ?? []), ...v.todos], context = leftContext(store, fresh, 'your-reply')
+	leaveForYou(store, fresh, v.left, context)
 	store.log({ event: 'promise-checked', workflowId: fresh.id, code: fresh.code, offered: now.effects.length, todos: left.length, ...(now.why ? { why: now.why } : {}), ...(now.again ? { again: true } : {}) })
 	const lines: string[] = []
 	let shared: ReturnType<typeof carry>
@@ -162,15 +166,20 @@ export async function checkPromise(store: Store, src: Source, cfg: Config, wf: W
 		if (shared === 'busy') return again()
 		const line = saidLine(now.effects), meaning = now.effects.map(e => e.pr).find(Boolean)
 		Object.assign(fresh, { ...stateFields(fresh, 'needs_human'), draft: undefined, effects: now.effects, promised: undefined, approved: undefined, question: undefined, promise: { ...fresh.promise!, text: said, state: 'offered', why: undefined }, status: line, revAt: new Date().toISOString() })
+		allowLeft(fresh, now.effects)
 		lines.push(`${fresh.code}: ${line.replace(/^You/, 'you')}${meaning ? ` ("${meaning.title}" by ${meaning.author}${meaning.autoComplete ? '; autocomplete is on: your approval may complete it' : ''})` : ''}. Say "ok ${fresh.code}" to do it, or "skip ${fresh.code}".`)
 	} else {
 		// Another open item on the same review shows its own changes, so this one's list cannot replace it: it is the owner's to do.
-		if (shared) left.push(...now.effects.map(e => `${e.summary.replace(/[.\s]+$/, '')}. Not made for you: another open item on this review has changes waiting; ok or skip it first, then say it again, or make it by hand`))
+		if (shared) {
+			const why = 'another open item on this review has changes waiting; ok or skip it first, then say it again, or make it by hand'
+			left.push(...now.effects.map(e => `${e.summary.replace(/[.\s]+$/, '')}. Not made for you: ${why}`))
+			leaveForYou(store, fresh, now.effects.map(effect => leftRefusal(effectLeftAction(effect, prTarget(store, fresh)), 'other', { why })), context)
+		}
 		fresh.promise = undefined
 	}
 	if (left.length) {
-		fresh.todos = [...new Set([...(fresh.todos ?? []), ...left])]
-		keepTodos(fresh, wf.sent?.at ?? wf.promise!.at, left)
+		leaveForYou(store, fresh, (report.todos ?? []).map(leftPromise), context)
+		fresh.kept ??= []
 	}
 	// A promise that waits on a condition can be watched, as a reply's check-back is.
 	const home = homeOf(store, fresh)

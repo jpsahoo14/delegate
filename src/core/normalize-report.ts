@@ -1,6 +1,7 @@
-import type { Blocker, Fact, Job, Report, Workflow } from './types.ts'
+import type { Blocker, Fact, Job, QuestionHint, Report, Workflow } from './types.ts'
 import { documentFailureCause } from './document-failure.ts'
 import { scrub } from './secrets.ts'
+import { displayedLeftAction, leftActionText, type LeftRefusal } from './left-lines.ts'
 
 export type FailureCause = {
 	step: 'pr-read' | 'doc-read' | 'teams-read' | 'post' | 'send' | 'calendar' | 'work-item' | 'run-stopped'
@@ -11,8 +12,8 @@ export type FailureCause = {
 	size?: string
 }
 export type ReportFailure = { kind: 'setup' | 'other' | 'content' | 'tool' | 'stopped'; why: string; tried: string[]; at?: string; cause?: FailureCause }
-export type ReportRefusal = { what: string; target: string; reason: string }
-type ReportData = Partial<Pick<Report, 'intent' | 'context' | 'summary' | 'goalMet' | 'blocker' | 'todos'>>
+export type ReportRefusal = LeftRefusal & { what: string; target: string; reason: string }
+type ReportData = Partial<Pick<Report, 'intent' | 'context' | 'summary' | 'goalMet' | 'blocker' | 'todos' | 'question' | 'questionHint' | 'refused'>>
 export type StoredReport = ReportData & {
 	key?: string
 	every?: number
@@ -23,9 +24,10 @@ export type StoredReport = ReportData & {
 	retry?: Pick<NonNullable<Job['retry']>, 'last' | 'tried'> & { nextAt?: string }
 	runFailed?: Workflow['runFailed']
 	failure?: ReportFailure
-	refused?: ReportRefusal[]
 }
 export type NormalizedReport = {
+	question?: Report['question']
+	questionHint?: Report['questionHint']
 	context: Fact[]
 	findings: Fact[]
 	refused: ReportRefusal[]
@@ -38,8 +40,7 @@ const VOTE_STATUS = /\b(?:your|my|our|(?:the )?owner's)\s+(?:reviewer\s+)?groups
 const REVIEWER_STATUS = /^(?:[A-Z][\w'-]*\s+){1,3}(?:has\s+)?(?:approved|voted|(?:is\s+)?waiting)(?=$|[.!;,]|\s+(?:on|for|with|this|the|PR)\b)/
 const REVIEW_STATUS_LABEL = /^(?:live votes?|newest builds?|ci and (?:test |code )?coverage)\b|\bdependency\b.*\bvotes?\b/i
 const PLUMBING = /\b(?:tool discovery|execution calls?|tool schema)\b/i
-const INTERNAL = /[0-9a-f]{8,}|job:|Error:|Not made for you|\bworker\b|\b(?:ado|teams|sharepoint|delegate_worker)[-_][\w-]+/i
-const REFUSAL = /(?:\.\s*)?Not made for you:\s*/i
+const INTERNAL = /[0-9a-f]{8,}|job:|Error:|\bworker\b|\b(?:ado|teams|sharepoint|delegate_worker)[-_][\w-]+/i
 const GATE = /^Not reviewing$/i
 const words = (s: string) => s.replace(/\s+/g, ' ').trim()
 
@@ -62,14 +63,6 @@ function plain(text: string, fallback: string): string {
 	return fallback
 }
 
-function refusal(text: string): ReportRefusal | undefined {
-	const match = REFUSAL.exec(text)
-	if (!match) return undefined
-	const what = plain(text.slice(0, match.index).replace(/[.\s]+$/, ''), 'Make the change yourself')
-	const pr = /\bPR\s*#?(\d+)\b/i.exec(what)?.[1]
-	return { what, target: pr ? `PR ${pr}` : '', reason: text.slice(match.index + match[0].length).trim() }
-}
-
 function failureKind(blocker: Blocker): ReportFailure['kind'] {
 	if (blocker.documentFailure) return 'content'
 	if (blocker.kind === 'tool') return 'tool'
@@ -85,16 +78,26 @@ function cleanCause(cause: FailureCause): FailureCause {
 		...(cause.retryAt && Number.isFinite(Date.parse(cause.retryAt)) ? { retryAt: cause.retryAt } : {}) }
 }
 
-function refusalReason(reason: string): string {
-	const value = words(reason), pr = /^PR (\d+) is not this item's PR \((\d+)\)/i.exec(value)
-	if (pr) return `This is about PR ${pr[1]}, but the item is about PR ${pr[2]}, so Delegate won't change PR ${pr[1]} from here.`
-	if (/is not one of the changes you allow/i.test(value)) return "You haven't allowed Delegate to do this. Settings > Changes Delegate may make."
-	if (/never completes, merges, abandons, bypasses, or deletes/i.test(value)) return 'Delegate never merges, completes, abandons or deletes. Do it in Azure DevOps.'
-	if (/may only add you as a reviewer/i.test(value)) return 'Delegate can only add you as a reviewer.'
-	if (/names no exact call|no exact call|must name.*(?:commit|PR)|vote must|pull request change must/i.test(value)) return "Delegate's proposal was incomplete, so it won't make it. Ask again from the card if you want it."
-	if (/invite.*older form/i.test(value)) return 'This invite was made by an older version. Answer the question to get a new one.'
-	if (/pipeline|deploy/i.test(value)) return 'Delegate only deploys to the places you allow, one at a time.'
-	return plain(value, "Delegate can't make this change from here.")
+export function normalizeQuestionHint(hint: QuestionHint): QuestionHint {
+	const answers: string[] = [], seen = new Set<string>()
+	const unsafe = (text: string) => /\b[AWRKH]\d+\b/i.test(text) || /^[^a-z]*(?:ok|send|approve|vote|close|skip|wait|never|pause|resume|stop|undo|remember|edit)\b/i.test(text)
+	for (const answer of hint.answers ?? []) {
+		const text = answer.replace(/["`\u2018-\u201f\p{Cf}\p{Default_Ignorable_Code_Point}]/gu, '').replace(/\s+/g, ' ').trim()
+		if (unsafe(text)) continue
+		const short = Array.from(text).slice(0, 60).join('').trim(), key = short.toLowerCase()
+		if (!short || seen.has(key) || unsafe(short)) continue
+		answers.push(short)
+		seen.add(key)
+		if (answers.length === 3) break
+	}
+	return answers.length ? { answers } : {}
+}
+
+function refusalHref(href: string): boolean {
+	if (!URL.canParse(href)) return false
+	const url = new URL(href), host = url.hostname
+	return url.protocol === 'https:' && (host === 'dev.azure.com' || host.endsWith('.visualstudio.com') ||
+		host === 'teams.microsoft.com' || host === 'teams.cloud.microsoft')
 }
 
 // Read-only display facts, not an upgrade or a retry decision. Older Job.result has no context:
@@ -104,26 +107,29 @@ export function normalizeReport(stored: StoredReport): NormalizedReport {
 	const report = stored.result ?? stored
 	const review = !stored.every && ((stored.intent ?? report.intent) === 'pr_review' || /^pr:/i.test(stored.key?.trim() ?? ''))
 	const normalized: NormalizedReport = { context: [], findings: [], refused: [], todos: [] }
-	const addRefusal = (r: ReportRefusal) => {
-		const clean = { what: plain(r.what, 'Make the change yourself'), target: plain(r.target, ''), reason: refusalReason(r.reason) }
-		if (!normalized.refused.some(x => x.what === clean.what && x.target === clean.target && x.reason === clean.reason)) normalized.refused.push(clean)
+	const question = report.question?.trim()
+	if (question) {
+		normalized.question = question
+		if (report.questionHint) normalized.questionHint = normalizeQuestionHint(report.questionHint)
 	}
-	for (const r of stored.refused ?? []) addRefusal(r)
+	const addRefusal = (r: LeftRefusal) => {
+		const { reply, pr, ...record } = r
+		const action = displayedLeftAction(r.action)
+		const clean: ReportRefusal = { ...record, action,
+			...(reply && refusalHref(reply.href) ? { reply } : {}),
+			...(pr && refusalHref(pr.href) ? { pr } : {}),
+			what: plain(leftActionText(action), 'Make the change yourself'),
+			target: r.action.pr ? `PR ${r.action.pr}` : plain(r.action.target ?? '', ''),
+			reason: plain(r.why ?? '', "Delegate can't make this change from here.") }
+		const key = (draft: LeftRefusal) => JSON.stringify([draft.kind, draft.action.key, draft.action.verb, draft.action.pr, draft.action.target, draft.action.quote, draft.why, draft.setting, draft.reply, draft.pr])
+		if (!normalized.refused.some(x => key(x) === key(clean))) normalized.refused.push(clean)
+	}
+	for (const r of [...(report.refused ?? []), ...(stored.result ? stored.refused ?? [] : [])]) addRefusal(r)
 	for (const text of [...(report.todos ?? []), ...(stored.result ? stored.todos ?? [] : [])]) {
-		const r = refusal(text)
-		if (r) addRefusal(r)
-		else {
-			const todo = plain(text, 'Review this step yourself.')
-			if (!normalized.todos.includes(todo)) normalized.todos.push(todo)
-		}
+		const todo = plain(text, 'Review this step yourself.')
+		if (!normalized.todos.includes(todo)) normalized.todos.push(todo)
 	}
 	for (const fact of stored.context ?? report.context ?? []) {
-		const r = refusal(fact.text)
-		if (r) { addRefusal(r); continue }
-		if (/^(?:refused change|change refused|not made for you|left for you)$/i.test(fact.label.trim())) {
-			addRefusal({ what: 'Make the change yourself', target: '', reason: fact.text })
-			continue
-		}
 		const gate = GATE.test(fact.label.trim())
 		const text = `${fact.label} ${fact.text}`
 		// Status phrases, not source-code categories: builds, readers and service workers can have real findings.
@@ -138,13 +144,11 @@ export function normalizeReport(stored: StoredReport): NormalizedReport {
 	}
 	const explicit = stored.runFailed ?? stored.failure
 	const blocker = (report.goalMet === false ? report.blocker : undefined) ?? (stored.state === 'failed' ? stored.retry?.last : undefined)
-	const errorRefusal = stored.error ? refusal(stored.error) : undefined
-	if (errorRefusal) addRefusal(errorRefusal)
 	const failed: ReportFailure | undefined = explicit
 		? { kind: explicit.kind, why: explicit.why, tried: explicit.tried ?? [], ...(explicit.at ? { at: explicit.at } : {}) }
 		: blocker
 			? { kind: failureKind(blocker), why: blocker.why, tried: [...(stored.retry?.tried ?? []), ...blocker.tried], ...(stored.updatedAt ? { at: stored.updatedAt } : {}) }
-			: stored.state === 'failed' && !errorRefusal
+			: stored.state === 'failed'
 				? { kind: 'other', why: stored.error ?? 'The work stopped before it finished.', tried: stored.retry?.tried ?? [], ...(stored.updatedAt ? { at: stored.updatedAt } : {}) }
 				: undefined
 	if (failed) {
@@ -156,17 +160,11 @@ export function normalizeReport(stored: StoredReport): NormalizedReport {
 			: failed.kind === 'stopped' ? { step: 'run-stopped' }
 			: doc ? { ...doc, target: causeText(doc.target) ?? 'the document' } : undefined
 		if (cause && stored.retry?.nextAt && Number.isFinite(Date.parse(stored.retry.nextAt))) cause.retryAt = stored.retry.nextAt
-		const whyRefusal = refusal(failed.why)
-		if (whyRefusal) addRefusal(whyRefusal)
-		else normalized.failure = {
+		normalized.failure = {
 			...failed,
 			...(cause ? { cause } : {}),
 			why: plain(failed.why, "The work couldn't be completed."),
-			tried: [...new Set(failed.tried.flatMap(text => {
-				const r = refusal(text)
-				if (r) { addRefusal(r); return [] }
-				return [plain(text, 'Tried another way, without a usable result.')]
-			}))],
+			tried: [...new Set(failed.tried.map(text => plain(text, 'Tried another way, without a usable result.')))],
 		}
 	}
 	return normalized

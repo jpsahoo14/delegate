@@ -10,7 +10,8 @@ import { DELAYS, MAX_TRIES } from '../runner/retry.ts'
 import { cardType, msgKeys, readingOf, who as whoOf, type Who } from './view.ts'
 import { NAME } from '../brand.ts'
 import { handledThisWeek } from '../store/numbers.ts'
-import { openTodos } from '../runner/work.ts'
+import { openLeft, openTodos } from '../runner/work.ts'
+import { leftWords } from './model/left-words.ts'
 import { htmlToText } from '../core/intake.ts'
 import { activeAgentHold, type AgentSetupFailure } from '../core/agent-failure.ts'
 import { placeOf } from './model/place.ts'
@@ -80,7 +81,8 @@ export function factsOf(s: Snap, sub: Subject): Facts {
 		job: j && { state: j.state, watch: !!j.every, retryLater: !!j.retry && Date.parse(j.retry.at) > s.now, slot: s.slots.has(j.id), retry: !!j.retry },
 		// A step for "them" that waits on the owner by name is the owner's step.
 		work: w.work && { open: !w.work.closed, next: nextWho(s, w.work), waiting: !!w.work.waitingOn },
-		todos: openTodos(w).length,
+		// PE 07:35:05Z (rule 5): his open wf.left lines are to-dos too, so a done item with one stays a todo row (core/whose.ts:52).
+		todos: openTodos(w).length + openLeft(w).length,
 		fyiUnread: !!w.fyi && (w.fyi.at ?? w.updatedAt) > s.catchupSeen,
 		...(w.openOn ? { window: true } : {}),
 	}
@@ -425,17 +427,25 @@ function itemRow(s: Snap, p: Placed, w: Workflow): Body {
 }
 
 // "To do: Update the release checklist": the oldest open to-do a sent reply left, Mark done for all of them (R-NEX-07).
-// Only a to-do the reply promised to someone says "You promised <them>": a change Delegate refused says why, a clone to make
-// says nothing more, and the owner never promised themself (review N2 P2-7).
-const REFUSED = /\.\s*Not made for you:\s*/, CLONE = /^Clone \S+ on \S+ \(git clone /
-export const todoHeadline = (text: string, remaining = 0) => clip(`To do: ${text.split(REFUSED)[0].replace(/[.\s]+$/, '')}${remaining ? ` (+${remaining} more)` : ''}`, 160)
+// Only a to-do the reply promised to someone says "You promised <them>": a change Delegate refused (a wf.left refusal) says why, a
+// clone to make says nothing more, and the owner never promised themself (review N2 P2-7). No stored wording is read (contract rule 1):
+// a refusal is a wf.left line worded from its fields; a pre-0.2.46 refusal string is a plain to-do line (rule 6).
+const CLONE = /^Clone \S+ on \S+ \(git clone /
+export const todoHeadline = (text: string, remaining = 0) => clip(`To do: ${text.replace(/[.\s]+$/, '')}${remaining ? ` (+${remaining} more)` : ''}`, 160)
+// The first open "Left for you" line of an item: its oldest kept to-do, else its oldest wf.left line, in the page's words.
+export function firstLeft(w: Workflow): { text: string; at: string; why?: string; refusal: boolean; count: number } | undefined {
+	const todos = openTodos(w), left = openLeft(w).toSorted((a, b) => a.at.localeCompare(b.at)), count = todos.length + left.length
+	if (todos[0]) return { text: todos[0].text, at: todos[0].at, refusal: false, count }
+	const line = left[0]
+	return line && { text: leftWords(line), at: line.at, ...(line.why ? { why: line.why } : {}), refusal: line.type === 'refusal', count }
+}
 function todoRow(s: Snap, base: Omit<Body, 'kind' | 'headline'>, w: Workflow): Body {
-	const open = openTodos(w), t = open[0], [, why] = t.text.split(REFUSED)
+	const t = firstLeft(w)!, newest = [...openTodos(w), ...openLeft(w)].map(x => x.at).sort().at(-1)!
 	const where = s.place?.(w.chat, w.asker) ?? (w.chat.name && w.chat.name !== w.asker?.name ? w.chat.name : undefined)
-	const to = !why && !CLONE.test(t.text) && w.asker?.name && !isMe(s, w.asker.name) && !isMe(s, w.asker.name.split(/\s+/)[0]) ? first(w.asker.name) : undefined
-	const promise: Promise_ = { ...(to ? { to } : {}), at: t.at, ...(why ? { why: clip(why, 140) } : CLONE.test(t.text) ? {} : { why: 'no tool can do it' }) }
-	// Its rev is the newest to-do it shows, so Mark done marks no to-do kept after the page drew it (re-review N2 P2-C).
-	return { ...base, kind: 'todo', rev: open.map(x => x.at).sort().at(-1)!, headline: todoHeadline(t.text, open.length - 1), facts: { at: t.at, ...(where ? { where } : {}), promise }, primary: { label: 'Mark done', command: `close ${w.code}` }, more: [{ label: 'Open' }] }
+	const to = !t.refusal && !CLONE.test(t.text) && w.asker?.name && !isMe(s, w.asker.name) && !isMe(s, w.asker.name.split(/\s+/)[0]) ? first(w.asker.name) : undefined
+	const promise: Promise_ = { ...(to ? { to } : {}), at: t.at, ...(t.why ? { why: clip(t.why, 140) } : t.refusal || CLONE.test(t.text) ? {} : { why: 'no tool can do it' }) }
+	// Its rev is the newest to-do or line it shows, so Mark done marks nothing kept after the page drew it (re-review N2 P2-C).
+	return { ...base, kind: 'todo', rev: newest, headline: todoHeadline(t.text, t.count - 1), facts: { at: t.at, ...(where ? { where } : {}), promise }, primary: { label: 'Mark done', command: `close ${w.code}` }, more: [{ label: 'Open' }] }
 }
 
 // Who does a plan step: the owner, Delegate, or someone else in the AI's words: the person in the chat of a part of this work the

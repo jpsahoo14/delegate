@@ -12,6 +12,7 @@ import { dirname, join } from 'node:path'
 import { moveOffRecord, restoreOffRecord } from './offrecord.ts'
 import { telemetryEvent } from '../core/telemetry.ts'
 import { personName } from '../core/format.ts'
+import { placeOf } from '../web/model/place.ts'
 
 // Need to know, first slice: a reply may go by itself only when everyone in its chat could already see every other
 // conversation it drew on (dev-spec/sharing.md). Owner-approved sends are not held; the owner sees the sources.
@@ -185,31 +186,32 @@ export async function sharingHold(store: Store, src: Source, wf: Workflow, use: 
 	}
 	return undefined
 }
-// The owner marks a chat in plain words. `chat` is a message link, a chat id, or a name Delegate knows from its items.
+// The owner marks a chat by message link, chat id, known name, or a marked chat's exact displayed place label.
 export function setChatLevel(store: Store, chat: string, level: ChatLevel | 'normal', said?: string): string {
 	const cfg = store.config(), levels = { ...cfg.chatLevels }, known = new Map<string, string>()
 	for (const w of store.workflows()) if (w.chat.id && w.chat.id !== cfg.source?.selfChatId) known.set(w.chat.id, w.chat.name)
 	for (const [id, v] of Object.entries(levels)) known.set(id, v.name)
 	const q = chat.trim(), lc = q.toLowerCase(), direct = parseMessageLink(q)?.chatId ?? (/^\d+:\S+$/.test(q) ? q : undefined)
-	const named = (exact: boolean) => [...known].filter(([, n]) => (exact ? n.toLowerCase() === lc : n.toLowerCase().includes(lc))).map(([i]) => i)
+	const places = new Map(Object.entries(levels).map(([id, v]) => [id, placeOf(store, { id, name: v.name })?.sentence]))
+	const named = (exact: boolean) => [...known].filter(([id, n]) => (exact ? n.toLowerCase() === lc || places.get(id)?.toLowerCase() === lc : n.toLowerCase().includes(lc))).map(([i]) => i)
 	const ids = direct ? [direct] : named(true).length ? named(true) : named(false)
 	if (!ids.length) return `I don't know a chat called "${q}". Paste a link to any message in it.`
-	if (ids.length > 1) return `More than one chat matches "${q}": ${ids.map(i => known.get(i)).join('; ')}. Say which one, or paste a link to a message in it.`
-	const id = ids[0], name = said?.trim() || known.get(id) || 'That chat'
+	if (ids.length > 1) return `More than one chat matches "${q}": ${ids.map(i => places.get(i) ?? known.get(i)).join('; ')}. Say which one, or paste a link to a message in it.`
+	const id = ids[0], name = said?.trim() || known.get(id) || 'That chat', shown = placeOf(store, { id, name })?.sentence ?? name
 	// Shareable within my org is for group and meeting chats: a 1:1 is a conversation by nature (PM rule, #36).
 	const group = store.workflows().find(w => w.chat.id === id)?.chat.group ?? !/@unq\.gbl\.spaces$/.test(id)
-	if (level === 'shareable' && !group) return `Shareable within my org is for group and meeting chats only; ${name} stays a normal chat.`
+	if (level === 'shareable' && !group) return `Shareable within my org is for group and meeting chats only; ${shown} stays a normal chat.`
 	// Off the record takes the chat's facts out of the cards runs read, and back when it is no longer off (#21 §2c).
 	const wasOff = levels[id]?.level === 'off'
 	if (level === 'normal') {
-		if (!levels[id]) return `${name} was not marked, so nothing changed.`
+		if (!levels[id]) return `${shown} was not marked, so nothing changed.`
 		delete levels[id]
 		store.saveConfig({ ...cfg, chatLevels: levels })
 		if (wasOff) restoreOffRecord(store, id)
-		return `${name} is normal again.`
+		return `${shown} is normal again.`
 	}
 	store.saveConfig({ ...cfg, chatLevels: { ...levels, [id]: { level, name, at: new Date().toISOString() } } })
 	if (level === 'off' && !wasOff) moveOffRecord(store, id)
 	else if (level !== 'off' && wasOff) restoreOffRecord(store, id)
-	return `${name} is ${LEVEL_SAYS[level]}. Say "${name} is normal again" to undo.`
+	return `${shown} is ${LEVEL_SAYS[level]}. Say "${shown} is normal again" to undo.`
 }

@@ -9,6 +9,7 @@ import { freshRead } from '../store/fs.ts'
 import type { Source } from '../adapters/source.ts'
 import type { Store } from '../store/state.ts'
 import { isThread } from '../adapters/channels.ts'
+import { telemetryEvent } from '../core/telemetry.ts'
 
 const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
 
@@ -207,6 +208,7 @@ export async function dueAutomations(store: Store, src: Source, cfg: Config, now
 		try {
 			const { msgId } = await src.send(a.to.chatId, out)
 			store.addSent(msgId, out)
+			store.log(telemetryEvent('marker', { code: a.code, applied: true, why: 'auto' }))
 			store.setHealth(`auto:${a.code}`)
 			store.log({ event: 'sent', code: a.code, chat: a.to.chatId, asker: { id: '', name: a.to.name }, approvedBy: `automation:${a.code}`, msgId, text: out })
 			n++

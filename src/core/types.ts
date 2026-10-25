@@ -1,6 +1,7 @@
 import type { Section } from './whose.ts'
 import type { Attachment } from './intake.ts'
 import type { Capability } from './capabilities.ts'
+import type { LeftLine, LeftRefusal } from './left-lines.ts'
 export type Id = string
 export type Code = string
 // open: the reply is out and the work it started goes on; nothing needs the owner now (dev-spec/work.md).
@@ -9,6 +10,7 @@ export type State = 'running' | 'needs_human' | 'waiting_on_task' | 'waiting_on_
 export type Intent = string
 
 export type Person = { id: string; name: string }
+export type QuestionHint = { answers?: string[] }
 // Where an owner's edit was made, so a learned drafting style can be kept to that person or chat (edit habits).
 export type EditScope = { item: string; chat: string; chatName?: string; group: boolean; asker?: Person }
 // Who the owner is on a pull request: a reviewer by name, a member of a reviewer team that has not approved, its author, or none.
@@ -169,7 +171,7 @@ export type Job = {
 	// sent: asks the session has; from: where the run in flight started; ok: asks the owner let through (review 10-19 #5, #12).
 	relay?: { machine: string; session: string; what: string; sent?: number; from?: number; ok?: number }
 	// at: when a tracker check gave this result, so the page says when the last check really ran.
-	result?: { summary: string; reply?: Draft; effects: Effect[]; context?: Fact[]; at?: string; findings?: ReviewFinding[]; reviewHead?: string; reviewClean?: true; reviewSources?: { unknown: boolean; chats: string[]; restricted: boolean }; voteRecommendation?: VoteRecommendation; sendFacts?: Record<string, ResultFacts> }
+	result?: { summary: string; reply?: Draft; effects: Effect[]; context?: Fact[]; refused?: LeftRefusal[]; at?: string; findings?: ReviewFinding[]; reviewHead?: string; reviewClean?: true; reviewSources?: { unknown: boolean; chats: string[]; restricted: boolean }; voteRecommendation?: VoteRecommendation; sendFacts?: Record<string, ResultFacts> }
 	error?: string
 	// Trackers (R-TRK-01): run again every N minutes until the condition in words holds.
 	every?: number
@@ -246,6 +248,7 @@ export type Workflow = {
 	voteClaim?: { why: string; pr?: number; claim: number | 'approval' | 'others'; vote?: number; digest: string; automatic?: boolean; canOverride?: false }
 	voteClaimRedrafted?: true
 	question?: string
+	questionHint?: QuestionHint
 	// What the worker could not read, such as an image or a file it has no access to (R-ING-11).
 	gaps?: string[]
 	choices?: Choices
@@ -286,6 +289,9 @@ export type Workflow = {
 	correction?: { kind: 'wrong' | 'incomplete'; note?: string; sent: string; at: string }
 	// What the reply promises that is still the owner's to do, and the check-back it promised (B19). This turn's list: a new turn drops it.
 	todos?: string[]
+	left?: LeftLine[]
+	leftCleared?: string[]
+	leftRetry?: { id: string; at: string }
 	// The to-dos a sent reply promised, kept across turns until the owner marks them done (R-NEX-07, N2).
 	kept?: Todo[]
 	follow?: Follow
@@ -336,7 +342,7 @@ export type Workflow = {
 	promised?: boolean
 	// The owner's own words went out on an item whose PR Delegate can change: one short run maps what they promise to changes held
 	// for ok (Slice 3). pending: waits for the run; checking: the run is going; offered: its changes wait for ok; failed: it could not tell.
-	promise?: { text: string; at: string; state: 'pending' | 'checking' | 'offered' | 'failed'; why?: string }
+	promise?: { text: string; at: string; msgId?: string; state: 'pending' | 'checking' | 'offered' | 'failed'; why?: string }
 	approved?: { text: string; effects: string; at: string; replyDigest?: string; sendReview?: string; byRule?: string; effectIds?: string[] }
 	revAt?: string
 	newCount: number
@@ -353,11 +359,13 @@ export type ReviewFinding = { text: string; file?: string; line?: number; severi
 export type VoteRecommendation = { vote: 'Approved' | 'ApprovedWithSuggestions' | 'NoVote' | 'WaitingForAuthor' | 'Rejected' | 'none'; why: string }
 
 export type Report = {
+	refused?: LeftRefusal[]
 	workflowId: Id
 	intent: Intent
 	state: 'needs_human' | 'done' | 'waiting_on_sender'
 	reply?: { text: string; commitment: boolean; sources: Source[] }
 	question?: string
+	questionHint?: QuestionHint
 	gaps?: string[]
 	choices?: Choices
 	context?: Fact[]
@@ -394,7 +402,7 @@ export type Blocker = { kind: BlockerKind; why: string; tried: string[]; retryAf
 // The tries so far for one ask: when the next is due, and what each one met.
 export type Retry = { at: string; n: number; total?: number; firstAt: string; kindAt?: string; last: Blocker; tried: string[] }
 
-export type Verb = 'watch' | 'unwatch' | 'mine' | 'ok' | 'edit' | 'send' | 'later' | 'answer' | 'skip' | 'more' | 'undo' | 'continue' | 'pick' | 'ask' | 'wrong' | 'incomplete' | 'unneeded' | 'every' | 'extend' | 'close' | 'wait' | 'never' | 'pause' | 'resume' | 'stop' | 'auto-on' | 'auto-off'
+export type Verb = 'watch' | 'unwatch' | 'mine' | 'ok' | 'edit' | 'send' | 'later' | 'answer' | 'skip' | 'more' | 'undo' | 'continue' | 'pick' | 'ask' | 'wrong' | 'incomplete' | 'unneeded' | 'every' | 'extend' | 'close' | 'wait' | 'never' | 'pause' | 'resume' | 'stop' | 'auto-on' | 'auto-off' | 'left-ask-again' | 'left-draft-invite'
 export const CONTROL_VERBS = ['pause', 'resume', 'stop', 'auto-on', 'auto-off'] as const
 
 // seenAt: when the owner gave the command. An ok older than the item's last change approves nothing (review 01-04 P0).

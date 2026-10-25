@@ -11,6 +11,7 @@ import type { EffectCallRepair } from './effect-calls.ts'
 import { recordCommit } from './commit.ts'
 import { freshRead } from '../store/fs.ts'
 import { stateFields } from '../core/upgrades.ts'
+import type { LeftDraft } from '../core/left-lines.ts'
 
 const reference = (store: Store, items: Workflow[]): CommentRef | undefined => {
 	const refs = items.map(w => prOf(store, w)).filter(r => r !== undefined)
@@ -22,20 +23,22 @@ const reference = (store: Store, items: Workflow[]): CommentRef | undefined => {
 const deferred = (e: Effect) => isVote(e.call) || e.call?.args.action === 'update_reviewers'
 const sameRepair = (a: Effect, b: Effect) => sameChange(a, b) && isDeepStrictEqual(a.payload, b.payload)
 
-export function prepareReportCalls(store: Store, cfg: Config, items: Workflow[], report: Report): { report: Report; problems: string[] } {
-	if (report.goalMet === false) return { report, problems: [] }
+export function prepareReportCalls(store: Store, cfg: Config, items: Workflow[], report: Report): { report: Report; problems: string[]; left: LeftDraft[] } {
+	if (report.goalMet === false) return { report, problems: [], left: [] }
 	const catalogs = cachedCatalogs(cfg), ref = reference(store, items)
 	const prepare = (effects: Effect[] = []) => prepareEffectCalls(effects, ref, catalogs, entry => store.log(entry), deferred)
-	const main = prepare(report.effects), problems = [...main.problems]
+	const main = prepare(report.effects), problems = [...main.problems], left = [...main.left]
 	const choices = report.choices && { ...report.choices, options: report.choices.options.map((option, i) => {
 		const ready = prepare(option.effects)
 		problems.push(...ready.problems.map(p => `${p} (option ${i + 1})`))
+		left.push(...ready.left.map(draft => ({ ...draft, ...(draft.why ? { why: `${draft.why} (option ${i + 1})` } : {}) })))
 		return { ...option, effects: ready.effects }
 	}) }
 	return { report: { ...report, effects: main.effects, ...(choices ? { choices } : {}),
+		...(left.length ? { refused: [...(report.refused ?? []), ...left.filter(draft => draft.type === 'refusal')] } : {}),
 		...(problems.length ? { state: 'needs_human' as const, question: report.question ?? problems.join('\n'),
 			todos: [...new Set([...(report.todos ?? []), ...problems])],
-			work: report.work ? { ...report.work, closed: undefined } : undefined } : {}) }, problems }
+			work: report.work ? { ...report.work, closed: undefined } : undefined } : {}) }, problems, left }
 }
 
 export function builtEffectProblem(cfg: Config, effect: Effect): string | undefined {
@@ -45,7 +48,7 @@ export function builtEffectProblem(cfg: Config, effect: Effect): string | undefi
 }
 
 // effect-call-shape-1 is an idempotent validity rule, including after a catalog changes, not a once-only schema upgrade.
-export function repairPendingEffectCalls(store: Store): number {
+export function repairPendingEffectCalls(store: Store, consume?: (wf: Workflow, drafts: LeftDraft[]) => void): number {
 	const cfg = store.config(), catalogs = cachedCatalogs(cfg)
 	if (!Object.values(catalogs).some(c => c.tools.some(t => /pull_request_thread_write$/i.test(t.name)))) return 0
 	const items = store.workflows(), jobs = new Map(store.jobs().map(job => [job.id, job]))
@@ -56,7 +59,7 @@ export function repairPendingEffectCalls(store: Store): number {
 		if (!['needs_human', 'waiting_on_task', 'open'].includes(wf.state) || wf.work?.closed) continue
 		const job = wf.job ? jobs.get(wf.job) : undefined
 		if (job?.state === 'running') continue
-		const updates: { before: Effect; after?: Effect }[] = [], problems: string[] = []
+		const updates: { before: Effect; after?: Effect }[] = [], problems: string[] = [], left: LeftDraft[] = []
 		const events: { entry: EffectCallRepair; id: string }[] = []
 		const effects = (wf.effects ?? []).flatMap(effect => {
 			const copyMade = job?.result?.effects.some(e => sameChange(e, effect) && (e.done || e.off || maybeOf(store, e) || madeBefore(store, e)))
@@ -68,6 +71,7 @@ export function repairPendingEffectCalls(store: Store): number {
 			for (const entry of notices) events.push({ entry, id: pageChangeId(after ?? effect) })
 			updates.push({ before: effect, after })
 			problems.push(...ready.problems)
+			left.push(...ready.left)
 			if (after) repaired++
 			return after ? [after] : []
 		})
@@ -77,8 +81,9 @@ export function repairPendingEffectCalls(store: Store): number {
 		Object.assign(wf, { effects, ...stateFields(wf, 'needs_human'), approved: undefined, sendAt: undefined, waitingSince: undefined,
 			question: effects.some(e => !e.done && !e.off) ? undefined : problems.join('\n') || undefined,
 			status: updates.some(u => u.after) ? 'The comment format was wrong and is fixed. Post them now?' : problems.join('\n'),
-			todos: [...new Set([...(wf.todos ?? []), ...problems])],
+			todos: consume ? wf.todos : [...new Set([...(wf.todos ?? []), ...problems])],
 			revAt: new Date(Math.max(Date.now(), (Date.parse(wf.revAt ?? wf.updatedAt) || 0) + 1)).toISOString() })
+		if (consume && left.length) consume(wf, left)
 		commit()
 		for (const { entry, id } of events) if (!logged.has(id)) {
 			store.log({ ...entry, pageChangeId: id, code: wf.code })

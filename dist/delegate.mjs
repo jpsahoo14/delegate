@@ -1041,6 +1041,101 @@ var init_deploy = __esm({
   }
 });
 
+// src/core/left-lines.ts
+import { createHash } from "node:crypto";
+function leftRefusal(action2, kind, details = {}) {
+  return { ...details, type: "refusal", action: displayedLeftAction(action2), kind };
+}
+function leftPromise(quote) {
+  return { type: "promise", action: { verb: "promise", key: normalized(quote), ...leftQuote(quote, "owner") } };
+}
+function leftQuote(quote, quoteBy) {
+  const points = Array.from(quote);
+  if (points.length <= 200) return { quote, quoteBy };
+  const prefix = points.slice(0, 199).join("");
+  const clipped = /\s/u.test(points[199]) ? prefix.trimEnd() : prefix.replace(/\S+$/u, "").trimEnd();
+  return { quote: `${clipped}\u2026`, quoteBy };
+}
+function displayedLeftAction(action2) {
+  if (action2.quote === void 0) return action2;
+  const quote = action2.verb === "comment" && action2.quoteBy === "delegate" ? action2.quote.split(/\r?\n/, 1)[0] : action2.quote;
+  return { ...action2, ...leftQuote(quote, action2.quoteBy) };
+}
+function leftActionKey(call2, summary3) {
+  if (!call2) return normalized(summary3);
+  const args2 = Object.fromEntries(Object.entries(call2.args).filter(([key]) => !/^(?:requestId|clientRequestId|correlationId|traceId)$/i.test(key)));
+  const canonical3 = (value) => Array.isArray(value) ? value.map(canonical3) : value && typeof value === "object" ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, v]) => [key, canonical3(v)])) : value;
+  return createHash("sha256").update(JSON.stringify([call2.tool, canonical3(args2)])).digest("hex");
+}
+function leftActionText(action2) {
+  if (action2.verb === "promise") return action2.quote ?? "Keep the promise";
+  const verb = {
+    reply: "Send the reply",
+    comment: "Post the comment",
+    vote: "Cast the vote",
+    merge: "Merge",
+    complete: "Complete",
+    abandon: "Abandon",
+    delete: "Delete",
+    reviewer: "Change reviewers",
+    deploy: "Deploy",
+    invite: "Send the invite",
+    change: "Make the change"
+  };
+  const pr = action2.pr ? `${["merge", "complete", "abandon", "delete"].includes(action2.verb) ? "" : "on "}PR ${action2.pr}` : "";
+  return [verb[action2.verb], pr, action2.target].filter(Boolean).join(" ");
+}
+var normalized;
+var init_left_lines = __esm({
+  "src/core/left-lines.ts"() {
+    "use strict";
+    normalized = (text4) => text4.replace(/\s+/g, " ").trim();
+  }
+});
+
+// src/core/setting-keys.ts
+var STATIC_SETTING_KEYS, settingKey;
+var init_setting_keys = __esm({
+  "src/core/setting-keys.ts"() {
+    "use strict";
+    STATIC_SETTING_KEYS = [
+      "reviewRule",
+      "profile",
+      "aliases",
+      "reviewerGroups",
+      "knowledge",
+      "orgVisibleProjects",
+      "repos",
+      "deployTo",
+      "summaryAt",
+      "quietHours",
+      "dailyRuns",
+      "autoUpdate",
+      "updateEvery",
+      "signature",
+      "signApproved",
+      "noticeHabits",
+      "reviewLearning",
+      "delayMin",
+      "undoMin",
+      "maxAutoPerChatHour",
+      "quiet",
+      "tz",
+      "pollIdle",
+      "pollFast",
+      "pollFastFor",
+      "maxParallel",
+      "hostIdleMin",
+      "retentionDays",
+      "followUpHours",
+      "model",
+      "showDetails",
+      "toolsAll"
+    ];
+    settingKey = (entry) => STATIC_SETTING_KEYS.find((key) => key === entry) ?? `change:${entry}`;
+  }
+});
+
 // src/core/effects.ts
 function proposalEffects(effects, items2) {
   const turns = items2.map((w) => `${w.id}:${w.lastMsgId}`);
@@ -1070,26 +1165,48 @@ function askedVote(text4) {
   }
   return found.size === 1 ? [...found][0] : void 0;
 }
-function refusal(cfg, e, pr) {
+function effectLeftAction(e, pr) {
+  const c = e.call, action2 = String(c?.args.action ?? e.action).toLowerCase();
+  const status3 = String(c?.args.status ?? "").toLowerCase();
+  const lifecycle = ["merge", "complete", "abandon", "delete"].find((verb2) => verb2 === action2);
+  const verb = isDeploy(c) || c && isPipelineTool(c) ? "deploy" : isVote(c) || /^(vote|approve)$/.test(e.action) ? "vote" : lifecycle ? lifecycle : c && prTool(c) && !/thread/i.test(c.tool) && /^(completed|3)$/.test(status3) ? "complete" : c && prTool(c) && !/thread/i.test(c.tool) && /^(abandoned|2)$/.test(status3) ? "abandon" : /delete/i.test(c?.tool ?? "") ? "delete" : action2 === "update_reviewers" ? "reviewer" : /pull_request_thread/i.test(c?.tool ?? "") || /^(?:post[_ -]?)?(?:pr[_ -]?)?comment$/i.test(e.action) ? "comment" : isInvite(e) ? "invite" : "change";
+  const id = prIdOf(c) ?? e.deploy?.pr ?? (["comment", "vote", "reviewer", "deploy", "merge", "complete", "abandon"].includes(verb) ? pr : void 0);
+  const payload = e.payload && typeof e.payload === "object" && "text" in e.payload ? e.payload.text : void 0;
+  const comment = [c?.args.content, c?.args.text, c?.args.body, payload].find((value) => typeof value === "string");
+  const base2 = { key: leftActionKey(c, e.summary), verb, ...id ? { pr: id } : {}, ...e.deploy?.ring ? { target: e.deploy.ring } : {} };
+  return verb === "comment" && comment !== void 0 ? { ...base2, ...leftQuote(comment.split(/\r?\n/, 1)[0], "delegate") } : base2;
+}
+function effectRefusal(cfg, e, pr) {
   const c = e.call;
-  if (!c) return "it names no exact call";
-  if (isPipelineTool(c) && !isDeploy(c)) return `${NAME} never creates, renames, or changes a pipeline, or cancels or retries its stages`;
-  if (forbidden(c)) return `${NAME} never completes, merges, abandons, bypasses, or deletes`;
-  if (isDeploy(c)) return deployRefusal(cfg, e, pr);
-  if (!allows(cfg.agent.effectTools, c)) return `${c.tool}${c.args.action ? `:${String(c.args.action)}` : ""} is not one of the changes you allow`;
+  const deny = (kind, why2, setting) => leftRefusal(effectLeftAction(e, pr), kind, { why: why2, ...setting ? { setting } : {} });
+  if (!c) return deny("incomplete", "it names no exact call");
+  if (isPipelineTool(c) && !isDeploy(c)) return deny("deploy", `${NAME} never creates, renames, or changes a pipeline, or cancels or retries its stages`);
+  if (forbidden(c)) return deny(prTool(c) ? "pr-lifecycle" : "other", `${NAME} never completes, merges, abandons, bypasses, or deletes`);
+  if (isDeploy(c)) {
+    const why2 = deployRefusal(cfg, e, pr);
+    return why2 ? deny("deploy", why2, settingKey("deployTo")) : void 0;
+  }
+  if (!allows(cfg.agent.effectTools, c)) {
+    const entry = `${c.tool}${c.args.action ? `:${String(c.args.action)}` : ""}`;
+    const setting = settingKey(LINES[entry] || site().actions?.[entry] ? entry : c.tool);
+    return deny("setting-off", `${entry} is not one of the changes you allow`, setting);
+  }
   const id = prIdOf(c);
-  if (id === void 0 && (prTool(c) || isVote(c))) return "a pull request change must name its PR by number in pullRequestId";
-  if (id !== void 0 && id !== pr) return `PR ${id} is not this item's PR${pr ? ` (${pr})` : ""}`;
-  if (isVote(c) && voteValue(c) === void 0) return "a vote must be Approved, ApprovedWithSuggestions, WaitingForAuthor, Rejected, or NoVote";
-  if (isVote(c) && !e.head) return "a vote must name the commit the review read";
+  if (id === void 0 && (prTool(c) || isVote(c))) return deny("incomplete", "a pull request change must name its PR by number in pullRequestId");
+  if (id !== void 0 && id !== pr) return deny("other-pr", `PR ${id} is not this item's PR${pr ? ` (${pr})` : ""}`);
+  if (isVote(c) && voteValue(c) === void 0) return deny("incomplete", "a vote must be Approved, ApprovedWithSuggestions, WaitingForAuthor, Rejected, or NoVote");
+  if (isVote(c) && !e.head) return deny("incomplete", "a vote must name the commit the review read");
   if (prTool(c) && String(c.args.action ?? "").toLowerCase() === "update_reviewers") {
     const ids = Array.isArray(c.args.reviewerIds) ? c.args.reviewerIds.map(String) : [];
     const upn = (cfg.owner.upn ?? "").trim().toLowerCase();
-    if (!(String(c.args.reviewerAction ?? "").toLowerCase() === "add" && ids.length === 1 && upn && ids[0].trim().toLowerCase() === upn)) return `${NAME} may only add you as a reviewer, never remove anyone or add someone else`;
+    if (!(String(c.args.reviewerAction ?? "").toLowerCase() === "add" && ids.length === 1 && upn && ids[0].trim().toLowerCase() === upn)) return deny("other", `${NAME} may only add you as a reviewer, never remove anyone or add someone else`);
   }
   const invite = inviteShapeProblem(c);
-  if (invite) return invite;
+  if (invite) return deny("old-invite", invite);
   return void 0;
+}
+function deployBusyLeft(e, why2, pr) {
+  return leftRefusal({ ...effectLeftAction(e, pr), verb: "deploy" }, "deploy", { why: why2 });
 }
 function inviteShapeProblem(c) {
   if (!c || !/(?:^|[-_])CreateEvent$/i.test(c.tool)) return void 0;
@@ -1111,20 +1228,25 @@ function toolShape(c) {
   return { ...c, args: { ...rest2, subject: a.subject, attendeeEmails: emails, startDateTime: utc(start), endDateTime: utc(start + minutes * 6e4), timeZone: "UTC" } };
 }
 function vet(cfg, effects = [], pr) {
-  const ok = [], todos = [];
-  const todo = (e, why2) => todos.push(`${e.summary.replace(/[.\s]+$/, "")}. Not made for you: ${why2}`);
+  const ok = [], left = [], todos = [];
   for (const raw of effects) {
     const [tool, action2] = parts(raw.call?.tool ?? "");
     const split2 = raw.call && action2 && action2.toLowerCase() === String(raw.call.args.action ?? "").toLowerCase() ? { ...raw, call: { ...raw.call, tool } } : raw;
     const e = split2.call ? { ...split2, call: toolShape(split2.call) } : split2;
-    const why2 = refusal(cfg, e, pr);
-    if (why2) todo(e, why2);
-    else ok.push(isDeploy(e.call) ? { ...e, deploy: { ring: targetOf(cfg, pipelineOf(e.call)).ring, pr } } : e);
+    const denied2 = effectRefusal(cfg, e, pr);
+    if (denied2) {
+      left.push(denied2);
+      todos.push(`${e.summary.replace(/[.\s]+$/, "")}. Not made for you: ${denied2.why}`);
+    } else ok.push(isDeploy(e.call) ? { ...e, deploy: { ring: targetOf(cfg, pipelineOf(e.call)).ring, pr } } : e);
   }
   const first3 = ok.find((e) => isDeploy(e.call));
-  if (!first3) return { effects: ok, todos };
-  for (const e of ok.filter((x) => x !== first3)) todo(e, `one change at a time with a deploy; propose it again after the deploy to ${first3.deploy.ring} is made`);
-  return { effects: [first3], todos };
+  if (!first3) return { effects: ok, left, todos };
+  for (const e of ok.filter((x) => x !== first3)) {
+    const why2 = `one change at a time with a deploy; propose it again after the deploy to ${first3.deploy.ring} is made`;
+    left.push(leftRefusal(effectLeftAction(e, pr), "deploy", { why: why2 }));
+    todos.push(`${e.summary.replace(/[.\s]+$/, "")}. Not made for you: ${why2}`);
+  }
+  return { effects: [first3], left, todos };
 }
 function known(c, pr, e) {
   const a = c.args, action2 = a.action === void 0 ? "" : String(a.action), prKey = pr ? ["pullRequestId"] : [];
@@ -1181,7 +1303,7 @@ function changeSays(e) {
   const says2 = !x.line.toLowerCase().includes(x.text.toLowerCase()) ? `: ${x.text}` : "";
   return `${x.line}${where ? ` at ${where}` : ""}${says2}`;
 }
-var pendingEffects, sameChange, sameProposal, carryMarks, parts, allows, toolOf, NEVER_KEY, never, prTool, forbidden, SETUP_REFUSAL, prIdOf, isVote, VOTES, VOTE_NAME, VOTE_WORDS, sameHead, ASK_VOTE, voteName, isInvite, BOOK, asksInvite, claimsInvite, OLD_INVITE, OLD_INVITE_ASK, reviewAgainCmd, reviewAgain, asksReviewAgain, refusedAsk, LINES, WRITE_DEFAULTS, offerable, line, changeName, changeLine, prParts, meaningParts, meaningOf, str, VOTE_SAYS, at, doLine, saidLine;
+var pendingEffects, sameChange, sameProposal, carryMarks, parts, allows, toolOf, NEVER_KEY, never, prTool, forbidden, SETUP_REFUSAL, prIdOf, isVote, VOTES, VOTE_NAME, VOTE_WORDS, sameHead, ASK_VOTE, voteName, isInvite, BOOK, asksInvite, claimsInvite, refusal, OLD_INVITE, OLD_INVITE_ASK, reviewAgainCmd, reviewAgain, asksReviewAgain, refusedAsk, LINES, WRITE_DEFAULTS, offerable, line, changeName, changeLine, prParts, meaningParts, meaningOf, str, VOTE_SAYS, at, doLine, saidLine;
 var init_effects = __esm({
   "src/core/effects.ts"() {
     "use strict";
@@ -1189,6 +1311,8 @@ var init_effects = __esm({
     init_tool_class();
     init_brand();
     init_deploy();
+    init_left_lines();
+    init_setting_keys();
     pendingEffects = (es = []) => es.filter((e) => !e.done && !e.off);
     sameChange = (a, b) => JSON.stringify([a.system, a.action, a.target, a.call ?? a.payload ?? null]) === JSON.stringify([b.system, b.action, b.target, b.call ?? b.payload ?? null]) && (!isVote(a.call) || (a.head ?? null) === (b.head ?? null));
     sameProposal = (a, b) => sameChange(a, b) && (a.turns && b.turns ? a.turns.some((turn) => b.turns?.includes(turn)) : !a.turns && !b.turns);
@@ -1232,6 +1356,7 @@ var init_effects = __esm({
       return !!m && !/\b(?:do not|don't|dont|no need to|not|never|without)\b/i.test(s3.slice(0, m.index));
     });
     claimsInvite = (text4) => /\b(?:I(?:'|’)ve|I have|I(?:'|’)ve just|we(?:'|’)ve|we have)\s+(?:just\s+)?(?:sent|booked|scheduled|set up)\b[^.!?]{0,80}\b(?:invite|invitation|meeting|call|sync)\b|\b(?:invite|invitation)\b[^.!?]{0,40}\b(?:is|was|has been)\s+(?:sent|booked)\b|\bsent (?:you |them |everyone )?(?:an? |the )?(?:invite|invitation)\b/i.test(text4);
+    refusal = (cfg, e, pr) => effectRefusal(cfg, e, pr)?.why;
     OLD_INVITE = "this invite was proposed in an older form";
     OLD_INVITE_ASK = `The invite was proposed in an older form ${NAME} cannot make. Answer to have ${NAME} draft the invite again; nothing is sent until you OK the new draft.`;
     reviewAgainCmd = (code) => `${code}: review again`;
@@ -1335,6 +1460,42 @@ var init_share = __esm({
   }
 });
 
+// src/core/pr-refs.ts
+function linksIn(text4) {
+  const out = /* @__PURE__ */ new Set();
+  for (const m of text4.matchAll(/\b(?:pull request|PR)\s*#?\s*(\d{4,})/gi)) out.add(`pr:${m[1]}`);
+  for (const m of text4.matchAll(/https?:\/\/[^\s<>]+\/pullrequest\/(\d+)/gi)) out.add(`pr:${m[1]}`);
+  const esc4 = (w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const builds = ["build", "run", "pipeline run", ...site().buildWords ?? []].map(esc4).join("|");
+  for (const m of text4.matchAll(new RegExp(`\\b(?:${builds})\\s*#?\\s*(\\d{6,})\\b`, "gi"))) out.add(`build:${m[1]}`);
+  const words4 = ["incident", ...site().incidentWords ?? []].map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
+  for (const m of text4.matchAll(new RegExp(`\\b(?:${words4})\\s*#?\\s*(\\d{6,})`, "gi"))) out.add(`incident:${m[1]}`);
+  for (const m of text4.matchAll(/\b(?:work ?item|bug|task)\s*#?\s*(\d{6,})/gi)) out.add(`workItem:${m[1]}`);
+  return [...out];
+}
+function prMentions(text4) {
+  return text4.matchAll(/\b(?:PR|pull\s+request|pullrequest\/)\s*#?\s*(\d+)\b|(?:^|\s)#(\d{3,})\b/gi);
+}
+function isNonAdoPrLink(url2) {
+  if (!URL.canParse(url2)) return false;
+  const link2 = new URL(url2), host = link2.hostname.toLowerCase();
+  return /^https?:$/.test(link2.protocol) && host !== "dev.azure.com" && !host.endsWith(".visualstudio.com") && /\/(?:pull|pull-requests|merge_requests)\/[1-9]\d*(?:\/|$)/i.test(link2.pathname);
+}
+function adoPrNumber(url2) {
+  if (!URL.canParse(url2)) return void 0;
+  const link2 = new URL(url2), host = link2.hostname.toLowerCase();
+  if (!/^https?:$/.test(link2.protocol) || host !== "dev.azure.com" && !host.endsWith(".visualstudio.com")) return void 0;
+  return Number(/\/pullrequest\/(\d+)(?:\/|$)/i.exec(link2.pathname)?.[1]) || void 0;
+}
+var prNumbersIn;
+var init_pr_refs = __esm({
+  "src/core/pr-refs.ts"() {
+    "use strict";
+    init_site();
+    prNumbersIn = (text4) => [...prMentions(text4)].map((m) => Number(m[1] ?? m[2]));
+  }
+});
+
 // src/core/vote-claims.ts
 function voteClaimText(pr, claim2, text4) {
   const target2 = pr === void 0 ? "this PR" : `PR ${pr}`;
@@ -1343,13 +1504,129 @@ function voteClaimText(pr, claim2, text4) {
   const words4 = claim2 === -10 ? /\brequested changes\b/i.test(text4) ? "asked for changes" : "rejected it" : claim2 === -5 ? "are waiting for the author" : claim2 === 0 ? "have no vote set" : "approved";
   return `Your reply says you ${words4}, but Delegate won't vote on ${target2}. Change the reply first.`;
 }
-var APPROVAL_WORD, approvalMention, voteMention;
+function approvalReplyMatches(text4, vote, pr) {
+  if (!voteMention(text4)) return true;
+  return sentencesOf(text4).filter(voteMention).every((s3) => approvalSentenceMatches(s3, vote, pr));
+}
+function approvalSentenceMatches(sentence2, vote, pr) {
+  const line3 = sentence2.replace(/[.!;]$/, "");
+  const target2 = "(?:\\s+(?:(?:the\\s+)?(?:PR|pull request)(?:\\s*#?\\s*\\d+)?|it|\\d+))?";
+  const condition = "(?:\\s+(?:after|once|when|until)\\s+(?:(?:the\\s+|its\\s+)?(?:build|tests?|checks?|requested changes|null check|comments?)(?:\\s+(?:is|are)\\s+(?:green|fixed|addressed|resolved|complete|done))?|checking the comments))?";
+  const future = new RegExp(`^(?:(?:(?:Rechecked,?\\s+)?looks good(?: to me)?[.!;]|Yes,)\\s+)?(?:I|we)(?:'ll| will(?: not)?| won't)\\s+(?:approve|sign[ -]?off)${target2}(?:\\s+too)?${condition}(?:, and add [a-z][a-z -]{0,60} as a reviewer)?$`, "i");
+  if (future.test(line3)) return true;
+  if ([...prNumbersIn(line3), ...[...line3.matchAll(/\b(?:approve|approved|sign[ -]?off|signed[ -]?off)\s+#?(\d+)\b/gi)].map((m) => Number(m[1]))].some((id) => id !== pr)) return false;
+  if (vote === void 0 || !Object.values(VOTES).includes(vote)) return false;
+  const negative = new RegExp(`^(?:(?:I|we)\\s+(?:have not|haven't|did not|didn't|have never|never)\\s+(?:approved|signed[ -]?off)${target2}(?:\\s+yet)?|(?:Not yet,\\s*)?(?:my|our)\\s+approval\\s+(?:has not been|hasn't been|is not|isn't)\\s+(?:recorded|given))$`, "i");
+  if (negative.test(line3)) return vote !== void 0 && vote < 5;
+  const said2 = explicitVote(line3);
+  if (said2 !== void 0) return vote === said2 && /^(?:my vote (?:is|was set to|has been set to)|(?:I|we)(?:'ve| have)?\s+(?:(?:just|now|already)\s+)?(?:voted|set my vote(?: on \S+(?: \d+)?)? to))\s+(?:now\s+)?["']?(?:approved with suggestions|approved|waiting for author|waitingforauthor|rejected|no vote|novote)["']?$/i.test(line3);
+  if (/^(?:(?:I|we)(?:'ve| have)?\s+)?(?:rejected(?:\s+(?:it|the PR|PR\s+#?\d+))?(?: for now)?|requested changes(?:\s+on (?:the )?PR(?:\s+#?\d+)?)?)$/i.test(line3)) return vote === -10;
+  if (/^(?:(?:I|we)(?:'m| am| are)?\s+)?waiting (?:for|on) author$/i.test(line3)) return vote === -5;
+  const positive = new RegExp(`^(?:Reviewed and\\s+)?(?:(?:I|we)(?:'ve|\\s+have)?\\s+)?(?:approved|signed[ -]?off)${target2}(?:,?\\s*(?:thanks|with suggestions|with one nit))?$|^LGTM$`, "i");
+  return vote !== void 0 && vote >= 5 && positive.test(line3);
+}
+function othersSentence(sentence2, owner2) {
+  const line3 = sentence2.replace(/[.!;]$/, "");
+  if (FIRST_PERSON.test(line3) || /^\W*(?:(?:have|had|has|just|already|now|also)\s+)*(?:approved|signed[ -]?off|LGTM)\b/i.test(line3)) return void 0;
+  const named2 = NAMED_APPROVED.exec(line3), by = APPROVED_BY.exec(line3);
+  const simple = /^(@?[\p{Lu}][\p{L}'-]*(?:\s+[\p{Lu}][\p{L}'-]*){0,3})\s+(?:approves|approved|signed[ -]?off)\b/u.exec(line3);
+  const who2 = (named2 ? line3.slice(0, named2.index) : by?.[1] ?? simple?.[1] ?? "").replace(/[@*_]/g, " ").trim();
+  if (who2) return owner2 && who2.toLowerCase().includes(owner2.toLowerCase()) ? void 0 : { kind: "named", who: who2 };
+  return PENDING.test(line3) && !/\bapproved\b/i.test(line3) ? { kind: "pending" } : void 0;
+}
+function othersApprovalMismatch(kinds2, st, pr) {
+  for (const k of kinds2) {
+    if (k.kind === "pending") {
+      if (!/^active$/i.test(st.status)) return `PR ${pr} is ${st.status.toLowerCase()}, so no approval is pending`;
+      if (st.votes.length && st.votes.every((v) => v.vote >= 5)) return `every reviewer on PR ${pr} has approved, so none is pending`;
+      continue;
+    }
+    const words4 = (s3) => s3.toLowerCase().split(/[^\p{L}\p{N}'-]+/u).filter((w) => w.length > 1);
+    const said2 = words4(k.who);
+    const hits = st.votes.map((v) => {
+      const full = words4(v.name), at3 = (() => {
+        for (let i = said2.length - 1; i >= 0; i--) if (full.includes(said2[i])) return i;
+        return -1;
+      })();
+      return { v, at: at3 };
+    }).filter((h) => h.at >= 0);
+    const last2 = Math.max(-1, ...hits.map((h) => h.at)), named2 = hits.filter((h) => h.at === last2);
+    if (!named2.length) return `the reply says "${k.who}" approved, but no reviewer by that name is on PR ${pr}`;
+    if (named2.length > 1) return `the reply says "${k.who}" approved, but more than one reviewer on PR ${pr} matches that name`;
+    if (named2[0].v.vote < 5) return `the reply says ${named2[0].v.name} approved, but their vote on PR ${pr} is ${voteName(named2[0].v.vote)}`;
+  }
+  return void 0;
+}
+function explicitVote(s3) {
+  const v = /\bmy vote (?:is|was set to|has been set to)\s+(?:now\s+)?["']?(approved with suggestions|approved|waiting for author|waitingforauthor|rejected|no vote|novote)\b/i.exec(s3) ?? /\b(?:I|we)(?:'ve|\s+have)?\s+(?:just\s+|now\s+|already\s+)?(?:voted|set my vote(?: on \S+(?: \d+)?)? to)\s+["']?(approved with suggestions|approved|waiting for author|waitingforauthor|rejected|no vote|novote)\b/i.exec(s3);
+  return v ? VOTE_SAID[v[1].toLowerCase().replace(/\s+/g, "")] : void 0;
+}
+function notClaim(s3) {
+  const completed = /\b(?:approved|signed[ -]?off|rejected|requested changes|voted|waiting (?:for|on) author|lgtm)\b/i.exec(s3);
+  const before = completed ? s3.slice(0, completed.index).replace(/^\s*when\s+(?=(?:I|we)(?:'ve|\s+have)?\s)/i, "") : s3;
+  return /\?\s*$/.test(s3) || /^(?:please\b|(?:could|can|would|will) you\b)/i.test(s3) || /^(?:approve|reject|request changes|sign[ -]?off)\s+(?:it|this|that|the PR|PR\s+#?\d+)\b/i.test(s3) || /^(?:looks? |it (?:looks? |is ))?(?:not )?ready for (?:approval|sign[ -]?off)\b/i.test(s3) || /\b(?:not|never|until|unless|if|once|after|when|before|will)\b|n't\b|'ll\b/i.test(before);
+}
+function voteSentences(text4, owner2 = "") {
+  return sentencesOf(text4).filter(voteMention).flatMap((sentence2) => sentence2.split(/[,;\u2014\u2013:]\s*(?:(?:but|and)\s+)?/i).map((clause) => clause.trim()).filter(voteMention).map((clause) => {
+    const others = othersSentence(clause, owner2);
+    const vote = explicitVote(clause) ?? (/\breject(?:ed|ion)?\b|\brequested changes\b/i.test(clause) ? -10 : /\bwaiting (?:for|on) author\b/i.test(clause) ? -5 : "approval");
+    return { sentence: sentence2, vote, kind: VOTE_CLASSES.find((row) => row.matches(clause, owner2)).kind, others };
+  }));
+}
+function approvalClaim(text4, owner2) {
+  const said2 = voteSentences(text4, owner2).filter((s3) => s3.kind !== "none");
+  if (said2.some((s3) => s3.kind === "owner")) return "owner";
+  const others = said2.flatMap((s3) => s3.others ? [s3.others] : []);
+  return others.length ? { others } : "none";
+}
+function voteClaimGap(text4, effects = [], lastKnownVote) {
+  for (const said2 of voteSentences(text4).filter((s3) => s3.kind === "owner")) {
+    const ids = prNumbersIn(said2.sentence), candidates2 = [...new Set(effects.filter((e) => isVote(e.call)).map((e) => prIdOf(e.call)).filter((id) => id !== void 0))];
+    const prs = ids.length ? ids : lastKnownVote ? [lastKnownVote.pr] : candidates2.length === 1 ? candidates2 : [void 0];
+    for (const pr of prs) {
+      const matches2 = (vote) => vote !== void 0 && (said2.vote === "approval" ? vote >= 5 : vote === said2.vote);
+      const supported = pr !== void 0 && (lastKnownVote?.pr === pr && matches2(lastKnownVote.vote) || effects.some((e) => isVote(e.call) && prIdOf(e.call) === pr && !e.off && !e.error && !e.maybe && (!e.done || !!lastKnownVote?.head && sameHead(e.head, lastKnownVote.head)) && matches2(voteValue(e.call))));
+      if (!supported) return { pr, claim: said2.vote, why: voteClaimText(pr, said2.vote, said2.sentence) };
+    }
+  }
+  return void 0;
+}
+function claimedPrs(text4, askPrs2, single) {
+  const said2 = voteSentences(text4).filter((s3) => s3.kind !== "none").flatMap((s3) => prNumbersIn(s3.sentence));
+  if (said2.length) return [...new Set(said2)];
+  if (askPrs2.length > 1 && /\b(?:all|both|each|every|them|these|those)\b/i.test(text4)) return askPrs2;
+  return single ? [single] : askPrs2.length === 1 ? askPrs2 : [];
+}
+var APPROVAL_WORD, approvalMention, voteMention, untagged, sentencesOf, reReviewAsk, FIRST_PERSON, NAMED_APPROVED, APPROVED_BY, PENDING, VOTE_SAID, VOTE_CLASSES, approvalAsk, approvalOnly;
 var init_vote_claims = __esm({
   "src/core/vote-claims.ts"() {
     "use strict";
+    init_effects();
+    init_pr_refs();
     APPROVAL_WORD = /\bapprov(?:e|es|ed|ing|als?)\b|\bsign(?:ed|ing)?[ -]?off\b|\blgtm\b/i;
     approvalMention = (text4) => APPROVAL_WORD.test(text4);
     voteMention = (text4) => approvalMention(text4) || /\breject(?:ed|ion)?\b|\brequested changes\b|\bwaiting (?:for|on) author\b|\bmy vote\b/i.test(text4);
+    untagged = (text4) => text4.trim().replace(/\u2019/g, "'").replace(/^(?:\[[^\]\n]{1,120}\]\s*)+/, "");
+    sentencesOf = (text4) => untagged(text4).split(/(?<=[.!?;])\s+|\n+/).map((s3) => s3.trim()).filter(Boolean);
+    reReviewAsk = (text4) => /re[ -]?review|review again|recheck/i.test(text4);
+    FIRST_PERSON = /\b(?:I|we|my|our|me|us|mine)\b/i;
+    NAMED_APPROVED = /\b(?:has|have|had)\s+(?:already\s+|now\s+|just\s+)?(?:approved|signed[ -]?off)\b/i;
+    APPROVED_BY = /\b(?:approved|signed[ -]?off)\s+by\s+(.+)$/i;
+    PENDING = /\b(?:approvals?|sign[ -]?offs?)\b.*\b(?:is|are)\s+(?:still\s+)?(?:pending|outstanding|needed|required|missing)\b|\b(?:still\s+)?(?:needs?|waiting\s+(?:on|for)|awaiting)\b.*\b(?:approvals?|sign[ -]?offs?)\b/i;
+    VOTE_SAID = { approved: 10, approvedwithsuggestions: 5, waitingforauthor: -5, rejected: -10, novote: 0 };
+    VOTE_CLASSES = [
+      { kind: "none", matches: (s3, _owner) => notClaim(s3) },
+      { kind: "others", matches: (s3, owner2) => !!othersSentence(s3, owner2) },
+      { kind: "owner", matches: (_s, _owner) => true }
+    ];
+    approvalAsk = (text4) => approvalMention(text4) && !reReviewAsk(text4);
+    approvalOnly = (wf) => {
+      const k = wf.work;
+      if (!k || !/^(?:please\s+)?(?:review\s+(?:and|&)\s+)?(?:approve|sign[ -]?off)\s+(?:PR|pull request)\s*#?\s*\d{4,}[.!]?$/i.test(k.goal)) return false;
+      if (k.plan?.some((p) => !p.done) || /\b(?:after|before|then|validat\w*|test\w*|deploy\w*|ship\w*|monitor\w*|rollback|config\w*|partner)\b/i.test(k.doneWhen)) return false;
+      const goal = linksIn(k.goal).filter((l) => l.startsWith("pr:")), ask = linksIn(wf.lastAsk ?? "").filter((l) => l.startsWith("pr:"));
+      return new Set([...k.links.filter((l) => /^pr:/i.test(l)), ...goal, ...ask].map((l) => l.split(/[:/]/).at(-1))).size <= 1;
+    };
   }
 });
 
@@ -4802,8 +5079,8 @@ var init_schemas = __esm({
       const _normalized = cached2(() => normalizeDef(def));
       const memo2 = globalConfig.memoizer;
       const generateFastpass = (shape) => {
-        const normalized2 = _normalized.value;
-        const syms = normalized2.symbolKeys;
+        const normalized3 = _normalized.value;
+        const syms = normalized3.symbolKeys;
         const doc = new Doc(["payload", "ctx"], { shape, inst, memo: memo2, syms });
         const parseStr = (k) => `shape[${k}]._zod.run({ value: input[${k}], issues: [] }, ctx)`;
         const prefixStr = (id, k) => `
@@ -4821,11 +5098,11 @@ var init_schemas = __esm({
         doc.write(`const input = payload.value;`);
         const ids = /* @__PURE__ */ Object.create(null);
         let counter = 0;
-        for (const key of normalized2.allKeys) {
+        for (const key of normalized3.allKeys) {
           ids[key] = `key_${counter++}`;
         }
         doc.write(memo2 ? `const newResult = memo.alloc(inst, payload, {}, ctx);` : `const newResult = {};`);
-        for (const key of normalized2.allKeys) {
+        for (const key of normalized3.allKeys) {
           if (key === "__proto__")
             continue;
           const id = ids[key];
@@ -21042,23 +21319,23 @@ function fromJSONSchema(schema2, params) {
   if (typeof schema2 === "boolean") {
     return schema2 ? z.any() : z.never();
   }
-  let normalized2;
+  let normalized3;
   try {
-    normalized2 = JSON.parse(JSON.stringify(schema2));
+    normalized3 = JSON.parse(JSON.stringify(schema2));
   } catch {
     throw new Error("fromJSONSchema input is not valid JSON (possibly cyclic); use $defs/$ref for recursive schemas");
   }
-  const version4 = detectVersion(normalized2, params?.defaultTarget);
-  const defs = normalized2.$defs || normalized2.definitions || {};
+  const version4 = detectVersion(normalized3, params?.defaultTarget);
+  const defs = normalized3.$defs || normalized3.definitions || {};
   const ctx = {
     version: version4,
     defs,
     refs: /* @__PURE__ */ new Map(),
     processing: /* @__PURE__ */ new Set(),
-    rootSchema: normalized2,
+    rootSchema: normalized3,
     registry: params?.registry ?? globalRegistry
   };
-  return convertSchema(normalized2, ctx);
+  return convertSchema(normalized3, ctx);
 }
 var z, RECOGNIZED_KEYS, SCHEMA_KEYWORDS, SCHEMA_MAP_KEYWORDS, fullTime;
 var init_from_json_schema = __esm({
@@ -21827,7 +22104,7 @@ var init_limits = __esm({
 });
 
 // src/core/rule-lines.ts
-import { createHash } from "node:crypto";
+import { createHash as createHash2 } from "node:crypto";
 function compileRuleLine(line3, raw, trusted = []) {
   const output2 = RuleCompileSchema.parse(raw);
   const grants = output2.grants.map((grant, i) => {
@@ -21979,7 +22256,7 @@ var init_rule_lines = __esm({
       if (output2.setting && (output2.grants.length || output2.question))
         ctx.addIssue({ code: "custom", message: "A Settings redirect cannot also grant an action or ask a question." });
     });
-    ruleTextHash = (text4) => createHash("sha256").update(text4).digest("hex");
+    ruleTextHash = (text4) => createHash2("sha256").update(text4).digest("hex");
     widening = (rule) => !rule.style && ["send", "ack", "ignore", "review"].includes(rule.then);
     grantConfirmed = (rule) => !widening(rule) || !rule.when.results && rule.catalogVersion === void 0 || !!rule.confirmedAt && rule.confirmedHash === ruleTextHash(rule.text) && (!rule.when.results || (rule.catalogVersion ?? 0) >= 3);
     lineConfirmed = (line3) => !line3.unbound && !!line3.confirmedAt && line3.confirmedHash === ruleTextHash(line3.text) && line3.confirmedCatalogVersion === line3.catalogVersion;
@@ -22112,14 +22389,15 @@ function whyWaited(wf, rules, ctx) {
 }
 function withMarker(text4, marker, ownerName, required2 = true) {
   const line3 = marker.replace("{first}", ownerName.split(/\s+/)[0]);
-  let body = text4.trimEnd(), marked = false;
+  let body = text4.trimEnd();
   while (line3.length && body.toLowerCase().endsWith(line3.toLowerCase())) {
-    body = body.slice(0, -line3.length).trimEnd();
-    marked = true;
+    const before = body.slice(0, -line3.length);
+    if (before && !/[\r\n]$/.test(before)) break;
+    body = before.trimEnd();
   }
-  return required2 || marked ? `${body}
+  return required2 ? `${body}
 
-${line3}` : text4;
+${line3}` : body;
 }
 function inQuietHours(now, quiet = { from: "20:00", to: "08:00" }) {
   const m = now.getHours() * 60 + now.getMinutes();
@@ -22165,19 +22443,99 @@ var init_policy = __esm({
   }
 });
 
+// src/runner/left.ts
+import { createHash as createHash3 } from "node:crypto";
+function mergeLeft(wf, drafts, source3, reviewHead, at3 = (/* @__PURE__ */ new Date()).toISOString()) {
+  const merged = [];
+  const sourceIdentity = source3.kind === "review" && reviewHead ? `${source3.href ?? ""}@${reviewHead}` : source3.href ?? "";
+  for (const draft2 of drafts) {
+    if (!draft2.action.key.trim()) throw new Error("A Left-for-you draft must have a producer-computed action key");
+    const id = `left-${createHash3("sha256").update([
+      draft2.type,
+      draft2.kind ?? "",
+      draft2.action.verb,
+      draft2.action.pr ?? draft2.pr?.id ?? "",
+      draft2.action.target ?? "",
+      draft2.action.key,
+      sourceIdentity
+    ].join("|")).digest("hex").slice(0, 16)}`;
+    if (wf.leftCleared?.includes(id)) continue;
+    const prior = wf.left?.find((line4) => line4.id === id);
+    if (prior?.cleared) continue;
+    const line3 = { ...structuredClone(draft2), id, source: { ...prior?.source ?? source3 }, at: prior?.at ?? at3 };
+    wf.left ??= [];
+    const index = wf.left.findIndex((item2) => item2.id === id);
+    if (index === -1) wf.left.push(line3);
+    else wf.left[index] = line3;
+    merged.push(line3);
+  }
+  return merged;
+}
+function pruneLeft(wf, now = Date.now()) {
+  const expired2 = (wf.left ?? []).filter((line3) => line3.cleared && Date.parse(line3.cleared.at) <= now - RETAIN_MS).sort((a, b) => Date.parse(a.cleared.at) - Date.parse(b.cleared.at));
+  if (!expired2.length && (wf.leftCleared?.length ?? 0) <= MAX_CLEARED) return { pruned: 0, dropped: 0 };
+  const ids = new Set(expired2.map((line3) => line3.id));
+  const cleared = [.../* @__PURE__ */ new Set([...wf.leftCleared ?? [], ...ids])];
+  wf.left = (wf.left ?? []).filter((line3) => !ids.has(line3.id));
+  wf.leftCleared = cleared.slice(-MAX_CLEARED);
+  return { pruned: expired2.length, dropped: Math.max(0, cleared.length - MAX_CLEARED) };
+}
+function clearLeft(wf, ids, cleared) {
+  const wanted = new Set(ids), changed = [];
+  for (const line3 of openLeft(wf)) if (wanted.has(line3.id)) {
+    line3.cleared = structuredClone(cleared);
+    changed.push(line3.id);
+  }
+  return changed;
+}
+function closeLeft(wf, at3 = (/* @__PURE__ */ new Date()).toISOString()) {
+  wf.leftRetry = void 0;
+  for (const line3 of wf.left ?? []) if (!line3.cleared || line3.cleared.by === "owner" && line3.cleared.why === "ticked") {
+    line3.cleared = { at: at3, by: "engine", why: "item-closed" };
+  }
+}
+function settleLeftRetry(wf, report2, effects) {
+  if (!wf.leftRetry || report2.goalMet === false || !report2.reply && !report2.choices?.options.some((option) => option.reply || option.effects?.length) && !effects.length) return;
+  clearLeft(wf, [wf.leftRetry.id], { at: (/* @__PURE__ */ new Date()).toISOString(), by: "engine", why: "superseded" });
+  wf.leftRetry = void 0;
+}
+function allowLeft(wf, effects, at3 = (/* @__PURE__ */ new Date()).toISOString()) {
+  const keys2 = new Set(effects.filter((effect) => effect.call && !effect.off).map((effect) => leftActionKey(effect.call, effect.summary)));
+  return clearLeft(
+    wf,
+    openLeft(wf).filter((line3) => line3.type === "refusal" && keys2.has(line3.action.key)).map((line3) => line3.id),
+    { at: at3, by: "engine", why: "allowed-now" }
+  );
+}
+var openLeft, RETAIN_MS, MAX_CLEARED, needsLeftPrune;
+var init_left = __esm({
+  "src/runner/left.ts"() {
+    "use strict";
+    init_left_lines();
+    openLeft = (wf) => (wf.left ?? []).filter((line3) => !line3.cleared);
+    RETAIN_MS = 30 * 864e5;
+    MAX_CLEARED = 2e3;
+    needsLeftPrune = (wf, now = Date.now()) => (wf.leftCleared?.length ?? 0) > MAX_CLEARED || !!wf.left?.some((line3) => line3.cleared && Date.parse(line3.cleared.at) <= now - RETAIN_MS);
+  }
+});
+
 // src/core/page-approval.ts
-import { createHash as createHash2 } from "node:crypto";
+import { createHash as createHash4 } from "node:crypto";
 function pageAnswerRefusal(answer, workflow, automation2, proposal, cfg, managementRev, job) {
   const guard = answer.page;
   if (!guard) return void 0;
   if (guard.kind === "manage") return managementRev === guard.expect ? void 0 : "Changed since you looked. Nothing was sent or changed. Open the new version first.";
   if (guard.kind === "send-reply" && workflow?.state === "done") return "Already sent. Nothing else was sent. Open the current item before posting a correction.";
   if (guard.kind === "send-reply" && (!workflow || !currentDraft(workflow, job)?.text)) return "The latest turn proposes no reply. Nothing was sent. Open the current item.";
-  if (guard.kind === "mark-todos") {
-    if (!workflow || !guard.todoIds?.length || guard.todoIds.some((id) => !workflow.kept?.some((todo) => todo.id === id && !todo.done))) return "These to-dos changed. Nothing was marked. Open the current list.";
+  if (answer.verb === "left-ask-again" || answer.verb === "left-draft-invite") {
+    if (!workflow || !openLeft(workflow).some((line3) => line3.id === answer.text) || guard.expect !== leftRev(workflow)) return "These to-dos changed. Nothing was changed. Open the current list.";
     return void 0;
   }
-  if (answer.verb === "close" && workflow?.kept?.some((todo) => !todo.done)) return "These to-dos changed. Nothing was marked. Open the current list.";
+  if (guard.kind === "mark-todos") {
+    if (!workflow || guard.expect !== leftRev(workflow) || !guard.todoIds?.length || guard.todoIds.some((id) => !workflow.kept?.some((todo) => todo.id === id && !todo.done) && !openLeft(workflow).some((line3) => line3.id === id))) return "These to-dos changed. Nothing was marked. Open the current list.";
+    return void 0;
+  }
+  if (answer.verb === "close" && workflow && (workflow.kept?.some((todo) => !todo.done) || openLeft(workflow).length)) return "These to-dos changed. Nothing was marked. Open the current list.";
   if (guard.kind === "undo-send" && (!workflow?.sent || workflow.sent.msgId !== guard.sentMessageId)) return "That reply is no longer the current sent reply. Nothing was deleted.";
   if (guard.kind === "feedback-send" && (!workflow?.sent || workflow.sent.msgId !== guard.sentMessageId)) return "That reply changed. Nothing was sent, deleted or redrafted. Open its current activity first.";
   const current3 = workflow ? workflowApprovalRev(workflow) : automation2 ? automationApprovalRev(automation2) : proposal ? proposalApprovalRev(proposal) : void 0;
@@ -22185,14 +22543,15 @@ function pageAnswerRefusal(answer, workflow, automation2, proposal, cfg, managem
   if (guard.replyDigest && (!cfg || !workflow?.draft || pageDigest(approvedReplyText(workflow.draft.text, workflow, cfg)) !== guard.replyDigest)) return "The reply signature changed since you looked. Nothing was sent or changed. Open the new version first.";
   return void 0;
 }
-var canonical2, pageDigest, PAGE_REPLY_CHANGED, pageChangeId, pageOptionId, workflowApprovalRev, automationApprovalRev, proposalApprovalRev;
+var canonical2, pageDigest, PAGE_REPLY_CHANGED, pageChangeId, pageOptionId, workflowApprovalRev, automationApprovalRev, proposalApprovalRev, leftRev;
 var init_page_approval = __esm({
   "src/core/page-approval.ts"() {
     "use strict";
     init_effects();
     init_policy();
+    init_left();
     canonical2 = (value) => Array.isArray(value) ? value.map(canonical2) : value && typeof value === "object" ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical2(value[key])])) : value;
-    pageDigest = (value) => createHash2("sha256").update(JSON.stringify(canonical2(value))).digest("hex");
+    pageDigest = (value) => createHash4("sha256").update(JSON.stringify(canonical2(value))).digest("hex");
     PAGE_REPLY_CHANGED = "The reply changed since you approved it. It was not sent. Review the current reply.";
     pageChangeId = (effect) => pageDigest([effect.call ?? effect.payload, effect.system, effect.action, effect.target, effect.head]);
     pageOptionId = (option) => pageDigest(option);
@@ -22229,6 +22588,9 @@ var init_page_approval = __esm({
       stopOnReply: automation2.stopOnReply
     });
     proposalApprovalRev = (proposal) => pageDigest({ state: proposal.state, title: proposal.title, ops: proposal.ops });
+    leftRev = (workflow) => pageDigest(
+      openLeft(workflow).map(({ id, cleared }) => ({ id, cleared })).sort((a, b) => a.id.localeCompare(b.id))
+    );
   }
 });
 
@@ -35282,8 +35644,8 @@ var require_fast_uri = __commonJS({
       } catch {
         return void 0;
       }
-      const { normalized: normalized2, malformedAuthorityOrPort, malformedPercentEncoding, malformedSchemeSpecific, malformedHost, malformedScheme } = normalizeStringWithStatus(value, opts);
-      return malformedAuthorityOrPort || malformedPercentEncoding || malformedSchemeSpecific || malformedHost || malformedScheme ? void 0 : normalized2;
+      const { normalized: normalized3, malformedAuthorityOrPort, malformedPercentEncoding, malformedSchemeSpecific, malformedHost, malformedScheme } = normalizeStringWithStatus(value, opts);
+      return malformedAuthorityOrPort || malformedPercentEncoding || malformedSchemeSpecific || malformedHost || malformedScheme ? void 0 : normalized3;
     }
     var fastUri = {
       SCHEMES,
@@ -40105,6 +40467,154 @@ var init_ids = __esm({
   }
 });
 
+// src/core/document-failure.ts
+function documentFailureCause(reason) {
+  const match = DOCUMENT_FAILURE.exec(reason);
+  if (!match) return void 0;
+  const why2 = match[2].toLowerCase();
+  return {
+    step: "doc-read",
+    target: match[1],
+    reason: why2 === "no access" ? "no-access" : why2.startsWith("too ") ? "too-large" : "unsupported",
+    .../^\d+ MB$/.test(match[3] ?? "") ? { size: match[3] } : {}
+  };
+}
+var DOCUMENT_FAILURE, hardDocumentFailure;
+var init_document_failure = __esm({
+  "src/core/document-failure.ts"() {
+    "use strict";
+    DOCUMENT_FAILURE = /^Couldn't open (.+?): (no access|too much content to open|not a Word, PowerPoint or Excel file|too large to open(?: \(([^)\r\n]*)\))?)$/i;
+    hardDocumentFailure = (reason) => DOCUMENT_FAILURE.test(reason);
+  }
+});
+
+// src/core/normalize-report.ts
+function factText(text4) {
+  return words(text4.replace(/\bjob:[^\s,;!?()[\]{}]+/gi, "").replace(/\b(?:delegate_worker|ado|teams|sharepoint)[-_][\w-]+(?::[\w-]+)?\s*:?\s*/gi, "").replace(/^(?:\s*Error:\s*)+/i, ""));
+}
+function plain(text4, fallback) {
+  const value = words(text4);
+  if (!value) return fallback;
+  if (!INTERNAL.test(value) && !PLUMBING.test(value) && !/^schema$/i.test(value)) return value;
+  if (/too large|too much content/i.test(value)) return "The document is too large to open.";
+  if (/no access|access denied|forbidden|permission/i.test(value)) return "Access to the source was denied.";
+  if (/sign.in|authenticat|credentials/i.test(value)) return "Sign in again to read the source.";
+  if (/approval|approv.*confirm|unverified/i.test(value)) return "The approval couldn't be confirmed.";
+  if (/timeout|timed out|unreachable|connection/i.test(value)) return "The source couldn't be reached.";
+  if (/stopped|time budget|out of time/i.test(value)) return "The work stopped before it finished.";
+  return fallback;
+}
+function failureKind(blocker) {
+  if (blocker.documentFailure) return "content";
+  if (blocker.kind === "tool") return "tool";
+  return blocker.kind === "transient" || blocker.kind === "budget" ? "other" : "content";
+}
+function cleanCause(cause) {
+  const target2 = causeText(cause.target), system = causeText(cause.system), size = causeText(cause.size);
+  return {
+    step: cause.step,
+    ...cause.reason ? { reason: cause.reason } : {},
+    ...target2 ? { target: target2 } : {},
+    ...system ? { system } : {},
+    ...size ? { size } : {},
+    ...cause.retryAt && Number.isFinite(Date.parse(cause.retryAt)) ? { retryAt: cause.retryAt } : {}
+  };
+}
+function normalizeQuestionHint(hint) {
+  const answers2 = [], seen = /* @__PURE__ */ new Set();
+  const unsafe = (text4) => /\b[AWRKH]\d+\b/i.test(text4) || /^[^a-z]*(?:ok|send|approve|vote|close|skip|wait|never|pause|resume|stop|undo|remember|edit)\b/i.test(text4);
+  for (const answer of hint.answers ?? []) {
+    const text4 = answer.replace(/["`\u2018-\u201f\p{Cf}\p{Default_Ignorable_Code_Point}]/gu, "").replace(/\s+/g, " ").trim();
+    if (unsafe(text4)) continue;
+    const short3 = Array.from(text4).slice(0, 60).join("").trim(), key = short3.toLowerCase();
+    if (!short3 || seen.has(key) || unsafe(short3)) continue;
+    answers2.push(short3);
+    seen.add(key);
+    if (answers2.length === 3) break;
+  }
+  return answers2.length ? { answers: answers2 } : {};
+}
+function refusalHref(href) {
+  if (!URL.canParse(href)) return false;
+  const url2 = new URL(href), host = url2.hostname;
+  return url2.protocol === "https:" && (host === "dev.azure.com" || host.endsWith(".visualstudio.com") || host === "teams.microsoft.com" || host === "teams.cloud.microsoft");
+}
+function normalizeReport(stored) {
+  const report2 = stored.result ?? stored;
+  const review = !stored.every && ((stored.intent ?? report2.intent) === "pr_review" || /^pr:/i.test(stored.key?.trim() ?? ""));
+  const normalized3 = { context: [], findings: [], refused: [], todos: [] };
+  const question = report2.question?.trim();
+  if (question) {
+    normalized3.question = question;
+    if (report2.questionHint) normalized3.questionHint = normalizeQuestionHint(report2.questionHint);
+  }
+  const addRefusal = (r) => {
+    const { reply: reply2, pr, ...record3 } = r;
+    const action2 = displayedLeftAction(r.action);
+    const clean4 = {
+      ...record3,
+      action: action2,
+      ...reply2 && refusalHref(reply2.href) ? { reply: reply2 } : {},
+      ...pr && refusalHref(pr.href) ? { pr } : {},
+      what: plain(leftActionText(action2), "Make the change yourself"),
+      target: r.action.pr ? `PR ${r.action.pr}` : plain(r.action.target ?? "", ""),
+      reason: plain(r.why ?? "", "Delegate can't make this change from here.")
+    };
+    const key = (draft2) => JSON.stringify([draft2.kind, draft2.action.key, draft2.action.verb, draft2.action.pr, draft2.action.target, draft2.action.quote, draft2.why, draft2.setting, draft2.reply, draft2.pr]);
+    if (!normalized3.refused.some((x) => key(x) === key(clean4))) normalized3.refused.push(clean4);
+  };
+  for (const r of [...report2.refused ?? [], ...stored.result ? stored.refused ?? [] : []]) addRefusal(r);
+  for (const text4 of [...report2.todos ?? [], ...stored.result ? stored.todos ?? [] : []]) {
+    const todo = plain(text4, "Review this step yourself.");
+    if (!normalized3.todos.includes(todo)) normalized3.todos.push(todo);
+  }
+  for (const fact of stored.context ?? report2.context ?? []) {
+    const gate = GATE.test(fact.label.trim());
+    const text4 = `${fact.label} ${fact.text}`;
+    if (review && !gate && (CI.test(text4) || VOTE_STATUS.test(text4) || PLUMBING.test(text4) || REVIEW_STATUS_LABEL.test(fact.label.trim()) || /\bThese are CI facts\b/i.test(fact.text) || REVIEWER_STATUS.test(fact.label.trim()) || REVIEWER_STATUS.test(fact.text.trim()))) continue;
+    const clean4 = {
+      label: factText(fact.label),
+      text: factText(fact.text),
+      ...review ? { tone: gate && fact.tone === "warn" ? "warn" : "info" } : fact.tone ? { tone: fact.tone } : {}
+    };
+    normalized3.context.push(clean4);
+    if (review && !gate) normalized3.findings.push({ ...clean4 });
+  }
+  const explicit = stored.runFailed ?? stored.failure;
+  const blocker = (report2.goalMet === false ? report2.blocker : void 0) ?? (stored.state === "failed" ? stored.retry?.last : void 0);
+  const failed2 = explicit ? { kind: explicit.kind, why: explicit.why, tried: explicit.tried ?? [], ...explicit.at ? { at: explicit.at } : {} } : blocker ? { kind: failureKind(blocker), why: blocker.why, tried: [...stored.retry?.tried ?? [], ...blocker.tried], ...stored.updatedAt ? { at: stored.updatedAt } : {} } : stored.state === "failed" ? { kind: "other", why: stored.error ?? "The work stopped before it finished.", tried: stored.retry?.tried ?? [], ...stored.updatedAt ? { at: stored.updatedAt } : {} } : void 0;
+  if (failed2) {
+    const doc = explicit ? explicit.kind === "content" ? documentFailureCause(explicit.why) : void 0 : blocker?.documentFailure ? documentFailureCause(blocker.why) : void 0;
+    const cause = explicit && "cause" in explicit && explicit.cause ? cleanCause(explicit.cause) : failed2.kind === "stopped" ? { step: "run-stopped" } : doc ? { ...doc, target: causeText(doc.target) ?? "the document" } : void 0;
+    if (cause && stored.retry?.nextAt && Number.isFinite(Date.parse(stored.retry.nextAt))) cause.retryAt = stored.retry.nextAt;
+    normalized3.failure = {
+      ...failed2,
+      ...cause ? { cause } : {},
+      why: plain(failed2.why, "The work couldn't be completed."),
+      tried: [...new Set(failed2.tried.map((text4) => plain(text4, "Tried another way, without a usable result.")))]
+    };
+  }
+  return normalized3;
+}
+var CI, VOTE_STATUS, REVIEWER_STATUS, REVIEW_STATUS_LABEL, PLUMBING, INTERNAL, GATE, words, causeText;
+var init_normalize_report = __esm({
+  "src/core/normalize-report.ts"() {
+    "use strict";
+    init_document_failure();
+    init_secrets();
+    init_left_lines();
+    CI = /\b(?:builds?|CI|pipelines?|checks?|validation)\s+(?:(?:is|are|has|have)\s+)?(?:failed|failing|passed|green|red|pending|running|succeeded|queued)\b|\bcoverage\s+(?:dropped|is below|fell)\b/i;
+    VOTE_STATUS = /\b(?:your|my|our|(?:the )?owner's)\s+(?:reviewer\s+)?groups?\b|\bowner\s+(?:has\s+)?(?:approved|voted|is waiting)\b|\b(?:votes?|reviewer status)\s+(?:is|are)\s+(?:(?:still|already)\s+)?(?:present|recorded|approved|pending|waiting)\b/i;
+    REVIEWER_STATUS = /^(?:[A-Z][\w'-]*\s+){1,3}(?:has\s+)?(?:approved|voted|(?:is\s+)?waiting)(?=$|[.!;,]|\s+(?:on|for|with|this|the|PR)\b)/;
+    REVIEW_STATUS_LABEL = /^(?:live votes?|newest builds?|ci and (?:test |code )?coverage)\b|\bdependency\b.*\bvotes?\b/i;
+    PLUMBING = /\b(?:tool discovery|execution calls?|tool schema)\b/i;
+    INTERNAL = /[0-9a-f]{8,}|job:|Error:|\bworker\b|\b(?:ado|teams|sharepoint|delegate_worker)[-_][\w-]+/i;
+    GATE = /^Not reviewing$/i;
+    words = (s3) => s3.replace(/\s+/g, " ").trim();
+    causeText = (text4) => text4 && !/[\\/]|(?:https?|file):/i.test(text4) ? plain(scrub(text4), "").slice(0, 200) || void 0 : void 0;
+  }
+});
+
 // src/core/render.ts
 function age(fromIso, now) {
   const m = Math.max(0, Math.round((now.getTime() - Date.parse(fromIso)) / 6e4));
@@ -40112,7 +40622,7 @@ function age(fromIso, now) {
   if (m < 60 * 48) return `${Math.round(m / 60)}h`;
   return `${Math.round(m / 1440)}d`;
 }
-function statusLine(wf, now = /* @__PURE__ */ new Date()) {
+function statusLine(wf, now = /* @__PURE__ */ new Date(), location) {
   if (wf.state === "done") {
     const left = wf.sent?.undoUntil ? Math.round((Date.parse(wf.sent.undoUntil) - now.getTime()) / 6e4) : 0;
     return (wf.status || "Done") + (left > 0 ? ` \xB7 undo for ${left} min: "undo ${wf.code}"` : "");
@@ -40124,9 +40634,9 @@ function statusLine(wf, now = /* @__PURE__ */ new Date()) {
   if (wf.state === "scheduled") return wf.statusReason?.kind === "not-sent" ? wf.statusReason.text : `Sending at ${hhmm2(wf.sendAt)} unless you act (${wf.decision?.reason ?? "rule"})`;
   if (wf.job && !wf.question) {
     const effects = (wf.effects ?? []).filter((e) => !e.off), error62 = effects.find((e) => e.error)?.error;
-    if (effects.some((e) => e.maybe)) return effectResultLine(wf, "unsure");
-    if (error62) return effectResultLine(wf, effects.some((e) => e.done) ? "partial" : "failed", error62);
-    if (effects.length && effects.every((e) => e.done) && !wf.draft?.text) return effectResultLine(wf, "changes-only");
+    if (effects.some((e) => e.maybe)) return effectResultLine(wf, "unsure", "", location);
+    if (error62) return effectResultLine(wf, effects.some((e) => e.done) ? "partial" : "failed", error62, location);
+    if (effects.length && effects.every((e) => e.done) && !wf.draft?.text) return effectResultLine(wf, "changes-only", "", location);
     if (!wf.draft?.preview) return `Ready: ${wf.status}`;
   }
   if (wf.draft?.preview) return `Preview: reply "ok ${wf.code}" to send`;
@@ -40134,15 +40644,15 @@ function statusLine(wf, now = /* @__PURE__ */ new Date()) {
   if (!wf.question) return wf.decision ? { high: "Ready \xB7 based on your notes and a live source", medium: "Ready \xB7 based on your notes", low: "Draft \xB7 little evidence, check it" }[wf.decision.confidence] : "Draft ready";
   return `Needs you: ${wf.question}`;
 }
-function renderItem(wf, mode, now, bold = true) {
+function renderItem(wf, mode, now, bold = true, location) {
   const code = bold ? `**${wf.code}**` : wf.code;
   const who2 = wf.asker?.name ?? "Someone";
-  const head = `${code} \xB7 ${who2} \xB7 ${wf.chat.name} \xB7 ${age(wf.createdAt, now)}`;
+  const head = `${code} \xB7 ${who2} \xB7 ${location?.row ?? wf.chat.name} \xB7 ${age(wf.createdAt, now)}`;
   const fresh = wf.newCount > 0 ? ` \xB7 ${wf.newCount} new message${wf.newCount > 1 ? "s" : ""}` : "";
-  if (mode === "line") return `${head} \xB7 ${clip(oneLine(statusLine(wf, now)), 110)}`;
+  if (mode === "line") return `${head} \xB7 ${clip(oneLine(statusLine(wf, now, location)), 110)}`;
   const lines = [head + fresh];
   if (wf.lastAsk) lines.push(`> ${clip(oneLine(wf.lastAsk), 140)}`);
-  lines.push(statusLine(wf, now));
+  lines.push(statusLine(wf, now, location));
   lines.push(...cardLines(wf));
   const left = pendingEffects(wf.effects);
   if (wf.state === "needs_human" && left.length) lines.push(okWill(wf), ...left.map((e) => `- ${clip(oneLine(changeSays(e)), 140)}`));
@@ -40157,6 +40667,10 @@ function cardLines(wf) {
     out.push(...wf.choices.options.map((o, i) => `${i + 1}. ${o.label}${o.note ? ` (${o.note})` : ""}`));
     out.push(`Reply "${wf.code}: 1"${wf.choices.multi ? `, or several: "${wf.code}: 1, 3"` : ""}${wf.choices.other ? `, or "${wf.code}: your own answer"` : ""}.`);
   } else if (real) out.push(`Draft: "${clip(wf.draft.text.split("\n").slice(0, 2).join(" "), 220)}"`);
+  if (wf.question && wf.questionHint && !wf.choices) {
+    const answers2 = normalizeQuestionHint(wf.questionHint).answers ?? ["your answer"];
+    out.push(`Answer ${answers2.map((answer) => `"${wf.code}: ${answer}"`).join(" or ")}.`);
+  }
   return out;
 }
 function effectLine(effects, tense = "will", titles = tense !== "done") {
@@ -40192,9 +40706,9 @@ function effectLine(effects, tense = "will", titles = tense !== "done") {
   }
   return lines.join(" and ");
 }
-function effectResultLine(wf, result2, reason = "") {
+function effectResultLine(wf, result2, reason = "", location) {
   const effects = wf.effects ?? [], first3 = wf.asker?.name?.split(/\s+/)[0] ?? "them";
-  const person2 = `${first3}${wf.chat.group ? ` in ${wf.chat.name}` : ""}`;
+  const person2 = `${first3}${location ? ` in ${location.sentence}` : wf.chat.group ? ` in ${wf.chat.name}` : ""}`;
   const pr = effects.map((e) => prIdOf(e.call)).find((id) => id !== void 0), place2 = pr === void 0 ? "the changes" : `PR ${pr}`;
   const clean4 = reason.replace(/^Error:\s*/i, "").split(/(?<=[.!?])\s+/)[0].replace(/\b[A-Z]\d+\b/g, "this item").replace(/[.\s]+$/, "");
   const why2 = /not allowed|haven.t allowed|not enabled|not permitted/i.test(clean4) ? "you haven't allowed Delegate to make this change" : /changed|stale|\bhead\b/i.test(clean4) ? `${place2} changed since the review` : /closed|completed|abandoned/i.test(clean4) ? "the PR is closed" : /unreach|network|ECONN|timeout|timed out/i.test(clean4) ? "Azure DevOps wasn't reachable" : /[0-9a-f]{8,}|job:|Error:|[_-](?:write|read|request)|\btool\b|\bschema\b/i.test(clean4) ? "the change could not be verified" : clean4 || "the change could not be verified";
@@ -40217,7 +40731,7 @@ function groups(wfs, since2) {
   const done2 = [...wfs.filter((w) => w.state === "done" && w.code && (!since2 || w.updatedAt > since2) && w.intent !== "none"), ...watching.filter((w) => w.changedAt && (!since2 || w.changedAt > since2) && (!w.ackAt || w.changedAt > w.ackAt))];
   return { needs, watching, running: running2, done: done2 };
 }
-function renderList(wfs, now, since2, health = {}, extra = {}) {
+function renderList(wfs, now, since2, health = {}, extra = {}, placeOfItem) {
   const kp = (extra.proposals ?? []).filter((p) => p.state === "needs_human").sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   const bg = extra.background ?? [];
   const { needs, watching, running: running2, done: done2 } = groups(wfs, since2);
@@ -40225,8 +40739,8 @@ function renderList(wfs, now, since2, health = {}, extra = {}) {
   const out = [head];
   const problems = Object.values(health);
   if (problems.length) out.push("", "### Health", ...problems.map((p) => `- ${p.text} (since ${age(p.since, now)} ago)`));
-  if (needs.length) out.push("", "### Needs you", ...needs.map((w) => renderItem(w, "full", now) + "\n"));
-  if (done2.length) out.push("", "### Done while you were away", ...done2.map((w) => w.kind === "tracker" ? `- Update \xB7 **${w.code}** \xB7 ${w.lastAsk?.replace(/^Watch /, "").replace(/ until .*$/, "") ?? ""}: ${clip(oneLine(w.status), 110)}` : `- ${renderItem(w, "line", now)}`));
+  if (needs.length) out.push("", "### Needs you", ...needs.map((w) => renderItem(w, "full", now, true, placeOfItem?.(w)) + "\n"));
+  if (done2.length) out.push("", "### Done while you were away", ...done2.map((w) => w.kind === "tracker" ? `- Update \xB7 **${w.code}** \xB7 ${w.lastAsk?.replace(/^Watch /, "").replace(/ until .*$/, "") ?? ""}: ${clip(oneLine(w.status), 110)}` : `- ${renderItem(w, "line", now, true, placeOfItem?.(w))}`));
   if (kp.length) out.push(
     "",
     "### Knowledge to review",
@@ -40241,7 +40755,7 @@ function renderList(wfs, now, since2, health = {}, extra = {}) {
   const progress2 = wfs.filter((w) => w.state === "open" && w.work);
   if (progress2.length) out.push("", "### In progress", ...progress2.map((w) => `- **${w.code}** \xB7 ${clip(oneLine(w.work.goal), 80)} \xB7 ${w.status}`), `Say "more ${progress2[0].code}" for its steps, or "close ${progress2[0].code}: why" when it is finished.`);
   if (watching.length) out.push("", "### Watching", ...watching.map((w) => `- **${w.code}** \xB7 ${w.lastAsk?.replace(/^Watch /, "") ?? ""} \xB7 ${w.status}`));
-  if (running2.length || bg.length) out.push("", "### Running", ...running2.map((w) => `- ${renderItem(w, "line", now)}`), ...bg.map((b) => `- ${b.what} (${Math.max(0, Math.round((now.getTime() - Date.parse(b.since)) / 6e4))} min)`));
+  if (running2.length || bg.length) out.push("", "### Running", ...running2.map((w) => `- ${renderItem(w, "line", now, true, placeOfItem?.(w))}`), ...bg.map((b) => `- ${b.what} (${Math.max(0, Math.round((now.getTime() - Date.parse(b.since)) / 6e4))} min)`));
   if (!needs.length && !done2.length && !running2.length && !kp.length && !bg.length && !progress2.length) out.push("", "Nothing needs you.");
   return out.join("\n");
 }
@@ -40279,18 +40793,18 @@ function renderPhone(wfs, kp = [], health = {}, since2) {
 function renderPreview(wf) {
   return [`${MARK} ${wf.code} \u2192 "${wf.draft?.text ?? ""}"`, okWill(wf), `Reply "ok ${wf.code}" to send, or "edit ${wf.code}: ..." to change it.`].filter(Boolean).join("\n");
 }
-function renderMore(wf, thread2, now) {
+function renderMore(wf, thread2, now, location) {
   const t2 = thread2.slice(-10).map((m) => `- ${m.from.name}: ${clip(oneLine(m.text), 200)}`);
   const src = (wf.draft?.sources ?? []).map((s3) => `- ${s3.ref} (${s3.tier}, ${s3.origin})`);
   const changes = pendingEffects(wf.effects).map((e) => `- ${clip(oneLine(changeSays(e)), 400)}`);
-  const head = `${wf.code} \xB7 ${wf.asker?.name ?? "Someone"} \xB7 ${wf.chat.name}
-${statusLine(wf, now)}`;
+  const head = `${wf.code} \xB7 ${wf.asker?.name ?? "Someone"} \xB7 ${location?.row ?? wf.chat.name}
+${statusLine(wf, now, location)}`;
   const card2 = cardLines(wf);
   const notes = (wf.notes ?? []).map((n) => `- ${clip(oneLine(n.q), 120)}: ${n.a ? clip(oneLine(n.a), 300) : "asking\u2026"}`);
   const work2 = wf.work ? ["", `This work: ${wf.work.goal}. Done when ${wf.work.doneWhen}.`, ...(wf.work.plan ?? []).map((p) => `${p.done ? "[x]" : "[ ]"} ${p.what} (${p.who}${p.in ? `, ${p.in}` : ""}${p.probe ? `, build ${p.probe.build}${p.seen ? ` ${p.seen}` : ""}` : ""})`), ...wf.work.steps.slice(-8).map((x) => `- ${x.at.slice(5, 16).replace("T", " ")} ${clip(oneLine(x.what), 160)}`)] : [];
   return [head, ...work2, "", ...card2.length ? card2 : ["Draft: none"], ...notes.length ? ["", "You asked:", ...notes] : [], ...changes.length ? ["", okWill(wf), ...changes] : [], "", "Sources:", ...src.length ? src : ["- none"], ...wf.looked?.length ? ["", "Looked up:", ...wf.looked.map((x) => `- ${lookLine(x)}`)] : [], "", "Thread:", ...t2].join("\n");
 }
-function plain(md3) {
+function plain2(md3) {
   return md3.replace(/\*\*/g, "").replace(/^### /gm, "");
 }
 var MARK, clip, oneLine, hhmm2, hitCount, lookLine;
@@ -40298,6 +40812,7 @@ var init_render = __esm({
   "src/core/render.ts"() {
     "use strict";
     init_effects();
+    init_normalize_report();
     MARK = "Assistant \xB7";
     clip = (s3, n) => s3.length > n ? `${s3.slice(0, n - 1)}\u2026` : s3;
     oneLine = (s3) => s3.replace(/\s+/g, " ").trim();
@@ -40614,7 +41129,7 @@ function corrections(ls, item2, now = Date.now(), max = 4) {
   return ls.filter((l) => l.kind === "correction" && l.code !== item2.code && Date.parse(l.at) > now - 30 * 864e5 && (score(l) > 0 || l.event === "sent" || l.event === "replied" || l.event === "notfyi")).sort((a, b) => score(b) - score(a) || b.at.localeCompare(a.at)).slice(0, max).flatMap((l) => {
     const x = d(l), who2 = x.asker?.name ? `For ${x.asker.name}` : "Elsewhere";
     if (!item2.asker?.id || x.asker?.id !== item2.asker.id) {
-      if (l.event === "sent" || l.event === "replied") return [`For someone else: the owner ${words(x.sent) < words(x.draft) ? "cut" : "changed"} a ${words(x.draft)}-word draft to ${words(x.sent)} words${GREET.test(s(x.draft)) && !GREET.test(s(x.sent)) ? " and dropped the greeting" : ""}.`];
+      if (l.event === "sent" || l.event === "replied") return [`For someone else: the owner ${words2(x.sent) < words2(x.draft) ? "cut" : "changed"} a ${words2(x.draft)}-word draft to ${words2(x.sent)} words${GREET.test(s(x.draft)) && !GREET.test(s(x.sent)) ? " and dropped the greeting" : ""}.`];
       if (l.event === "marked") return [`For someone else: the owner marked a sent reply ${s(x.kind)}.`];
       if (l.event === "notfyi") return [`For someone else: a message you closed as FYI${x.intent && x.intent !== "none" ? ` (${s(x.intent).replace(/_/g, " ")})` : ""} needed the owner.`];
       return [];
@@ -40631,7 +41146,7 @@ function report(s3, t2, code) {
   s3.log({ event: "feedback", code: wf?.code, text: t2, item: wf && { intent: wf.intent, ask: wf.lastAsk?.slice(0, 400), draft: wf.draft?.text, status: wf.status, chat: wf.chat.name } });
   return `Noted${wf ? ` for ${wf.code}` : ""}. It is in your feedback log, with what ${NAME} had done, so it can be fixed.`;
 }
-var s, RULES, lessonOf, words, GREET, q, REPORT;
+var s, RULES, lessonOf, words2, GREET, q, REPORT;
 var init_feedback = __esm({
   "src/store/feedback.ts"() {
     "use strict";
@@ -40655,7 +41170,7 @@ var init_feedback = __esm({
       feedback: (e) => ({ kind: "report", code: e.code ? s(e.code) : void 0, what: s(e.text), detail: e.item })
     };
     lessonOf = (e) => RULES[s(e.event)]?.(e);
-    words = (v) => s(v).split(/\s+/).filter(Boolean).length;
+    words2 = (v) => s(v).split(/\s+/).filter(Boolean).length;
     GREET = /^\s*(hi|hello|hey|thanks|thank you)\b/i;
     q = (v) => `"${s(v).replace(/\s+/g, " ").slice(0, 220)}"`;
     REPORT = /^report(?:\s+([A-Z]\d+))?\s*:\s*([\s\S]+)$/i;
@@ -40745,7 +41260,9 @@ var init_telemetry = __esm({
       "run-tools": { privacy: "metadata", fields: ["call", "tool", "ok", "class", "ms", "bytes", "contentTypes", "keys", "keysTruncated", "offloaded"] },
       "run-tools-invalid": { privacy: "metadata", fields: ["class", "lines"] },
       "vote-claim-override": { privacy: "metadata", fields: ["code", "pr", "claim", "vote"] },
+      marker: { privacy: "metadata", fields: ["code", "applied", "why"] },
       "pr-anchor-conflict": { privacy: "metadata", fields: ["code", "anchor", "computed"] },
+      "left-cleared-cap": { privacy: "metadata", fields: ["code", "dropped"] },
       "members-shape": { privacy: "metadata", fields: ["memberKeys", "roles", "roleValues", "tenantIdPresent"] },
       "forwarded-message-shape": { privacy: "metadata", fields: ["contentStatus", "shape", "truncated"] }
     };
@@ -41211,7 +41728,7 @@ var init_rules = __esm({
 // src/store/state.ts
 import { closeSync as closeSync3, existsSync as existsSync8, mkdirSync as mkdirSync3, openSync as openSync3, readdirSync as readdirSync5, readFileSync as readFileSync8, rmSync as rmSync3, writeSync } from "node:fs";
 import { hostname as hostname3, uptime } from "node:os";
-import { createHash as createHash3 } from "node:crypto";
+import { createHash as createHash5 } from "node:crypto";
 import { basename as basename4, dirname as dirname5, isAbsolute as isAbsolute4, join as join10, relative, resolve as resolve5 } from "node:path";
 function loadLocal() {
   const p = join10(LOCAL_DIR, "local.json");
@@ -41394,7 +41911,7 @@ var init_state = __esm({
     init_upgrades();
     init_rules();
     localDay = (d = /* @__PURE__ */ new Date()) => d.toLocaleDateString("sv");
-    documentKey = (key) => createHash3("sha256").update(key).digest("hex");
+    documentKey = (key) => createHash5("sha256").update(key).digest("hex");
     codeIndex = /* @__PURE__ */ new Map();
     portable = (root, p) => {
       const r = relative(dirname5(root), p);
@@ -41965,10 +42482,10 @@ var init_state = __esm({
         return readJson(this.p("state", "changes", `${jobId}-${runId}.json`), {});
       }
       callRec(call2) {
-        return readJson(this.p("state", "calls", `${createHash3("sha256").update(call2).digest("hex")}.json`), void 0);
+        return readJson(this.p("state", "calls", `${createHash5("sha256").update(call2).digest("hex")}.json`), void 0);
       }
       saveCallRec(r) {
-        this.w(this.p("state", "calls", `${createHash3("sha256").update(r.call).digest("hex")}.json`), r);
+        this.w(this.p("state", "calls", `${createHash5("sha256").update(r.call).digest("hex")}.json`), r);
       }
       saveChange(jobId, runId, index, c) {
         this.w(this.p("state", "changes", `${jobId}-${runId}.json`), { ...this.changes(jobId, runId), [index]: c });
@@ -42273,8 +42790,52 @@ var init_schedule = __esm({
   }
 });
 
+// src/runner/left-source.ts
+function leftContext(store2, wf, origin = "item") {
+  const thread2 = store2.thread(wf.id), own3 = origin === "your-reply";
+  const sent = wf.sent && (!wf.promise || Date.parse(wf.sent.at) >= Date.parse(wf.promise.at)) ? wf.sent : void 0;
+  const ownAt = sent?.at ?? wf.promise?.at ?? wf.updatedAt;
+  const message = own3 ? thread2.find((item2) => item2.byOwner && item2.at === ownAt) : thread2.find((item2) => item2.id === wf.lastMsgId && wf.msgIds.includes(item2.id)) ?? thread2.filter((item2) => wf.msgIds.includes(item2.id)).at(-1);
+  const job = wf.job ? store2.job(wf.job) : void 0;
+  const pr = prTarget(store2, wf), ref = pr ? prRefFor(store2, wf, pr) : void 0;
+  const review = wf.intent === "pr_review" || job?.intent === "pr_review" || /^pr:/i.test(job?.key.trim() ?? "");
+  const kind = own3 ? "your-reply" : review ? "review" : wf.key.type === "pr" ? "pr-comment" : "chat-ask";
+  const who2 = (own3 ? store2.config().owner.name : message?.from.name ?? wf.asker?.name)?.trim().split(/\s+/)[0];
+  const at3 = own3 ? ownAt : review ? wf.reviewBasis?.at ?? job?.result?.at ?? job?.reviewStart?.at ?? wf.prReadAt ?? message?.at ?? wf.createdAt : message?.at ?? wf.createdAt;
+  const msgId = own3 ? sent?.msgId ?? wf.promise?.msgId ?? message?.id : message?.id;
+  const prThread = wf.key.type === "pr" && pr && wf.key.id.startsWith("https://") && adoPrNumber(wf.key.id) === pr ? wf.key.id : void 0;
+  const href = kind === "review" || kind === "pr-comment" ? prThread ?? (ref?.url?.startsWith("https://") ? ref.url : void 0) : msgId && wf.chat.id ? messageLink(wf.chat.id, msgId) : void 0;
+  return {
+    source: { kind, at: at3, ...who2 ? { who: who2 } : {}, ...pr ? { pr } : {}, ...href ? { href } : {} },
+    ...kind === "review" && job?.result?.reviewHead ? { reviewHead: job.result.reviewHead } : {}
+  };
+}
+function leaveForYou(store2, wf, drafts, context2) {
+  if (!drafts.length) return [];
+  const placedContext = context2 ?? leftContext(store2, wf);
+  const placed = drafts.map((draft2) => {
+    const pr = draft2.action.pr;
+    if (draft2.pr || !pr) return draft2;
+    const href = prRefFor(store2, wf, pr)?.url;
+    return href?.startsWith("https://") ? { ...draft2, pr: { id: pr, href } } : draft2;
+  });
+  return mergeLeft(wf, placed, placedContext.source, placedContext.reviewHead);
+}
+var reportLeft;
+var init_left_source = __esm({
+  "src/runner/left-source.ts"() {
+    "use strict";
+    init_channels();
+    init_pr_refs();
+    init_normalize_report();
+    init_left();
+    init_probe();
+    reportLeft = (report2) => normalizeReport(report2).refused.map(({ what: _what, target: _target, reason, ...draft2 }) => ({ ...draft2, why: reason }));
+  }
+});
+
 // src/runner/habits.ts
-import { createHash as createHash4, randomUUID as randomUUID3 } from "node:crypto";
+import { createHash as createHash6, randomUUID as randomUUID3 } from "node:crypto";
 import { join as join11 } from "node:path";
 function dismissalHistory(h) {
   if (h.dismissals) return h.dismissals;
@@ -42667,7 +43228,7 @@ function styleHabit(store2, cfg, habits, now) {
   const { scope: scope2, kinds: kinds2 } = best, es = best.es, n = items2(es).size;
   const style = kinds2.map((k) => says(k).rule).join(" ");
   const key = `style:${scope2.key}:${kinds2.map(kindKey).sort().join("+")}`;
-  const id = `style-${createHash4("sha256").update(key).digest("hex").slice(0, 10)}`;
+  const id = `style-${createHash6("sha256").update(key).digest("hex").slice(0, 10)}`;
   return {
     key,
     code: "",
@@ -43140,7 +43701,7 @@ var init_commit = __esm({
 });
 
 // src/knowledge/format.ts
-import { createHash as createHash5 } from "node:crypto";
+import { createHash as createHash7 } from "node:crypto";
 function reviewDate(e) {
   if (e.review) return e.review;
   const days2 = TTL_DAYS[e.type];
@@ -43229,7 +43790,7 @@ var init_format2 = __esm({
       const r = reviewDate(e);
       return !!r && r < now.toISOString().slice(0, 10);
     };
-    hashOf = (text4) => createHash5("sha1").update(text4).digest("hex").slice(0, 12);
+    hashOf = (text4) => createHash7("sha1").update(text4).digest("hex").slice(0, 12);
     LINE = /^- \[(\w+)\]\s+(.*)$/;
     DATE = /^\d{4}-\d{2}-\d{2}$/;
     GROUP = /\s*\((src|review|audience):\s*([^()]*)\)\s*$/;
@@ -43324,7 +43885,7 @@ var init_inbox = __esm({
 });
 
 // src/mesh/route.ts
-import { createHash as createHash6 } from "node:crypto";
+import { createHash as createHash8 } from "node:crypto";
 import { copyFileSync, existsSync as existsSync12, mkdirSync as mkdirSync5, readFileSync as readFileSync12, rmSync as rmSync5, writeFileSync as writeFileSync5 } from "node:fs";
 import { join as join15 } from "node:path";
 function readSettings(copilotHome, forWriting = false) {
@@ -43438,7 +43999,7 @@ var init_route = __esm({
     EXTENSION = "delegate-inbox";
     FILES = ["extension.mjs", "inbox.mjs"];
     MARK2 = "delegate.json";
-    hash2 = (f) => createHash6("sha256").update(readFileSync12(f, "utf8").replace(/\r\n/g, "\n")).digest("hex");
+    hash2 = (f) => createHash8("sha256").update(readFileSync12(f, "utf8").replace(/\r\n/g, "\n")).digest("hex");
     extensionDir = (copilotHome) => join15(copilotHome, "extensions", EXTENSION);
     ours2 = (dir2) => existsSync12(join15(dir2, MARK2));
     extensionsOn = (copilotHome) => {
@@ -43457,7 +44018,7 @@ var init_route = __esm({
 import { cpSync, existsSync as existsSync13, lstatSync as lstatSync2, mkdirSync as mkdirSync6, readFileSync as readFileSync13, renameSync as renameSync3, rmSync as rmSync6, statSync as statSync7, writeFileSync as writeFileSync6 } from "node:fs";
 import { homedir as homedir6 } from "node:os";
 import { dirname as dirname7, join as join16 } from "node:path";
-import { createHash as createHash7, randomUUID as randomUUID4 } from "node:crypto";
+import { createHash as createHash9, randomUUID as randomUUID4 } from "node:crypto";
 function sessionCwd(id) {
   const f = join16(sessions(), id, "workspace.yaml");
   return existsSync13(f) ? readFileSync13(f, "utf8").match(/^cwd:\s*(.+)$/m)?.[1].trim() : void 0;
@@ -43487,7 +44048,7 @@ function diverged(store2, id, dir2, events) {
   noteDiverged(store2, id);
 }
 function keepCopy(dir2, events) {
-  const p = join16(dir2, `events.conflict-${createHash7("sha256").update(events).digest("hex").slice(0, 16)}.jsonl`);
+  const p = join16(dir2, `events.conflict-${createHash9("sha256").update(events).digest("hex").slice(0, 16)}.jsonl`);
   if (!existsSync13(p)) put(p, events);
   return p;
 }
@@ -43654,7 +44215,7 @@ function scrubbed(raw) {
   const text4 = raw.toString("utf8"), clean4 = scrub(text4);
   return clean4 === text4 ? raw : Buffer.from(clean4, "utf8");
 }
-var sessions, sessionExists, sessionBytes, plain2, isPrefix, read2, leads;
+var sessions, sessionExists, sessionBytes, plain3, isPrefix, read2, leads;
 var init_own = __esm({
   "src/runner/own.ts"() {
     "use strict";
@@ -43671,9 +44232,9 @@ var init_own = __esm({
         return 0;
       }
     };
-    plain2 = (s3) => !s3.endsWith(".lock") && !lstatSync2(s3).isSymbolicLink();
+    plain3 = (s3) => !s3.endsWith(".lock") && !lstatSync2(s3).isSymbolicLink();
     isPrefix = (a, b) => a.length <= b.length && b.subarray(0, a.length).equals(a);
-    read2 = (p) => existsSync13(p) && plain2(p) ? readFileSync13(p) : void 0;
+    read2 = (p) => existsSync13(p) && plain3(p) ? readFileSync13(p) : void 0;
     leads = (store2) => store2.lease()?.machine === store2.machine;
   }
 });
@@ -43707,6 +44268,8 @@ function parseWatch(body) {
   return { target: target2, until: u?.[2].trim() || void 0, by, push: push2 };
 }
 function parseVerbs(input2) {
+  const left = input2.trim().match(/^(left-ask-again|left-draft-invite)\s+([A-Z]\d+)\s*:\s*(left-[a-f0-9]{16})$/i);
+  if (left) return [{ verb: left[1].toLowerCase(), code: left[2].toUpperCase(), text: left[3].toLowerCase() }];
   if (/^watch\b/i.test(input2.trim())) {
     const w = input2.trim().match(WATCH);
     if (!w || !w[1] && !w[2]?.trim()) return null;
@@ -44038,7 +44601,7 @@ function readsOf(slice, k, knowledgeDirs, read3 = readSaved, documentChats = () 
     if (/(?:^|-)getFile(?:OrFolder)?MetadataByUrl$/.test(name) && d.success !== false) {
       const url2 = [args2.fileOrFolderUrl, args2.fileUrl, args2.url].find((value) => typeof value === "string");
       const shared = url2 ? documentChats({ url: url2 }) : [];
-      const shown2 = resultText(d), saved = shown2 && SAVED.exec(shown2)?.[1], full = saved ? read3(saved) : shown2;
+      const shown3 = resultText(d), saved = shown3 && SAVED.exec(shown3)?.[1], full = saved ? read3(saved) : shown3;
       if (shared.length && full) {
         try {
           const hit = JSON.parse(full.slice(full.indexOf("{"), full.lastIndexOf("}") + 1));
@@ -44050,7 +44613,7 @@ function readsOf(slice, k, knowledgeDirs, read3 = readSaved, documentChats = () 
       }
     }
     if (/(?:^|-)get_incident_details_by_id$/.test(name) && d.success !== false && args2.incidentId !== void 0) {
-      const id = String(args2.incidentId).replace(/\D/g, ""), shown2 = resultText(d), saved = shown2 && SAVED.exec(shown2)?.[1], full = saved ? read3(saved) : shown2;
+      const id = String(args2.incidentId).replace(/\D/g, ""), shown3 = resultText(d), saved = shown3 && SAVED.exec(shown3)?.[1], full = saved ? read3(saved) : shown3;
       const structured = d.result?.structuredContent;
       let body = structured;
       if (!body && full) {
@@ -44091,11 +44654,11 @@ function readsOf(slice, k, knowledgeDirs, read3 = readSaved, documentChats = () 
       if (d.success === false) continue;
       const named2 = [...chatsIn(argText), ...typeof args2.chatId === "string" ? [args2.chatId] : [], ...typeof args2.teamId === "string" && typeof args2.channelId === "string" ? [args2.channelId] : []];
       for (const c of named2) chats.add(c);
-      const shown2 = resultText(d), saved = shown2 && SAVED.exec(shown2)?.[1];
-      const full = saved ? read3(saved) : shown2;
+      const shown3 = resultText(d), saved = shown3 && SAVED.exec(shown3)?.[1];
+      const full = saved ? read3(saved) : shown3;
       const found = full === void 0 ? [] : chatsIn(full);
       for (const c of found) chats.add(c);
-      const unknown2 = named2.length ? void 0 : shown2 === void 0 ? "no result" : saved && full === void 0 ? "saved file gone" : void 0;
+      const unknown2 = named2.length ? void 0 : shown3 === void 0 ? "no result" : saved && full === void 0 ? "saved file gone" : void 0;
       calls.push({ tool: name, from: named2.length ? "args" : saved && full !== void 0 ? "file" : found.length || full !== void 0 ? "result" : "none", chats: (/* @__PURE__ */ new Set([...named2, ...found])).size, ...unknown2 ? { unknown: unknown2 } : {} });
       if (q2) searches.push({ tool: "teams", q: q2.slice(0, 120), n: full === void 0 ? 0 : (full.match(LINK) ?? []).length || found.length });
       continue;
@@ -44335,6 +44898,7 @@ async function dueAutomations(store2, src, cfg, now = /* @__PURE__ */ new Date()
     try {
       const { msgId } = await src.send(a.to.chatId, out);
       store2.addSent(msgId, out);
+      store2.log(telemetryEvent("marker", { code: a.code, applied: true, why: "auto" }));
       store2.setHealth(`auto:${a.code}`);
       store2.log({ event: "sent", code: a.code, chat: a.to.chatId, asker: { id: "", name: a.to.name }, approvedBy: `automation:${a.code}`, msgId, text: out });
       n++;
@@ -44356,6 +44920,7 @@ var init_automations = __esm({
     init_vote_claims();
     init_fs();
     init_channels();
+    init_telemetry();
     DAYS2 = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
     localDay3 = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
     at2 = (day3, hhmm4) => {
@@ -44467,12 +45032,20 @@ function decline(store2, cfg, wf, ref, gate) {
     context: gate.note ? [{ label: "Not reviewing", text: gate.note, tone: "warn" }] : void 0
   });
 }
-function voteGate(store2, cfg, wf, effects, todos, checkAsk = true) {
+function voteGate(store2, cfg, wf, effects, todos, checkAsk = true, left = []) {
   if (!effects.some((e) => isVote(e.call))) return effects;
   const pr = prTarget(store2, wf) ?? 0;
   const why2 = checkAsk && !reviewAsked(store2, wf, pr) ? `nobody asked you to review PR ${pr}` : wf.prRole && !MAY_REVIEW.includes(wf.prRole) ? roleWhy(cfg, wf.prRole) : void 0;
   if (!why2) return effects;
-  for (const e of effects.filter((e2) => isVote(e2.call))) todos.push(`${e.summary.replace(/[.\s]+$/, "")}. Not made for you: ${why2}`);
+  for (const e of effects.filter((e2) => isVote(e2.call))) {
+    todos.push(`${e.summary.replace(/[.\s]+$/, "")}. Not made for you: ${why2}`);
+    const group2 = wf.prRole === "group-unknown";
+    left.push(leftRefusal(
+      effectLeftAction(e, pr),
+      group2 ? "setting-off" : "pr-lifecycle",
+      { why: why2, ...group2 ? { setting: settingKey("reviewerGroups") } : {} }
+    ));
+  }
   store2.log({ event: "vote-gated", workflowId: wf.id, code: wf.code, pr, role: wf.prRole, why: why2 });
   return effects.filter((e) => !isVote(e.call));
 }
@@ -44527,6 +45100,8 @@ var init_review_gate = __esm({
     init_upgrades();
     init_brand();
     init_effects();
+    init_left_lines();
+    init_setting_keys();
     init_probe();
     MAY_REVIEW = ["reviewer", "group"];
     norm2 = (s3 = "") => s3.trim().toLowerCase();
@@ -44558,6 +45133,7 @@ var init_owner = __esm({
 });
 
 // src/core/report.ts
+import { createHash as createHash10 } from "node:crypto";
 function reportFromText(text4, workflowId, known2) {
   for (const raw of [...(text4 ?? "").matchAll(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/g)].map((m) => m[1]).reverse()) {
     let v;
@@ -44571,11 +45147,12 @@ function reportFromText(text4, workflowId, known2) {
   }
   return void 0;
 }
-var SourceSchema, ClaimSchema, CallSchema, EffectSchema, ReportSchema;
+var SourceSchema, ClaimSchema, CallSchema, EffectSchema, RefusedActionSchema, RefusalSchema, ReportSchema;
 var init_report = __esm({
   "src/core/report.ts"() {
     "use strict";
     init_zod();
+    init_setting_keys();
     SourceSchema = external_exports.object({ ref: external_exports.string(), tier: external_exports.enum(["card", "live", "private"]), origin: external_exports.enum(["extracted", "inferred"]), label: external_exports.string().optional().describe("The sensitivity label of the file or page, such as Confidential, when it has one") });
     ClaimSchema = external_exports.object({
       topic: external_exports.string().describe('Short topic name, such as "Banner fix"'),
@@ -44588,12 +45165,59 @@ var init_report = __esm({
     });
     CallSchema = external_exports.object({ tool: external_exports.string().describe("The listed change tool name, without any :action suffix"), args: external_exports.record(external_exports.string(), external_exports.unknown()).describe('Its exact arguments, with "action" when the tool does several') }).describe("The exact call that makes this change");
     EffectSchema = external_exports.object({ system: external_exports.string(), action: external_exports.string(), target: external_exports.string(), summary: external_exports.string(), payload: external_exports.unknown().optional(), call: CallSchema.optional(), head: external_exports.string().optional().describe("For a pull request vote: the head commit ID of the iteration your review read. For a deploy: the PR head commit its build is from") });
+    RefusedActionSchema = external_exports.object({
+      key: external_exports.string().default("").describe("Omit this field. Delegate computes the action key in code; a supplied value is ignored."),
+      verb: external_exports.enum(["reply", "comment", "vote", "merge", "complete", "abandon", "delete", "reviewer", "deploy", "invite", "change", "promise"]),
+      pr: external_exports.number().int().positive().optional(),
+      target: external_exports.string().optional()
+    });
+    RefusalSchema = external_exports.object({
+      type: external_exports.literal("refusal"),
+      kind: external_exports.enum(["other-pr", "setting-off", "pr-lifecycle", "incomplete", "old-invite", "deploy", "other"]),
+      action: external_exports.union([
+        RefusedActionSchema.extend({
+          quote: external_exports.string().describe("Only a verbatim quote of the asker request, the reply promise, or the first line of a refused comment; never a label or a generated instruction"),
+          quoteBy: external_exports.enum(["asker", "owner", "delegate"]).default("asker").describe("Omit this field. Delegate assigns attribution from the action in code.")
+        }),
+        RefusedActionSchema.strict()
+      ]),
+      why: external_exports.string().optional(),
+      setting: external_exports.union([external_exports.enum(STATIC_SETTING_KEYS), external_exports.templateLiteral([external_exports.enum(["change:", "read:", "allow:"]), external_exports.string().min(1)])]).optional().describe("The exact Settings row key: a static row such as deployTo, or change:<catalog entry>, read:<tool> or allow:<tool>."),
+      reply: external_exports.object({ text: external_exports.string(), href: external_exports.string().url() }).optional(),
+      pr: external_exports.object({ id: external_exports.number().int().positive(), href: external_exports.string().url() }).optional()
+    }).overwrite((r) => {
+      const quote = "quote" in r.action ? r.action.quote : void 0;
+      const action2 = {
+        verb: r.action.verb,
+        ...r.action.pr === void 0 ? {} : { pr: r.action.pr },
+        ...r.action.target === void 0 ? {} : { target: r.action.target }
+      };
+      const normalized3 = (text4) => text4.replace(/\s+/g, " ").trim();
+      const key = createHash10("sha256").update(JSON.stringify([
+        r.kind,
+        action2.verb,
+        action2.pr ?? r.pr?.id,
+        normalized3(action2.target ?? ""),
+        normalized3(quote ?? r.why ?? ""),
+        r.setting,
+        r.reply?.href,
+        r.pr?.href
+      ])).digest("hex");
+      return { ...r, action: quote === void 0 ? { ...action2, key } : {
+        ...action2,
+        key,
+        quote,
+        quoteBy: action2.verb === "promise" ? "owner" : action2.verb === "comment" ? "delegate" : "asker"
+      } };
+    });
     ReportSchema = {
       workflowId: external_exports.string(),
       intent: external_exports.string().describe("One intent id from the list in your prompt"),
       state: external_exports.enum(["needs_human", "done", "waiting_on_sender"]),
       reply: external_exports.object({ text: external_exports.string().describe("Complete sendable words only, with no blanks or placeholders. When a fact is missing, use question or goalMet false instead."), commitment: external_exports.boolean(), sources: external_exports.array(SourceSchema) }).optional(),
-      question: external_exports.string().optional(),
+      question: external_exports.string().optional().describe("The question for the owner only, without an item code, answer command, or instructions for using the page."),
+      questionHint: external_exports.object({ answers: external_exports.array(external_exports.string()).optional() }).optional().describe("Suggested short answers to question, for page chips. Only answers, never item codes or commands."),
+      refused: external_exports.array(RefusalSchema).optional().describe("Requests you cannot perform, with their structured reason kind and action. Never encode refusals in todos or context copy. For other-pr, keep the other PR number and the suggested reply with its destination href when known. Do not invent an id, source or clearing state."),
       choices: external_exports.object({
         prompt: external_exports.string(),
         multi: external_exports.boolean().optional(),
@@ -44823,14 +45447,14 @@ function askRelation(store2, item2, text4) {
     if ([...incoming].some((key) => existing.has(key)) && [...incoming].every((key) => existing.has(key))) return "same";
     if (existing.size) return "different";
   }
-  const names = new Set([store2.config().owner.name, item2.asker?.name ?? ""].flatMap((name) => plain3(name).split(" ")));
-  const terms = (value) => new Set(plain3(value).split(" ").filter((term) => term.length > 1 && !STOP.has(term) && !names.has(term)));
+  const names = new Set([store2.config().owner.name, item2.asker?.name ?? ""].flatMap((name) => plain4(name).split(" ")));
+  const terms = (value) => new Set(plain4(value).split(" ").filter((term) => term.length > 1 && !STOP.has(term) && !names.has(term)));
   const a = terms(before), b = terms(text4), overlap = [...b].filter((term) => a.has(term)).length;
   if (a.size >= 2 && b.size >= 2 && overlap >= 2 && overlap / Math.min(a.size, b.size) >= 0.6 && !incoming.size) return "same";
   if (a.size >= 2 && b.size >= 2 && !overlap) return "different";
   return "unknown";
 }
-var FOLLOWUP_MS, keys, STOP, plain3;
+var FOLLOWUP_MS, keys, STOP, plain4;
 var init_same_ask = __esm({
   "src/runner/same-ask.ts"() {
     "use strict";
@@ -44842,7 +45466,7 @@ var init_same_ask = __esm({
       ...[...text4.matchAll(/\b(PR|pull request|incident|work ?item|bug|task|build|run)\s*#?\s*(\d+)\b/gi)].map((match) => `${/^(?:pr|pull request)$/i.test(match[1]) ? "pr" : /^(?:bug|task|work ?item)$/i.test(match[1]) ? "workItem" : /^(?:build|run)$/i.test(match[1]) ? "build" : "incident"}:${match[2]}`)
     ].map((key) => `${key.split(":")[0].toLowerCase()}:${key.split(/[:/]/).at(-1)}`));
     STOP = new Set("a an the this that these those it its is are was were be been to for of on in at with from by as and or but also can could would will should you your we our i me my please hi hello hey thanks thank now still again do does did have has had what which where when who how any about there here same one too fictional".split(" "));
-    plain3 = (text4) => text4.normalize("NFKC").toLowerCase().replace(/^(?:\[[^\]\n]+\]\s*)+/, "").replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+    plain4 = (text4) => text4.normalize("NFKC").toLowerCase().replace(/^(?:\[[^\]\n]+\]\s*)+/, "").replace(/[^\p{L}\p{N}]+/gu, " ").trim();
   }
 });
 
@@ -44894,7 +45518,13 @@ function buildCommentCall(payload, ref, tool) {
 function prepareEffectCalls(effects, ref, catalogs, log, defer = () => false) {
   const tools = Object.entries(catalogs).flatMap(([server, catalog]) => catalog.tools.map((t2) => ({ server, name: `${server}-${t2.name}`, info: t2.info })));
   const comments = tools.filter((t2) => threadTool(t2.name));
-  const result2 = { effects: [], problems: [], repaired: [] };
+  const result2 = { effects: [], problems: [], repaired: [], left: [] };
+  const problemLeft = (effect, why2, comment = false) => {
+    const action2 = effectLeftAction(effect, ref?.pullRequestId);
+    const draft2 = { ...leftRefusal(comment ? { ...action2, verb: "comment" } : action2, "incomplete"), why: why2 };
+    result2.left.push(draft2);
+    result2.problems.push(draft2.why);
+  };
   let n = 0;
   for (const [index, effect] of effects.entries()) {
     if (defer(effect)) {
@@ -44907,7 +45537,7 @@ function prepareEffectCalls(effects, ref, catalogs, log, defer = () => false) {
       const tool2 = tools.find((t2) => t2.name === name);
       const problem = !effect.call ? "no exact call was provided" : !tool2 ? "the tool is not in the cached catalog" : effectCallProblem(effect.call, tool2.info);
       if (problem) {
-        result2.problems.push(`Couldn't prepare change ${index + 1}: ${problem}`);
+        problemLeft(effect, `Couldn't prepare change ${index + 1}: ${problem}`);
         log({ event: "effect-call-repaired", from: "rebuilt", ok: false });
       } else result2.effects.push(effect);
       continue;
@@ -44919,7 +45549,7 @@ function prepareEffectCalls(effects, ref, catalogs, log, defer = () => false) {
     const built = tool ? buildCommentCall(effect.payload, ref, tool) : { problem: "the comment tool isn't uniquely identified in the cached catalog" };
     const from = object5(effect.call?.args) && Object.hasOwn(effect.call.args, "threadContext") ? "threadContext" : "rebuilt";
     if (!built.call) {
-      result2.problems.push(`Couldn't prepare comment ${n}: ${built.problem}`);
+      problemLeft(effect, `Couldn't prepare comment ${n}: ${built.problem}`, true);
       log({ event: "effect-call-repaired", from, ok: false });
     } else if (isDeepStrictEqual2(effect.call, built.call)) result2.effects.push(effect);
     else {
@@ -44935,6 +45565,8 @@ var init_effect_calls = __esm({
   "src/runner/effect-calls.ts"() {
     "use strict";
     init_ajv_provider();
+    init_effects();
+    init_left_lines();
     object5 = (v) => !!v && typeof v === "object" && !Array.isArray(v);
     text = (v) => typeof v === "string" && !!v.trim();
     line2 = (v) => typeof v === "number" && Number.isSafeInteger(v) && v > 0;
@@ -44968,32 +45600,34 @@ var init_ledger = __esm({
 // src/runner/effect-preparation.ts
 import { isDeepStrictEqual as isDeepStrictEqual3 } from "node:util";
 function prepareReportCalls(store2, cfg, items2, report2) {
-  if (report2.goalMet === false) return { report: report2, problems: [] };
+  if (report2.goalMet === false) return { report: report2, problems: [], left: [] };
   const catalogs = cachedCatalogs(cfg), ref = reference(store2, items2);
   const prepare = (effects = []) => prepareEffectCalls(effects, ref, catalogs, (entry) => store2.log(entry), deferred);
-  const main2 = prepare(report2.effects), problems = [...main2.problems];
+  const main2 = prepare(report2.effects), problems = [...main2.problems], left = [...main2.left];
   const choices2 = report2.choices && { ...report2.choices, options: report2.choices.options.map((option, i) => {
     const ready = prepare(option.effects);
     problems.push(...ready.problems.map((p) => `${p} (option ${i + 1})`));
+    left.push(...ready.left.map((draft2) => ({ ...draft2, ...draft2.why ? { why: `${draft2.why} (option ${i + 1})` } : {} })));
     return { ...option, effects: ready.effects };
   }) };
   return { report: {
     ...report2,
     effects: main2.effects,
     ...choices2 ? { choices: choices2 } : {},
+    ...left.length ? { refused: [...report2.refused ?? [], ...left.filter((draft2) => draft2.type === "refusal")] } : {},
     ...problems.length ? {
       state: "needs_human",
       question: report2.question ?? problems.join("\n"),
       todos: [.../* @__PURE__ */ new Set([...report2.todos ?? [], ...problems])],
       work: report2.work ? { ...report2.work, closed: void 0 } : void 0
     } : {}
-  }, problems };
+  }, problems, left };
 }
 function builtEffectProblem(cfg, effect) {
   const tool = Object.entries(cachedCatalogs(cfg)).flatMap(([server, c]) => c.tools.map((t2) => ({ name: `${server}-${t2.name}`, info: t2.info }))).find((t2) => t2.name === effect.call?.tool);
   return !effect.call ? "no exact call was provided" : !tool ? "the tool is not in the cached catalog" : effectCallProblem(effect.call, tool.info);
 }
-function repairPendingEffectCalls(store2) {
+function repairPendingEffectCalls(store2, consume) {
   const cfg = store2.config(), catalogs = cachedCatalogs(cfg);
   if (!Object.values(catalogs).some((c) => c.tools.some((t2) => /pull_request_thread_write$/i.test(t2.name)))) return 0;
   const items2 = store2.workflows(), jobs = new Map(store2.jobs().map((job) => [job.id, job]));
@@ -45004,7 +45638,7 @@ function repairPendingEffectCalls(store2) {
     if (!["needs_human", "waiting_on_task", "open"].includes(wf.state) || wf.work?.closed) continue;
     const job = wf.job ? jobs.get(wf.job) : void 0;
     if (job?.state === "running") continue;
-    const updates = [], problems = [];
+    const updates = [], problems = [], left = [];
     const events = [];
     const effects = (wf.effects ?? []).flatMap((effect) => {
       const copyMade = job?.result?.effects.some((e) => sameChange(e, effect) && (e.done || e.off || maybeOf(store2, e) || madeBefore(store2, e)));
@@ -45015,6 +45649,7 @@ function repairPendingEffectCalls(store2) {
       for (const entry of notices) events.push({ entry, id: pageChangeId(after ?? effect) });
       updates.push({ before: effect, after });
       problems.push(...ready.problems);
+      left.push(...ready.left);
       if (after) repaired++;
       return after ? [after] : [];
     });
@@ -45029,9 +45664,10 @@ function repairPendingEffectCalls(store2) {
       waitingSince: void 0,
       question: effects.some((e) => !e.done && !e.off) ? void 0 : problems.join("\n") || void 0,
       status: updates.some((u) => u.after) ? "The comment format was wrong and is fixed. Post them now?" : problems.join("\n"),
-      todos: [.../* @__PURE__ */ new Set([...wf.todos ?? [], ...problems])],
+      todos: consume ? wf.todos : [.../* @__PURE__ */ new Set([...wf.todos ?? [], ...problems])],
       revAt: new Date(Math.max(Date.now(), (Date.parse(wf.revAt ?? wf.updatedAt) || 0) + 1)).toISOString()
     });
+    if (consume && left.length) consume(wf, left);
     commit();
     for (const { entry, id } of events) if (!logged.has(id)) {
       store2.log({ ...entry, pageChangeId: id, code: wf.code });
@@ -45162,8 +45798,8 @@ ${result2.summary ?? ""}`);
     try {
       rawOutput = JSON.parse(result2.summary ?? "");
     } catch {
-      const refusal3 = setupRefusal();
-      if (refusal3) return refusal3;
+      const refusal2 = setupRefusal();
+      if (refusal2) return refusal2;
       throw new Error("The AI returned invalid rule JSON; your text is kept.");
     }
     const parsed = RuleCompileSchema.safeParse(rawOutput);
@@ -45562,6 +46198,7 @@ ${res.summary ?? ""}`));
     return;
   }
   if (report2 && !report2.reply && fresh.ownerSend && (!fresh.sent || fresh.sent.at < fresh.ownerSend.at)) {
+    leaveForYou(store2, fresh, reportLeft(report2));
     keepApprovedDraft(fresh, report2.summary || "No reply needed");
     fresh.pending = [];
     await checkPreservedHold(store2, src, fresh);
@@ -45617,7 +46254,9 @@ ${res.summary ?? ""}`));
     attachJob(store2, cfg, fresh, job);
   } else {
     const h = family(store2, fresh, report2);
-    report2 = prepareReportCalls(store2, cfg, [fresh], report2).report;
+    const todos = report2.todos;
+    report2 = { ...prepareReportCalls(store2, cfg, [fresh], report2).report, todos };
+    leaveForYou(store2, fresh, reportLeft(report2));
     applyReport(fresh, checked(store2, cfg, report2), h, canCloseReport(store2, h, fresh));
     if (completedJob?.state === "done") fresh.context = replyFacts(jobContext, fresh.context);
     if (fresh.holdCheckPending) await checkPreservedHold(store2, src, fresh);
@@ -45630,12 +46269,14 @@ ${res.summary ?? ""}`));
     if (h !== fresh) store2.save(h);
     if (report2.goalMet === false && fresh.draft && !fresh.draft.holding) fresh.draft = { ...fresh.draft, holding: true };
     const v = vet(cfg, report2.goalMet === false ? [] : report2.effects, prTarget(store2, fresh));
-    v.effects = voteGate(store2, cfg, wf, v.effects, v.todos);
+    v.effects = voteGate(store2, cfg, wf, v.effects, v.todos, true, v.left);
     const read4 = v.effects.some((e) => isVote(e.call)) ? await voteNow(store2, cfg, fresh, v.effects, probe) : void 0;
     commit.refresh();
     const effects = proposalEffects(read4 && !read4.why && !read4.again && read4.effects.length === v.effects.length ? read4.effects : v.effects, [fresh]);
+    settleLeftRetry(fresh, report2, effects);
+    allowLeft(fresh, effects);
+    leaveForYou(store2, fresh, v.left);
     if (v.todos.length) Object.assign(fresh, {
-      todos: [.../* @__PURE__ */ new Set([...fresh.todos ?? [], ...v.todos])],
       // "Are you in <group>?" stays the question while it is open: its answer can bring the vote back (queue-new #7C).
       question: fresh.question ?? (wf.groupAsk ? groupQuestion(wf.groupAsk) : fresh.draft ? refusedAsk(fresh.code, v.todos.length) : `These changes need you: ${v.todos.join("; ")}`)
     });
@@ -45662,6 +46303,7 @@ ${res.summary ?? ""}`));
       store2.log({ event: "invite-ask-unmet", workflowId: fresh.id, code: fresh.code });
     }
   }
+  if (report2 && job) leaveForYou(store2, fresh, reportLeft(report2));
   if (report2?.split?.length) splitOff(store2, cfg, fresh, report2.split);
   fresh.looked = read3.searches.length ? read3.searches : void 0;
   const records2 = [...new Map([...previousRecords, ...read3.records ?? []].map((r) => [r.id, r])).values()];
@@ -45736,7 +46378,7 @@ ${res.summary ?? ""}`));
   commit();
   store2.archiveReport(wf.id, runId);
   store2.log({ event: "ask", workflowId: wf.id, code: wf.code, runId, ms: res.ms, ...ran("ask", res.used) });
-  if (note && fresh.answerSurface === "self") await say(store2, src, plain(`${MARK} ${fresh.code} \xB7 ${note.q}
+  if (note && fresh.answerSurface === "self") await say(store2, src, plain2(`${MARK} ${fresh.code} \xB7 ${note.q}
 ${note.a}`).slice(0, 1800));
 }
 function checked(store2, cfg, r) {
@@ -45744,7 +46386,11 @@ function checked(store2, cfg, r) {
   return q2.reply ? { ...q2, reply: { ...q2.reply, sources: resolveEvidence(knowledgeOf(store2, cfg), cfg, q2.reply.sources, store2.root) } } : q2;
 }
 function applyReport(wf, r, home = wf, allowClose = true, store2) {
-  if (store2) r = prepareReportCalls(store2, store2.config(), [wf], checked(store2, store2.config(), r)).report;
+  if (store2) {
+    const todos = r.todos;
+    r = { ...prepareReportCalls(store2, store2.config(), [wf], checked(store2, store2.config(), r)).report, todos };
+    leaveForYou(store2, wf, reportLeft(r));
+  }
   wf.returnedFrom = void 0;
   wf.statusReason = void 0;
   wf.reviewAgain = void 0;
@@ -45809,11 +46455,13 @@ function applyReport(wf, r, home = wf, allowClose = true, store2) {
   Object.assign(wf, stateFields(wf, "needs_human"));
   if (store2 && r.goalMet !== false) {
     const cfg = store2.config(), v = vet(cfg, r.effects, prTarget(store2, wf));
-    v.effects = voteGate(store2, cfg, wf, v.effects, v.todos);
+    v.effects = voteGate(store2, cfg, wf, v.effects, v.todos, true, v.left);
     wf.effects = proposalEffects(v.effects, [wf]);
+    settleLeftRetry(wf, r, wf.effects);
+    allowLeft(wf, wf.effects);
+    leaveForYou(store2, wf, v.left);
     if (wf.effects.length) carry(store2, cfg, wf, wf.effects);
     if (v.todos.length) {
-      wf.todos = [.../* @__PURE__ */ new Set([...wf.todos ?? [], ...v.todos])];
       wf.question ??= wf.draft ? refusedAsk(wf.code, v.todos.length) : v.todos.join("\n");
     }
   }
@@ -45891,6 +46539,8 @@ var init_dispatch = __esm({
     init_autosend();
     init_jobs();
     init_effects();
+    init_left();
+    init_left_source();
     init_probe();
     init_review_gate();
     init_promise2();
@@ -45933,10 +46583,10 @@ var init_dispatch = __esm({
 });
 
 // src/runner/promise.ts
-function notePromise(store2, wf, text4) {
+function notePromise(store2, wf, text4, source3 = wf.sent && { msgId: wf.sent.msgId, at: wf.sent.at }) {
   const p = wf.promise;
   wf.promise = p && (p.state === "pending" || p.state === "checking") ? { ...p, text: `${p.text}
-${text4}`, state: "pending" } : { text: text4, at: (/* @__PURE__ */ new Date()).toISOString(), state: "pending" };
+${text4}`, at: source3?.at ?? p.at, state: "pending", msgId: source3?.msgId ?? p.msgId } : { text: text4, at: source3?.at ?? (/* @__PURE__ */ new Date()).toISOString(), msgId: source3?.msgId, state: "pending" };
 }
 function rest(store2, wf, status3) {
   const home = homeOf(store2, wf);
@@ -46033,7 +46683,8 @@ ${res.summary ?? ""}`));
   const cast = (e) => isVote(e.call) && fresh.prVote !== void 0 && fresh.prVote !== 0 && fresh.prVote === voteValue(e.call);
   const wanted = proposalEffects(v.effects.filter((e) => !decided.some((m) => same2(m, e)) && !cast(e)).map((e) => ({ ...e, done: void 0, error: void 0 })), [fresh]);
   const now = await voteNow(store2, cfg, fresh, wanted, probe);
-  const left = [...report2.todos ?? [], ...v.todos];
+  const left = [...report2.todos ?? [], ...v.todos], context2 = leftContext(store2, fresh, "your-reply");
+  leaveForYou(store2, fresh, v.left, context2);
   store2.log({ event: "promise-checked", workflowId: fresh.id, code: fresh.code, offered: now.effects.length, todos: left.length, ...now.why ? { why: now.why } : {}, ...now.again ? { again: true } : {} });
   const lines = [];
   let shared;
@@ -46047,14 +46698,19 @@ ${res.summary ?? ""}`));
     if (shared === "busy") return again();
     const line3 = saidLine(now.effects), meaning = now.effects.map((e) => e.pr).find(Boolean);
     Object.assign(fresh, { ...stateFields(fresh, "needs_human"), draft: void 0, effects: now.effects, promised: void 0, approved: void 0, question: void 0, promise: { ...fresh.promise, text: said2, state: "offered", why: void 0 }, status: line3, revAt: (/* @__PURE__ */ new Date()).toISOString() });
+    allowLeft(fresh, now.effects);
     lines.push(`${fresh.code}: ${line3.replace(/^You/, "you")}${meaning ? ` ("${meaning.title}" by ${meaning.author}${meaning.autoComplete ? "; autocomplete is on: your approval may complete it" : ""})` : ""}. Say "ok ${fresh.code}" to do it, or "skip ${fresh.code}".`);
   } else {
-    if (shared) left.push(...now.effects.map((e) => `${e.summary.replace(/[.\s]+$/, "")}. Not made for you: another open item on this review has changes waiting; ok or skip it first, then say it again, or make it by hand`));
+    if (shared) {
+      const why2 = "another open item on this review has changes waiting; ok or skip it first, then say it again, or make it by hand";
+      left.push(...now.effects.map((e) => `${e.summary.replace(/[.\s]+$/, "")}. Not made for you: ${why2}`));
+      leaveForYou(store2, fresh, now.effects.map((effect) => leftRefusal(effectLeftAction(effect, prTarget(store2, fresh)), "other", { why: why2 })), context2);
+    }
     fresh.promise = void 0;
   }
   if (left.length) {
-    fresh.todos = [.../* @__PURE__ */ new Set([...fresh.todos ?? [], ...left])];
-    keepTodos(fresh, wf.sent?.at ?? wf.promise.at, left);
+    leaveForYou(store2, fresh, (report2.todos ?? []).map(leftPromise), context2);
+    fresh.kept ??= [];
   }
   const home = homeOf(store2, fresh);
   const watching = report2.follow && !now.again ? active2(home) ? startWatch(store2, home, report2.follow) : startFollow(store2, report2.follow) : void 0;
@@ -46072,6 +46728,9 @@ var init_promise2 = __esm({
     init_ids();
     init_render();
     init_effects();
+    init_left_lines();
+    init_left();
+    init_left_source();
     init_prompt();
     init_dispatch();
     init_agent_failure();
@@ -46379,7 +47038,7 @@ function ownReplyText(raw, text4) {
   return raw.html ? htmlToText(raw.body.replace(/<blockquote\b[^>]*>[\s\S]*?<\/blockquote>/gi, "")) : text4.replace(/^>.*$/gm, "");
 }
 function matchesOwnerDraft(text4, item2) {
-  const draft2 = normalized(item2.draft?.text ?? ""), post = normalized(text4);
+  const draft2 = normalized2(item2.draft?.text ?? ""), post = normalized2(text4);
   if (!draft2) return false;
   for (let at3 = post.indexOf(draft2); at3 >= 0; at3 = post.indexOf(draft2, at3 + 1)) {
     if (!/[\p{L}\p{N}]/u.test(post[at3 - 1] ?? "") && !/[\p{L}\p{N}]/u.test(post[at3 + draft2.length] ?? "")) return true;
@@ -46509,7 +47168,7 @@ async function retryOwnerReplies(store2, cfg, before = Infinity) {
     if (checked2) store2.setHealth(key);
   }
 }
-var OWNER_REPLY_UNCHECKED, normalized;
+var OWNER_REPLY_UNCHECKED, normalized2;
 var init_owner_reply = __esm({
   "src/runner/owner-reply.ts"() {
     "use strict";
@@ -46527,7 +47186,7 @@ var init_owner_reply = __esm({
     init_agent_failure();
     init_agent_health();
     OWNER_REPLY_UNCHECKED = `${NAME} couldn't check with the AI whether you already replied; it found no reply of yours in the chat.`;
-    normalized = (text4) => htmlToText(mdToHtml(text4)).normalize("NFKC").replace(/\s+/g, " ").trim().toLowerCase();
+    normalized2 = (text4) => htmlToText(mdToHtml(text4)).normalize("NFKC").replace(/\s+/g, " ").trim().toLowerCase();
   }
 });
 
@@ -46780,7 +47439,7 @@ ${caught2.join("\n")}` : ""));
       continue;
     }
     if (/^review knowledge$/i.test(text4)) {
-      await say(store2, src, plain(`${MARK} ${nextProposal(store2, void 0, 6)}`).slice(0, 1800));
+      await say(store2, src, plain2(`${MARK} ${nextProposal(store2, void 0, 6)}`).slice(0, 1800));
       continue;
     }
     const rep = text4.match(REPORT);
@@ -47394,6 +48053,7 @@ async function ack(store2, src, cfg, wf, ruleId) {
     const { msgId } = await src.send(wf.chat.id, text4);
     store2.addSent(msgId, text4);
     store2.addAuto(wf.chat.id, "ack");
+    store2.log(telemetryEvent("marker", { code: wf.code, applied: true, why: "auto" }));
     store2.log({ event: "ack", workflowId: wf.id, code: wf.code, rule: ruleId, byRule: ruleId, msgId });
   }
 }
@@ -47469,6 +48129,7 @@ var init_autosend = __esm({
     init_commit();
     init_upgrades();
     init_limits();
+    init_telemetry();
     policy = (cfg) => ({ ...DEFAULT_POLICY, ...cfg.policy });
     policyContext = (store2, cfg, wf) => {
       const members2 = store2.members()[wf.chat.id];
@@ -47486,6 +48147,37 @@ var init_autosend = __esm({
   }
 });
 
+// src/web/model/place.ts
+function untitledGroup(store2, chat2, askerName) {
+  if (!isGroup(chat2)) return false;
+  const name = chat2.name.trim().toLowerCase();
+  if (!name || name === "group chat" || name === chat2.id.toLowerCase() || /^19:/.test(name) || name === askerName?.trim().toLowerCase()) return true;
+  return Object.values(store2.members()[chat2.id]?.names ?? {}).some((member) => member.trim().toLowerCase() === name);
+}
+function placeOf(store2, chat2, asker) {
+  if (!untitledGroup(store2, chat2, asker?.name)) return void 0;
+  const cached4 = store2.members()[chat2.id]?.names ?? {}, name = asker?.name?.trim().toLowerCase();
+  const askerId = asker?.id ?? (name ? Object.keys(cached4).find((id) => cached4[id].trim().toLowerCase() === name) : void 0);
+  const people2 = groupChatPeople(store2, chat2.id, store2.config().owner.id, askerId);
+  if (!people2?.count || !people2.names.length) return { head: "in a group chat", row: "in a group chat", sentence: "a group chat" };
+  const { names, count } = people2;
+  const list2 = (shown3) => `${names.slice(0, shown3).join(", ")}${count > Math.min(shown3, names.length) ? ` +${count - Math.min(shown3, names.length)}` : ""}`;
+  return {
+    head: `in a group with ${list2(2)}`,
+    row: `in a group with ${list2(1)}`,
+    sentence: `your group with ${list2(2)}`,
+    title: `With ${names.join(", ")}${count > names.length ? ` and ${count - names.length} more` : ""}`
+  };
+}
+var isGroup;
+var init_place = __esm({
+  "src/web/model/place.ts"() {
+    "use strict";
+    init_sharing();
+    isGroup = (chat2) => chat2.group ?? /@thread\.v2$/i.test(chat2.id);
+  }
+});
+
 // src/adapters/source.ts
 var SendUncertain;
 var init_source = __esm({
@@ -47496,145 +48188,6 @@ var init_source = __esm({
         super(`Not sure it was sent; check Teams. ${detail}`);
       }
     };
-  }
-});
-
-// src/runner/continue.ts
-import { spawnSync as spawnProcess3 } from "node:child_process";
-import { uptime as uptime2 } from "node:os";
-import { existsSync as existsSync17 } from "node:fs";
-import { join as join20 } from "node:path";
-function target(store2, wf) {
-  const job = wf.job ? store2.job(wf.job) : void 0;
-  if (wf.session.at && (!job || (job.state === "done" || job.state === "failed") && !job.relay && wf.session.at >= job.updatedAt))
-    return { id: wf.id, session: wf.session.id, repo: wf.session.repo, job: void 0 };
-  return { id: job?.id ?? wf.id, session: job?.session.id ?? wf.session.id, repo: job?.repo, job };
-}
-async function openContinue(store2, src, wf, a, procs) {
-  const t2 = target(store2, wf);
-  const tell2 = (text4) => a.surface === "self" ? say(store2, src, `${MARK} ${text4}`) : Promise.resolve(store2.log({ event: "continue", code: wf.code, text: text4 }));
-  if (store2.openWindow(t2.id)) return tell2(`${wf.code} is already open in a window on ${store2.machine}.`);
-  if (t2.job?.relay) return tell2(`${wf.code} runs in your own session for ${t2.job.relay.what} on ${t2.job.relay.machine}. Continue it there.`);
-  if (t2.job?.state === "running") return tell2(`${wf.code} is still working. Say "continue ${wf.code}" again when it finishes.`);
-  if (t2.repo && !existsSync17(t2.repo)) return tell2(`${wf.code} needs the repo ${t2.repo} on ${store2.machine}, so nothing was opened.`);
-  store2.setOpenWindow(t2.id, { machine: store2.machine, pid: 0, runId: "", since: (/* @__PURE__ */ new Date()).toISOString() });
-  if (wf.state === "scheduled") {
-    Object.assign(wf, { ...stateFields(wf, "needs_human"), sendAt: void 0, status: "Held: you opened it in a window" });
-    store2.save(wf);
-  }
-  procs.openWindow(`${NAME} ${wf.code}`, [process.execPath, CLI, "continue", wf.code], { DELEGATE_LOCAL: LOCAL_DIR, DELEGATE_ROOT: store2.root });
-  store2.log({ event: "continue-open", code: wf.code, target: t2.id });
-  return tell2(`Opening ${wf.code} in a new window on ${store2.machine}. If it asks whether you trust the folder, answer it once, then it will summarize where ${wf.code} stands. I'll leave ${wf.code} alone until you close the window.`);
-}
-function runWindow(store2, cfg, code) {
-  const wf = store2.byCode(code);
-  if (!wf) {
-    console.error(`No item ${code}.`);
-    return 1;
-  }
-  const t2 = target(store2, wf);
-  const held = store2.openWindow(t2.id);
-  const ownReservation = held && !held.pid && held.machine === store2.machine;
-  if (held && !held.closed && !ownReservation) {
-    console.error(`${code} is already open on ${held.machine}. Close that window first.`);
-    return 1;
-  }
-  if (t2.job?.state === "running") {
-    console.error(`${code} is still working. Try again when it finishes.`);
-    return 1;
-  }
-  const runId = ulid3();
-  const { cwd, mcpConfigPath } = workerMcp(store2, t2.id, runId, true);
-  const open2 = { machine: store2.machine, pid: process.pid, runId, since: (/* @__PURE__ */ new Date()).toISOString() };
-  store2.setOpenWindow(t2.id, open2);
-  const effects = pendingEffects(wf.effects).map((e) => shown(e).line);
-  try {
-    const [cmd2, ...args2] = interactiveCommand(cfg.agent, t2.session, orientation(wf.code, t2.id, wf.status, wf.draft?.text, effects), mcpConfigPath);
-    restoreSession(store2, t2.session);
-    const r = spawnSync3(cmd2, args2, { stdio: "inherit", cwd: t2.repo ?? cwd, env: cleanEnv(process.env) });
-    backupSession(store2, t2.session);
-    return r.status ?? 0;
-  } finally {
-    if (store2.openWindow(t2.id)?.runId === runId) store2.setOpenWindow(t2.id, { ...open2, closed: true });
-    removeRunFiles(mcpConfigPath);
-  }
-}
-function windowProcess(pid, since2) {
-  if (!alive(pid)) return false;
-  const key = `${pid}:${since2}`;
-  if (!asked.has(key)) {
-    const cmd2 = commandOf(pid);
-    asked.set(key, cmd2 === void 0 || ours().test(cmd2) && /\bcontinue\b/i.test(cmd2));
-  }
-  return asked.get(key);
-}
-function checkOpen(store2, procs, bootMs = Date.now() - uptime2() * 1e3) {
-  let n = 0;
-  const isWindow = procs.windowAlive ?? windowProcess;
-  for (const { id, o } of store2.openWindows()) {
-    const job = store2.job(id);
-    const items2 = job ? parentsOf(store2, job) : [store2.workflow(id)].filter((w) => !!w);
-    const reserved = !o.pid && Date.now() - Date.parse(o.since) < 2 * 6e4;
-    const age2 = Date.now() - Date.parse(o.since);
-    const remote = o.machine !== store2.machine && !!o.pid && age2 < WINDOW_MS;
-    const here3 = !!o.pid && o.machine === store2.machine && Date.parse(o.since) > bootMs && age2 < WINDOW_MS && isWindow(o.pid, o.since);
-    if (!o.closed && (reserved || remote || here3)) {
-      for (const was of items2.filter((w) => w.openOn !== o.machine)) freshRead(() => {
-        const wf = store2.workflow(was.id);
-        if (wf) {
-          wf.openOn = o.machine;
-          store2.save(wf);
-        }
-      });
-      continue;
-    }
-    const r = store2.peekReport(id, o.runId);
-    if (r && job) finishWork(store2, job, r, job.asks.length);
-    for (const wf of job ? parentsOf(store2, job) : items2) {
-      const fresh = freshRead(() => store2.workflow(wf.id));
-      if (!fresh) throw new Error("The terminal item disappeared before its return could be saved");
-      const commit = recordCommit(fresh, () => store2.workflow(fresh.id), store2.save.bind(store2));
-      if (r && !job) applyReport(fresh, r, fresh, true, store2);
-      if (r && fresh.draft) fresh.draft.preview = true;
-      fresh.openOn = void 0;
-      if (!r && !fresh.returnedFrom && fresh.statusReason?.kind !== "back-from-window") Object.assign(fresh, statusFields("back-from-window", `Back from your window, nothing decided. ${fresh.status}`.slice(0, 200)));
-      fresh.returnedFrom = { machine: o.machine, at: (/* @__PURE__ */ new Date()).toISOString(), report: !!r };
-      commit();
-    }
-    store2.archiveReport(id, o.runId);
-    if (o.machine === store2.machine && o.runId) removeRunFiles(join20(LOCAL_DIR, "sessions", `mcp-${o.runId}.json`));
-    store2.setOpenWindow(id, void 0);
-    const why2 = o.takenBack ? "taken-back" : o.closed ? "closed" : !(age2 < WINDOW_MS) ? "over-12h" : !o.pid || o.machine !== store2.machine || Date.parse(o.since) <= bootMs || !alive(o.pid) ? "gone" : "not-ours";
-    store2.log({ event: "continue-closed", target: id, report: !!r, why: why2 });
-    n++;
-  }
-  return n;
-}
-var spawnSync3, WINDOW_MS, asked;
-var init_continue = __esm({
-  "src/runner/continue.ts"() {
-    "use strict";
-    init_effects();
-    init_io_time();
-    init_ids();
-    init_render();
-    init_agent();
-    init_run_files();
-    init_state();
-    init_paths();
-    init_prompt();
-    init_dispatch();
-    init_jobs();
-    init_intake2();
-    init_own();
-    init_brand();
-    init_fs();
-    init_commit();
-    init_process();
-    init_upgrades();
-    spawnSync3 = timedCall(() => spawnProcess3);
-    WINDOW_MS = 12 * 36e5;
-    asked = /* @__PURE__ */ new Map();
   }
 });
 
@@ -47712,65 +48265,6 @@ var init_learn = __esm({
   }
 });
 
-// src/store/page-revision.ts
-function pageManagementRev(store2, code) {
-  if (!code) return pageDigest(store2.control());
-  const workflow = store2.byCode(code);
-  if (workflow) {
-    const jobId = workflow.work?.watch ?? workflow.job;
-    const job = jobId ? store2.job(jobId) : void 0;
-    return workflowManagementRev(workflow, job);
-  }
-  const automation2 = store2.automation(code);
-  if (automation2) return pageDigest([automationApprovalRev(automation2), automation2.why]);
-  const entity = store2.proposal(code) ?? store2.habit(code) ?? store2.waiting().find((waiting) => waiting.code === code);
-  return entity ? pageDigest(entity) : void 0;
-}
-var workflowManagementRev;
-var init_page_revision = __esm({
-  "src/store/page-revision.ts"() {
-    "use strict";
-    init_page_approval();
-    init_effects();
-    workflowManagementRev = (workflow, job) => pageDigest({
-      id: workflow.id,
-      kind: workflow.kind,
-      state: workflow.state,
-      chat: workflow.chat,
-      asker: workflow.asker,
-      askers: workflow.askers,
-      status: workflow.status,
-      lastAsk: workflow.lastAsk,
-      question: workflow.question,
-      draft: workflow.draft,
-      choices: workflow.choices,
-      context: workflow.context,
-      meeting: workflow.meeting,
-      fyi: workflow.fyi,
-      todos: workflow.todos,
-      kept: workflow.kept?.filter((todo) => !todo.done),
-      changes: pendingEffects(workflow.effects),
-      work: workflow.work && {
-        goal: workflow.work.goal,
-        doneWhen: workflow.work.doneWhen,
-        next: workflow.work.next,
-        waitingOn: workflow.work.waitingOn,
-        steps: workflow.work.steps,
-        links: workflow.work.links,
-        closed: workflow.work.closed,
-        proposed: workflow.work.proposed,
-        plan: workflow.work.plan?.map((step2) => ({ id: step2.id, what: step2.what, who: step2.who, done: step2.done, in: step2.in, ring: step2.ring }))
-      },
-      follow: workflow.follow,
-      watchBy: workflow.watchBy,
-      watchedAs: workflow.watchedAs,
-      changedAt: workflow.changedAt,
-      ackAt: workflow.ackAt,
-      watch: job && { id: job.id, every: job.every, until: job.until, endsAt: job.endsAt }
-    });
-  }
-});
-
 // src/runner/vote-claim.ts
 async function checkVoteClaims(store2, cfg, wf, text4, ownWords2, probe) {
   const live3 = probe ?? adoProbe(cfg), sentences = voteSentences(text4, cfg.owner.name).filter((s3) => s3.kind !== "none");
@@ -47837,575 +48331,43 @@ var init_vote_claim = __esm({
   }
 });
 
-// src/runner/apply.ts
-import { randomUUID as randomUUID11 } from "node:crypto";
-async function applyAnswers(store2, src, cfg, procs = realProcs, controlsOnly = false, probe, quick2) {
-  let n = 0;
-  for (const { file: file4, answer } of store2.answers()) {
-    if (controlsOnly && !isControl(answer.verb)) continue;
-    const wf = answer.code ? freshRead(() => store2.byCode(answer.code)) : void 0;
-    try {
-      const kp = answer.code?.startsWith("K") ? store2.proposal(answer.code) : void 0;
-      if (answer.page) {
-        if (store2.answered(answer.id)) {
-          store2.doneAnswer(file4);
-          continue;
-        }
-        const refusal3 = pageAnswerRefusal(answer, wf, answer.code?.startsWith("R") ? store2.automation(answer.code) : void 0, kp, cfg, answer.page.kind === "manage" ? pageManagementRev(store2, answer.code ?? "") : void 0, wf?.job ? store2.job(wf.job) : void 0);
-        if (refusal3) {
-          await reply(store2, src, answer, `${MARK} ${refusal3}`, true);
-          store2.doneAnswer(file4);
-          store2.log({ event: "page-answer-refused", code: answer.code, verb: answer.verb, reason: refusal3 });
-          n++;
-          continue;
-        }
-      }
-      if (answer.except?.length) {
-        const total = kp ? kp.ops.length : wf ? pendingEffects(wf.effects).length : 0;
-        answer.nums = Array.from({ length: total }, (_, i) => i + 1).filter((n2) => !answer.except.includes(n2));
-        if (!answer.nums.length) answer.nums = [0];
-      }
-      if (wf?.choices && answer.verb === "answer" && /^\s*#?\d+(\s*,\s*#?\d+)*\s*$/.test(answer.text ?? "")) Object.assign(answer, { verb: "pick", nums: answer.text.match(/\d+/g).map(Number), text: void 0 });
-      const auto = answer.code?.startsWith("R") ? store2.automation(answer.code) : void 0;
-      const wt = answer.code?.startsWith("W") ? store2.waiting().find((w) => w.code === answer.code) : void 0;
-      const hb = answer.code?.startsWith("H") ? store2.habit(answer.code) : void 0;
-      if (hb) {
-        const result2 = answerHabitResult(store2, hb, answer.verb, answer.text);
-        await reply(store2, src, answer, `${MARK} ${result2.ok ? result2.text : result2.why}`, !result2.ok);
-      } else if (wt) await reply(store2, src, answer, `${MARK} ${await followUp(store2, src, cfg, wt, answer)}`);
-      else if (auto) await reply(store2, src, answer, `${MARK} ${answerAutomation(store2, auto, answer)}`);
-      else if (isControl(answer.verb)) await control(store2, src, answer, procs);
-      else if (kp) await reply(store2, src, answer, plain(`${MARK} ${answerProposal(store2, knowledgeOf(store2, cfg), kp, answer)}${answer.verb === "more" || answer.verb === "undo" ? "" : `
-
-${nextProposal(store2, kp.code, answer.surface === "self" ? 6 : Infinity)}`}`).slice(0, 1800));
-      else if (!wf) await reply(store2, src, answer, `${MARK} I can't find item ${answer.code}.`);
-      else await applyOne(store2, src, cfg, wf, answer, procs, probe, quick2);
-    } catch (e) {
-      const why2 = String(e).slice(0, 160);
-      store2.log({ event: "answer-failed", code: answer.code, verb: answer.verb, error: String(e).slice(0, 300) });
-      if (wf && (answer.verb === "ok" || answer.verb === "send") && wf.state !== "done") {
-        if (answer.verb === "send" && answer.text && wf.draft) wf.draft = { ...wf.draft, text: answer.text };
-        Object.assign(wf, { ...stateFields(wf, "needs_human"), status: `Could not send: ${why2}. Reply "ok ${wf.code}" to retry` });
-        store2.save(wf);
-      }
-      await reply(store2, src, answer, `${MARK} ${answer.verb} ${answer.code} failed: ${why2}`, true);
-    }
-    store2.doneAnswer(file4);
-    store2.addOutcome(answer.id, "");
-    store2.completePageSubmission(answer);
-    store2.log({ event: "answer", workflowId: wf?.id, code: answer.code, verb: answer.verb, surface: answer.surface, text: answer.text });
-    n++;
-  }
-  return n;
-}
-async function applyOne(store2, src, cfg, wf, a, procs, probe, quick2) {
+// src/runner/send.ts
+function okSendGate(store2, cfg, wf, a) {
   const commit = recordCommit(wf, () => store2.workflow(wf.id), store2.save.bind(store2));
-  if (wf.returnedFrom) {
-    wf.returnedFrom = void 0;
-    commit(false);
-  }
-  wf.answerSurface = a.surface;
-  if (a.verb === "answer" && /^send anyway[.!]?$/i.test(a.text?.trim() ?? "") && (holdReasons(wf).length || voteHold(wf))) {
-    const vote = voteHold(wf);
-    if (vote && (!a.page || vote.automatic || vote.canOverride === false)) return reply(store2, src, a, `${MARK} Not sent ${wf.code}: ${wf.statusReason.text}`, true);
-    a = { ...a, verb: "ok", text: void 0, sendReview: a.page ? a.sendReview : wf.holdNotice?.digest };
-  }
-  if (a.verb === "answer" && /^add (?:the )?vote[.!]?$/i.test(a.text?.trim() ?? "")) {
-    const ref = prRefOf(store2, wf), vote = (wf.job ? store2.job(wf.job)?.result?.voteRecommendation : void 0)?.vote;
-    if (!ref || !vote || vote === "none") return reply(store2, src, a, `${MARK} No vote was recommended for this PR. Nothing changed.`, true);
-    const effect = {
-      system: "azure devops",
-      action: "vote",
-      target: `PR ${ref.id}`,
-      summary: `Vote ${vote} on PR ${ref.id}`,
-      call: { tool: "ado-repo_pull_request_write", args: { action: "vote", project: ref.project, repositoryId: ref.repo, pullRequestId: ref.id, vote } }
-    };
-    if (wf.prRead) {
-      const read3 = JSON.parse(wf.prRead);
-      if (Array.isArray(read3) && read3[0] === ref.id && typeof read3[2] === "string") effect.head = read3[2];
+  let voteChecks = [];
+  if (a.surface === "self" && !a.page && a.verb === "ok") {
+    const left = pendingEffects(wf.effects), omitted = left.filter((e) => isVote(e.call) && !namesVote(a.text, e));
+    if (omitted.length) {
+      const keep = left.flatMap((e, i) => omitted.includes(e) ? [] : [i + 1]);
+      const removed = only(store2, wf, keep.length ? keep : [0], "self-chat-ok");
+      if (typeof removed === "string") return { refuse: { text: `${MARK} ${removed}`, refused: true }, voteChecks };
+      voteChecks = omittedVoteChecks(wf);
+      if (wf.ownerSend) wf.ownerSend.checks = [.../* @__PURE__ */ new Set([...wf.ownerSend.checks ?? [], ...voteChecks])];
+      wf.status = voteChecks.join(" ");
+      commit();
+      store2.log({ event: "self-ok-votes-left-out", workflowId: wf.id, code: wf.code, prs: omitted.map((e) => prIdOf(e.call)) });
+      if (!wf.draft?.text && !pendingEffects(wf.effects).length) {
+        if (wf.promise && wf.sent) rest(store2, wf);
+        wf.status = `Nothing was changed. ${voteChecks.join(" ")}`;
+        commit();
+        return { refuse: { text: `${MARK} ${wf.status}`, refused: false }, voteChecks };
+      }
     }
-    const why2 = refusal(cfg, effect, ref.id);
-    if (why2) return reply(store2, src, a, `${MARK} Cannot offer that vote: ${why2}. Nothing changed.`, true);
-    const effects = proposalEffects([...(wf.effects ?? []).filter((e) => !isVote(e.call) || e.done || e.off), effect], [wf]);
-    const busy2 = carry(store2, cfg, wf, effects);
-    if (busy2) return reply(store2, src, a, `${MARK} This review is ${busy2 === "busy" ? "still making approved changes" : "shared with another item"}. Nothing changed.`, true);
-    clearVoteHold(wf);
-    Object.assign(wf, {
-      effects,
-      approved: void 0,
-      sendAt: void 0,
-      ...stateFields(wf, "needs_human"),
-      revAt: (/* @__PURE__ */ new Date()).toISOString(),
-      status: "Vote added to the proposal. Review and approve it before anything is made or sent."
-    });
+  }
+  const denied2 = pendingEffects(wf.effects).map((effect) => ({ effect, why: refusal(cfg, effect, prTarget(store2, wf)) })).find((entry) => entry.why);
+  if (denied2) {
+    wf.status = `${shown(denied2.effect).line} cannot be made: ${denied2.why}.`;
+    if (denied2.why.startsWith(OLD_INVITE)) {
+      wf.status += " Nothing was created, and the reply was not sent.";
+      wf.question = OLD_INVITE_ASK;
+      wf.revAt = (/* @__PURE__ */ new Date()).toISOString();
+    }
+    wf.statusReason = { kind: "refused", text: wf.status, at: (/* @__PURE__ */ new Date()).toISOString() };
     commit();
     store2.markShown([wf]);
-    return reply(store2, src, a, `${MARK} ${wf.status}`);
+    return { refuse: { text: `${MARK} Not done ${wf.code}: ${wf.status} Nothing was changed.`, refused: true }, voteChecks };
   }
-  const cardAnswer = a.verb === "answer" && /^(?:try again|redraft|add the vote|send anyway|review again)[.!]?$/i.test(a.text?.trim() ?? "");
-  if (wf.groupAsk && !cardAnswer && (a.verb === "answer" || a.verb === "pick" && !wf.choices)) {
-    const selected = groupSelection(wf.groupAsk, a.verb === "pick" ? { nums: a.nums ?? [] } : { text: a.text });
-    if (!selected) return reply(store2, src, a, `${MARK} Say which groups you're in, or none.`);
-    return groupAnswer(store2, src, wf, a, selected, probe);
-  }
-  if (wf.runFailed && a.verb === "answer" && /^\s*try again\s*$/i.test(a.text ?? "")) {
-    store2.log({ event: "run-retried", code: wf.code, why: wf.runFailed.why, ...wf.runFailed.job ? { job: wf.runFailed.job } : {} });
-    const job = wf.runFailed.job ? store2.job(wf.runFailed.job) : void 0;
-    if (job) {
-      Object.assign(job, { state: "queued", purpose: "work", retry: void 0, nextAt: void 0, error: void 0, run: void 0, session: { ...job.session, id: randomUUID11() } });
-      store2.saveJob(job);
-      Object.assign(wf, { job: job.id, ...stateFields(wf, "waiting_on_task"), runFailed: void 0, statusReason: void 0, reviewAgain: void 0, question: void 0, status: `Working: ${job.goal}`, waitingSince: (/* @__PURE__ */ new Date()).toISOString() });
-      commit();
-      return reply(store2, src, a, `${MARK} Trying ${wf.code} again. You'll see what it finds first.`);
-    }
-    Object.assign(wf, { ...stateFields(wf, "running"), runFailed: void 0, statusReason: void 0, reviewAgain: void 0, question: void 0, status: "Trying again", pending: wf.pending.length ? wf.pending : wf.msgIds.slice(-1) });
-    commit();
-    return reply(store2, src, a, `${MARK} Trying ${wf.code} again. You'll see the draft first.`);
-  }
-  if (a.verb === "watch") return reply(store2, src, a, `${MARK} ${watchCommand(store2, { code: wf.code, text: a.text }).text}`);
-  if (a.verb === "unwatch") {
-    const blocked = stopPromisedWatch(store2, procs, wf);
-    return reply(store2, src, a, `${MARK} ${blocked ?? `Stopped the check-back for ${wf.code}. Work and to-dos stay open. Nothing was sent.`}`, !!blocked);
-  }
-  if (a.verb === "close" || a.verb === "wait") return workVerb(store2, src, wf, a, procs);
-  if (wf.work?.proposed && wf.state === "needs_human" && a.verb !== "skip" && a.verb !== "more" && a.verb !== "ask") {
-    if (a.verb !== "ok" && a.verb !== "answer") return reply(store2, src, a, `${MARK} ${wf.code} asks whether to track work: "${wf.work.goal}". Say "ok ${wf.code}" to track it, or "skip ${wf.code}".`);
-    if (a.verb === "ok") {
-      wf.work.proposed = void 0;
-      wf.work.checkAt = new Date(Date.now() + 3 * 864e5).toISOString();
-      step(wf, "You chose to track this");
-      newTurn(wf);
-      Object.assign(wf, { ...stateFields(wf, "open"), status: statusOf(wf), pending: [] });
-      commit();
-      return reply(store2, src, a, `${MARK} Tracking ${wf.code}: ${wf.work.goal}. Messages about it in any chat come back to it.`);
-    }
-  }
-  if (wf.state === "open") {
-    if ((a.verb === "edit" || a.verb === "send") && a.text) {
-      newTurn(wf);
-      Object.assign(wf, stateFields(wf, "needs_human"));
-    } else if (a.verb === "answer") newTurn(wf);
-    else if (["ok", "pick", "later", "undo"].includes(a.verb)) return reply(store2, src, a, `${MARK} ${wf.code} is in progress (${wf.status}) and has no draft. Say "${wf.code}: what to do next", "wait ${wf.code}: 3d", or "close ${wf.code}".`);
-  }
-  const replied = !!wf.sent && !wf.sent.holding;
-  if (wf.state === "done" && a.verb === "send" && replied && a.text) return correct(store2, src, wf, a);
-  if (wf.state === "done" && a.verb === "edit" && replied) return reply(store2, src, a, `${MARK} ${wf.code} was already sent. To post a correction under it, say "send ${wf.code}: <text>".`);
-  if (a.verb === "later") {
-    if (wf.state !== "scheduled") return reply(store2, src, a, `${MARK} Left ${wf.code} for later. It stays in your inbox.`);
-    Object.assign(wf, { ...stateFields(wf, "needs_human"), sendAt: void 0, status: "Held for later by you" });
-    commit();
-    return reply(store2, src, a, `${MARK} Held ${wf.code}: it will not send on its own. It stays in your inbox.`);
-  }
-  if (a.verb === "continue") return openContinue(store2, src, wf, a, procs);
-  if (a.verb === "ok" && wf.kind === "tracker" && !pendingEffects(wf.effects).length && !wf.draft?.text && !wf.question) {
-    wf.ackAt = (/* @__PURE__ */ new Date()).toISOString();
-    commit();
-    return reply(store2, src, a, `${MARK} Got it. Still watching ${wf.code}.`);
-  }
-  if (a.verb === "wrong" || a.verb === "incomplete" || a.verb === "unneeded") return mark(store2, src, cfg, wf, a, procs);
-  if (a.verb === "every" || a.verb === "extend") return retune(store2, src, wf, a);
-  if (a.verb === "mine") {
-    if (wf.state !== "done" || !wf.fyi || wf.sent) return reply(store2, src, a, `${MARK} ${wf.code} is not in Catch up, so nothing changed.`);
-    store2.log({ event: "notfyi", workflowId: wf.id, code: wf.code, chat: wf.chat.id, asker: wf.asker, intent: wf.intent, ask: wf.lastAsk?.slice(0, 400), text: wf.fyi.line });
-    Object.assign(wf, { ...stateFields(wf, "running"), needsMe: true, fyi: void 0, intent: void 0, startedBy: wf.startedBy === "room" ? void 0 : wf.startedBy, status: "Drafting: you said this one needs you" });
-    commit();
-    return reply(store2, src, a, `${MARK} Drafting a reply to ${wf.asker?.name ?? "them"} (${wf.code}). It waits for your ok.`);
-  }
-  if (reopenable(wf, a.verb)) Object.assign(wf, { ...stateFields(wf, "needs_human"), startedBy: wf.startedBy === "room" ? void 0 : wf.startedBy, intent: void 0 });
-  if (wf.state === "done" && a.verb !== "more" && a.verb !== "undo" && a.verb !== "ask") return reply(store2, src, a, `${MARK} ${wf.code} is already done: ${wf.status}`);
-  if (a.verb !== "more" && heldBy(store2, wf) === "window") return reply(store2, src, a, `${MARK} ${wf.code} is open in a window. Close the window first.`, true);
-  const effectsLeft = pendingEffects(wf.effects).length > 0;
-  if ((a.verb === "ok" || (a.verb === "edit" || a.verb === "send") && effectsLeft) && a.seenAt !== void 0 && wf.revAt && (a.seenAt === "" || a.seenAt < wf.revAt) && (wf.state === "needs_human" || wf.state === "scheduled")) {
-    store2.markShown([wf]);
-    if (replied && !wf.draft?.text && effectsLeft) return reply(store2, src, a, `${MARK} Here it is first. Nothing was changed. You said you'd ${effectLine(pendingEffects(wf.effects))}; ok will ${effectLine(pendingEffects(wf.effects))}. Say ok ${wf.code}.`);
-    if (a.seenAt === "") return reply(store2, src, a, `${MARK} Here it is first. Nothing was sent. ${wf.asker?.name ?? "They"} asked: "${(wf.lastAsk ?? "").slice(0, 200)}". ${effectsLeft ? `ok will ${effectLine(pendingEffects(wf.effects))}, then reply` : "Reply"}: "${wf.draft?.text ?? ""}". Say ok ${wf.code}.`);
-    return reply(store2, src, a, `${MARK} This changed after you looked. Nothing was sent or changed. It will now ${effectsLeft ? `${effectLine(pendingEffects(wf.effects))}, then reply: "${wf.draft?.text ?? ""}"` : wf.draft?.text ? `reply: "${wf.draft.text}"` : `ask: ${wf.question ?? wf.status}`}. Say more ${wf.code} to see it.`);
-  }
-  if (a.verb === "ok" && wf.promise?.state === "failed" && !wf.draft?.text) {
-    const r = checkAgain(store2, wf);
-    commit();
-    return reply(store2, src, a, `${MARK} ${r}`);
-  }
-  if ((a.verb === "send" || a.verb === "edit") && a.text && replied && wf.promise?.state === "offered") return reply(store2, src, a, `${MARK} ${wf.code}'s reply already went to ${wf.asker?.name?.split(/\s+/)[0] ?? "them"}. Say "ok ${wf.code}" to ${doLine(pendingEffects(wf.effects))}, or "skip ${wf.code}".`);
-  if (a.verb === "ok") {
-    const r = okRelay(store2, wf);
-    if (r) {
-      commit();
-      return reply(store2, src, a, `${MARK} ${r}`);
-    }
-  }
-  if (a.verb === "send" && a.text && effectsLeft) a = { ...a, verb: "edit" };
-  switch (a.verb) {
-    case "skip": {
-      const blocked = cancelRetry(store2, procs, wf);
-      if (blocked) return reply(store2, src, a, `${MARK} ${blocked}`, true);
-      wf.needsMe = void 0;
-      wf.ownerSend = void 0;
-      clearHold(wf);
-      wf.learnAfter = void 0;
-      if (wf.kind !== "tracker" && wf.draft && !wf.sent) store2.log({ event: "skipped", workflowId: wf.id, code: wf.code, chat: wf.chat.id, intent: wf.intent, asker: wf.asker, ask: wf.lastAsk?.slice(0, 400), draft: wf.draft.text });
-      if (wf.kind !== "tracker" && wf.draft && !wf.sent) outcome(store2, wf, "skipped");
-      withdraw(store2, procs, wf);
-      dropPromise(store2, wf);
-      if (inWork(store2, wf)) {
-        const home = homeOf(store2, wf);
-        step(home, `${wf === home ? "" : `${wf.code}: `}You skipped a reply`);
-        newTurn(wf, !!wf.sent);
-        Object.assign(wf, { ...stateFields(wf, "open"), status: statusOf(home), pending: [] });
-        if (home !== wf) store2.save(home);
-        break;
-      }
-      if (wf.kind === "tracker") stopTracker(store2, procs, wf);
-      close(wf, wf.kind === "tracker" ? "Stopped watching" : "Skipped by you");
-      if (wf.kind !== "tracker") wf.closedBy = "skipped";
-      break;
-    }
-    case "more":
-      if (a.surface === "self") {
-        await say(store2, src, plain(`${MARK} ${renderMore(wf, store2.thread(wf.id), /* @__PURE__ */ new Date())}`).slice(0, 1800));
-        store2.markShown([wf]);
-      }
-      return;
-    case "pick": {
-      const r = pick2(store2, cfg, wf, a);
-      if (r) return reply(store2, src, a, `${MARK} ${r}`, true);
-      if (wf.state === "needs_human") {
-        commit();
-        store2.markShown([wf]);
-        return reply(store2, src, a, renderPreview(wf));
-      }
-      break;
-    }
-    case "ask":
-      wf.notes = [...wf.notes ?? [], { q: a.text, at: (/* @__PURE__ */ new Date()).toISOString() }];
-      commit();
-      return reply(store2, src, a, `${MARK} Asking about ${wf.code}. The answer comes back here; nothing is sent to ${wf.asker?.name ?? "anyone"}.`);
-    case "answer":
-      if (/^redraft[.!]?$/i.test(a.text?.trim() ?? "")) {
-        const messages = holdReasons(wf).flatMap(reasonMessages), thread2 = store2.thread(wf.id);
-        for (const message of messages) if (!thread2.some((m) => m.id === message.id) && wf.asker)
-          thread2.push({ ...message, from: wf.asker, byOwner: false, contentKey: contentKey(message.text) });
-        const newest2 = messages.at(-1);
-        if (newest2) {
-          store2.saveThread(wf.id, thread2);
-          wf.lastAsk = newest2.text;
-          wf.lastMsgId = newest2.id;
-          wf.msgIds = [.../* @__PURE__ */ new Set([...wf.msgIds, ...messages.map((m) => m.id)])];
-          wf.pending = messages.map((m) => m.id);
-        }
-      }
-      wf.ownerSend = void 0;
-      clearHold(wf);
-      withdraw(store2, procs, wf);
-      if (wf.sent) reopenPromise(store2, wf);
-      if (wf.kind === "tracker" && wf.job && store2.job(wf.job)) {
-        const job = store2.job(wf.job);
-        Object.assign(job, { asks: [...job.asks, `Owner: ${a.text}`], ...job.state === "running" ? {} : { state: "queued", purpose: "work" } });
-        store2.saveJob(job);
-        Object.assign(wf, { ...stateFields(wf, "waiting_on_task"), statusReason: void 0, reviewAgain: void 0, question: void 0, status: "Checking again with your answer", waitingSince: (/* @__PURE__ */ new Date()).toISOString() });
-        break;
-      }
-      if (wf.job && store2.job(wf.job) && isValidate(store2.job(wf.job), wf) && (saysTested(a.text) || reportsResult(a.text))) {
-        const job = store2.job(wf.job);
-        Object.assign(job, { asks: [...job.asks, testedAsk(homeOf(store2, wf), a.text)], ...job.state === "running" ? {} : { state: "queued", purpose: "work", error: void 0 } });
-        store2.saveJob(job);
-        Object.assign(wf, { ...stateFields(wf, "waiting_on_task"), statusReason: void 0, reviewAgain: void 0, question: void 0, status: "Reading the results of your test and drafting the report", waitingSince: (/* @__PURE__ */ new Date()).toISOString() });
-        break;
-      }
-      Object.assign(wf, { ownerAnswer: a.text, ...stateFields(wf, "running"), statusReason: void 0, reviewAgain: void 0, status: "Redrafting with your answer" });
-      store2.addOutcome(a.id, "Redrafting with your answer");
-      store2.completePageSubmission(a, "Redrafting with your answer");
-      break;
-    case "edit": {
-      if (wf.state === "waiting_on_task" || wf.state === "running") return reply(store2, src, a, `${MARK} ${wf.code} is still working. I'll show the draft first.`);
-      const original = wf.learnAfter?.draft ?? wf.draft?.text;
-      wf.ownerSend = void 0;
-      clearHold(wf);
-      Object.assign(wf, { ...stateFields(wf, "needs_human"), sendAt: void 0, approved: void 0, runFailed: void 0, statusReason: void 0, reviewAgain: void 0, draft: { ...wf.draft ?? { commitment: false, sources: [] }, text: a.text, preview: true, byOwner: true, ownWords: ownWords(wf, a.text) }, question: void 0, revAt: (/* @__PURE__ */ new Date()).toISOString(), status: "Edited by you", learnAfter: original ? { draft: original, sent: a.text } : void 0 });
-      commit();
-      store2.markShown([wf]);
-      const left = pendingEffects(wf.effects);
-      return reply(store2, src, a, `${MARK} Updated your reply: "${a.text}". Nothing sent. ${left.length ? `ok will also ${effectLine(left)}. Say ok ${wf.code} for both, or ok ${wf.code} except ${left.map((_, i) => i + 1).join(" ")} to send only the reply.` : `Say ok ${wf.code} to send it.`}`);
-    }
-    case "ok":
-      if (holdReplyGap(store2, wf, wf.draft?.text)) return reply(store2, src, a, `${MARK} ${REPLY_BLANK}`, true);
-      if (wf.state === "needs_human" && wf.question && !a.page && !wf.draft?.holding) return reply(store2, src, a, `${MARK} ${wf.code} is not ready: ${wf.question}. Reply "${wf.code}: your answer", and I'll show the new draft.`);
-      if (wf.state === "running") return reply(store2, src, a, `${MARK} ${wf.code} is being rewritten with your answer. I'll show the new draft first.`);
-    // falls through
-    case "send": {
-      if (wf.state === "waiting_on_task") return reply(store2, src, a, `${MARK} ${wf.code} is still working. I'll show the result first.`);
-      if (a.verb === "send" && a.text) {
-        if (holdReasons(wf).length && !a.page && await heldSend(store2, src, wf, a, { quick: quick2 })) return;
-        const reviewed = reviewedReasons(wf, a.sendReview);
-        const original = wf.learnAfter?.draft ?? wf.draft?.text;
-        if (original && original.trim() !== a.text.trim()) wf.learnAfter = { draft: original, sent: a.text };
-        wf.draft = { ...wf.draft ?? { commitment: false, sources: [] }, text: a.text, byOwner: true, ownWords: ownWords(wf, a.text) };
-        if (a.page && holdReasons(wf).length) a = { ...a, sendReview: restampReasons(wf, reviewed) };
-      }
-      if (holdReplyGap(store2, wf, wf.draft?.text)) return reply(store2, src, a, `${MARK} ${REPLY_BLANK}`, true);
-      rememberSend(store2, wf);
-      if (wf.job && pendingEffects(wf.effects).length > 0) {
-        const t2 = await threadSince(store2, src, cfg, wf, "");
-        if (t2.ownerUnknown && !t2.ownerReplied) store2.log({ event: "owner-reply-fallback", code: wf.code, before: "approved-changes", note: OWNER_REPLY_UNCHECKED });
-        if (t2.ownerReplied || await heldSend(store2, src, wf, a, { messages: t2.messages, quick: quick2 })) {
-          if (t2.ownerReplied) {
-            close(wf, t2.ownerExact ? "You sent it yourself" : "You replied yourself");
-            wf.closedBy = "replied";
-          }
-          commit(true, t2.ownerReplied ? { askAt: askAtOf(store2.thread(wf.id), wf.msgIds), replyAt: t2.ownerAt } : void 0);
-          if (t2.ownerReplied) return reply(store2, src, a, `${MARK} Not done ${wf.code}: you already replied in the chat.`);
-          return;
-        }
-      }
-      if (a.nums?.length) {
-        const r = only(store2, wf, a.nums);
-        if (typeof r === "string") return reply(store2, src, a, `${MARK} ${r}`);
-        const pr = prTarget(store2, wf), unmade = r.some((e) => e.error || e.maybe || !!refusal(cfg, e, pr)) || wf.statusReason?.kind === "refused" && (wf.effects ?? []).some((e) => e.off && isVote(e.call));
-        const rest2 = pendingEffects(wf.effects).length;
-        if (wf.draft?.text && (rest2 ? unmade : !wf.draft.byOwner || unmade)) {
-          wf.revAt = (/* @__PURE__ */ new Date()).toISOString();
-          commit();
-          store2.markShown([wf]);
-          return reply(store2, src, a, `${MARK} ${rest2 ? `The reply was written counting on the changes you left out, and it says: "${wf.draft.text}" Say "ok ${wf.code}" to make the rest and send it as it is` : `Only the reply goes now, and it says: "${wf.draft.text}" It was written counting on the changes you left out. Say "ok ${wf.code}" to send it as it is`}, or "edit ${wf.code}: <text>" to change it.`);
-        }
-      }
-      let voteChecks = [];
-      if (a.surface === "self" && !a.page && a.verb === "ok") {
-        const left = pendingEffects(wf.effects), omitted = left.filter((e) => isVote(e.call) && !namesVote(a.text, e));
-        if (omitted.length) {
-          const keep = left.flatMap((e, i) => omitted.includes(e) ? [] : [i + 1]);
-          const removed = only(store2, wf, keep.length ? keep : [0], "self-chat-ok");
-          if (typeof removed === "string") return reply(store2, src, a, `${MARK} ${removed}`, true);
-          voteChecks = omittedVoteChecks(wf);
-          if (wf.ownerSend) wf.ownerSend.checks = [.../* @__PURE__ */ new Set([...wf.ownerSend.checks ?? [], ...voteChecks])];
-          wf.status = voteChecks.join(" ");
-          commit();
-          store2.log({ event: "self-ok-votes-left-out", workflowId: wf.id, code: wf.code, prs: omitted.map((e) => prIdOf(e.call)) });
-          if (!wf.draft?.text && !pendingEffects(wf.effects).length) {
-            if (wf.promise && wf.sent) rest(store2, wf);
-            wf.status = `Nothing was changed. ${voteChecks.join(" ")}`;
-            commit();
-            return reply(store2, src, a, `${MARK} ${wf.status}`);
-          }
-        }
-      }
-      const denied2 = pendingEffects(wf.effects).map((effect) => ({ effect, why: refusal(cfg, effect, prTarget(store2, wf)) })).find((entry) => entry.why);
-      if (denied2) {
-        wf.status = `${shown(denied2.effect).line} cannot be made: ${denied2.why}.`;
-        if (denied2.why.startsWith(OLD_INVITE)) {
-          wf.status += " Nothing was created, and the reply was not sent.";
-          wf.question = OLD_INVITE_ASK;
-          wf.revAt = (/* @__PURE__ */ new Date()).toISOString();
-        }
-        wf.statusReason = { kind: "refused", text: wf.status, at: (/* @__PURE__ */ new Date()).toISOString() };
-        commit();
-        store2.markShown([wf]);
-        return reply(store2, src, a, `${MARK} Not done ${wf.code}: ${wf.status} Nothing was changed.`, true);
-      }
-      const stale = await recheckPr(store2, wf, probe) ?? await recheckDeploy(store2, wf, probe);
-      if (stale && wf.promise && wf.sent && !wf.draft?.text) {
-        if (!pendingEffects(wf.effects).length) {
-          const why2 = wf.status;
-          rest(store2, wf);
-          commit();
-          return reply(store2, src, a, `${MARK} Not done ${wf.code}: ${why2}. Nothing was changed; its reply already went.`);
-        }
-        if (wf.reviewAgain) {
-          const keep = { question: wf.question, status: wf.status, reviewAgain: wf.reviewAgain };
-          newTurn(wf);
-          Object.assign(wf, { ...keep, promise: void 0, ...stateFields(wf, "needs_human"), revAt: (/* @__PURE__ */ new Date()).toISOString() });
-        }
-      }
-      if (stale) {
-        commit();
-        store2.markShown([wf]);
-        return reply(store2, src, a, `${MARK} ${stale}`, true);
-      }
-      const held = approveEffects(store2, cfg, wf, !!a.again);
-      if (!held && wf.approved) {
-        wf.approved.replyDigest = a.page?.replyDigest;
-        wf.approved.sendReview = a.sendReview;
-      }
-      if (held !== void 0) {
-        const checks = wf.ownerSend?.checks ?? voteChecks;
-        if (checks.length) wf.status += ` ${checks.join(" ")}`;
-        commit();
-        return reply(store2, src, a, `${MARK} ${effectResultLine(wf, held ? wf.effects?.some((e) => e.maybe) ? "unsure" : "held" : "running", held)}${checks.length ? ` ${checks.join(" ")}` : ""}`, !!held);
-      }
-      if (wf.promise && wf.sent && !wf.draft?.text) {
-        rest(store2, wf);
-        commit();
-        return reply(store2, src, a, `${MARK} Nothing was changed for ${wf.code}; its reply already went.`);
-      }
-      await send(store2, src, cfg, wf, wf.draft?.text, { answer: a, quick: quick2 }, probe);
-      break;
-    }
-    case "undo":
-      await undo(store2, src, cfg, wf, a);
-      break;
-  }
-  wf.newCount = 0;
-  commit();
-}
-async function followUp(store2, src, cfg, w, a) {
-  const set3 = (state, item2) => store2.saveWaiting(store2.waiting().map((x) => x.code === w.code ? { ...x, state, item: item2, doneAt: (/* @__PURE__ */ new Date()).toISOString() } : x));
-  if (a.verb === "skip") {
-    set3("dismissed");
-    return `Dropped ${w.code}. I won't remind you about it.`;
-  }
-  if (a.verb !== "ok") return `${w.code} takes ok (draft a follow-up) or skip.`;
-  if (w.state !== "waiting") return `${w.code} is already ${w.state}.`;
-  const open2 = w.item ? store2.byCode(w.item) : void 0;
-  if (open2 && open2.state !== "done") return `${w.code} already has a follow-up: ${w.item}.`;
-  const now = (/* @__PURE__ */ new Date()).toISOString(), who2 = w.to.join(", ");
-  const wf = {
-    schema: WORKFLOW_SCHEMA,
-    id: ulid3(),
-    code: store2.nextCode(),
-    kind: "reply",
-    ...stateFields(void 0, "running"),
-    key: { type: "thread", id: w.chat.id },
-    chat: { id: w.chat.id, name: w.chat.name, test: false, group: kindOf(w.chat.id) !== "oneOnOne" },
-    asker: { id: `asked:${w.to[0].toLowerCase()}`, name: who2 },
-    session: { agent: cfg.agent.flavor, id: randomUUID11() },
-    lastMsgId: w.msgId,
-    pending: [w.msgId],
-    msgIds: [w.msgId],
-    lastAsk: w.text,
-    followUp: who2,
-    status: `Drafting a follow-up to ${who2}`,
-    newCount: 0,
-    createdAt: now,
-    updatedAt: now
-  };
-  const recent = await src.recent(w.chat.id, 20).catch(() => []);
-  store2.saveThread(wf.id, recent.filter((r) => r.from).map((r) => ({ id: r.id, at: r.at, from: r.from, text: r.html ? htmlToText(r.body) : r.body, byOwner: r.from.id === cfg.owner.id })));
-  store2.save(wf);
-  store2.saveWaiting(store2.waiting().map((x) => x.code === w.code ? { ...x, item: wf.code } : x));
-  return `Drafting a follow-up to ${who2} as ${wf.code}. You'll see it before anything is sent.`;
-}
-function keepWaiting(store2, wf, a) {
-  const result2 = (text4, refused = false) => store2.addReceipt(recordAnswerResult(store2, a, text4, refused));
-  const commit = recordCommit(wf, () => store2.workflow(wf.id), store2.save.bind(store2));
-  commit.refresh();
-  if (!wf.followUp || wf.kind !== "reply") return result2("This item is not a follow-up reply. Nothing changed.", true);
-  if (wf.sent) return result2("This follow-up was already sent. Nothing changed.", true);
-  const skipped = wf.state === "done" && wf.closedBy === "skipped";
-  if (!skipped && wf.state !== "needs_human" && wf.state !== "scheduled") return result2("This follow-up is not a resting draft. Nothing changed.", true);
-  if (heldBy(store2, wf) === "window" || wf.partOf || pendingParts(store2, wf)) return result2("This follow-up is open elsewhere or part of ongoing work. Nothing changed.", true);
-  const busy2 = freshRead(() => [wf.job, wf.work?.watch].some((id) => {
-    const job = id ? store2.job(id) : void 0;
-    return job?.state === "queued" || job?.state === "running" || !!job?.parents.some((parentId) => {
-      const parent = store2.workflow(parentId);
-      return parent && parent.id !== wf.id && parent.state !== "done";
-    });
-  }));
-  if (busy2) return result2("This follow-up is still working or shared with another item. Nothing changed.", true);
-  const linked = freshRead(() => store2.waiting().filter((w) => w.item === wf.code));
-  if (!linked.length && skipped) return result2("This follow-up is already closed. Nothing was sent.");
-  if (linked.length !== 1 || linked[0].chat.id !== wf.chat.id || !wf.msgIds.includes(linked[0].msgId)) {
-    store2.log({ event: "keep-waiting-refused", code: wf.code, reason: "waiting-link" });
-    return result2("The original waiting entry isn't uniquely linked to this follow-up. Nothing changed.", true);
-  }
-  if (!skipped) {
-    stopWatch(store2, wf);
-    if (wf.work) {
-      wf.work.closed = { at: (/* @__PURE__ */ new Date()).toISOString(), why: "Kept waiting instead" };
-      wf.work.next = void 0;
-      wf.work.waitingOn = void 0;
-    }
-    close(wf, "Skipped follow-up; kept waiting instead");
-    Object.assign(wf, {
-      closedBy: "skipped",
-      approved: void 0,
-      sendAt: void 0,
-      waitingSince: void 0,
-      learnAfter: void 0,
-      promise: void 0,
-      needsMe: void 0,
-      revAt: (/* @__PURE__ */ new Date()).toISOString()
-    });
-    commit();
-  }
-  const state = freshRead(() => {
-    const waits = store2.waiting(), current3 = waits.find((w) => w.code === linked[0].code && w.item === wf.code);
-    if (!current3) throw new Error("The waiting link changed before the follow-up could return");
-    store2.saveWaiting(waits.map((w) => w === current3 ? { ...w, item: void 0, ...w.state === "waiting" ? { doneAt: void 0 } : {} } : w));
-    return current3.state;
-  });
-  store2.log({ event: "kept-waiting", code: wf.code, waiting: linked[0].code, state });
-  return result2(state === "waiting" ? `Kept waiting on ${linked[0].to.join(", ")}. Nothing was sent.` : `Follow-up skipped. The original wait is already ${state}. Nothing was sent.`);
-}
-async function groupAnswer(store2, src, wf, a, selected, probe) {
-  const ask = wf.groupAsk, commit = recordCommit(wf, () => store2.workflow(wf.id), store2.save.bind(store2));
-  const cfg = freshRead(() => {
-    const cfg2 = store2.config();
-    const replace = (list2, add) => {
-      const names = [.../* @__PURE__ */ new Set([...(list2 ?? []).filter((g) => !ask.groups.some((x) => reviewerGroupMatches(x, g))), ...add])];
-      return names.length ? names : void 0;
-    };
-    const owner2 = {
-      ...cfg2.owner,
-      reviewerGroups: replace(cfg2.owner.reviewerGroups, selected),
-      notReviewerGroups: replace(cfg2.owner.notReviewerGroups, ask.groups.filter((g) => !selected.includes(g)))
-    };
-    const updated = { ...cfg2, owner: owner2 };
-    store2.saveConfig(updated);
-    return updated;
-  });
-  Object.assign(wf, { groupAsk: void 0, question: void 0, revAt: (/* @__PURE__ */ new Date()).toISOString() });
-  commit();
-  store2.log({ event: "group-answer", code: wf.code, pr: ask.pr, selected: selected.length, groups: ask.groups.length });
-  const live3 = probe ?? adoProbe(cfg);
-  try {
-    if (live3?.pr) await probePRs(store2, cfg, live3, Date.now(), true, [wf]);
-  } finally {
-    if (!probe) await live3?.close?.();
-  }
-  commit.refresh();
-  if (selected.length && wf.state === "needs_human" && live3?.pr && wf.prRead && wf.prRole && MAY_REVIEW.includes(wf.prRole) && !wf.heldVotes && !pendingEffects(wf.effects).some((e) => isVote(e.call)) && wf.todos?.some((t2) => /Not made for you: /.test(t2))) {
-    Object.assign(wf, { ...stateFields(wf, "running"), todos: wf.todos.filter((t2) => !/Not made for you: .*group that reviews it/.test(t2)), status: `Your reviewer groups are saved; reviewing PR ${ask.pr} again so it can propose your vote`, pending: wf.pending.length ? wf.pending : wf.msgIds.slice(-1) });
-    if (!wf.todos?.length) wf.todos = void 0;
-  }
-  commit();
-  await reply(store2, src, a, `${MARK} ${NAME} remembers your answer.`);
-}
-function pick2(store2, cfg, wf, a) {
-  const c = wf.choices;
-  if (!c || wf.state !== "needs_human") return `${wf.code} has no options to pick from.`;
-  const nums = [...new Set(a.nums ?? [])];
-  if (nums.some((n) => n < 1 || n > c.options.length)) return `${wf.code} has options 1 to ${c.options.length}.`;
-  if (nums.length > 1 && !c.multi) return `Pick one option for ${wf.code}.`;
-  const chosen = nums.map((n) => c.options[n - 1]);
-  const now = (/* @__PURE__ */ new Date()).toISOString();
-  if (chosen.length === 1 && chosen[0].reply) {
-    const o = chosen[0];
-    const job = wf.job ? store2.job(wf.job) : void 0;
-    const own3 = !job || job.key === `item:${wf.id}`;
-    const v = o.effects ? vet(cfg, o.effects.map((e) => ({ ...e, done: void 0, error: void 0 })), prTarget(store2, wf)) : void 0;
-    const busy2 = v && deployRunning(homeOf(store2, wf));
-    if (v && busy2) for (const e of v.effects.filter((e2) => isDeploy(e2.call))) v.todos.push(`${e.summary.replace(/[.\s]+$/, "")}. Not made for you: ${busy2}`);
-    const effects = v ? proposalEffects(v.effects.filter((e) => !busy2 || !isDeploy(e.call)), [wf]) : own3 ? void 0 : wf.effects;
-    const candidate = {
-      ...wf,
-      draft: { ...wf.draft ?? { commitment: false, sources: [] }, text: o.reply ?? "", preview: true, byOwner: void 0, ownWords: void 0 },
-      learnAfter: void 0,
-      effects,
-      question: v?.todos.length ? refusedAsk(wf.code, v.todos.length) : void 0,
-      todos: v?.todos.length ? [.../* @__PURE__ */ new Set([...wf.todos ?? [], ...v.todos])] : wf.todos,
-      picked: nums,
-      revAt: now,
-      status: `You picked "${o.label}"`
-    };
-    if (job && effects !== wf.effects || !job && effects?.length) {
-      const held = carry(store2, cfg, candidate, effects ?? []);
-      if (held) return held === "busy" ? `${wf.code}'s approved changes are still running. Wait for their result before changing the option.` : `${wf.code} shares changes with another open item. Review that item before changing the option.`;
-    }
-    Object.assign(wf, candidate);
-    return void 0;
-  }
-  Object.assign(wf, { ownerAnswer: `The owner picked: ${chosen.map((o) => o.label).join("; ")}`, picked: nums, ...stateFields(wf, "running"), status: "Rewriting with your choice" });
-  return void 0;
+  return { voteChecks };
 }
 function namesVote(text4, effect) {
   const word = (text4 ?? "").trim().replace(/[.!]$/, "");
@@ -48420,24 +48382,16 @@ function omittedVoteChecks(wf) {
     return `Your vote${pr === void 0 ? "" : ` on PR ${pr}`} wasn't cast: a plain ok never votes. Vote on the PR.`;
   }))];
 }
-function only(store2, wf, nums, offReason) {
-  const left = pendingEffects(wf.effects);
-  const none = nums.length === 1 && nums[0] === 0;
-  if (!none && nums.some((n) => n < 1 || n > left.length)) return `${wf.code} has changes 1 to ${left.length}.`;
-  const keep = new Set(nums.map((n) => left[n - 1]));
-  const job = wf.job ? store2.job(wf.job) : void 0;
-  const offIdx = (wf.effects ?? []).map((e, i) => left.includes(e) && !keep.has(e) ? i : -1).filter((i) => i >= 0);
-  for (const i of offIdx) {
-    wf.effects[i] = { ...wf.effects[i], off: true, ...offReason ? { offReason } : {} };
-    const j = job?.result?.effects.findIndex((x) => pendingEffects([x]).length && sameChange(x, wf.effects[i])) ?? -1;
-    if (j >= 0) job.result.effects[j] = { ...job.result.effects[j], off: true, ...offReason ? { offReason } : {} };
-  }
-  if (job) store2.saveJob(job);
-  return left.filter((e) => !keep.has(e));
-}
 function ownWords(wf, text4) {
   const theirs = wf.learnAfter?.draft ?? (wf.draft?.byOwner ? void 0 : wf.draft?.text);
   return !theirs || flat(theirs) !== flat(text4) ? true : void 0;
+}
+function markerFor(text4, wf, by, cfg) {
+  const marker = signatureOf(cfg), strip = (value) => withMarker(value, marker, cfg.owner.name, false);
+  const body = strip(text4);
+  const why2 = by.ruleId ? "auto" : wf.learnAfter ? "owner-edit" : !wf.draft || wf.draft.byOwner || by.answer?.verb === "send" && by.answer.text !== void 0 ? "owner-text" : norm3(body) !== norm3(strip(wf.draft.text)) ? "owner-edit" : signsApproved(cfg) ? "approved" : "off";
+  const applied = why2 === "auto" || why2 === "approved";
+  return { text: withMarker(body, marker, cfg.owner.name, applied), applied, why: why2 };
 }
 function rememberSend(store2, wf) {
   if (!wf.draft) return;
@@ -48609,7 +48563,8 @@ async function send(store2, src, cfg, wf, text4, by, probe) {
   }
   const a = by.answer ?? { id: "", code: wf.code, verb: "ok", surface: wf.answerSurface ?? "chat", at: "", sendReview: by.sendReview };
   const p = { ...DEFAULT_POLICY, ...cfg.policy };
-  const rendered = text4 ? by.ruleId ? withMarker(text4, signatureOf(cfg), cfg.owner.name) : approvedReplyText(text4, wf, cfg) : text4;
+  const marker = text4 ? markerFor(text4, wf, by, cfg) : void 0;
+  const rendered = marker?.text ?? text4;
   let out = rendered === void 0 ? void 0 : scrub(rendered);
   if (out !== text4 && holdReplyGap(store2, wf, out, !!by.ruleId)) {
     if (by.answer) await reply(store2, src, by.answer, `${MARK} ${REPLY_BLANK}`, true);
@@ -48766,6 +48721,7 @@ async function send(store2, src, cfg, wf, text4, by, probe) {
   wf.sent = { msgId, at: (/* @__PURE__ */ new Date()).toISOString(), text: text4, sendText: out !== text4 ? out : void 0, byRule: by.ruleId, undoUntil: new Date(Date.now() + p.undoMin * 6e4).toISOString(), ...askMsgId ? { askMsgId } : {}, ...sendChecks.length ? { checks: sendChecks } : {}, ...holding ? { holding: true } : {} };
   if (wf.approved) wf.approved.replyDigest = void 0;
   commit(false);
+  if (marker) store2.log(telemetryEvent("marker", { code: wf.code, applied: marker.applied, why: marker.why }));
   if (reviewReply) store2.addAuto(wf.chat.id, "send");
   keepTodos(wf, wf.sent.at);
   const home = homeOf(store2, wf);
@@ -48814,7 +48770,8 @@ async function send(store2, src, cfg, wf, text4, by, probe) {
     wf.learnAfter = void 0;
     commit();
   }
-  if (!by.ruleId) await reply(store2, src, a, `${MARK} ${!holding && wf.effects?.some((e) => e.done && !e.off) ? effectResultLine(wf, "done") : !holding && wf.effects?.some((e) => e.off) && !omittedVoteChecks(wf).length ? effectResultLine(wf, "reply-only") : `Sent ${holding ? "the holding reply" : "your reply"} to ${wf.asker?.name?.split(/\s+/)[0] ?? "them"}${wf.chat.group ? ` in ${wf.chat.name}` : ""}.${holding ? " It stays open for the full answer." : ""}`}${sendChecks.length ? ` ${sendChecks.join(" ")}` : ""}${watching ? ` Watching ${wf.follow.target} every ${wf.follow.everyHours ?? 4} h as ${watching}; it stops after 7 days unless you extend it.` : ""}${wf.todos?.length ? ` Still yours to do: ${wf.todos.join("; ")}.` : ""}`);
+  const place2 = placeOf(store2, wf.chat, wf.asker);
+  if (!by.ruleId) await reply(store2, src, a, `${MARK} ${!holding && wf.effects?.some((e) => e.done && !e.off) ? effectResultLine(wf, "done", "", place2) : !holding && wf.effects?.some((e) => e.off) && !omittedVoteChecks(wf).length ? effectResultLine(wf, "reply-only", "", place2) : `Sent ${holding ? "the holding reply" : "your reply"} to ${wf.asker?.name?.split(/\s+/)[0] ?? "them"}${place2 ? ` in ${place2.sentence}` : wf.chat.group ? ` in ${wf.chat.name}` : ""}.${holding ? " It stays open for the full answer." : ""}`}${sendChecks.length ? ` ${sendChecks.join(" ")}` : ""}${watching ? ` Watching ${wf.follow.target} every ${wf.follow.everyHours ?? 4} h as ${watching}; it stops after 7 days unless you extend it.` : ""}${wf.todos?.length ? ` Still yours to do: ${wf.todos.join("; ")}.` : ""}`);
   return true;
 }
 function replyContext(wf, text4 = "", all = {}, ownerId = "") {
@@ -48828,6 +48785,861 @@ function replyContext(wf, text4 = "", all = {}, ownerId = "") {
     ...wf.lastAsk && wf.asker ? { replyTo: { name: wf.asker.name, text: wf.lastAsk } } : {},
     mentions: people2.filter((p) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(p.id)).map((p) => ({ id: p.id, name: p.name }))
   };
+}
+async function undo(store2, src, cfg, wf, a) {
+  if (!wf.sent) return reply(store2, src, a, `${MARK} ${wf.code} has not been sent. Nothing changed.`);
+  if (Date.now() > Date.parse(wf.sent.undoUntil ?? "")) {
+    return reply(store2, src, a, `${MARK} The undo window for ${wf.code} has closed. To post a correction, say "send ${wf.code}: <text>".`);
+  }
+  const p = { ...DEFAULT_POLICY, ...cfg.policy };
+  let how = "deleted";
+  try {
+    await src.deleteMessage(wf.chat.id, wf.sent.msgId);
+  } catch {
+    try {
+      await src.editMessage(wf.chat.id, wf.sent.msgId, withMarker("This message was withdrawn.", signatureOf(cfg), cfg.owner.name));
+      how = "withdrawn";
+    } catch (e) {
+      store2.log({ event: "undo-failed", workflowId: wf.id, code: wf.code, error: String(e).slice(0, 200) });
+      return reply(store2, src, a, `${MARK} I could not undo ${wf.code}: Teams refused both delete and edit. To correct it, reply "edit ${wf.code}: <text>".`);
+    }
+  }
+  store2.log({ event: "undo", workflowId: wf.id, code: wf.code, msgId: wf.sent.msgId, rule: wf.sent.byRule, how });
+  withdrawLearning(store2, cfg, wf.chat.id, wf.sent.msgId);
+  const made = (wf.effects ?? []).filter((e) => e.done);
+  Object.assign(wf, { ...stateFields(wf, "needs_human"), sent: void 0, status: "Undone by you. The draft is kept." });
+  await reply(store2, src, a, `${MARK} Undid ${wf.code} (message ${how}). It is back in your inbox as a draft.${made.length ? ` The ${made.length === 1 ? "change it made stays" : `${made.length} changes it made stay`}: ${made.map((e) => e.summary).join("; ")}.` : ""}`);
+}
+var norm3, flat, squash;
+var init_send = __esm({
+  "src/runner/send.ts"() {
+    "use strict";
+    init_habits();
+    init_sharing();
+    init_work();
+    init_effects();
+    init_gate();
+    init_intake();
+    init_format();
+    init_policy();
+    init_secrets();
+    init_limits();
+    init_autosend();
+    init_render();
+    init_place();
+    init_source();
+    init_intake2();
+    init_owner_reply();
+    init_jobs();
+    init_owner();
+    init_learn();
+    init_discover();
+    init_numbers();
+    init_track();
+    init_probe();
+    init_promise2();
+    init_page_approval();
+    init_reply_gap();
+    init_owner_send();
+    init_send_holds();
+    init_fs();
+    init_commit();
+    init_vote_claim();
+    init_vote_claims();
+    init_upgrades();
+    init_telemetry();
+    init_apply();
+    norm3 = (t2) => htmlToText(t2).replace(/\s+/g, " ").trim();
+    flat = (t2) => t2.replace(/\s+/g, " ").trim();
+    squash = (t2) => norm3(t2).replace(/[^\p{L}\p{N}]+/gu, "").toLowerCase();
+  }
+});
+
+// src/runner/continue.ts
+import { spawnSync as spawnProcess3 } from "node:child_process";
+import { uptime as uptime2 } from "node:os";
+import { existsSync as existsSync17 } from "node:fs";
+import { join as join20 } from "node:path";
+function target(store2, wf) {
+  const job = wf.job ? store2.job(wf.job) : void 0;
+  if (wf.session.at && (!job || (job.state === "done" || job.state === "failed") && !job.relay && wf.session.at >= job.updatedAt))
+    return { id: wf.id, session: wf.session.id, repo: wf.session.repo, job: void 0 };
+  return { id: job?.id ?? wf.id, session: job?.session.id ?? wf.session.id, repo: job?.repo, job };
+}
+async function openContinue(store2, src, wf, a, procs) {
+  const t2 = target(store2, wf);
+  const tell2 = (text4) => a.surface === "self" ? say(store2, src, `${MARK} ${text4}`) : Promise.resolve(store2.log({ event: "continue", code: wf.code, text: text4 }));
+  if (store2.openWindow(t2.id)) return tell2(`${wf.code} is already open in a window on ${store2.machine}.`);
+  if (t2.job?.relay) return tell2(`${wf.code} runs in your own session for ${t2.job.relay.what} on ${t2.job.relay.machine}. Continue it there.`);
+  if (t2.job?.state === "running") return tell2(`${wf.code} is still working. Say "continue ${wf.code}" again when it finishes.`);
+  if (t2.repo && !existsSync17(t2.repo)) return tell2(`${wf.code} needs the repo ${t2.repo} on ${store2.machine}, so nothing was opened.`);
+  store2.setOpenWindow(t2.id, { machine: store2.machine, pid: 0, runId: "", since: (/* @__PURE__ */ new Date()).toISOString() });
+  if (wf.state === "scheduled") {
+    Object.assign(wf, { ...stateFields(wf, "needs_human"), sendAt: void 0, status: "Held: you opened it in a window" });
+    store2.save(wf);
+  }
+  procs.openWindow(`${NAME} ${wf.code}`, [process.execPath, CLI, "continue", wf.code], { DELEGATE_LOCAL: LOCAL_DIR, DELEGATE_ROOT: store2.root });
+  store2.log({ event: "continue-open", code: wf.code, target: t2.id });
+  return tell2(`Opening ${wf.code} in a new window on ${store2.machine}. If it asks whether you trust the folder, answer it once, then it will summarize where ${wf.code} stands. I'll leave ${wf.code} alone until you close the window.`);
+}
+function runWindow(store2, cfg, code) {
+  const wf = store2.byCode(code);
+  if (!wf) {
+    console.error(`No item ${code}.`);
+    return 1;
+  }
+  const t2 = target(store2, wf);
+  const held = store2.openWindow(t2.id);
+  const ownReservation = held && !held.pid && held.machine === store2.machine;
+  if (held && !held.closed && !ownReservation) {
+    console.error(`${code} is already open on ${held.machine}. Close that window first.`);
+    return 1;
+  }
+  if (t2.job?.state === "running") {
+    console.error(`${code} is still working. Try again when it finishes.`);
+    return 1;
+  }
+  const runId = ulid3();
+  const { cwd, mcpConfigPath } = workerMcp(store2, t2.id, runId, true);
+  const open2 = { machine: store2.machine, pid: process.pid, runId, since: (/* @__PURE__ */ new Date()).toISOString() };
+  store2.setOpenWindow(t2.id, open2);
+  const effects = pendingEffects(wf.effects).map((e) => shown(e).line);
+  try {
+    const [cmd2, ...args2] = interactiveCommand(cfg.agent, t2.session, orientation(wf.code, t2.id, wf.status, wf.draft?.text, effects), mcpConfigPath);
+    restoreSession(store2, t2.session);
+    const r = spawnSync3(cmd2, args2, { stdio: "inherit", cwd: t2.repo ?? cwd, env: cleanEnv(process.env) });
+    backupSession(store2, t2.session);
+    return r.status ?? 0;
+  } finally {
+    if (store2.openWindow(t2.id)?.runId === runId) store2.setOpenWindow(t2.id, { ...open2, closed: true });
+    removeRunFiles(mcpConfigPath);
+  }
+}
+function windowProcess(pid, since2) {
+  if (!alive(pid)) return false;
+  const key = `${pid}:${since2}`;
+  if (!asked.has(key)) {
+    const cmd2 = commandOf(pid);
+    asked.set(key, cmd2 === void 0 || ours().test(cmd2) && /\bcontinue\b/i.test(cmd2));
+  }
+  return asked.get(key);
+}
+function checkOpen(store2, procs, bootMs = Date.now() - uptime2() * 1e3) {
+  let n = 0;
+  const isWindow = procs.windowAlive ?? windowProcess;
+  for (const { id, o } of store2.openWindows()) {
+    const job = store2.job(id);
+    const items2 = job ? parentsOf(store2, job) : [store2.workflow(id)].filter((w) => !!w);
+    const reserved = !o.pid && Date.now() - Date.parse(o.since) < 2 * 6e4;
+    const age2 = Date.now() - Date.parse(o.since);
+    const remote = o.machine !== store2.machine && !!o.pid && age2 < WINDOW_MS;
+    const here3 = !!o.pid && o.machine === store2.machine && Date.parse(o.since) > bootMs && age2 < WINDOW_MS && isWindow(o.pid, o.since);
+    if (!o.closed && (reserved || remote || here3)) {
+      for (const was of items2.filter((w) => w.openOn !== o.machine)) freshRead(() => {
+        const wf = store2.workflow(was.id);
+        if (wf) {
+          wf.openOn = o.machine;
+          store2.save(wf);
+        }
+      });
+      continue;
+    }
+    const r = store2.peekReport(id, o.runId);
+    if (r && job) finishWork(store2, job, r, job.asks.length);
+    for (const wf of job ? parentsOf(store2, job) : items2) {
+      const fresh = freshRead(() => store2.workflow(wf.id));
+      if (!fresh) throw new Error("The terminal item disappeared before its return could be saved");
+      const commit = recordCommit(fresh, () => store2.workflow(fresh.id), store2.save.bind(store2));
+      if (r && !job) applyReport(fresh, r, fresh, true, store2);
+      if (r && fresh.draft) fresh.draft.preview = true;
+      fresh.openOn = void 0;
+      if (!r && !fresh.returnedFrom && fresh.statusReason?.kind !== "back-from-window") Object.assign(fresh, statusFields("back-from-window", `Back from your window, nothing decided. ${fresh.status}`.slice(0, 200)));
+      fresh.returnedFrom = { machine: o.machine, at: (/* @__PURE__ */ new Date()).toISOString(), report: !!r };
+      commit();
+    }
+    store2.archiveReport(id, o.runId);
+    if (o.machine === store2.machine && o.runId) removeRunFiles(join20(LOCAL_DIR, "sessions", `mcp-${o.runId}.json`));
+    store2.setOpenWindow(id, void 0);
+    const why2 = o.takenBack ? "taken-back" : o.closed ? "closed" : !(age2 < WINDOW_MS) ? "over-12h" : !o.pid || o.machine !== store2.machine || Date.parse(o.since) <= bootMs || !alive(o.pid) ? "gone" : "not-ours";
+    store2.log({ event: "continue-closed", target: id, report: !!r, why: why2 });
+    n++;
+  }
+  return n;
+}
+var spawnSync3, WINDOW_MS, asked;
+var init_continue = __esm({
+  "src/runner/continue.ts"() {
+    "use strict";
+    init_effects();
+    init_io_time();
+    init_ids();
+    init_render();
+    init_agent();
+    init_run_files();
+    init_state();
+    init_paths();
+    init_prompt();
+    init_dispatch();
+    init_jobs();
+    init_intake2();
+    init_own();
+    init_brand();
+    init_fs();
+    init_commit();
+    init_process();
+    init_upgrades();
+    spawnSync3 = timedCall(() => spawnProcess3);
+    WINDOW_MS = 12 * 36e5;
+    asked = /* @__PURE__ */ new Map();
+  }
+});
+
+// src/store/page-revision.ts
+function pageManagementRev(store2, code) {
+  if (!code) return pageDigest(store2.control());
+  const workflow = store2.byCode(code);
+  if (workflow) {
+    const jobId = workflow.work?.watch ?? workflow.job;
+    const job = jobId ? store2.job(jobId) : void 0;
+    return workflowManagementRev(workflow, job);
+  }
+  const automation2 = store2.automation(code);
+  if (automation2) return pageDigest([automationApprovalRev(automation2), automation2.why]);
+  const entity = store2.proposal(code) ?? store2.habit(code) ?? store2.waiting().find((waiting) => waiting.code === code);
+  return entity ? pageDigest(entity) : void 0;
+}
+var workflowManagementRev;
+var init_page_revision = __esm({
+  "src/store/page-revision.ts"() {
+    "use strict";
+    init_page_approval();
+    init_effects();
+    workflowManagementRev = (workflow, job) => pageDigest({
+      id: workflow.id,
+      kind: workflow.kind,
+      state: workflow.state,
+      chat: workflow.chat,
+      asker: workflow.asker,
+      askers: workflow.askers,
+      status: workflow.status,
+      lastAsk: workflow.lastAsk,
+      question: workflow.question,
+      draft: workflow.draft,
+      choices: workflow.choices,
+      context: workflow.context,
+      meeting: workflow.meeting,
+      fyi: workflow.fyi,
+      todos: workflow.todos,
+      kept: workflow.kept?.filter((todo) => !todo.done),
+      changes: pendingEffects(workflow.effects),
+      work: workflow.work && {
+        goal: workflow.work.goal,
+        doneWhen: workflow.work.doneWhen,
+        next: workflow.work.next,
+        waitingOn: workflow.work.waitingOn,
+        steps: workflow.work.steps,
+        links: workflow.work.links,
+        closed: workflow.work.closed,
+        proposed: workflow.work.proposed,
+        plan: workflow.work.plan?.map((step2) => ({ id: step2.id, what: step2.what, who: step2.who, done: step2.done, in: step2.in, ring: step2.ring }))
+      },
+      follow: workflow.follow,
+      watchBy: workflow.watchBy,
+      watchedAs: workflow.watchedAs,
+      changedAt: workflow.changedAt,
+      ackAt: workflow.ackAt,
+      watch: job && { id: job.id, every: job.every, until: job.until, endsAt: job.endsAt }
+    });
+  }
+});
+
+// src/runner/apply.ts
+import { randomUUID as randomUUID11 } from "node:crypto";
+async function applyAnswers(store2, src, cfg, procs = realProcs, controlsOnly = false, probe, quick2) {
+  let n = 0;
+  for (const { file: file4, answer } of store2.answers()) {
+    if (controlsOnly && !isControl(answer.verb)) continue;
+    const wf = answer.code ? freshRead(() => store2.byCode(answer.code)) : void 0;
+    try {
+      const kp = answer.code?.startsWith("K") ? store2.proposal(answer.code) : void 0;
+      if (answer.page) {
+        if (store2.answered(answer.id)) {
+          store2.doneAnswer(file4);
+          continue;
+        }
+        const refusal2 = pageAnswerRefusal(answer, wf, answer.code?.startsWith("R") ? store2.automation(answer.code) : void 0, kp, cfg, answer.page.kind === "manage" ? pageManagementRev(store2, answer.code ?? "") : void 0, wf?.job ? store2.job(wf.job) : void 0);
+        if (refusal2) {
+          await reply(store2, src, answer, `${MARK} ${refusal2}`, true);
+          store2.doneAnswer(file4);
+          store2.log({ event: "page-answer-refused", code: answer.code, verb: answer.verb, reason: refusal2 });
+          n++;
+          continue;
+        }
+      }
+      if (answer.except?.length) {
+        const total = kp ? kp.ops.length : wf ? pendingEffects(wf.effects).length : 0;
+        answer.nums = Array.from({ length: total }, (_, i) => i + 1).filter((n2) => !answer.except.includes(n2));
+        if (!answer.nums.length) answer.nums = [0];
+      }
+      if (wf?.choices && answer.verb === "answer" && /^\s*#?\d+(\s*,\s*#?\d+)*\s*$/.test(answer.text ?? "")) Object.assign(answer, { verb: "pick", nums: answer.text.match(/\d+/g).map(Number), text: void 0 });
+      const auto = answer.code?.startsWith("R") ? store2.automation(answer.code) : void 0;
+      const wt = answer.code?.startsWith("W") ? store2.waiting().find((w) => w.code === answer.code) : void 0;
+      const hb = answer.code?.startsWith("H") ? store2.habit(answer.code) : void 0;
+      if (hb) {
+        const result2 = answerHabitResult(store2, hb, answer.verb, answer.text);
+        await reply(store2, src, answer, `${MARK} ${result2.ok ? result2.text : result2.why}`, !result2.ok);
+      } else if (wt) await reply(store2, src, answer, `${MARK} ${await followUp(store2, src, cfg, wt, answer)}`);
+      else if (auto) await reply(store2, src, answer, `${MARK} ${answerAutomation(store2, auto, answer)}`);
+      else if (isControl(answer.verb)) await control(store2, src, answer, procs);
+      else if (kp) await reply(store2, src, answer, plain2(`${MARK} ${answerProposal(store2, knowledgeOf(store2, cfg), kp, answer)}${answer.verb === "more" || answer.verb === "undo" ? "" : `
+
+${nextProposal(store2, kp.code, answer.surface === "self" ? 6 : Infinity)}`}`).slice(0, 1800));
+      else if (!wf) await reply(store2, src, answer, `${MARK} I can't find item ${answer.code}.`);
+      else await applyOne(store2, src, cfg, wf, answer, procs, probe, quick2);
+    } catch (e) {
+      const why2 = String(e).slice(0, 160);
+      store2.log({ event: "answer-failed", code: answer.code, verb: answer.verb, error: String(e).slice(0, 300) });
+      if (wf && (answer.verb === "ok" || answer.verb === "send") && wf.state !== "done") {
+        if (answer.verb === "send" && answer.text && wf.draft) wf.draft = { ...wf.draft, text: answer.text };
+        Object.assign(wf, { ...stateFields(wf, "needs_human"), status: `Could not send: ${why2}. Reply "ok ${wf.code}" to retry` });
+        store2.save(wf);
+      }
+      await reply(store2, src, answer, `${MARK} ${answer.verb} ${answer.code} failed: ${why2}`, true);
+    }
+    store2.doneAnswer(file4);
+    store2.addOutcome(answer.id, "");
+    store2.completePageSubmission(answer);
+    store2.log({ event: "answer", workflowId: wf?.id, code: answer.code, verb: answer.verb, surface: answer.surface, text: answer.text });
+    n++;
+  }
+  return n;
+}
+async function applyOne(store2, src, cfg, wf, a, procs, probe, quick2) {
+  const commit = recordCommit(wf, () => store2.workflow(wf.id), store2.save.bind(store2));
+  if (wf.returnedFrom) {
+    wf.returnedFrom = void 0;
+    commit(false);
+  }
+  wf.answerSurface = a.surface;
+  if (a.verb === "left-ask-again" || a.verb === "left-draft-invite") {
+    const line3 = openLeft(wf).find((item2) => item2.id === a.text);
+    if (!line3) return reply(store2, src, a, `${MARK} That Left-for-you line has changed or is already done. Open the current item.`, true);
+    if (a.verb === "left-draft-invite" && (line3.type !== "refusal" || line3.kind !== "old-invite"))
+      return reply(store2, src, a, `${MARK} That line is not an old invite. Nothing changed.`, true);
+    if (wf.leftRetry?.id === line3.id) return reply(store2, src, a, `${MARK} That line is already queued for a new proposal. Nothing was sent.`);
+    const job = wf.job ? store2.job(wf.job) : void 0;
+    if (heldBy(store2, wf) === "window" || wf.state === "running" || wf.state === "waiting_on_task" || job && (executing(job) || job.state === "running"))
+      return reply(store2, src, a, `${MARK} ${wf.code} is still working or open in a window. Wait before asking for another proposal.`, true);
+    newTurn(wf, !!wf.sent);
+    Object.assign(wf, {
+      ...stateFields(wf, "running"),
+      job: void 0,
+      needsMe: true,
+      fyi: void 0,
+      runFailed: void 0,
+      promise: void 0,
+      startedBy: void 0,
+      intent: void 0,
+      leftRetry: { id: line3.id, at: (/* @__PURE__ */ new Date()).toISOString() },
+      ownerAnswer: `Propose ${leftActionText(line3.action)} again. Draft only; wait for my OK.`,
+      pending: wf.msgIds.slice(-1),
+      status: "Preparing a new proposal for your OK"
+    });
+    commit();
+    return reply(store2, src, a, `${MARK} ${wf.code}: preparing a new proposal. Nothing is sent or made without your OK.`);
+  }
+  if (a.verb === "answer" && /^send anyway[.!]?$/i.test(a.text?.trim() ?? "") && (holdReasons(wf).length || voteHold(wf))) {
+    const vote = voteHold(wf);
+    if (vote && (!a.page || vote.automatic || vote.canOverride === false)) return reply(store2, src, a, `${MARK} Not sent ${wf.code}: ${wf.statusReason.text}`, true);
+    a = { ...a, verb: "ok", text: void 0, sendReview: a.page ? a.sendReview : wf.holdNotice?.digest };
+  }
+  if (a.verb === "answer" && /^add (?:the )?vote[.!]?$/i.test(a.text?.trim() ?? "")) {
+    const ref = prRefOf(store2, wf), vote = (wf.job ? store2.job(wf.job)?.result?.voteRecommendation : void 0)?.vote;
+    if (!ref || !vote || vote === "none") return reply(store2, src, a, `${MARK} No vote was recommended for this PR. Nothing changed.`, true);
+    const effect = {
+      system: "azure devops",
+      action: "vote",
+      target: `PR ${ref.id}`,
+      summary: `Vote ${vote} on PR ${ref.id}`,
+      call: { tool: "ado-repo_pull_request_write", args: { action: "vote", project: ref.project, repositoryId: ref.repo, pullRequestId: ref.id, vote } }
+    };
+    if (wf.prRead) {
+      const read3 = JSON.parse(wf.prRead);
+      if (Array.isArray(read3) && read3[0] === ref.id && typeof read3[2] === "string") effect.head = read3[2];
+    }
+    const why2 = refusal(cfg, effect, ref.id);
+    if (why2) return reply(store2, src, a, `${MARK} Cannot offer that vote: ${why2}. Nothing changed.`, true);
+    const effects = proposalEffects([...(wf.effects ?? []).filter((e) => !isVote(e.call) || e.done || e.off), effect], [wf]);
+    const busy2 = carry(store2, cfg, wf, effects);
+    if (busy2) return reply(store2, src, a, `${MARK} This review is ${busy2 === "busy" ? "still making approved changes" : "shared with another item"}. Nothing changed.`, true);
+    clearVoteHold(wf);
+    Object.assign(wf, {
+      effects,
+      approved: void 0,
+      sendAt: void 0,
+      ...stateFields(wf, "needs_human"),
+      revAt: (/* @__PURE__ */ new Date()).toISOString(),
+      status: "Vote added to the proposal. Review and approve it before anything is made or sent."
+    });
+    commit();
+    store2.markShown([wf]);
+    return reply(store2, src, a, `${MARK} ${wf.status}`);
+  }
+  const cardAnswer = a.verb === "answer" && /^(?:try again|redraft|add the vote|send anyway|review again)[.!]?$/i.test(a.text?.trim() ?? "");
+  if (wf.groupAsk && !cardAnswer && (a.verb === "answer" || a.verb === "pick" && !wf.choices)) {
+    const selected = groupSelection(wf.groupAsk, a.verb === "pick" ? { nums: a.nums ?? [] } : { text: a.text });
+    if (!selected) return reply(store2, src, a, `${MARK} Say which groups you're in, or none.`);
+    return groupAnswer(store2, src, wf, a, selected, probe);
+  }
+  if (wf.runFailed && a.verb === "answer" && /^\s*try again\s*$/i.test(a.text ?? "")) {
+    store2.log({ event: "run-retried", code: wf.code, why: wf.runFailed.why, ...wf.runFailed.job ? { job: wf.runFailed.job } : {} });
+    const job = wf.runFailed.job ? store2.job(wf.runFailed.job) : void 0;
+    if (job) {
+      Object.assign(job, { state: "queued", purpose: "work", retry: void 0, nextAt: void 0, error: void 0, run: void 0, session: { ...job.session, id: randomUUID11() } });
+      store2.saveJob(job);
+      Object.assign(wf, { job: job.id, ...stateFields(wf, "waiting_on_task"), runFailed: void 0, statusReason: void 0, reviewAgain: void 0, question: void 0, status: `Working: ${job.goal}`, waitingSince: (/* @__PURE__ */ new Date()).toISOString() });
+      commit();
+      return reply(store2, src, a, `${MARK} Trying ${wf.code} again. You'll see what it finds first.`);
+    }
+    Object.assign(wf, { ...stateFields(wf, "running"), runFailed: void 0, statusReason: void 0, reviewAgain: void 0, question: void 0, status: "Trying again", pending: wf.pending.length ? wf.pending : wf.msgIds.slice(-1) });
+    commit();
+    return reply(store2, src, a, `${MARK} Trying ${wf.code} again. You'll see the draft first.`);
+  }
+  if (a.verb === "watch") return reply(store2, src, a, `${MARK} ${watchCommand(store2, { code: wf.code, text: a.text }).text}`);
+  if (a.verb === "unwatch") {
+    const blocked = stopPromisedWatch(store2, procs, wf);
+    return reply(store2, src, a, `${MARK} ${blocked ?? `Stopped the check-back for ${wf.code}. Work and to-dos stay open. Nothing was sent.`}`, !!blocked);
+  }
+  if (a.verb === "close" || a.verb === "wait") return workVerb(store2, src, wf, a, procs);
+  if (wf.work?.proposed && wf.state === "needs_human" && a.verb !== "skip" && a.verb !== "more" && a.verb !== "ask") {
+    if (a.verb !== "ok" && a.verb !== "answer") return reply(store2, src, a, `${MARK} ${wf.code} asks whether to track work: "${wf.work.goal}". Say "ok ${wf.code}" to track it, or "skip ${wf.code}".`);
+    if (a.verb === "ok") {
+      wf.work.proposed = void 0;
+      wf.work.checkAt = new Date(Date.now() + 3 * 864e5).toISOString();
+      step(wf, "You chose to track this");
+      newTurn(wf);
+      Object.assign(wf, { ...stateFields(wf, "open"), status: statusOf(wf), pending: [] });
+      commit();
+      return reply(store2, src, a, `${MARK} Tracking ${wf.code}: ${wf.work.goal}. Messages about it in any chat come back to it.`);
+    }
+  }
+  if (wf.state === "open") {
+    if ((a.verb === "edit" || a.verb === "send") && a.text) {
+      newTurn(wf);
+      Object.assign(wf, stateFields(wf, "needs_human"));
+    } else if (a.verb === "answer") newTurn(wf);
+    else if (["ok", "pick", "later", "undo"].includes(a.verb)) return reply(store2, src, a, `${MARK} ${wf.code} is in progress (${wf.status}) and has no draft. Say "${wf.code}: what to do next", "wait ${wf.code}: 3d", or "close ${wf.code}".`);
+  }
+  const replied = !!wf.sent && !wf.sent.holding;
+  if (wf.state === "done" && a.verb === "send" && replied && a.text) return correct(store2, src, wf, a);
+  if (wf.state === "done" && a.verb === "edit" && replied) return reply(store2, src, a, `${MARK} ${wf.code} was already sent. To post a correction under it, say "send ${wf.code}: <text>".`);
+  if (a.verb === "later") {
+    if (wf.state !== "scheduled") return reply(store2, src, a, `${MARK} Left ${wf.code} for later. It stays in your inbox.`);
+    Object.assign(wf, { ...stateFields(wf, "needs_human"), sendAt: void 0, status: "Held for later by you" });
+    commit();
+    return reply(store2, src, a, `${MARK} Held ${wf.code}: it will not send on its own. It stays in your inbox.`);
+  }
+  if (a.verb === "continue") return openContinue(store2, src, wf, a, procs);
+  if (a.verb === "ok" && wf.kind === "tracker" && !pendingEffects(wf.effects).length && !wf.draft?.text && !wf.question) {
+    wf.ackAt = (/* @__PURE__ */ new Date()).toISOString();
+    commit();
+    return reply(store2, src, a, `${MARK} Got it. Still watching ${wf.code}.`);
+  }
+  if (a.verb === "wrong" || a.verb === "incomplete" || a.verb === "unneeded") return mark(store2, src, cfg, wf, a, procs);
+  if (a.verb === "every" || a.verb === "extend") return retune(store2, src, wf, a);
+  if (a.verb === "mine") {
+    if (wf.state !== "done" || !wf.fyi || wf.sent) return reply(store2, src, a, `${MARK} ${wf.code} is not in Catch up, so nothing changed.`);
+    store2.log({ event: "notfyi", workflowId: wf.id, code: wf.code, chat: wf.chat.id, asker: wf.asker, intent: wf.intent, ask: wf.lastAsk?.slice(0, 400), text: wf.fyi.line });
+    Object.assign(wf, { ...stateFields(wf, "running"), needsMe: true, fyi: void 0, intent: void 0, startedBy: wf.startedBy === "room" ? void 0 : wf.startedBy, status: "Drafting: you said this one needs you" });
+    commit();
+    return reply(store2, src, a, `${MARK} Drafting a reply to ${wf.asker?.name ?? "them"} (${wf.code}). It waits for your ok.`);
+  }
+  if (reopenable(wf, a.verb)) Object.assign(wf, { ...stateFields(wf, "needs_human"), startedBy: wf.startedBy === "room" ? void 0 : wf.startedBy, intent: void 0 });
+  if (wf.state === "done" && a.verb !== "more" && a.verb !== "undo" && a.verb !== "ask") return reply(store2, src, a, `${MARK} ${wf.code} is already done: ${wf.status}`);
+  if (a.verb !== "more" && heldBy(store2, wf) === "window") return reply(store2, src, a, `${MARK} ${wf.code} is open in a window. Close the window first.`, true);
+  const effectsLeft = pendingEffects(wf.effects).length > 0;
+  if ((a.verb === "ok" || (a.verb === "edit" || a.verb === "send") && effectsLeft) && a.seenAt !== void 0 && wf.revAt && (a.seenAt === "" || a.seenAt < wf.revAt) && (wf.state === "needs_human" || wf.state === "scheduled")) {
+    store2.markShown([wf]);
+    if (replied && !wf.draft?.text && effectsLeft) return reply(store2, src, a, `${MARK} Here it is first. Nothing was changed. You said you'd ${effectLine(pendingEffects(wf.effects))}; ok will ${effectLine(pendingEffects(wf.effects))}. Say ok ${wf.code}.`);
+    if (a.seenAt === "") return reply(store2, src, a, `${MARK} Here it is first. Nothing was sent. ${wf.asker?.name ?? "They"} asked: "${(wf.lastAsk ?? "").slice(0, 200)}". ${effectsLeft ? `ok will ${effectLine(pendingEffects(wf.effects))}, then reply` : "Reply"}: "${wf.draft?.text ?? ""}". Say ok ${wf.code}.`);
+    return reply(store2, src, a, `${MARK} This changed after you looked. Nothing was sent or changed. It will now ${effectsLeft ? `${effectLine(pendingEffects(wf.effects))}, then reply: "${wf.draft?.text ?? ""}"` : wf.draft?.text ? `reply: "${wf.draft.text}"` : `ask: ${wf.question ?? wf.status}`}. Say more ${wf.code} to see it.`);
+  }
+  if (a.verb === "ok" && wf.promise?.state === "failed" && !wf.draft?.text) {
+    const r = checkAgain(store2, wf);
+    commit();
+    return reply(store2, src, a, `${MARK} ${r}`);
+  }
+  if ((a.verb === "send" || a.verb === "edit") && a.text && replied && wf.promise?.state === "offered") return reply(store2, src, a, `${MARK} ${wf.code}'s reply already went to ${wf.asker?.name?.split(/\s+/)[0] ?? "them"}. Say "ok ${wf.code}" to ${doLine(pendingEffects(wf.effects))}, or "skip ${wf.code}".`);
+  if (a.verb === "ok") {
+    const r = okRelay(store2, wf);
+    if (r) {
+      commit();
+      return reply(store2, src, a, `${MARK} ${r}`);
+    }
+  }
+  if (a.verb === "send" && a.text && effectsLeft) a = { ...a, verb: "edit" };
+  switch (a.verb) {
+    case "skip": {
+      const blocked = cancelRetry(store2, procs, wf);
+      if (blocked) return reply(store2, src, a, `${MARK} ${blocked}`, true);
+      wf.needsMe = void 0;
+      wf.ownerSend = void 0;
+      clearHold(wf);
+      wf.learnAfter = void 0;
+      if (wf.kind !== "tracker" && wf.draft && !wf.sent) store2.log({ event: "skipped", workflowId: wf.id, code: wf.code, chat: wf.chat.id, intent: wf.intent, asker: wf.asker, ask: wf.lastAsk?.slice(0, 400), draft: wf.draft.text });
+      if (wf.kind !== "tracker" && wf.draft && !wf.sent) outcome(store2, wf, "skipped");
+      withdraw(store2, procs, wf);
+      dropPromise(store2, wf);
+      if (inWork(store2, wf)) {
+        const home = homeOf(store2, wf);
+        step(home, `${wf === home ? "" : `${wf.code}: `}You skipped a reply`);
+        newTurn(wf, !!wf.sent);
+        Object.assign(wf, { ...stateFields(wf, "open"), status: statusOf(home), pending: [] });
+        if (home !== wf) store2.save(home);
+        break;
+      }
+      closeLeft(wf);
+      if (wf.kind === "tracker") stopTracker(store2, procs, wf);
+      close(wf, wf.kind === "tracker" ? "Stopped watching" : "Skipped by you");
+      if (wf.kind !== "tracker") wf.closedBy = "skipped";
+      break;
+    }
+    case "more":
+      if (a.surface === "self") {
+        await say(store2, src, plain2(`${MARK} ${renderMore(wf, store2.thread(wf.id), /* @__PURE__ */ new Date(), placeOf(store2, wf.chat, wf.asker))}`).slice(0, 1800));
+        store2.markShown([wf]);
+      }
+      return;
+    case "pick": {
+      const r = pick2(store2, cfg, wf, a);
+      if (r) return reply(store2, src, a, `${MARK} ${r}`, true);
+      if (wf.state === "needs_human") {
+        commit();
+        store2.markShown([wf]);
+        return reply(store2, src, a, renderPreview(wf));
+      }
+      break;
+    }
+    case "ask":
+      wf.notes = [...wf.notes ?? [], { q: a.text, at: (/* @__PURE__ */ new Date()).toISOString() }];
+      commit();
+      return reply(store2, src, a, `${MARK} Asking about ${wf.code}. The answer comes back here; nothing is sent to ${wf.asker?.name ?? "anyone"}.`);
+    case "answer":
+      if (/^redraft[.!]?$/i.test(a.text?.trim() ?? "")) {
+        const messages = holdReasons(wf).flatMap(reasonMessages), thread2 = store2.thread(wf.id);
+        for (const message of messages) if (!thread2.some((m) => m.id === message.id) && wf.asker)
+          thread2.push({ ...message, from: wf.asker, byOwner: false, contentKey: contentKey(message.text) });
+        const newest2 = messages.at(-1);
+        if (newest2) {
+          store2.saveThread(wf.id, thread2);
+          wf.lastAsk = newest2.text;
+          wf.lastMsgId = newest2.id;
+          wf.msgIds = [.../* @__PURE__ */ new Set([...wf.msgIds, ...messages.map((m) => m.id)])];
+          wf.pending = messages.map((m) => m.id);
+        }
+      }
+      wf.ownerSend = void 0;
+      clearHold(wf);
+      withdraw(store2, procs, wf);
+      if (wf.sent) reopenPromise(store2, wf);
+      if (wf.kind === "tracker" && wf.job && store2.job(wf.job)) {
+        const job = store2.job(wf.job);
+        Object.assign(job, { asks: [...job.asks, `Owner: ${a.text}`], ...job.state === "running" ? {} : { state: "queued", purpose: "work" } });
+        store2.saveJob(job);
+        Object.assign(wf, { ...stateFields(wf, "waiting_on_task"), statusReason: void 0, reviewAgain: void 0, question: void 0, status: "Checking again with your answer", waitingSince: (/* @__PURE__ */ new Date()).toISOString() });
+        break;
+      }
+      if (wf.job && store2.job(wf.job) && isValidate(store2.job(wf.job), wf) && (saysTested(a.text) || reportsResult(a.text))) {
+        const job = store2.job(wf.job);
+        Object.assign(job, { asks: [...job.asks, testedAsk(homeOf(store2, wf), a.text)], ...job.state === "running" ? {} : { state: "queued", purpose: "work", error: void 0 } });
+        store2.saveJob(job);
+        Object.assign(wf, { ...stateFields(wf, "waiting_on_task"), statusReason: void 0, reviewAgain: void 0, question: void 0, status: "Reading the results of your test and drafting the report", waitingSince: (/* @__PURE__ */ new Date()).toISOString() });
+        break;
+      }
+      Object.assign(wf, { ownerAnswer: a.text, ...stateFields(wf, "running"), statusReason: void 0, reviewAgain: void 0, status: "Redrafting with your answer" });
+      store2.addOutcome(a.id, "Redrafting with your answer");
+      store2.completePageSubmission(a, "Redrafting with your answer");
+      break;
+    case "edit": {
+      if (wf.state === "waiting_on_task" || wf.state === "running") return reply(store2, src, a, `${MARK} ${wf.code} is still working. I'll show the draft first.`);
+      const original = wf.learnAfter?.draft ?? wf.draft?.text;
+      wf.ownerSend = void 0;
+      clearHold(wf);
+      Object.assign(wf, { ...stateFields(wf, "needs_human"), sendAt: void 0, approved: void 0, runFailed: void 0, statusReason: void 0, reviewAgain: void 0, draft: { ...wf.draft ?? { commitment: false, sources: [] }, text: a.text, preview: true, byOwner: true, ownWords: ownWords(wf, a.text) }, question: void 0, revAt: (/* @__PURE__ */ new Date()).toISOString(), status: "Edited by you", learnAfter: original ? { draft: original, sent: a.text } : void 0 });
+      commit();
+      store2.markShown([wf]);
+      const left = pendingEffects(wf.effects);
+      return reply(store2, src, a, `${MARK} Updated your reply: "${a.text}". Nothing sent. ${left.length ? `ok will also ${effectLine(left)}. Say ok ${wf.code} for both, or ok ${wf.code} except ${left.map((_, i) => i + 1).join(" ")} to send only the reply.` : `Say ok ${wf.code} to send it.`}`);
+    }
+    case "ok":
+      if (holdReplyGap(store2, wf, wf.draft?.text)) return reply(store2, src, a, `${MARK} ${REPLY_BLANK}`, true);
+      if (wf.state === "needs_human" && wf.question && !a.page && !wf.draft?.holding) return reply(store2, src, a, `${MARK} ${wf.code} is not ready: ${wf.question}. Reply "${wf.code}: your answer", and I'll show the new draft.`);
+      if (wf.state === "running") return reply(store2, src, a, `${MARK} ${wf.code} is being rewritten with your answer. I'll show the new draft first.`);
+    // falls through
+    case "send": {
+      if (wf.state === "waiting_on_task") return reply(store2, src, a, `${MARK} ${wf.code} is still working. I'll show the result first.`);
+      if (a.verb === "send" && a.text) {
+        if (holdReasons(wf).length && !a.page && await heldSend(store2, src, wf, a, { quick: quick2 })) return;
+        const reviewed = reviewedReasons(wf, a.sendReview);
+        const original = wf.learnAfter?.draft ?? wf.draft?.text;
+        if (original && original.trim() !== a.text.trim()) wf.learnAfter = { draft: original, sent: a.text };
+        wf.draft = { ...wf.draft ?? { commitment: false, sources: [] }, text: a.text, byOwner: true, ownWords: ownWords(wf, a.text) };
+        if (a.page && holdReasons(wf).length) a = { ...a, sendReview: restampReasons(wf, reviewed) };
+      }
+      if (holdReplyGap(store2, wf, wf.draft?.text)) return reply(store2, src, a, `${MARK} ${REPLY_BLANK}`, true);
+      rememberSend(store2, wf);
+      if (wf.job && pendingEffects(wf.effects).length > 0) {
+        const t2 = await threadSince(store2, src, cfg, wf, "");
+        if (t2.ownerUnknown && !t2.ownerReplied) store2.log({ event: "owner-reply-fallback", code: wf.code, before: "approved-changes", note: OWNER_REPLY_UNCHECKED });
+        if (t2.ownerReplied || await heldSend(store2, src, wf, a, { messages: t2.messages, quick: quick2 })) {
+          if (t2.ownerReplied) {
+            close(wf, t2.ownerExact ? "You sent it yourself" : "You replied yourself");
+            wf.closedBy = "replied";
+          }
+          commit(true, t2.ownerReplied ? { askAt: askAtOf(store2.thread(wf.id), wf.msgIds), replyAt: t2.ownerAt } : void 0);
+          if (t2.ownerReplied) return reply(store2, src, a, `${MARK} Not done ${wf.code}: you already replied in the chat.`);
+          return;
+        }
+      }
+      if (a.nums?.length) {
+        const r = only(store2, wf, a.nums);
+        if (typeof r === "string") return reply(store2, src, a, `${MARK} ${r}`);
+        const pr = prTarget(store2, wf), unmade = r.some((e) => e.error || e.maybe || !!refusal(cfg, e, pr)) || wf.statusReason?.kind === "refused" && (wf.effects ?? []).some((e) => e.off && isVote(e.call));
+        const rest2 = pendingEffects(wf.effects).length;
+        if (wf.draft?.text && (rest2 ? unmade : !wf.draft.byOwner || unmade)) {
+          wf.revAt = (/* @__PURE__ */ new Date()).toISOString();
+          commit();
+          store2.markShown([wf]);
+          return reply(store2, src, a, `${MARK} ${rest2 ? `The reply was written counting on the changes you left out, and it says: "${wf.draft.text}" Say "ok ${wf.code}" to make the rest and send it as it is` : `Only the reply goes now, and it says: "${wf.draft.text}" It was written counting on the changes you left out. Say "ok ${wf.code}" to send it as it is`}, or "edit ${wf.code}: <text>" to change it.`);
+        }
+      }
+      const { refuse, voteChecks } = okSendGate(store2, cfg, wf, a);
+      if (refuse) return reply(store2, src, a, refuse.text, refuse.refused);
+      const stale = await recheckPr(store2, wf, probe) ?? await recheckDeploy(store2, wf, probe);
+      if (stale && wf.promise && wf.sent && !wf.draft?.text) {
+        if (!pendingEffects(wf.effects).length) {
+          const why2 = wf.status;
+          rest(store2, wf);
+          commit();
+          return reply(store2, src, a, `${MARK} Not done ${wf.code}: ${why2}. Nothing was changed; its reply already went.`);
+        }
+        if (wf.reviewAgain) {
+          const keep = { question: wf.question, status: wf.status, reviewAgain: wf.reviewAgain };
+          newTurn(wf);
+          Object.assign(wf, { ...keep, promise: void 0, ...stateFields(wf, "needs_human"), revAt: (/* @__PURE__ */ new Date()).toISOString() });
+        }
+      }
+      if (stale) {
+        commit();
+        store2.markShown([wf]);
+        return reply(store2, src, a, `${MARK} ${stale}`, true);
+      }
+      const held = approveEffects(store2, cfg, wf, !!a.again);
+      if (!held && wf.approved) {
+        wf.approved.replyDigest = a.page?.replyDigest;
+        wf.approved.sendReview = a.sendReview;
+      }
+      if (held !== void 0) {
+        const checks = wf.ownerSend?.checks ?? voteChecks;
+        if (checks.length) wf.status += ` ${checks.join(" ")}`;
+        commit();
+        return reply(store2, src, a, `${MARK} ${effectResultLine(wf, held ? wf.effects?.some((e) => e.maybe) ? "unsure" : "held" : "running", held, placeOf(store2, wf.chat, wf.asker))}${checks.length ? ` ${checks.join(" ")}` : ""}`, !!held);
+      }
+      if (wf.promise && wf.sent && !wf.draft?.text) {
+        rest(store2, wf);
+        commit();
+        return reply(store2, src, a, `${MARK} Nothing was changed for ${wf.code}; its reply already went.`);
+      }
+      await send(store2, src, cfg, wf, wf.draft?.text, { answer: a, quick: quick2 }, probe);
+      break;
+    }
+    case "undo":
+      await undo(store2, src, cfg, wf, a);
+      break;
+  }
+  wf.newCount = 0;
+  commit();
+}
+async function followUp(store2, src, cfg, w, a) {
+  const set3 = (state, item2) => store2.saveWaiting(store2.waiting().map((x) => x.code === w.code ? { ...x, state, item: item2, doneAt: (/* @__PURE__ */ new Date()).toISOString() } : x));
+  if (a.verb === "skip") {
+    set3("dismissed");
+    return `Dropped ${w.code}. I won't remind you about it.`;
+  }
+  if (a.verb !== "ok") return `${w.code} takes ok (draft a follow-up) or skip.`;
+  if (w.state !== "waiting") return `${w.code} is already ${w.state}.`;
+  const open2 = w.item ? store2.byCode(w.item) : void 0;
+  if (open2 && open2.state !== "done") return `${w.code} already has a follow-up: ${w.item}.`;
+  const now = (/* @__PURE__ */ new Date()).toISOString(), who2 = w.to.join(", ");
+  const wf = {
+    schema: WORKFLOW_SCHEMA,
+    id: ulid3(),
+    code: store2.nextCode(),
+    kind: "reply",
+    ...stateFields(void 0, "running"),
+    key: { type: "thread", id: w.chat.id },
+    chat: { id: w.chat.id, name: w.chat.name, test: false, group: kindOf(w.chat.id) !== "oneOnOne" },
+    asker: { id: `asked:${w.to[0].toLowerCase()}`, name: who2 },
+    session: { agent: cfg.agent.flavor, id: randomUUID11() },
+    lastMsgId: w.msgId,
+    pending: [w.msgId],
+    msgIds: [w.msgId],
+    lastAsk: w.text,
+    followUp: who2,
+    status: `Drafting a follow-up to ${who2}`,
+    newCount: 0,
+    createdAt: now,
+    updatedAt: now
+  };
+  const recent = await src.recent(w.chat.id, 20).catch(() => []);
+  store2.saveThread(wf.id, recent.filter((r) => r.from).map((r) => ({ id: r.id, at: r.at, from: r.from, text: r.html ? htmlToText(r.body) : r.body, byOwner: r.from.id === cfg.owner.id })));
+  store2.save(wf);
+  store2.saveWaiting(store2.waiting().map((x) => x.code === w.code ? { ...x, item: wf.code } : x));
+  return `Drafting a follow-up to ${who2} as ${wf.code}. You'll see it before anything is sent.`;
+}
+function keepWaiting(store2, wf, a) {
+  const result2 = (text4, refused = false) => store2.addReceipt(recordAnswerResult(store2, a, text4, refused));
+  const commit = recordCommit(wf, () => store2.workflow(wf.id), store2.save.bind(store2));
+  commit.refresh();
+  if (!wf.followUp || wf.kind !== "reply") return result2("This item is not a follow-up reply. Nothing changed.", true);
+  if (wf.sent) return result2("This follow-up was already sent. Nothing changed.", true);
+  const skipped = wf.state === "done" && wf.closedBy === "skipped";
+  if (!skipped && wf.state !== "needs_human" && wf.state !== "scheduled") return result2("This follow-up is not a resting draft. Nothing changed.", true);
+  if (heldBy(store2, wf) === "window" || wf.partOf || pendingParts(store2, wf)) return result2("This follow-up is open elsewhere or part of ongoing work. Nothing changed.", true);
+  const busy2 = freshRead(() => [wf.job, wf.work?.watch].some((id) => {
+    const job = id ? store2.job(id) : void 0;
+    return job?.state === "queued" || job?.state === "running" || !!job?.parents.some((parentId) => {
+      const parent = store2.workflow(parentId);
+      return parent && parent.id !== wf.id && parent.state !== "done";
+    });
+  }));
+  if (busy2) return result2("This follow-up is still working or shared with another item. Nothing changed.", true);
+  const linked = freshRead(() => store2.waiting().filter((w) => w.item === wf.code));
+  if (!linked.length && skipped) return result2("This follow-up is already closed. Nothing was sent.");
+  if (linked.length !== 1 || linked[0].chat.id !== wf.chat.id || !wf.msgIds.includes(linked[0].msgId)) {
+    store2.log({ event: "keep-waiting-refused", code: wf.code, reason: "waiting-link" });
+    return result2("The original waiting entry isn't uniquely linked to this follow-up. Nothing changed.", true);
+  }
+  if (!skipped) {
+    stopWatch(store2, wf);
+    if (wf.work) {
+      wf.work.closed = { at: (/* @__PURE__ */ new Date()).toISOString(), why: "Kept waiting instead" };
+      wf.work.next = void 0;
+      wf.work.waitingOn = void 0;
+    }
+    close(wf, "Skipped follow-up; kept waiting instead");
+    Object.assign(wf, {
+      closedBy: "skipped",
+      approved: void 0,
+      sendAt: void 0,
+      waitingSince: void 0,
+      learnAfter: void 0,
+      promise: void 0,
+      needsMe: void 0,
+      revAt: (/* @__PURE__ */ new Date()).toISOString()
+    });
+    commit();
+  }
+  const state = freshRead(() => {
+    const waits = store2.waiting(), current3 = waits.find((w) => w.code === linked[0].code && w.item === wf.code);
+    if (!current3) throw new Error("The waiting link changed before the follow-up could return");
+    store2.saveWaiting(waits.map((w) => w === current3 ? { ...w, item: void 0, ...w.state === "waiting" ? { doneAt: void 0 } : {} } : w));
+    return current3.state;
+  });
+  store2.log({ event: "kept-waiting", code: wf.code, waiting: linked[0].code, state });
+  return result2(state === "waiting" ? `Kept waiting on ${linked[0].to.join(", ")}. Nothing was sent.` : `Follow-up skipped. The original wait is already ${state}. Nothing was sent.`);
+}
+async function groupAnswer(store2, src, wf, a, selected, probe) {
+  const ask = wf.groupAsk, commit = recordCommit(wf, () => store2.workflow(wf.id), store2.save.bind(store2));
+  const cfg = freshRead(() => {
+    const cfg2 = store2.config();
+    const replace = (list2, add) => {
+      const names = [.../* @__PURE__ */ new Set([...(list2 ?? []).filter((g) => !ask.groups.some((x) => reviewerGroupMatches(x, g))), ...add])];
+      return names.length ? names : void 0;
+    };
+    const owner2 = {
+      ...cfg2.owner,
+      reviewerGroups: replace(cfg2.owner.reviewerGroups, selected),
+      notReviewerGroups: replace(cfg2.owner.notReviewerGroups, ask.groups.filter((g) => !selected.includes(g)))
+    };
+    const updated = { ...cfg2, owner: owner2 };
+    store2.saveConfig(updated);
+    return updated;
+  });
+  Object.assign(wf, { groupAsk: void 0, question: void 0, revAt: (/* @__PURE__ */ new Date()).toISOString() });
+  commit();
+  store2.log({ event: "group-answer", code: wf.code, pr: ask.pr, selected: selected.length, groups: ask.groups.length });
+  const live3 = probe ?? adoProbe(cfg);
+  try {
+    if (live3?.pr) await probePRs(store2, cfg, live3, Date.now(), true, [wf]);
+  } finally {
+    if (!probe) await live3?.close?.();
+  }
+  commit.refresh();
+  const groupLeft = openLeft(wf).filter((line3) => line3.type === "refusal" && line3.kind === "setting-off" && line3.setting === settingKey("reviewerGroups") && line3.action.verb === "vote" && line3.action.pr === ask.pr);
+  const legacyReview = wf.left === void 0 && isReviewJob(wf.job ? store2.job(wf.job)?.key ?? "" : "", wf.intent);
+  if (selected.length && wf.state === "needs_human" && live3?.pr && wf.prRead && wf.prRole && MAY_REVIEW.includes(wf.prRole) && !wf.heldVotes && !pendingEffects(wf.effects).some((e) => isVote(e.call)) && (groupLeft.length || legacyReview)) {
+    clearLeft(wf, groupLeft.map((line3) => line3.id), { at: (/* @__PURE__ */ new Date()).toISOString(), by: "engine", why: "allowed-now" });
+    Object.assign(wf, { ...stateFields(wf, "running"), status: `Your reviewer groups are saved; reviewing PR ${ask.pr} again so it can propose your vote`, pending: wf.pending.length ? wf.pending : wf.msgIds.slice(-1) });
+  }
+  commit();
+  await reply(store2, src, a, `${MARK} ${NAME} remembers your answer.`);
+}
+function pick2(store2, cfg, wf, a) {
+  const c = wf.choices;
+  if (!c || wf.state !== "needs_human") return `${wf.code} has no options to pick from.`;
+  const nums = [...new Set(a.nums ?? [])];
+  if (nums.some((n) => n < 1 || n > c.options.length)) return `${wf.code} has options 1 to ${c.options.length}.`;
+  if (nums.length > 1 && !c.multi) return `Pick one option for ${wf.code}.`;
+  const chosen = nums.map((n) => c.options[n - 1]);
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  if (chosen.length === 1 && chosen[0].reply) {
+    const o = chosen[0];
+    const job = wf.job ? store2.job(wf.job) : void 0;
+    const own3 = !job || job.key === `item:${wf.id}`;
+    const v = o.effects ? vet(cfg, o.effects.map((e) => ({ ...e, done: void 0, error: void 0 })), prTarget(store2, wf)) : void 0;
+    const busy2 = v && deployRunning(homeOf(store2, wf));
+    if (v && busy2) for (const e of v.effects.filter((e2) => isDeploy(e2.call))) {
+      v.todos.push(`${e.summary.replace(/[.\s]+$/, "")}. Not made for you: ${busy2}`);
+      v.left.push(deployBusyLeft(e, busy2));
+    }
+    const effects = v ? proposalEffects(v.effects.filter((e) => !busy2 || !isDeploy(e.call)), [wf]) : own3 ? void 0 : wf.effects;
+    const candidate = {
+      ...wf,
+      draft: { ...wf.draft ?? { commitment: false, sources: [] }, text: o.reply ?? "", preview: true, byOwner: void 0, ownWords: void 0 },
+      learnAfter: void 0,
+      effects,
+      question: v?.todos.length ? refusedAsk(wf.code, v.todos.length) : void 0,
+      picked: nums,
+      revAt: now,
+      status: `You picked "${o.label}"`
+    };
+    if (job && effects !== wf.effects || !job && effects?.length) {
+      const held = carry(store2, cfg, candidate, effects ?? []);
+      if (held) return held === "busy" ? `${wf.code}'s approved changes are still running. Wait for their result before changing the option.` : `${wf.code} shares changes with another open item. Review that item before changing the option.`;
+    }
+    Object.assign(wf, candidate);
+    if (effects) allowLeft(wf, effects);
+    if (v) leaveForYou(store2, wf, v.left);
+    return void 0;
+  }
+  Object.assign(wf, { ownerAnswer: `The owner picked: ${chosen.map((o) => o.label).join("; ")}`, picked: nums, ...stateFields(wf, "running"), status: "Rewriting with your choice" });
+  return void 0;
+}
+function only(store2, wf, nums, offReason) {
+  const left = pendingEffects(wf.effects);
+  const none = nums.length === 1 && nums[0] === 0;
+  if (!none && nums.some((n) => n < 1 || n > left.length)) return `${wf.code} has changes 1 to ${left.length}.`;
+  const keep = new Set(nums.map((n) => left[n - 1]));
+  const job = wf.job ? store2.job(wf.job) : void 0;
+  const offIdx = (wf.effects ?? []).map((e, i) => left.includes(e) && !keep.has(e) ? i : -1).filter((i) => i >= 0);
+  for (const i of offIdx) {
+    wf.effects[i] = { ...wf.effects[i], off: true, ...offReason ? { offReason } : {} };
+    const j = job?.result?.effects.findIndex((x) => pendingEffects([x]).length && sameChange(x, wf.effects[i])) ?? -1;
+    if (j >= 0) job.result.effects[j] = { ...job.result.effects[j], off: true, ...offReason ? { offReason } : {} };
+  }
+  if (job) store2.saveJob(job);
+  return left.filter((e) => !keep.has(e));
 }
 function recordAnswerResult(store2, a, text4, refused = false) {
   const detail = text4.replace(new RegExp(`^${MARK}\\s*`), "");
@@ -48873,30 +49685,6 @@ async function control(store2, src, a, procs) {
   }
   await reply(store2, src, a, `${MARK} ${CONTROL_REPLY[v]}`);
 }
-async function undo(store2, src, cfg, wf, a) {
-  if (!wf.sent) return reply(store2, src, a, `${MARK} ${wf.code} has not been sent. Nothing changed.`);
-  if (Date.now() > Date.parse(wf.sent.undoUntil ?? "")) {
-    return reply(store2, src, a, `${MARK} The undo window for ${wf.code} has closed. To post a correction, say "send ${wf.code}: <text>".`);
-  }
-  const p = { ...DEFAULT_POLICY, ...cfg.policy };
-  let how = "deleted";
-  try {
-    await src.deleteMessage(wf.chat.id, wf.sent.msgId);
-  } catch {
-    try {
-      await src.editMessage(wf.chat.id, wf.sent.msgId, withMarker("This message was withdrawn.", signatureOf(cfg), cfg.owner.name));
-      how = "withdrawn";
-    } catch (e) {
-      store2.log({ event: "undo-failed", workflowId: wf.id, code: wf.code, error: String(e).slice(0, 200) });
-      return reply(store2, src, a, `${MARK} I could not undo ${wf.code}: Teams refused both delete and edit. To correct it, reply "edit ${wf.code}: <text>".`);
-    }
-  }
-  store2.log({ event: "undo", workflowId: wf.id, code: wf.code, msgId: wf.sent.msgId, rule: wf.sent.byRule, how });
-  withdrawLearning(store2, cfg, wf.chat.id, wf.sent.msgId);
-  const made = (wf.effects ?? []).filter((e) => e.done);
-  Object.assign(wf, { ...stateFields(wf, "needs_human"), sent: void 0, status: "Undone by you. The draft is kept." });
-  await reply(store2, src, a, `${MARK} Undid ${wf.code} (message ${how}). It is back in your inbox as a draft.${made.length ? ` The ${made.length === 1 ? "change it made stays" : `${made.length} changes it made stay`}: ${made.map((e) => e.summary).join("; ")}.` : ""}`);
-}
 async function mark(store2, src, cfg, wf, a, procs) {
   if (wf.state !== "done" && wf.state !== "open" || !wf.sent) return reply(store2, src, a, `${MARK} ${wf.code} has not been sent. Edit or skip the draft instead.`);
   const kind = a.verb, sent = wf.sent.text ?? wf.draft?.text ?? "", rule = wf.sent.byRule;
@@ -48941,13 +49729,18 @@ async function retune(store2, src, wf, a) {
 async function workVerb(store2, src, wf, a, procs) {
   if (a.verb === "wait" && wf.followUp && !a.text?.trim()) return keepWaiting(store2, wf, a);
   if (a.verb === "close") {
-    if (a.todos && !openTodos(wf).some((t2) => a.todos.includes(t2.id))) return reply(store2, src, a, `${MARK} ${wf.code}: the ${a.todos.length === 1 ? "to-do you marked is" : "to-dos you marked are"} already done. ${wf.code} stays ${wf.state === "done" ? "done" : "open"}. Nothing was sent.`);
-    if (openTodos(wf).length) {
+    const tasks = [...openTodos(wf), ...openLeft(wf)];
+    if (a.todos && !tasks.some((t2) => a.todos.includes(t2.id))) return reply(store2, src, a, `${MARK} ${wf.code}: the ${a.todos.length === 1 ? "to-do you marked is" : "to-dos you marked are"} already done. ${wf.code} stays ${wf.state === "done" ? "done" : "open"}. Nothing was sent.`);
+    if (tasks.length) {
       const done2 = doneTodos(wf, void 0, a.todos);
       store2.save(wf, a.page?.kind !== "mark-todos");
       return reply(store2, src, a, `${MARK} Marked ${done2.length === 1 ? "your to-do" : `your ${done2.length} to-dos`} on ${wf.code} done: ${done2.join("; ")}. ${wf.state === "done" ? `${wf.code} stays done.` : a.page ? `${wf.code} stays open.` : `${wf.code} stays open; say "close ${wf.code}" again to close it.`} Nothing was sent.`);
     }
-    if (wf.state === "done") return reply(store2, src, a, `${MARK} ${wf.code} is already closed: ${wf.status}`);
+    if (wf.state === "done") {
+      closeLeft(wf);
+      store2.save(wf);
+      return reply(store2, src, a, `${MARK} ${wf.code} is already closed: ${wf.status}`);
+    }
     const why2 = a.text?.trim() || "Closed by you";
     const home2 = homeOf(store2, wf);
     if (home2 !== wf) {
@@ -48955,16 +49748,18 @@ async function workVerb(store2, src, wf, a, procs) {
       home2.work.parts = home2.work.parts?.filter((id) => id !== wf.id);
       step(home2, `${wf.code} closed: ${why2}`);
       close(wf, why2);
+      closeLeft(wf);
       store2.save(home2);
       store2.save(wf);
       return reply(store2, src, a, `${MARK} Closed ${wf.code}: ${why2}. ${home2.code} stays in progress. Nothing was sent.`);
     }
     withdraw(store2, procs, wf);
     stopWatch(store2, wf);
-    if (wf.work) closeFamily(store2, procs, wf, why2);
+    if (wf.work) closeFamily(store2, procs, wf, why2, true);
     else {
       if (wf.kind === "tracker") stopTracker(store2, procs, wf);
       close(wf, why2);
+      closeLeft(wf);
     }
     store2.save(wf);
     return reply(store2, src, a, `${MARK} Closed ${wf.code}: ${why2}. Nothing was sent.`);
@@ -48977,16 +49772,25 @@ async function workVerb(store2, src, wf, a, procs) {
   store2.save(home);
   return reply(store2, src, a, `${MARK} ${home.code} stays in progress. I'll ask again on ${home.work.checkAt.slice(0, 10)} if nothing happens.`);
 }
-function closeFamily(store2, procs, home, why2) {
+function closeFamily(store2, procs, home, why2, byOwner = false) {
+  if (byOwner) closeLeft(home);
   stopWatch(store2, home);
   if (!home.work?.closed) closeWork(home, why2);
   else Object.assign(home, { ...stateFields(home, "done"), status: `Closed: ${why2}`, pending: [] });
   for (const id of home.work?.parts ?? []) {
     const p = store2.workflow(id);
-    if (!p || p.state === "done") continue;
+    if (!p) continue;
+    if (p.state === "done") {
+      if (byOwner) {
+        closeLeft(p);
+        store2.save(p);
+      }
+      continue;
+    }
     withdraw(store2, procs, p);
     newTurn(p, !!p.sent);
     close(p, `Closed with ${home.code}: ${why2}`);
+    if (byOwner) closeLeft(p);
     store2.save(p);
   }
 }
@@ -48995,28 +49799,32 @@ async function correct(store2, src, wf, a) {
   const cfg = store2.config(), text4 = authorize({ automatic: false, text: withMarker(a.text, signatureOf(cfg), cfg.owner.name, false) }).text;
   const { msgId } = await src.send(wf.chat.id, text4);
   store2.addSent(msgId, text4);
+  store2.log(telemetryEvent("marker", { code: wf.code, applied: false, why: "owner-text" }));
   store2.log({ event: "correction", workflowId: wf.id, code: wf.code, msgId, sentId: wf.sent?.msgId, text: a.text });
   if (prTarget(store2, wf)) {
-    notePromise(store2, wf, a.text);
+    notePromise(store2, wf, a.text, { msgId, at: (/* @__PURE__ */ new Date()).toISOString() });
     store2.save(wf);
   }
   await reply(store2, src, a, `${MARK} Posted your correction for ${wf.code}.`);
 }
-var norm3, flat, squash, CONTROL_REPLY;
+var CONTROL_REPLY;
 var init_apply = __esm({
   "src/runner/apply.ts"() {
     "use strict";
+    init_send();
+    init_send();
     init_habits();
-    init_sharing();
     init_work();
     init_effects();
-    init_gate();
+    init_left();
+    init_left_source();
+    init_setting_keys();
+    init_left_lines();
+    init_telemetry();
+    init_place();
     init_intake();
-    init_format();
     init_policy();
-    init_secrets();
     init_limits();
-    init_autosend();
     init_render();
     init_source();
     init_intake2();
@@ -49024,7 +49832,6 @@ var init_apply = __esm({
     init_jobs();
     init_continue();
     init_owner();
-    init_learn();
     init_automations();
     init_discover();
     init_ids();
@@ -49045,11 +49852,7 @@ var init_apply = __esm({
     init_fs();
     init_commit();
     init_vote_claim();
-    init_vote_claims();
     init_upgrades();
-    norm3 = (t2) => htmlToText(t2).replace(/\s+/g, " ").trim();
-    flat = (t2) => t2.replace(/\s+/g, " ").trim();
-    squash = (t2) => norm3(t2).replace(/[^\p{L}\p{N}]+/gu, "").toLowerCase();
     CONTROL_REPLY = {
       "auto-on": "Auto-send is on. Replies that your rules allow go out after the delay, with a marker, and you can undo them for a few minutes.",
       "auto-off": "Auto-send is off. Every reply waits for your ok.",
@@ -49094,6 +49897,26 @@ function adoProbe(cfg) {
       const r = await mcp.call("core_list_project_teams", { project, mine: true, top: 200 });
       const list2 = Array.isArray(r) ? r : r.value ?? r.items ?? [];
       return list2.map((t2) => String(t2.name ?? "")).filter(Boolean);
+    },
+    async threadActivity(project, repo, id) {
+      const all = [];
+      for (let skip = 0; skip < 2e3; skip += 100) {
+        const raw = await mcp.call("repo_pull_request_thread", { action: "list", project, repositoryId: repo, pullRequestId: id, top: 100, skip });
+        const rows = Array.isArray(raw) ? raw : raw?.value ?? raw?.items ?? raw?.threads;
+        if (!Array.isArray(rows) || rows.length > 100 || !Array.isArray(raw) && raw.continuationToken)
+          throw new Error("PR thread activity returned an unsupported page");
+        for (const row of rows) {
+          if (row.isDeleted) continue;
+          if (row.id === void 0 || !Array.isArray(row.comments)) throw new Error("PR thread activity returned an incomplete thread");
+          all.push({ id: String(row.id), comments: row.comments.filter((comment) => !comment.isDeleted && !!comment.publishedDate).map((comment) => ({
+            authorId: comment.author?.id,
+            authorUnique: comment.author?.uniqueName,
+            at: comment.publishedDate
+          })) });
+        }
+        if (rows.length < 100 && (Array.isArray(raw) || !raw.hasMoreResults)) return all;
+      }
+      throw new Error("Too many PR threads to read activity completely");
     },
     async runs(project, pipelineId) {
       const r = await mcp.call("pipelines_build", { action: "list", project, definitions: [pipelineId], top: 10, queryOrder: "QueueTimeDescending" });
@@ -49152,12 +49975,6 @@ async function probeBuilds(store2, probe, now = Date.now()) {
     }
   }
   return n;
-}
-function adoPrNumber(url2) {
-  if (!URL.canParse(url2)) return void 0;
-  const link2 = new URL(url2), host = link2.hostname.toLowerCase();
-  if (!/^https?:$/.test(link2.protocol) || host !== "dev.azure.com" && !host.endsWith(".visualstudio.com")) return void 0;
-  return Number(/\/pullrequest\/(\d+)(?:\/|$)/i.exec(link2.pathname)?.[1]) || void 0;
 }
 function prTarget(store2, w) {
   const job = w.job ? store2.job(w.job) : void 0;
@@ -49407,13 +50224,17 @@ function regateVotes(store2, cfg, w, ref, st) {
   const votes = (w.effects ?? []).filter(ours4);
   if (!MAY_REVIEW.includes(w.prRole)) {
     const why2 = roleWhy(cfg, w.prRole);
-    const gated = w.todos?.some((t2) => t2.endsWith(`${NOT_MADE}${why2}`));
+    const gated = w.heldVotes?.pr === ref.id || openLeft(w).some((line3) => line3.action.verb === "vote" && line3.action.pr === ref.id);
     if (!votes.length && !gated) return;
     const addMe = w.prRole === "none" && votes.length ? addMeEffect(cfg, w, ref) : void 0;
     if (votes.length) {
       setEffects(store2, w, (es) => [...(es ?? []).filter((e) => !ours4(e)), ...addMe && !es?.some(isAddMe) ? [addMe] : []]);
       w.heldVotes = { pr: ref.id, effects: [...w.heldVotes?.pr === ref.id ? w.heldVotes.effects : [], ...votes], why: why2 };
-      w.todos = [.../* @__PURE__ */ new Set([...w.todos ?? [], ...votes.map((e) => `${e.summary.replace(/[.\s]+$/, "")}. ${NOT_MADE}${why2}`)])];
+      leaveForYou(store2, w, votes.map((effect) => leftRefusal(
+        effectLeftAction(effect, ref.id),
+        w.prRole === "group-unknown" ? "setting-off" : "pr-lifecycle",
+        { why: why2, ...w.prRole === "group-unknown" ? { setting: settingKey("reviewerGroups") } : {} }
+      )));
     }
     const groups2 = w.prRole === "group-unknown" ? unknownGroups(cfg, st) : [];
     const ask = groups2.length > 0 && w.groupAsk?.pr !== ref.id && (!w.question || w.question.startsWith("The reply counts on "));
@@ -49427,8 +50248,7 @@ function regateVotes(store2, cfg, w, ref, st) {
   const held = w.heldVotes;
   if (held?.pr !== ref.id) return;
   setEffects(store2, w, (es) => [...(es ?? []).filter((e) => !isAddMe(e) && !ours4(e)), ...held.effects]);
-  w.todos = w.todos?.filter((t2) => !held.effects.some((e) => t2 === `${e.summary.replace(/[.\s]+$/, "")}. ${NOT_MADE}${held.why}`));
-  if (!w.todos?.length) w.todos = void 0;
+  allowLeft(w, held.effects);
   if (w.groupAsk?.pr === ref.id) {
     w.groupAsk = void 0;
     w.question = void 0;
@@ -49591,7 +50411,7 @@ async function describeDeploys(store2, probe) {
       if ("why" in now.build) {
         const why2 = now.build.why;
         setEffects(store2, w, (es = []) => es.map((x) => isDeploy(x.call) && sameCall(x, e) ? { ...x, off: true } : x));
-        w.todos = [.../* @__PURE__ */ new Set([...w.todos ?? [], `${e.summary.replace(/[.\s]+$/, "")}. Not made for you: ${why2}`])];
+        leaveForYou(store2, w, [leftRefusal(effectLeftAction(e, prTarget(store2, w)), "pr-lifecycle", { why: why2 })]);
         store2.log({ event: "deploy-build-refused", code: w.code, why: why2 });
       } else {
         const facts = now.build.facts;
@@ -49624,8 +50444,8 @@ async function recheckDeploy(store2, w, probe) {
   if (!e.ring || !e.build) {
     const facts = now.build.facts;
     setEffects(store2, w, (es = []) => es.map((x) => sameCall(x, e) ? { ...x, ring: now.ring, build: facts } : x));
-    const shown2 = { ...e, build: facts };
-    return `Before you ok ${code}: ${deployLine(shown2)} (${ringMeaning(now.ring)}). Say "ok ${code}" to go ahead.`;
+    const shown3 = { ...e, build: facts };
+    return `Before you ok ${code}: ${deployLine(shown3)} (${ringMeaning(now.ring)}). Say "ok ${code}" to go ahead.`;
   }
   return void 0;
 }
@@ -49655,13 +50475,17 @@ async function deployMoved(store2, w, e, probe) {
     return `Could not read ${ring} right before the deploy (${String(err).slice(0, 120)}).`;
   }
 }
-var EVERY_MS, PR_LINK, anchorConflicts, VOTE, prChanges, factsOf, NOT_MADE, noVoteNeeded, voteDropped2, sameVote, clock3, deploys, projectOf, sameCall;
+var EVERY_MS, PR_LINK, anchorConflicts, VOTE, prChanges, factsOf, noVoteNeeded, voteDropped, sameVote, clock3, deploys, projectOf, sameCall;
 var init_probe = __esm({
   "src/runner/probe.ts"() {
     "use strict";
     init_deploy();
     init_repos();
     init_effects();
+    init_left_lines();
+    init_setting_keys();
+    init_left();
+    init_left_source();
     init_render();
     init_mcp_client();
     init_brand();
@@ -49674,15 +50498,15 @@ var init_probe = __esm({
     init_fs();
     init_commit();
     init_upgrades();
+    init_pr_refs();
     EVERY_MS = 10 * 6e4;
     PR_LINK = /https?:\/\/(?:[\w-]+\.visualstudio\.com|dev\.azure\.com\/[\w-]+)\/([^/\s]+)\/_git\/([^/\s?#]+)\/pullrequest\/(\d+)/i;
     anchorConflicts = /* @__PURE__ */ new Set();
     VOTE = { "10": (id) => `approved PR ${id}`, "5": (id) => `approved PR ${id} with suggestions`, "-5": (id) => `voted "Waiting for author" on PR ${id}`, "-10": (id) => `rejected PR ${id}` };
     prChanges = (w) => pendingEffects(w.effects).filter((e) => isVote(e.call) && prIdOf(e.call) !== void 0);
     factsOf = (st) => ({ title: st.title ?? "", author: st.author ?? "", required: st.required ?? [], autoComplete: !!st.autoComplete });
-    NOT_MADE = "Not made for you: ";
     noVoteNeeded = (id, state) => `PR ${id} is ${state}, so no vote is needed`;
-    voteDropped2 = (status3 = "") => /^PR \d+ is \w+, so no vote is needed$/.test(status3);
+    voteDropped = (status3 = "") => /^PR \d+ is \w+, so no vote is needed$/.test(status3);
     sameVote = (a, b) => a === b || a >= 5 && (b ?? 0) >= 5;
     clock3 = (iso, tz) => {
       try {
@@ -50433,27 +51257,6 @@ var init_demo = __esm({
         store2.log({ event: "demo-window", title });
       }
     });
-  }
-});
-
-// src/core/document-failure.ts
-function documentFailureCause(reason) {
-  const match = DOCUMENT_FAILURE.exec(reason);
-  if (!match) return void 0;
-  const why2 = match[2].toLowerCase();
-  return {
-    step: "doc-read",
-    target: match[1],
-    reason: why2 === "no access" ? "no-access" : why2.startsWith("too ") ? "too-large" : "unsupported",
-    .../^\d+ MB$/.test(match[3] ?? "") ? { size: match[3] } : {}
-  };
-}
-var DOCUMENT_FAILURE, hardDocumentFailure;
-var init_document_failure = __esm({
-  "src/core/document-failure.ts"() {
-    "use strict";
-    DOCUMENT_FAILURE = /^Couldn't open (.+?): (no access|too much content to open|not a Word, PowerPoint or Excel file|too large to open(?: \(([^)\r\n]*)\))?)$/i;
-    hardDocumentFailure = (reason) => DOCUMENT_FAILURE.test(reason);
   }
 });
 
@@ -51269,7 +52072,7 @@ __export(host_exports, {
   hostHash: () => hostHash,
   runHost: () => runHost
 });
-import { createHash as createHash8, randomUUID as randomUUID12 } from "node:crypto";
+import { createHash as createHash11, randomUUID as randomUUID12 } from "node:crypto";
 import { existsSync as existsSync20, readFileSync as readFileSync17, renameSync as renameSync4, rmSync as rmSync8, writeFileSync as writeFileSync9 } from "node:fs";
 import { createServer } from "node:http";
 import { homedir as homedir9, tmpdir as tmpdir2 } from "node:os";
@@ -51282,7 +52085,7 @@ function envProvider() {
 }
 function hostHash(cfg, cli = cliPackage()?.version ?? "") {
   const servers = Object.fromEntries(listable(cfg).map(([n, s3]) => [n, { c: s3.command, a: s3.args ?? [], e: Object.keys(s3.env ?? {}).sort() }]));
-  return createHash8("sha256").update(JSON.stringify({ c: cfg.agent.command, m: cfg.agent.model ?? "", servers, cli, d: VERSION })).digest("hex").slice(0, 16);
+  return createHash11("sha256").update(JSON.stringify({ c: cfg.agent.command, m: cfg.agent.model ?? "", servers, cli, d: VERSION })).digest("hex").slice(0, 16);
 }
 async function runHost() {
   const store2 = new Store(loadLocal()), cfg = store2.config(), pkg = cliPackage();
@@ -52612,7 +53415,7 @@ function authorAsk(store2, parents, job, question) {
 }
 function finishWork(store2, job, r, asksAtStart, review) {
   if (isBootstrap(job) || job.key.startsWith("learn:")) return finishBootstrap(store2, job, r);
-  if (job.every && !r.effects?.length && !r.question) return finishCheck(store2, job, r, asksAtStart);
+  if (job.every && !r.effects?.length && !r.question && !r.refused?.length) return finishCheck(store2, job, r, asksAtStart);
   if (job.every && r.done) Object.assign(job, { every: void 0, nextAt: void 0 });
   if (isValidate(job)) {
     proposeTargets(store2, r);
@@ -52621,8 +53424,9 @@ function finishWork(store2, job, r, asksAtStart, review) {
   const cfg = store2.config();
   if (r.reply) r = checked(store2, cfg, r);
   const parents = parentsOf(store2, job);
+  const todos = r.todos, extra = [];
   const prepared = prepareReportCalls(store2, cfg, parents, r);
-  r = prepared.report;
+  r = { ...prepared.report, todos };
   if (r.question && isReviewJob(job.key, r.intent) && specChoice(r.question)) {
     const ask = authorAsk(store2, parents, job, r.question);
     if (ask) {
@@ -52630,6 +53434,7 @@ function finishWork(store2, job, r, asksAtStart, review) {
       if (problem) {
         const why2 = `Couldn't prepare question for the author: ${problem}`;
         prepared.problems.push(why2);
+        extra.push(leftRefusal(effectLeftAction(ask), "incomplete", { why: why2 }));
         r = { ...r, question: why2 };
         store2.log({ event: "effect-call-repaired", from: "rebuilt", ok: false });
       } else {
@@ -52645,9 +53450,12 @@ function finishWork(store2, job, r, asksAtStart, review) {
   const v = vet(cfg, r.effects, parents.map((w) => prTarget(store2, w)).find(Boolean));
   v.todos.push(...prepared.problems);
   const reader = parents.find((w) => w.prRole);
-  if (reader) v.effects = voteGate(store2, cfg, reader, v.effects, v.todos, false);
+  if (reader) v.effects = voteGate(store2, cfg, reader, v.effects, v.todos, false, v.left);
   const busy2 = parents.map((w) => deployRunning(homeOf(store2, w))).find(Boolean);
-  if (busy2) for (const e of v.effects.filter((e2) => isDeploy(e2.call))) v.todos.push(`${e.summary.replace(/[.\s]+$/, "")}. Not made for you: ${busy2}`);
+  if (busy2) for (const e of v.effects.filter((e2) => isDeploy(e2.call))) {
+    v.todos.push(`${e.summary.replace(/[.\s]+$/, "")}. Not made for you: ${busy2}`);
+    v.left.push(deployBusyLeft(e, busy2));
+  }
   const effects = proposalEffects(v.effects.filter((e) => !busy2 || !isDeploy(e.call)).map((e) => ({ ...e, done: void 0, error: void 0 })), parents);
   const again = job.asks.length > asksAtStart;
   const finding = findingNotBlocker(job, r);
@@ -52655,7 +53463,7 @@ function finishWork(store2, job, r, asksAtStart, review) {
   if (r.goalMet === false && !again && !finding) return shortOfGoal(store2, job, r);
   Object.assign(job, job.every ? { retry: void 0, missed: void 0 } : { retry: void 0, nextAt: void 0 });
   const rules = store2.rules();
-  const cleanReview = !!review?.basis && /^active$/i.test(review.status ?? "") && r.findings?.length === 0 && parents.some((w) => w.intent === "pr_review" && prTarget(store2, w) === review.pr && reviewRuleFor(w, rules)) && r.state !== "waiting_on_sender" && r.goalMet !== false && !r.effects?.length && !effects.length && !v.todos.length && !r.question && !r.blocker;
+  const cleanReview = !!review?.basis && /^active$/i.test(review.status ?? "") && r.findings?.length === 0 && parents.some((w) => w.intent === "pr_review" && prTarget(store2, w) === review.pr && reviewRuleFor(w, rules)) && r.state !== "waiting_on_sender" && r.goalMet !== false && !r.effects?.length && !effects.length && !v.todos.length && !r.refused?.length && !r.question && !r.blocker;
   if (!again) for (const wf of parentsOf(store2, job)) {
     const reviewRule = wf.intent === "pr_review" ? reviewRuleFor(wf, rules) : void 0;
     const nothing = !(cleanReview && reviewRule) && r.state === "done" && !r.reply && !r.question && !effects.length && !prepared.problems.length;
@@ -52669,6 +53477,13 @@ function finishWork(store2, job, r, asksAtStart, review) {
       store2.save(wf);
       continue;
     }
+    const currentReview = review?.pr === prTarget(store2, wf) ? review : void 0;
+    const context2 = leftContext(store2, wf);
+    context2.reviewHead = currentReview?.basis?.head;
+    if (context2.source.kind === "review") context2.source.at = currentReview?.at ?? job.reviewStart?.at ?? context2.source.at;
+    settleLeftRetry(wf, r, effects);
+    allowLeft(wf, effects);
+    leaveForYou(store2, wf, [...reportLeft(r), ...v.left, ...extra], context2);
     wf.statusReason = void 0;
     wf.reviewAgain = void 0;
     wf.runFailed = void 0;
@@ -52686,16 +53501,15 @@ function finishWork(store2, job, r, asksAtStart, review) {
     if (wf.sent) reopenPromise(store2, wf);
     const decision = r.reply ? { action: "draft", reason: "A review or investigation result always waits for you", confidence: confidence(r.reply.sources ?? []) } : wf.decision;
     Object.assign(wf, { ...stateFields(wf, nothing ? wf.work || wf.partOf ? "open" : "done" : "needs_human"), closedBy: nothing && !(wf.work || wf.partOf) ? "job" : void 0, learnAfter: void 0, status: nothing ? `Nothing needed: ${r.summary}` : r.summary, question: r.question, draft: r.reply ? { ...r.reply } : void 0, effects, decision, waitingSince: void 0, approved: void 0, newCount: 0, revAt: (/* @__PURE__ */ new Date()).toISOString(), ...r.context || contextTrimmed ? { context: r.context } : {} });
+    if (r.reply) wf.todos = r.todos;
     if (wf.intent === "pr_review") {
-      const current3 = review?.pr === prTarget(store2, wf) ? review : void 0;
+      const current3 = currentReview;
       wf.reviewBasis = current3?.basis;
       wf.reviewDone = void 0;
       wf.reviewAgain = !current3?.basis && current3?.head && job.reviewStart?.pr === current3.pr && !sameHead(job.reviewStart.head, current3.head) ? { pr: current3.pr, head: current3.head, at: current3.at } : void 0;
       if (reviewRule && !current3?.basis && !nothing) wf.status = "The reviewed revision could not be verified. Findings stay proposed for your OK; review again before posting by rule.";
     }
-    const allowedNow = (t2) => effects.some((e) => t2.startsWith(`${e.summary.replace(/[.\s]+$/, "")}. Not made for you: `));
-    if (wf.todos?.some(allowedNow)) wf.todos = wf.todos.filter((t2) => !allowedNow(t2));
-    if (v.todos.length) Object.assign(wf, { todos: [.../* @__PURE__ */ new Set([...wf.todos ?? [], ...v.todos])], question: wf.question ?? (wf.draft ? refusedAsk(wf.code, v.todos.length) : void 0) });
+    if (v.todos.length) wf.question ??= wf.draft ? refusedAsk(wf.code, v.todos.length) : void 0;
     const home = homeOf(store2, wf);
     mergeReportWork(wf, r, home, void 0, canCloseReport(store2, home, wf));
     if (nothing) wf.completionSeen = `job:${job.id}:${hashOf(r.summary)}`;
@@ -52715,7 +53529,7 @@ function finishWork(store2, job, r, asksAtStart, review) {
     chats: reads.chats,
     restricted: !!reads.knowledge || !!reads.customerNames?.length || !!reads.records?.some((record3) => !targets.some((id) => record3.id === `pr:${id}`))
   } : void 0;
-  Object.assign(job, { result: { summary: r.summary, reply: r.reply ? { ...r.reply } : void 0, effects, context: (r.context ?? []).slice(0, 12), findings: r.findings, reviewHead: review?.basis?.head, reviewClean: cleanReview ? true : void 0, reviewSources, voteRecommendation: r.voteRecommendation, at: (/* @__PURE__ */ new Date()).toISOString() }, state: again ? "queued" : "done", purpose: "work", run: void 0 });
+  Object.assign(job, { result: { summary: r.summary, reply: r.reply ? { ...r.reply } : void 0, effects, context: (r.context ?? []).slice(0, 12), refused: r.refused, findings: r.findings, reviewHead: review?.basis?.head, reviewClean: cleanReview ? true : void 0, reviewSources, voteRecommendation: r.voteRecommendation, at: (/* @__PURE__ */ new Date()).toISOString() }, state: again ? "queued" : "done", purpose: "work", run: void 0 });
   store2.saveJob(job);
   if (!again) store2.log({ event: "job-done", job: job.id, key: job.key, summary: r.summary, effects: effects.length, ...usedBy(job) });
 }
@@ -52843,12 +53657,14 @@ async function finishExecute(store2, src, cfg, job, procs, probe) {
     }
     const moving = effects.filter((e) => e.done && isDeploy(e.call)).map((e) => deployed(store2, wf, e, e.done.ref, job.goal)).filter((x) => !!x);
     if (left.length) {
-      const old = left.find((e) => e.error?.includes(OLD_INVITE));
-      if (old) {
+      const old = left.map((effect) => ({ effect, why: inviteShapeProblem(effect.call) })).find((item2) => item2.why !== void 0);
+      if (old?.why) {
+        const { effect, why: why2 } = old;
+        leaveForYou(store2, wf, [leftRefusal(effectLeftAction(effect, prTarget(store2, wf)), "old-invite", { why: why2 })]);
         Object.assign(wf, {
           ...stateFields(wf, "needs_human"),
           waitingSince: void 0,
-          status: `Not made: ${changeText(old)}. ${old.error.replace(/^Change \d+ cannot be made: /, "").replace(/^./, (c) => c.toUpperCase())} Nothing was created, and the reply was not sent`,
+          status: `Not made: ${changeText(effect)}. ${why2.replace(/^./, (c) => c.toUpperCase())} Nothing was created, and the reply was not sent`,
           question: OLD_INVITE_ASK
         });
         commit();
@@ -53000,7 +53816,9 @@ function approveEffects(store2, cfg, wf, again = false) {
   return "";
 }
 function legacyEffects(store2) {
-  repairPendingEffectCalls(store2);
+  repairPendingEffectCalls(store2, (wf, drafts) => {
+    leaveForYou(store2, wf, drafts);
+  });
   for (const wf of store2.workflows().filter((w) => w.state === "needs_human" && pendingEffects(w.effects).some((e) => !e.call))) {
     const old = pendingEffects(wf.effects).filter((e) => !e.call);
     const keep = (es = []) => es.filter((e) => e.call || e.done || e.off);
@@ -53009,8 +53827,9 @@ function legacyEffects(store2) {
       job.result = { ...job.result, effects: keep(job.result.effects) };
       store2.saveJob(job);
     }
-    const todos = old.map((e) => `${e.summary.replace(/[.\s]+$/, "")}. Not made for you: it was proposed before this update, without the exact call needed to make it`);
-    Object.assign(wf, { effects: keep(wf.effects), todos: [.../* @__PURE__ */ new Set([...wf.todos ?? [], ...todos])], question: wf.question ?? (wf.draft ? refusedAsk(wf.code, old.length) : void 0), revAt: (/* @__PURE__ */ new Date()).toISOString() });
+    const why2 = "it was proposed before this update, without the exact call needed to make it";
+    leaveForYou(store2, wf, old.map((effect) => leftRefusal(effectLeftAction(effect, prTarget(store2, wf)), "incomplete", { why: why2 })));
+    Object.assign(wf, { effects: keep(wf.effects), question: wf.question ?? (wf.draft ? refusedAsk(wf.code, old.length) : void 0), revAt: (/* @__PURE__ */ new Date()).toISOString() });
     store2.save(wf);
     store2.log({ event: "legacy-changes", code: wf.code, n: old.length });
   }
@@ -53199,12 +54018,19 @@ function queueRetry(store2, job, retry2, fresh) {
   store2.log({ event: "retry-planned", job: job.id, key: job.key, n: retry2.n, kind: retry2.last.kind, why: retry2.last.why, at: retry2.at, fresh, ...usedBy(job) });
 }
 function shortOfGoal(store2, job, r) {
+  if (r.refused !== void 0 || job.result?.refused !== void 0) job.result = { ...job.result ?? { summary: r.summary, effects: [] }, refused: r.refused };
   const p = planRetry(job.retry, r.blocker);
   if (!("stop" in p)) return queueRetry(store2, job, p.retry, p.fresh);
   const draft2 = r.reply ? { ...r.reply, holding: true } : void 0;
   const now = (/* @__PURE__ */ new Date()).toISOString();
   const b = blockerOf(r.blocker), tried = [.../* @__PURE__ */ new Set([...job.retry?.tried ?? [], ...b.tried])];
   for (const wf of parentsOf(store2, job)) {
+    if (!wf.pending.length) {
+      const context2 = leftContext(store2, wf);
+      context2.reviewHead = void 0;
+      if (context2.source.kind === "review") context2.source.at = job.reviewStart?.at ?? context2.source.at;
+      leaveForYou(store2, wf, reportLeft(r), context2);
+    }
     if (r.reply) {
       wf.ownerSend = void 0;
       clearHold(wf);
@@ -53224,7 +54050,7 @@ function shortOfGoal(store2, job, r) {
     if (home.work && step(home, `${home === wf ? "" : `${wf.code}: `}Not finished: ${p.stop}`, { ref: `job:${job.id}:${hashOf(p.stop)}` }) && home !== wf) store2.save(home);
     store2.save(wf);
   }
-  Object.assign(job, { result: { summary: r.summary, reply: draft2, effects: [] }, state: "done", purpose: "work", run: void 0, retry: void 0, nextAt: void 0 });
+  Object.assign(job, { result: { summary: r.summary, reply: draft2, effects: [], refused: r.refused }, state: "done", purpose: "work", run: void 0, retry: void 0, nextAt: void 0 });
   store2.saveJob(job);
   store2.log({ event: "retry-stopped", job: job.id, key: job.key, why: p.stop, ...usedBy(job) });
 }
@@ -53258,6 +54084,9 @@ var init_jobs = __esm({
     init_send_holds();
     init_page_approval();
     init_effects();
+    init_left_lines();
+    init_left();
+    init_left_source();
     init_probe();
     init_review_gate();
     init_habits();
@@ -53356,18 +54185,6 @@ var init_jobs = __esm({
 function homeOf(store2, wf) {
   const h = wf.partOf ? store2.workflow(wf.partOf) : void 0;
   return h && h.work?.parts?.includes(wf.id) ? h : wf;
-}
-function linksIn(text4) {
-  const out = /* @__PURE__ */ new Set();
-  for (const m of text4.matchAll(/\b(?:pull request|PR)\s*#?\s*(\d{4,})/gi)) out.add(`pr:${m[1]}`);
-  for (const m of text4.matchAll(/https?:\/\/[^\s<>]+\/pullrequest\/(\d+)/gi)) out.add(`pr:${m[1]}`);
-  const esc4 = (w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const builds = ["build", "run", "pipeline run", ...site().buildWords ?? []].map(esc4).join("|");
-  for (const m of text4.matchAll(new RegExp(`\\b(?:${builds})\\s*#?\\s*(\\d{6,})\\b`, "gi"))) out.add(`build:${m[1]}`);
-  const words4 = ["incident", ...site().incidentWords ?? []].map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
-  for (const m of text4.matchAll(new RegExp(`\\b(?:${words4})\\s*#?\\s*(\\d{6,})`, "gi"))) out.add(`incident:${m[1]}`);
-  for (const m of text4.matchAll(/\b(?:work ?item|bug|task)\s*#?\s*(\d{6,})/gi)) out.add(`workItem:${m[1]}`);
-  return [...out];
 }
 function askLinks(store2, w) {
   return [...new Set([w.lastAsk ?? "", ...store2.thread(w.id).filter((m) => !m.byOwner && w.msgIds.includes(m.id)).map((m) => m.text)].flatMap(linksIn))];
@@ -53477,6 +54294,7 @@ function newTurn(wf, keepSent = false) {
   wf.statusReason = void 0;
   wf.reviewAgain = void 0;
   wf.returnedFrom = void 0;
+  wf.leftRetry = void 0;
   wf.ownerSend = void 0;
   clearHold(wf);
   wf.reviewRun = void 0;
@@ -53488,15 +54306,20 @@ function newTurn(wf, keepSent = false) {
   Object.assign(wf, { draft: void 0, prDraft: void 0, learnAfter: void 0, closeWorkAfterSend: void 0, choices: void 0, question: void 0, effects: void 0, promised: void 0, decision: void 0, approved: void 0, picked: void 0, sendAt: void 0, correction: void 0, todos: void 0, newCount: 0, ...keepSent ? {} : { sent: void 0 } });
 }
 function keepTodos(wf, at3, todos = wf.todos) {
-  const kept = wf.kept ?? [];
-  let n = kept.reduce((m, t2) => Math.max(m, Number(t2.id.replace(/\D/g, "")) || 0), 0);
-  const add = [...new Set(todos ?? [])].filter((text4) => !kept.some((t2) => !t2.done && t2.text === text4)).map((text4) => ({ id: `t${++n}`, text: text4, at: at3 }));
-  wf.kept = [...kept, ...add];
+  const msgId = wf.sent?.at === at3 ? wf.sent.msgId : wf.promise?.at === at3 ? wf.promise.msgId : void 0;
+  mergeLeft(wf, [...new Set(todos ?? [])].map(leftPromise), {
+    kind: "your-reply",
+    at: at3,
+    ...msgId ? { href: messageLink(wf.chat.id, msgId) } : {}
+  });
+  wf.kept ??= [];
 }
 function doneTodos(wf, at3 = (/* @__PURE__ */ new Date()).toISOString(), only2) {
   const open2 = openTodos(wf).filter((t2) => !only2 || only2.includes(t2.id));
   wf.kept = (wf.kept ?? []).map((t2) => open2.includes(t2) ? { ...t2, done: at3 } : t2);
-  return open2.map((t2) => t2.text);
+  const left = openLeft(wf).filter((line3) => !only2 || only2.includes(line3.id));
+  clearLeft(wf, left.map((line3) => line3.id), { at: at3, by: "owner", why: "ticked" });
+  return [...open2.map((t2) => t2.text), ...left.map((line3) => leftActionText(line3.action))];
 }
 function settle3(wf, r, home = wf) {
   if (!home.work) return false;
@@ -53529,107 +54352,6 @@ function afterSend(wf, text4, msgId, home = wf, closeApproval = true, closeRepor
   }
   Object.assign(wf, { ...stateFields(wf, "open"), status: statusOf(home), pending: [] });
   return true;
-}
-function prMentions(text4) {
-  return text4.matchAll(/\b(?:PR|pull\s+request|pullrequest\/)\s*#?\s*(\d+)\b|(?:^|\s)#(\d{3,})\b/gi);
-}
-function approvalReplyMatches(text4, vote, pr) {
-  if (!voteMention(text4)) return true;
-  return sentencesOf(text4).filter(voteMention).every((s3) => approvalSentenceMatches(s3, vote, pr));
-}
-function approvalSentenceMatches(sentence2, vote, pr) {
-  const line3 = sentence2.replace(/[.!;]$/, "");
-  const target2 = "(?:\\s+(?:(?:the\\s+)?(?:PR|pull request)(?:\\s*#?\\s*\\d+)?|it|\\d+))?";
-  const condition = "(?:\\s+(?:after|once|when|until)\\s+(?:(?:the\\s+|its\\s+)?(?:build|tests?|checks?|requested changes|null check|comments?)(?:\\s+(?:is|are)\\s+(?:green|fixed|addressed|resolved|complete|done))?|checking the comments))?";
-  const future = new RegExp(`^(?:(?:(?:Rechecked,?\\s+)?looks good(?: to me)?[.!;]|Yes,)\\s+)?(?:I|we)(?:'ll| will(?: not)?| won't)\\s+(?:approve|sign[ -]?off)${target2}(?:\\s+too)?${condition}(?:, and add [a-z][a-z -]{0,60} as a reviewer)?$`, "i");
-  if (future.test(line3)) return true;
-  if ([...prNumbersIn(line3), ...[...line3.matchAll(/\b(?:approve|approved|sign[ -]?off|signed[ -]?off)\s+#?(\d+)\b/gi)].map((m) => Number(m[1]))].some((id) => id !== pr)) return false;
-  if (vote === void 0 || !Object.values(VOTES).includes(vote)) return false;
-  const negative = new RegExp(`^(?:(?:I|we)\\s+(?:have not|haven't|did not|didn't|have never|never)\\s+(?:approved|signed[ -]?off)${target2}(?:\\s+yet)?|(?:Not yet,\\s*)?(?:my|our)\\s+approval\\s+(?:has not been|hasn't been|is not|isn't)\\s+(?:recorded|given))$`, "i");
-  if (negative.test(line3)) return vote !== void 0 && vote < 5;
-  const said2 = explicitVote(line3);
-  if (said2 !== void 0) return vote === said2 && /^(?:my vote (?:is|was set to|has been set to)|(?:I|we)(?:'ve| have)?\s+(?:(?:just|now|already)\s+)?(?:voted|set my vote(?: on \S+(?: \d+)?)? to))\s+(?:now\s+)?["']?(?:approved with suggestions|approved|waiting for author|waitingforauthor|rejected|no vote|novote)["']?$/i.test(line3);
-  if (/^(?:(?:I|we)(?:'ve| have)?\s+)?(?:rejected(?:\s+(?:it|the PR|PR\s+#?\d+))?(?: for now)?|requested changes(?:\s+on (?:the )?PR(?:\s+#?\d+)?)?)$/i.test(line3)) return vote === -10;
-  if (/^(?:(?:I|we)(?:'m| am| are)?\s+)?waiting (?:for|on) author$/i.test(line3)) return vote === -5;
-  const positive = new RegExp(`^(?:Reviewed and\\s+)?(?:(?:I|we)(?:'ve|\\s+have)?\\s+)?(?:approved|signed[ -]?off)${target2}(?:,?\\s*(?:thanks|with suggestions|with one nit))?$|^LGTM$`, "i");
-  return vote !== void 0 && vote >= 5 && positive.test(line3);
-}
-function othersSentence(sentence2, owner2) {
-  const line3 = sentence2.replace(/[.!;]$/, "");
-  if (FIRST_PERSON.test(line3) || /^\W*(?:(?:have|had|has|just|already|now|also)\s+)*(?:approved|signed[ -]?off|LGTM)\b/i.test(line3)) return void 0;
-  const named2 = NAMED_APPROVED.exec(line3), by = APPROVED_BY.exec(line3);
-  const simple = /^(@?[\p{Lu}][\p{L}'-]*(?:\s+[\p{Lu}][\p{L}'-]*){0,3})\s+(?:approves|approved|signed[ -]?off)\b/u.exec(line3);
-  const who2 = (named2 ? line3.slice(0, named2.index) : by?.[1] ?? simple?.[1] ?? "").replace(/[@*_]/g, " ").trim();
-  if (who2) return owner2 && who2.toLowerCase().includes(owner2.toLowerCase()) ? void 0 : { kind: "named", who: who2 };
-  return PENDING.test(line3) && !/\bapproved\b/i.test(line3) ? { kind: "pending" } : void 0;
-}
-function othersApprovalMismatch(kinds2, st, pr) {
-  for (const k of kinds2) {
-    if (k.kind === "pending") {
-      if (!/^active$/i.test(st.status)) return `PR ${pr} is ${st.status.toLowerCase()}, so no approval is pending`;
-      if (st.votes.length && st.votes.every((v) => v.vote >= 5)) return `every reviewer on PR ${pr} has approved, so none is pending`;
-      continue;
-    }
-    const words4 = (s3) => s3.toLowerCase().split(/[^\p{L}\p{N}'-]+/u).filter((w) => w.length > 1);
-    const said2 = words4(k.who);
-    const hits = st.votes.map((v) => {
-      const full = words4(v.name), at3 = (() => {
-        for (let i = said2.length - 1; i >= 0; i--) if (full.includes(said2[i])) return i;
-        return -1;
-      })();
-      return { v, at: at3 };
-    }).filter((h) => h.at >= 0);
-    const last2 = Math.max(-1, ...hits.map((h) => h.at)), named2 = hits.filter((h) => h.at === last2);
-    if (!named2.length) return `the reply says "${k.who}" approved, but no reviewer by that name is on PR ${pr}`;
-    if (named2.length > 1) return `the reply says "${k.who}" approved, but more than one reviewer on PR ${pr} matches that name`;
-    if (named2[0].v.vote < 5) return `the reply says ${named2[0].v.name} approved, but their vote on PR ${pr} is ${voteName(named2[0].v.vote)}`;
-  }
-  return void 0;
-}
-function explicitVote(s3) {
-  const v = /\bmy vote (?:is|was set to|has been set to)\s+(?:now\s+)?["']?(approved with suggestions|approved|waiting for author|waitingforauthor|rejected|no vote|novote)\b/i.exec(s3) ?? /\b(?:I|we)(?:'ve|\s+have)?\s+(?:just\s+|now\s+|already\s+)?(?:voted|set my vote(?: on \S+(?: \d+)?)? to)\s+["']?(approved with suggestions|approved|waiting for author|waitingforauthor|rejected|no vote|novote)\b/i.exec(s3);
-  return v ? VOTE_SAID[v[1].toLowerCase().replace(/\s+/g, "")] : void 0;
-}
-function notClaim(s3) {
-  const completed = /\b(?:approved|signed[ -]?off|rejected|requested changes|voted|waiting (?:for|on) author|lgtm)\b/i.exec(s3);
-  const before = completed ? s3.slice(0, completed.index).replace(/^\s*when\s+(?=(?:I|we)(?:'ve|\s+have)?\s)/i, "") : s3;
-  return /\?\s*$/.test(s3) || /^(?:please\b|(?:could|can|would|will) you\b)/i.test(s3) || /^(?:approve|reject|request changes|sign[ -]?off)\s+(?:it|this|that|the PR|PR\s+#?\d+)\b/i.test(s3) || /^(?:looks? |it (?:looks? |is ))?(?:not )?ready for (?:approval|sign[ -]?off)\b/i.test(s3) || /\b(?:not|never|until|unless|if|once|after|when|before|will)\b|n't\b|'ll\b/i.test(before);
-}
-function voteSentences(text4, owner2 = "") {
-  return sentencesOf(text4).filter(voteMention).flatMap((sentence2) => sentence2.split(/[,;\u2014\u2013:]\s*(?:(?:but|and)\s+)?/i).map((clause) => clause.trim()).filter(voteMention).map((clause) => {
-    const others = othersSentence(clause, owner2);
-    const vote = explicitVote(clause) ?? (/\breject(?:ed|ion)?\b|\brequested changes\b/i.test(clause) ? -10 : /\bwaiting (?:for|on) author\b/i.test(clause) ? -5 : "approval");
-    return { sentence: sentence2, vote, kind: VOTE_CLASSES.find((row) => row.matches(clause, owner2)).kind, others };
-  }));
-}
-function isNonAdoPrLink(url2) {
-  if (!URL.canParse(url2)) return false;
-  const link2 = new URL(url2), host = link2.hostname.toLowerCase();
-  return /^https?:$/.test(link2.protocol) && host !== "dev.azure.com" && !host.endsWith(".visualstudio.com") && /\/(?:pull|pull-requests|merge_requests)\/[1-9]\d*(?:\/|$)/i.test(link2.pathname);
-}
-function approvalClaim(text4, owner2) {
-  const said2 = voteSentences(text4, owner2).filter((s3) => s3.kind !== "none");
-  if (said2.some((s3) => s3.kind === "owner")) return "owner";
-  const others = said2.flatMap((s3) => s3.others ? [s3.others] : []);
-  return others.length ? { others } : "none";
-}
-function voteClaimGap(text4, effects = [], lastKnownVote) {
-  for (const said2 of voteSentences(text4).filter((s3) => s3.kind === "owner")) {
-    const ids = prNumbersIn(said2.sentence), candidates2 = [...new Set(effects.filter((e) => isVote(e.call)).map((e) => prIdOf(e.call)).filter((id) => id !== void 0))];
-    const prs = ids.length ? ids : lastKnownVote ? [lastKnownVote.pr] : candidates2.length === 1 ? candidates2 : [void 0];
-    for (const pr of prs) {
-      const matches2 = (vote) => vote !== void 0 && (said2.vote === "approval" ? vote >= 5 : vote === said2.vote);
-      const supported = pr !== void 0 && (lastKnownVote?.pr === pr && matches2(lastKnownVote.vote) || effects.some((e) => isVote(e.call) && prIdOf(e.call) === pr && !e.off && !e.error && !e.maybe && (!e.done || !!lastKnownVote?.head && sameHead(e.head, lastKnownVote.head)) && matches2(voteValue(e.call))));
-      if (!supported) return { pr, claim: said2.vote, why: voteClaimText(pr, said2.vote, said2.sentence) };
-    }
-  }
-  return void 0;
-}
-function claimedPrs(text4, askPrs2, single) {
-  const said2 = voteSentences(text4).filter((s3) => s3.kind !== "none").flatMap((s3) => prNumbersIn(s3.sentence));
-  if (said2.length) return [...new Set(said2)];
-  if (askPrs2.length > 1 && /\b(?:all|both|each|every|them|these|those)\b/i.test(text4)) return askPrs2;
-  return single ? [single] : askPrs2.length === 1 ? askPrs2 : [];
 }
 function pendingParts(store2, home, except) {
   return (home.work?.parts ?? []).filter((id) => id !== except).some((id) => {
@@ -53719,18 +54441,23 @@ function ownerStep(wf, text4, msgId, home = wf) {
   newTurn(wf, !!wf.sent);
   Object.assign(wf, { ...stateFields(wf, "open"), status: statusOf(home), pending: [] });
 }
-var DAY3, MAX_STEPS, active2, inWork, label, sameLink, prIds, hasDecisions, openTodos, untagged, sentencesOf, prNumbersIn, reReviewAsk, FIRST_PERSON, NAMED_APPROVED, APPROVED_BY, PENDING, VOTE_SAID, VOTE_CLASSES, approvalAsk, approvalOnly, CHECK_DAYS;
+var DAY3, MAX_STEPS, active2, inWork, label, sameLink, prIds, hasDecisions, openTodos, CHECK_DAYS;
 var init_work = __esm({
   "src/runner/work.ts"() {
     "use strict";
     init_upgrades();
-    init_site();
     init_owner_send();
     init_jobs();
     init_effects();
     init_vote_claims();
     init_probe();
+    init_pr_refs();
+    init_channels();
+    init_left_lines();
+    init_left();
+    init_left();
     init_vote_claims();
+    init_pr_refs();
     DAY3 = 864e5;
     MAX_STEPS = 40;
     active2 = (wf) => !!wf.work && !wf.work.closed && !wf.work.proposed;
@@ -53740,28 +54467,6 @@ var init_work = __esm({
     prIds = (ls) => ls.filter((l) => /^pr:/i.test(l)).map((l) => l.split(/[:/]/).at(-1));
     hasDecisions = (r) => !!r.choices || !!r.effects?.length;
     openTodos = (wf) => (wf.kept ?? []).filter((t2) => !t2.done);
-    untagged = (text4) => text4.trim().replace(/\u2019/g, "'").replace(/^(?:\[[^\]\n]{1,120}\]\s*)+/, "");
-    sentencesOf = (text4) => untagged(text4).split(/(?<=[.!?;])\s+|\n+/).map((s3) => s3.trim()).filter(Boolean);
-    prNumbersIn = (text4) => [...prMentions(text4)].map((m) => Number(m[1] ?? m[2]));
-    reReviewAsk = (text4) => /re[ -]?review|review again|recheck/i.test(text4);
-    FIRST_PERSON = /\b(?:I|we|my|our|me|us|mine)\b/i;
-    NAMED_APPROVED = /\b(?:has|have|had)\s+(?:already\s+|now\s+|just\s+)?(?:approved|signed[ -]?off)\b/i;
-    APPROVED_BY = /\b(?:approved|signed[ -]?off)\s+by\s+(.+)$/i;
-    PENDING = /\b(?:approvals?|sign[ -]?offs?)\b.*\b(?:is|are)\s+(?:still\s+)?(?:pending|outstanding|needed|required|missing)\b|\b(?:still\s+)?(?:needs?|waiting\s+(?:on|for)|awaiting)\b.*\b(?:approvals?|sign[ -]?offs?)\b/i;
-    VOTE_SAID = { approved: 10, approvedwithsuggestions: 5, waitingforauthor: -5, rejected: -10, novote: 0 };
-    VOTE_CLASSES = [
-      { kind: "none", matches: (s3, _owner) => notClaim(s3) },
-      { kind: "others", matches: (s3, owner2) => !!othersSentence(s3, owner2) },
-      { kind: "owner", matches: (_s, _owner) => true }
-    ];
-    approvalAsk = (text4) => approvalMention(text4) && !reReviewAsk(text4);
-    approvalOnly = (wf) => {
-      const k = wf.work;
-      if (!k || !/^(?:please\s+)?(?:review\s+(?:and|&)\s+)?(?:approve|sign[ -]?off)\s+(?:PR|pull request)\s*#?\s*\d{4,}[.!]?$/i.test(k.goal)) return false;
-      if (k.plan?.some((p) => !p.done) || /\b(?:after|before|then|validat\w*|test\w*|deploy\w*|ship\w*|monitor\w*|rollback|config\w*|partner)\b/i.test(k.doneWhen)) return false;
-      const goal = linksIn(k.goal).filter((l) => l.startsWith("pr:")), ask = linksIn(wf.lastAsk ?? "").filter((l) => l.startsWith("pr:"));
-      return new Set([...k.links.filter((l) => /^pr:/i.test(l)), ...goal, ...ask].map((l) => l.split(/[:/]/).at(-1))).size <= 1;
-    };
     CHECK_DAYS = 3;
   }
 });
@@ -53887,34 +54592,49 @@ var init_numbers2 = __esm({
   }
 });
 
-// src/web/model/place.ts
-function untitledGroup(store2, chat2, askerName) {
-  if (!isGroup(chat2)) return false;
-  const name = chat2.name.trim().toLowerCase();
-  if (!name || name === "group chat" || name === chat2.id.toLowerCase() || /^19:/.test(name) || name === askerName?.trim().toLowerCase()) return true;
-  return Object.values(store2.members()[chat2.id]?.names ?? {}).some((member) => member.trim().toLowerCase() === name);
+// src/web/model/left-words.ts
+function leftWords(line3) {
+  const { action: action2 } = line3;
+  if (action2.verb === "promise") return action2.quote ?? "Keep the promise";
+  const pr = action2.pr ? `${ON_PR.has(action2.verb) ? "" : "on "}PR ${action2.pr}` : "";
+  const asked3 = action2.verb === "reply" && action2.quoteBy === "asker" && line3.source.who;
+  const verb = asked3 ? `Answer ${line3.source.who}'s question` : VERB[action2.verb];
+  const target2 = action2.target ? `${TO.has(action2.verb) ? "to" : "in"} ${action2.target}` : "";
+  return `${[verb, pr, target2].filter(Boolean).join(" ").replace(/[.\s]+$/, "")}.`;
 }
-function placeOf(store2, chat2, asker) {
-  if (!untitledGroup(store2, chat2, asker?.name)) return void 0;
-  const cached4 = store2.members()[chat2.id]?.names ?? {}, name = asker?.name?.trim().toLowerCase();
-  const askerId = asker?.id ?? (name ? Object.keys(cached4).find((id) => cached4[id].trim().toLowerCase() === name) : void 0);
-  const people2 = groupChatPeople(store2, chat2.id, store2.config().owner.id, askerId);
-  if (!people2?.count || !people2.names.length) return { head: "in a group chat", row: "in a group chat", sentence: "a group chat" };
-  const { names, count } = people2;
-  const list2 = (shown2) => `${names.slice(0, shown2).join(", ")}${count > Math.min(shown2, names.length) ? ` +${count - Math.min(shown2, names.length)}` : ""}`;
-  return {
-    head: `in a group with ${list2(2)}`,
-    row: `in a group with ${list2(1)}`,
-    sentence: `your group with ${list2(2)}`,
-    title: `With ${names.join(", ")}${count > names.length ? ` and ${count - names.length} more` : ""}`
-  };
+function leftSourceWords(source3, asker, chat2) {
+  const who2 = source3.who ?? "They";
+  switch (source3.kind) {
+    case "pr-comment":
+      return `${who2} asked in a comment${source3.pr ? ` on PR ${source3.pr}` : ""}`;
+    case "chat-ask":
+      return chat2 ? `${who2} asked in ${chat2}` : `${who2} asked you`;
+    case "your-reply":
+      return `From your reply${asker ? ` to ${asker}` : ""}`;
+    case "review":
+      return `From ${NAME}'s review${source3.pr ? ` of PR ${source3.pr}` : ""}`;
+  }
 }
-var isGroup;
-var init_place = __esm({
-  "src/web/model/place.ts"() {
+var VERB, ON_PR, TO;
+var init_left_words = __esm({
+  "src/web/model/left-words.ts"() {
     "use strict";
-    init_sharing();
-    isGroup = (chat2) => chat2.group ?? /@thread\.v2$/i.test(chat2.id);
+    init_brand();
+    VERB = {
+      reply: "Send the reply",
+      comment: "Post the comment",
+      vote: "Cast your vote",
+      merge: "Merge",
+      complete: "Complete",
+      abandon: "Abandon",
+      delete: "Delete",
+      reviewer: "Change the reviewers",
+      deploy: "Deploy",
+      invite: "Send the invite",
+      change: "Make the change"
+    };
+    ON_PR = /* @__PURE__ */ new Set(["merge", "complete", "abandon", "delete", "deploy"]);
+    TO = /* @__PURE__ */ new Set(["deploy", "invite"]);
   }
 });
 
@@ -53927,6 +54647,7 @@ __export(next_exports, {
   dryText: () => dryText,
   every: () => every,
   factsOf: () => factsOf2,
+  firstLeft: () => firstLeft,
   gerund: () => gerund,
   mustSee: () => mustSee,
   nextView: () => nextView,
@@ -53983,7 +54704,8 @@ function factsOf2(s3, sub) {
     job: j && { state: j.state, watch: !!j.every, retryLater: !!j.retry && Date.parse(j.retry.at) > s3.now, slot: s3.slots.has(j.id), retry: !!j.retry },
     // A step for "them" that waits on the owner by name is the owner's step.
     work: w.work && { open: !w.work.closed, next: nextWho(s3, w.work), waiting: !!w.work.waitingOn },
-    todos: openTodos(w).length,
+    // PE 07:35:05Z (rule 5): his open wf.left lines are to-dos too, so a done item with one stays a todo row (core/whose.ts:52).
+    todos: openTodos(w).length + openLeft(w).length,
     fyiUnread: !!w.fyi && (w.fyi.at ?? w.updatedAt) > s3.catchupSeen,
     ...w.openOn ? { window: true } : {}
   };
@@ -54170,12 +54892,18 @@ function itemRow(s3, p, w) {
   }
   return { ...base2, kind: "waiting-person", headline: `Waiting on ${name} to answer`, facts: { ...facts, quote: void 0, notes: w.decision?.reason ? [{ label: "Waiting for", text: clip2(w.decision.reason, 160) }] : [] }, primary: { label: "Draft a nudge", command: `${c}: nudge them` } };
 }
+function firstLeft(w) {
+  const todos = openTodos(w), left = openLeft(w).toSorted((a, b) => a.at.localeCompare(b.at)), count = todos.length + left.length;
+  if (todos[0]) return { text: todos[0].text, at: todos[0].at, refusal: false, count };
+  const line3 = left[0];
+  return line3 && { text: leftWords(line3), at: line3.at, ...line3.why ? { why: line3.why } : {}, refusal: line3.type === "refusal", count };
+}
 function todoRow(s3, base2, w) {
-  const open2 = openTodos(w), t2 = open2[0], [, why2] = t2.text.split(REFUSED);
+  const t2 = firstLeft(w), newest2 = [...openTodos(w), ...openLeft(w)].map((x) => x.at).sort().at(-1);
   const where = s3.place?.(w.chat, w.asker) ?? (w.chat.name && w.chat.name !== w.asker?.name ? w.chat.name : void 0);
-  const to = !why2 && !CLONE.test(t2.text) && w.asker?.name && !isMe(s3, w.asker.name) && !isMe(s3, w.asker.name.split(/\s+/)[0]) ? first2(w.asker.name) : void 0;
-  const promise2 = { ...to ? { to } : {}, at: t2.at, ...why2 ? { why: clip2(why2, 140) } : CLONE.test(t2.text) ? {} : { why: "no tool can do it" } };
-  return { ...base2, kind: "todo", rev: open2.map((x) => x.at).sort().at(-1), headline: todoHeadline(t2.text, open2.length - 1), facts: { at: t2.at, ...where ? { where } : {}, promise: promise2 }, primary: { label: "Mark done", command: `close ${w.code}` }, more: [{ label: "Open" }] };
+  const to = !t2.refusal && !CLONE.test(t2.text) && w.asker?.name && !isMe(s3, w.asker.name) && !isMe(s3, w.asker.name.split(/\s+/)[0]) ? first2(w.asker.name) : void 0;
+  const promise2 = { ...to ? { to } : {}, at: t2.at, ...t2.why ? { why: clip2(t2.why, 140) } : t2.refusal || CLONE.test(t2.text) ? {} : { why: "no tool can do it" } };
+  return { ...base2, kind: "todo", rev: newest2, headline: todoHeadline(t2.text, t2.count - 1), facts: { at: t2.at, ...where ? { where } : {}, promise: promise2 }, primary: { label: "Mark done", command: `close ${w.code}` }, more: [{ label: "Open" }] };
 }
 function workOf(s3, p, w, home) {
   const k = home.work;
@@ -54257,7 +54985,7 @@ function nextView(store2, now = Date.now(), options = {}) {
   const off = s3.runner === "ok" ? void 0 : s3.runner === "paused" ? { text: "Paused: drafts go on, nothing is sent" } : s3.runner === "off" ? { text: `${NAME} is off`, ...reading.at ? { since: reading.at } : {} } : { text: s3.runner === "capped" ? "Daily limit reached; it runs again tomorrow" : `${NAME} is ${s3.runner}` };
   return { move: move2, working, waiting, catchup: { count: cu.length, worth: cu.filter((r) => high(r) === 0).length, rows: options.allCatchup ? cu : cu.slice(0, 3) }, minute: options.only ? { facts: 0, suggestions: 0 } : { facts: store2.proposals().filter((p) => p.state === "needs_human").length, suggestions: store2.habits().filter((h) => h.state === "suggested").length }, ...off ? { off } : {}, ...store2.control().paused || store2.config().paused ? { paused: true } : {}, handled: options.only ? 0 : handledThisWeek(store2, s3.workflows, new Date(now)) };
 }
-var isMe, nextWho, runnerWhy, titleOf, ownerText, NAMES, CARD_MORE, COMMANDS, INLINE_MAX, first2, firsts, clipPlain, clip2, teamsLink2, triesOf, every, whyOf, mustSee, SHORT, said, commentsOrChanges, pickPrompt, watchLine, REFUSED, CLONE, todoHeadline;
+var isMe, nextWho, runnerWhy, titleOf, ownerText, NAMES, CARD_MORE, COMMANDS, INLINE_MAX, first2, firsts, clipPlain, clip2, teamsLink2, triesOf, every, whyOf, mustSee, SHORT, said, commentsOrChanges, pickPrompt, watchLine, CLONE, todoHeadline;
 var init_next = __esm({
   "src/web/next.ts"() {
     "use strict";
@@ -54271,6 +54999,7 @@ var init_next = __esm({
     init_brand();
     init_numbers2();
     init_work();
+    init_left_words();
     init_intake();
     init_agent_failure();
     init_place();
@@ -54339,9 +55068,8 @@ var init_next = __esm({
       return /[?]$/.test(s3) ? s3 : `${s3}?`;
     };
     watchLine = (t2 = "") => t2.replace(/^Watch\s+/i, "").replace(/\s+until\s+(it\s+is\s+)?merged$/i, ", until it merges").replace(/\s+until\s+(?!it merges$)/i, ", until ");
-    REFUSED = /\.\s*Not made for you:\s*/;
     CLONE = /^Clone \S+ on \S+ \(git clone /;
-    todoHeadline = (text4, remaining = 0) => clip2(`To do: ${text4.split(REFUSED)[0].replace(/[.\s]+$/, "")}${remaining ? ` (+${remaining} more)` : ""}`, 160);
+    todoHeadline = (text4, remaining = 0) => clip2(`To do: ${text4.replace(/[.\s]+$/, "")}${remaining ? ` (+${remaining} more)` : ""}`, 160);
   }
 });
 
@@ -54413,7 +55141,7 @@ function workView(w, home = w) {
 }
 function nextSteps(w) {
   const left = pendingEffects(w.effects);
-  const failed2 = left.some((e) => e.error || e.maybe), dropped = voteDropped2(w.status) && (w.effects ?? []).some((e) => e.off && !e.done && isVote(e.call));
+  const failed2 = left.some((e) => e.error || e.maybe), dropped = voteDropped(w.status) && (w.effects ?? []).some((e) => e.off && !e.done && isVote(e.call));
   return {
     // Never while a question is open: every ok is refused then (a stale vote after a change run, a refusedAsk; review chui P2-1).
     // Nor on a draft with a blank, which every ok refuses too (re-review N4).
@@ -54652,7 +55380,7 @@ function newId2(text4) {
 function openKnowledge(root, machine2, team) {
   return team ? new LayeredKnowledge(new FilesKnowledge(root, machine2), new FilesKnowledge(team, machine2)) : new FilesKnowledge(root, machine2);
 }
-var StaleCard, newestSrc, byRank, STOP2, words2, FilesKnowledge, LayeredKnowledge;
+var StaleCard, newestSrc, byRank, STOP2, words3, FilesKnowledge, LayeredKnowledge;
 var init_knowledge = __esm({
   "src/knowledge/index.ts"() {
     "use strict";
@@ -54664,7 +55392,7 @@ var init_knowledge = __esm({
     newestSrc = (h) => h.src.map((s3) => s3.date).sort().at(-1) ?? "";
     byRank = (a, b) => b.score - a.score || Number(a.expired) - Number(b.expired) || newestSrc(b).localeCompare(newestSrc(a));
     STOP2 = new Set("a an and are as at be by for from has have how in is it its of on or that the this to was what when where which who why will with".split(" "));
-    words2 = (s3) => s3.normalize("NFKC").toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w.length > 1 && !STOP2.has(w));
+    words3 = (s3) => s3.normalize("NFKC").toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w.length > 1 && !STOP2.has(w));
     FilesKnowledge = class {
       root;
       machine;
@@ -54680,14 +55408,14 @@ var init_knowledge = __esm({
         });
       }
       search(q2, f = {}) {
-        const want = words2(q2);
+        const want = words3(q2);
         const hits = [];
         for (const c of this.cards()) {
-          const head = new Set(words2(`${c.topic} ${c.title} ${c.aliases.join(" ")}`));
+          const head = new Set(words3(`${c.topic} ${c.title} ${c.aliases.join(" ")}`));
           for (const e of c.entries) {
             if (f.types && !f.types.includes(e.type)) continue;
             if (f.audience === "team" && e.audience !== "team") continue;
-            const body = new Set(words2(e.text)), tags = new Set(e.tags.flatMap(words2));
+            const body = new Set(words3(e.text)), tags = new Set(e.tags.flatMap(words3));
             const flat2 = e.text.normalize("NFKC").toLowerCase();
             const score = want.reduce((s3, w) => s3 + (tags.has(w) || head.has(w) ? 3 : 0) + (body.has(w) ? 2 : flat2.includes(w) ? 1 : 0), 0);
             if (score) hits.push({ ...e, score, expired: expired(e) });
@@ -55069,10 +55797,10 @@ function publish(store2, k, owner2, topic, claims, session) {
   return made.map((p) => answerProposal(store2, k, p, { id: "", code: p.code, verb: "ok", surface: "chat", at: "" })).join("\n");
 }
 function renderProposal(p, max = Infinity) {
-  const shown2 = p.ops.slice(0, max);
-  const lines = shown2.map((o) => `- ${o.op === "add" ? "new" : o.was !== void 0 ? `replaces "${o.was}" with` : o.op} [${o.entry.type}] ${o.entry.text}${o.entry.audience === "private" ? " (private)" : ""}
+  const shown3 = p.ops.slice(0, max);
+  const lines = shown3.map((o) => `- ${o.op === "add" ? "new" : o.was !== void 0 ? `replaces "${o.was}" with` : o.op} [${o.entry.type}] ${o.entry.text}${o.entry.audience === "private" ? " (private)" : ""}
   source: ${o.entry.src.map((s3) => [s3.link, s3.date, s3.who].filter(Boolean).join(", ")).join("; ")}`);
-  const rest2 = p.ops.length - shown2.length;
+  const rest2 = p.ops.length - shown3.length;
   return [`${p.code} \xB7 ${p.title} \xB7 ${p.status}${p.home === "team" ? " \xB7 saves to team knowledge" : ""}`, ...lines, ...rest2 > 0 ? [`\u2026 and ${rest2} more. ok ${p.code} saves all ${p.ops.length}. See them all with "open my inbox".`] : []].join("\n");
 }
 function nextProposal(store2, after, max = Infinity) {
@@ -55101,7 +55829,14 @@ function resolveEvidence(k, cfg, sources, root = "") {
 }
 function inbox2(store2, since2) {
   const receipts = store2.takeReceipts();
-  const list2 = renderList(store2.workflows(), /* @__PURE__ */ new Date(), since2, store2.health(), { proposals: store2.proposals(), background: bootLines(store2), automations: store2.automations().filter((a) => a.state !== "ended").map((a) => ({ line: describe3(a), state: a.state, next: a.next, code: a.code })), waiting: view(store2, since2).waiting });
+  const list2 = renderList(
+    store2.workflows(),
+    /* @__PURE__ */ new Date(),
+    since2,
+    store2.health(),
+    { proposals: store2.proposals(), background: bootLines(store2), automations: store2.automations().filter((a) => a.state !== "ended").map((a) => ({ line: describe3(a), state: a.state, next: a.next, code: a.code })), waiting: view(store2, since2).waiting },
+    (wf) => placeOf(store2, wf.chat, wf.asker)
+  );
   store2.markShown(store2.workflows());
   const caught2 = catchUpLines(store2, since2);
   const all = caught2.length ? `${list2}
@@ -55140,6 +55875,7 @@ var init_proposals = __esm({
   "src/runner/proposals.ts"() {
     "use strict";
     init_view();
+    init_place();
     init_automations();
     init_ids();
     init_discover();
@@ -55233,10 +55969,10 @@ async function membersOf(store2, src, chatId, refresh = false) {
   }
   store2.saveMembers({ ...store2.members(), [chatId]: { ids: r.ids, names: r.names, guests: r.guests, outside: r.outside ?? [], at: (/* @__PURE__ */ new Date()).toISOString() } });
   if (!membershipUnknown(store2, chatId)) membershipWait(store2, chatId, false);
-  if (r.guests) await clearShareable2(store2, src, chatId);
+  if (r.guests) await clearShareable(store2, src, chatId);
   return r.ids;
 }
-async function clearShareable2(store2, src, chatId) {
+async function clearShareable(store2, src, chatId) {
   const cfg = store2.config(), level = cfg.chatLevels?.[chatId];
   if (level?.level !== "shareable") return;
   const levels = { ...cfg.chatLevels };
@@ -55331,25 +56067,26 @@ function setChatLevel(store2, chat2, level, said2) {
   for (const w of store2.workflows()) if (w.chat.id && w.chat.id !== cfg.source?.selfChatId) known2.set(w.chat.id, w.chat.name);
   for (const [id2, v] of Object.entries(levels)) known2.set(id2, v.name);
   const q2 = chat2.trim(), lc = q2.toLowerCase(), direct = parseMessageLink(q2)?.chatId ?? (/^\d+:\S+$/.test(q2) ? q2 : void 0);
-  const named2 = (exact) => [...known2].filter(([, n]) => exact ? n.toLowerCase() === lc : n.toLowerCase().includes(lc)).map(([i]) => i);
+  const places = new Map(Object.entries(levels).map(([id2, v]) => [id2, placeOf(store2, { id: id2, name: v.name })?.sentence]));
+  const named2 = (exact) => [...known2].filter(([id2, n]) => exact ? n.toLowerCase() === lc || places.get(id2)?.toLowerCase() === lc : n.toLowerCase().includes(lc)).map(([i]) => i);
   const ids = direct ? [direct] : named2(true).length ? named2(true) : named2(false);
   if (!ids.length) return `I don't know a chat called "${q2}". Paste a link to any message in it.`;
-  if (ids.length > 1) return `More than one chat matches "${q2}": ${ids.map((i) => known2.get(i)).join("; ")}. Say which one, or paste a link to a message in it.`;
-  const id = ids[0], name = said2?.trim() || known2.get(id) || "That chat";
+  if (ids.length > 1) return `More than one chat matches "${q2}": ${ids.map((i) => places.get(i) ?? known2.get(i)).join("; ")}. Say which one, or paste a link to a message in it.`;
+  const id = ids[0], name = said2?.trim() || known2.get(id) || "That chat", shown3 = placeOf(store2, { id, name })?.sentence ?? name;
   const group2 = store2.workflows().find((w) => w.chat.id === id)?.chat.group ?? !/@unq\.gbl\.spaces$/.test(id);
-  if (level === "shareable" && !group2) return `Shareable within my org is for group and meeting chats only; ${name} stays a normal chat.`;
+  if (level === "shareable" && !group2) return `Shareable within my org is for group and meeting chats only; ${shown3} stays a normal chat.`;
   const wasOff = levels[id]?.level === "off";
   if (level === "normal") {
-    if (!levels[id]) return `${name} was not marked, so nothing changed.`;
+    if (!levels[id]) return `${shown3} was not marked, so nothing changed.`;
     delete levels[id];
     store2.saveConfig({ ...cfg, chatLevels: levels });
     if (wasOff) restoreOffRecord(store2, id);
-    return `${name} is normal again.`;
+    return `${shown3} is normal again.`;
   }
   store2.saveConfig({ ...cfg, chatLevels: { ...levels, [id]: { level, name, at: (/* @__PURE__ */ new Date()).toISOString() } } });
   if (level === "off" && !wasOff) moveOffRecord(store2, id);
   else if (level !== "off" && wasOff) restoreOffRecord(store2, id);
-  return `${name} is ${LEVEL_SAYS[level]}. Say "${name} is normal again" to undo.`;
+  return `${shown3} is ${LEVEL_SAYS[level]}. Say "${shown3} is normal again" to undo.`;
 }
 var provenanceFile, normal, UNTRACKED, guestsIn, nameOf2, fromOffChat, flatName, namesIn;
 var init_sharing = __esm({
@@ -55363,6 +56100,7 @@ var init_sharing = __esm({
     init_offrecord();
     init_telemetry();
     init_format();
+    init_place();
     provenanceFile = (root, runId) => join31(root, "state", "provenance", `${runId}.json`);
     normal = (v) => Array.isArray(v) ? { chats: v, searches: [] } : v;
     UNTRACKED = /^teams-(List|Get|Search)/i;
@@ -55378,7 +56116,7 @@ var init_sharing = __esm({
 });
 
 // src/runner/catalog.ts
-import { createHash as createHash9 } from "node:crypto";
+import { createHash as createHash12 } from "node:crypto";
 import { existsSync as existsSync25, mkdirSync as mkdirSync11, readdirSync as readdirSync9, readFileSync as readFileSync21, renameSync as renameSync5, statSync as statSync9, writeFileSync as writeFileSync12 } from "node:fs";
 import { homedir as homedir10 } from "node:os";
 import { basename as basename5, join as join32 } from "node:path";
@@ -55517,8 +56255,8 @@ var init_catalog = __esm({
     OWN = /* @__PURE__ */ new Set(["delegate", "delegate_worker"]);
     dir = () => join32(LOCAL_DIR, "catalog");
     file3 = (server) => join32(dir(), `${server.replace(/[^\w.-]/g, "_")}.json`);
-    specKey = (s3) => createHash9("sha256").update(JSON.stringify({ command: s3.command, args: s3.args ?? [], env: Object.keys(s3.env ?? {}).sort(), ...s3.url ? { url: s3.url } : {} })).digest("hex").slice(0, 16);
-    toolsHash = (tools) => createHash9("sha256").update(JSON.stringify(tools.map((t2) => [t2.name, t2.annotations ?? null, t2.inputSchema ?? null]).sort())).digest("hex").slice(0, 16);
+    specKey = (s3) => createHash12("sha256").update(JSON.stringify({ command: s3.command, args: s3.args ?? [], env: Object.keys(s3.env ?? {}).sort(), ...s3.url ? { url: s3.url } : {} })).digest("hex").slice(0, 16);
+    toolsHash = (tools) => createHash12("sha256").update(JSON.stringify(tools.map((t2) => [t2.name, t2.annotations ?? null, t2.inputSchema ?? null]).sort())).digest("hex").slice(0, 16);
     stampOf = (path) => {
       try {
         const s3 = statSync9(path);
@@ -56499,6 +57237,83 @@ init_automations();
 init_jobs();
 init_continue();
 init_own();
+init_left();
+
+// src/runner/left-probe.ts
+init_fs();
+init_commit();
+init_left();
+init_probe();
+var lastProbe = /* @__PURE__ */ new Map();
+var EVERY_MS2 = 10 * 6e4;
+var threadId2 = (href) => {
+  if (!href || !URL.canParse(href)) return void 0;
+  const url2 = new URL(href);
+  if (url2.protocol !== "https:" || url2.hostname !== "dev.azure.com" && !url2.hostname.endsWith(".visualstudio.com")) return void 0;
+  const id = url2.searchParams.get("discussionId");
+  return id && /^\d+$/.test(id) ? id : void 0;
+};
+async function probeLeft(store2, cfg, probe, now = Date.now(), force = false) {
+  if (!probe?.pr) return 0;
+  const candidates2 = store2.workflows().filter((wf) => openLeft(wf).some((line3) => line3.pr?.id || line3.action.pr));
+  if (!candidates2.length) {
+    lastProbe.delete(store2.root);
+    return 0;
+  }
+  if (!force && now - (lastProbe.get(store2.root) ?? 0) < EVERY_MS2) return 0;
+  lastProbe.set(store2.root, now);
+  const groups2 = /* @__PURE__ */ new Map();
+  for (const wf of candidates2) for (const line3 of openLeft(wf)) {
+    const pr = line3.pr?.id ?? line3.action.pr;
+    const ref = pr ? prRefFor(store2, wf, pr) : void 0;
+    if (!ref) continue;
+    const key = JSON.stringify([ref.project, ref.repo, ref.id]), group2 = groups2.get(key) ?? { ref, items: [], threads: false };
+    if (!group2.items.some((item2) => item2.id === wf.id)) group2.items.push(wf);
+    group2.threads ||= (line3.source.kind === "pr-comment" || line3.source.kind === "review") && !!threadId2(line3.source.href);
+    groups2.set(key, group2);
+  }
+  const reads = /* @__PURE__ */ new Map();
+  const entries = [...groups2.entries()];
+  for (let offset = 0; offset < entries.length; offset += 4) await Promise.all(entries.slice(offset, offset + 4).map(async ([key, group2]) => {
+    try {
+      const { project, repo, id } = group2.ref;
+      const state = await probe.pr(project, repo, id);
+      const threads2 = group2.threads && probe.threadActivity ? await probe.threadActivity(project, repo, id) : [];
+      reads.set(key, { state, threads: threads2 });
+    } catch (error62) {
+      store2.log({ event: "pr-check-failed", pr: group2.ref.id, error: String(error62).slice(0, 200) });
+    }
+  }));
+  const queued = freshRead(() => new Set(store2.answers().map((item2) => item2.answer.code)));
+  const norm4 = (value) => value?.trim().toLowerCase();
+  const owner2 = (comment) => !!cfg.owner.id && norm4(comment.authorId) === norm4(cfg.owner.id) || !!cfg.owner.upn && norm4(comment.authorUnique) === norm4(cfg.owner.upn);
+  let cleared = 0;
+  for (const [key, group2] of entries) {
+    const read3 = reads.get(key);
+    if (!read3) continue;
+    for (const was of group2.items) {
+      const wf = freshRead(() => store2.workflow(was.id));
+      if (!wf || queued.has(wf.code) || wf.pending.length) continue;
+      const commit = recordCommit(wf, () => store2.workflow(wf.id), store2.save.bind(store2));
+      let changed = 0;
+      for (const line3 of openLeft(wf).filter((line4) => (line4.pr?.id ?? line4.action.pr) === group2.ref.id)) {
+        const after = (at3) => !!at3 && Number.isFinite(Date.parse(at3)) && Date.parse(at3) > Date.parse(line3.at) && Date.parse(at3) <= now;
+        const closed = /^(completed|abandoned)$/i.test(read3.state.status) && after(read3.state.closedAt);
+        const id = line3.source.pr === group2.ref.id && (line3.source.kind === "review" || line3.source.kind === "pr-comment") ? threadId2(line3.source.href) : void 0;
+        const replied = id ? read3.threads.find((thread2) => thread2.id === id)?.comments.filter((comment) => owner2(comment) && after(comment.at)).sort((a, b) => a.at.localeCompare(b.at))[0] : void 0;
+        const seen = closed && read3.state.closedAt ? { pr: group2.ref.id, how: "closed", at: read3.state.closedAt } : replied ? { pr: group2.ref.id, how: "replied", at: replied.at } : void 0;
+        if (seen) changed += clearLeft(wf, [line3.id], { at: new Date(now).toISOString(), by: "engine", why: "seen-done", seen }).length;
+      }
+      if (changed) {
+        commit(false);
+        cleared += changed;
+      }
+    }
+  }
+  return cleared;
+}
+
+// src/runner/tick.ts
 init_catalog();
 init_client3();
 init_locate();
@@ -56570,7 +57385,7 @@ function stampPlaces(store2, now = Date.now()) {
 init_state();
 init_format2();
 init_fs();
-import { createHash as createHash10, randomBytes as randomBytes3 } from "node:crypto";
+import { createHash as createHash13, randomBytes as randomBytes3 } from "node:crypto";
 import { createServer as createServer2 } from "node:http";
 import { existsSync as existsSync30 } from "node:fs";
 import { join as join40, resolve as resolve11 } from "node:path";
@@ -58195,6 +59010,9 @@ init_locate();
 init_host();
 init_client3();
 init_rules();
+init_setting_keys();
+init_place();
+init_setting_keys();
 var set2 = (patch) => ({ ok: true, save: (cfg) => ({ ...cfg, ...patch }) });
 var list = (raw) => raw.split(/[,\n]/).map((s3) => s3.trim()).filter(Boolean);
 var num3 = (raw, min, max, key) => {
@@ -58549,7 +59367,7 @@ function changeChoices(cfg) {
   return [...new Set([...byServer, ...Object.keys(s3.actions ?? {})].filter(own3).concat(cfg.agent.effectTools ?? []))].filter(offerable);
 }
 var changeSpecs = (cfg) => changeChoices(cfg).map((entry) => ({
-  key: `change:${entry}`,
+  key: settingKey(entry),
   label: changeName(entry),
   help: changeLine(entry),
   kind: "switch",
@@ -58673,7 +59491,7 @@ function aboutView(store2) {
       };
     }),
     suggestions: habits.filter((h) => h.state === "suggested").map((h) => ({ code: h.code, text: h.text, does: h.does, evidence: h.kind === "style" ? `${h.evidence.count} edited replies on ${h.evidence.days} day${h.evidence.days === 1 ? "" : "s"}, out of ${h.evidence.total} edited in that time${h.evidence.links.length ? ` (${h.evidence.links.length} linked below)` : ""}` : `${h.evidence.count} unedited replies on ${h.evidence.days} days, out of ${h.evidence.total}`, links: h.evidence.links })),
-    chats: Object.values(cfg.chatLevels ?? {}).map((c) => ({ name: c.name, says: LEVEL_SAYS[c.level] }))
+    chats: Object.entries(cfg.chatLevels ?? {}).map(([id, c]) => ({ name: placeOf(store2, { id, name: c.name })?.sentence ?? c.name, says: LEVEL_SAYS[c.level] }))
   };
 }
 function aboutText(store2) {
@@ -58854,6 +59672,7 @@ init_automations();
 init_report();
 init_tools();
 init_brand();
+init_place();
 var text2 = (t2) => ({ content: [{ type: "text", text: t2 }] });
 async function serve(store2) {
   await build2(store2).connect(new StdioServerTransport());
@@ -59101,7 +59920,7 @@ function actResult(store2, command, shownAt, from = "chat") {
 function enqueueParsed(store2, parsed, shownAt, from = "page", answerId, page2, pageSubmissionId) {
   if (answerId && parsed.length !== 1) throw new Error("A page submission must target exactly one action.");
   const write = (answer) => store2.writeAnswer({ ...answer, ...page2 ? { page: page2, ...page2.todoIds ? { todos: page2.todoIds } : {} } : {}, ...pageSubmissionId ? { pageSubmissionId } : {} }, answerId);
-  let shown2 = 0;
+  let shown3 = 0;
   const out = [];
   const ids = [];
   for (const p of parsed) {
@@ -59125,7 +59944,7 @@ function enqueueParsed(store2, parsed, shownAt, from = "page", answerId, page2, 
     if (hb) {
       if (p.verb === "more") {
         out.push(answerHabit(store2, hb, "more"));
-        shown2++;
+        shown3++;
         continue;
       }
       const style = hb.kind === "style" && !hb.removes;
@@ -59141,7 +59960,7 @@ function enqueueParsed(store2, parsed, shownAt, from = "page", answerId, page2, 
     if (auto) {
       if (p.verb === "more") {
         out.push(describe3(auto));
-        shown2++;
+        shown3++;
         continue;
       }
       ids.push(write({ code: auto.code, verb: p.verb, text: p.text, surface: "chat", seenAt: shownAt }).id);
@@ -59152,7 +59971,7 @@ function enqueueParsed(store2, parsed, shownAt, from = "page", answerId, page2, 
     if (kp) {
       if (p.verb === "more") {
         out.push(renderProposal(kp));
-        shown2++;
+        shown3++;
         continue;
       }
       if (p.verb === "edit" && kp.ops.length > 1) {
@@ -59169,32 +59988,34 @@ function enqueueParsed(store2, parsed, shownAt, from = "page", answerId, page2, 
       continue;
     }
     if (p.verb === "more") {
-      out.push(renderMore(wf, store2.thread(wf.id), /* @__PURE__ */ new Date()));
+      out.push(renderMore(wf, store2.thread(wf.id), /* @__PURE__ */ new Date(), placeOf(store2, wf.chat, wf.asker)));
       store2.markShown([wf]);
-      shown2++;
+      shown3++;
       continue;
     }
-    const marks = p.verb === "close" && openTodos(wf).length > 0;
-    const drawn = marks ? openTodos(wf).filter((t2) => from !== "page" || !shownAt || t2.at <= shownAt) : [], seen = drawn.length ? drawn : openTodos(wf);
+    const todos = [...openTodos(wf), ...openLeft(wf)];
+    const marks = p.verb === "close" && todos.length > 0;
+    const drawn = marks ? todos.filter((t2) => from !== "page" || !shownAt || t2.at <= shownAt) : [], seen = drawn.length ? drawn : todos;
     if (marks) {
       ids.push(write({ code: wf.code, verb: p.verb, text: p.text, surface: "chat", seenAt: shownAt ?? store2.seenRev(wf.code), todos: seen.map((t2) => t2.id) }).id);
       const count = page2?.todoIds?.length ?? seen.length;
       out.push(`${wf.code} will mark ${count === 1 ? "its to-do" : `its ${count} to-dos`} done. Nothing is sent.`);
       continue;
     }
-    if (wf.state === "done" && !reopenable(wf, p.verb) && !(p.verb === "mine" && wf.fyi) && !["undo", "ask", "wrong", "incomplete", "unneeded"].includes(p.verb) && !(p.verb === "send" && wf.sent)) {
+    const leftAction = (p.verb === "left-ask-again" || p.verb === "left-draft-invite") && openLeft(wf).some((line3) => line3.id === p.text);
+    if (wf.state === "done" && !leftAction && !reopenable(wf, p.verb) && !(p.verb === "mine" && wf.fyi) && !["undo", "ask", "wrong", "incomplete", "unneeded"].includes(p.verb) && !(p.verb === "send" && wf.sent)) {
       out.push(`${wf.code} is already done: ${wf.status}`);
-      shown2++;
+      shown3++;
       continue;
     }
     if (p.verb === "mine" && (wf.state !== "done" || !wf.fyi)) {
       out.push(`${wf.code} is not in Catch up, so nothing changed.`);
-      shown2++;
+      shown3++;
       continue;
     }
     if (p.verb === "undo" && !wf.sent) {
       out.push(`${wf.code}: has not been sent, so there is nothing to undo.`);
-      shown2++;
+      shown3++;
       continue;
     }
     if (from === "page" && p.verb === "undo" && (!wf.sent?.undoUntil || Date.parse(wf.sent.undoUntil) <= Date.now())) {
@@ -59207,6 +60028,10 @@ function enqueueParsed(store2, parsed, shownAt, from = "page", answerId, page2, 
     const changes = left.length ? `will ${effectLine(left)}, then ` : "will ";
     if (p.verb === "answer" && wf.choices && /^\s*#?\d+(\s*,\s*#?\d+)*\s*$/.test(p.text ?? "")) Object.assign(p, { verb: "pick", nums: p.text.match(/\d+/g).map(Number) });
     const opts = p.nums?.map((n) => wf.choices?.options[n - 1]?.label).filter(Boolean).join('", "');
+    if (p.verb === "left-ask-again" || p.verb === "left-draft-invite") {
+      out.push(`${wf.code} will draft for your review. Nothing is sent.`);
+      continue;
+    }
     const what = { mine: "will be drafted for you. It waits for your ok", pick: opts ? `will use "${opts}" and show the reply first` : "has no such option", ask: "will be answered here. Nothing is sent", ok: `${p.nums?.length ? `will make only change${p.nums.length > 1 ? "s" : ""} ${p.nums.join(", ")}, then ` : changes}send the draft: "${wf.draft?.text?.slice(0, 160) ?? ""}"`, edit: `will change the draft to: "${p.text}". Nothing is sent until you say ok`, send: `${changes}send your words: "${p.text}"`, later: "stays in your inbox for later", answer: "will redraft with your answer and show a preview", skip: "will be dismissed without a reply", unwatch: "will stop only the check-back; work and to-dos stay open", undo: "will take back the automatic reply and keep the draft", continue: `will open its session on the computer running ${NAME}`, wrong: "gets a correction drafted for your ok. Nothing is sent yet", incomplete: "gets a follow-up with what was missing, drafted for your ok. Nothing is sent yet", unneeded: "is noted as not needed, and taken back if it still can be", every: "will check at the new interval", extend: "keeps watching for 7 more days" }[p.verb];
     out.push(`${wf.code}${ask} ${what}.`);
   }
@@ -59214,7 +60039,7 @@ function enqueueParsed(store2, parsed, shownAt, from = "page", answerId, page2, 
     kickTick(store2);
     out.push(from === "page" ? "Applying now." : 'Applying now. It takes up to a minute, and you will see the result in "inbox".');
   }
-  return { text: out.join("\n"), accepted: ids.length + shown2 > 0, ids };
+  return { text: out.join("\n"), accepted: ids.length + shown3 > 0, ids };
 }
 function kickTick(store2) {
   store2.saveKick();
@@ -59606,6 +60431,21 @@ var choice = external_exports.object({ id: optional2, label: text3, note: option
 var choices = external_exports.object({ prompt: text3, multi: external_exports.boolean().optional(), options: external_exports.array(choice), other: external_exports.boolean().optional(), group: external_exports.boolean().optional() });
 var context = external_exports.object({ label: text3, text: text3, tone: external_exports.enum(["info", "warn"]).optional() });
 var thread = external_exports.object({ who: text3, text: text3, at: text3, owner: external_exports.boolean() });
+var leftLine = external_exports.object({
+  id: text3,
+  type: external_exports.enum(["refusal", "promise"]),
+  text: text3,
+  quote: external_exports.object({ text: text3, by: external_exports.enum(["asker", "owner", "delegate"]) }).optional(),
+  source: external_exports.object({ text: text3, href: optional2 }),
+  why: optional2,
+  seen: external_exports.object({ pr: external_exports.number() }).optional(),
+  button: external_exports.discriminatedUnion("kind", [
+    external_exports.object({ kind: external_exports.literal("copy-reply"), text: text3, href: text3 }),
+    external_exports.object({ kind: external_exports.literal("settings"), key: text3 }),
+    external_exports.object({ kind: external_exports.literal("open-pr"), href: text3 }),
+    external_exports.object({ kind: external_exports.literal("action"), actionId: text3 })
+  ]).optional()
+});
 var item = external_exports.object({
   id: text3,
   code: text3,
@@ -59651,7 +60491,7 @@ var item = external_exports.object({
   debug: strings.optional(),
   promise: external_exports.object({ said: text3, failed: optional2 }).optional(),
   todos: strings.optional(),
-  leftLines: external_exports.array(external_exports.object({ text: text3, why: text3 })).optional(),
+  leftLines: external_exports.array(leftLine).optional(),
   repaired: external_exports.boolean().optional(),
   // R10b: a review posted under his rule that waits for his approval (SEND's reviewDone, from receipts).
   reviewDone: external_exports.object({
@@ -60143,10 +60983,10 @@ function heldLine(who2, reasons) {
   const noReply = reasons.find((r) => r.kind === "no-reply-needed");
   const said2 = (r) => r.kind === "no-reply-needed" ? sentence("Delegate thinks no reply is needed now", r.why) : sentence(`${who2} ${r.kind === "ask-edited" ? "edited their message" : (r.count ?? 1) > 1 ? `wrote ${r.count} more messages` : "wrote again"} after you approved`, r.changed);
   const all = [...asks, ...noReply ? [noReply] : []].map(said2);
-  const shown2 = [asks[0], noReply ?? asks[1]].filter((r) => !!r).map(said2);
-  const line3 = shown2.map((s3) => s3.short).join(" ");
+  const shown3 = [asks[0], noReply ?? asks[1]].filter((r) => !!r).map(said2);
+  const line3 = shown3.map((s3) => s3.short).join(" ");
   const full = all.map((s3) => s3.full).join("\n");
-  return all.length === shown2.length && all.every((s3, i) => s3.full === shown2[i].short) ? { line: line3 } : { line: line3, full };
+  return all.length === shown3.length && all.every((s3, i) => s3.full === shown3[i].short) ? { line: line3 } : { line: line3, full };
 }
 var asked2 = (f) => !!f.question || f.yourStep?.kind === "decision";
 var sinceWords = (at3) => at3 && Number.isFinite(Date.parse(at3)) ? ` since ${new Date(at3).toLocaleString("en-US", { weekday: "short", hour: "numeric", minute: "2-digit" })}` : "";
@@ -60263,136 +61103,7 @@ function checkCard(f, s3) {
 
 // src/core/card-facts.ts
 init_owner_send();
-
-// src/core/normalize-report.ts
-init_document_failure();
-init_secrets();
-var CI = /\b(?:builds?|CI|pipelines?|checks?|validation)\s+(?:(?:is|are|has|have)\s+)?(?:failed|failing|passed|green|red|pending|running|succeeded|queued)\b|\bcoverage\s+(?:dropped|is below|fell)\b/i;
-var VOTE_STATUS = /\b(?:your|my|our|(?:the )?owner's)\s+(?:reviewer\s+)?groups?\b|\bowner\s+(?:has\s+)?(?:approved|voted|is waiting)\b|\b(?:votes?|reviewer status)\s+(?:is|are)\s+(?:(?:still|already)\s+)?(?:present|recorded|approved|pending|waiting)\b/i;
-var REVIEWER_STATUS = /^(?:[A-Z][\w'-]*\s+){1,3}(?:has\s+)?(?:approved|voted|(?:is\s+)?waiting)(?=$|[.!;,]|\s+(?:on|for|with|this|the|PR)\b)/;
-var REVIEW_STATUS_LABEL = /^(?:live votes?|newest builds?|ci and (?:test |code )?coverage)\b|\bdependency\b.*\bvotes?\b/i;
-var PLUMBING = /\b(?:tool discovery|execution calls?|tool schema)\b/i;
-var INTERNAL = /[0-9a-f]{8,}|job:|Error:|Not made for you|\bworker\b|\b(?:ado|teams|sharepoint|delegate_worker)[-_][\w-]+/i;
-var REFUSAL = /(?:\.\s*)?Not made for you:\s*/i;
-var GATE = /^Not reviewing$/i;
-var words3 = (s3) => s3.replace(/\s+/g, " ").trim();
-function factText(text4) {
-  return words3(text4.replace(/\bjob:[^\s,;!?()[\]{}]+/gi, "").replace(/\b(?:delegate_worker|ado|teams|sharepoint)[-_][\w-]+(?::[\w-]+)?\s*:?\s*/gi, "").replace(/^(?:\s*Error:\s*)+/i, ""));
-}
-function plain4(text4, fallback) {
-  const value = words3(text4);
-  if (!value) return fallback;
-  if (!INTERNAL.test(value) && !PLUMBING.test(value) && !/^schema$/i.test(value)) return value;
-  if (/too large|too much content/i.test(value)) return "The document is too large to open.";
-  if (/no access|access denied|forbidden|permission/i.test(value)) return "Access to the source was denied.";
-  if (/sign.in|authenticat|credentials/i.test(value)) return "Sign in again to read the source.";
-  if (/approval|approv.*confirm|unverified/i.test(value)) return "The approval couldn't be confirmed.";
-  if (/timeout|timed out|unreachable|connection/i.test(value)) return "The source couldn't be reached.";
-  if (/stopped|time budget|out of time/i.test(value)) return "The work stopped before it finished.";
-  return fallback;
-}
-function refusal2(text4) {
-  const match = REFUSAL.exec(text4);
-  if (!match) return void 0;
-  const what = plain4(text4.slice(0, match.index).replace(/[.\s]+$/, ""), "Make the change yourself");
-  const pr = /\bPR\s*#?(\d+)\b/i.exec(what)?.[1];
-  return { what, target: pr ? `PR ${pr}` : "", reason: text4.slice(match.index + match[0].length).trim() };
-}
-function failureKind(blocker) {
-  if (blocker.documentFailure) return "content";
-  if (blocker.kind === "tool") return "tool";
-  return blocker.kind === "transient" || blocker.kind === "budget" ? "other" : "content";
-}
-var causeText = (text4) => text4 && !/[\\/]|(?:https?|file):/i.test(text4) ? plain4(scrub(text4), "").slice(0, 200) || void 0 : void 0;
-function cleanCause(cause) {
-  const target2 = causeText(cause.target), system = causeText(cause.system), size = causeText(cause.size);
-  return {
-    step: cause.step,
-    ...cause.reason ? { reason: cause.reason } : {},
-    ...target2 ? { target: target2 } : {},
-    ...system ? { system } : {},
-    ...size ? { size } : {},
-    ...cause.retryAt && Number.isFinite(Date.parse(cause.retryAt)) ? { retryAt: cause.retryAt } : {}
-  };
-}
-function refusalReason(reason) {
-  const value = words3(reason), pr = /^PR (\d+) is not this item's PR \((\d+)\)/i.exec(value);
-  if (pr) return `This is about PR ${pr[1]}, but the item is about PR ${pr[2]}, so Delegate won't change PR ${pr[1]} from here.`;
-  if (/is not one of the changes you allow/i.test(value)) return "You haven't allowed Delegate to do this. Settings > Changes Delegate may make.";
-  if (/never completes, merges, abandons, bypasses, or deletes/i.test(value)) return "Delegate never merges, completes, abandons or deletes. Do it in Azure DevOps.";
-  if (/may only add you as a reviewer/i.test(value)) return "Delegate can only add you as a reviewer.";
-  if (/names no exact call|no exact call|must name.*(?:commit|PR)|vote must|pull request change must/i.test(value)) return "Delegate's proposal was incomplete, so it won't make it. Ask again from the card if you want it.";
-  if (/invite.*older form/i.test(value)) return "This invite was made by an older version. Answer the question to get a new one.";
-  if (/pipeline|deploy/i.test(value)) return "Delegate only deploys to the places you allow, one at a time.";
-  return plain4(value, "Delegate can't make this change from here.");
-}
-function normalizeReport(stored) {
-  const report2 = stored.result ?? stored;
-  const review = !stored.every && ((stored.intent ?? report2.intent) === "pr_review" || /^pr:/i.test(stored.key?.trim() ?? ""));
-  const normalized2 = { context: [], findings: [], refused: [], todos: [] };
-  const addRefusal = (r) => {
-    const clean4 = { what: plain4(r.what, "Make the change yourself"), target: plain4(r.target, ""), reason: refusalReason(r.reason) };
-    if (!normalized2.refused.some((x) => x.what === clean4.what && x.target === clean4.target && x.reason === clean4.reason)) normalized2.refused.push(clean4);
-  };
-  for (const r of stored.refused ?? []) addRefusal(r);
-  for (const text4 of [...report2.todos ?? [], ...stored.result ? stored.todos ?? [] : []]) {
-    const r = refusal2(text4);
-    if (r) addRefusal(r);
-    else {
-      const todo = plain4(text4, "Review this step yourself.");
-      if (!normalized2.todos.includes(todo)) normalized2.todos.push(todo);
-    }
-  }
-  for (const fact of stored.context ?? report2.context ?? []) {
-    const r = refusal2(fact.text);
-    if (r) {
-      addRefusal(r);
-      continue;
-    }
-    if (/^(?:refused change|change refused|not made for you|left for you)$/i.test(fact.label.trim())) {
-      addRefusal({ what: "Make the change yourself", target: "", reason: fact.text });
-      continue;
-    }
-    const gate = GATE.test(fact.label.trim());
-    const text4 = `${fact.label} ${fact.text}`;
-    if (review && !gate && (CI.test(text4) || VOTE_STATUS.test(text4) || PLUMBING.test(text4) || REVIEW_STATUS_LABEL.test(fact.label.trim()) || /\bThese are CI facts\b/i.test(fact.text) || REVIEWER_STATUS.test(fact.label.trim()) || REVIEWER_STATUS.test(fact.text.trim()))) continue;
-    const clean4 = {
-      label: factText(fact.label),
-      text: factText(fact.text),
-      ...review ? { tone: gate && fact.tone === "warn" ? "warn" : "info" } : fact.tone ? { tone: fact.tone } : {}
-    };
-    normalized2.context.push(clean4);
-    if (review && !gate) normalized2.findings.push({ ...clean4 });
-  }
-  const explicit = stored.runFailed ?? stored.failure;
-  const blocker = (report2.goalMet === false ? report2.blocker : void 0) ?? (stored.state === "failed" ? stored.retry?.last : void 0);
-  const errorRefusal = stored.error ? refusal2(stored.error) : void 0;
-  if (errorRefusal) addRefusal(errorRefusal);
-  const failed2 = explicit ? { kind: explicit.kind, why: explicit.why, tried: explicit.tried ?? [], ...explicit.at ? { at: explicit.at } : {} } : blocker ? { kind: failureKind(blocker), why: blocker.why, tried: [...stored.retry?.tried ?? [], ...blocker.tried], ...stored.updatedAt ? { at: stored.updatedAt } : {} } : stored.state === "failed" && !errorRefusal ? { kind: "other", why: stored.error ?? "The work stopped before it finished.", tried: stored.retry?.tried ?? [], ...stored.updatedAt ? { at: stored.updatedAt } : {} } : void 0;
-  if (failed2) {
-    const doc = explicit ? explicit.kind === "content" ? documentFailureCause(explicit.why) : void 0 : blocker?.documentFailure ? documentFailureCause(blocker.why) : void 0;
-    const cause = explicit && "cause" in explicit && explicit.cause ? cleanCause(explicit.cause) : failed2.kind === "stopped" ? { step: "run-stopped" } : doc ? { ...doc, target: causeText(doc.target) ?? "the document" } : void 0;
-    if (cause && stored.retry?.nextAt && Number.isFinite(Date.parse(stored.retry.nextAt))) cause.retryAt = stored.retry.nextAt;
-    const whyRefusal = refusal2(failed2.why);
-    if (whyRefusal) addRefusal(whyRefusal);
-    else normalized2.failure = {
-      ...failed2,
-      ...cause ? { cause } : {},
-      why: plain4(failed2.why, "The work couldn't be completed."),
-      tried: [...new Set(failed2.tried.flatMap((text4) => {
-        const r = refusal2(text4);
-        if (r) {
-          addRefusal(r);
-          return [];
-        }
-        return [plain4(text4, "Tried another way, without a usable result.")];
-      }))]
-    };
-  }
-  return normalized2;
-}
-
-// src/core/card-facts.ts
+init_normalize_report();
 init_effects();
 var FIXED = [/It needs the repo https?:/i, /no decoder|encoded binary|base64/i];
 var PERMANENT = /^Couldn't open .*?: (?:no access|too large to open|too much content to open|not a Word, PowerPoint or Excel file)/i;
@@ -60486,6 +61197,7 @@ function cardContext(wf, job, context2 = []) {
 }
 
 // src/web/react-projection.ts
+init_normalize_report();
 init_autosend();
 init_intake();
 init_page_approval();
@@ -60648,6 +61360,7 @@ function reconsiderSuggestion(store2, id) {
 init_vote_claims();
 init_format();
 init_place();
+init_left_words();
 init_review_gate();
 init_offrecord();
 
@@ -60848,8 +61561,8 @@ function reactProjection(store2, query = "", visit2, opts = {}) {
   }
   function person2(code, who2) {
     const id = `person:${hashOf(byCode.get(code)?.asker?.id ?? code)}`;
-    const shown2 = byCode.get(code)?.startedBy === "owner" ? who("You") : who2;
-    entities.people[id] = { id, ...shown2, first: personName(shown2.name).split(/\s+/)[0] || shown2.name };
+    const shown3 = byCode.get(code)?.startedBy === "owner" ? who("You") : who2;
+    entities.people[id] = { id, ...shown3, first: personName(shown3.name).split(/\s+/)[0] || shown3.name };
     return id;
   }
   function sources(itemId, prefix, rows) {
@@ -60905,6 +61618,24 @@ function reactProjection(store2, query = "", visit2, opts = {}) {
     return w ? w.chat.group ? placeOf(store2, w.chat, w.asker)?.sentence ?? w.chat.name : `${(w.asker?.name ?? "").split(/\s+/)[0]} \xB7 1:1` : void 0;
   };
   const whereWords = (home, where) => !where ? void 0 : !isCode2(where) ? where : where === home ? "this chat" : chatWords(where);
+  const seenSince = since2 ?? visit2?.fallbackSince;
+  const leftLinesOf = (wf) => [...openLeft(wf), ...(wf.left ?? []).filter((line3) => line3.cleared?.why === "seen-done" && line3.cleared.seen && !!seenSince && line3.cleared.at > seenSince)].map((line3) => {
+    const day3 = shortDay(line3.source.at), href = safeLink(line3.source.href);
+    const button = line3.type !== "refusal" ? void 0 : line3.kind === "other-pr" && line3.reply && safeLink(line3.reply.href) ? { kind: "copy-reply", text: pageText(line3.reply.text), href: safeLink(line3.reply.href) } : line3.kind === "setting-off" && line3.setting ? { kind: "settings", key: line3.setting } : ["pr-lifecycle", "deploy"].includes(line3.kind) && safeLink(line3.pr?.href) ? { kind: "open-pr", href: safeLink(line3.pr.href) } : !line3.cleared && line3.kind === "incomplete" ? { kind: "action", actionId: leftVerb(wf.code, wf, line3.id, "left-ask-again") } : !line3.cleared && line3.kind === "old-invite" ? { kind: "action", actionId: leftVerb(wf.code, wf, line3.id, "left-draft-invite") } : void 0;
+    const chat2 = wf.chat.group ? placeOf(store2, wf.chat, wf.asker)?.sentence ?? wf.chat.name : void 0;
+    const seen = line3.cleared?.seen;
+    return {
+      id: line3.id,
+      type: line3.type,
+      text: pageText(leftWords(line3)),
+      ...line3.action.quote && line3.action.verb !== "promise" ? { quote: { text: pageText(line3.action.quote), by: line3.action.quoteBy ?? "asker" } } : {},
+      source: { text: pageText([leftSourceWords(line3.source, wf.asker?.name?.split(/\s+/)[0], chat2), day3].filter(Boolean).join(" \xB7 ")), ...href ? { href } : {} },
+      ...seen ? { seen: { pr: seen.pr } } : {
+        ...line3.type === "refusal" && line3.why?.trim() ? { why: pageText(line3.why).replace(/[.\s]+$/, "") } : {},
+        ...button ? { button } : {}
+      }
+    };
+  });
   const plainText = (text4) => text4.replace(/\s*\(([^()]*?),\s*([A-Z]\d{1,5})\)/g, (all, inner, code) => isCode2(code) ? ` \xB7 ${inner}` : all).replace(/\s*\(([A-Z]\d{1,5})\)/g, (all, code) => isCode2(code) ? "" : all).replace(/\b(?:part|job|sent|owner|completion|row):[^\s,;)]+/g, "").replace(/\b([A-Z]\d{1,5})(:\s|\b)/g, (all, code, tail) => isCode2(code) ? tail.trim() ? "" : "" : all).replace(/\s{2,}/g, " ").replace(/\s+([,.;:])/g, "$1").trim();
   const escape4 = (n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const ownerFull = base2.owner?.trim(), ownerFirst = ownerFull?.split(/\s+/)[0];
@@ -60925,21 +61656,29 @@ function reactProjection(store2, query = "", visit2, opts = {}) {
     const words4 = plainText(asked3.replace(/\b\d{4}-\d{2}-\d{2}(?:T[\d:.]+Z?)?\b/g, (day3) => shortDay(day3)));
     return words4 ? `Earlier${m ? ` \xB7 ${shortDay(m[1])}` : ""}: ${words4}` : void 0;
   };
-  function markTodos(code, todos, kind = "todo-done", prefix = code) {
-    const expect = pageDigest(todos.map((todo) => [todo.id, todo.text, todo.at]));
+  function markTodos(code, wf, kind = "todo-done", prefix = code) {
+    const ids = [...(wf.kept ?? []).filter((todo) => !todo.done).map((todo) => todo.id), ...openLeft(wf).map((line3) => line3.id)], expect = leftRev(wf);
     return offer(
       code,
       expect,
       kind,
-      kind === "todo-row-done" ? "Mark done" : todos.length === 1 ? "Mark to-do done" : `Mark ${todos.length} to-dos done`,
+      kind === "todo-row-done" ? "Mark done" : ids.length === 1 ? "Mark to-do done" : `Mark ${ids.length} to-dos done`,
       () => ({ code, verb: "close" }),
-      { staleness: "exact", expect, todoIds: todos.map((todo) => todo.id) },
+      { staleness: "exact", expect, todoIds: ids },
       prefix
     );
   }
+  function leftVerb(code, wf, lineId, verb) {
+    const expect = leftRev(wf);
+    return offer(code, expect, verb, verb === "left-ask-again" ? "Ask Delegate again" : "Draft the invite again", () => ({ code, verb, text: lineId }), {
+      staleness: "exact",
+      expect,
+      meaning: verb === "left-ask-again" ? `${NAME} proposes it again for your OK. Nothing is sent or changed until you approve.` : `${NAME} drafts the invite again for your OK. Nothing is sent until you approve.`
+    }, `${code}/${lineId}`);
+  }
   function closeWork2(code, kind, prefix = code, label2 = "Close") {
-    const rev = entities.items[code].rev;
-    const blocked = byCode.get(code)?.kept?.some((todo) => !todo.done);
+    const rev = entities.items[code].rev, wf = byCode.get(code);
+    const blocked = !!wf && (wf.kept?.some((todo) => !todo.done) || openLeft(wf).length > 0);
     const reason = "Open the item and tick what's left for you first, then close this work.";
     return offer(code, rev, kind, label2, () => {
       if (blocked) throw new IntentError(409, reason);
@@ -61018,7 +61757,6 @@ function reactProjection(store2, query = "", visit2, opts = {}) {
     }))];
     const todoIds = (wf.kept ?? []).filter((todo) => !todo.done).map((todo) => {
       const key = `${id}/todo/${todo.id}`;
-      const [what, why3] = todo.text.split(/^\s*Not made for you:\s*|\.\s*Not made for you:\s*/);
       const teams = wf.sent && wf.sent.at === todo.at && wf.chat.id && (!wf.chat.test || teamsChat(wf.chat.id)) ? safeLink(messageLink(wf.chat.id, wf.sent.msgId)) : void 0;
       entities.todos[key] = {
         ...todo,
@@ -61026,7 +61764,6 @@ function reactProjection(store2, query = "", visit2, opts = {}) {
         itemId: id,
         code: id,
         done: false,
-        ...why3 ? { text: `${pageText(what.trim() ? what : why3).replace(/[.\s]+$/, "").replace(/^./, (c2) => c2.toUpperCase())}.`, why: pageText(why3).replace(/[.\s]+$/, "") } : {},
         from: { at: todo.at, ...wf.asker?.name ? { who: wf.asker.name.split(/\s+/)[0] } : {}, ...wf.chat.group && wf.chat.name ? { chat: placeOf(store2, wf.chat, wf.asker)?.sentence ?? wf.chat.name } : {}, ...teams ? { teams } : {} }
       };
       return key;
@@ -61228,8 +61965,8 @@ function reactProjection(store2, query = "", visit2, opts = {}) {
       if (checkBack.endsAt) actionIds.push(offer(id, rev, "extend-watch", "Extend 7 days", () => ({ code: id, verb: "extend" })));
       actionIds.push(offer(id, rev, "stop-watch", "Stop", () => ({ code: id, verb: "unwatch" }), { meaning: "Stops only this check-back. Work and to-dos stay open." }));
     }
-    if (todoIds.length) {
-      actionIds.push(markTodos(id, wf.kept.filter((todo) => !todo.done)));
+    if (todoIds.length || openLeft(wf).length) {
+      actionIds.push(markTodos(id, wf));
     }
     const replyChanged = wf.state === "needs_human" && wf.status === PAGE_REPLY_CHANGED;
     const notSent = !replyChanged && wf.state === "needs_human" && wf.statusReason?.kind !== "vote-claim" && (!!draft2 && /^(?:Not sent: |Not sure it was sent)/.test(wf.status) || /^Could not start: /.test(wf.status));
@@ -61276,17 +62013,10 @@ function reactProjection(store2, query = "", visit2, opts = {}) {
         .../* @__PURE__ */ ((text4) => text4 ? { previous: text4 } : {})(stored.workflows.find((w) => w.id === wf.id)?.draft?.text)
       } } : {},
       prLabel,
-      // #50 + refused[] (PE 01:00): to-dos he keeps stay in block 3; a change Delegate won't make (normalizeReport's refused[], from
-      // the to-dos and the report's facts) and a comment it couldn't prepare are "Left for you" lines, each with its reason.
-      ...((lines) => ({ todos: lines.todos, ...lines.left.length ? { leftLines: lines.left } : {} }))((() => {
-        const raw = c.todos ?? [], PREPARE = /^Couldn't prepare (comment \d+|change \d+|question for the author)(?: \(option \d+\))?:\s*(.+)$/;
-        const normal2 = normalizeReport({ todos: raw.filter((t2) => !PREPARE.test(t2)), context: c.context ?? [], intent: wf.intent });
-        const left = [
-          ...normal2.refused.map((r) => ({ text: `${pageText(r.what).replace(/[.\s]+$/, "")}.`, why: pageText(r.reason).replace(/[.\s]+$/, "") })),
-          ...raw.flatMap((t2) => ((m) => m ? [{ text: `Couldn't prepare ${m[1]}.`, why: pageText(m[2]).replace(/[.\s]+$/, "") }] : [])(PREPARE.exec(t2)))
-        ];
-        return { todos: normal2.todos, left };
-      })()),
+      // #50 + the Left-for-you contract (0.2.46): to-dos he keeps stay in block 3; what Delegate won't make or couldn't prepare is a
+      // wf.left line (HOST's merge), worded here from its fields (rule 2) with its source, Why? and one kind button. No copy parsing (rule 1).
+      todos: normalizeReport({ todos: c.todos ?? [], context: c.context ?? [], intent: wf.intent }).todos,
+      ...((lines) => lines.length ? { leftLines: lines } : {})(leftLinesOf(wf)),
       // #50: SEND's repaired comments (its exact status); the card says so above them and offers the post on this revision.
       ...wf.status === REPAIRED ? { repaired: true } : {},
       // R10b (PM §2, joint C2): what the review posted, H→M→L (the chip carries the severity, not the "[High]" bracket), five then
@@ -61449,7 +62179,7 @@ function reactProjection(store2, query = "", visit2, opts = {}) {
       const workflow = byCode.get(row.act), askedAt = asksAt.get(row.act);
       const waitEntry = row.act.startsWith("W") ? base2.waiting.find((w) => w.code === row.act) : void 0;
       const waitLine = waitEntry && `Waiting on ${waitEntry.to.split(/,\s*/).map((name) => firstOf(name)).filter(Boolean).join(", ") || "them"} since ${shortDay(waitEntry.at)} \xB7 asked: "${waitEntry.text.replace(/\s+/g, " ").trim().slice(0, 80)}${waitEntry.text.length > 80 ? "\u2026" : ""}"`;
-      const headline = (failedJobDirections(workflow) && row.kind === "question" ? forPage(row.headline) : pageText(reviewRows.get(row.act) ?? waitLine ?? (row.kind === "todo" ? todoHeadline(byCode.get(row.act).kept.find((todo) => !todo.done).text) : row.headline.replace(/: nudge, wait, or close\?$/, ": follow up, wait, or close?")))) || "Review this item";
+      const headline = (failedJobDirections(workflow) && row.kind === "question" ? forPage(row.headline) : pageText(reviewRows.get(row.act) ?? waitLine ?? (row.kind === "todo" ? todoHeadline(firstLeft(byCode.get(row.act)).text) : row.headline.replace(/: nudge, wait, or close\?$/, ": follow up, wait, or close?")))) || "Review this item";
       const nextWhat = pageText(row.next?.what).replace(/\s+/g, " ").trim(), owner2 = row.next?.owner;
       const nextText = !owner2 ? void 0 : owner2.kind === "others" ? pageText(owner2.text).replace(/\s+/g, " ").trim() : owner2.kind === "you" ? nextWhat ? `You: ${nextWhat}` : "You" : owner2.kind === "nobody" ? nextWhat || `nobody has started this; Do it now hands it to ${NAME}` : !nextWhat ? NAME : /^(after|back)\b/.test(nextWhat) ? nextWhat : `${NAME} ${nextWhat}`;
       entities.placements[row.code] = {
@@ -61654,7 +62384,7 @@ function reactProjection(store2, query = "", visit2, opts = {}) {
       expect: pageDigest([chatId, level]),
       staleness: "exact",
       needsConfirm: true,
-      meaning: `Stop treating ${level.name} as ${level.level === "off" ? "off the record" : level.level === "shareable" ? "shareable within your org" : "private"}? Future learning and replies use the normal privacy checks.${level.level === "off" ? " Facts set aside from it come back to your knowledge." : " Existing stored facts are not changed."}`
+      meaning: `Stop treating ${placeOf(store2, { id: chatId, name: level.name })?.sentence ?? level.name} as ${level.level === "off" ? "off the record" : level.level === "shareable" ? "shareable within your org" : "private"}? Future learning and replies use the normal privacy checks.${level.level === "off" ? " Facts set aside from it come back to your knowledge." : " Existing stored facts are not changed."}`
     });
     settingsActions[key] = [actionId];
   }
@@ -61840,7 +62570,7 @@ function reactProjection(store2, query = "", visit2, opts = {}) {
       next: row.next && pageText(row.next),
       actionIds: [
         // Open to-dos are ticked on the item's card ("Left for you", the same section as New; PM 20:15), never from this row.
-        ...entities.items[row.code].todoIds.length ? [] : [closeWork2(row.code, "classic-close")],
+        ...entities.items[row.code].todoIds.length || entities.items[row.code].leftLines?.some((line3) => !line3.seen) ? [] : [closeWork2(row.code, "classic-close")],
         ...row.every ? [offer(row.code, row.rev, "classic-interval", "Save interval", (input2) => ({ code: row.code, verb: "every", text: requiredText(input2) }), { input: "interval" })] : [],
         ...row.endsAt ? [offer(row.code, row.rev, "classic-extend", "Extend 7 days", () => ({ code: row.code, verb: "extend" }))] : [],
         ...entities.actions[`${row.code}/stop-watch`] ? [`${row.code}/stop-watch`] : []
@@ -61922,7 +62652,8 @@ function resolvePageIntent(store2, intent) {
   const workflow = store2.byCode(intent.item), automation2 = workflow ? void 0 : store2.automation(intent.item), proposal = workflow || automation2 ? void 0 : store2.proposal(intent.item);
   let page2;
   if (binding.action.staleness === "exact") {
-    const expect = workflow ? workflowApprovalRev(workflow) : automation2 ? automationApprovalRev(automation2) : proposal ? proposalApprovalRev(proposal) : void 0;
+    const lineBound = !!workflow && (!!binding.action.todoIds?.length || parsed.verb === "left-ask-again" || parsed.verb === "left-draft-invite");
+    const expect = lineBound ? leftRev(workflow) : workflow ? workflowApprovalRev(workflow) : automation2 ? automationApprovalRev(automation2) : proposal ? proposalApprovalRev(proposal) : void 0;
     if (expect) {
       const todoIds = binding.action.todoIds && intent.input?.picks?.length ? [...new Set(intent.input.picks)].map((n) => binding.action.todoIds[n - 1]) : binding.action.todoIds;
       if (todoIds?.some((todo) => !todo)) throw new IntentError(422, "Tick a to-do from the list.");
@@ -62237,7 +62968,7 @@ async function serveInbox(get, port = 0, token = randomBytes3(16).toString("hex"
           const store2 = get(), start = performance.now(), snapshot2 = readScope(() => reactProjection(store2, query, reactVisit ?? { since: store2.lastViewed(), fallbackSince: initialSince }).snapshot);
           const body = { ...snapshot2, version: versionFor(store2) };
           const { now: _now, fetchedAt: _fetchedAt, ...content } = body;
-          const etag = `"${createHash10("sha256").update(JSON.stringify(content)).digest("hex")}"`;
+          const etag = `"${createHash13("sha256").update(JSON.stringify(content)).digest("hex")}"`;
           const extra = { etag, "server-timing": `projection;dur=${(performance.now() - start).toFixed(2)}` };
           const priorTag = req.headers["if-none-match"], prior = typeof priorTag === "string" ? reactPages.get(priorTag) : void 0;
           reactPages.delete(etag);
@@ -62665,11 +63396,22 @@ async function tickInPhases(store2, deps = {}) {
   }
   try {
     scanCodeFolders(Date.now(), true);
-    for (const wf of store2.workflows().filter((w) => w.todos?.length)) {
-      const todos = visibleCloneTodos(cfg, wf, wf.job ? store2.job(wf.job) : void 0, store2.machine);
-      if (todos?.length !== wf.todos?.length) {
-        wf.todos = todos;
-        store2.save(wf);
+    for (const wf of store2.workflows()) {
+      if (wf.todos?.length) {
+        const todos = visibleCloneTodos(cfg, wf, wf.job ? store2.job(wf.job) : void 0, store2.machine);
+        if (todos?.length !== wf.todos?.length) {
+          wf.todos = todos;
+          store2.save(wf);
+        }
+      }
+      if (needsLeftPrune(wf)) {
+        const commit = recordCommit(wf, () => store2.workflow(wf.id), store2.save.bind(store2));
+        commit.refresh();
+        if (needsLeftPrune(wf)) {
+          const { dropped } = pruneLeft(wf);
+          commit(false);
+          if (dropped) store2.log({ event: "left-cleared-cap", code: wf.code, dropped });
+        }
       }
     }
     const cursors = store2.cursors();
@@ -62790,6 +63532,7 @@ async function tickInPhases(store2, deps = {}) {
       await describeDeploys(store2, probe).catch((e) => store2.log({ event: "probe-failed", error: String(e).slice(0, 300) }));
       await describeTargets(store2, probe).catch((e) => store2.log({ event: "probe-failed", error: String(e).slice(0, 300) }));
       await probePRs(store2, cfg, probe, Date.now(), kicked).catch((e) => store2.log({ event: "probe-failed", error: String(e).slice(0, 300) }));
+      await probeLeft(store2, cfg, probe, Date.now(), kicked).catch((e) => store2.log({ event: "probe-failed", error: String(e).slice(0, 300) }));
       const due3 = store2.workflows().filter((w) => due(w, Date.now(), store2));
       for (const w of due3) {
         askWhatNext(w, store2);
@@ -63197,7 +63940,7 @@ init_state();
 init_fs();
 init_scheduler();
 import { execFileSync as execFileSync5, spawn as spawn7, spawnSync as spawnSync5 } from "node:child_process";
-import { createHash as createHash11 } from "node:crypto";
+import { createHash as createHash14 } from "node:crypto";
 import { cpSync as cpSync2, existsSync as existsSync32, lstatSync as lstatSync3, mkdirSync as mkdirSync14, readFileSync as readFileSync26, readlinkSync, rmSync as rmSync11, symlinkSync, writeFileSync as writeFileSync17 } from "node:fs";
 import { homedir as homedir12 } from "node:os";
 import { basename as basename7, join as join42 } from "node:path";
@@ -63432,7 +64175,7 @@ function uninstall2(purge) {
   out.push(root ? `Your data is still in ${root}. Delete that folder yourself if you want it gone.` : "Done.");
   return out;
 }
-var fileHash = (f) => createHash11("sha256").update(readFileSync26(f, "utf8").replace(/\r\n/g, "\n")).digest("hex");
+var fileHash = (f) => createHash14("sha256").update(readFileSync26(f, "utf8").replace(/\r\n/g, "\n")).digest("hex");
 var pluginListed = (out = spawnSync5("copilot", ["plugin", "list"], { encoding: "utf8", windowsHide: true }).stdout ?? "") => /^\s*\W?\s*delegate(@\S+)?\s+\(v/m.test(out);
 var version3 = () => VERSION;
 

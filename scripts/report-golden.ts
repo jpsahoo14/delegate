@@ -22,11 +22,11 @@ const rows: Golden[] = [
 	{ id: 'recurring-watch-keeps-builds', stored: { key: 'pr:acme/aurora/1234', every: 10, context: [{ label: 'Build', text: 'The build is running.', tone: 'warn' }] }, expected: { ...empty(), context: [{ label: 'Build', text: 'The build is running.', tone: 'warn' }] } },
 	{ id: 'non-review-ci-kept', stored: { intent: 'validate', context: [{ label: 'CI', text: 'Validation is complete.' }] }, expected: { ...empty(), context: [{ label: 'CI', text: 'Validation is complete.' }] } },
 	{ id: 'non-review-check-status-kept', stored: { intent: 'validate', context: [{ label: 'Checks', text: 'Validation is running.', tone: 'warn' }] }, expected: { ...empty(), context: [{ label: 'Checks', text: 'Validation is running.', tone: 'warn' }] } },
-	{ id: 'legacy-refusal-todo', stored: { todos: ['Post the comment on PR 1234. Not made for you: PR 1234 is not this item\'s PR (1235)', 'Send Kim the notes'] }, expected: { ...empty(), todos: ['Send Kim the notes'], refused: [{ what: 'Post the comment on PR 1234', target: 'PR 1234', reason: "This is about PR 1234, but the item is about PR 1235, so Delegate won't change PR 1234 from here." }] } },
-	{ id: 'refusal-context-not-warning', stored: { intent: 'pr_review', context: [{ label: 'Warning', text: 'Post the comment on PR 1234. Not made for you: You have not allowed this change.', tone: 'warn' }] }, expected: { ...empty(), refused: [{ what: 'Post the comment on PR 1234', target: 'PR 1234', reason: 'You have not allowed this change.' }] } },
-	{ id: 'refusal-label-not-warning', stored: { context: [{ label: 'Refused change', text: 'You have not allowed this change.', tone: 'warn' }] }, expected: { ...empty(), refused: [{ what: 'Make the change yourself', target: '', reason: 'You have not allowed this change.' }] } },
-	{ id: 'refusal-error-is-not-failure', stored: { state: 'failed', error: 'Post the comment. Not made for you: You have not allowed this change.' }, expected: { ...empty(), refused: [{ what: 'Post the comment', target: '', reason: 'You have not allowed this change.' }] } },
-	{ id: 'refusal-failure-is-not-warning', stored: { failure: { kind: 'other', why: 'Post the comment. Not made for you: You have not allowed this change.', tried: [] } }, expected: { ...empty(), refused: [{ what: 'Post the comment', target: '', reason: 'You have not allowed this change.' }] } },
+	{ id: 'legacy-refusal-todo', stored: { todos: ['Post the comment on PR 1234. Not made for you: PR 1234 is not this item\'s PR (1235)', 'Send Kim the notes'] }, expected: { ...empty(), todos: ['Post the comment on PR 1234. Not made for you: PR 1234 is not this item\'s PR (1235)', 'Send Kim the notes'] } },
+	{ id: 'refusal-context-not-warning', stored: { intent: 'pr_review', context: [{ label: 'Warning', text: 'Post the comment on PR 1234. Not made for you: You have not allowed this change.', tone: 'warn' }] }, expected: { ...empty(), context: [{ label: 'Warning', text: 'Post the comment on PR 1234. Not made for you: You have not allowed this change.', tone: 'info' }], findings: [{ label: 'Warning', text: 'Post the comment on PR 1234. Not made for you: You have not allowed this change.', tone: 'info' }] } },
+	{ id: 'refusal-label-not-warning', stored: { context: [{ label: 'Refused change', text: 'You have not allowed this change.', tone: 'warn' }] }, expected: { ...empty(), context: [{ label: 'Refused change', text: 'You have not allowed this change.', tone: 'warn' }] } },
+	{ id: 'refusal-error-is-not-failure', stored: { state: 'failed', error: 'Post the comment. Not made for you: You have not allowed this change.' }, expected: { ...empty(), failure: { kind: 'other', why: 'Post the comment. Not made for you: You have not allowed this change.', tried: [] } } },
+	{ id: 'refusal-failure-is-not-warning', stored: { failure: { kind: 'other', why: 'Post the comment. Not made for you: You have not allowed this change.', tried: [] } }, expected: { ...empty(), failure: { kind: 'other', why: 'Post the comment. Not made for you: You have not allowed this change.', tried: [] } } },
 	{ id: 'setup', stored: { runFailed: { kind: 'setup', at: '2026-10-24T08:00:00Z', why: 'The selected AI model is unavailable.' } }, expected: { ...empty(), failure: { kind: 'setup', at: '2026-10-24T08:00:00Z', why: 'The selected AI model is unavailable.', tried: [] } } },
 	{ id: 'stopped', stored: { failure: { kind: 'stopped', why: 'The work stopped before it finished.', tried: [] } }, expected: { ...empty(), failure: { kind: 'stopped', why: 'The work stopped before it finished.', tried: [], cause: { step: 'run-stopped' } } } },
 	{ id: 'failed-job-no-error', stored: { state: 'failed', updatedAt: '2026-10-24T08:00:00Z' }, expected: { ...empty(), failure: { kind: 'other', at: '2026-10-24T08:00:00Z', why: 'The work stopped before it finished.', tried: [] } } },
@@ -100,16 +100,16 @@ rows.push({
 	id: 'retry-history-plain-deduplicated', stored: { state: 'failed', retry: { last: { kind: 'tool', why: 'Error: connection timed out', tried: ['ado-get_file: route timed out'] }, tried: ['ado-get_file: route timed out', 'Opened the shared document.'] } },
 	expected: { ...empty(), failure: { kind: 'tool', why: "The source couldn't be reached.", tried: ["The source couldn't be reached.", 'Opened the shared document.'] } },
 })
-for (const [reason, expected] of [
-	['ado-repo_pull_request_thread_write is not one of the changes you allow', "You haven't allowed Delegate to do this. Settings > Changes Delegate may make."],
-	['Delegate never completes, merges, abandons, bypasses, or deletes', 'Delegate never merges, completes, abandons or deletes. Do it in Azure DevOps.'],
-	['Delegate may only add you as a reviewer, never remove anyone', 'Delegate can only add you as a reviewer.'],
-	['it names no exact call', "Delegate's proposal was incomplete, so it won't make it. Ask again from the card if you want it."],
-	['this invite was proposed in an older form', 'This invite was made by an older version. Answer the question to get a new one.'],
-	['a pipeline is not on the allowed deploy list', 'Delegate only deploys to the places you allow, one at a time.'],
+for (const reason of [
+	'ado-repo_pull_request_thread_write is not one of the changes you allow',
+	'Delegate never completes, merges, abandons, bypasses, or deletes',
+	'Delegate may only add you as a reviewer, never remove anyone',
+	'it names no exact call',
+	'this invite was proposed in an older form',
+	'a pipeline is not on the allowed deploy list',
 ]) rows.push({
 	id: `plain-refusal-${rows.length}`, stored: { todos: [`Make the change. Not made for you: ${reason}`] },
-	expected: { ...empty(), refused: [{ what: 'Make the change', target: '', reason: expected }] },
+	expected: { ...empty(), todos: [reason.startsWith('ado-') ? 'Review this step yourself.' : `Make the change. Not made for you: ${reason}`] },
 })
 
 const root = mkdtempSync(join(tmpdir(), 'delegate-report-golden-'))
@@ -150,7 +150,7 @@ try {
 	const beforeJob = readFileSync(jobPath, 'utf8'), beforeWorkflow = readFileSync(workflowPath, 'utf8')
 	const job: Job = JSON.parse(beforeJob), workflow: StoredReport = JSON.parse(beforeWorkflow)
 	const result = normalizeReport({ ...job, intent: workflow.intent, context: workflow.context, todos: workflow.todos })
-	assert.deepEqual(result, { ...empty(), context: [finding], findings: [finding], todos: ['Send Kim the notes'], refused: [{ what: 'Post the comment on PR 1234', target: 'PR 1234', reason: 'You have not allowed this change.' }] })
+	assert.deepEqual(result, { ...empty(), context: [finding], findings: [finding], todos: ['Post the comment on PR 1234. Not made for you: You have not allowed this change.', 'Send Kim the notes'] })
 	assert.equal(readFileSync(jobPath, 'utf8'), beforeJob)
 	assert.equal(readFileSync(workflowPath, 'utf8'), beforeWorkflow)
 	console.log('PASS inert fictional owner-copy-shaped job/workflow: old review facts normalized on read, no repair or write')
@@ -166,9 +166,9 @@ try {
 		assert.equal(JSON.stringify(row.stored), before, `${row.id}: no mutation`)
 		assert.deepEqual(normalizeReport({ ...row.stored, ...actual }), actual, `${row.id}: repeat normalization`)
 		for (const fact of [...actual.context, ...actual.findings]) for (const value of [fact.label, fact.text]) {
-			assert.doesNotMatch(value, /job:|^\s*Error:|\b(?:delegate_worker|ado|teams|sharepoint)[-_][\w-]+|Not made for you/i, row.id)
+			assert.doesNotMatch(value, /job:|^\s*Error:|\b(?:delegate_worker|ado|teams|sharepoint)[-_][\w-]+/i, row.id)
 		}
-		assert.doesNotMatch(JSON.stringify([actual.failure, actual.todos, actual.refused]), /[0-9a-f]{8,}|job:|Error:|Not made for you/, row.id)
+		assert.doesNotMatch(JSON.stringify([actual.failure, actual.todos, actual.refused]), /[0-9a-f]{8,}|job:|Error:/, row.id)
 	}
 	console.log(`REPORT GOLDEN: ${rows.length} fictional cases passed; Report, Job and Job.result shapes accepted; no live root, model, runner or card integration.`)
 } finally {

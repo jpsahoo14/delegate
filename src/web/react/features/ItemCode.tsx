@@ -11,7 +11,7 @@ export const CODE = /^[A-Z]\d+$/i
 export const itemCodeHover = (code: string, classic = false) => /^A\d+$/i.test(code) ? `Item code: say "look at ${code}"${classic ? ` to ${NAME}.` : ', or type it in Find.'}` : codeHover(code)
 
 // I1 (PE 02:09): true only when the code is really on the clipboard.
-async function copyText(text: string): Promise<boolean> {
+export async function copyText(text: string): Promise<boolean> {
 	try { await navigator.clipboard.writeText(text); return true } catch { /* falls back below */ }
 	const area = document.createElement('textarea')
 	area.value = text; area.setAttribute('readonly', ''); area.style.position = 'fixed'; area.style.opacity = '0'

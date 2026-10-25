@@ -12,7 +12,7 @@ import { when, time } from '../domain/time.ts'
 import { Icon } from '../components/ui/icon.tsx'
 import { Field, Sources } from './CardFields.tsx'
 import { SentTime } from './SentTime.tsx'
-import { ItemCode } from './ItemCode.tsx'
+import { copyText, ItemCode } from './ItemCode.tsx'
 import { useLiveVoteCheck } from './vote-check.ts'
 import './card.css'
 import { useScreenNavigation } from '../classic/navigation.tsx'
@@ -44,6 +44,20 @@ function withImages(text: string, teams?: string) {
 	return parts.flatMap((part, n) => n === 0 ? [part] : [teams
 		? <a key={n} className="chip card-image" href={teams} target="_blank" rel="noopener noreferrer" title="Open this message in Teams, in a new tab.">{IMAGE_TOKEN} · Open in Teams <Icon name="ext" /></a>
 		: <span key={n} className="chip card-image">{IMAGE_TOKEN}</span>, part])
+}
+// I34 (Designer, designer-automated-marker.md §3): what the reply box's footer means, for screen readers ("Teams will add: …") while it
+// shows, and the muted line once he has edited; a change of state is announced once, politely, never per keystroke or on first render.
+function MarkerState({ id, marker, edited }: { id: string; marker: string; edited: boolean }) {
+	const [said, setSaid] = useState(''), seen = useRef(edited)
+	useEffect(() => {
+		if (seen.current === edited) return
+		seen.current = edited
+		setSaid(edited ? `Marker removed: your words are sent without “${marker}”.` : `Marker back: unchanged draft is sent with “${marker}”.`)
+	}, [edited, marker])
+	return <>
+		{edited ? <p id={id} className="muted card-marker">Your words: sent without &ldquo;{marker}&rdquo;.</p> : <span id={id} className="sr-only">Teams will add: {marker}</span>}
+		<span className="sr-only" aria-live="polite">{said}</span>
+	</>
 }
 export function MessageBubble({ text: raw, teams, open, onToggle }: { text: string; teams?: string; open: boolean; onToggle: (open: boolean) => void }) {
 	// L7c: a run of blank lines reads as one before the clamp, so a short message isn't cut to two visible lines.
@@ -110,13 +124,13 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 	const fold = (key: string, open: boolean) => { if (ui.folds?.[key] !== open) edit({ folds: { ...ui.folds, [key]: open } }) }
 	const redraftingNow = item.mode === 'working' && item.working?.kind === 'redraft'
 	const editable = !!draft && actions.some(action => action.kind === 'send-edit')
-	// L7b: the configured marker is a fixed, muted suffix under the box ("Teams will show: …"), not text he can delete or move. The box
-	// holds the reply without it, and Send your version adds it back once, as the box with the marker used to send.
+	// I34 (PE 05:30, decision 45): the marker means "Delegate wrote this and nobody changed it". The server decides it (SEND's markerFor);
+	// the page only previews it, from the projection's own marker string. The box holds the reply without it, and his words are sent as he
+	// wrote them, never signed here. The footer shows only while the box still equals the draft (trailing whitespace aside).
 	const marker = draft?.marker && draft.sendText?.endsWith(draft.marker) ? draft.marker : undefined
 	const body = marker ? draft!.sendText!.slice(0, -marker.length).trimEnd() : draft?.sendText ?? draft?.text ?? ''
-	const signed = (text: string) => marker && text.trim() && !text.trimEnd().endsWith(marker) ? `${text.trimEnd()}\n\n${marker}` : text
 	const replyText = ui.editText ?? body
-	const input: Intent['input'] = primary?.kind === 'send-edit' ? { text: signed(replyText), excluded: ui.excluded } :
+	const input: Intent['input'] = primary?.kind === 'send-edit' ? { text: replyText, excluded: ui.excluded } :
 		primary?.kind === 'pick' ? { picks: ui.picks ?? item.picked ?? [] } :
 			primary?.input === 'text' ? { text: ui.answer ?? '' } : { excluded: ui.excluded }
 	const invalid = primary?.input === 'text' && primary.kind !== 'send-edit' && !ui.answer?.trim() || primary?.kind === 'pick' && !input.picks?.length ||
@@ -163,7 +177,10 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 
 	// A run that gave no result (queue-new #11): the reason and its time, never a question; Try again is the primary, or write it yourself.
 	const writeOwn = actions.find(action => action.kind === 'write-own')
-	const writeBox = writeOwn && !readOnly && ui.editing && <><Field code={code} rev={item.rev} field="answer" label={`Your reply to ${first}, ${replyWhere}`} value={ui.answer ?? ''} edit={edit} rows={4} placeholder={`Write your reply to ${first}`} />
+	const writeBox = writeOwn && !readOnly && ui.editing && <><Field code={code} rev={item.rev} field="answer" label={`Your reply to ${first}, ${replyWhere}`} value={ui.answer ?? ''} edit={edit} rows={4} placeholder={`Write your reply to ${first}`}
+		describedBy={marker && ui.answer?.trim() ? `${code}-${item.rev}-own-marker` : undefined} />
+		{/* I34: words he wrote himself never carry the marker; once he has typed, the line says why there is none. */}
+		{marker && !!ui.answer?.trim() && <p id={`${code}-${item.rev}-own-marker`} className="muted card-marker">Your words: sent without &ldquo;{marker}&rdquo;.</p>}
 		<div className="action-bar"><ActionButton action={writeOwn} label="Send your reply" input={{ text: ui.answer ?? '' }} disabled={!ui.answer?.trim()} disabledReason="Write your reply first." />
 			<Button variant="outline" onClick={() => edit({ editing: false })}>Cancel</Button></div></>
 	const reopen = actions.find(action => action.kind === 'reopen')
@@ -285,9 +302,10 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 		{draft && boxMode !== 'answer' && <section className="card-block reply-section">
 			{editable ? <Field code={code} rev={item.rev} field="editText" rows={Math.min(14, Math.max(3, Math.ceil(replyText.length / 70) + replyText.split('\n').length))}
 				label={draft.holding ? `Holding reply to ${first}, ${replyWhere} · says you are on it; not the answer yet` : `Your reply to ${first}, ${replyWhere}`}
-				value={replyText} edit={edit} patch={value => ({ editText: value, editing: value !== body })} mark={ui.editing ? live.claim?.quote : item.voteGap?.quote} />
+				value={replyText} edit={edit} patch={value => ({ editText: value, editing: value.trimEnd() !== body.trimEnd() })} mark={ui.editing ? live.claim?.quote : item.voteGap?.quote}
+				framed={!!marker} footer={marker && !ui.editing ? marker : undefined} describedBy={marker ? `${code}-${item.rev}-marker` : undefined} />
 				: <><h3>{draft.holding ? `Holding reply to ${first}` : `Your reply to ${first}, ${replyWhere}`}</h3><div className="draft">{marked(draft.sendText ?? draft.text, item.voteGap?.quote)}</div></>}
-			{editable && marker && <p className="muted card-marker">Teams will show: {marker}</p>}
+			{editable && marker && <MarkerState id={`${code}-${item.rev}-marker`} marker={marker} edited={!!ui.editing} />}
 			{/* L1b (joint C2): the vote-claim line is about his text, so it sits right under the editor, not in block 1. */}
 			{/* A37 (b): live while he edits; once no claim is left the line says so, muted, and Send enables (PM A R37). */}
 			<div aria-live="polite">{voteLine ? <p className="warnline card-vote-claim" role="note"><Icon name="warn" /> {voteLine}</p>
@@ -362,27 +380,31 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 		{nothingPosted && <p className="nothing-posted">{nothingPosted}</p>}
 		{noVote && <p className="no-vote">On PR {replyPr} when you send: No vote{item.prReview && !item.prReview.voteRecommended ? ' (not ready)' : ''}</p>}
 	</section>
-	// "Left for you" (#44(2), PM 18:40; designer step 7 §4): the to-dos only he can do. One tick per line, "Tick all" at 2+, and one
-	// "I've done these (N)" that marks exactly the ticked lines after a 6 s Undo; it never closes the work and sends nothing.
-	const todoAction = !readOnly && todoIds.length ? entities.actions[`${code}/todo-done`] : undefined
+	// "Left for you" (#44(2), PM 18:40; designer step 7 §4; decision 53): the to-dos only he can do, his kept to-dos then his open wf.left
+	// lines, in the order the server bound them (tick n is the n-th id). One tick per line, "Tick all" at 2+, and one "I've done these (N)"
+	// that marks exactly the ticked lines after a 6 s Undo; it never closes the work and sends nothing. An automatic done keeps the lines
+	// (PE 07:35:05Z rule 5), so they show whenever the item has them.
+	const leftLines = item.leftLines ?? [], openLines = leftLines.filter(line => !line.seen), seenLines = leftLines.filter(line => line.seen)
+	const kept = todoIds.length, tickText = (n: number) => n <= kept ? entities.todos[todoIds[n - 1]]?.text ?? '' : openLines[n - kept - 1]?.text ?? ''
+	const todoAction = !readOnly && kept + openLines.length > 0 ? entities.actions[`${code}/todo-done`] : undefined
 	const ticked = ui.ticked ?? [], marking = ui.marking
 	const doneButton = (lead: boolean) => todoAction && <Hint text={ticked.length ? "Records them here as done. Delegate doesn't do them and nothing is sent." : "Tick what you've done first"}>
 		<Button variant={lead ? 'default' : 'outline'} data-primary={lead || undefined} data-action-kind="todo-done" disabled={!ticked.length || newer || busy}
-			onClick={() => { const picks = [...ticked].sort((a, b) => a - b); markTodos(todoAction, item.rev, picks, picks.map(n => entities.todos[todoIds[n - 1]]?.text ?? ''), act) }}>
+			onClick={() => { const picks = [...ticked].sort((a, b) => a - b); markTodos(todoAction, item.rev, picks, picks.map(tickText), act) }}>
 			I've done these{ticked.length ? ` (${ticked.length})` : ''}</Button></Hint>
 	const shownTodos = todoIds.map((id, n) => ({ id, n: n + 1 })).filter(todo => !marking?.picks.includes(todo.n))
-	// #50 + refused[] (PE 01:00): before Send or approve, what Delegate won't make or couldn't prepare is his too, a line with its reason
-	// (no tick: nothing is recorded until it goes; after it, these are the kept to-dos above). A repaired item may have no draft.
-	const pendingChange = item.changeIds.some(id => ['proposed', 'approved'].includes(entities.changes[id]?.state))
-	const leftLines = draft || item.repaired || pendingChange ? item.leftLines ?? [] : []
-	const earlierTodos = (todoIds.length > 0 || marking || leftLines.length > 0) && <section className="card-block card-left-for-you" aria-label="Left for you"><h3>Left for you</h3>
-		{(todoIds.length > 0 || marking) && <p className="muted">Only you can do these. Ticking one off records it here; Delegate doesn't do it and nothing is sent.</p>}
-		{!readOnly && shownTodos.length >= 2 && <button type="button" className="link-button" onClick={() => edit({ ticked: ticked.length === shownTodos.length ? [] : shownTodos.map(todo => todo.n) })}>Tick all</button>}
+	const shownLines = openLines.map((line, j) => ({ line, n: kept + j + 1 })).filter(shown => !marking?.picks.includes(shown.n))
+	const shownCount = shownTodos.length + shownLines.length
+	const tick = (n: number) => readOnly ? undefined : { checked: ticked.includes(n), disabled: newer || busy, onChange: (on: boolean) => edit({ ticked: on ? [...ticked, n] : ticked.filter(x => x !== n) }) }
+	const earlierTodos = (kept > 0 || marking || leftLines.length > 0) && <section className="card-block card-left-for-you" aria-label="Left for you"><h3>Left for you</h3>
+		{(kept > 0 || openLines.length > 0 || marking) && <p className="muted">Only you can do these. Ticking one off records it here; Delegate doesn't do it and nothing is sent.</p>}
+		{!readOnly && shownCount >= 2 && <button type="button" className="link-button" onClick={() => edit({ ticked: ticked.length === shownCount ? [] : [...shownTodos.map(todo => todo.n), ...shownLines.map(shown => shown.n)] })}>Tick all</button>}
 		<ul className="todo-ticks">{shownTodos.map(({ id, n }) => <li key={id}>{readOnly ? entities.todos[id].text : <label><input type="checkbox" checked={ticked.includes(n)} disabled={newer || busy}
 			onChange={event => edit({ ticked: event.currentTarget.checked ? [...ticked, n] : ticked.filter(x => x !== n) })} /> {entities.todos[id].text}</label>}<TodoSource todo={entities.todos[id]} /></li>)}
+			{shownLines.map(({ line, n }) => <LeftLineRow key={line.id} line={line} tick={tick(n)} action={line.button?.kind === 'action' && !readOnly ? entities.actions[line.button.actionId] : undefined} />)}
 			{marking?.texts.map((text, n) => <li key={`done-${n}`} className="todo-done-line" role="status"><Icon name="check" /> Done: {text} · <button type="button" className="link-button" onClick={() => undoMark(code, item.rev)}>Undo</button></li>)}
-			{leftLines.map((line, n) => <li key={`left-${n}`} className="todo-refused">{line.text}<details className="todo-source todo-why"><summary>{NAME} couldn&apos;t do this · Why?</summary><p>{line.why}.</p></details></li>)}</ul>
-		{primary?.kind !== 'todo-done' && shownTodos.length > 0 && <div className="action-bar">{doneButton(false)}</div>}
+			{seenLines.map(line => <LeftLineRow key={line.id} line={line} />)}</ul>
+		{primary?.kind !== 'todo-done' && shownCount > 0 && <div className="action-bar">{doneButton(false)}</div>}
 		{todoAction && <ActionState item={todoAction.item} rev={todoAction.rev} />}</section>
 
 	// An approved batch that partly ran: one plain line above the actions says what was done and what was not, and why (queue-new #7D).
@@ -416,7 +438,7 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 		{primary?.kind === 'todo-done' && doneButton(true)}
 		{report && primary?.id !== report.id && <ActionButton primary action={report} label={`Draft my update to ${first}`} input={{ result: ui.resultKind, text: ui.report }} disabled={!ui.resultKind} disabledReason="Pick how it went first." />}
 		{/* An offered send is never hidden: when another action leads, it sits next to it (#33). */}
-		{actions.filter(action => ['approve', 'approve-again'].includes(action.kind) && action.id !== primary?.id).map(action => action.kind === 'approve' && editedAside ? <ActionButton key={editedAside.id} action={editedAside} label="Send your edited reply" input={{ text: signed(replyText), excluded: ui.excluded }} disabled={newer || !replyText.trim() || editedHeld} disabledReason={newer ? 'stale' : editedHeld ? voteReason : 'Type your reply first.'} /> : <ActionButton key={action.id} action={action} label={draft?.holding && action.kind === 'approve' && !item.changeIds.length ? 'Send holding reply' : undefined} input={{ excluded: ui.excluded }} disabled={newer || action.kind === 'approve' && !!item.voteGap} disabledReason={newer ? 'stale' : item.voteGap?.text ?? 'stale'} />)}
+		{actions.filter(action => ['approve', 'approve-again'].includes(action.kind) && action.id !== primary?.id).map(action => action.kind === 'approve' && editedAside ? <ActionButton key={editedAside.id} action={editedAside} label="Send your edited reply" input={{ text: replyText, excluded: ui.excluded }} disabled={newer || !replyText.trim() || editedHeld} disabledReason={newer ? 'stale' : editedHeld ? voteReason : 'Type your reply first.'} /> : <ActionButton key={action.id} action={action} label={draft?.holding && action.kind === 'approve' && !item.changeIds.length ? 'Send holding reply' : undefined} input={{ excluded: ui.excluded }} disabled={newer || action.kind === 'approve' && !!item.voteGap} disabledReason={newer ? 'stale' : item.voteGap?.text ?? 'stale'} />)}
 		{actions.filter(action => ['try-again', 'review-again', 'send-anyway', 'redraft', 'add-vote', 'keep-waiting'].includes(action.kind) && action.id !== primary?.id && !((item.voteGap || ui.editing) && action.kind === 'send-anyway') && !(reviewed && action.kind === 'review-again')).map(action => <ActionButton key={action.id} action={action} disabled={newer && action.staleness === 'exact'} disabledReason="stale" />)}
 		{primary?.kind !== 'write-own' && writeButton}
 		{item.mode === 'held' && actions.filter(action => action.kind === 'dismiss' && action.label === 'Skip').map(action => <ActionButton key={action.id} action={action} disabled={newer && action.staleness === 'exact'} disabledReason="stale" />)}
@@ -437,7 +459,7 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 	</div>
 	const others = actions.filter(action => action.id !== primary?.id && action.id !== report?.id && !(report && action.id === declared?.id) && !['approve', 'approve-again', 'send-edit', 'answer', 'pick', 'ask', 'later', 'dismiss', 'continue', 'todo-done', 'reply-only', 'review-again', 'try-again', 'write-own', 'send-anyway', 'redraft', 'add-vote', 'approve-pr', 'post-waiting', 'keep-waiting'].includes(action.kind) && !(item.ownReply && action.kind === 'reopen'))
 	// Every action the projection offers is drawn somewhere (engineer-card-state-devspec.md §4, invariant 4); one that isn't is marked.
-	const drawn = (kind: string) => ({ answer: !!answerBox || !!decision || both || primary?.kind === 'answer', pick: !!item.choices, 'send-edit': !!draft && editable, 'todo-done': todoIds.length > 0 } as Record<string, boolean>)[kind] ?? true
+	const drawn = (kind: string) => ({ answer: !!answerBox || !!decision || both || primary?.kind === 'answer', pick: !!item.choices, 'send-edit': !!draft && editable, 'todo-done': todoIds.length > 0 || openLines.length > 0 } as Record<string, boolean>)[kind] ?? true
 	const undrawn = readOnly ? [] : actions.filter(action => !drawn(action.kind)).map(action => action.kind)
 
 	// Block 5: Details, one collapsed line: why, sources, progress and history, changes already handled, and Ask Delegate.
@@ -517,6 +539,29 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 	</article>
 }
 
+// A "Left for you" line from wf.left (PM A R35 (d)): what he does, a quote as a quotation, a muted source line (its link opens the
+// thread, message or PR, ↗) with "· Why?" on a refusal, and one button at the right for its kind. Copy reply · open thread copies
+// Delegate's suggested reply and opens the thread; it says so only when the copy really happened. An open line has its tick (decision
+// 53: ticked lines go with "I've done these"); Ask Delegate again / Draft the invite again are HOST's line verbs (draft only).
+function LeftLineRow({ line, tick, action: verb }: { line: NonNullable<Item['leftLines']>[number]; tick?: { checked: boolean; disabled: boolean; onChange: (on: boolean) => void }; action?: Entities['actions'][string] }) {
+	const { href } = useScreenNavigation(), [copied, setCopied] = useState<'yes' | 'no'>()
+	const button = line.button
+	const action = !button ? null
+		: button.kind === 'copy-reply' ? <Button variant="outline" size="sm" onClick={async () => { const ok = await copyText(button.text); setCopied(ok ? 'yes' : 'no'); window.open(button.href, '_blank', 'noopener,noreferrer') }}>Copy reply · open thread ↗</Button>
+			: button.kind === 'settings' ? <a className="left-button" href={href(`settings/${button.key}`)}>Turn it on in Settings</a>
+				: button.kind === 'open-pr' ? <a className="left-button" href={button.href} target="_blank" rel="noopener noreferrer">Open PR ↗</a>
+					: verb ? <ActionButton action={verb} /> : null
+	const source = line.source.href ? <a href={line.source.href} target="_blank" rel="noopener noreferrer" title="Opens where this came from, in a new tab.">{line.source.text} ↗</a> : line.source.text
+	// Rule 5 seen-done: shown once, on the first visit after Delegate saw it done on the PR; no button, no tick.
+	if (line.seen) return <li className="left-line left-seen todo-done-line" data-left-id={line.id} role="status"><Icon name="check" /> Done (seen on PR {line.seen.pr}): {line.text.replace(/[.\s]+$/, '')}<span className="todo-source">{source}</span></li>
+	const words = <span className="left-text">{line.text}</span>
+	return <li className={`left-line left-${line.type}`} data-left-id={line.id}>
+		<div className="left-main">{tick ? <label className="left-tick"><input type="checkbox" checked={tick.checked} disabled={tick.disabled} onChange={event => tick.onChange(event.currentTarget.checked)} /> {words}</label> : words}{action}</div>
+		{line.quote && <q className="left-quote">{line.quote.text}</q>}
+		{line.why ? <details className="todo-source todo-why"><summary>{source} · Why?</summary><p>{line.why}.</p></details> : <span className="todo-source">{source}</span>}
+		{copied && <p className="todo-source" role="status">{copied === 'yes' ? 'Reply copied: paste it in the thread.' : "Couldn't copy"}</p>}
+	</li>
+}
 // Under each "Left for you" line, where it came from (PM 20:00): "From your reply to Robin in Acme reviews · Tue 22 Oct", opening that
 // message in Teams when there is one; a change Delegate couldn't make says so, with its reason under Why?. No codes or links in the words.
 function TodoSource({ todo }: { todo: Entities['todos'][string] }) {

@@ -75,7 +75,8 @@ export function useClassicKeyboard(offline: boolean) {
 			prefix = ''
 			if (event.key === '?') { event.preventDefault(); setHelp(true) }
 			if (route === 'snapshot') return
-			const direction = ['j', 'ArrowRight'].includes(event.key) ? 1 : ['k', 'ArrowLeft'].includes(event.key) ? -1 : 0
+			// Owner 13:41 (25 Oct): k = next, j = previous; the arrows stay spatial, → next and ← previous (PM 08:15:34Z).
+			const direction = ['k', 'ArrowRight'].includes(event.key) ? 1 : ['j', 'ArrowLeft'].includes(event.key) ? -1 : 0
 			if (route.startsWith('focus') && direction) {
 				const ids = snapshot?.classic?.needsIds ?? []
 				const code = route.split('/')[1] ?? ids[0], index = ids.indexOf(code), next = ids[index + direction]

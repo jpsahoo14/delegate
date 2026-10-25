@@ -1,7 +1,11 @@
 import type { BuildFacts, Config, Effect, PrFacts, RingFacts, RunFact, Workflow } from '../core/types.ts'
 import { buildCheck, buildOf, deployLine, isDeploy, pipelineOf, ringMeaning, ringMoved, targetOf } from '../core/deploy.ts'
 import { remoteOf } from './repos.ts'
-import { isVote, pendingEffects, prIdOf, reviewAgain, sameHead, voteValue } from '../core/effects.ts'
+import { effectLeftAction, isVote, pendingEffects, prIdOf, reviewAgain, sameHead, voteValue } from '../core/effects.ts'
+import { leftRefusal } from '../core/left-lines.ts'
+import { settingKey } from '../core/setting-keys.ts'
+import { allowLeft, openLeft } from './left.ts'
+import { leaveForYou } from './left-source.ts'
 import { effectLine } from '../core/render.ts'
 import type { Store } from '../store/state.ts'
 import { clientFor, toolServers } from '../adapters/mcp-client.ts'
@@ -15,6 +19,7 @@ import { addMeEffect, isAddMe, liveOwnerVote, MAY_REVIEW, groupQuestion, reviewe
 import { freshRead } from '../store/fs.ts'
 import { recordCommit } from './commit.ts'
 import { stateFields, statusFields } from '../core/upgrades.ts'
+export { adoPrNumber } from '../core/pr-refs.ts'
 
 // Checklist steps that wait on a build are checked by the runner, not the AI (R-WRK-13).
 // branch, version, repo: where the build is from, for a deploy's build check (review 10-21 P1-3).
@@ -28,7 +33,8 @@ export type PrState = { status: string; closedAt?: string; votes: { name: string
 export type Reviewer = { name: string; unique?: string; vote: number; required: boolean; group: boolean; declined: boolean }
 // runs: a pipeline's newest runs, newest first, for the ring table and the overwrite check (owned work).
 // myTeams: the teams the owner is a member of in a project, so a team reviewer can count as the owner (review gate).
-export type BuildProbe = { builds(project: string, ids: number[]): Promise<Map<number, BuildState>>; pr?(project: string, repo: string, id: number): Promise<PrState>; runs?(project: string, pipelineId: number): Promise<RunFact[]>; definition?(project: string, id: number): Promise<{ name: string; path?: string } | undefined>; myTeams?(project: string): Promise<string[]>; close?(): Promise<void> }
+export type PrThreadActivity = { id: string; comments: { authorId?: string; authorUnique?: string; at: string }[] }
+export type BuildProbe = { builds(project: string, ids: number[]): Promise<Map<number, BuildState>>; pr?(project: string, repo: string, id: number): Promise<PrState>; threadActivity?(project: string, repo: string, id: number): Promise<PrThreadActivity[]>; runs?(project: string, pipelineId: number): Promise<RunFact[]>; definition?(project: string, id: number): Promise<{ name: string; path?: string } | undefined>; myTeams?(project: string): Promise<string[]>; close?(): Promise<void> }
 
 const EVERY_MS = 10 * 60_000
 
@@ -59,6 +65,25 @@ export function adoProbe(cfg: Config): BuildProbe | undefined {
 			const r = await mcp.call<unknown>('core_list_project_teams', { project, mine: true, top: 200 })
 			const list = Array.isArray(r) ? r : (r as { value?: unknown[]; items?: unknown[] }).value ?? (r as { items?: unknown[] }).items ?? []
 			return list.map(t => String((t as { name?: string }).name ?? '')).filter(Boolean)
+		},
+		async threadActivity(project, repo, id) {
+			type Thread = { id?: number; isDeleted?: boolean; comments?: { isDeleted?: boolean; publishedDate?: string; author?: { id?: string; uniqueName?: string } }[] }
+			const all: PrThreadActivity[] = []
+			for (let skip = 0; skip < 2000; skip += 100) {
+				const raw = await mcp.call<Thread[] | { value?: Thread[]; items?: Thread[]; threads?: Thread[]; continuationToken?: string; hasMoreResults?: boolean }>('repo_pull_request_thread', { action: 'list', project, repositoryId: repo, pullRequestId: id, top: 100, skip })
+				const rows = Array.isArray(raw) ? raw : raw?.value ?? raw?.items ?? raw?.threads
+				if (!Array.isArray(rows) || rows.length > 100 || !Array.isArray(raw) && raw.continuationToken)
+					throw new Error('PR thread activity returned an unsupported page')
+				for (const row of rows) {
+					if (row.isDeleted) continue
+					if (row.id === undefined || !Array.isArray(row.comments)) throw new Error('PR thread activity returned an incomplete thread')
+					all.push({ id: String(row.id), comments: row.comments.filter(comment => !comment.isDeleted && !!comment.publishedDate).map(comment => ({
+						authorId: comment.author?.id, authorUnique: comment.author?.uniqueName, at: comment.publishedDate!,
+					})) })
+				}
+				if (rows.length < 100 && (Array.isArray(raw) || !raw.hasMoreResults)) return all
+			}
+			throw new Error('Too many PR threads to read activity completely')
 		},
 		async runs(project, pipelineId) {
 			// The owner's server lists the starter flat, in requestedForDisplayName (dry run 10-21); the REST shape nests it.
@@ -124,12 +149,6 @@ export async function probeBuilds(store: Store, probe: BuildProbe | undefined, n
 // A pull request link in an item: its project, repository, and number (Azure DevOps needs all three to read it).
 const PR_LINK = /https?:\/\/(?:[\w-]+\.visualstudio\.com|dev\.azure\.com\/[\w-]+)\/([^/\s]+)\/_git\/([^/\s?#]+)\/pullrequest\/(\d+)/i
 const anchorConflicts = new Set<string>()
-export function adoPrNumber(url: string): number | undefined {
-	if (!URL.canParse(url)) return undefined
-	const link = new URL(url), host = link.hostname.toLowerCase()
-	if (!/^https?:$/.test(link.protocol) || host !== 'dev.azure.com' && !host.endsWith('.visualstudio.com')) return undefined
-	return Number(/\/pullrequest\/(\d+)(?:\/|$)/i.exec(link.pathname)?.[1]) || undefined
-}
 // remote: the repo by its remote, from the PR's own link, never the AI's key (owned work).
 // url: the PR's own web link, as the item has it.
 export type PrRef = { project: string; repo: string; id: number; remote?: string; url?: string }
@@ -360,7 +379,6 @@ function setEffects(store: Store, w: Workflow, f: (es?: Effect[]) => Effect[]) {
 // A vote already on the card is re-gated each time the owner's role on its PR is read: one he may not cast (a role outside
 // MAY_REVIEW) leaves the card for a to-do with the reason, so ok never offers what the last backstop would refuse; a group the
 // runner cannot match is asked about once; and the vote comes back once he may vote (queue-new #7A, #7C).
-const NOT_MADE = 'Not made for you: '
 function regateVotes(store: Store, cfg: Config, w: Workflow, ref: PrRef, st: PrState) {
 	if (w.state !== 'needs_human' || !w.prRole) return
 	if (w.groupAsk?.pr === ref.id) {
@@ -376,13 +394,14 @@ function regateVotes(store: Store, cfg: Config, w: Workflow, ref: PrRef, st: PrS
 	const votes = (w.effects ?? []).filter(ours)
 	if (!MAY_REVIEW.includes(w.prRole)) {
 		const why = roleWhy(cfg, w.prRole)
-		const gated = w.todos?.some(t => t.endsWith(`${NOT_MADE}${why}`))
+		const gated = w.heldVotes?.pr === ref.id || openLeft(w).some(line => line.action.verb === 'vote' && line.action.pr === ref.id)
 		if (!votes.length && !gated) return
 		const addMe = w.prRole === 'none' && votes.length ? addMeEffect(cfg, w, ref) : undefined
 		if (votes.length) {
 			setEffects(store, w, es => [...(es ?? []).filter(e => !ours(e)), ...(addMe && !es?.some(isAddMe) ? [addMe] : [])])
 			w.heldVotes = { pr: ref.id, effects: [...(w.heldVotes?.pr === ref.id ? w.heldVotes.effects : []), ...votes], why }
-			w.todos = [...new Set([...(w.todos ?? []), ...votes.map(e => `${e.summary.replace(/[.\s]+$/, '')}. ${NOT_MADE}${why}`)])]
+			leaveForYou(store, w, votes.map(effect => leftRefusal(effectLeftAction(effect, ref.id), w.prRole === 'group-unknown' ? 'setting-off' : 'pr-lifecycle',
+				{ why, ...(w.prRole === 'group-unknown' ? { setting: settingKey('reviewerGroups') } : {}) })))
 		}
 		const groups = w.prRole === 'group-unknown' ? unknownGroups(cfg, st) : []
 		// The group question comes before the generic "the reply counts on a change" one: its answer can bring the vote back.
@@ -398,8 +417,7 @@ function regateVotes(store: Store, cfg: Config, w: Workflow, ref: PrRef, st: PrS
 	const held = w.heldVotes
 	if (held?.pr !== ref.id) return
 	setEffects(store, w, es => [...(es ?? []).filter(e => !isAddMe(e) && !ours(e)), ...held.effects])
-	w.todos = w.todos?.filter(t => !held.effects.some(e => t === `${e.summary.replace(/[.\s]+$/, '')}. ${NOT_MADE}${held.why}`))
-	if (!w.todos?.length) w.todos = undefined
+	allowLeft(w, held.effects)
 	if (w.groupAsk?.pr === ref.id) { w.groupAsk = undefined; w.question = undefined }
 	w.heldVotes = undefined
 	store.log({ event: 'vote-restored', code: w.code, pr: ref.id, role: w.prRole, votes: held.effects.length })
@@ -553,7 +571,7 @@ export async function describeDeploys(store: Store, probe: BuildProbe | undefine
 			if ('why' in now.build) {
 				const why = now.build.why
 				setEffects(store, w, (es = []) => es.map(x => (isDeploy(x.call) && sameCall(x, e) ? { ...x, off: true } : x)))
-				w.todos = [...new Set([...(w.todos ?? []), `${e.summary.replace(/[.\s]+$/, '')}. Not made for you: ${why}`])]
+				leaveForYou(store, w, [leftRefusal(effectLeftAction(e, prTarget(store, w)), 'pr-lifecycle', { why })])
 				store.log({ event: 'deploy-build-refused', code: w.code, why })
 			} else { const facts = now.build.facts; setEffects(store, w, (es = []) => es.map(x => (sameCall(x, e) ? { ...x, ring: now.ring, build: facts } : x))) }
 			n++

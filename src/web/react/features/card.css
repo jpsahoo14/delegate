@@ -22,6 +22,17 @@
 .item-card .warnbox{margin:10px 0 0 40px;background:var(--warn-soft);border-radius:8px;padding:4px 10px}
 .item-card .warnbox>.warnline{margin:0;background:none;border-radius:0;padding:2px 0}
 .card-marker{margin:4px 0 0;font-size:12.5px}
+/* I34 (designer-automated-marker.md): one frame holding his words and a fixed footer row with the marker Teams will add; the footer
+   is outside the textarea's value and stays pinned below its scroll area. */
+.reply-frame{position:relative;border:1px solid var(--border-strong);border-radius:8px;background:var(--surface)}
+.reply-frame:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 22%,transparent)}
+.reply-frame>textarea{display:block;border:0;border-radius:inherit;background:transparent;box-shadow:none}
+.reply-frame>textarea:focus,.reply-frame>textarea:focus-visible{outline:none}
+.reply-footer{padding:6px 12px 9px;color:var(--text-2);font-size:15px;line-height:1.55;cursor:text;user-select:none}
+.classic-card .reply-frame{border-radius:12px}
+.classic-card .reply-frame>textarea{width:100%;padding:12px 14px;font-size:15px;line-height:1.55;min-height:120px;resize:vertical}
+.classic-card .reply-footer{padding:6px 14px 12px}
+@media (forced-colors:active){.reply-frame{border-color:CanvasText}.reply-footer{color:GrayText}}
 .card-details .card-subfold{margin:8px 0 0}.card-details .card-subfold>summary{cursor:pointer;font-weight:600}
 .card-status{margin:10px 0 0 40px;color:var(--text-2)}
 .item-card .card-message>.chip{margin:8px 0 0 40px}
@@ -92,3 +103,14 @@ a.todo-source:hover{text-decoration:underline}
 .field-mark mark{color:transparent}.card-vote-cleared{margin:4px 0 0}
 /* PM A R38 (1): suggested answers from the engine's question hint. */
 .answer-chips{display:flex;flex-wrap:wrap;gap:6px;margin:4px 0 8px}.answer-chip{cursor:pointer;border:1px solid var(--border-strong);background:var(--surface)}.answer-chip[aria-pressed=true]{border-color:var(--accent);color:var(--accent)}
+.left-line{padding:6px 0}
+.left-main{display:flex;gap:12px;align-items:flex-start;justify-content:space-between}
+.left-main .left-text{flex:1 1 auto}
+.left-main>a.left-button,.left-main>button{flex:none}
+a.left-button{display:inline-flex;align-items:center;height:32px;padding:0 12px;border:1px solid var(--border-strong);border-radius:6px;font-size:13px;text-decoration:none;color:var(--text)}
+a.left-button:hover{background:var(--surface-2)}
+.left-quote{display:block;margin:2px 0 0;color:var(--text-2);font-style:italic}
+.left-line .todo-source{margin-left:0}
+.left-main .left-tick{display:flex;gap:8px;align-items:flex-start;cursor:pointer;flex:1 1 auto}
+.left-main .left-tick input{margin-top:3px}
+.left-line .todo-source,.left-line .left-quote{margin-left:24px}

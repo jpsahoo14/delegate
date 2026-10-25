@@ -48,7 +48,9 @@ type EventFields = {
 	}
 	'run-tools-invalid': { class: 'invalid-json' | 'inspection-error'; lines?: number }
 	'vote-claim-override': { code: string; pr?: number; claim: number | 'approval' | 'others'; vote?: number }
+	marker: { code: string; applied: boolean; why: 'auto' | 'approved' | 'owner-edit' | 'owner-text' | 'off' }
 	'pr-anchor-conflict': { code: string; anchor: number; computed: number }
+	'left-cleared-cap': { code: string; dropped: number }
 	'members-shape': { memberKeys: string[]; roles: { array: number; undefined: number; other: number }; roleValues: string[]; tenantIdPresent: number }
 	'forwarded-message-shape': { contentStatus: 'json' | 'invalid-json' | 'value'; shape: { path: string; kind: string }[]; truncated: boolean }
 }
@@ -64,7 +66,9 @@ const metadataEvents = {
 	'run-tools': { privacy: 'metadata', fields: ['call', 'tool', 'ok', 'class', 'ms', 'bytes', 'contentTypes', 'keys', 'keysTruncated', 'offloaded'] },
 	'run-tools-invalid': { privacy: 'metadata', fields: ['class', 'lines'] },
 	'vote-claim-override': { privacy: 'metadata', fields: ['code', 'pr', 'claim', 'vote'] },
+	marker: { privacy: 'metadata', fields: ['code', 'applied', 'why'] },
 	'pr-anchor-conflict': { privacy: 'metadata', fields: ['code', 'anchor', 'computed'] },
+	'left-cleared-cap': { privacy: 'metadata', fields: ['code', 'dropped'] },
 	'members-shape': { privacy: 'metadata', fields: ['memberKeys', 'roles', 'roleValues', 'tenantIdPresent'] },
 	'forwarded-message-shape': { privacy: 'metadata', fields: ['contentStatus', 'shape', 'truncated'] },
 } as const satisfies { [K in keyof EventFields]: { privacy: 'metadata'; fields: readonly (keyof EventFields[K])[] } }

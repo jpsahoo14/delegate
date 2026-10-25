@@ -120,9 +120,10 @@ export const NowRow = memo(function NowRow({ id, day }: { id: string; day?: stri
 	const work = row.workId && entities ? entities.work[row.workId] : undefined
 	const mine: [string, string] | undefined = row.section !== 'move' ? undefined
 		: row.kind === 'your-step' ? ['Your step', work?.yours?.what ?? row.headline]
-			: draft && ['reply', 'holding', 'review'].includes(row.kind) ? [draft.holding ? 'Holding reply' : 'Your reply', `${draft.sendText ?? draft.text}${item?.changeIds.length ? ` · plus ${item.changeIds.length} ${item.changeIds.length === 1 ? 'change' : 'changes'}` : ''}`]
+			// I34 (Designer §4): the row is a summary of his words, never the marker Teams will add.
+			: draft && ['reply', 'holding', 'review'].includes(row.kind) ? [draft.holding ? 'Holding reply' : 'Your reply', `${draft.marker && draft.sendText?.endsWith(draft.marker) ? draft.sendText.slice(0, -draft.marker.length).trimEnd() : draft.sendText ?? draft.text}${item?.changeIds.length ? ` · plus ${item.changeIds.length} ${item.changeIds.length === 1 ? 'change' : 'changes'}` : ''}`]
 				: item?.question && row.kind === 'question' ? [`${NAME} needs to know`, item.question]
-					: row.kind === 'todo' && item?.todoIds.length && entities?.todos[item.todoIds[0]] ? ['Left for you', `${entities.todos[item.todoIds[0]].text}${item.todoIds.length > 1 ? ` (+${item.todoIds.length - 1} more)` : ''}`] : undefined
+					: row.kind === 'todo' && item && (lines => lines.length > 0 && ['Left for you', `${lines[0]}${lines.length > 1 ? ` (+${lines.length - 1} more)` : ''}`] as [string, string])([...item.todoIds.map(id => entities?.todos[id]?.text).filter((text): text is string => !!text), ...(item.leftLines ?? []).filter(line => !line.seen).map(line => line.text)]) || undefined
 	const who = person?.name ?? row.facts.who
 	return <article className={`now-row${open ? ' row-open' : ''}`} data-code={row.code} data-row-kind={row.kind} onClick={row.kind === 'catchup' ? isolateRowControls : undefined}>
 		<div className="row-content" onClick={row.section === 'waiting' ? event => { if (!(event.target instanceof Element && event.target.closest('a, button, input, textarea, select'))) toggle() } : undefined}>

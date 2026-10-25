@@ -135,6 +135,8 @@ button.notice-pill{border:0;font:inherit;font-size:12px;cursor:pointer;max-width
 .notice-line{padding:8px 10px;border-radius:8px}.notice-line p{margin:0}.notice-line+.notice-line{border-top:1px solid var(--border)}
 .notice-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
 .card-note{margin:4px 0 0}
+/* PE 01:13:27Z nit 4: a countdown button keeps its widest label's width; the visible label and the hidden sizers share one cell. */
+.label-stack{display:inline-grid;font-variant-numeric:tabular-nums}.label-stack>*{grid-area:1/1;text-align:center}.label-sizer{visibility:hidden}
 .action-slot{display:contents}.action-slot.reserved{display:flow-root;position:relative}
 .action-slot.reserved .slot-toggle-band{position:absolute;left:0;right:0;bottom:0;display:flex;justify-content:flex-end;align-items:flex-end;line-height:1.5;background:var(--surface,Canvas)}
 .action-slot.reserved .slot-toggle{position:relative;padding:0 2px 0 8px;border:0;background:none;color:var(--accent,LinkText);font:inherit;cursor:pointer;line-height:1.5}

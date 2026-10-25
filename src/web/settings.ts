@@ -22,6 +22,9 @@ import { HOST_IDLE_MIN, HOST_MEMORY_MB, HOST_WORK_IDLE_MIN, hostOff } from '../h
 import { hostFile } from '../host/host.ts'
 import { hostDisabledUntil, hostFaultLimit } from '../host/client.ts'
 import { toggleReviewRules } from '../store/rules.ts'
+import { settingKey, type SettingKey } from '../core/setting-keys.ts'
+import { placeOf } from './model/place.ts'
+export { settingKey, type SettingKey } from '../core/setting-keys.ts'
 
 // The settings the page can change, in one table: how each is shown, read, checked, and saved (B13).
 // Each saves to the shared config (or profile.md) in the storage folder, so every machine and the next cycle use it.
@@ -29,7 +32,7 @@ type Kind = 'text' | 'line' | 'list' | 'number' | 'choice' | 'bool' | 'time' | '
 // Settings are grouped by what the owner is trying to do (design-spec/settings-v2.md); advanced rows sit under More in the last one.
 export type Section = 'learned' | 'you' | 'replies' | 'timing' | 'system'
 type Spec = {
-	key: string; label: string; help: string | ((cfg: Config) => string); kind: Kind; section: Section; options?: { value: string; label: string }[]; advanced?: true
+	key: SettingKey; label: string; help: string | ((cfg: Config) => string); kind: Kind; section: Section; options?: { value: string; label: string }[]; advanced?: true
 	// A read tool's server, shown under Tools your drafts may read; '*' for the whole list.
 	group?: string
 	read: (cfg: Config, store: Store) => string
@@ -165,7 +168,7 @@ export function changeChoices(cfg: Config): string[] {
 	return [...new Set([...byServer, ...Object.keys(s.actions ?? {})].filter(own).concat(cfg.agent.effectTools ?? []))].filter(offerable)
 }
 const changeSpecs = (cfg: Config): Spec[] => changeChoices(cfg).map(entry => ({
-	key: `change:${entry}`, label: changeName(entry), help: changeLine(entry), kind: 'switch', section: 'you',
+	key: settingKey(entry), label: changeName(entry), help: changeLine(entry), kind: 'switch', section: 'you',
 	read: c => String((c.agent.effectTools ?? []).includes(entry)),
 	saved: raw => raw === 'true' ? `${changeName(entry)} is on: ${NAME} may propose it, each time for your ok.` : `${changeName(entry)} is off: new drafts won't propose it, and an ok on one already shown is refused.`,
 	parse: (raw, store) => {
@@ -243,7 +246,7 @@ export function toolsView(cfg: Config, where: { machine: string; root: string } 
 	return { servers: [...servers, ...ignored] }
 }
 
-export type SettingRow = { key: string; label: string; help: string; kind: Kind; section: Section; value: string; options?: { value: string; label: string }[]; advanced?: true; group?: string }
+export type SettingRow = { key: SettingKey; label: string; help: string; kind: Kind; section: Section; value: string; options?: { value: string; label: string }[]; advanced?: true; group?: string }
 export type ReadOnlyRow = { label: string; value: string; how: string }
 
 // What Delegate knows about the owner and acts on, in one place (R-HAB-03): standing instructions, said or learned, and suggestions.
@@ -270,7 +273,7 @@ export function aboutView(store: Store): AboutView {
 				...(r.style ? { style: r.style } : {}), ...(h && habitUndoable(store, h) ? { undoUntil: new Date(Date.parse(h.at) + undoMs(store)).toISOString() } : {}) }
 		}),
 		suggestions: habits.filter(h => h.state === 'suggested').map(h => ({ code: h.code, text: h.text, does: h.does, evidence: h.kind === 'style' ? `${h.evidence.count} edited replies on ${h.evidence.days} day${h.evidence.days === 1 ? '' : 's'}, out of ${h.evidence.total} edited in that time${h.evidence.links.length ? ` (${h.evidence.links.length} linked below)` : ''}` : `${h.evidence.count} unedited replies on ${h.evidence.days} days, out of ${h.evidence.total}`, links: h.evidence.links })),
-		chats: Object.values(cfg.chatLevels ?? {}).map(c => ({ name: c.name, says: LEVEL_SAYS[c.level] })),
+		chats: Object.entries(cfg.chatLevels ?? {}).map(([id, c]) => ({ name: placeOf(store, { id, name: c.name })?.sentence ?? c.name, says: LEVEL_SAYS[c.level] })),
 	}
 }
 

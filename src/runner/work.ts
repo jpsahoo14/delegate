@@ -1,13 +1,18 @@
 import { stateFields } from '../core/upgrades.ts'
-import { site } from '../core/site.ts'
 import { clearHold } from '../core/owner-send.ts'
-import type { Effect, PlanStep, Report, Step, Workflow, WorkReport } from '../core/types.ts'
+import type { PlanStep, Report, Step, Workflow, WorkReport } from '../core/types.ts'
 import type { Store } from '../store/state.ts'
 import { canonicalKey } from './jobs.ts'
-import { isVote, pendingEffects, prIdOf, sameHead, VOTES, voteName, voteValue } from '../core/effects.ts'
-import { approvalMention, voteMention, voteClaimText } from '../core/vote-claims.ts'
-import { adoPrNumber, prTarget } from './probe.ts'
-export { approvalMention, voteMention } from '../core/vote-claims.ts'
+import { isVote, pendingEffects, prIdOf, voteValue } from '../core/effects.ts'
+import { approvalAsk, approvalOnly } from '../core/vote-claims.ts'
+import { prTarget } from './probe.ts'
+import { adoPrNumber, isNonAdoPrLink, linksIn, prMentions } from '../core/pr-refs.ts'
+import { messageLink } from '../adapters/channels.ts'
+import { leftActionText, leftPromise } from '../core/left-lines.ts'
+import { clearLeft, mergeLeft, openLeft } from './left.ts'
+export { openLeft } from './left.ts'
+export { approvalMention, voteMention, approvalReplyMatches, reReviewAsk, othersApproval, othersApprovalMismatch, voteSentences, claimedVote, claimsApproval, approvalClaim, voteClaimGap, claimedPrs, approvalAsk, approvalOnly, type ApprovalClaim } from '../core/vote-claims.ts'
+export { linksIn, prNumbersIn, isNonAdoPrLink } from '../core/pr-refs.ts'
 
 // Open work: an item that keeps one code until its work is closed. Every state change for work items is here (dev-spec/work.md).
 
@@ -25,19 +30,6 @@ export function homeOf(store: Store, wf: Workflow): Workflow {
 export const inWork = (store: Store, wf: Workflow) => active(homeOf(store, wf))
 export const label = (wf: Workflow, home: Workflow) => (wf === home || wf.id === home.id ? '' : `${wf.asker?.name?.split(' ')[0] ?? wf.chat.name} (${wf.chat.group ? wf.chat.name : '1:1'}, ${wf.code}): `)
 
-// Typed links a message names; numbers alone are never links (review part 2 #2).
-export function linksIn(text: string): string[] {
-	const out = new Set<string>()
-	for (const m of text.matchAll(/\b(?:pull request|PR)\s*#?\s*(\d{4,})/gi)) out.add(`pr:${m[1]}`)
-	for (const m of text.matchAll(/https?:\/\/[^\s<>]+\/pullrequest\/(\d+)/gi)) out.add(`pr:${m[1]}`)
-	const esc = (w: string) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-	const builds = ['build', 'run', 'pipeline run', ...(site().buildWords ?? [])].map(esc).join('|')
-	for (const m of text.matchAll(new RegExp(`\\b(?:${builds})\\s*#?\\s*(\\d{6,})\\b`, 'gi'))) out.add(`build:${m[1]}`)
-	const words = ['incident', ...(site().incidentWords ?? [])].map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')
-	for (const m of text.matchAll(new RegExp(`\\b(?:${words})\\s*#?\\s*(\\d{6,})`, 'gi'))) out.add(`incident:${m[1]}`)
-	for (const m of text.matchAll(/\b(?:work ?item|bug|task)\s*#?\s*(\d{6,})/gi)) out.add(`workItem:${m[1]}`)
-	return [...out]
-}
 const sameLink = (a: string, b: string) => a.split(':')[0].toLowerCase() === b.split(':')[0].toLowerCase() && a.split(/[:/]/).at(-1) === b.split(/[:/]/).at(-1)
 // An item's own links: what its own asks name, and its PR job's key; never links its parts brought (queue-new #9).
 export function askLinks(store: Store, w: Workflow): string[] {
@@ -160,7 +152,7 @@ export function mergePlan(old: PlanStep[], next: NonNullable<WorkReport['plan']>
 // Ending a turn without new input (wait, skip, close, the owner's own message) keeps the last send for Done and "Not right?".
 // The turn's own to-dos go with it; the ones a sent reply promised (kept) stay until the owner marks them done (R-NEX-07).
 export function newTurn(wf: Workflow, keepSent = false) {
-	wf.statusReason = undefined; wf.reviewAgain = undefined; wf.returnedFrom = undefined
+	wf.statusReason = undefined; wf.reviewAgain = undefined; wf.returnedFrom = undefined; wf.leftRetry = undefined
 	wf.ownerSend = undefined; clearHold(wf)
 	wf.reviewRun = undefined; wf.reviewDone = undefined; wf.reviewAsk = undefined; wf.reviewAttempt = undefined; wf.reviewBasis = undefined
 	wf.voteClaimRedrafted = undefined
@@ -169,18 +161,20 @@ export function newTurn(wf: Workflow, keepSent = false) {
 
 // When a reply goes out, what it promised the owner would do becomes theirs to keep, once per open text (R-NEX-07).
 export function keepTodos(wf: Workflow, at: string, todos = wf.todos) {
-	const kept = wf.kept ?? []
-	let n = kept.reduce((m, t) => Math.max(m, Number(t.id.replace(/\D/g, '')) || 0), 0)
-	const add = [...new Set(todos ?? [])].filter(text => !kept.some(t => !t.done && t.text === text)).map(text => ({ id: `t${++n}`, text, at }))
+	const msgId = wf.sent?.at === at ? wf.sent.msgId : wf.promise?.at === at ? wf.promise.msgId : undefined
+	mergeLeft(wf, [...new Set(todos ?? [])].map(leftPromise), { kind: 'your-reply', at,
+		...(msgId ? { href: messageLink(wf.chat.id, msgId) } : {}) })
 	// Always set, even empty: an item with no kept list was written before N2, and only those are migrated (review N2 P2-2).
-	wf.kept = [...kept, ...add]
+	wf.kept ??= []
 }
 export const openTodos = (wf: Workflow) => (wf.kept ?? []).filter(t => !t.done)
 // "Mark done": the open to-dos on the item are done, or only those named (the ones the owner saw). Nothing else about the item changes.
 export function doneTodos(wf: Workflow, at = new Date().toISOString(), only?: string[]): string[] {
 	const open = openTodos(wf).filter(t => !only || only.includes(t.id))
 	wf.kept = (wf.kept ?? []).map(t => (open.includes(t) ? { ...t, done: at } : t))
-	return open.map(t => t.text)
+	const left = openLeft(wf).filter(line => !only || only.includes(line.id))
+	clearLeft(wf, left.map(line => line.id), { at, by: 'owner', why: 'ticked' })
+	return [...open.map(t => t.text), ...left.map(line => leftActionText(line.action))]
 }
 
 // A report with no response or decision: active work stays open, closed work is done.
@@ -209,163 +203,6 @@ export function afterSend(wf: Workflow, text: string, msgId: string, home = wf, 
 	Object.assign(wf, { ...stateFields(wf, 'open'), status: statusOf(home), pending: [] })
 	return true
 }
-
-// A run tag such as "[E2E-… 1792751673901]" before the words is a label, not part of what they say (bug 10-23 E35).
-const untagged = (text: string) => text.trim().replace(/\u2019/g, "'").replace(/^(?:\[[^\]\n]{1,120}\]\s*)+/, '')
-const sentencesOf = (text: string) => untagged(text).split(/(?<=[.!?;])\s+|\n+/).map(s => s.trim()).filter(Boolean)
-// Only a number written as a pull request names one ("PR 12", "pull request #12", ".../pullrequest/12"); tags, times and counts never do.
-function prMentions(text: string) { return text.matchAll(/\b(?:PR|pull\s+request|pullrequest\/)\s*#?\s*(\d+)\b|(?:^|\s)#(\d{3,})\b/gi) }
-export const prNumbersIn = (text: string) => [...prMentions(text)].map(m => Number(m[1] ?? m[2]))
-export function approvalReplyMatches(text: string, vote: number | undefined, pr: number): boolean {
-	if (!voteMention(text)) return true
-	// Every sentence that speaks of approval must be a complete, bounded statement the vote supports; the rest is free.
-	return sentencesOf(text).filter(voteMention).every(s => approvalSentenceMatches(s, vote, pr))
-}
-function approvalSentenceMatches(sentence: string, vote: number | undefined, pr: number): boolean {
-	const line = sentence.replace(/[.!;]$/, '')
-	// Only complete, bounded statements pass. Unrecognized approval wording waits for a redraft.
-	const target = '(?:\\s+(?:(?:the\\s+)?(?:PR|pull request)(?:\\s*#?\\s*\\d+)?|it|\\d+))?'
-	const condition = '(?:\\s+(?:after|once|when|until)\\s+(?:(?:the\\s+|its\\s+)?(?:build|tests?|checks?|requested changes|null check|comments?)(?:\\s+(?:is|are)\\s+(?:green|fixed|addressed|resolved|complete|done))?|checking the comments))?'
-	const future = new RegExp(`^(?:(?:(?:Rechecked,?\\s+)?looks good(?: to me)?[.!;]|Yes,)\\s+)?(?:I|we)(?:'ll| will(?: not)?| won't)\\s+(?:approve|sign[ -]?off)${target}(?:\\s+too)?${condition}(?:, and add [a-z][a-z -]{0,60} as a reviewer)?$`, 'i')
-	if (future.test(line)) return true
-	if ([...prNumbersIn(line), ...[...line.matchAll(/\b(?:approve|approved|sign[ -]?off|signed[ -]?off)\s+#?(\d+)\b/gi)].map(m => Number(m[1]))].some(id => id !== pr)) return false
-	if (vote === undefined || !Object.values(VOTES).includes(vote)) return false
-	const negative = new RegExp(`^(?:(?:I|we)\\s+(?:have not|haven't|did not|didn't|have never|never)\\s+(?:approved|signed[ -]?off)${target}(?:\\s+yet)?|(?:Not yet,\\s*)?(?:my|our)\\s+approval\\s+(?:has not been|hasn't been|is not|isn't)\\s+(?:recorded|given))$`, 'i')
-	if (negative.test(line)) return vote !== undefined && vote < 5
-	const said = explicitVote(line)
-	if (said !== undefined) return vote === said && /^(?:my vote (?:is|was set to|has been set to)|(?:I|we)(?:'ve| have)?\s+(?:(?:just|now|already)\s+)?(?:voted|set my vote(?: on \S+(?: \d+)?)? to))\s+(?:now\s+)?["']?(?:approved with suggestions|approved|waiting for author|waitingforauthor|rejected|no vote|novote)["']?$/i.test(line)
-	if (/^(?:(?:I|we)(?:'ve| have)?\s+)?(?:rejected(?:\s+(?:it|the PR|PR\s+#?\d+))?(?: for now)?|requested changes(?:\s+on (?:the )?PR(?:\s+#?\d+)?)?)$/i.test(line)) return vote === -10
-	if (/^(?:(?:I|we)(?:'m| am| are)?\s+)?waiting (?:for|on) author$/i.test(line)) return vote === -5
-	const positive = new RegExp(`^(?:Reviewed and\\s+)?(?:(?:I|we)(?:'ve|\\s+have)?\\s+)?(?:approved|signed[ -]?off)${target}(?:,?\\s*(?:thanks|with suggestions|with one nit))?$|^LGTM$`, 'i')
-	return vote !== undefined && vote >= 5 && positive.test(line)
-}
-export const reReviewAsk = (text: string) => /re[ -]?review|review again|recheck/i.test(text)
-// A reply that only reports other people's approval state ("Priya has approved; the EM approval is still pending"): it does not
-// speak for the owner, so it is checked against those reviewers' live votes, not the owner's (queue-new #6, A57).
-const FIRST_PERSON = /\b(?:I|we|my|our|me|us|mine)\b/i
-const NAMED_APPROVED = /\b(?:has|have|had)\s+(?:already\s+|now\s+|just\s+)?(?:approved|signed[ -]?off)\b/i
-const APPROVED_BY = /\b(?:approved|signed[ -]?off)\s+by\s+(.+)$/i
-const PENDING = /\b(?:approvals?|sign[ -]?offs?)\b.*\b(?:is|are)\s+(?:still\s+)?(?:pending|outstanding|needed|required|missing)\b|\b(?:still\s+)?(?:needs?|waiting\s+(?:on|for)|awaiting)\b.*\b(?:approvals?|sign[ -]?offs?)\b/i
-type Kind = { kind: 'named'; who: string } | { kind: 'pending' }
-function othersSentence(sentence: string, owner: string): Kind | undefined {
-	const line = sentence.replace(/[.!;]$/, '')
-	if (FIRST_PERSON.test(line) || /^\W*(?:(?:have|had|has|just|already|now|also)\s+)*(?:approved|signed[ -]?off|LGTM)\b/i.test(line)) return undefined
-	const named = NAMED_APPROVED.exec(line), by = APPROVED_BY.exec(line)
-	const simple = /^(@?[\p{Lu}][\p{L}'-]*(?:\s+[\p{Lu}][\p{L}'-]*){0,3})\s+(?:approves|approved|signed[ -]?off)\b/u.exec(line)
-	const who = (named ? line.slice(0, named.index) : by?.[1] ?? simple?.[1] ?? '').replace(/[@*_]/g, ' ').trim()
-	if (who) return owner && who.toLowerCase().includes(owner.toLowerCase()) ? undefined : { kind: 'named', who }
-	return PENDING.test(line) && !/\bapproved\b/i.test(line) ? { kind: 'pending' } : undefined
-}
-// Every sentence about approval reports someone else's state; undefined when any of them speaks for the owner (today's strict path).
-export function othersApproval(text: string, owner: string): Kind[] | undefined {
-	const said = sentencesOf(text).filter(approvalMention)
-	if (!said.length) return undefined
-	const kinds = said.map(s => othersSentence(s, owner.trim()))
-	return kinds.every((k): k is Kind => !!k) ? kinds : undefined
-}
-// Why the live PR does not support such a reply, or undefined when it does. The reviewer named closest before "has approved"
-// (or right after "approved by") must have voted approve (5 or more); "still pending" needs an active PR still short of approval.
-export function othersApprovalMismatch(kinds: Kind[], st: { status: string; votes: { name: string; vote: number }[] }, pr: number): string | undefined {
-	for (const k of kinds) {
-		if (k.kind === 'pending') {
-			if (!/^active$/i.test(st.status)) return `PR ${pr} is ${st.status.toLowerCase()}, so no approval is pending`
-			if (st.votes.length && st.votes.every(v => v.vote >= 5)) return `every reviewer on PR ${pr} has approved, so none is pending`
-			continue
-		}
-		const words = (s: string) => s.toLowerCase().split(/[^\p{L}\p{N}'-]+/u).filter(w => w.length > 1)
-		const said = words(k.who)
-		const hits = st.votes.map(v => {
-			const full = words(v.name), at = (() => { for (let i = said.length - 1; i >= 0; i--) if (full.includes(said[i])) return i; return -1 })()
-			return { v, at }
-		}).filter(h => h.at >= 0)
-		const last = Math.max(-1, ...hits.map(h => h.at)), named = hits.filter(h => h.at === last)
-		if (!named.length) return `the reply says "${k.who}" approved, but no reviewer by that name is on PR ${pr}`
-		if (named.length > 1) return `the reply says "${k.who}" approved, but more than one reviewer on PR ${pr} matches that name`
-		if (named[0].v.vote < 5) return `the reply says ${named[0].v.name} approved, but their vote on PR ${pr} is ${voteName(named[0].v.vote)}`
-	}
-	return undefined
-}
-// The vote the owner's own words say is already in place: 'approval' for "I approved it" or "LGTM", a vote value for
-// "my vote is now Waiting for author"; undefined for a plan, a condition or a negation (bug 10-23 E35).
-const VOTE_SAID: Record<string, number> = { approved: 10, approvedwithsuggestions: 5, waitingforauthor: -5, rejected: -10, novote: 0 }
-function explicitVote(s: string): number | undefined {
-	const v = /\bmy vote (?:is|was set to|has been set to)\s+(?:now\s+)?["']?(approved with suggestions|approved|waiting for author|waitingforauthor|rejected|no vote|novote)\b/i.exec(s)
-		?? /\b(?:I|we)(?:'ve|\s+have)?\s+(?:just\s+|now\s+|already\s+)?(?:voted|set my vote(?: on \S+(?: \d+)?)? to)\s+["']?(approved with suggestions|approved|waiting for author|waitingforauthor|rejected|no vote|novote)\b/i.exec(s)
-	return v ? VOTE_SAID[v[1].toLowerCase().replace(/\s+/g, '')] : undefined
-}
-function notClaim(s: string): boolean {
-	const completed = /\b(?:approved|signed[ -]?off|rejected|requested changes|voted|waiting (?:for|on) author|lgtm)\b/i.exec(s)
-	const before = completed ? s.slice(0, completed.index).replace(/^\s*when\s+(?=(?:I|we)(?:'ve|\s+have)?\s)/i, '') : s
-	return /\?\s*$/.test(s) || /^(?:please\b|(?:could|can|would|will) you\b)/i.test(s) ||
-		/^(?:approve|reject|request changes|sign[ -]?off)\s+(?:it|this|that|the PR|PR\s+#?\d+)\b/i.test(s) ||
-		/^(?:looks? |it (?:looks? |is ))?(?:not )?ready for (?:approval|sign[ -]?off)\b/i.test(s) ||
-		/\b(?:not|never|until|unless|if|once|after|when|before|will)\b|n't\b|'ll\b/i.test(before)
-}
-const VOTE_CLASSES = [
-	{ kind: 'none', matches: (s: string, _owner: string) => notClaim(s) },
-	{ kind: 'others', matches: (s: string, owner: string) => !!othersSentence(s, owner) },
-	{ kind: 'owner', matches: (_s: string, _owner: string) => true },
-] as const
-export function voteSentences(text: string, owner = '') {
-	return sentencesOf(text).filter(voteMention).flatMap(sentence =>
-		sentence.split(/[,;\u2014\u2013:]\s*(?:(?:but|and)\s+)?/i).map(clause => clause.trim()).filter(voteMention).map(clause => {
-			const others = othersSentence(clause, owner)
-			const vote = explicitVote(clause) ?? (/\breject(?:ed|ion)?\b|\brequested changes\b/i.test(clause) ? -10 :
-				/\bwaiting (?:for|on) author\b/i.test(clause) ? -5 : 'approval' as const)
-			return { sentence, vote, kind: VOTE_CLASSES.find(row => row.matches(clause, owner))!.kind, others }
-		}))
-}
-export function isNonAdoPrLink(url: string): boolean {
-	if (!URL.canParse(url)) return false
-	const link = new URL(url), host = link.hostname.toLowerCase()
-	return /^https?:$/.test(link.protocol) && host !== 'dev.azure.com' && !host.endsWith('.visualstudio.com') &&
-		/\/(?:pull|pull-requests|merge_requests)\/[1-9]\d*(?:\/|$)/i.test(link.pathname)
-}
-export function claimedVote(text: string): number | 'approval' | undefined {
-	return voteSentences(text).find(s => s.kind === 'owner')?.vote
-}
-export const claimsApproval = (text: string) => claimedVote(text) !== undefined
-// What a reply claims about votes, which decides whether the PR is read before it goes (queue-new #12): 'owner' for the owner's own
-// approval or vote ("I approved it", "Approved.", "my vote is …"), others' approval (#6), or 'none'. Withholding, conditional and
-// future words ("not ready to approve", "will approve once …", "looks ready for approval") claim nothing and send with no PR read.
-export type ApprovalClaim = 'none' | 'owner' | { others: NonNullable<ReturnType<typeof othersApproval>> }
-export function approvalClaim(text: string, owner: string): ApprovalClaim {
-	const said = voteSentences(text, owner).filter(s => s.kind !== 'none')
-	if (said.some(s => s.kind === 'owner')) return 'owner'
-	const others = said.flatMap(s => s.others ? [s.others] : [])
-	return others.length ? { others } : 'none'
-}
-export function voteClaimGap(text: string, effects: Effect[] = [], lastKnownVote?: { pr: number; vote?: number; head?: string }): { pr?: number; claim: number | 'approval'; why: string } | undefined {
-	for (const said of voteSentences(text).filter(s => s.kind === 'owner')) {
-		const ids = prNumbersIn(said.sentence), candidates = [...new Set(effects.filter(e => isVote(e.call)).map(e => prIdOf(e.call)).filter(id => id !== undefined))]
-		const prs = ids.length ? ids : lastKnownVote ? [lastKnownVote.pr] : candidates.length === 1 ? candidates : [undefined]
-		for (const pr of prs) {
-			const matches = (vote?: number) => vote !== undefined && (said.vote === 'approval' ? vote >= 5 : vote === said.vote)
-			const supported = pr !== undefined && (lastKnownVote?.pr === pr && matches(lastKnownVote.vote) ||
-				effects.some(e => isVote(e.call) && prIdOf(e.call) === pr && !e.off && !e.error && !e.maybe &&
-					(!e.done || !!lastKnownVote?.head && sameHead(e.head, lastKnownVote.head)) && matches(voteValue(e.call))))
-			if (!supported) return { pr, claim: said.vote, why: voteClaimText(pr, said.vote, said.sentence) }
-		}
-	}
-	return undefined
-}
-// The PRs a claim is about: numbers in the sentences that make it; else every PR the ask named when the reply says "all three",
-// "both", "each", "them"; else the one the item is about. Empty: it does not say which of several.
-export function claimedPrs(text: string, askPrs: number[], single?: number): number[] {
-	const said = voteSentences(text).filter(s => s.kind !== 'none').flatMap(s => prNumbersIn(s.sentence))
-	if (said.length) return [...new Set(said)]
-	if (askPrs.length > 1 && /\b(?:all|both|each|every|them|these|those)\b/i.test(text)) return askPrs
-	return single ? [single] : askPrs.length === 1 ? askPrs : []
-}
-export const approvalAsk = (text: string) => approvalMention(text) && !reReviewAsk(text)
-export const approvalOnly = (wf: Workflow) => {
-	const k = wf.work
-	if (!k || !/^(?:please\s+)?(?:review\s+(?:and|&)\s+)?(?:approve|sign[ -]?off)\s+(?:PR|pull request)\s*#?\s*\d{4,}[.!]?$/i.test(k.goal)) return false
-	if (k.plan?.some(p => !p.done) || /\b(?:after|before|then|validat\w*|test\w*|deploy\w*|ship\w*|monitor\w*|rollback|config\w*|partner)\b/i.test(k.doneWhen)) return false
-	const goal = linksIn(k.goal).filter(l => l.startsWith('pr:')), ask = linksIn(wf.lastAsk ?? '').filter(l => l.startsWith('pr:'))
-	return new Set([...k.links.filter(l => /^pr:/i.test(l)), ...goal, ...ask].map(l => l.split(/[:/]/).at(-1))).size <= 1
-}
-
 export function pendingParts(store: Store, home: Workflow, except?: string): boolean {
 	return (home.work?.parts ?? []).filter(id => id !== except).some(id => {
 		const part = store.workflow(id)

@@ -1,5 +1,7 @@
 import { changeSays, isVote, pendingEffects, prIdOf, shown, voteValue } from './effects.ts'
 import type { Effect, Msg, Proposal, Workflow } from './types.ts'
+import { normalizeQuestionHint } from './normalize-report.ts'
+import type { Place } from '../web/model/place.ts'
 
 export const MARK = 'Assistant ·'
 
@@ -13,7 +15,7 @@ export function age(fromIso: string, now: Date): string {
 	return `${Math.round(m / 1440)}d`
 }
 
-export function statusLine(wf: Workflow, now = new Date()): string {
+export function statusLine(wf: Workflow, now = new Date(), location?: Place): string {
 	if (wf.state === 'done') {
 		const left = wf.sent?.undoUntil ? Math.round((Date.parse(wf.sent.undoUntil) - now.getTime()) / 60000) : 0
 		return (wf.status || 'Done') + (left > 0 ? ` · undo for ${left} min: "undo ${wf.code}"` : '')
@@ -25,9 +27,9 @@ export function statusLine(wf: Workflow, now = new Date()): string {
 	if (wf.state === 'scheduled') return wf.statusReason?.kind === 'not-sent' ? wf.statusReason.text : `Sending at ${hhmm(wf.sendAt)} unless you act (${wf.decision?.reason ?? 'rule'})`
 	if (wf.job && !wf.question) {
 		const effects = (wf.effects ?? []).filter(e => !e.off), error = effects.find(e => e.error)?.error
-		if (effects.some(e => e.maybe)) return effectResultLine(wf, 'unsure')
-		if (error) return effectResultLine(wf, effects.some(e => e.done) ? 'partial' : 'failed', error)
-		if (effects.length && effects.every(e => e.done) && !wf.draft?.text) return effectResultLine(wf, 'changes-only')
+		if (effects.some(e => e.maybe)) return effectResultLine(wf, 'unsure', '', location)
+		if (error) return effectResultLine(wf, effects.some(e => e.done) ? 'partial' : 'failed', error, location)
+		if (effects.length && effects.every(e => e.done) && !wf.draft?.text) return effectResultLine(wf, 'changes-only', '', location)
 		if (!wf.draft?.preview) return `Ready: ${wf.status}`
 	}
 	if (wf.draft?.preview) return `Preview: reply "ok ${wf.code}" to send`
@@ -38,15 +40,15 @@ export function statusLine(wf: Workflow, now = new Date()): string {
 	return `Needs you: ${wf.question}`
 }
 
-export function renderItem(wf: Workflow, mode: 'full' | 'line', now: Date, bold = true): string {
+export function renderItem(wf: Workflow, mode: 'full' | 'line', now: Date, bold = true, location?: Place): string {
 	const code = bold ? `**${wf.code}**` : wf.code
 	const who = wf.asker?.name ?? 'Someone'
-	const head = `${code} · ${who} · ${wf.chat.name} · ${age(wf.createdAt, now)}`
+	const head = `${code} · ${who} · ${location?.row ?? wf.chat.name} · ${age(wf.createdAt, now)}`
 	const fresh = wf.newCount > 0 ? ` · ${wf.newCount} new message${wf.newCount > 1 ? 's' : ''}` : ''
-	if (mode === 'line') return `${head} · ${clip(oneLine(statusLine(wf, now)), 110)}`
+	if (mode === 'line') return `${head} · ${clip(oneLine(statusLine(wf, now, location)), 110)}`
 	const lines = [head + fresh]
 	if (wf.lastAsk) lines.push(`> ${clip(oneLine(wf.lastAsk), 140)}`)
-	lines.push(statusLine(wf, now))
+	lines.push(statusLine(wf, now, location))
 	lines.push(...cardLines(wf))
 	const left = pendingEffects(wf.effects)
 	if (wf.state === 'needs_human' && left.length) lines.push(okWill(wf), ...left.map(e => `- ${clip(oneLine(changeSays(e)), 140)}`))
@@ -64,6 +66,10 @@ export function cardLines(wf: Workflow): string[] {
 		out.push(...wf.choices.options.map((o, i) => `${i + 1}. ${o.label}${o.note ? ` (${o.note})` : ''}`))
 		out.push(`Reply "${wf.code}: 1"${wf.choices.multi ? `, or several: "${wf.code}: 1, 3"` : ''}${wf.choices.other ? `, or "${wf.code}: your own answer"` : ''}.`)
 	} else if (real) out.push(`Draft: "${clip(wf.draft!.text.split('\n').slice(0, 2).join(' '), 220)}"`)
+	if (wf.question && wf.questionHint && !wf.choices) {
+		const answers = normalizeQuestionHint(wf.questionHint).answers ?? ['your answer']
+		out.push(`Answer ${answers.map(answer => `"${wf.code}: ${answer}"`).join(' or ')}.`)
+	}
 	return out
 }
 
@@ -108,9 +114,9 @@ export function effectLine(effects: Effect[], tense: 'will' | 'doing' | 'done' =
 }
 
 export type EffectResult = 'running' | 'done' | 'changes-only' | 'held' | 'partial' | 'failed' | 'unsure' | 'reply-only'
-export function effectResultLine(wf: Workflow, result: EffectResult, reason = ''): string {
+export function effectResultLine(wf: Workflow, result: EffectResult, reason = '', location?: Place): string {
 	const effects = wf.effects ?? [], first = wf.asker?.name?.split(/\s+/)[0] ?? 'them'
-	const person = `${first}${wf.chat.group ? ` in ${wf.chat.name}` : ''}`
+	const person = `${first}${location ? ` in ${location.sentence}` : wf.chat.group ? ` in ${wf.chat.name}` : ''}`
 	const pr = effects.map(e => prIdOf(e.call)).find(id => id !== undefined), place = pr === undefined ? 'the changes' : `PR ${pr}`
 	const clean = reason.replace(/^Error:\s*/i, '').split(/(?<=[.!?])\s+/)[0].replace(/\b[A-Z]\d+\b/g, 'this item').replace(/[.\s]+$/, '')
 	const why = /not allowed|haven.t allowed|not enabled|not permitted/i.test(clean) ? "you haven't allowed Delegate to make this change"
@@ -144,7 +150,7 @@ export function groups(wfs: Workflow[], since?: string) {
 	return { needs, watching, running, done }
 }
 
-export function renderList(wfs: Workflow[], now: Date, since?: string, health: Record<string, { text: string; since: string }> = {}, extra: Extra = {}): string {
+export function renderList(wfs: Workflow[], now: Date, since?: string, health: Record<string, { text: string; since: string }> = {}, extra: Extra = {}, placeOfItem?: (wf: Workflow) => Place | undefined): string {
 	const kp = (extra.proposals ?? []).filter(p => p.state === 'needs_human').sort((a, b) => a.createdAt.localeCompare(b.createdAt))
 	const bg = extra.background ?? []
 	const { needs, watching, running, done } = groups(wfs, since)
@@ -152,8 +158,8 @@ export function renderList(wfs: Workflow[], now: Date, since?: string, health: R
 	const out = [head]
 	const problems = Object.values(health)
 	if (problems.length) out.push('', '### Health', ...problems.map(p => `- ${p.text} (since ${age(p.since, now)} ago)`))
-	if (needs.length) out.push('', '### Needs you', ...needs.map(w => renderItem(w, 'full', now) + '\n'))
-	if (done.length) out.push('', '### Done while you were away', ...done.map(w => (w.kind === 'tracker' ? `- Update · **${w.code}** · ${w.lastAsk?.replace(/^Watch /, '').replace(/ until .*$/, '') ?? ''}: ${clip(oneLine(w.status), 110)}` : `- ${renderItem(w, 'line', now)}`)))
+	if (needs.length) out.push('', '### Needs you', ...needs.map(w => renderItem(w, 'full', now, true, placeOfItem?.(w)) + '\n'))
+	if (done.length) out.push('', '### Done while you were away', ...done.map(w => (w.kind === 'tracker' ? `- Update · **${w.code}** · ${w.lastAsk?.replace(/^Watch /, '').replace(/ until .*$/, '') ?? ''}: ${clip(oneLine(w.status), 110)}` : `- ${renderItem(w, 'line', now, true, placeOfItem?.(w))}`)))
 	// Knowledge never crowds out replies: one line per topic, after them (dev-spec/slices/05 UX).
 	if (kp.length) out.push('', '### Knowledge to review', ...kp.slice(0, 5).map(p => `- **${p.code}** · ${p.title} · ${p.status}`), ...(kp.length > 5 ? [`- and ${kp.length - 5} more`] : []),
 		kp.length > 1 && kp.length <= 20 ? `Say "review knowledge" to go through them one by one, or "ok ${kp[0].code}-${kp.at(-1)!.code}" to save all.` : `Reply "ok ${kp[0].code}", "more ${kp[0].code}", or "skip ${kp[0].code}".`)
@@ -164,7 +170,7 @@ export function renderList(wfs: Workflow[], now: Date, since?: string, health: R
 	const progress = wfs.filter(w => w.state === 'open' && w.work)
 	if (progress.length) out.push('', '### In progress', ...progress.map(w => `- **${w.code}** · ${clip(oneLine(w.work!.goal), 80)} · ${w.status}`), `Say "more ${progress[0].code}" for its steps, or "close ${progress[0].code}: why" when it is finished.`)
 	if (watching.length) out.push('', '### Watching', ...watching.map(w => `- **${w.code}** · ${w.lastAsk?.replace(/^Watch /, '') ?? ''} · ${w.status}`))
-	if (running.length || bg.length) out.push('', '### Running', ...running.map(w => `- ${renderItem(w, 'line', now)}`), ...bg.map(b => `- ${b.what} (${Math.max(0, Math.round((now.getTime() - Date.parse(b.since)) / 60000))} min)`))
+	if (running.length || bg.length) out.push('', '### Running', ...running.map(w => `- ${renderItem(w, 'line', now, true, placeOfItem?.(w))}`), ...bg.map(b => `- ${b.what} (${Math.max(0, Math.round((now.getTime() - Date.parse(b.since)) / 60000))} min)`))
 	if (!needs.length && !done.length && !running.length && !kp.length && !bg.length && !progress.length) out.push('', 'Nothing needs you.')
 	return out.join('\n')
 }
@@ -218,12 +224,12 @@ export const lookLine = (x: NonNullable<Workflow['looked']>[number]) =>
 		: x.tool === 'incident' ? `Read incident ${x.q}` : x.tool === 'ado' ? `Read ${x.id?.startsWith('pr:') ? 'PR' : 'work item'} ${x.q}` : x.tool === 'wiki' ? `Read a wiki page`
 			: `${x.tool === 'knowledge' ? 'Your knowledge' : 'Teams'}: "${x.q}" (${hitCount(x.n)})`
 
-export function renderMore(wf: Workflow, thread: Msg[], now: Date): string {
+export function renderMore(wf: Workflow, thread: Msg[], now: Date, location?: Place): string {
 	const t = thread.slice(-10).map(m => `- ${m.from.name}: ${clip(oneLine(m.text), 200)}`)
 	const src = (wf.draft?.sources ?? []).map(s => `- ${s.ref} (${s.tier}, ${s.origin})`)
 	// What the owner approves comes first; the thread last, so a phone cutoff trims context, not the decision (review 01-04 P2-9).
 	const changes = pendingEffects(wf.effects).map(e => `- ${clip(oneLine(changeSays(e)), 400)}`)
-	const head = `${wf.code} · ${wf.asker?.name ?? 'Someone'} · ${wf.chat.name}\n${statusLine(wf, now)}`
+	const head = `${wf.code} · ${wf.asker?.name ?? 'Someone'} · ${location?.row ?? wf.chat.name}\n${statusLine(wf, now, location)}`
 	const card = cardLines(wf)
 	const notes = (wf.notes ?? []).map(n => `- ${clip(oneLine(n.q), 120)}: ${n.a ? clip(oneLine(n.a), 300) : 'asking…'}`)
 	const work = wf.work ? ['', `This work: ${wf.work.goal}. Done when ${wf.work.doneWhen}.`, ...(wf.work.plan ?? []).map(p => `${p.done ? '[x]' : '[ ]'} ${p.what} (${p.who}${p.in ? `, ${p.in}` : ''}${p.probe ? `, build ${p.probe.build}${p.seen ? ` ${p.seen}` : ''}` : ''})`), ...wf.work.steps.slice(-8).map(x => `- ${x.at.slice(5, 16).replace('T', ' ')} ${clip(oneLine(x.what), 160)}`)] : []

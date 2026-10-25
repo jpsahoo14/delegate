@@ -25,6 +25,16 @@ const choice = z.object({ id: optional, label: text, note: optional, reply: opti
 const choices = z.object({ prompt: text, multi: z.boolean().optional(), options: z.array(choice), other: z.boolean().optional(), group: z.boolean().optional() })
 const context = z.object({ label: text, text, tone: z.enum(['info', 'warn']).optional() })
 const thread = z.object({ who: text, text, at: text, owner: z.boolean() })
+// A "Left for you" line from wf.left (Left-for-you contract, 0.2.46), worded on the server: what he does, its quote, where it came from,
+// Why? (refusals) and the one page-only button of its kind.
+const leftLine = z.object({
+	id: text, type: z.enum(['refusal', 'promise']), text, quote: z.object({ text, by: z.enum(['asker', 'owner', 'delegate']) }).optional(),
+	source: z.object({ text, href: optional }), why: optional, seen: z.object({ pr: z.number() }).optional(),
+	button: z.discriminatedUnion('kind', [
+		z.object({ kind: z.literal('copy-reply'), text, href: text }), z.object({ kind: z.literal('settings'), key: text }), z.object({ kind: z.literal('open-pr'), href: text }),
+		z.object({ kind: z.literal('action'), actionId: text }),
+	]).optional(),
+})
 const item = z.object({
 	id: text, code: text, rev: text, type: text,
 	personId: text, chatId: text, at: text, askAt: optional, ask: optional, thread: z.array(thread), newCount: z.number(), earlier: optional, before: optional,
@@ -33,7 +43,7 @@ const item = z.object({
 	changeIds: strings, effectIds: strings.optional(), sourceIds: strings, noteIds: strings, todoIds: strings, actionIds: strings, primaryActionId: optional, workId: optional,
 	job: optional, why, status: text, attention: optional, attentionKind: z.enum(['reply-changed', 'run-failed', 'agent-setup', 'reason']).optional(), voteGap: z.object({ text, held: z.boolean(), quote: optional }).optional(), returned: z.object({ machine: text, at: text, report: z.boolean() }).optional(),
 	prReview: z.object({ pr: z.number(), voteRecommended: z.boolean(), findings: z.array(z.object({ text, file: optional, line: z.number().optional(), thread: z.object({ author: text, at: text, url: optional }).optional(), posts: z.boolean().optional(), changeId: optional })) }).optional(), mode: optional, editor: z.enum(['reply', 'answer', 'none']).optional(), block3: z.enum(['when-you-send', 'none']).optional(), openOn: optional, teams: optional, debug: strings.optional(),
-	promise: z.object({ said: text, failed: optional }).optional(), todos: strings.optional(), leftLines: z.array(z.object({ text, why: text })).optional(), repaired: z.boolean().optional(),
+	promise: z.object({ said: text, failed: optional }).optional(), todos: strings.optional(), leftLines: z.array(leftLine).optional(), repaired: z.boolean().optional(),
 	// R10b: a review posted under his rule that waits for his approval (SEND's reviewDone, from receipts).
 	reviewDone: z.object({ pr: z.number(), reviewedAt: text, counts: z.object({ high: z.number(), medium: z.number(), low: z.number() }),
 		posted: z.array(z.object({ severity: z.enum(['High', 'Medium', 'Low']), file: optional, line: z.number().optional(), text, thread: optional })), more: z.number(),

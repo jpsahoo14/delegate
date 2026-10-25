@@ -1,4 +1,5 @@
 import { view } from '../web/view.ts'
+import { placeOf } from '../web/model/place.ts'
 import { describe } from './automations.ts'
 import { existsSync } from 'node:fs'
 import { isAbsolute, join, relative, resolve } from 'node:path'
@@ -263,7 +264,8 @@ export function resolveEvidence(k: Knowledge, cfg: Config, sources: Source[], ro
 // The one inbox every surface shows. Results of AI-chat actions wait here, so the owner sees them next time (tester 05 P2-2).
 export function inbox(store: Store, since?: string): string {
 	const receipts = store.takeReceipts()
-	const list = renderList(store.workflows(), new Date(), since, store.health(), { proposals: store.proposals(), background: bootLines(store), automations: store.automations().filter(a => a.state !== 'ended').map(a => ({ line: describe(a), state: a.state, next: a.next, code: a.code })), waiting: view(store, since).waiting })
+	const list = renderList(store.workflows(), new Date(), since, store.health(), { proposals: store.proposals(), background: bootLines(store), automations: store.automations().filter(a => a.state !== 'ended').map(a => ({ line: describe(a), state: a.state, next: a.next, code: a.code })), waiting: view(store, since).waiting },
+		wf => placeOf(store, wf.chat, wf.asker))
 	store.markShown(store.workflows())
 	const caught = catchUpLines(store, since)
 	const all = caught.length ? `${list}\n\n### Catch up\n${caught.join('\n')}\nSay "mine ${caught[0].split(' ')[1]}" if one of these needs you.` : list

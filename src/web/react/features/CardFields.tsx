@@ -3,9 +3,12 @@ import type { CardUi } from '../data/store.ts'
 import type { Entities } from '../domain/contracts.ts'
 
 type FieldKey = 'editText' | 'answer' | 'ask' | 'report' | 'feedback' | 'watchText' | 'watchUntil'
-export function Field({ code, rev, field, label, value, edit, rows = 3, placeholder, singleLine = false, patch, describedBy, mark }: {
+export function Field({ code, rev, field, label, value, edit, rows = 3, placeholder, singleLine = false, patch, describedBy, mark, framed = false, footer }: {
 	code: string; rev: string; field: FieldKey; label: string; value: string; edit: (patch: Partial<CardUi>) => void; rows?: number; placeholder?: string; singleLine?: boolean
 	patch?: (value: string) => Partial<CardUi>; describedBy?: string; mark?: string
+	// I34 (Designer, designer-automated-marker.md): one frame holding the text and a fixed footer row (the marker Teams will add), a
+	// sibling of the textarea, so it can't be selected into, typed into or deleted; clicking it puts the caret at the end of his words.
+	framed?: boolean; footer?: string
 }) {
 	const id = `${code}-${rev}-${field}`, Control = singleLine ? 'input' : 'textarea'
 	const control = useRef<HTMLTextAreaElement & HTMLInputElement>(null), mirror = useRef<HTMLDivElement>(null)
@@ -13,7 +16,7 @@ export function Field({ code, rev, field, label, value, edit, rows = 3, placehol
 	useMarkMirror(control, mirror, at >= 0)
 	const change = (value: string) => patch ? patch(value) : { [field]: value }
 	useEffect(() => () => edit({ focusedField: undefined }), [edit])
-	return <label className="field-label" htmlFor={id} style={at >= 0 ? { position: 'relative' } : undefined}><span>{label}</span>
+	const box = <>
 		{at >= 0 && <div ref={mirror} className="field-mark" aria-hidden="true">{value.slice(0, at)}<mark>{mark}</mark>{value.slice(at + mark!.length)}{'\n'}</div>}
 		<Control ref={control} id={id} data-field={field} value={value} rows={singleLine ? undefined : rows} placeholder={placeholder} aria-describedby={describedBy}
 		onChange={event => edit(change(event.target.value))}
@@ -28,7 +31,11 @@ export function Field({ code, rev, field, label, value, edit, rows = 3, placehol
 			event.preventDefault()
 			if (!event.nativeEvent.isComposing && !event.repeat) event.currentTarget.closest('form, section')?.querySelector<HTMLButtonElement>('[data-action-kind=ask]')?.click()
 		}}
-	/></label>
+	/></>
+	const toEnd = (event: { preventDefault(): void }) => { event.preventDefault(); const area = control.current; if (!area) return; area.focus(); area.setSelectionRange(area.value.length, area.value.length) }
+	return <label className="field-label" htmlFor={id} style={at >= 0 && !framed ? { position: 'relative' } : undefined}><span>{label}</span>
+		{framed ? <div className="reply-frame">{box}{footer && <div className="reply-footer" aria-hidden="true" onMouseDown={toEnd} onClick={toEnd}>{footer}</div>}</div> : box}
+	</label>
 }
 // A37 (b) / PM A R37: the words a vote claim quotes, highlighted in the editor: a mirror of the textarea (its computed font, padding,
 // border, size and scroll) drawn over it with transparent text and a tinted mark, so typing, selection and the caret are untouched.

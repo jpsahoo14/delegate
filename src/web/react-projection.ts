@@ -3,7 +3,7 @@ import type { Parsed } from '../core/verbs.ts'
 import { parseVerbs } from '../core/verbs.ts'
 import { hashOf } from '../knowledge/format.ts'
 import { card, knowledge as knowledgeCard, readingOf, view, who as displayWho, type ItemCard, type SourceRow, type Who } from './view.ts'
-import { nextView, snapshot as placementSnapshot, place, todoHeadline, type NextRow } from './next.ts'
+import { firstLeft, nextView, snapshot as placementSnapshot, place, todoHeadline, type NextRow } from './next.ts'
 import { emptyEntities, IMAGE_TOKEN, snapshotSchema, type Action, type Intent, type Snapshot } from './react/domain/contracts.ts'
 import { knowledgeOf } from '../runner/proposals.ts'
 import { find, teamsMessage } from './model/find.ts'
@@ -49,7 +49,7 @@ function scrubFacts(f: CardFacts): CardFacts {
 import { cardState, checkCard, failLine, type ActionKind, type CardFacts } from '../core/card-state.ts'
 import { policyContext } from '../runner/autosend.ts'
 import { isPersona } from '../core/intake.ts'
-import { PAGE_REPLY_CHANGED, automationApprovalRev, pageChangeId, pageDigest, pageOptionId, proposalApprovalRev, workflowApprovalRev } from '../core/page-approval.ts'
+import { PAGE_REPLY_CHANGED, automationApprovalRev, pageChangeId, pageDigest, pageOptionId, leftRev, proposalApprovalRev, workflowApprovalRev } from '../core/page-approval.ts'
 import type { Config, PageApproval, Workflow } from '../core/types.ts'
 import { isVote, meaningParts, pendingEffects, refusal, shown, voteValue } from '../core/effects.ts'
 import { byDate, forPage, sourceChip } from './model/format.ts'
@@ -70,11 +70,12 @@ import { acceptSuggestion, addLine, answerLine, confirmLine, deleteLine, deleteN
 import { APPROVAL_WORD, voteMention } from '../core/vote-claims.ts'
 import { personName } from '../core/format.ts'
 import { placeOf } from './model/place.ts'
+import { leftSourceWords, leftWords } from './model/left-words.ts'
 import { groupChoices } from '../runner/review-gate.ts'
 import { restoreOffRecord } from '../runner/offrecord.ts'
 import { chatIdNet, idNet, pageText, takePageTextLeaks } from './page-text.ts'
 import { pageManagementRev, workflowManagementRev } from '../store/page-revision.ts'
-import { active, isNonAdoPrLink, pendingParts, voteClaimGap, voteSentences } from '../runner/work.ts'
+import { active, isNonAdoPrLink, openLeft, pendingParts, voteClaimGap, voteSentences } from '../runner/work.ts'
 import { heldBy } from '../runner/owner.ts'
 import { voteClaimReview } from '../runner/vote-claim.ts'
 import { voteHold } from '../core/owner-send.ts'
@@ -267,6 +268,33 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 	const isCode = (token: string) => /^[A-Z]\d{1,5}$/.test(token) && byCode.has(token)
 	const chatWords = (code: string) => { const w = byCode.get(code); return w ? w.chat.group ? placeOf(store, w.chat, w.asker)?.sentence ?? w.chat.name : `${(w.asker?.name ?? '').split(/\s+/)[0]} · 1:1` : undefined }
 	const whereWords = (home: string, where?: string) => !where ? undefined : !isCode(where) ? where : where === home ? 'this chat' : chatWords(where)
+	// "Left for you" lines from wf.left only (Left-for-you contract; PM A R35 (d)): what he does, a muted source line with its link
+	// (no thread ids or raw links shown), "Why?" on a refusal, and one button for its kind. Ask Delegate again and Draft the invite again
+	// go through HOST's line verbs behind SEND's leftRev consent (decision 53). A promise has none: its tick is its action.
+	// Rule 5 seen-done: a line HOST's probe saw done shows once, "✓ Done (seen on PR <n>)", on the first visit after it was seen (its
+	// cleared.at is newer than this visit's cursor); nothing is stored per view.
+	const seenSince = since ?? visit?.fallbackSince
+	const leftLinesOf = (wf: Workflow) => [...openLeft(wf), ...(wf.left ?? []).filter(line => line.cleared?.why === 'seen-done' && line.cleared.seen && !!seenSince && line.cleared.at > seenSince)].map(line => {
+		const day = shortDay(line.source.at), href = safeLink(line.source.href)
+		const button = line.type !== 'refusal' ? undefined
+			: line.kind === 'other-pr' && line.reply && safeLink(line.reply.href) ? { kind: 'copy-reply' as const, text: pageText(line.reply.text), href: safeLink(line.reply.href)! }
+				: line.kind === 'setting-off' && line.setting ? { kind: 'settings' as const, key: line.setting }
+					: ['pr-lifecycle', 'deploy'].includes(line.kind) && safeLink(line.pr?.href) ? { kind: 'open-pr' as const, href: safeLink(line.pr!.href)! }
+						// Decision 53: HOST's two line verbs, behind SEND's leftRev consent (PM A R35 (d): incomplete and old invite).
+						: !line.cleared && line.kind === 'incomplete' ? { kind: 'action' as const, actionId: leftVerb(wf.code, wf, line.id, 'left-ask-again') }
+							: !line.cleared && line.kind === 'old-invite' ? { kind: 'action' as const, actionId: leftVerb(wf.code, wf, line.id, 'left-draft-invite') } : undefined
+		const chat = wf.chat.group ? placeOf(store, wf.chat, wf.asker)?.sentence ?? wf.chat.name : undefined
+		const seen = line.cleared?.seen
+		return {
+			id: line.id, type: line.type, text: pageText(leftWords(line)),
+			...(line.action.quote && line.action.verb !== 'promise' ? { quote: { text: pageText(line.action.quote), by: line.action.quoteBy ?? 'asker' } } : {}),
+			source: { text: pageText([leftSourceWords(line.source, wf.asker?.name?.split(/\s+/)[0], chat), day].filter(Boolean).join(' · ')), ...(href ? { href } : {}) },
+			...(seen ? { seen: { pr: seen.pr } } : {
+				...(line.type === 'refusal' && line.why?.trim() ? { why: pageText(line.why).replace(/[.\s]+$/, '') } : {}),
+				...(button ? { button } : {}),
+			}),
+		}
+	})
 	const plainText = (text: string) => text
 		.replace(/\s*\(([^()]*?),\s*([A-Z]\d{1,5})\)/g, (all, inner, code) => isCode(code) ? ` · ${inner}` : all)
 		.replace(/\s*\(([A-Z]\d{1,5})\)/g, (all, code) => isCode(code) ? '' : all)
@@ -299,14 +327,25 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 		const words = plainText(asked.replace(/\b\d{4}-\d{2}-\d{2}(?:T[\d:.]+Z?)?\b/g, day => shortDay(day)))
 		return words ? `Earlier${m ? ` · ${shortDay(m[1])}` : ''}: ${words}` : undefined
 	}
-	function markTodos(code: string, todos: NonNullable<Workflow['kept']>, kind = 'todo-done', prefix = code): string {
-		const expect = pageDigest(todos.map(todo => [todo.id, todo.text, todo.at]))
-		return offer(code, expect, kind, kind === 'todo-row-done' ? 'Mark done' : todos.length === 1 ? 'Mark to-do done' : `Mark ${todos.length} to-dos done`,
-			() => ({ code, verb: 'close' }), { staleness: 'exact', expect, todoIds: todos.map(todo => todo.id) }, prefix)
+	// "I've done these" (decision 53, PE 08:05:12Z): one mark binds his open kept to-dos AND his open wf.left lines, in that order (the
+	// card's tick numbers), to SEND's separate leftRev, never to workflowApprovalRev, so a new or cleared line can't stale a Send.
+	function markTodos(code: string, wf: Workflow, kind = 'todo-done', prefix = code): string {
+		const ids = [...(wf.kept ?? []).filter(todo => !todo.done).map(todo => todo.id), ...openLeft(wf).map(line => line.id)], expect = leftRev(wf)
+		return offer(code, expect, kind, kind === 'todo-row-done' ? 'Mark done' : ids.length === 1 ? 'Mark to-do done' : `Mark ${ids.length} to-dos done`,
+			() => ({ code, verb: 'close' }), { staleness: 'exact', expect, todoIds: ids }, prefix)
+	}
+	// Decision 53: the two line verbs, bound to one active line id and leftRev. Draft only: the result is a proposal or a draft for his OK.
+	function leftVerb(code: string, wf: Workflow, lineId: string, verb: 'left-ask-again' | 'left-draft-invite'): string {
+		const expect = leftRev(wf)
+		return offer(code, expect, verb, verb === 'left-ask-again' ? 'Ask Delegate again' : 'Draft the invite again', () => ({ code, verb, text: lineId }), {
+			staleness: 'exact', expect,
+			meaning: verb === 'left-ask-again' ? `${NAME} proposes it again for your OK. Nothing is sent or changed until you approve.` : `${NAME} drafts the invite again for your OK. Nothing is sent until you approve.`,
+		}, `${code}/${lineId}`)
 	}
 	function closeWork(code: string, kind: string, prefix = code, label = 'Close'): string {
-		const rev = entities.items[code].rev
-		const blocked = byCode.get(code)?.kept?.some(todo => !todo.done)
+		const rev = entities.items[code].rev, wf = byCode.get(code)
+		// SEND's consent refuses a plain page Close while lines are open (decision 53): he ticks them first, or closes from chat.
+		const blocked = !!wf && (wf.kept?.some(todo => !todo.done) || openLeft(wf).length > 0)
 		const reason = "Open the item and tick what's left for you first, then close this work."
 		return offer(code, rev, kind, label, () => {
 			if (blocked) throw new IntentError(409, reason)
@@ -369,12 +408,10 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 		}))]
 		const todoIds = (wf.kept ?? []).filter(todo => !todo.done).map(todo => {
 			const key = `${id}/todo/${todo.id}`
-			// Where it came from (PM 20:00): the reply it was left by, to whom and where, and that message in Teams when it is that one;
-			// a change Delegate couldn't make says so, with its reason under Why?. Never a code or a link in the words.
-			// A to-do that is only the refusal ("Not made for you: <reason>", PE 20:12) has an empty what: the reason is its line.
-			const [what, why] = todo.text.split(/^\s*Not made for you:\s*|\.\s*Not made for you:\s*/)
+			// Where it came from (PM 20:00): the reply it was left by, to whom and where, and that message in Teams when it is that one.
+			// Never a code or a link in the words. Its text is shown as stored: a pre-0.2.46 refusal string is a plain line (contract rules 1, 6).
 			const teams = wf.sent && wf.sent.at === todo.at && wf.chat.id && (!wf.chat.test || teamsChat(wf.chat.id)) ? safeLink(messageLink(wf.chat.id, wf.sent.msgId)) : undefined
-			entities.todos[key] = { ...todo, id: key, itemId: id, code: id, done: false, ...(why ? { text: `${pageText(what.trim() ? what : why).replace(/[.\s]+$/, '').replace(/^./, c => c.toUpperCase())}.`, why: pageText(why).replace(/[.\s]+$/, '') } : {}),
+			entities.todos[key] = { ...todo, id: key, itemId: id, code: id, done: false,
 				from: { at: todo.at, ...(wf.asker?.name ? { who: wf.asker.name.split(/\s+/)[0] } : {}), ...(wf.chat.group && wf.chat.name ? { chat: placeOf(store, wf.chat, wf.asker)?.sentence ?? wf.chat.name } : {}), ...(teams ? { teams } : {}) } }
 			return key
 		})
@@ -572,8 +609,8 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 			if (checkBack.endsAt) actionIds.push(offer(id, rev, 'extend-watch', 'Extend 7 days', () => ({ code: id, verb: 'extend' })))
 			actionIds.push(offer(id, rev, 'stop-watch', 'Stop', () => ({ code: id, verb: 'unwatch' }), { meaning: 'Stops only this check-back. Work and to-dos stay open.' }))
 		}
-		if (todoIds.length) {
-			actionIds.push(markTodos(id, wf.kept!.filter(todo => !todo.done)))
+		if (todoIds.length || openLeft(wf).length) {
+			actionIds.push(markTodos(id, wf))
 		}
 		const replyChanged = wf.state === 'needs_human' && wf.status === PAGE_REPLY_CHANGED
 		// A send the engine refused (owner words claiming an approval the PR does not show, an unverifiable PR) says why on the card (bug 10-23 E35).
@@ -613,17 +650,10 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 				...(cs.strip.kind === 'redraft' && wf.ownerAnswer ? { answer: { text: pageText(wf.ownerAnswer.replace(/^The owner picked:\s*/, 'You picked: ')), ...(wf.workingSince ? { at: wf.workingSince } : {}) } } : {}),
 				...((text => (text ? { previous: text } : {}))(stored.workflows.find(w => w.id === wf.id)?.draft?.text)) } } : {}),
 			prLabel,
-			// #50 + refused[] (PE 01:00): to-dos he keeps stay in block 3; a change Delegate won't make (normalizeReport's refused[], from
-			// the to-dos and the report's facts) and a comment it couldn't prepare are "Left for you" lines, each with its reason.
-			...((lines => ({ todos: lines.todos, ...(lines.left.length ? { leftLines: lines.left } : {}) }))((() => {
-				const raw = c.todos ?? [], PREPARE = /^Couldn't prepare (comment \d+|change \d+|question for the author)(?: \(option \d+\))?:\s*(.+)$/
-				const normal = normalizeReport({ todos: raw.filter(t => !PREPARE.test(t)), context: c.context ?? [], intent: wf.intent })
-				const left = [
-					...normal.refused.map(r => ({ text: `${pageText(r.what).replace(/[.\s]+$/, '')}.`, why: pageText(r.reason).replace(/[.\s]+$/, '') })),
-					...raw.flatMap(t => (m => m ? [{ text: `Couldn't prepare ${m[1]}.`, why: pageText(m[2]).replace(/[.\s]+$/, '') }] : [])(PREPARE.exec(t))),
-				]
-				return { todos: normal.todos, left }
-			})())),
+			// #50 + the Left-for-you contract (0.2.46): to-dos he keeps stay in block 3; what Delegate won't make or couldn't prepare is a
+			// wf.left line (HOST's merge), worded here from its fields (rule 2) with its source, Why? and one kind button. No copy parsing (rule 1).
+			todos: normalizeReport({ todos: c.todos ?? [], context: c.context ?? [], intent: wf.intent }).todos,
+			...((lines => (lines.length ? { leftLines: lines } : {}))(leftLinesOf(wf))),
 			// #50: SEND's repaired comments (its exact status); the card says so above them and offers the post on this revision.
 			...(wf.status === REPAIRED ? { repaired: true } : {}),
 			// R10b (PM §2, joint C2): what the review posted, H→M→L (the chip carries the severity, not the "[High]" bracket), five then
@@ -752,7 +782,7 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 			const waitEntry = row.act.startsWith('W') ? base.waiting.find(w => w.code === row.act) : undefined
 			const waitLine = waitEntry && `Waiting on ${waitEntry.to.split(/,\s*/).map(name => firstOf(name)).filter(Boolean).join(', ') || 'them'} since ${shortDay(waitEntry.at)} · asked: "${waitEntry.text.replace(/\s+/g, ' ').trim().slice(0, 80)}${waitEntry.text.length > 80 ? '…' : ''}"`
 			const headline = (failedJobDirections(workflow) && row.kind === 'question' ? forPage(row.headline) :
-				pageText(reviewRows.get(row.act) ?? waitLine ?? (row.kind === 'todo' ? todoHeadline(byCode.get(row.act)!.kept!.find(todo => !todo.done)!.text) : row.headline.replace(/: nudge, wait, or close\?$/, ': follow up, wait, or close?')))) || 'Review this item'
+				pageText(reviewRows.get(row.act) ?? waitLine ?? (row.kind === 'todo' ? todoHeadline(firstLeft(byCode.get(row.act)!)!.text) : row.headline.replace(/: nudge, wait, or close\?$/, ': follow up, wait, or close?')))) || 'Review this item'
 			const nextWhat = pageText(row.next?.what).replace(/\s+/g, ' ').trim(), owner = row.next?.owner
 			const nextText = !owner ? undefined : owner.kind === 'others' ? pageText(owner.text).replace(/\s+/g, ' ').trim() :
 				owner.kind === 'you' ? nextWhat ? `You: ${nextWhat}` : 'You' :
@@ -923,9 +953,10 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 			const back = wasOff ? restoreOffRecord(store, chatId) : 0
 			return { accepted: true, text: `This chat is normal again.${back ? ` ${back} fact${back === 1 ? '' : 's'} from it ${back === 1 ? 'is' : 'are'} back in your knowledge.` : ''} Existing drafts and source checks are unchanged.` }
 		}, undefined, key)
+		// C2 companion (untitled-chat contract): an untitled group is named by its place sentence, never its stored id-like name.
 		Object.assign(entities.actions[actionId], {
 			effect: 'changes-system', rev: pageDigest([chatId, level]), expect: pageDigest([chatId, level]), staleness: 'exact', needsConfirm: true,
-			meaning: `Stop treating ${level.name} as ${level.level === 'off' ? 'off the record' : level.level === 'shareable' ? 'shareable within your org' : 'private'}? Future learning and replies use the normal privacy checks.${level.level === 'off' ? ' Facts set aside from it come back to your knowledge.' : ' Existing stored facts are not changed.'}`,
+			meaning: `Stop treating ${placeOf(store, { id: chatId, name: level.name })?.sentence ?? level.name} as ${level.level === 'off' ? 'off the record' : level.level === 'shareable' ? 'shareable within your org' : 'private'}? Future learning and replies use the normal privacy checks.${level.level === 'off' ? ' Facts set aside from it come back to your knowledge.' : ' Existing stored facts are not changed.'}`,
 		})
 		settingsActions[key] = [actionId]
 	}
@@ -1092,7 +1123,7 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 			...row, who: row.who.name, status: pageText(row.status), next: row.next && pageText(row.next),
 			actionIds: [
 				// Open to-dos are ticked on the item's card ("Left for you", the same section as New; PM 20:15), never from this row.
-				...(entities.items[row.code].todoIds.length ? [] : [closeWork(row.code, 'classic-close')]),
+				...(entities.items[row.code].todoIds.length || entities.items[row.code].leftLines?.some(line => !line.seen) ? [] : [closeWork(row.code, 'classic-close')]),
 				...(row.every ? [offer(row.code, row.rev, 'classic-interval', 'Save interval', input => ({ code: row.code, verb: 'every', text: requiredText(input) }), { input: 'interval' })] : []),
 				...(row.endsAt ? [offer(row.code, row.rev, 'classic-extend', 'Extend 7 days', () => ({ code: row.code, verb: 'extend' }))] : []),
 				...(entities.actions[`${row.code}/stop-watch`] ? [`${row.code}/stop-watch`] : []),
@@ -1158,7 +1189,10 @@ export function resolvePageIntent(store: Store, intent: Intent): { parsed?: Pars
 	const workflow = store.byCode(intent.item), automation = workflow ? undefined : store.automation(intent.item), proposal = workflow || automation ? undefined : store.proposal(intent.item)
 	let page: PageApproval | undefined
 	if (binding.action.staleness === 'exact') {
-		const expect = workflow ? workflowApprovalRev(workflow) : automation ? automationApprovalRev(automation) : proposal ? proposalApprovalRev(proposal) : undefined
+		// Decision 53: a mark of his to-dos and the two line verbs bind to SEND's separate leftRev; every other page answer keeps
+		// workflowApprovalRev, so Send and approve consent are unchanged.
+		const lineBound = !!workflow && (!!binding.action.todoIds?.length || parsed.verb === 'left-ask-again' || parsed.verb === 'left-draft-invite')
+		const expect = lineBound ? leftRev(workflow!) : workflow ? workflowApprovalRev(workflow) : automation ? automationApprovalRev(automation) : proposal ? proposalApprovalRev(proposal) : undefined
 		if (expect) {
 			// "I've done these" marks only the to-dos he ticked, by their place in the list the card drew (#44(2), PM 18:40).
 			const todoIds = binding.action.todoIds && intent.input?.picks?.length ? [...new Set(intent.input.picks)].map(n => binding.action.todoIds![n - 1]) : binding.action.todoIds

@@ -1,6 +1,8 @@
 import { stateFields } from '../core/upgrades.ts'
 import { NAME } from '../brand.ts'
-import { allows, isVote, VOTES } from '../core/effects.ts'
+import { allows, effectLeftAction, isVote, VOTES } from '../core/effects.ts'
+import { leftRefusal, type LeftDraft } from '../core/left-lines.ts'
+import { settingKey } from '../core/setting-keys.ts'
 import type { Choices, Config, Effect, PrRole, Workflow } from '../core/types.ts'
 import type { Store } from '../store/state.ts'
 import { prTarget, type BuildProbe, type PrRef, type PrState } from './probe.ts'
@@ -130,12 +132,17 @@ export function decline(store: Store, cfg: Config, wf: Workflow, ref: PrRef | un
 
 // A vote is offered only on a PR the owner may review: a vote by a non-reviewer adds him to the PR (G7, G11). Any other vote
 // becomes a to-do with the reason, as a change the owner does not allow does.
-export function voteGate(store: Store, cfg: Config, wf: Workflow, effects: Effect[], todos: string[], checkAsk = true): Effect[] {
+export function voteGate(store: Store, cfg: Config, wf: Workflow, effects: Effect[], todos: string[], checkAsk = true, left: LeftDraft[] = []): Effect[] {
 	if (!effects.some(e => isVote(e.call))) return effects
 	const pr = prTarget(store, wf) ?? 0
 	const why = checkAsk && !reviewAsked(store, wf, pr) ? `nobody asked you to review PR ${pr}` : wf.prRole && !MAY_REVIEW.includes(wf.prRole) ? roleWhy(cfg, wf.prRole) : undefined
 	if (!why) return effects
-	for (const e of effects.filter(e => isVote(e.call))) todos.push(`${e.summary.replace(/[.\s]+$/, '')}. Not made for you: ${why}`)
+	for (const e of effects.filter(e => isVote(e.call))) {
+		todos.push(`${e.summary.replace(/[.\s]+$/, '')}. Not made for you: ${why}`)
+		const group = wf.prRole === 'group-unknown'
+		left.push(leftRefusal(effectLeftAction(e, pr), group ? 'setting-off' : 'pr-lifecycle',
+			{ why, ...(group ? { setting: settingKey('reviewerGroups') } : {}) }))
+	}
 	store.log({ event: 'vote-gated', workflowId: wf.id, code: wf.code, pr, role: wf.prRole, why })
 	return effects.filter(e => !isVote(e.call))
 }

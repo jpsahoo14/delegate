@@ -90,7 +90,8 @@ function NewApp() {
 			prefix.current = ''
 			if (event.key === '?') { event.preventDefault(); setHelp(true) }
 			if (event.key === '/') { event.preventDefault(); document.getElementById('find')?.focus() }
-			const direction = event.key === 'j' || event.key === 'ArrowRight' ? 1 : event.key === 'k' || event.key === 'ArrowLeft' ? -1 : 0
+			// Owner 13:41 (25 Oct): k = next, j = previous; the arrows stay spatial, → next and ← previous (PM 08:15:34Z).
+			const direction = event.key === 'k' || event.key === 'ArrowRight' ? 1 : event.key === 'j' || event.key === 'ArrowLeft' ? -1 : 0
 			if (current === 'now' && direction) {
 				const currentId = route.split('/')[1]
 				const section = nowSections?.find(section => section.id === currentId || section.ids.includes(currentId)) ?? nowSections?.[0]
@@ -148,7 +149,7 @@ function NewApp() {
 			</footer>}
 		</main>
 		<dialog ref={dialog} onClose={() => setHelp(false)} onCancel={() => setHelp(false)} aria-labelledby="keyboard-title"><h2 id="keyboard-title">Keyboard shortcuts</h2>
-			<dl><dt>j / k, Left / Right</dt><dd>Next / previous item on Now</dd><dt>/</dt><dd>Find</dd><dt>g then h</dt><dd>Now</dd><dt>Ctrl+Enter / Command+Enter</dt><dd>Primary action in the open card</dd><dt>e / a / l</dt><dd>Edit / ask / later in the open card</dd><dt>1-9</dt><dd>Choose an answer</dd><dt>u</dt><dd>Undo the newest reply still in its window and open Done Replies</dd><dt>Escape</dt><dd>Close a sheet or item, or leave a field</dd><dt>?</dt><dd>This list</dd></dl>
+			<dl><dt>k or →</dt><dd>Next item</dd><dt>j or ←</dt><dd>Previous item</dd><dt>/</dt><dd>Find</dd><dt>g then h</dt><dd>Now</dd><dt>Ctrl+Enter / Command+Enter</dt><dd>Primary action in the open card</dd><dt>e / a / l</dt><dd>Edit / ask / later in the open card</dd><dt>1-9</dt><dd>Choose an answer</dd><dt>u</dt><dd>Undo the newest reply still in its window and open Done Replies</dd><dt>Escape</dt><dd>Close a sheet or item, or leave a field</dd><dt>?</dt><dd>This list</dd></dl>
 			<Button variant="outline" onClick={() => setHelp(false)}>Close</Button>
 		</dialog>
 	</>

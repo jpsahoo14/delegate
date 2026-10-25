@@ -6,7 +6,10 @@ import { clearHold, keepApprovedDraft } from '../core/owner-send.ts'
 import { refreshApprovedHolds } from './send-holds.ts'
 import { PAGE_REPLY_CHANGED } from '../core/page-approval.ts'
 import { uptime } from 'node:os'
-import { allows, changeName, changeSays, isVote, unsafeRead, pendingEffects, proposalEffects, refusal, refusedAsk, reviewAgain, sameHead, carryMarks, shown, vet, voteValue, SETUP_REFUSAL, OLD_INVITE, OLD_INVITE_ASK } from '../core/effects.ts'
+import { allows, changeName, changeSays, deployBusyLeft, effectLeftAction, inviteShapeProblem, isVote, unsafeRead, pendingEffects, proposalEffects, refusal, refusedAsk, reviewAgain, sameHead, carryMarks, shown, vet, voteValue, SETUP_REFUSAL, OLD_INVITE, OLD_INVITE_ASK } from '../core/effects.ts'
+import { leftRefusal, type LeftDraft } from '../core/left-lines.ts'
+import { allowLeft, settleLeftRetry } from './left.ts'
+import { leaveForYou, leftContext, reportLeft } from './left-source.ts'
 import { adoProbe, prOf, prRefFor, prTarget, type BuildProbe } from './probe.ts'
 import { isAddMe, isReviewJob, liveOwnerVote, voteGate } from './review-gate.ts'
 import { noticeHabits } from './habits.ts'
@@ -447,7 +450,7 @@ export function authorAsk(store: Store, parents: Workflow[], job: Job, question:
 
 export function finishWork(store: Store, job: Job, r: Report, asksAtStart: number, review?: ReviewCompletion) {
 	if (isBootstrap(job) || job.key.startsWith('learn:')) return finishBootstrap(store, job, r)
-	if (job.every && !r.effects?.length && !r.question) return finishCheck(store, job, r, asksAtStart)
+	if (job.every && !r.effects?.length && !r.question && !r.refused?.length) return finishCheck(store, job, r, asksAtStart)
 	// A tracker that reports done stops, even when it also proposes changes or asks something (tester 06-07 P1-5).
 	if (job.every && r.done) Object.assign(job, { every: undefined, nextAt: undefined })
 	// A validate run's proposed test rings are saved for the owner to confirm, and its report says when telemetry was not read (owned work).
@@ -456,8 +459,9 @@ export function finishWork(store: Store, job: Job, r: Report, asksAtStart: numbe
 	if (r.reply) r = checked(store, cfg, r)
 	// Each proposed change must be one the owner allows, on this item's PR; any other becomes a to-do with the reason (owner, 2026-10-20).
 	const parents = parentsOf(store, job)
+	const todos = r.todos, extra: LeftDraft[] = []
 	const prepared = prepareReportCalls(store, cfg, parents, r)
-	r = prepared.report
+	r = { ...prepared.report, todos }
 	// In a PR review, a product or spec choice belongs to the PR's author: it becomes a proposed comment to them, never the owner's
 	// question (queue-new #10). A question for the owner alone (approve with a thread open, review at all) stays one.
 	if (r.question && isReviewJob(job.key, r.intent) && specChoice(r.question)) {
@@ -467,6 +471,7 @@ export function finishWork(store: Store, job: Job, r: Report, asksAtStart: numbe
 			if (problem) {
 				const why = `Couldn't prepare question for the author: ${problem}`
 				prepared.problems.push(why)
+				extra.push(leftRefusal(effectLeftAction(ask), 'incomplete', { why }))
 				r = { ...r, question: why }
 				store.log({ event: 'effect-call-repaired', from: 'rebuilt', ok: false })
 			} else {
@@ -485,10 +490,13 @@ export function finishWork(store: Store, job: Job, r: Report, asksAtStart: numbe
 	v.todos.push(...prepared.problems)
 	// A review's vote only while the owner may review the PR, at its last read (review gate G7).
 	const reader = parents.find(w => w.prRole)
-	if (reader) v.effects = voteGate(store, cfg, reader, v.effects, v.todos, false)
+	if (reader) v.effects = voteGate(store, cfg, reader, v.effects, v.todos, false, v.left)
 	// A deploy while our last one is still running waits: one change at a time, never stacked on a ring (owned work).
 	const busy = parents.map(w => deployRunning(homeOf(store, w))).find(Boolean)
-	if (busy) for (const e of v.effects.filter(e => isDeploy(e.call))) v.todos.push(`${e.summary.replace(/[.\s]+$/, '')}. Not made for you: ${busy}`)
+	if (busy) for (const e of v.effects.filter(e => isDeploy(e.call))) {
+		v.todos.push(`${e.summary.replace(/[.\s]+$/, '')}. Not made for you: ${busy}`)
+		v.left.push(deployBusyLeft(e, busy))
+	}
 	const effects = proposalEffects(v.effects.filter(e => !busy || !isDeploy(e.call)).map(e => ({ ...e, done: undefined, error: undefined })), parents)
 	const again = job.asks.length > asksAtStart
 	// A failure of the system under test is a finding in the report, not a blocker (owned work).
@@ -502,7 +510,7 @@ export function finishWork(store: Store, job: Job, r: Report, asksAtStart: numbe
 	const rules = store.rules()
 	const cleanReview = !!review?.basis && /^active$/i.test(review.status ?? '') && r.findings?.length === 0 &&
 		parents.some(w => w.intent === 'pr_review' && prTarget(store, w) === review.pr && reviewRuleFor(w, rules)) &&
-		r.state !== 'waiting_on_sender' && r.goalMet !== false && !r.effects?.length && !effects.length && !v.todos.length && !r.question && !r.blocker
+		r.state !== 'waiting_on_sender' && r.goalMet !== false && !r.effects?.length && !effects.length && !v.todos.length && !r.refused?.length && !r.question && !r.blocker
 	if (!again) for (const wf of parentsOf(store, job)) {
 		const reviewRule = wf.intent === 'pr_review' ? reviewRuleFor(wf, rules) : undefined
 		const nothing = !(cleanReview && reviewRule) && r.state === 'done' && !r.reply && !r.question && !effects.length && !prepared.problems.length
@@ -516,6 +524,13 @@ export function finishWork(store: Store, job: Job, r: Report, asksAtStart: numbe
 			store.save(wf)
 			continue
 		}
+		const currentReview = review?.pr === prTarget(store, wf) ? review : undefined
+		const context = leftContext(store, wf)
+		context.reviewHead = currentReview?.basis?.head
+		if (context.source.kind === 'review') context.source.at = currentReview?.at ?? job.reviewStart?.at ?? context.source.at
+		settleLeftRetry(wf, r, effects)
+		allowLeft(wf, effects)
+		leaveForYou(store, wf, [...reportLeft(r), ...v.left, ...extra], context)
 		wf.statusReason = undefined; wf.reviewAgain = undefined; wf.runFailed = undefined
 		if (r.reply) { wf.ownerSend = undefined; clearHold(wf); wf.returnedFrom = undefined }
 		else if (wf.ownerSend && (!wf.sent || wf.sent.at < wf.ownerSend.at)) {
@@ -531,17 +546,15 @@ export function finishWork(store: Store, job: Job, r: Report, asksAtStart: numbe
 		// Rules never send a review's or an investigation's result; the card says so, so the owner is not left guessing (dogfood 10-20, A34).
 		const decision = r.reply ? { action: 'draft', reason: 'A review or investigation result always waits for you', confidence: confidence(r.reply.sources ?? []) } : wf.decision
 		Object.assign(wf, { ...stateFields(wf, nothing ? (wf.work || wf.partOf ? 'open' : 'done') : 'needs_human'), closedBy: nothing && !(wf.work || wf.partOf) ? 'job' : undefined, learnAfter: undefined, status: nothing ? `Nothing needed: ${r.summary}` : r.summary, question: r.question, draft: r.reply ? { ...r.reply } : undefined, effects, decision, waitingSince: undefined, approved: undefined, newCount: 0, revAt: new Date().toISOString(), ...(r.context || contextTrimmed ? { context: r.context } : {}) })
+		if (r.reply) wf.todos = r.todos
 		if (wf.intent === 'pr_review') {
-			const current = review?.pr === prTarget(store, wf) ? review : undefined
+			const current = currentReview
 			wf.reviewBasis = current?.basis
 			wf.reviewDone = undefined
 			wf.reviewAgain = !current?.basis && current?.head && job.reviewStart?.pr === current.pr && !sameHead(job.reviewStart.head, current.head) ? { pr: current.pr, head: current.head, at: current.at } : undefined
 			if (reviewRule && !current?.basis && !nothing) wf.status = 'The reviewed revision could not be verified. Findings stay proposed for your OK; review again before posting by rule.'
 		}
-		// A change refused before and allowed now loses its old refusal (dry run 10-21: the deploy list was confirmed in between).
-		const allowedNow = (t: string) => effects.some(e => t.startsWith(`${e.summary.replace(/[.\s]+$/, '')}. Not made for you: `))
-		if (wf.todos?.some(allowedNow)) wf.todos = wf.todos.filter(t => !allowedNow(t))
-		if (v.todos.length) Object.assign(wf, { todos: [...new Set([...(wf.todos ?? []), ...v.todos])], question: wf.question ?? (wf.draft ? refusedAsk(wf.code, v.todos.length) : undefined) })
+		if (v.todos.length) wf.question ??= wf.draft ? refusedAsk(wf.code, v.todos.length) : undefined
 		// A job's finding is a step on the work its item belongs to, the home or a part's home (review part 2 #5).
 		const home = homeOf(store, wf)
 		mergeReportWork(wf, r, home, undefined, canCloseReport(store, home, wf))
@@ -560,7 +573,7 @@ export function finishWork(store: Store, job: Job, r: Report, asksAtStart: numbe
 	const targets = parents.map(w => prTarget(store, w))
 	const reviewSources = reads ? { unknown: cfg.agent.flavor !== 'copilot' || reads.unknown, chats: reads.chats,
 		restricted: !!reads.knowledge || !!reads.customerNames?.length || !!reads.records?.some(record => !targets.some(id => record.id === `pr:${id}`)) } : undefined
-	Object.assign(job, { result: { summary: r.summary, reply: r.reply ? { ...r.reply } : undefined, effects, context: (r.context ?? []).slice(0, 12), findings: r.findings, reviewHead: review?.basis?.head, reviewClean: cleanReview ? true : undefined, reviewSources, voteRecommendation: r.voteRecommendation, at: new Date().toISOString() }, state: again ? 'queued' : 'done', purpose: 'work', run: undefined })
+	Object.assign(job, { result: { summary: r.summary, reply: r.reply ? { ...r.reply } : undefined, effects, context: (r.context ?? []).slice(0, 12), refused: r.refused, findings: r.findings, reviewHead: review?.basis?.head, reviewClean: cleanReview ? true : undefined, reviewSources, voteRecommendation: r.voteRecommendation, at: new Date().toISOString() }, state: again ? 'queued' : 'done', purpose: 'work', run: undefined })
 	store.saveJob(job)
 	if (!again) store.log({ event: 'job-done', job: job.id, key: job.key, summary: r.summary, effects: effects.length, ...usedBy(job) })
 }
@@ -704,9 +717,11 @@ async function finishExecute(store: Store, src: Source, cfg: Config, job: Job, p
 		const moving = effects.filter(e => e.done && isDeploy(e.call)).map(e => deployed(store, wf, e, e.done!.ref, job.goal)).filter((x): x is string => !!x)
 		if (left.length) {
 			// An old invite that cannot be made: a retry cannot work, so the owner is offered a new draft (legacy E16).
-			const old = left.find(e => e.error?.includes(OLD_INVITE))
-			if (old) {
-				Object.assign(wf, { ...stateFields(wf, 'needs_human'), waitingSince: undefined, status: `Not made: ${changeText(old)}. ${old.error!.replace(/^Change \d+ cannot be made: /, '').replace(/^./, c => c.toUpperCase())} Nothing was created, and the reply was not sent`,
+			const old = left.map(effect => ({ effect, why: inviteShapeProblem(effect.call) })).find(item => item.why !== undefined)
+			if (old?.why) {
+				const { effect, why } = old
+				leaveForYou(store, wf, [leftRefusal(effectLeftAction(effect, prTarget(store, wf)), 'old-invite', { why })])
+				Object.assign(wf, { ...stateFields(wf, 'needs_human'), waitingSince: undefined, status: `Not made: ${changeText(effect)}. ${why.replace(/^./, c => c.toUpperCase())} Nothing was created, and the reply was not sent`,
 					question: OLD_INVITE_ASK })
 				commit()
 				continue
@@ -876,14 +891,15 @@ export function approveEffects(store: Store, cfg: Config, wf: Workflow, again = 
 // A change proposed before exact calls existed can never be made: it becomes the owner's to-do once, with a note,
 // and the reply waits to be changed, since it counted on it (review 10-21 P2-11).
 export function legacyEffects(store: Store) {
-	repairPendingEffectCalls(store)
+	repairPendingEffectCalls(store, (wf, drafts) => { leaveForYou(store, wf, drafts) })
 	for (const wf of store.workflows().filter(w => w.state === 'needs_human' && pendingEffects(w.effects).some(e => !e.call))) {
 		const old = pendingEffects(wf.effects).filter(e => !e.call)
 		const keep = (es: Effect[] = []) => es.filter(e => e.call || e.done || e.off)
 		const job = wf.job ? store.job(wf.job) : undefined
 		if (job?.result) { job.result = { ...job.result, effects: keep(job.result.effects) }; store.saveJob(job) }
-		const todos = old.map(e => `${e.summary.replace(/[.\s]+$/, '')}. Not made for you: it was proposed before this update, without the exact call needed to make it`)
-		Object.assign(wf, { effects: keep(wf.effects), todos: [...new Set([...(wf.todos ?? []), ...todos])], question: wf.question ?? (wf.draft ? refusedAsk(wf.code, old.length) : undefined), revAt: new Date().toISOString() })
+		const why = 'it was proposed before this update, without the exact call needed to make it'
+		leaveForYou(store, wf, old.map(effect => leftRefusal(effectLeftAction(effect, prTarget(store, wf)), 'incomplete', { why })))
+		Object.assign(wf, { effects: keep(wf.effects), question: wf.question ?? (wf.draft ? refusedAsk(wf.code, old.length) : undefined), revAt: new Date().toISOString() })
 		store.save(wf)
 		store.log({ event: 'legacy-changes', code: wf.code, n: old.length })
 	}
@@ -1085,6 +1101,7 @@ function queueRetry(store: Store, job: Job, retry: Retry, fresh: boolean) {
 }
 
 function shortOfGoal(store: Store, job: Job, r: Report) {
+	if (r.refused !== undefined || job.result?.refused !== undefined) job.result = { ...(job.result ?? { summary: r.summary, effects: [] }), refused: r.refused }
 	const p = planRetry(job.retry, r.blocker)
 	// The earlier result stays, so a fresh try knows what was found before; what fell short is in the retry.
 	if (!('stop' in p)) return queueRetry(store, job, p.retry, p.fresh)
@@ -1095,6 +1112,12 @@ function shortOfGoal(store: Store, job: Job, r: Report) {
 	const now = new Date().toISOString()
 	const b = blockerOf(r.blocker), tried = [...new Set([...(job.retry?.tried ?? []), ...b.tried])]
 	for (const wf of parentsOf(store, job)) {
+		if (!wf.pending.length) {
+			const context = leftContext(store, wf)
+			context.reviewHead = undefined
+			if (context.source.kind === 'review') context.source.at = job.reviewStart?.at ?? context.source.at
+			leaveForYou(store, wf, reportLeft(r), context)
+		}
 		if (r.reply) { wf.ownerSend = undefined; clearHold(wf); wf.returnedFrom = undefined; wf.statusReason = undefined; wf.reviewAgain = undefined }
 		else if (wf.ownerSend && (!wf.sent || wf.sent.at < wf.ownerSend.at)) {
 			keepApprovedDraft(wf, r.summary || 'No reply needed')
@@ -1110,7 +1133,7 @@ function shortOfGoal(store: Store, job: Job, r: Report) {
 		if (home.work && step(home, `${home === wf ? '' : `${wf.code}: `}Not finished: ${p.stop}`, { ref: `job:${job.id}:${hashOf(p.stop)}` }) && home !== wf) store.save(home)
 		store.save(wf)
 	}
-	Object.assign(job, { result: { summary: r.summary, reply: draft, effects: [] }, state: 'done', purpose: 'work', run: undefined, retry: undefined, nextAt: undefined })
+	Object.assign(job, { result: { summary: r.summary, reply: draft, effects: [], refused: r.refused }, state: 'done', purpose: 'work', run: undefined, retry: undefined, nextAt: undefined })
 	store.saveJob(job)
 	store.log({ event: 'retry-stopped', job: job.id, key: job.key, why: p.stop, ...usedBy(job) })
 }

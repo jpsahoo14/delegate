@@ -36,6 +36,8 @@ const PART = /^(?:(mine|ok|edit|send|later|dismiss|answer|skip|more|undo|continu
 // "ok A7" | "edit A7: text" (change the draft) | "send A7: text" (send these words) | "A7: text" (answer) | "skip A7" | "later A7" | "more A7" | "ok" | "ok A2-A4".
 // Several parts are joined by commas: "ok A7, skip A8, A9: tell him Monday".
 export function parseVerbs(input: string): Parsed[] | null {
+	const left = input.trim().match(/^(left-ask-again|left-draft-invite)\s+([A-Z]\d+)\s*:\s*(left-[a-f0-9]{16})$/i)
+	if (left) return [{ verb: left[1].toLowerCase() as Verb, code: left[2].toUpperCase(), text: left[3].toLowerCase() }]
 	// "watch A41", "watch A41: <target> until <until> by YYYY-MM-DD push", "watch: <text> by YYYY-MM-DD push": one command, commas belong to the text.
 	if (/^watch\b/i.test(input.trim())) {
 		const w = input.trim().match(WATCH)

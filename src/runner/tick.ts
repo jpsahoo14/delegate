@@ -28,6 +28,8 @@ import { checkJobs, executeDirect, legacyEffects, realProcs, settleCompleted, st
 import type { Caller } from './change.ts'
 import { checkOpen } from './continue.ts'
 import { pruneSessionNotes } from './own.ts'
+import { needsLeftPrune, pruneLeft } from './left.ts'
+import { probeLeft } from './left-probe.ts'
 import { refreshCatalogs } from './catalog.ts'
 import { finishTrim } from './tools-migrate.ts'
 import { hostCaller, hostLister, hostRunner, prewarmHost } from '../host/client.ts'
@@ -122,9 +124,20 @@ async function tickInPhases(store: Store, deps: Parameters<typeof tick>[1] = {})
 	}
 	try {
 		scanCodeFolders(Date.now(), true)
-		for (const wf of store.workflows().filter(w => w.todos?.length)) {
-			const todos = visibleCloneTodos(cfg, wf, wf.job ? store.job(wf.job) : undefined, store.machine)
-			if (todos?.length !== wf.todos?.length) { wf.todos = todos; store.save(wf) }
+		for (const wf of store.workflows()) {
+			if (wf.todos?.length) {
+				const todos = visibleCloneTodos(cfg, wf, wf.job ? store.job(wf.job) : undefined, store.machine)
+				if (todos?.length !== wf.todos?.length) { wf.todos = todos; store.save(wf) }
+			}
+			if (needsLeftPrune(wf)) {
+				const commit = recordCommit(wf, () => store.workflow(wf.id), store.save.bind(store))
+				commit.refresh()
+				if (needsLeftPrune(wf)) {
+					const { dropped } = pruneLeft(wf)
+					commit(false)
+					if (dropped) store.log({ event: 'left-cleared-cap', code: wf.code, dropped })
+				}
+			}
 		}
 		const cursors = store.cursors()
 		const commitCursors = recordCommit(cursors, () => store.cursors(), store.saveCursors.bind(store))
@@ -219,6 +232,7 @@ async function tickInPhases(store: Store, deps: Parameters<typeof tick>[1] = {})
 			await describeDeploys(store, probe).catch(e => store.log({ event: 'probe-failed', error: String(e).slice(0, 300) }))
 			await describeTargets(store, probe).catch(e => store.log({ event: 'probe-failed', error: String(e).slice(0, 300) }))
 			await probePRs(store, cfg, probe, Date.now(), kicked).catch(e => store.log({ event: 'probe-failed', error: String(e).slice(0, 300) }))
+			await probeLeft(store, cfg, probe, Date.now(), kicked).catch(e => store.log({ event: 'probe-failed', error: String(e).slice(0, 300) }))
 			const due = store.workflows().filter(w => dueWork(w, Date.now(), store))
 			for (const w of due) { askWhatNext(w, store); store.save(w) }
 			// The owner's own words may promise a vote: its PR is read through the same probe, then closed (Slice 3).

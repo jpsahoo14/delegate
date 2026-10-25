@@ -78,7 +78,7 @@ export default function Ongoing() {
 			return <li className="ongoing-row" key={row.code} data-classic-progress={row.code}>
 				{person ? <Avatar person={person} /> : <span className="ongoing-icon"><Icon name="task" /></span>}
 				<div className="ongoing-text"><b>{row.goal}</b><span className="ongoing-meta">{[row.who, row.status].filter(Boolean).join(' · ')}</span>
-					{(todoIds => todoIds.length > 0 && entities.todos[todoIds[0]] && <span className="ongoing-meta" data-left-for-you>Left for you: {entities.todos[todoIds[0]].text}{todoIds.length > 1 ? ` (+${todoIds.length - 1} more)` : ''}</span>)(entities.items[row.code]?.todoIds ?? [])}
+					{(lines => lines.length > 0 && <span className="ongoing-meta" data-left-for-you>Left for you: {lines[0]}{lines.length > 1 ? ` (+${lines.length - 1} more)` : ''}</span>)([...(entities.items[row.code]?.todoIds ?? []).map(id => entities.todos[id]?.text).filter((text): text is string => !!text), ...(entities.items[row.code]?.leftLines ?? []).filter(line => !line.seen).map(line => line.text)])}
 					{row.last && <span className="ongoing-meta">Last: {preview(row.last.what, 160)} · {when(row.last.at)}</span>}
 					{row.checkAt && <span className="ongoing-meta">I&apos;ll ask you on {shortDate(row.checkAt)} if nothing happens</span>}
 					<Timing action={actions.find(action => action.input === 'interval')} every={row.every} endsAt={row.endsAt} extend={actions.find(action => action.kind === 'classic-extend')} /><RowState actions={actions} />

@@ -200,13 +200,13 @@ export const signsApproved = (cfg: Config) => cfg.signApproved ?? !!cfg.signatur
 export const signatureOf = (cfg: Config) => cfg.signature?.trim() || cfg.policy?.marker || DEFAULT_POLICY.marker
 export function withMarker(text: string, marker: string, ownerName: string, required = true): string {
 	const line = marker.replace('{first}', ownerName.split(/\s+/)[0])
-	let body = text.trimEnd(), marked = false
+	let body = text.trimEnd()
 	while (line.length && body.toLowerCase().endsWith(line.toLowerCase())) {
-		body = body.slice(0, -line.length).trimEnd()
-		marked = true
+		const before = body.slice(0, -line.length)
+		if (before && !/[\r\n]$/.test(before)) break
+		body = before.trimEnd()
 	}
-	// Owner-written words stay unsigned unless they already carry the suffix from the approved preview.
-	return required || marked ? `${body}\n\n${line}` : text
+	return required ? `${body}\n\n${line}` : body
 }
 export const approvedReplyText = (text: string, workflow: Workflow, cfg: Config): string =>
 	text ? scrub(withMarker(text, signatureOf(cfg), cfg.owner.name, signsApproved(cfg) && !workflow.learnAfter && !workflow.draft?.byOwner)) : text

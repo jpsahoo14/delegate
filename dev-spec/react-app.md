@@ -1,5 +1,108 @@
 # React preview
 
+## A120 text-render caller pairing (HOST)
+
+- Merge only the reviewed optional-Place renderer API and MCP caller at SEND df5ec00e / 5bf331e.
+  HOST's apply more/effect-result and proposals inbox renderList pass placeOf(store, wf.chat, wf.asker),
+  using the existing cached place model and excluding that item's actual asker.
+- Untitled groups therefore use the same place words as the page. Titled chats and 1:1s get undefined Place
+  and keep the renderer's existing output. No live member read, stored-name rewrite or migration.
+- Display-only: keep the same truncation/plain-text pass, markShown behavior, effect/send/hold decisions,
+  consent revisions and receipt timing. MCP admission/leftRev remain SEND's separate decision-53 work.
+- This is the named SEND08:05:45 HOST companion, not a broader legacy-web, card, Settings or source-ownership transfer.
+
+## I34 HOST marker hooks (decision 45)
+
+- After a correction's successful send and addSent, emit the existing marker metadata as owner-text/unmarked.
+  After a reminder's successful send and addSent, emit it as auto/marked. This is the named SEND handoff.
+- No message text, user or target enters the event. No new await, change to send order, marker policy, final
+  consent check or retry behavior. The existing SEND catalogue/markerFor and New preview remain paired.
+
+## Left-for-you tasks, verbs and certain-signal probe (HOST)
+
+- keepTodos creates typed promise records from the reply's real todos at send time, keyed by the sent-message link;
+  existing kept records stay readable, and new promises are not also added there. A corrected owner reply records its
+  real msgId/at for promise provenance. The shared-review hold, legacy no-call proposals, old invites, role-regated
+  votes and stale deploy-build refusals emit LeftDrafts directly. No legacy wording is read to recover an action.
+- doneTodos accepts the selected kept and left ids together; typed ticks use owner/ticked at the same timestamp.
+  It never closes/reopens the item. New owns the same six-second receipt/Undo and page consent integration.
+- left-ask-again and left-draft-invite accept one exact active line id in Answer.text. Stale/cleared ids, non-invites
+  for the invite verb, open windows and busy jobs refuse explicitly. A repeat for the queued id is a no-op.
+  leftRetry tracks that id until a proposal/draft lands, when it clears as superseded; new turns/explicit closure
+  invalidate the pending binding. The existing needsMe and ownerAnswer path makes the result draft-only, never a send.
+- The PR activity probe runs with the normal read-only probe every ten minutes (or an explicit kick), groups reads
+  by project/repository/PR and uses at most four reads in parallel. It skips items with pending asks/queued answers
+  after the reads. Only a known closedAt after line.at, or the exact source discussionId with a later owner-id/UPN
+  comment, clears as seen-done. Base PR links without a discussionId cannot prove a reply to a particular thread.
+  No display-name match, AI judgment, stored per-view flag or guessed timestamp; unfamiliar reads log and leave tasks.
+- These are HOST engine surfaces, not a claim that the page/MCP counterparts have landed. SEND owns MCP admission
+  for done items; New owns active-left task selection/revision and receipt Undo. The reviewed optional repair bridge
+  is now wired at legacyEffects: its unchanged code-made LeftDrafts get the same code-owned source/id merge before
+  SEND's existing recordCommit, with no duplicate generated wf.todos strings.
+  The existing cross-owner handoffs must pair before the release cut. No A76, anchor.also or .47 work is included.
+
+## Left-for-you report consumers (HOST, decision 44)
+
+- left-source constructs source facts from the item's current origin message, PR/job and saved review head.
+  It uses messageLink for chat/reply origins and the owned PR URL for a review; who is first-name-only.
+  A completing review supplies the same verified head it saves to Job.result.reviewHead, never an old cached head.
+- Report.refused is kept raw in Job.result, including a stopped/retrying job. Before wf.left, reportLeft calls
+  normalizeReport, keeps its filtered HTTPS ADO/Teams links and plain reason, and drops display-only compatibility fields.
+  Neither normalization nor source placement changes the producer-computed action key.
+- Reply/report completion, preserved approved drafts, job results, vet, reviewer-role vote gates and picked/deploy-busy
+  choices feed the shared merge. Admission/pending-ask/failed-effect and carry/share gates stay in their original order.
+  A refusal cannot qualify a review as clean. Ending the reply lifecycle does not end the owner's typed tasks.
+- Typed refused actions no longer enter wf.todos as generated refusal prose. Report todos remain real reply promises.
+  Allowed-now and reviewer-group recovery use structured keys/kinds/settings, or a legacy review's typed job/intent,
+  not the old refusal wording.
+- PE 2026-10-25T07:35:05Z, clarified 08:40:29Z: automatic done/close transitions leave lines active. Only an explicit
+  owner action that closes the item clears them in the same commit, including explicitly closed family parts.
+  R-WRK-08 skip on open work drops only the reply and keeps its Left-for-you lines; closeLeft runs after that branch.
+  A prior owner-ticked clear becomes
+  item-closed on explicit closure so a delayed tick Undo cannot revive it. stateFields and close alone never clear lines.
+  work re-exports openLeft beside openTodos; New counts both for the done-but-task row. No new state or SEND edit.
+  No migration or restoration of prior clears: the corrected skip path applies when the next owner action is handled.
+- This was the first producer slice, not the full feature. The next HOST task/verb/probe slice is described above.
+  The reviewed repair bridge is wired above; MCP admission plus New's renderer/consent/receipt integration still pair separately.
+  The simple SEND close path remains unchanged as the PE ruled.
+
+## Left-for-you foundation (decision 44; HOST)
+
+- API: mergeLeft(wf, drafts: LeftDraft[], source: LeftSource, reviewHead?, at?) -> LeftLine[]. It mutates only wf.left;
+  the caller supplies the item's code-derived source and persists through its existing recordCommit/save.
+  Worker refusals must pass normalizeReport before this API; the job keeps the original raw refused records.
+- The id is left- plus the first 16 hex digits of sha256(type|kind|verb|pr|target|action.key|sourceIdentity).
+  PE 2026-10-25T06:44:10Z C: sourceIdentity is source.href, or source.href@reviewHead for a review with
+  the job's result.reviewHead. The link stays the real PR URL; same-head reruns keep an id, new heads do not.
+  Keys come from SEND's reviewed producers, never model-supplied keys or display text. A same-source rerun
+  updates an active record without changing its original id, source or at. Cleared ids never reopen.
+- clearLeft and undoLeft are id-based. Undo restores only an owner-ticked record with the exact clear timestamp;
+  the page's existing six-second receipt is still mandatory. allowLeft clears refusals only on an exact allowed call key.
+  Explicit owner closure replaces a prior tick with item-closed, so Undo cannot revive it afterward.
+- PE 2026-10-25T06:32:03Z: prune cleared records after 30 days, then retain their ids in optional leftCleared.
+  The merge checks both retained cleared records and those tombstones. Deduplicate; cap at 2,000 oldest-first.
+  A cap event left-cleared-cap records only code and dropped count. No content, links or person names enter telemetry.
+- Pruning shares tick's existing workflow pass, re-reads only expiry candidates and commits owned fields freshly.
+  Absent left/leftCleared means empty; no migration, legacy-copy parsing or old-data repair.
+- Source construction/report consumers are in the slice above; proposal-only verbs and seen-done probing are
+  not functionality supplied by this foundation alone. Prerequisite merge 35c147ed includes New's reviewed
+  d61b7eed G96 legacy-input handoff, decision 40; its expectation is unchanged.
+  No A76 call site, anchor.also draft, UI/State edit or frozen-stage mutation is included.
+
+## M2: PR/link parsing boundary (0.2.46)
+
+- Move linksIn, prMentions, prNumbersIn, isNonAdoPrLink and adoPrNumber to core/pr-refs with byte-identical bodies.
+  Only the former private prMentions gains export for the joiner's direct import. Preserve the distinct existing
+  parser semantics, including site-provided build/incident words; this is not a policy or regex change.
+- work keeps the join/family decisions, including prJoinCandidates, and re-exports its three prior public parsers
+  for the compatibility release. probe re-exports adoPrNumber. Existing caller paths therefore resolve the same functions.
+- M1's core/vote-claims imports linksIn/prNumbersIn from core/pr-refs, not runner/work, removing that interim
+  core-to-runner dependency. This import-only named handoff changes no classifier code or output.
+- Build on the reviewed M1 prerequisite on a separate future-release branch. Do not mutate the frozen 0.2.45 stage,
+  apply A76 WIP, consume blocked key-dependent producers or claim M3/M4/hint/wf.left complete.
+- Source/declaration byte comparison plus build, both typechecks, existing goldens and publication scan validate the move.
+  No new test/proof cases or old-data changes; caller import cleanup/removal of re-exports belongs to M5 in 0.2.47.
+
 ## Joiner follow-ups (PE decision 43(c), 0.2.45)
 
 - Keep candidate scoping by actual prTarget for every named PR. Only multi-PR messages may bypass askRelation;
@@ -606,6 +709,42 @@ PM rule `pm-need-to-know-audience.md`, with the PE 17:05 corrections.
   - A shareable chat used elsewhere doesn't hold when the target chat has no guest.
   - Any membership read that finds a guest clears it, logs `shareable-cleared`, and tells the owner once in his self-chat.
   - Members are now cached with `guests`.
+- **Settings, Chats you marked (C(2)).**
+  - Read from `cfg.chatLevels` plus the cached member names. Untitled group rows use the existing `placeOf(...).sentence`;
+    titled chats and 1:1 names stay unchanged. No stored-name migration, new wording, or Teams read is needed.
+  - Preserve the existing row order and chat-ID-based actions. Both Settings experiences and the text view consume `aboutView`.
+  - Keep the existing `"<name> is normal again"` instruction rather than replace it with a row-action-only instruction:
+    `setChatLevel` accepts the exact displayed place label for marked chats, case-insensitively.
+  - Exact stored names and displayed labels are considered together before the existing substring-name fallback. A chat
+    matching both counts once; different chats sharing a label, or a label colliding with another exact name, refuse as
+    ambiguous rather than pick a target. Direct chat IDs and message links still resolve as before.
+  - Mark/undo receipts and marked-chat ambiguity suggestions use the same cached place words; saved names remain unchanged.
+- **Pending effect-call repair, structured refusal handoff.**
+  - `repairPendingEffectCalls(store, consume?)` collects the existing pure `prepareEffectCalls` refusal drafts for the effects
+    it repairs/removes. An optional `(wf, drafts: LeftDraft[]) => void` consumer receives the same workflow after its
+    `recordCommit` baseline and local repair updates, before that commit saves it. No new source, ID or formatter is assigned here.
+  - With a consumer, these refusal strings are not also appended to legacy `wf.todos`; existing todos are preserved, and
+    question/status text keeps its old behavior. Without a consumer, old callers retain the existing legacy todos.
+  - HOST owns the consumer's source/hash/clear state and caller wiring. This callback does not change successful-Send closing.
+- **A120 self-chat parity (decision 52, 0.2.46).**
+  - The text inbox and `more` headers use `placeOf(...).row`; result/owner-send receipts use its sentence form. They pass the
+    workflow's asker so cached labels omit both asker and owner, just like the page. Titled and 1:1 names stay unchanged.
+  - Pure renderers accept a trailing optional `Place`; list rendering accepts a per-item place lookup. Old signatures remain valid.
+    HOST must wire the inbox in `runner/proposals.ts` with `w => placeOf(store, w.chat, w.asker)`, and both `runner/apply.ts`
+    `more`/result callers with `placeOf(store, wf.chat, wf.asker)`. The MCP `more` caller passes the same argument
+    (decision 53 assigns that exact file to SEND). Full self-chat parity requires the reviewed HOST caller counterparts.
+  - Place data propagates through list/item/status result rendering. Unknown members use the reviewed helper's group-chat
+    fallback, with no Teams reads, workflow-name rewrites or new wording. The renderer imports only the `Place` type, not a runtime
+    helper/store dependency; `place.ts` remains unchanged.
+  - The plain successful-send receipt also consumes the same place helper rather than bypassing it. Only text changes:
+    send authorization, final checks, `keepTodos`, closing, retries, markers, undo and A76 rule metadata are untouched.
+- **Left-for-you consent (decision 53, 0.2.46).**
+  - Ticks and the two line-bound draft verbs use a separate `leftRev`, derived from sorted active line IDs and clear state.
+    Only active left IDs or open legacy kept IDs can be ticked; stale revisions and cleared/unknown IDs refuse.
+    A generic page Close cannot tick active lines without the explicit mark-todos binding.
+  - Send and approve still use the unchanged `workflowApprovalRev`; left-line changes alone never stale their consent.
+  - MCP close selection includes active lines. A done item admits only an exact active-line draft verb in addition to its
+    existing commands. The runner remains authoritative for kind, window and retry checks; these commands never send.
 - **Card and page.**
   - `CardFacts.shareHold` gives `CardState.waited`, the "Why it waited" line in the PM's words. Golden G63–G70, one per kind;
     70/70.
@@ -4785,6 +4924,81 @@ the bounded full run exits cleanly with no skipped tests.
   substring in a local history variable; it was renamed for clarity rather than
   weakening the deny list.
 
+## 0.2.46 I34 (decision 45): the page previews the automated marker, it never signs
+
+PE 05:30 (I34), PM A R43, Designer designer-automated-marker.md. The marker means "Delegate wrote this and nobody changed it";
+SEND's markerFor decides it on the server. The page only previews it, from the projection's own marker string (draft.marker), and
+never appends it: "Send your version" and "Send your edited reply" send his words exactly as typed.
+
+- The reply box is one frame holding the textarea and, when the marker is configured, a fixed footer row with the marker. The
+  footer is a sibling of the textarea (not in its value): it can't be selected, typed into or deleted, and clicking it puts the
+  caret at the end of his words. It shows only while the box equals the draft, trailing whitespace aside; one changed character
+  removes it and shows 'Your words: sent without "<marker>".' under the box; editing back restores it.
+- The textarea's description is "Teams will add: <marker>" while the footer shows, or the muted line once edited. A polite live
+  message fires once per change of state, never per keystroke or on first render.
+- Write the reply yourself never shows a footer; once he has typed, the same muted line explains why, when a marker is known.
+- New's row line 3 ("Your reply: …") shows his words only, never the marker. Read-only drafts and the "draft so far" fold still
+  show what is delivered.
+- Boxes without a configured marker are unchanged (no frame).
+
+## 0.2.46 PE 01:13:27Z nit 4: a countdown button never moves its neighbours
+
+A button with a countdown ("Undo 0:42", then "Undo window closed") changes its label on a timer. It reserves its widest label at
+mount: the closed wording and the countdown with every digit as 0, as hidden layers in the same grid cell, with tabular digits.
+Later labels swap in place, so the button's width and its neighbours' positions never change. Other buttons are unchanged.
+
+## 0.2.46 decision 46 (3)-(4), PE 06:23:42Z B: the 600 ms shift-then-press guard
+
+A pointer press on an ActionButton does nothing when the button's viewport top moved by 4 px or more within the 600 ms before
+pointerdown, unless the move was his own: wheel, touchmove, scroll keys, a pointerdown outside any control (the scrollbar), opening
+or closing a card ([aria-expanded]/summary), input in the same card, or a scroll that continues one of those. App-initiated moves
+(scrollIntoView, Find's Open, anchoring, late content) are not excepted. Enter or Space is never refused. A refusal shows the
+existing muted line ("The card changed as you clicked. Nothing was done; check and click again.") and never synthesises a click;
+the console logs '[guard] refused <kind>' (codes only). Event-driven: a DOM change, resize or scroll schedules one measurement of
+the mounted buttons in the next frame; nothing runs when idle. A settle under 4 px (fonts, a scrollbar) can't put another control
+under the pointer, and the stored top only advances when a move is recorded, so drift still adds up.
+
+Follow-up (PE 06:39:54Z A (a), CR 06:40:30Z B1): the guard measures BOTH axes, viewport top and left, 4 px each, so a sideways
+slide within a bar (8e077af7's 31 px wider-label case) is refused like a vertical one. Every pointer press is judged on its own: the
+refused flag is cleared at each pointerdown before the check, so a refused press released off the button leaves nothing behind.
+Only a pointer-originated click (event.detail > 0) is ever refused; a keyboard click (Enter or Space, detail 0) always acts. The
+catalogued refusal count is deferred to 0.2.47 (a client-event route plus SEND's 'page.guard.refused'); 0.2.46 keeps the codes-only
+console line.
+
+## 0.2.46 C2 companion (SEND 07:39:56Z Q): the chat-normal confirmation names an untitled group by its place
+
+The "Mark normal again" confirmation on a marked chat ("Stop treating <chat> as private/off the record/shareable within your org?")
+names the chat as placeOf(store, { id, name })?.sentence ?? the stored name, the same helper SEND's setChatLevel uses. An untitled
+group whose stored name is its raw id, "Group chat" or a member's name reads "your group with Dev, Kim +1" (or "a group chat" with no
+cached names); a titled chat or a 1:1 keeps its stored name. No new wording or formatter; the action key and privacy level are unchanged.
+
+## 0.2.46 Left for you from wf.left (Left-for-you contract; PE 07:35:05Z rule 5; PM A R35 (d))
+
+The card's "Left for you" lines come only from wf.left (HOST's merge, ae4ebc9b). No reader matches stored wording (rule 1): the
+projection's "Not made for you" split of kept to-dos, its "Couldn't prepare" regex and the refused-from-to-dos parse are gone, and so
+is next.ts's REFUSED split. A pre-0.2.46 refusal string is a plain kept to-do line, shown whole (rule 6).
+
+- **Words** (rule 2, web/model/left-words.ts): what he does from action.verb/pr/target ("Merge PR 4200002.", "Cast your vote on PR 5.",
+  "Answer Kim's question on PR 5." for a reply to the asker's quote); a quote is shown as a quotation; why only behind "Why?".
+- **Source line** (PM forms, no thread ids or raw links): "Kim asked in a comment on PR <n> · Tue ↗", "Kim asked in <place> · Tue ↗"
+  (1:1: "Kim asked you"), "From your reply to Kim · Tue ↗", "From Delegate's review of PR <n> · Tue ↗"; the link opens source.href.
+  Refusals add "· Why?".
+- **One button per kind** (page-only): other-pr with a suggested reply, "Copy reply · open thread ↗" (copies, opens the thread, then
+  "Reply copied: paste it in the thread." only when the copy happened, else "Couldn't copy"); setting-off, "Turn it on in Settings"
+  (#settings/<key>; Settings focuses that row); pr-lifecycle and deploy with a PR link, "Open PR ↗". Promises have none.
+- **Ticks, Undo and the two line verbs** (decision 53, PE 08:05:12Z; SEND 5e0c865a): every open line has a tick in the same list as his
+  kept to-dos, kept first then lines, the order the server binds ("tick n" is its n-th id). "I've done these" binds that list to
+  SEND's separate leftRev (never workflowApprovalRev, so a new or cleared line can't stale a Send), passes the ids in page.todoIds,
+  and HOST's doneTodos clears ticked lines as owner/ticked. Undo is the existing 6 s window before anything is sent (P0-07): nothing
+  reaches the server inside it, so no server undo is needed. An incomplete line offers "Ask Delegate again" and an old-invite line
+  "Draft the invite again" (HOST's left-ask-again / left-draft-invite, the line id in Answer.text, leftRev bound, draft only). A left-
+  only item's card leads with "I've done these". A plain page Close is not offered while lines are open (SEND refuses it).
+- **Seen done** (rule 5): a line HOST's probe cleared as seen-done shows once, "✓ Done (seen on PR <n>): <words>", with its source and no
+  button, on the first visit whose cursor is older than cleared.at; the next visit no longer shows it, and nothing is stored per view.
+  It never counts as left in the row line.
+- **Placement:** factsOf counts todos as openTodos + openLeft, so an item that went done automatically with open lines stays a
+  todo row (core/whose.ts:52); its row line and Classic Ongoing's "Left for you:" use the first kept to-do, else the first line.
+
 ## bug 10-25 G3 (decision 52): a Catch up row named an untitled group by its raw chat id
 
 Every group label in page text goes through placeOf, with the existing A120 words: the Catch up attribution (view.ts itemRow,
@@ -4794,3 +5008,9 @@ untitled one reads 'in a group with <first> +N' (row) or 'your group with …' (
 with no cached names; never a raw id.
 A receipt that kept an untitled group's raw chat id (stored before 0.2.46's writer fix) loses it on the page: the result line
 reads just the name (decision 52 C(1)). Numbers' label leaves out the send's own asker, as the reply rows do.
+## Owner 13:41 (25 Oct): item keys swapped, k = next, j = previous (PM 08:15:34Z)
+
+New (Now) and Classic (Focus): k moves to the next item and j to the previous one. The arrows stay spatial and unchanged, → next and
+← previous; no Up/Down (they scroll the page). Copy, as the PM wrote it: Classic's hint bar "k next · j previous"; both help dialogs
+"k or →: Next item" and "j or ←: Previous item". The send hint is unchanged (the OS-specific hint is not in this scope). With no item
+open, j still opens the first one (the index clamps), as before.

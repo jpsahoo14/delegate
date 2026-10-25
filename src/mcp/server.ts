@@ -16,7 +16,7 @@ import { changeKnowledge, inbox, knowledgeOf, publish, remember, renderProposal 
 import { BOOT_SOURCES, startBootstrap } from '../runner/bootstrap.ts'
 import { disown, own } from '../runner/own.ts'
 import { track, watchCommand } from '../runner/track.ts'
-import { openTodos } from '../runner/work.ts'
+import { openLeft, openTodos } from '../runner/work.ts'
 import { statusText } from '../runner/status.ts'
 import { makeChange, mcpCaller } from '../runner/change.ts'
 import { adoProbe } from '../runner/probe.ts'
@@ -38,6 +38,7 @@ import { describe, propose as proposeAutomation } from '../runner/automations.ts
 import { ClaimSchema, ReportSchema } from '../core/report.ts'
 import { DOCUMENT_DESCRIPTION, DOCUMENT_INPUT, documentReader, IMAGE_DESCRIPTION, IMAGE_LINK, readImage, reportTaker, SUBMIT_DESCRIPTION } from '../worker/tools.ts'
 import { NAME } from '../brand.ts'
+import { placeOf } from '../web/model/place.ts'
 
 const text = (t: string) => ({ content: [{ type: 'text' as const, text: t }] })
 
@@ -316,20 +317,22 @@ export function enqueueParsed(store: Store, parsed: Parsed[], shownAt?: string, 
 		}
 		const wf = code ? store.byCode(code) : undefined
 		if (!wf) { out.push(code ? `${code}: no such item.` : 'Which item? Add a code, for example "ok A7".'); continue }
-		if (p.verb === 'more') { out.push(renderMore(wf, store.thread(wf.id), new Date())); store.markShown([wf]); shown++; continue }
+		if (p.verb === 'more') { out.push(renderMore(wf, store.thread(wf.id), new Date(), placeOf(store, wf.chat, wf.asker))); store.markShown([wf]); shown++; continue }
 		// Promise only what can happen (final review persona notes).
 		// Mark done: close on an item with open to-dos marks them done, even when the item is done (R-NEX-07).
 		// From the page, only the to-dos it drew: the button carries the newest one's time, and one kept after that stays open (re-review N2 P2-C).
-		const marks = p.verb === 'close' && openTodos(wf).length > 0
+		const todos = [...openTodos(wf), ...openLeft(wf)]
+		const marks = p.verb === 'close' && todos.length > 0
 		// A rev older than every open to-do came from a button that drew none (a Close on another row): all open, as before.
-		const drawn = marks ? openTodos(wf).filter(t => from !== 'page' || !shownAt || t.at <= shownAt) : [], seen = drawn.length ? drawn : openTodos(wf)
+		const drawn = marks ? todos.filter(t => from !== 'page' || !shownAt || t.at <= shownAt) : [], seen = drawn.length ? drawn : todos
 		if (marks) {
 			ids.push(write({ code: wf.code, verb: p.verb, text: p.text, surface: 'chat', seenAt: shownAt ?? store.seenRev(wf.code), todos: seen.map(t => t.id) }).id)
 			const count = page?.todoIds?.length ?? seen.length
 			out.push(`${wf.code} will mark ${count === 1 ? 'its to-do' : `its ${count} to-dos`} done. Nothing is sent.`)
 			continue
 		}
-		if (wf.state === 'done' && !reopenable(wf, p.verb) && !(p.verb === 'mine' && wf.fyi) && !['undo', 'ask', 'wrong', 'incomplete', 'unneeded'].includes(p.verb) && !(p.verb === 'send' && wf.sent)) { out.push(`${wf.code} is already done: ${wf.status}`); shown++; continue }
+		const leftAction = (p.verb === 'left-ask-again' || p.verb === 'left-draft-invite') && openLeft(wf).some(line => line.id === p.text)
+		if (wf.state === 'done' && !leftAction && !reopenable(wf, p.verb) && !(p.verb === 'mine' && wf.fyi) && !['undo', 'ask', 'wrong', 'incomplete', 'unneeded'].includes(p.verb) && !(p.verb === 'send' && wf.sent)) { out.push(`${wf.code} is already done: ${wf.status}`); shown++; continue }
 		if (p.verb === 'mine' && (wf.state !== 'done' || !wf.fyi)) { out.push(`${wf.code} is not in Catch up, so nothing changed.`); shown++; continue }
 		// Every sent reply can be undone inside its window, as the page offers; the runner says when it has closed (owner 10-21; review react-spec P0-2).
 		if (p.verb === 'undo' && !wf.sent) { out.push(`${wf.code}: has not been sent, so there is nothing to undo.`); shown++; continue }
@@ -341,6 +344,7 @@ export function enqueueParsed(store: Store, parsed: Parsed[], shownAt?: string, 
 		// "A7: 2" on an item with options is a pick; say which option.
 		if (p.verb === 'answer' && wf.choices && /^\s*#?\d+(\s*,\s*#?\d+)*\s*$/.test(p.text ?? '')) Object.assign(p, { verb: 'pick', nums: p.text!.match(/\d+/g)!.map(Number) })
 		const opts = p.nums?.map(n => wf.choices?.options[n - 1]?.label).filter(Boolean).join('", "')
+		if (p.verb === 'left-ask-again' || p.verb === 'left-draft-invite') { out.push(`${wf.code} will draft for your review. Nothing is sent.`); continue }
 		const what = { mine: 'will be drafted for you. It waits for your ok', pick: opts ? `will use "${opts}" and show the reply first` : 'has no such option', ask: 'will be answered here. Nothing is sent', ok: `${p.nums?.length ? `will make only change${p.nums.length > 1 ? 's' : ''} ${p.nums.join(', ')}, then ` : changes}send the draft: "${wf.draft?.text?.slice(0, 160) ?? ''}"`, edit: `will change the draft to: "${p.text}". Nothing is sent until you say ok`, send: `${changes}send your words: "${p.text}"`, later: 'stays in your inbox for later', answer: 'will redraft with your answer and show a preview', skip: 'will be dismissed without a reply', unwatch: 'will stop only the check-back; work and to-dos stay open', undo: 'will take back the automatic reply and keep the draft', continue: `will open its session on the computer running ${NAME}`, wrong: 'gets a correction drafted for your ok. Nothing is sent yet', incomplete: 'gets a follow-up with what was missing, drafted for your ok. Nothing is sent yet', unneeded: 'is noted as not needed, and taken back if it still can be', every: 'will check at the new interval', extend: 'keeps watching for 7 more days' }[p.verb as 'ok']
 		out.push(`${wf.code}${ask} ${what}.`)
 	}

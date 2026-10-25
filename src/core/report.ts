@@ -1,5 +1,8 @@
 import { z } from 'zod'
+import { createHash } from 'node:crypto'
 import type { Report } from './types.ts'
+import type { LeftRefusal } from './left-lines.ts'
+import { STATIC_SETTING_KEYS } from './setting-keys.ts'
 
 export const SourceSchema = z.object({ ref: z.string(), tier: z.enum(['card', 'live', 'private']), origin: z.enum(['extracted', 'inferred']), label: z.string().optional().describe('The sensitivity label of the file or page, such as Confidential, when it has one') })
 export const ClaimSchema = z.object({
@@ -15,12 +18,46 @@ export const ClaimSchema = z.object({
 // The exact tool call that makes a change: the only call a change run may make for it.
 const CallSchema = z.object({ tool: z.string().describe('The listed change tool name, without any :action suffix'), args: z.record(z.string(), z.unknown()).describe('Its exact arguments, with "action" when the tool does several') }).describe('The exact call that makes this change')
 const EffectSchema = z.object({ system: z.string(), action: z.string(), target: z.string(), summary: z.string(), payload: z.unknown().optional(), call: CallSchema.optional(), head: z.string().optional().describe('For a pull request vote: the head commit ID of the iteration your review read. For a deploy: the PR head commit its build is from') })
+const RefusedActionSchema = z.object({
+	key: z.string().default('').describe('Omit this field. Delegate computes the action key in code; a supplied value is ignored.'),
+	verb: z.enum(['reply', 'comment', 'vote', 'merge', 'complete', 'abandon', 'delete', 'reviewer', 'deploy', 'invite', 'change', 'promise']),
+	pr: z.number().int().positive().optional(), target: z.string().optional(),
+})
+export const RefusalSchema = z.object({
+	type: z.literal('refusal'),
+	kind: z.enum(['other-pr', 'setting-off', 'pr-lifecycle', 'incomplete', 'old-invite', 'deploy', 'other']),
+	action: z.union([
+		RefusedActionSchema.extend({
+			quote: z.string().describe('Only a verbatim quote of the asker request, the reply promise, or the first line of a refused comment; never a label or a generated instruction'),
+			quoteBy: z.enum(['asker', 'owner', 'delegate']).default('asker').describe('Omit this field. Delegate assigns attribution from the action in code.'),
+		}),
+		RefusedActionSchema.strict(),
+	]),
+	why: z.string().optional(),
+	setting: z.union([z.enum(STATIC_SETTING_KEYS), z.templateLiteral([z.enum(['change:', 'read:', 'allow:']), z.string().min(1)])]).optional()
+		.describe('The exact Settings row key: a static row such as deployTo, or change:<catalog entry>, read:<tool> or allow:<tool>.'),
+	reply: z.object({ text: z.string(), href: z.string().url() }).optional(),
+	pr: z.object({ id: z.number().int().positive(), href: z.string().url() }).optional(),
+}).overwrite((r): LeftRefusal => {
+	const quote = 'quote' in r.action ? r.action.quote : undefined
+	const action = { verb: r.action.verb, ...(r.action.pr === undefined ? {} : { pr: r.action.pr }),
+		...(r.action.target === undefined ? {} : { target: r.action.target }) }
+	const normalized = (text: string) => text.replace(/\s+/g, ' ').trim()
+	const key = createHash('sha256').update(JSON.stringify([r.kind, action.verb, action.pr ?? r.pr?.id,
+		normalized(action.target ?? ''), normalized(quote ?? r.why ?? ''), r.setting,
+		r.reply?.href, r.pr?.href])).digest('hex')
+	// MCP validates again at reportTaker; retain the full input until the display producer clips it.
+	return { ...r, action: quote === undefined ? { ...action, key } : { ...action, key, quote,
+		quoteBy: action.verb === 'promise' ? 'owner' : action.verb === 'comment' ? 'delegate' : 'asker' } }
+}) satisfies z.ZodType<LeftRefusal>
 export const ReportSchema = {
 	workflowId: z.string(),
 	intent: z.string().describe('One intent id from the list in your prompt'),
 	state: z.enum(['needs_human', 'done', 'waiting_on_sender']),
 	reply: z.object({ text: z.string().describe('Complete sendable words only, with no blanks or placeholders. When a fact is missing, use question or goalMet false instead.'), commitment: z.boolean(), sources: z.array(SourceSchema) }).optional(),
-	question: z.string().optional(),
+	question: z.string().optional().describe('The question for the owner only, without an item code, answer command, or instructions for using the page.'),
+	questionHint: z.object({ answers: z.array(z.string()).optional() }).optional().describe('Suggested short answers to question, for page chips. Only answers, never item codes or commands.'),
+	refused: z.array(RefusalSchema).optional().describe('Requests you cannot perform, with their structured reason kind and action. Never encode refusals in todos or context copy. For other-pr, keep the other PR number and the suggested reply with its destination href when known. Do not invent an id, source or clearing state.'),
 	choices: z.object({
 		prompt: z.string(), multi: z.boolean().optional(), other: z.boolean().optional(),
 		options: z.array(z.object({ label: z.string(), reply: z.string().optional().describe('The full reply if the owner picks this'), effects: z.array(EffectSchema).optional().describe('Changes this option makes, such as creating a calendar event'), note: z.string().optional() })).min(2).max(6),

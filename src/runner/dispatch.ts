@@ -32,6 +32,8 @@ import { auditSkip, joinInto, say, splitOff } from './intake.ts'
 import { ackJob, afterDraft, ownerActive } from './autosend.ts'
 import { attachJob, carry, jobForRecheck, recheckJob } from './jobs.ts'
 import { askedVote, asksInvite, isInvite, isVote, pendingEffects, proposalEffects, refusedAsk, sameHead, sameProposal, vet, voteName, voteValue } from '../core/effects.ts'
+import { allowLeft, settleLeftRetry } from './left.ts'
+import { leaveForYou, reportLeft } from './left-source.ts'
 import { probePRs, prRefOf, prTarget, sameVote, voteNow, type BuildProbe } from './probe.ts'
 import { decline, groupQuestion, isReviewJob, MAY_REVIEW, reviewGate, voteGate } from './review-gate.ts'
 import { checkPromise, failPromise, promisesDue } from './promise.ts'
@@ -436,6 +438,7 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 		return
 	}
 	if (report && !report.reply && fresh.ownerSend && (!fresh.sent || fresh.sent.at < fresh.ownerSend.at)) {
+		leaveForYou(store, fresh, reportLeft(report))
 		keepApprovedDraft(fresh, report.summary || 'No reply needed')
 		fresh.pending = []
 		await checkPreservedHold(store, src, fresh)
@@ -483,7 +486,9 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 	else {
 		// The home is read and written in one synchronous step, so a part's run and the home's run never overwrite each other (review part 2 #4).
 		const h = family(store, fresh, report)
-		report = prepareReportCalls(store, cfg, [fresh], report).report
+		const todos = report.todos
+		report = { ...prepareReportCalls(store, cfg, [fresh], report).report, todos }
+		leaveForYou(store, fresh, reportLeft(report))
 		applyReport(fresh, checked(store, cfg, report), h, canCloseReport(store, h, fresh))
 		if (completedJob?.state === 'done') fresh.context = replyFacts(jobContext, fresh.context)
 		if (fresh.holdCheckPending) await checkPreservedHold(store, src, fresh)
@@ -498,13 +503,16 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 		// Each promised change must be one the owner allows, on this item's PR; any other becomes a to-do with the reason (next action).
 		const v = vet(cfg, report.goalMet === false ? [] : report.effects, prTarget(store, fresh))
 		// A vote only when he was asked and may review the PR (review gate G11); any other becomes a to-do with the reason.
-		v.effects = voteGate(store, cfg, wf, v.effects, v.todos)
+		v.effects = voteGate(store, cfg, wf, v.effects, v.todos, true, v.left)
 		// A vote is read against its PR now, so the card shows what it means and the owner's first ok casts it (bug 10-21 A12).
 		// Anything the read would change (a closed PR, new commits) is left to the check at ok, which says why.
 		const read = v.effects.some(e => isVote(e.call)) ? await voteNow(store, cfg, fresh, v.effects, probe) : undefined
 		commit.refresh()
 		const effects = proposalEffects(read && !read.why && !read.again && read.effects.length === v.effects.length ? read.effects : v.effects, [fresh])
-		if (v.todos.length) Object.assign(fresh, { todos: [...new Set([...(fresh.todos ?? []), ...v.todos])],
+		settleLeftRetry(fresh, report, effects)
+		allowLeft(fresh, effects)
+		leaveForYou(store, fresh, v.left)
+		if (v.todos.length) Object.assign(fresh, {
 			// "Are you in <group>?" stays the question while it is open: its answer can bring the vote back (queue-new #7C).
 			question: fresh.question ?? (wf.groupAsk ? groupQuestion(wf.groupAsk) : fresh.draft ? refusedAsk(fresh.code, v.todos.length) : `These changes need you: ${v.todos.join('; ')}`) })
 		if (fresh.kind === 'reply' && effects.length) {
@@ -542,6 +550,7 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 			store.log({ event: 'invite-ask-unmet', workflowId: fresh.id, code: fresh.code })
 		}
 	}
+	if (report && job) leaveForYou(store, fresh, reportLeft(report))
 	if (report?.split?.length) splitOff(store, cfg, fresh, report.split)
 	// A draft that drew on another conversation not everyone here is in waits for the owner (R-SHR-01).
 	// What the run searched stays on the item for Why (queries and counts, never results).
@@ -633,7 +642,11 @@ export function checked(store: Store, cfg: Config, r: Report): Report {
 }
 
 export function applyReport(wf: Workflow, r: Report, home = wf, allowClose = true, store?: Store) {
-	if (store) r = prepareReportCalls(store, store.config(), [wf], checked(store, store.config(), r)).report
+	if (store) {
+		const todos = r.todos
+		r = { ...prepareReportCalls(store, store.config(), [wf], checked(store, store.config(), r)).report, todos }
+		leaveForYou(store, wf, reportLeft(r))
+	}
 	wf.returnedFrom = undefined; wf.statusReason = undefined; wf.reviewAgain = undefined
 	if (r.reply) wf.runFailed = undefined
 	if (r.reply) { wf.ownerSend = undefined; clearHold(wf); wf.approved = undefined }
@@ -691,11 +704,13 @@ export function applyReport(wf: Workflow, r: Report, home = wf, allowClose = tru
 	Object.assign(wf, stateFields(wf, 'needs_human'))
 	if (store && r.goalMet !== false) {
 		const cfg = store.config(), v = vet(cfg, r.effects, prTarget(store, wf))
-		v.effects = voteGate(store, cfg, wf, v.effects, v.todos)
+		v.effects = voteGate(store, cfg, wf, v.effects, v.todos, true, v.left)
 		wf.effects = proposalEffects(v.effects, [wf])
+		settleLeftRetry(wf, r, wf.effects)
+		allowLeft(wf, wf.effects)
+		leaveForYou(store, wf, v.left)
 		if (wf.effects.length) carry(store, cfg, wf, wf.effects)
 		if (v.todos.length) {
-			wf.todos = [...new Set([...(wf.todos ?? []), ...v.todos])]
 			wf.question ??= wf.draft ? refusedAsk(wf.code, v.todos.length) : v.todos.join('\n')
 		}
 	}

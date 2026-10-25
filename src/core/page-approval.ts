@@ -2,6 +2,7 @@ import type { Answer, Automation, Config, Effect, Job, Proposal, Workflow } from
 import { createHash } from 'node:crypto'
 import { pendingEffects } from './effects.ts'
 import { approvedReplyText, currentDraft } from './policy.ts'
+import { openLeft } from '../runner/left.ts'
 
 const canonical = (value: unknown): unknown => Array.isArray(value) ? value.map(canonical) :
 	value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical((value as Record<string, unknown>)[key])])) : value
@@ -27,6 +28,9 @@ export const automationApprovalRev = (automation: Automation): string => pageDig
 	schedule: automation.schedule, until: automation.until, maxSends: automation.maxSends, stopOnReply: automation.stopOnReply,
 })
 export const proposalApprovalRev = (proposal: Proposal): string => pageDigest({ state: proposal.state, title: proposal.title, ops: proposal.ops })
+export const leftRev = (workflow: Workflow): string => pageDigest(
+	openLeft(workflow).map(({ id, cleared }) => ({ id, cleared })).sort((a, b) => a.id.localeCompare(b.id)),
+)
 
 export function pageAnswerRefusal(answer: Answer, workflow?: Workflow, automation?: Automation, proposal?: Proposal, cfg?: Config, managementRev?: string, job?: Job): string | undefined {
 	const guard = answer.page
@@ -34,11 +38,16 @@ export function pageAnswerRefusal(answer: Answer, workflow?: Workflow, automatio
 	if (guard.kind === 'manage') return managementRev === guard.expect ? undefined : 'Changed since you looked. Nothing was sent or changed. Open the new version first.'
 	if (guard.kind === 'send-reply' && workflow?.state === 'done') return 'Already sent. Nothing else was sent. Open the current item before posting a correction.'
 	if (guard.kind === 'send-reply' && (!workflow || !currentDraft(workflow, job)?.text)) return 'The latest turn proposes no reply. Nothing was sent. Open the current item.'
-	if (guard.kind === 'mark-todos') {
-		if (!workflow || !guard.todoIds?.length || guard.todoIds.some(id => !workflow.kept?.some(todo => todo.id === id && !todo.done))) return 'These to-dos changed. Nothing was marked. Open the current list.'
+	if (answer.verb === 'left-ask-again' || answer.verb === 'left-draft-invite') {
+		if (!workflow || !openLeft(workflow).some(line => line.id === answer.text) || guard.expect !== leftRev(workflow)) return 'These to-dos changed. Nothing was changed. Open the current list.'
 		return undefined
 	}
-	if (answer.verb === 'close' && workflow?.kept?.some(todo => !todo.done)) return 'These to-dos changed. Nothing was marked. Open the current list.'
+	if (guard.kind === 'mark-todos') {
+		if (!workflow || guard.expect !== leftRev(workflow) || !guard.todoIds?.length || guard.todoIds.some(id =>
+			!workflow.kept?.some(todo => todo.id === id && !todo.done) && !openLeft(workflow).some(line => line.id === id))) return 'These to-dos changed. Nothing was marked. Open the current list.'
+		return undefined
+	}
+	if (answer.verb === 'close' && workflow && (workflow.kept?.some(todo => !todo.done) || openLeft(workflow).length)) return 'These to-dos changed. Nothing was marked. Open the current list.'
 	if (guard.kind === 'undo-send' && (!workflow?.sent || workflow.sent.msgId !== guard.sentMessageId)) return 'That reply is no longer the current sent reply. Nothing was deleted.'
 	if (guard.kind === 'feedback-send' && (!workflow?.sent || workflow.sent.msgId !== guard.sentMessageId)) return 'That reply changed. Nothing was sent, deleted or redrafted. Open its current activity first.'
 	const current = workflow ? workflowApprovalRev(workflow) : automation ? automationApprovalRev(automation) : proposal ? proposalApprovalRev(proposal) : undefined

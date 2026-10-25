@@ -1,5 +1,22 @@
 # React preview requirements
 
+Text inbox/details:
+- Use the same cached place labels as the page for untitled groups, excluding the item's asker and owner.
+  Keep titled-chat and 1:1 wording unchanged; do not show a raw chat id as a place label.
+
+Left for you:
+- Store structured actions separately from replaceable worker context. Same-source reruns do not duplicate a line.
+- Explain a refused action from structured facts and safe source links, not by guessing from a sentence.
+  A new reviewed revision can create a new line; re-running the same revision keeps the same line.
+- A cleared line does not reopen on a rerun. After 30 days its content expires; only a bounded, content-free id
+  tombstone remains. Old items retain plain legacy lines; do not infer structured actions by parsing their wording.
+- HOST supplies the data and engine handlers; New owns card wording, links and the existing six-second Undo receipt.
+- Sending or automatically finishing an item ends its reply, not the owner's unfinished tasks. Keep those tasks visible.
+  Explicit owner closure of the item clears them; an automatic transition to Done does not. Skipping only the reply
+  on open work keeps both the work and its Left-for-you tasks.
+- Asking again or redrafting an old invite is bound to one still-active line and only prepares a proposal for approval.
+  A line is seen done only after an exact later owner reply on its PR thread or a later PR closure, never an AI guess.
+
 Fast checking:
 - Open or extend fast checking only after a reply goes out, sent by Delegate or by the owner. Measure its window from
   that reply, not the tick or repeated reads of the same receipt.

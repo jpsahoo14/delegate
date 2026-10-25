@@ -1,11 +1,41 @@
 # Owner-approved sends (#35, #37, #45)
 
+## Reply marker (I34, decision 45; .46)
+
+`markerFor(text, workflow, by, config)` in runner/send owns the delivered form.
+Automatic replies always carry the marker. An unchanged Delegate draft follows
+`signApproved`, except during `learnAfter`; owner-authored and edited replies
+never carry it. Comparison strips a trailing preview marker and uses the send
+path's existing HTML/whitespace normalization against the current draft.
+A marker is stripped only as a standalone trailing line or block, not when its
+words occur at the end of an ordinary sentence. `withMarker(required=false)`
+removes the suffix rather than treating its presence as permission to sign.
+The existing correction caller therefore gets the unsigned form; ack and
+reminder paths retain the default required marker.
+
+Successful workflow sends and acknowledgements log catalogued `marker`
+metadata with item code, `applied` and `why` (`auto`, `approved`, `owner-edit`,
+`owner-text` or `off`). No reply content is in this metadata event. HOST owns
+the corresponding event hooks after successful correction and reminder sends
+in apply/automations, using `owner-text`/false and `auto`/true respectively.
+The page only previews the delivered form; New owns its paired I34 editor/footer
+change. Stored drafts and sent history are not migrated. Final consent,
+revision, claim and last-await source checks remain in place.
+
 The PE-approved send contract keeps the page's exact-revision guard first.
 Owner intent checks may use only the warm host's optional one-shot `quick` API,
 never a cold CLI or the item's session. Rule sends retain their stricter checks
 and never use the relaxed intent check.
 
 ## Stale Send anyway (decision 47)
+
+Decision 51 carries the actual private 0.2.45 release (`b37d9356`) into the
+reviewed SEND line without replacing its earlier `0730e90c` merge history.
+The released PR-join helpers stay in runner/work; approval classifiers stay in
+core/vote-claims and retain runner/work's compatibility exports. The telemetry
+catalogue keeps both reply-marker and PR-anchor-conflict metadata. Generated
+files are rebuilt from the combined source, not resolved by choosing one side.
+This carry-forward does not change the consent or final-send checks below.
 
 A page override consents only to the held digest shown on that card. New passes
 the intent's `reviewed` into `Answer.sendReview`; the send dispatcher never
@@ -52,11 +82,16 @@ The E2E report's in-flight-poll explanation is plausible, not an established
 cause. Only the exact integrated 0.2.45 stage can satisfy the browser gate.
 
 This is a 0.2.45 release gate and applies to the same send path shipped in
-0.2.44. Per PE 06:55, do not make a 0.2.44.1 hotfix unless 0.2.45 slips more than
-48 hours. Any such hotfix needs CR review and both the page's reviewed-digest
+0.2.44. A delay does not authorize a hotfix automatically: a narrower cut needs
+a fresh Coordinator decision, CR review and both the page's reviewed-digest
 transport and the engine checks together. Engine-only deployment fails closed
 for held page overrides without that field. The fixed path is carried into
-0.2.46 by rebasing M3 on 0.2.45, not by a separate port.
+0.2.46 by merging the reviewed 0.2.45 chain, not rebasing or making a separate
+port (decision 51). The extracted `runner/send.ts` retains the exact reviewed
+`heldSend` and `send` bodies; the dispatcher retains the merged consent
+transport. The extracted approval gate is unchanged. The merge resolution
+requires CR review and the existing isolated decision-47 checks before any
+0.2.46 SEND staging or further send-path/module-move work.
 
 ## Unknown membership (R34)
 
@@ -126,6 +161,113 @@ removed and `Last, First` becomes `First Last` before taking names/initials.
 The shared `personName` export in core/format also normalizes the cached
 one-to-one counterpart name; New can use it before taking headline first names.
 No membership fetch, permission change or stored-title rewrite is performed.
+
+## Structured work left for the owner
+
+The pure vote classifier lives in core/vote-claims; runner/work keeps
+compatibility re-exports during the ownership split. PR reference helpers
+remain in runner/work until HOST's separate reference-helper move.
+The send path and reply context live in runner/send; runner/apply retains
+compatibility re-exports and calls the extracted helpers for owner answers.
+The shared owner-answer receipt writer remains in runner/apply.
+`okSendGate(store, cfg, wf, answer)` returns `{ refuse?, voteChecks }`.
+It preserves the self-chat vote omission and Settings refusal order;
+`refuse` carries the receipt text and refusal flag. HOST's dispatcher presents
+that receipt and stops, or continues with live PR/deploy checks. It does not
+merge LeftDraft records.
+
+core/left-lines exports `LeftDraft`, `LeftKind`, `LeftAction`, `LeftSource` and
+`LeftLine`, plus pure `leftRefusal(action, kind, details)` and `leftPromise(quote)`
+constructors. A refusal requires its kind; producers supply action data, never
+an id or a source. HOST owns workflow merge, stable ids, sources and clearing
+in `Workflow.left`. Legacy strings are not parsed or migrated.
+
+`core/setting-keys.ts` exports the Settings row namespace (`SettingKey`), its
+static keys, and `settingKey(entry)`: a static entry stays unchanged, while a
+catalog change becomes `change:<entry>`. Settings rows and refusal producers
+share the helper; worker refusals validate the same namespace, including
+dynamic `read:<tool>` and `allow:<tool>` rows. The Settings module re-exports
+the type and helper for page consumers. New owns opening and focusing
+`#settings/<key>`; producers never infer keys from copy.
+Existing row keys, labels and save behavior are unchanged. Stored refusal
+metadata is not rewritten; new worker output with an unknown key fails schema
+validation rather than creating an unresolvable Settings target.
+
+`vet.left` and `prepareEffectCalls.left` expose the refusal records.
+`effectRefusal` returns the code-owned denial record; the existing `refusal`
+string API reads its reason, preserving the send/execute gates. Settings
+refusals carry the actual `change:<entry>` key (or `deployTo`); lifecycle,
+incomplete, other-PR, old-invite and deploy refusals are classified where the
+gate rejects them, never from their explanation. `deployBusyLeft` is the pure
+constructor for HOST's deploy-busy branches. `leftText` generates the legacy
+chat/status line from a record and preserves promise quotes. `vet.todos` instead
+keeps the exact 0.2.45 `<effect.summary>. Not made for you: <why>` text alongside
+each draft, including changes excluded by a deploy. The summary distinguishes
+different refused changes; the legacy text is never parsed back into records.
+`LeftAction.key` is required. Exact calls use a SHA-256 of tool plus recursively
+key-sorted arguments, excluding only top-level transport correlation fields
+`requestId`, `clientRequestId`, `correlationId` and `traceId`. PR, thread, build
+and pipeline run ids remain significant. Missing calls use a whitespace-normalized
+summary; promises use a whitespace-normalized quote. A refused comment carries
+its first payload line in `action.quote`. Display quotes are verbatim prefixes,
+clipped at a word boundary to at most 200 code points including the ellipsis.
+Every quote carries code-assigned `quoteBy`: `delegate` for a refused comment,
+`owner` for a promise, otherwise `asker`. Keys use the full input, never the
+clipped display text. Normalization includes the key
+when deduplicating, so distinct calls never collapse merely because their
+display fields match. HOST includes this producer key in its line id hash.
+
+`prepareReportCalls.left` includes incomplete proposals and folds them into
+`Report.refused`, including the option number in the reason where relevant.
+The worker report schema accepts structured refusals, including the suggested
+reply/destination on another PR. Schema acceptance overwrites worker keys in
+code before effect preparation can append code-made drafts. Worker keys are
+bounded SHA-256 hashes of the structured refusal tuple and destination hrefs;
+the generated suggested reply's wording is not identity. The full worker
+quote survives repeated MCP/schema validation so recomputation is stable;
+`normalizeReport.refused` clips its display quote without changing the key.
+`normalizeReport.refused` retains kind, action,
+settings and reply metadata, with compatibility `what`/`target`/`reason` display
+fields generated from that record. It keeps `reply` and `pr` link fields only
+for HTTPS URLs on dev.azure.com, a visualstudio.com subdomain,
+teams.microsoft.com or teams.cloud.microsoft; otherwise it drops that field,
+not the refusal line. Old prose remains plain content, not a
+typed refusal or an inferred button. No new golden rows are added; legacy
+report expectations reflect the deliberate removal of copy classification.
+
+Regression (PE-approved): a pre-0.2.46 failed job with only a free-text refusal
+now reads as an unknown failure; Try again leads while repeats are below two,
+then Write. Current refusal producers write to the typed `todos`/`refused`
+fields, not `job.error`. New owns switching G96 to a structured refusal fixture
+in the same 0.2.46 stage, keeping its expectation that a current refused change
+does not lead with Try again. No legacy copy parser or migration is added.
+Additional legacy regressions from removing copy classification: to-dos retain
+their raw engine reasons; tool-bearing reasons can sanitize to the same
+"Review this step yourself." line and deduplicate. Legacy refusal context can
+appear as informational review findings, while a "Refused change" fact keeps
+its warning tone. Structured `refused[].reason` now uses the plain cause rather
+than the removed friendly-wording translator. These display changes do not
+authorize a change. HOST's merge and New's structured rendering must land in
+the same stage before shipping new refusal lines.
+
+HOST must consume these arrays when applying reports, choices and preparation
+results and generate workflow ids/sources/lifecycle state. SEND does not
+write `Workflow.left` or change the card-state/projection/rendering ownership.
+
+Worker reports carry the question alone and optional `questionHint.answers`
+for page chips. Normalization retains supplied metadata and ignores orphan
+hints. Text rendering composes `Answer "A70: yes"` from the item code and suggested answers;
+an empty hint uses "your answer". Old command-bearing questions remain unchanged
+and are never parsed into hint metadata. HOST owns report application (copy
+the hint with a question, clear it for previews and replaced questions),
+engine-generated questions and the remaining lifecycle writers.
+`normalizeQuestionHint` is shared with text rendering: answers become one
+trimmed line without double/smart quotes, backticks or invisible format/joiner
+characters, at most 60 Unicode code points and three
+case-insensitively distinct answers. An item code anywhere, or a control verb
+as the first word, drops the answer rather than repairing it. Both checks run
+again after clipping, so truncation cannot create a code or command. The question
+remains visible. HOST can use the same helper at its application boundary.
 
 ## Rule-governed job results
 

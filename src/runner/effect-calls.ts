@@ -4,10 +4,12 @@ import type { JsonSchemaType } from '@modelcontextprotocol/sdk/validation'
 import type { Call, Effect } from '../core/types.ts'
 import type { ToolInfo } from '../core/tool-class.ts'
 import type { Catalog } from './catalog.ts'
+import { effectLeftAction } from '../core/effects.ts'
+import { leftRefusal, type LeftDraft } from '../core/left-lines.ts'
 
 export type CommentRef = { project: string; repositoryId: string; pullRequestId: number }
 export type EffectCallRepair = { event: 'effect-call-repaired'; from: 'threadContext' | 'rebuilt'; ok: boolean }
-export type EffectCallPreparation = { effects: Effect[]; problems: string[]; repaired: number[] }
+export type EffectCallPreparation = { effects: Effect[]; problems: string[]; repaired: number[]; left: LeftDraft[] }
 type ListedTool = { name: string; server: string; info: ToolInfo }
 type BuiltCall = { call: Call; problem?: never } | { call?: never; problem: string }
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
@@ -74,7 +76,13 @@ export function prepareEffectCalls(
 	const tools: ListedTool[] = Object.entries(catalogs).flatMap(([server, catalog]) =>
 		catalog.tools.map(t => ({ server, name: `${server}-${t.name}`, info: t.info })))
 	const comments = tools.filter(t => threadTool(t.name))
-	const result: EffectCallPreparation = { effects: [], problems: [], repaired: [] }
+	const result: EffectCallPreparation = { effects: [], problems: [], repaired: [], left: [] }
+	const problemLeft = (effect: Effect, why: string, comment = false) => {
+		const action = effectLeftAction(effect, ref?.pullRequestId)
+		const draft = { ...leftRefusal(comment ? { ...action, verb: 'comment' } : action, 'incomplete'), why }
+		result.left.push(draft)
+		result.problems.push(draft.why)
+	}
 	let n = 0
 	for (const [index, effect] of effects.entries()) {
 		if (defer(effect)) { result.effects.push(effect); continue }
@@ -84,7 +92,7 @@ export function prepareEffectCalls(
 			const tool = tools.find(t => t.name === name)
 			const problem = !effect.call ? 'no exact call was provided' : !tool ? 'the tool is not in the cached catalog' : effectCallProblem(effect.call, tool.info)
 			if (problem) {
-				result.problems.push(`Couldn't prepare change ${index + 1}: ${problem}`)
+				problemLeft(effect, `Couldn't prepare change ${index + 1}: ${problem}`)
 				log({ event: 'effect-call-repaired', from: 'rebuilt', ok: false })
 			} else result.effects.push(effect)
 			continue
@@ -97,7 +105,7 @@ export function prepareEffectCalls(
 		const built = tool ? buildCommentCall(effect.payload, ref, tool) : { problem: "the comment tool isn't uniquely identified in the cached catalog" }
 		const from = object(effect.call?.args) && Object.hasOwn(effect.call.args, 'threadContext') ? 'threadContext' : 'rebuilt'
 		if (!built.call) {
-			result.problems.push(`Couldn't prepare comment ${n}: ${built.problem}`)
+			problemLeft(effect, `Couldn't prepare comment ${n}: ${built.problem}`, true)
 			log({ event: 'effect-call-repaired', from, ok: false })
 		} else if (isDeepStrictEqual(effect.call, built.call)) result.effects.push(effect)
 		else {
