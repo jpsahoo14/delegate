@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { DONE_FILTER_KEYS } from './done.ts'
 
 export const text = z.string()
 // An image in a message reaches the page as this token (L3c); the bubble draws it as a chip that opens the message in Teams.
@@ -102,6 +103,7 @@ const done = z.object({
 	// What Delegate checked before this reply went (#45 sent.checks), as history lines: "Sent. Kim posted again at 8:52 AM; …".
 	checks: strings.optional(),
 	used: optional,
+	change: z.enum(['task', 'pr', 'invite', 'other']).optional(), comments: z.number().optional(), facts: z.number().optional(),
 })
 const watch = z.object({ id: text, code: text, what: text, last: text, changedAt: optional, update: z.boolean(), rev: text, every: z.number().optional(), endsAt: optional, by: optional, nextAt: optional, from: optional, actionIds: strings })
 const automation = z.object({ id: text, code: text, sentence: text, to: text, text, when: text, state: text, why: optional, next: optional, count: z.number(), rev: text, actionIds: strings })
@@ -172,7 +174,7 @@ export const snapshotSchema = z.object({
 	lastUndoId: optional,
 	classic: z.object({
 		needsIds: strings,
-		tiles: z.array(z.object({ key: text, count: z.number(), label: text, sub: optional })),
+		tiles: z.array(z.object({ key: text, count: z.number(), label: text, sub: optional, filter: z.enum(DONE_FILTER_KEYS).optional(), since: optional })),
 		also: z.array(z.object({ key: text, count: z.number(), label: text, sub: optional })),
 		catchupIds: strings,
 		running: z.array(z.object({ code: text, what: text, who: optional, since: text, sendAt: optional, progress: z.number().optional(), detail: optional, retry: z.object({ at: text, attempt: z.number(), reason: text, tried: strings }).optional(), queued: z.boolean().optional(), actionIds: strings })),

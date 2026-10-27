@@ -17,13 +17,9 @@ import { isolateRowControls } from '../features/row-navigation.ts'
 import { MessageBubble, messageText, ReviewPosted } from '../features/ItemCard.tsx'
 import { SentTime } from '../features/SentTime.tsx'
 import { CODE, ItemCode } from '../features/ItemCode.tsx'
+import { DONE_FILTERS, isDoneFilter, matchesDone, type DoneFilter } from '../domain/done.ts'
 
-const filters: Record<string, { label: string; kinds: string[] }> = {
-	all: { label: 'All', kinds: ['reply', 'review', 'change', 'reminder', 'learned', 'catchup'] },
-	replies: { label: 'Replies', kinds: ['reply', 'review'] }, reviews: { label: 'Reviews', kinds: ['review'] },
-	changes: { label: 'Changes', kinds: ['change'] }, reminders: { label: 'Reminders', kinds: ['reminder'] },
-	learned: { label: 'Learned', kinds: ['learned'] }, catchup: { label: 'Catch up', kinds: ['catchup'] },
-}
+const filters = DONE_FILTERS
 const marks = [
 	{ kind: 'wrong', label: 'Wrong', question: 'What should it have said?', button: 'Draft a correction' },
 	{ kind: 'incomplete', label: 'Incomplete', question: 'What was missing?', button: 'Draft what was missing' },
@@ -100,12 +96,12 @@ export function ActivityRow({ supplied, first = false, last = false }: { supplie
 	</article>
 }
 
-export default function Done() {
+function RecentDone() {
 	const entities = useEntities(), entries = useDoneEntries(), fresh = useDoneLook(), { route } = useScreenNavigation()
-	const requested = route.split('/')[1] ?? 'all', filter = requested === 'closed' ? 'catchup' : Object.hasOwn(filters, requested) ? requested : 'all'
+	const requested = route.split('/')[1] ?? 'all', filter = requested === 'closed' ? 'catchup' : isDoneFilter(requested) ? requested : 'all'
 	// R12b step 3: done/rule/<ids> lists only what a line's grants sent (Settings › Your way of working links here with the line's ruleIds).
 	const ruleIds = requested === 'rule' ? (route.split('/')[2] ?? '').split(',').map(decodeURIComponent).filter(Boolean) : undefined
-	const rows = Object.values(entries).filter(row => ruleIds ? !!row.rule && ruleIds.includes(row.rule) : filters[filter].kinds.includes(row.kind))
+	const rows = Object.values(entries).filter(row => ruleIds ? !!row.rule && ruleIds.includes(row.rule) : matchesDone(row, filter))
 	const newer = rows.filter(row => fresh.has(row.id)), earlier = rows.filter(row => !fresh.has(row.id))
 	const groups = [{ title: newer.length && earlier.length ? 'New' : '', rows: newer }, { title: newer.length && earlier.length ? 'Earlier this week' : '', rows: earlier }]
 	const closed = Object.values(entries).filter(row => row.kind === 'closed')
@@ -120,4 +116,28 @@ export default function Done() {
 		]) : <p className="empty">{filter === 'catchup' ? 'Nothing to catch up on in the last 7 days.' : 'Nothing in the last 7 days.'}</p>}</div>
 		{filter === 'catchup' && closed.length > 0 && <details className="classic-quiet"><summary>Also closed {closed.length} with nothing to know · Show</summary>{closed.map(row => <article className="classic-activity-row" key={row.id}><span className="classic-activity-icon"><Icon name="check" /></span><div className="classic-activity-text"><b>{row.sentence}</b><span className="classic-activity-meta">{when(row.at)}{row.teams && <> · <a href={row.teams} target="_blank" rel="noopener noreferrer">Open in Teams↗</a></>}</span></div>{CODE.test(row.code) && <ItemCode code={row.code} />}</article>)}</details>}
 	</section>
+}
+
+function ScopedDone({ filter, since }: { filter: DoneFilter; since: string }) {
+	const entities = useEntities()
+	const rows = Object.values(entities.doneEntries).filter(row => matchesDone(row, filter, since)).sort((a, b) => b.at.localeCompare(a.at))
+	return <section className="classic-done"><header className="classic-list-head"><div>
+		<h1>Since you were away · {filters[filter].label}</h1>
+		<p><a href={`#classic/done/${filter}`}>Show the last 7 days</a></p>
+	</div></header><div className="classic-done-stream">{rows.length
+		? rows.map((row, index) => <ActivityRow key={row.id} supplied={row} first={index === 0} last={index === rows.length - 1} />)
+		: <p className="empty">Nothing since you were away.</p>}</div></section>
+}
+
+export default function Done() {
+	const { route } = useScreenNavigation()
+	const [, filter, scope, encodedSince, ...extra] = route.split('/')
+	if (scope !== 'since') return <RecentDone />
+	let since: string | undefined
+	try { since = encodedSince === undefined ? undefined : decodeURIComponent(encodedSince) }
+	catch (error) { if (!(error instanceof URIError)) throw error }
+	if (!isDoneFilter(filter) || !since || !Number.isFinite(Date.parse(since)) || extra.length) return <section className="classic-done">
+		<h1>View not found</h1><p role="alert">This Done link is invalid.</p><a href="#classic/done">Show the last 7 days</a>
+	</section>
+	return <ScopedDone filter={filter} since={since} />
 }

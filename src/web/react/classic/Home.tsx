@@ -24,12 +24,12 @@ import { busyWords } from '../data/busy.ts'
 import { WaysLink, waysLinkShown } from '../features/Ways.tsx'
 
 const destinations: Record<string, string> = {
-	replies: 'done/replies', reviews: 'done/reviews', tasks: 'done/changes', prs: 'done/changes', invites: 'done/changes',
+	replies: 'done/replies', reviews: 'done/reviews', changes: 'done/changes', tasks: 'done/changes', prs: 'done/changes', invites: 'done/changes',
 	reminders: 'done/reminders', knowledge: 'knowledge', watching: 'ongoing', waiting: 'ongoing',
 	running: 'ongoing/running', automations: 'ongoing/automations', learned: 'done/learned', suggestions: 'settings/learned',
 }
 const icons: Record<string, ComponentProps<typeof Icon>['name']> = {
-	replies: 'reply', reviews: 'pr', tasks: 'task', prs: 'pr', invites: 'cal', reminders: 'clock',
+	replies: 'reply', reviews: 'pr', changes: 'task', tasks: 'task', prs: 'pr', invites: 'cal', reminders: 'clock',
 	knowledge: 'book', watching: 'eye', waiting: 'clock', running: 'bolt', automations: 'clock', learned: 'book', suggestions: 'bolt',
 }
 
@@ -92,7 +92,7 @@ export default function Home({ readOnly = false }: { readOnly?: boolean }) {
 					{!readOnly && <a className="classic-start" href={`#classic/focus/${needs[0].code}`}>Start with {(person => person.first ?? person.name)(entities.people[needs[0].personId])} <Icon name="arrow" /></a>}
 					{needs.length > 4 && <span>and {needs.length - 4} more</span>}
 				</div></> : <><span className="classic-tile-icon classic-all-clear"><Icon name="check" /></span><h2 id="classic-needs-title">All clear</h2><p>Nothing needs you.</p></>}
-		</section>{tiles.map(tile => <a className="classic-tile" key={tile.key} href={`#classic/${destinations[tile.key] ?? 'done'}`} aria-label={tile.label}><span className="classic-tile-icon"><Icon name={icons[tile.key] ?? 'check'} /></span><span className="classic-tile-go"><Icon name="arrow" /></span><TileSentence label={tile.label} count={tile.count} />{tile.sub && <span className="classic-tile-sub">{tile.sub}</span>}</a>)}</div>
+		</section>{tiles.map(tile => <a className="classic-tile" key={tile.key} href={`#classic/${tile.filter && tile.since ? `done/${tile.filter}/since/${encodeURIComponent(tile.since)}` : destinations[tile.key] ?? 'done'}`} aria-label={tile.label}><span className="classic-tile-icon"><Icon name={icons[tile.key] ?? 'check'} /></span><span className="classic-tile-go"><Icon name="arrow" /></span><TileSentence label={tile.label} count={tile.count} />{tile.sub && <span className="classic-tile-sub">{tile.sub}</span>}</a>)}</div>
 		{catchupIds.length > 0 && <section className="classic-catchup"><div className="classic-section-head"><h2>Catch up · {snapshot.summary.catchup.count} new</h2>{!readOnly && snapshot.summary.catchup.count > 0 && snapshot.pageActionIds?.filter(id => entities.actions[id].kind === 'mark-all-read').map(id => <ActionButton key={id} action={entities.actions[id]} input={{ seenAt: snapshot.now }} />)}</div>
 			<div className="classic-catchup-rows">{catchupIds.map(id => { const row = entries[id]; return row && (readOnly ? <article className="item-card" key={id}><h3>{row.sentence}</h3>{row.gist && <p>{row.gist}</p>}<small>{row.by} · {when(row.at)}</small></article> : <div key={id} onClickCapture={event => { if (event.target instanceof Element && event.target.closest('a[href^="https:"]')) seen.mark([`item:${row.code}`], snapshot.now) }}>{!classic.catchupIds.includes(id) && <p className="classic-retained-note">Your open edit is kept here; this is no longer a new Catch-up row.</p>}<Entry row={row} compact grouped open={false} onToggle={() => navigate('done/catchup')} /></div>) })}</div>
 			{seen.error && <p role="alert" className="error">{seen.error}</p>}

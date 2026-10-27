@@ -20,6 +20,7 @@ import { leftForYou } from '../core/whose.ts'
 import { currentDraft } from '../core/policy.ts'
 import { htmlToText, isPersona } from '../core/intake.ts'
 import { placeOf, type Place } from './model/place.ts'
+import { homeTiles, type ChangeKind, type DoneFilter } from './react/domain/done.ts'
 
 // The one shape every surface renders: the browser page, the chat panel, and the synced snapshot (design-spec/data.md).
 // Only what the owner should see: no ids, paths, or raw citations.
@@ -60,8 +61,8 @@ export type ItemCard = {
 export type WorkView = { goal: string; next?: string; waiting?: string; due: boolean; steps: { at: string; what: string; news: boolean }[]; plan: { what: string; who: string; done: boolean; where?: string; build?: string }[]; home?: string; proposed: boolean }
 export type KnowledgeCard = { code: string; rev: string; topic: string; home: 'team' | 'personal'; facts: { type: string; text: string; who?: string; date: string; href?: string; private: boolean; replaces?: string }[] }
 export type AutomationRow = { code: string; sentence: string; to: string; text: string; when: string; state: Automation['state']; why?: string; next?: string; count: number; rev: string }
-export type DoneRow = { work?: string; code: string; kind: 'reply' | 'review' | 'change' | 'closed' | 'catchup' | 'reminder' | 'learned'; who: Who; sentence: string; high?: boolean; teams?: string; ask?: string; said?: string; inTeams?: boolean; gist?: string; watch?: { target: string; until: string }; watchedAs?: string; own?: boolean; href?: string; by: string; at: string; text?: string; undoUntil?: string; notes?: Note[]; why?: ItemCard['why']; rule?: string; fresh?: boolean ; msgs?: string[]; sentId?: string; earlier?: true }
-export type Tile = { key: string; count: number; label: string; sub?: string }
+export type DoneRow = { work?: string; code: string; kind: 'reply' | 'review' | 'change' | 'closed' | 'catchup' | 'reminder' | 'learned'; who: Who; sentence: string; high?: boolean; teams?: string; ask?: string; said?: string; inTeams?: boolean; gist?: string; watch?: { target: string; until: string }; watchedAs?: string; own?: boolean; href?: string; by: string; at: string; text?: string; undoUntil?: string; notes?: Note[]; why?: ItemCard['why']; rule?: string; fresh?: boolean ; msgs?: string[]; sentId?: string; earlier?: true; change?: ChangeKind; comments?: number; facts?: number }
+export type Tile = { key: string; count: number; label: string; sub?: string; filter?: DoneFilter; since?: string }
 
 export type View = {
 	now: string; since?: string; owner: string
@@ -237,7 +238,7 @@ function itemRow(store: Store, w: Workflow): DoneRow | undefined {
 	const made = (w.effects ?? []).filter(e => e.done)
 	const sent = w.sent?.text ?? w.draft?.text
 	const base = { code: w.code, who: who(name), teams: teamsOf(w), ask: w.redacted ? undefined : askLine(w.lastAsk) || undefined, ...(w.msgIds.length ? { msgs: msgKeys(w) } : {}) }
-	if (w.sent) return { ...base, kind: made.length && w.intent === 'pr_review' ? 'review' : 'reply', sentence: made.length && w.intent === 'pr_review' ? `Reviewed for ${name} and replied${where}` : `Replied to ${name}${where}`, by: w.sent.byRule ? `by rule ${w.sent.byRule}` : 'by you', ...(w.sent.byRule ? { rule: w.sent.byRule } : {}), at: w.sent.at, text: w.redacted || sent === undefined ? undefined : htmlToText(sent), said: w.redacted ? undefined : short(sent), own: !w.sent.byRule, notes: w.notes ?? [], why: { reason: w.decision?.reason, confidence: w.decision?.confidence, sources: (w.draft?.sources ?? []).map(s => source(s.ref, s.tier, s.stale, s.label)), gaps: w.gaps ?? [] }, rule: w.sent.byRule, undoUntil: w.sent.undoUntil, work: workLine(homeOf(store, w)) }
+	if (w.sent) return { ...base, kind: made.length && w.intent === 'pr_review' ? 'review' : 'reply', sentence: made.length && w.intent === 'pr_review' ? `Reviewed for ${name} and replied${where}` : `Replied to ${name}${where}`, by: w.sent.byRule ? `by rule ${w.sent.byRule}` : 'by you', ...(w.sent.byRule ? { rule: w.sent.byRule } : {}), at: w.sent.at, text: w.redacted || sent === undefined ? undefined : htmlToText(sent), said: w.redacted ? undefined : short(sent), own: !w.sent.byRule, notes: w.notes ?? [], why: { reason: w.decision?.reason, confidence: w.decision?.confidence, sources: (w.draft?.sources ?? []).map(s => source(s.ref, s.tier, s.stale, s.label)), gaps: w.gaps ?? [] }, rule: w.sent.byRule, undoUntil: w.sent.undoUntil, work: workLine(homeOf(store, w)), comments: made.filter(e => COMMENT.test(e.action)).length }
 	if (w.fyi) return { ...base, kind: 'catchup', sentence: htmlToText(w.fyi.line), gist: w.fyi.gist === undefined ? base.ask : htmlToText(w.fyi.gist), watch: w.fyi.watch, watchedAs: w.watchedAs, by: `${first}${w.chat.group ? ` · ${placeOf(store, w.chat, w.asker)?.row ?? w.chat.name}` : ''}`, at: w.fyi.at ?? w.updatedAt, high: w.fyi.weight === 'high' }
 	if (closedHow(w) === 'replied') {
 		// Answered in Teams by the owner: a reply like any other, with their own words from the thread.
@@ -262,7 +263,7 @@ function doneRows(store: Store, since: string, workflows = store.workflows(), it
 		const r = itemRow(store, w), name = w.asker?.name ?? 'Someone'
 		if (r) rows.push(r)
 		if (w.sent?.msgId) listed.add(w.sent.msgId)
-		for (const e of (w.effects ?? []).filter(e => e.done)) if (!(w.intent === 'pr_review' && COMMENT.test(e.action))) rows.push({ code: w.code, kind: 'change', who: who(name), sentence: htmlToText(shown(e).line), by: shown(e).system, at: e.done!.at, own: true, href: /^https:\/\//.test(e.done?.ref ?? '') ? e.done!.ref : undefined })
+		for (const e of (w.effects ?? []).filter(e => e.done)) if (!(w.intent === 'pr_review' && COMMENT.test(e.action))) rows.push({ code: w.code, kind: 'change', change: TASK.test(`${e.system} ${e.action}`) ? 'task' : PR.test(e.action) ? 'pr' : INVITE.test(`${e.system} ${e.action}`) ? 'invite' : 'other', who: who(name), sentence: htmlToText(shown(e).line), by: shown(e).system, at: e.done!.at, own: true, href: /^https:\/\//.test(e.done?.ref ?? '') ? e.done!.ref : undefined })
 	}
 	// Every reply that went, as Numbers counts them: one an item made before it opened again, or an earlier one of the same item,
 	// stays in Done from the send log (bug 10-23 E60). Its words are what was sent; feedback acts on the item's current reply only.
@@ -281,34 +282,9 @@ function doneRows(store: Store, since: string, workflows = store.workflows(), it
 	for (const p of store.proposals().filter(p => p.state === 'applied' && p.from !== 'remember' && p.applied && p.applied.at > since)) {
 		// A newer fact that replaced an older one says so (#20): Replaced: "old" → "new".
 		const n = p.ops.length, swap = p.ops.find(o => o.was !== undefined), clip = (s: string) => (x => (x.length > 60 ? `${x.slice(0, 59)}…` : x))(short(s))
-		rows.push({ code: p.code, kind: 'learned', who: who(p.source ?? 'your chats'), sentence: htmlToText(`Learned ${n} ${n === 1 ? 'fact' : 'facts'} about ${p.title}, from ${p.source ?? 'your chats'}`), gist: swap ? `Replaced: "${clip(swap.was!)}" → "${clip(swap.entry.text)}"` : p.ops[0]?.entry.text ? short(p.ops[0].entry.text) : undefined, by: `say "undo ${p.code}" to take it back`, at: p.applied!.at })
+		rows.push({ code: p.code, kind: 'learned', facts: n, who: who(p.source ?? 'your chats'), sentence: htmlToText(`Learned ${n} ${n === 1 ? 'fact' : 'facts'} about ${p.title}, from ${p.source ?? 'your chats'}`), gist: swap ? `Replaced: "${clip(swap.was!)}" → "${clip(swap.entry.text)}"` : p.ops[0]?.entry.text ? short(p.ops[0].entry.text) : undefined, by: `say "undo ${p.code}" to take it back`, at: p.applied!.at })
 	}
 	return rows.sort((a, b) => b.at.localeCompare(a.at))
-}
-
-// Home tiles count only what happened since the owner last looked; a zero tile is hidden (design-spec/home.md).
-function tiles(store: Store, since: string, needs: number, done: DoneRow[]): Tile[] {
-	const replies = done.filter(r => r.kind === 'reply' || r.kind === 'review')
-	const people = new Set(replies.map(r => r.who.name))
-	const byRule = replies.filter(r => r.by.startsWith('by rule')).length
-	const reviews = store.jobs().filter(j => j.intent === 'pr_review' && j.result && j.updatedAt > since).length
-	const effects = store.workflows().flatMap(w => (w.effects ?? []).filter(e => e.done && e.done.at > since))
-	const count = (re: RegExp) => effects.filter(e => re.test(`${e.system} ${e.action}`)).length
-	const tasks = count(TASK), prs = effects.filter(e => PR.test(e.action)).length, invites = count(INVITE)
-	const comments = effects.filter(e => COMMENT.test(e.action)).length
-	const reminders = done.filter(r => r.kind === 'reminder').length
-	const learned = store.proposals().filter(p => p.state === 'applied' && p.from !== 'remember' && p.applied && p.applied.at > since).reduce((n, p) => n + p.ops.length, 0)
-	const t: Tile[] = [
-		{ key: 'needs', count: needs, label: needs === 1 ? 'needs you' : 'need you' },
-		{ key: 'replies', count: people.size, label: people.size === 1 ? 'Replied to 1 person' : `Replied to ${people.size} people`, sub: replies.length ? `${replies.length - byRule} by you, ${byRule} by your rules` : undefined },
-		{ key: 'reviews', count: reviews, label: reviews === 1 ? 'Reviewed 1 PR' : `Reviewed ${reviews} PRs`, sub: comments ? `${comments} comment${comments === 1 ? '' : 's'} posted` : undefined },
-		{ key: 'tasks', count: tasks, label: tasks === 1 ? 'Created 1 task' : `Created ${tasks} tasks` },
-		{ key: 'prs', count: prs, label: prs === 1 ? 'Created 1 PR' : `Created ${prs} PRs` },
-		{ key: 'invites', count: invites, label: invites === 1 ? 'Sent 1 invite' : `Sent ${invites} invites` },
-		{ key: 'reminders', count: reminders, label: reminders === 1 ? 'Sent 1 reminder' : `Sent ${reminders} reminders` },
-		{ key: 'learned', count: learned, label: learned === 1 ? 'Learned 1 fact' : `Learned ${learned} facts` },
-	]
-	return t.filter(x => x.key === 'needs' || x.count > 0)
 }
 
 // With `snap` (one thread's placement, #27 step 2) the page-wide parts are left out: knowledge to review, tiles, boot lines,
@@ -355,7 +331,7 @@ export function view(store: Store, since: string | undefined, now = new Date(), 
 	return {
 		now: now.toISOString(), since, owner: cfg.owner.name,
 		status: { state, autoSend: !!c.autoSend, runs: store.runsToday(), cap: cfg.dailyRuns ?? 200, reading: readingOf(store) },
-		health, tiles: snap ? [] : tiles(store, from, needs.length, done.filter(r => r.fresh)),
+		health, tiles: snap ? [] : [{ key: 'needs', count: needs.length, label: needs.length === 1 ? 'needs you' : 'need you' }, ...homeTiles(done, from)],
 		also: [
 			{ key: 'knowledge', count: kp.length, label: kp.length === 1 ? 'to learn' : 'to learn' },
 			{ key: 'watching', count: updates, label: updates === 1 ? 'update' : 'updates', sub: [`${watching.length} watched`, ...(progress.length ? [`${progress.length} in progress`] : []), ...(left ? [`${left} left for you`] : [])].join(' · ') },

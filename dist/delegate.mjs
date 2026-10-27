@@ -58842,6 +58842,56 @@ var init_next = __esm({
   }
 });
 
+// src/web/react/domain/done.ts
+function matchesDone(row, filter, since2) {
+  return DONE_FILTERS[filter].kinds.includes(row.kind) && (since2 === void 0 || row.at > since2);
+}
+function homeTiles(rows, since2) {
+  const selected = (filter) => rows.filter((row) => matchesDone(row, filter, since2));
+  const replies = selected("replies"), reviews = selected("reviews"), changes = selected("changes");
+  const reminders = selected("reminders"), learned = selected("learned");
+  const people2 = new Set(replies.map((row) => row.who.name)).size;
+  const byRule = replies.filter((row) => row.by.startsWith("by rule")).length;
+  const comments = reviews.reduce((count, row) => count + (row.comments ?? 0), 0);
+  const facts = learned.reduce((count, row) => count + (row.facts ?? 0), 0);
+  const breakdown2 = ["task", "pr", "invite", "other"].flatMap((kind) => {
+    const count = changes.filter((row) => (row.change ?? "other") === kind).length;
+    const label2 = kind === "pr" ? count === 1 ? "PR" : "PRs" : kind === "other" ? "other" : `${kind}${count === 1 ? "" : "s"}`;
+    return count ? [`${count} ${label2}`] : [];
+  });
+  const tile = (filter, count, sub) => ({
+    key: filter,
+    filter,
+    since: since2,
+    count,
+    label: `${DONE_FILTERS[filter].label} ${count}`,
+    ...sub ? { sub } : {}
+  });
+  return [
+    tile("replies", replies.length, `${people2} ${people2 === 1 ? "person" : "people"} \xB7 ${replies.length - byRule} by you, ${byRule} by your rules`),
+    tile("reviews", reviews.length, comments ? `${comments} comment${comments === 1 ? "" : "s"} posted` : void 0),
+    tile("changes", changes.length, breakdown2.join(" \xB7 ")),
+    { ...tile("reminders", reminders.length), label: reminders.length === 1 ? "Sent 1 reminder" : `Sent ${reminders.length} reminders` },
+    tile("learned", learned.length, facts ? `${facts} ${facts === 1 ? "fact" : "facts"}` : void 0)
+  ].filter((value) => value.count > 0);
+}
+var DONE_FILTER_KEYS, DONE_FILTERS;
+var init_done = __esm({
+  "src/web/react/domain/done.ts"() {
+    "use strict";
+    DONE_FILTER_KEYS = ["all", "replies", "reviews", "changes", "reminders", "learned", "catchup"];
+    DONE_FILTERS = {
+      all: { label: "All", kinds: ["reply", "review", "change", "reminder", "learned", "catchup"] },
+      replies: { label: "Replies", kinds: ["reply", "review"] },
+      reviews: { label: "Reviews", kinds: ["review"] },
+      changes: { label: "Changes", kinds: ["change"] },
+      reminders: { label: "Reminders", kinds: ["reminder"] },
+      learned: { label: "Learned", kinds: ["learned"] },
+      catchup: { label: "Catch up", kinds: ["catchup"] }
+    };
+  }
+});
+
 // src/web/view.ts
 function who(name = "Someone") {
   const parts2 = name.trim().split(/\s+/);
@@ -58973,7 +59023,7 @@ function itemRow2(store2, w) {
   const made = (w.effects ?? []).filter((e) => e.done);
   const sent = w.sent?.text ?? w.draft?.text;
   const base2 = { code: w.code, who: who(name), teams: teamsOf(w), ask: w.redacted ? void 0 : askLine(w.lastAsk) || void 0, ...w.msgIds.length ? { msgs: msgKeys(w) } : {} };
-  if (w.sent) return { ...base2, kind: made.length && w.intent === "pr_review" ? "review" : "reply", sentence: made.length && w.intent === "pr_review" ? `Reviewed for ${name} and replied${where}` : `Replied to ${name}${where}`, by: w.sent.byRule ? `by rule ${w.sent.byRule}` : "by you", ...w.sent.byRule ? { rule: w.sent.byRule } : {}, at: w.sent.at, text: w.redacted || sent === void 0 ? void 0 : htmlToText(sent), said: w.redacted ? void 0 : short2(sent), own: !w.sent.byRule, notes: w.notes ?? [], why: { reason: w.decision?.reason, confidence: w.decision?.confidence, sources: (w.draft?.sources ?? []).map((s3) => source(s3.ref, s3.tier, s3.stale, s3.label)), gaps: w.gaps ?? [] }, rule: w.sent.byRule, undoUntil: w.sent.undoUntil, work: workLine(homeOf(store2, w)) };
+  if (w.sent) return { ...base2, kind: made.length && w.intent === "pr_review" ? "review" : "reply", sentence: made.length && w.intent === "pr_review" ? `Reviewed for ${name} and replied${where}` : `Replied to ${name}${where}`, by: w.sent.byRule ? `by rule ${w.sent.byRule}` : "by you", ...w.sent.byRule ? { rule: w.sent.byRule } : {}, at: w.sent.at, text: w.redacted || sent === void 0 ? void 0 : htmlToText(sent), said: w.redacted ? void 0 : short2(sent), own: !w.sent.byRule, notes: w.notes ?? [], why: { reason: w.decision?.reason, confidence: w.decision?.confidence, sources: (w.draft?.sources ?? []).map((s3) => source(s3.ref, s3.tier, s3.stale, s3.label)), gaps: w.gaps ?? [] }, rule: w.sent.byRule, undoUntil: w.sent.undoUntil, work: workLine(homeOf(store2, w)), comments: made.filter((e) => COMMENT.test(e.action)).length };
   if (w.fyi) return { ...base2, kind: "catchup", sentence: htmlToText(w.fyi.line), gist: w.fyi.gist === void 0 ? base2.ask : htmlToText(w.fyi.gist), watch: w.fyi.watch, watchedAs: w.watchedAs, by: `${first3}${w.chat.group ? ` \xB7 ${placeOf(store2, w.chat, w.asker)?.row ?? w.chat.name}` : ""}`, at: w.fyi.at ?? w.updatedAt, high: w.fyi.weight === "high" };
   if (closedHow(w) === "replied") {
     const mine = store2.thread(w.id).filter((m) => m.byOwner).at(-1);
@@ -58993,7 +59043,7 @@ function doneRows(store2, since2, workflows = store2.workflows(), items2 = false
     const r = itemRow2(store2, w), name = w.asker?.name ?? "Someone";
     if (r) rows.push(r);
     if (w.sent?.msgId) listed2.add(w.sent.msgId);
-    for (const e of (w.effects ?? []).filter((e2) => e2.done)) if (!(w.intent === "pr_review" && COMMENT.test(e.action))) rows.push({ code: w.code, kind: "change", who: who(name), sentence: htmlToText(shown(e).line), by: shown(e).system, at: e.done.at, own: true, href: /^https:\/\//.test(e.done?.ref ?? "") ? e.done.ref : void 0 });
+    for (const e of (w.effects ?? []).filter((e2) => e2.done)) if (!(w.intent === "pr_review" && COMMENT.test(e.action))) rows.push({ code: w.code, kind: "change", change: TASK2.test(`${e.system} ${e.action}`) ? "task" : PR.test(e.action) ? "pr" : INVITE.test(`${e.system} ${e.action}`) ? "invite" : "other", who: who(name), sentence: htmlToText(shown(e).line), by: shown(e).system, at: e.done.at, own: true, href: /^https:\/\//.test(e.done?.ref ?? "") ? e.done.ref : void 0 });
   }
   if (items2) return rows.sort((a, b) => b.at.localeCompare(a.at));
   const byCode = new Map(workflows.map((w) => [w.code, w]));
@@ -59009,32 +59059,9 @@ function doneRows(store2, since2, workflows = store2.workflows(), items2 = false
   }
   for (const p of store2.proposals().filter((p2) => p2.state === "applied" && p2.from !== "remember" && p2.applied && p2.applied.at > since2)) {
     const n = p.ops.length, swap = p.ops.find((o) => o.was !== void 0), clip4 = (s3) => ((x) => x.length > 60 ? `${x.slice(0, 59)}\u2026` : x)(short2(s3));
-    rows.push({ code: p.code, kind: "learned", who: who(p.source ?? "your chats"), sentence: htmlToText(`Learned ${n} ${n === 1 ? "fact" : "facts"} about ${p.title}, from ${p.source ?? "your chats"}`), gist: swap ? `Replaced: "${clip4(swap.was)}" \u2192 "${clip4(swap.entry.text)}"` : p.ops[0]?.entry.text ? short2(p.ops[0].entry.text) : void 0, by: `say "undo ${p.code}" to take it back`, at: p.applied.at });
+    rows.push({ code: p.code, kind: "learned", facts: n, who: who(p.source ?? "your chats"), sentence: htmlToText(`Learned ${n} ${n === 1 ? "fact" : "facts"} about ${p.title}, from ${p.source ?? "your chats"}`), gist: swap ? `Replaced: "${clip4(swap.was)}" \u2192 "${clip4(swap.entry.text)}"` : p.ops[0]?.entry.text ? short2(p.ops[0].entry.text) : void 0, by: `say "undo ${p.code}" to take it back`, at: p.applied.at });
   }
   return rows.sort((a, b) => b.at.localeCompare(a.at));
-}
-function tiles(store2, since2, needs, done2) {
-  const replies = done2.filter((r) => r.kind === "reply" || r.kind === "review");
-  const people2 = new Set(replies.map((r) => r.who.name));
-  const byRule = replies.filter((r) => r.by.startsWith("by rule")).length;
-  const reviews = store2.jobs().filter((j) => j.intent === "pr_review" && j.result && j.updatedAt > since2).length;
-  const effects = store2.workflows().flatMap((w) => (w.effects ?? []).filter((e) => e.done && e.done.at > since2));
-  const count = (re) => effects.filter((e) => re.test(`${e.system} ${e.action}`)).length;
-  const tasks = count(TASK2), prs = effects.filter((e) => PR.test(e.action)).length, invites = count(INVITE);
-  const comments = effects.filter((e) => COMMENT.test(e.action)).length;
-  const reminders = done2.filter((r) => r.kind === "reminder").length;
-  const learned = store2.proposals().filter((p) => p.state === "applied" && p.from !== "remember" && p.applied && p.applied.at > since2).reduce((n, p) => n + p.ops.length, 0);
-  const t2 = [
-    { key: "needs", count: needs, label: needs === 1 ? "needs you" : "need you" },
-    { key: "replies", count: people2.size, label: people2.size === 1 ? "Replied to 1 person" : `Replied to ${people2.size} people`, sub: replies.length ? `${replies.length - byRule} by you, ${byRule} by your rules` : void 0 },
-    { key: "reviews", count: reviews, label: reviews === 1 ? "Reviewed 1 PR" : `Reviewed ${reviews} PRs`, sub: comments ? `${comments} comment${comments === 1 ? "" : "s"} posted` : void 0 },
-    { key: "tasks", count: tasks, label: tasks === 1 ? "Created 1 task" : `Created ${tasks} tasks` },
-    { key: "prs", count: prs, label: prs === 1 ? "Created 1 PR" : `Created ${prs} PRs` },
-    { key: "invites", count: invites, label: invites === 1 ? "Sent 1 invite" : `Sent ${invites} invites` },
-    { key: "reminders", count: reminders, label: reminders === 1 ? "Sent 1 reminder" : `Sent ${reminders} reminders` },
-    { key: "learned", count: learned, label: learned === 1 ? "Learned 1 fact" : `Learned ${learned} facts` }
-  ];
-  return t2.filter((x) => x.key === "needs" || x.count > 0);
 }
 function view2(store2, since2, now = /* @__PURE__ */ new Date(), workflows = store2.workflows(), snap) {
   const cfg = store2.config(), c = store2.control();
@@ -59075,7 +59102,7 @@ function view2(store2, since2, now = /* @__PURE__ */ new Date(), workflows = sto
     owner: cfg.owner.name,
     status: { state, autoSend: !!c.autoSend, runs: store2.runsToday(), cap: cfg.dailyRuns ?? 200, reading: readingOf(store2) },
     health,
-    tiles: snap ? [] : tiles(store2, from, needs.length, done2.filter((r) => r.fresh)),
+    tiles: snap ? [] : [{ key: "needs", count: needs.length, label: needs.length === 1 ? "needs you" : "need you" }, ...homeTiles(done2, from)],
     also: [
       { key: "knowledge", count: kp.length, label: kp.length === 1 ? "to learn" : "to learn" },
       { key: "watching", count: updates, label: updates === 1 ? "update" : "updates", sub: [`${watching2.length} watched`, ...progress2.length ? [`${progress2.length} in progress`] : [], ...left ? [`${left} left for you`] : []].join(" \xB7 ") },
@@ -59119,6 +59146,7 @@ var init_view = __esm({
     init_policy();
     init_intake();
     init_place();
+    init_done();
     HUES = [210, 160, 25, 280, 340, 45];
     catchUpOf = (rows) => ({ count: rows.length, top: [...rows].sort((a, b) => Number(!!b.high) - Number(!!a.high) || b.at.localeCompare(a.at)).slice(0, 3) });
     SKIP = /* @__PURE__ */ new Set(["state", "outcome"]);
@@ -63594,6 +63622,7 @@ init_next();
 
 // src/web/react/domain/contracts.ts
 init_zod();
+init_done();
 var text3 = external_exports.string();
 var IMAGE_TOKEN = "\u{1F5BC} Image";
 var strings = external_exports.array(text3);
@@ -63820,7 +63849,10 @@ var done = external_exports.object({
   msgs: strings.optional(),
   // What Delegate checked before this reply went (#45 sent.checks), as history lines: "Sent. Kim posted again at 8:52 AM; …".
   checks: strings.optional(),
-  used: optional2
+  used: optional2,
+  change: external_exports.enum(["task", "pr", "invite", "other"]).optional(),
+  comments: external_exports.number().optional(),
+  facts: external_exports.number().optional()
 });
 var watch = external_exports.object({ id: text3, code: text3, what: text3, last: text3, changedAt: optional2, update: external_exports.boolean(), rev: text3, every: external_exports.number().optional(), endsAt: optional2, by: optional2, nextAt: optional2, from: optional2, actionIds: strings });
 var automation = external_exports.object({ id: text3, code: text3, sentence: text3, to: text3, text: text3, when: text3, state: text3, why: optional2, next: optional2, count: external_exports.number(), rev: text3, actionIds: strings });
@@ -63930,7 +63962,7 @@ var snapshotSchema = external_exports.object({
   lastUndoId: optional2,
   classic: external_exports.object({
     needsIds: strings,
-    tiles: external_exports.array(external_exports.object({ key: text3, count: external_exports.number(), label: text3, sub: optional2 })),
+    tiles: external_exports.array(external_exports.object({ key: text3, count: external_exports.number(), label: text3, sub: optional2, filter: external_exports.enum(DONE_FILTER_KEYS).optional(), since: optional2 })),
     also: external_exports.array(external_exports.object({ key: text3, count: external_exports.number(), label: text3, sub: optional2 })),
     catchupIds: strings,
     running: external_exports.array(external_exports.object({ code: text3, what: text3, who: optional2, since: text3, sendAt: optional2, progress: external_exports.number().optional(), detail: optional2, retry: external_exports.object({ at: text3, attempt: external_exports.number(), reason: text3, tried: strings }).optional(), queued: external_exports.boolean().optional(), actionIds: strings })),
