@@ -120,9 +120,11 @@ export function useCardPresentation(code: string, placementId?: string, fallback
 	const rowPrimary = placement?.kind === 'todo' ? entities?.actions[`${code}/todo-done`] :
 		placement && ['track', 'check-date', 'promise', 'nobody', 'waiting-person', 'waiting-others', 'scheduled', 'watch', 'your-step', 'stopped'].includes(placement.kind) && placement.actionIds[0] ? entities?.actions[placement.actionIds[0]] : undefined
 	const declaredPrimary = item?.primaryActionId && entities ? entities.actions[item.primaryActionId] : undefined
-	const primary = override ? actions.find(action => action.kind === override) : rowPrimary ?? declaredPrimary ??
+	// D-A239 MP2: a card with a review per PR has no filled button unless the card declares one (Send on a reply awaiting his OK).
+	const perPr = (item?.reviews?.length ?? 0) >= 2
+	const primary = override ? actions.find(action => action.kind === override) : rowPrimary ?? declaredPrimary ?? (perPr ? undefined :
 		actions.find(action => ['review-again', 'approve', 'pick', 'answer'].includes(action.kind)) ??
-		(placement?.actionIds[0] && entities ? entities.actions[placement.actionIds[0]] : undefined)
+		(placement?.actionIds[0] && entities ? entities.actions[placement.actionIds[0]] : undefined))
 	return { ...card, ui, draft, actions, primary, todoIds: placement?.todoIds ?? item?.todoIds ?? [] }
 }
 export function useEdit(code: string, rev: string) {
@@ -282,7 +284,9 @@ function inProgress(action?: Action): string {
 }
 export function useAction() {
 	const client = useQueryClient()
-	return useCallback(async (action: Action, input?: Intent['input']) => {
+	// onSubmitted (CR 22:42:56 B2): called once, synchronously, only when THIS call creates a new submission (after every guard and after it
+	// is kept in tab storage), with its id. A restored, refused or replayed click never calls it.
+	return useCallback(async (action: Action, input?: Intent['input'], onSubmitted?: (submissionId: string) => void) => {
 		try { restorePending() } catch (error) {
 			console.error('Saved actions could not be checked:', error)
 			useData.getState().edit(action.item, action.rev, { error: 'Saved actions could not be read. Enable or repair tab storage before acting; no new action was sent.' })
@@ -317,6 +321,7 @@ export function useAction() {
 			return
 		}
 		state.edit(action.item, action.rev, { pending: { submissionId, action: action.id, phase: 'submitting', at }, lastAction: action.id, submittedInput: input, submittedForm: capturePageForm(action), formConsumed: undefined, error: undefined, note: undefined, result: undefined })
+		onSubmitted?.(submissionId)
 		try {
 			const result = await submit(intent)
 			if (result.submissionId !== submissionId || result.item !== action.item || result.rev !== action.rev) throw new Error('The server returned a result for another action.')

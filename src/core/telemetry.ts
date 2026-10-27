@@ -66,6 +66,8 @@ type EventFields = {
 	'wdd-record-held': { tries: number }
 	'wdd-stop-record-failed': { reason: 'busy' | 'missing' | 'write-failed' }
 	'wdd-record-incomplete': { kind: string }
+	// WDD N1 (PM round 2): he looked at what Delegate did; rows = how many he hadn't seen before.
+	'wdd-review': { rows: number }
 	'members-shape': { memberKeys: string[]; roles: { array: number; undefined: number; other: number }; roleValues: string[]; tenantIdPresent: number }
 	'forwarded-message-shape': { contentStatus: 'json' | 'invalid-json' | 'value'; shape: { path: string; kind: string }[]; truncated: boolean }
 }
@@ -96,6 +98,7 @@ const metadataEvents = {
 	'wdd-record-held': { privacy: 'metadata', fields: ['tries'] },
 	'wdd-stop-record-failed': { privacy: 'metadata', fields: ['reason'] },
 	'wdd-record-incomplete': { privacy: 'metadata', fields: ['kind'] },
+	'wdd-review': { privacy: 'metadata', fields: ['rows'] },
 	'members-shape': { privacy: 'metadata', fields: ['memberKeys', 'roles', 'roleValues', 'tenantIdPresent'] },
 	'forwarded-message-shape': { privacy: 'metadata', fields: ['contentStatus', 'shape', 'truncated'] },
 } as const satisfies { [K in keyof EventFields]: { privacy: 'metadata'; fields: readonly (keyof EventFields[K])[] } }

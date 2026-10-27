@@ -7,6 +7,7 @@ import { NAME } from '../brand.ts'
 import { actionPresentation, useActionAvailability } from '../data/presentation.ts'
 import { Icon } from '../components/ui/icon.tsx'
 import { useData, type CardUi } from '../data/store.ts'
+import { holdHide } from '../data/hide-holds.ts'
 import { verbing } from '../domain/verbing.ts'
 import { useScreenNavigation } from '../classic/navigation.tsx'
 
@@ -92,12 +93,18 @@ export function ActionState({ item, rev }: { item: string; rev: string }) {
 }
 export { verbing } from '../domain/verbing.ts'
 const CHANGED = 'The card changed as you clicked. Nothing was done; check and click again.'
-export function ActionButton({ action, input, primary = false, disabled = false, ariaLabel, pendingLabel, prepareInput, disabledReason, label: shownLabel }: {
+export function ActionButton({ action, input, primary = false, disabled = false, ariaLabel, pendingLabel, prepareInput, onSubmitted, disabledReason, label: shownLabel, softDisabled }: {
 	action: Action; input?: Intent['input']; primary?: boolean; disabled?: boolean; ariaLabel?: string; pendingLabel?: string; prepareInput?: () => Intent['input']
+	// Told the id of the submission THIS press created (useAction's onSubmitted); never for a refused, restored or held click.
+	onSubmitted?: (submissionId: string) => void
 	// A label the card says in its own words, such as "Draft the update to Pat"; the action's own label otherwise.
 	label?: string
 	// Why the caller disabled it, for the hover text: 'stale' (changed since you looked), 'pick' (no option picked), or words.
 	disabledReason?: 'stale' | 'pick' | string
+	// D-WATCH' (PE engineer-d-watch §8.7(1)/§8.12, CR B3): unavailable but still focusable (aria-disabled, never native disabled, even
+	// while a pending click makes it busy), with this as its reason. A press does nothing: it returns before the guard, any capture or
+	// act, so nothing is queued or recorded. Only WatchingControl sets it.
+	softDisabled?: string
 }) {
 	const act = useAction(), busy = useItemBusy(action.item)
 	const ui = useCardUi(action.item, action.rev)
@@ -125,17 +132,21 @@ export function ActionButton({ action, input, primary = false, disabled = false,
 	const hover = !online ? disabledHover({ offline: true }, what) : unsureOf(ui, action.effect) && ui.pending?.action === action.id ? UNSURE_SEND : off ? disabledHover({ unavailable: unavailable?.reason, busy, expired: window.expired, submitted: alreadySubmitted,
 		stale: disabled && reason === 'stale', needsPick: disabled && reason === 'pick' },
 		disabled && reason && !['stale', 'pick'].includes(reason) ? reason : what) : what
-	return <><Button ref={self} style={minWidth ? { minWidth } : undefined} variant={primary ? 'default' : 'outline'} data-action-kind={action.kind} title={hover} aria-describedby={hover ? describedBy : undefined} aria-label={ariaLabel ?? (action.kind === 'undo' ? 'Undo' : undefined)} disabled={off} data-primary={primary || undefined}
-		onPointerDown={event => { shiftedBeforePress(event); watchPress(event, () => useData.getState().edit(action.item, action.rev, { note: { text: CHANGED } })) }}
+	const shown = softDisabled ?? hover
+	return <><Button ref={self} style={minWidth ? { minWidth } : undefined} variant={primary ? 'default' : 'outline'} data-action-kind={action.kind} title={shown} aria-describedby={shown ? describedBy : undefined} aria-label={ariaLabel ?? (action.kind === 'undo' ? 'Undo' : undefined)} disabled={softDisabled ? undefined : off} aria-disabled={softDisabled ? true : undefined} data-primary={primary || undefined}
+		onPointerDown={event => { if (softDisabled) return; shiftedBeforePress(event); watchPress(event, () => useData.getState().edit(action.item, action.rev, { note: { text: CHANGED } })) }}
 		onClick={event => {
+			if (softDisabled) return event.preventDefault()
 			// Decision 46 (3), the 600 ms shift-then-press guard: a pointer press on a button that moved just before it does nothing.
 			// Only a pointer click (detail > 0) is judged; a keyboard click (Enter or Space, detail 0) is never refused (CR 06:40:30Z B1).
 			if (refusedPress(event.currentTarget) && event.detail > 0) {
 				console.info('[guard] refused', action.kind)
 				return useData.getState().edit(action.item, action.rev, { note: { text: CHANGED } })
 			}
-			void act(action, prepareInput ? prepareInput() : input)
-		}}>{action.kind === 'undo' && <Icon name="undo" />}{(text => sizers ? <span className="label-stack"><span>{text}</span>{sizers.map(sizer => <span key={sizer} className="label-sizer" aria-hidden="true">{sizer}</span>)}</span> : text)(busy ? pendingLabel ?? verbing(label) : window.expired ? 'Undo window closed' : unavailable?.label ?? `${label}${window.countdown ? ` ${window.countdown}` : ''}`)}</Button>{hover && <span id={describedBy} className="sr-only">{hover}</span>}</>
+			// A58 S-A2: a hide verb is held 6 s with Undo in the item's place; focus moves on to the next item (NX2).
+			if (action.hold) { focusNext(event.currentTarget); return holdHide(action, act) }
+			void act(action, prepareInput ? prepareInput() : input, onSubmitted)
+		}}>{action.kind === 'undo' && <Icon name="undo" />}{(text => sizers ? <span className="label-stack"><span>{text}</span>{sizers.map(sizer => <span key={sizer} className="label-sizer" aria-hidden="true">{sizer}</span>)}</span> : text)(busy ? pendingLabel ?? verbing(label) : window.expired ? 'Undo window closed' : unavailable?.label ?? `${label}${window.countdown ? ` ${window.countdown}` : ''}`)}</Button>{shown && <span id={describedBy} className="sr-only">{shown}</span>}</>
 }
 
 // Decision 46 (3)-(4), PE 06:23:42Z B: the 600 ms shift-then-press guard (0.2.46). A pointer press is refused when the button's
@@ -220,3 +231,12 @@ function watchPress(event: PointerEvent<HTMLButtonElement>, moved: () => void) {
 	}, { capture: true, signal })
 }const onlineEvents = (changed: () => void) => { addEventListener('online', changed); addEventListener('offline', changed); return () => { removeEventListener('online', changed); removeEventListener('offline', changed) } }
 export const useOnline = () => useSyncExternalStore(onlineEvents, () => navigator.onLine, () => true)
+function focusNext(from: HTMLElement) {
+	// CR H B1: Classic's Needs-you card stands alone under its pager, so its next item is the pager's Next item, else Previous item.
+	const pager = from.closest('.classic-open-card')?.querySelector('.classic-pager')
+	if (pager) return (pager.querySelector<HTMLElement>('button[aria-label="Next item"]:not(:disabled)') ?? pager.querySelector<HTMLElement>('button[aria-label="Previous item"]:not(:disabled)'))?.focus()
+	// Rows sit in wrappers (the viewport list), so the next item is found in document order, else the one before.
+	const items = [...document.querySelectorAll<HTMLElement>('.now-row, .ongoing-row, .ongoing-card')], here = from.closest<HTMLElement>('.now-row, .ongoing-row, .ongoing-card')
+	const at = here ? items.indexOf(here) : -1, to = at < 0 ? undefined : items[at + 1] ?? items[at - 1]
+	to?.querySelector<HTMLElement>('.row-title, .ongoing-card-open, button, a[href]')?.focus()
+}

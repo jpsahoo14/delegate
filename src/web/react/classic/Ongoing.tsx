@@ -9,11 +9,15 @@ import { OngoingSheet } from './OngoingSheet.tsx'
 import { NAME } from '../brand.ts'
 import { useState } from 'react'
 import { MessageBubble } from '../features/ItemCard.tsx'
+import { manyPrs, prsName, PrsLine } from '../features/PrsLine.tsx'
 import { SentTime } from '../features/SentTime.tsx'
 import { ItemCode } from '../features/ItemCode.tsx'
 import { busyReason } from '../data/busy.ts'
 import { Hint } from '../components/ui/button.tsx'
 import { disabledHover, hoverOf } from '../domain/hover.ts'
+import { HeldLine } from '../features/HeldLine.tsx'
+import { useHold } from '../data/hide-holds.ts'
+import type { ReactNode } from 'react'
 
 import './ongoing.css'
 
@@ -36,6 +40,12 @@ function Timing({ action, every, endsAt, extend }: { action?: Action; every?: nu
 	</div>
 }
 
+// A58 S-A2: a held Close it / Stop waiting / Stop watching shows its Undo line in the row's place for 6 s (decision 54).
+function Holdable({ code, card = false, children }: { code: string; card?: boolean; children: ReactNode }) {
+	if (!useHold(code)) return children
+	return card ? <article className="ongoing-card ongoing-held"><HeldLine item={code} /></article> : <li className="ongoing-row ongoing-held"><HeldLine item={code} /></li>
+}
+
 function RowActions({ actions, primary, className = '' }: { actions: Action[]; primary?: string; className?: string }) {
 	const first = actions[0], ui = useCardUi(first?.item ?? '', first?.rev ?? '')
 	const finished = !!ui.result && ui.result.accepted && !ui.result.refused && !ui.result.uncertain && !ui.pending && actions.some(action => action.id === ui.lastAction)
@@ -55,12 +65,12 @@ function Watch({ watch, actions }: { watch: Entities['watches'][string]; actions
 	].filter(Boolean).join(' · ')
 	const controls = actions.filter(action => action.input !== 'interval' && action.kind !== 'extend-watch' && (watch.update || action.kind !== 'classic-ack-watch'))
 	const timing = <Timing action={interval} every={watch.every} endsAt={watch.endsAt} extend={extend} />
-	return watch.update ? <article className="ongoing-card" data-classic-watch={watch.code} aria-labelledby={`watch-${watch.code}`}>
+	return <Holdable code={watch.code} card={watch.update}>{watch.update ? <article className="ongoing-card" data-classic-watch={watch.code} aria-labelledby={`watch-${watch.code}`}>
 		<div className="ongoing-card-head"><span className="ongoing-icon"><Icon name="eye" /></span><div className="ongoing-text"><h3 id={`watch-${watch.code}`}>{watch.what}</h3><span className="ongoing-meta">{[watch.changedAt ? `Changed ${when(watch.changedAt)}` : '', plan].filter(Boolean).join(' · ')}</span></div><ItemCode code={watch.code} /></div>
 		<div className="ongoing-change"><span>{watch.last}</span></div>{timing}<RowActions actions={controls} primary="classic-ack-watch" /><RowState actions={actions} />
 	</article> : <li className="ongoing-row" data-classic-watch={watch.code}><span className="ongoing-icon"><Icon name="eye" /></span>
 		<div className="ongoing-text"><b>{watch.what}</b><span className="ongoing-meta">{watch.last}</span>{plan && <span className="ongoing-meta">{plan}</span>}{timing}<RowState actions={actions} /></div><ItemCode code={watch.code} /><RowActions actions={controls} />
-	</li>
+	</li>}</Holdable>
 }
 
 export default function Ongoing() {
@@ -75,9 +85,11 @@ export default function Ongoing() {
 		<div className="ongoing-heading"><div><h1>Ongoing</h1><p>Work still in progress, your asks nobody has answered, what {NAME} watches or is doing now, and your reminders.</p></div><OngoingSheet /></div>
 		{classic.progress.length > 0 && <section><h2 className="ongoing-section-title ongoing-first-title">In progress</h2><p className="ongoing-description">Replied, and the work goes on. News comes back to the same item.</p><ul className="ongoing-rows">{classic.progress.map(row => {
 			const actions = actionsOf(row.actionIds), person = Object.values(entities.people).find(person => person.name === row.who)
-			return <li className="ongoing-row" key={row.code} data-classic-progress={row.code}>
+			return <Holdable code={row.code} key={row.code}><li className="ongoing-row" data-classic-progress={row.code}>
 				{person ? <Avatar person={person} /> : <span className="ongoing-icon"><Icon name="task" /></span>}
 				<div className="ongoing-text"><b>{row.goal}</b><span className="ongoing-meta">{[row.who, row.status].filter(Boolean).join(' · ')}</span>
+					{(prs => prs && <span className="ongoing-meta classic-queue-prs" aria-label={prsName(prs)}><PrsLine prs={prs} /></span>)(manyPrs(entities.items[row.code]))}
+					{entities.items[row.code]?.stop && <span className="ongoing-meta row-stop">{entities.items[row.code]!.stop!.row}</span>}
 					{(lines => lines.length > 0 && <span className="ongoing-meta" data-left-for-you>Left for you: {lines[0]}{lines.length > 1 ? ` (+${lines.length - 1} more)` : ''}</span>)([...(entities.items[row.code]?.todoIds ?? []).map(id => entities.todos[id]?.text).filter((text): text is string => !!text), ...(entities.items[row.code]?.leftLines ?? []).filter(line => !line.seen).map(line => line.text)])}
 					{/* COUNT58 (Designer CC2.6): open in a terminal, his own Next line, with Take it back; nothing is sent. */}
 					{row.terminal && <span className="ongoing-meta" data-terminal>Next: You're working on this in a terminal · since {when(row.terminal)}</span>}
@@ -85,16 +97,16 @@ export default function Ongoing() {
 					{row.checkAt && <span className="ongoing-meta">I&apos;ll ask you on {shortDate(row.checkAt)} if nothing happens</span>}
 					<Timing action={actions.find(action => action.input === 'interval')} every={row.every} endsAt={row.endsAt} extend={actions.find(action => action.kind === 'classic-extend')} /><RowState actions={actions} />
 				</div><a href={`#classic/focus/${row.code}`}>Open</a><RowActions actions={actions.filter(action => ['classic-close', 'stop-watch', 'take-back'].includes(action.kind))} />{row.terminal && <small className="ongoing-meta">Nothing is sent</small>}<ItemCode code={row.code} />
-			</li>
+			</li></Holdable>
 		})}</ul></section>}
 		{waiting.length > 0 && <section><h2 className="ongoing-section-title ongoing-first-title">Waiting on others</h2><p className="ongoing-description">No answer for a day. Open one to draft a follow-up for you to check first.</p><div className="ongoing-grid">{waiting.map(row => {
 			const actions = actionsOf(row.actionIds), open = !!cards[row.code]
 			// A206 (R11(3)): no action buttons on the row; it opens its card in place, where the follow-up only drafts and Stop waiting ends it.
 			const toggle = (event: { target: EventTarget }) => { if (!(event.target instanceof Element && event.target.closest('a, button'))) setCards(previous => ({ ...previous, [row.code]: !open })) }
-			return <article className="ongoing-card" key={row.id} data-classic-waiting={row.code} aria-labelledby={`waiting-${row.code}`}><div className="ongoing-card-head ongoing-card-open" tabIndex={0} aria-expanded={open} title="Open" onClick={toggle} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); toggle(event) } }}><span className="ongoing-icon"><Icon name="clock" /></span><div className="ongoing-text"><h3 id={`waiting-${row.code}`}>You asked {row.to}</h3>			<span className="ongoing-meta">{row.chat} · <SentTime at={row.at} />{row.link && <> · <a href={row.link} target="_blank" rel="noopener noreferrer">Open in Teams</a></>}			</span></div><ItemCode code={row.code} /><span className="row-chevron" aria-hidden="true">{open ? '⌄' : '›'}</span></div>
+			return <Holdable code={row.code} card key={row.id}><article className="ongoing-card" data-classic-waiting={row.code} aria-labelledby={`waiting-${row.code}`}><div className="ongoing-card-head ongoing-card-open" tabIndex={0} aria-expanded={open} title="Open" onClick={toggle} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); toggle(event) } }}><span className="ongoing-icon"><Icon name="clock" /></span><div className="ongoing-text"><h3 id={`waiting-${row.code}`}>You asked {row.to}</h3>			<span className="ongoing-meta">{row.chat} · <SentTime at={row.at} />{row.link && <> · <a href={row.link} target="_blank" rel="noopener noreferrer">Open in Teams</a></>}			</span></div><ItemCode code={row.code} /><span className="row-chevron" aria-hidden="true">{open ? '⌄' : '›'}</span></div>
 				<MessageBubble text={row.text} teams={row.link} open={!!opened[row.code]} onToggle={value => setOpened(previous => ({ ...previous, [row.code]: value }))} />
 				{open && <div className="ongoing-waiting-card"><p className="ongoing-meta">No reply from {row.to.split(/,\s*/)[0]?.split(/\s+/)[0] || 'them'} yet</p><RowActions actions={actions} primary="follow-up" /></div>}<RowState actions={actions} />
-			</article>
+			</article></Holdable>
 		})}</div></section>}
 		{updates.length > 0 && <section><h2 className="ongoing-section-title ongoing-first-title">{updates.length} update{updates.length === 1 ? '' : 's'}</h2><div className="ongoing-grid">{updates.map(watch => <Watch key={watch.id} watch={watch} actions={actionsOf(classic.watchActionIds[watch.code] ?? watch.actionIds)} />)}</div></section>}
 		{rest.length > 0 && <section><h2 className="ongoing-section-title">No change</h2><ul className="ongoing-rows">{rest.map(watch => <Watch key={watch.id} watch={watch} actions={actionsOf(classic.watchActionIds[watch.code] ?? watch.actionIds)} />)}</ul></section>}

@@ -7,6 +7,7 @@ import { ActionButton, ActionState } from './ActionButton.tsx'
 import type { Entities } from '../domain/contracts.ts'
 import { ItemCard, messageText } from './ItemCard.tsx'
 import { SentTime } from './SentTime.tsx'
+import { SentBecause } from './SentBecause.tsx'
 import { CODE, ItemCode } from './ItemCode.tsx'
 import { useDoneEntries, useDoneLook } from '../data/done.ts'
 import { when } from '../domain/time.ts'
@@ -16,6 +17,8 @@ import { NAME } from '../brand.ts'
 import { deadlineChoices, deadlineDate } from '../classic/dates.ts'
 import { isolateRowControls } from './row-navigation.ts'
 import { DONE_FILTERS, isDoneFilter, matchesDone } from '../domain/done.ts'
+import { ByDelegateChip, WddKindChips, WddList } from './WddList.tsx'
+import { wddSubline } from '../domain/wdd-words.ts'
 
 export function Entry({ row: supplied, fresh = false, grouped = false, compact = false, feedbackOnly = false, newView = false, open, onToggle }: { row: Entities['doneEntries'][string]; fresh?: boolean; grouped?: boolean; compact?: boolean; feedbackOnly?: boolean; newView?: boolean; open: boolean; onToggle: () => void }) {
 	const { row, entities, rev, newer, blocked } = useActivityCard(supplied.code, supplied.id)
@@ -72,7 +75,7 @@ export function Entry({ row: supplied, fresh = false, grouped = false, compact =
 				{row.text && <div className="draft">{row.text}</div>}
 				{row.checks?.map((check, index) => <p key={index} className="muted done-check">{check}</p>)}
 				{reopen && <fieldset disabled={blocked}><legend>Reopen this item</legend><Field code={row.code} rev={rev} field="answer" label="What should the new draft say?" value={ui.answer ?? ''} edit={edit} /><ActionButton action={reopen} input={{ text: ui.answer }} disabled={!ui.answer?.trim() || newer || blocked} /></fieldset>}
-				{(row.why || searched.length > 0) && <details><summary>Why</summary>{row.why && <><p>{row.why.reason}</p>{row.why.confidence === 'low' && <p>{NAME} isn&apos;t sure this reply is right.</p>}<Sources ids={row.sourceIds} entities={entities} />{row.why.gaps.map((gap, index) => <p key={index}>{gap}</p>)}</>}{searched.length > 0 && <><p>Places checked for this item</p><ul>{searched.map((line, index) => <li key={index}>{line}</li>)}</ul></>}</details>}
+				{(row.why || row.sentBecause || searched.length > 0) && <details><summary>Why</summary>{row.sentBecause && <p><SentBecause rule={row.sentBecause} /></p>}{row.why && <>{row.why.reason && <p>{row.why.reason}</p>}{row.why.confidence === 'low' && <p>{NAME} isn&apos;t sure this reply is right.</p>}<Sources ids={row.sourceIds} entities={entities} />{row.why.gaps.map((gap, index) => <p key={index}>{gap}</p>)}</>}{searched.length > 0 && <><p>Places checked for this item</p><ul>{searched.map((line, index) => <li key={index}>{line}</li>)}</ul></>}</details>}
 				{actions.some(action => ['wrong', 'incomplete', 'unneeded'].includes(action.kind)) && <Button variant="ghost" aria-label={feedbackLabel} disabled={blocked} onClick={() => edit({ feedbackKind: kind ? undefined : 'wrong' })}>Not right?</Button>}
 				{feedbackForm}
 				{ask && <section className="ask-thread" ref={askThread}><h3>Ask {NAME}</h3><p className="muted">Only you see this conversation.</p>{row.noteIds.map(id => {
@@ -102,7 +105,7 @@ export function Entry({ row: supplied, fresh = false, grouped = false, compact =
 		{feedbackForm}
 		{actions.length > 0 && <ActionState item={actions[0].item} rev={actions[0].rev} />}
 		{open && <><div className="draft">{row.text ?? row.said ?? row.sentence}</div>
-			{row.why && <details><summary>Why</summary><p>{row.why.reason}</p>{row.sourceIds.map(id => <p key={id}>{entities.sources[id].kind}: {entities.sources[id].label}</p>)}</details>}
+			{(row.why || row.sentBecause) && <details><summary>Why</summary>{row.sentBecause && <p><SentBecause rule={row.sentBecause} /></p>}{row.why?.reason && <p>{row.why.reason}</p>}{row.sourceIds.map(id => <p key={id}>{entities.sources[id].kind}: {entities.sources[id].label}</p>)}</details>}
 			{entities.items[row.code] ? <ItemCard code={row.code} /> : row.used && <p className="muted">{row.used}</p>}
 		</>}
 	</article>
@@ -114,6 +117,9 @@ export default function Done() {
 	const [openId, setOpenId] = useState<string>()
 	const fresh = useDoneLook()
 	const requested = route.split('/')[1] ?? 'all'
+	// WDD N1 (Designer D1): By Delegate, what Delegate did by itself (30 days, from the action ledger), with its own kind chips.
+	if (requested === 'by-delegate') return <div className="new-done"><header className="done-heading"><h1>Done</h1><p className="muted">{wddSubline(snapshot?.wdd, snapshot?.now)}</p></header>
+		<nav aria-label="Done filters" className="filter-bar"><ByDelegateChip /><WddKindChips /></nav><WddList /></div>
 	const filter = requested === 'closed' ? 'catchup' : isDoneFilter(requested) ? requested : 'all'
 	// R12b step 3: done/rule/<ids> lists only what a line's grants sent (Settings › Your way of working links here with the line's ruleIds).
 	const ruleIds = requested === 'rule' ? (route.split('/')[2] ?? '').split(',').map(decodeURIComponent).filter(Boolean) : undefined
@@ -122,7 +128,7 @@ export default function Done() {
 	const groups = [{ title: earlierRows.length ? 'New' : '', rows: newRows }, { title: newRows.length ? 'Earlier this week' : '', rows: earlierRows }]
 	const closed = Object.values(entries).filter(row => row.kind === 'closed')
 	return <div className="new-done"><header className="done-heading"><h1>Done</h1><p className="muted">{filter === 'catchup' ? `What ${NAME} read for you and closed with no reply. Click a row to open it in Teams.` : 'The last 7 days. Open a reply to see what was sent and why.'}</p>{ruleIds && <p className="muted">Only what one of your lines did, the last 7 days · <a href="#done">Show all</a></p>}</header>
-		<nav aria-label="Done filters" className="filter-bar">{Object.entries(DONE_FILTERS).map(([key, { label, kinds }]) => {
+		<nav aria-label="Done filters" className="filter-bar"><ByDelegateChip />{Object.entries(DONE_FILTERS).map(([key, { label, kinds }]) => {
 			const count = Object.values(entities.doneEntries).filter(row => kinds.includes(row.kind)).length
 			const unseen = Object.values(entities.doneEntries).filter(row => kinds.includes(row.kind) && fresh.has(row.id)).length
 			return count > 0 && <Button key={key} aria-label={label} aria-pressed={filter === key} variant={filter === key ? 'default' : 'outline'} onClick={() => navigate(`done/${key}`)}>{label} <span className="count">{count}</span>{unseen > 0 && <small>{unseen} new</small>}</Button>

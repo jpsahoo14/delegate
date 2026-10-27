@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { receiptSchema, snapshotSchema, voteCheckSchema, type Intent, type Receipt, type Snapshot } from '../domain/contracts.ts'
 import { readPageDelta } from './validation.ts'
-import { numbersSchema, saveResultSchema, settingsSchema } from '../domain/screens.ts'
+import { numbersSchema, saveResultSchema, settingsSchema, usageSchema } from '../domain/screens.ts'
 import { NAME } from '../brand.ts'
 
 export class ApiError extends Error {
@@ -73,6 +73,8 @@ export function takeEarlySnapshot(find: string): Promise<Snapshot> | undefined {
 export const submit = (intent: Intent) => request('/api/v1/actions', receiptSchema, { method: 'POST', body: JSON.stringify(intent) })
 // A37 (b): the live vote-claim re-check on the reply he is editing (read-only; the same rule as the card and Send).
 export const checkVoteClaim = (code: string, text: string, signal?: AbortSignal) => request('/api/v1/vote-check', voteCheckSchema, { method: 'POST', body: JSON.stringify({ code, text }), signal })
+// WYS (W4): SEND's consistency check on the ticked set; no text means the stored draft, the words Send would send.
+export const checkActionClaim = (code: string, text: string | undefined, include: string[], signal?: AbortSignal) => request('/api/v1/vote-check', voteCheckSchema, { method: 'POST', body: JSON.stringify({ code, ...(text === undefined ? {} : { text }), include }), signal })
 export const receipt = (submissionId: string) => request(`/api/v1/result?submission=${encodeURIComponent(submissionId)}`, receiptSchema)
 // What the server knows of a click (#42): its saved result, still being handled (202), or nothing saved under this id (404).
 export async function receiptState(submissionId: string): Promise<{ receipt: Receipt } | { working: true } | { missing: true }> {
@@ -85,7 +87,12 @@ export async function receiptState(submissionId: string): Promise<{ receipt: Rec
 	}
 }
 export const fetchSettings = (signal?: AbortSignal, experience: 'new' | 'classic' = 'new') => request(`/api/v1/settings${experience === 'classic' ? '?experience=classic' : ''}`, settingsSchema, { signal })
-export const fetchNumbers = (window: string, signal?: AbortSignal) => request(`/api/v1/numbers?window=${encodeURIComponent(window)}`, numbersSchema, { signal })
+// A custom window (PE §9) is "custom:<from>:<to>" on the page and window=custom&from&to on the wire.
+const windowQuery = (window: string) => { const [key, from, to] = window.split(':'); return key === 'custom' ? `window=custom&from=${encodeURIComponent(from ?? '')}&to=${encodeURIComponent(to ?? '')}` : `window=${encodeURIComponent(window)}` }
+export const fetchNumbers = (window: string, signal?: AbortSignal) => request(`/api/v1/numbers?${windowQuery(window)}`, numbersSchema, { signal })
+// D-COST URΔ4: AI USE for the same window with its filters; query is the window part the server sent with the section.
+export const fetchUsage = (query: string, filter: { model?: string; kind?: string; machine?: string }, signal?: AbortSignal) =>
+	request(`/api/v1/numbers/usage?${query}${Object.entries(filter).flatMap(([k, v]) => (v ? [`&${k}=${encodeURIComponent(v)}`] : [])).join('')}`, usageSchema, { signal })
 export const saveSetting = (key: string, value: string) => request('/settings', saveResultSchema, { method: 'POST', body: JSON.stringify({ key, value }) })
 export const saveSeen = (filters: string[], at: string) => request('/seen', z.object({ ok: z.literal(true) }), { method: 'POST', body: JSON.stringify({ filters, at }) })
 export const dismissExperienceNote = () => request('/ui', z.object({ ok: z.literal(true) }), { method: 'POST', body: JSON.stringify({ noted: true }) })

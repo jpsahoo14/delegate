@@ -45,10 +45,19 @@
 .card-working svg{flex:none;margin-top:2px}
 .card-working strong{color:var(--text)}
 .card-working-what{display:block;margin-top:2px}
-.card-actions>.card-more-menu{margin-left:auto}
-.card-actions .card-more-menu>summary{display:grid;place-items:center;width:34px;height:34px;border-radius:8px;list-style:none;color:var(--text-2);cursor:pointer}
-.card-actions .card-more-menu>summary::-webkit-details-marker{display:none}
-.card-actions .card-more-content{position:absolute;right:0;bottom:100%;z-index:25;display:flex;flex-direction:column;gap:6px;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:8px;box-shadow:var(--shadow-2);min-width:220px;max-height:min(480px,60vh);overflow:auto}
+/* D-MORE-MENU MM1/MM2/MM-i (PE engineer-d-more-menu §3.1, §5.1, §6.1): ⋯ is the head line's last child, held at line 1's right edge;
+   the head is at least as tall as its target, so it is centred on the name line, and the padding keeps wrapped lines clear of it. */
+.card-head{--more-target:34px}
+.card-head:has(>.card-more-menu){position:relative;padding-right:calc(var(--more-target) + 8px);min-height:var(--more-target)}
+.card-head>.card-more-menu{position:absolute;top:0;right:0;margin:0}
+.card-head>.card-more-menu>summary{display:grid;place-items:center;width:var(--more-target);height:var(--more-target);border-radius:8px;list-style:none;color:var(--text-2);cursor:pointer}
+.card-head>.card-more-menu>summary::-webkit-details-marker{display:none}
+.card-head>.card-more-menu>.card-more-content{position:absolute;right:0;top:100%;z-index:25;display:flex;flex-direction:column;gap:6px;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:8px;box-shadow:var(--shadow-2);min-width:220px;max-width:min(360px,calc(100vw - 28px));max-height:min(480px,60vh);overflow:auto}
+@media(max-width:560px){.card-head{--more-target:44px}}
+/* CR 00:34:04 B2 (MM2: never clipped): New's Now list (.rows, the inline card's ancestor) rounds its corners with overflow:hidden,
+   which would clip an open ⋯ and its lines at the list's edge. While a card menu inside it is open it doesn't clip; flow-root keeps
+   its own formatting context, so nothing in the list moves. */
+.rows:has(details.card-more-menu[open]){overflow:visible;display:flow-root}
 .card-details>summary{cursor:pointer;color:var(--text-2)}.card-details[open]>summary{margin-bottom:8px}
 .card-details h4{margin:12px 0 4px;font-size:13px}.card-details p,.card-details li{color:var(--text-2)}
 .card-details .history{list-style:none;padding:0;margin:0}.card-details .history li{display:grid;grid-template-columns:110px 1fr;gap:8px}
@@ -122,3 +131,54 @@ a.left-button:hover{background:var(--surface-2)}
 .item-card .card-sent>h3.sent-head strong{color:var(--text);font-weight:600}
 .item-card .card-sent>h3.sent-head a{text-decoration:none;color:var(--accent)}
 .card-sent .card-bubble{background:var(--accent-soft);margin-top:6px}
+/* WYS N1-2 (W1, W2, W7, W11): one "When you send" block. The summary is a disclosure; groups have small uppercase subheads with a
+   count; a suggestion's reason sits inline, muted; an asked line's Why? opens below it; option groups wrap. The consistency warn
+   stacks under the reply with the vote line (W4). */
+.wys-block .wys-summary{display:flex;justify-content:space-between;align-items:center;gap:8px;width:100%;border:0;background:none;padding:2px 0;font:inherit;font-size:13.5px;color:var(--text-2);text-align:left;cursor:pointer}
+.wys-block .wys-summary:hover>span:first-child{color:var(--text)}
+.wys-block .wys-summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
+.wys-summary-line,.wys-then{margin:0;font-size:13.5px}
+.wys-block .wys-group-block{margin-top:10px}
+.wys-block .wys-sub{font-size:11.5px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--text-2);margin:0 0 6px}
+.wys-block .wys-sub-hint{font-weight:400;letter-spacing:normal;text-transform:none}
+.wys-line-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px}
+.wys-line-head>label{flex:1 1 auto;min-width:0}
+.wys-reason{font-size:12.5px}
+.wys-why{font-size:12.5px;color:var(--text-2)}
+.wys-why>summary{cursor:pointer;color:var(--accent);list-style:none}
+.wys-why>summary::-webkit-details-marker{display:none}
+.wys-question{margin:4px 0 2px 24px;font-size:13px}
+.wys-options{display:flex;flex-wrap:wrap;gap:4px 14px;margin-left:24px}
+.card-action-claim{margin-top:6px}
+.card-action-claim>p{margin:0}
+.wys-claim-actions{display:flex;flex-wrap:wrap;gap:6px 14px;align-items:center;margin-top:4px!important}
+.wys-block .card-left-for-you{padding:0;border:0;margin-top:10px}
+@media (max-width:560px){.wys-why>summary,.wys-claim-actions .link-button{min-height:44px;display:inline-flex;align-items:center}}
+.wys-dismiss{border:0;background:none;color:var(--text-2);cursor:pointer;font-size:13px;line-height:1;padding:4px 6px;border-radius:4px}
+.wys-dismiss:hover{background:var(--surface-2);color:var(--text)}
+.wys-dismiss:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.wys-dismissed{margin:6px 0;font-size:13px;color:var(--text-2)}
+@media (max-width:560px){.wys-dismiss{min-width:44px;min-height:44px}}
+.wys-option{display:inline-flex;align-items:center;gap:2px}
+
+/* D-A239 MP1 (Designer): "PRs in this ask". One row per PR: name, outcome (icon plus words), ↗ Open PR, the PR's own outline action at
+   the end. At 400 px the outcome wraps under the title and the action drops below it. MP2: a per-PR approval pair. */
+.card-prs ul{list-style:none;margin:0;padding:0}
+.card-prs .pr-row{display:flex;flex-wrap:nowrap;align-items:center;gap:4px 10px;padding:4px 0;border-top:1px solid var(--line, color-mix(in srgb,currentColor 12%,transparent))}
+.card-prs .pr-row:first-child{border-top:0}
+.card-prs .pr-name{font-weight:600;flex:0 1 auto;min-width:5em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.card-prs .pr-title{font-weight:400}
+.card-prs .pr-outcome{display:inline-flex;align-items:center;gap:4px;flex:1 0 auto}
+.card-prs [data-outcome=checking] .pr-outcome,.card-prs [data-outcome=not-reviewing] .pr-outcome{color:var(--text-2)}
+.card-prs [data-outcome=couldnt-read] .pr-outcome,.card-prs [data-outcome=gave-up] .pr-outcome{color:var(--warn)}
+.card-prs .pr-open,.card-prs .pr-actions{flex:none;white-space:nowrap}
+.card-prs .pr-actions{margin-left:auto;display:inline-flex;flex-wrap:wrap;gap:6px}
+.card-prs .pr-spin{width:10px;height:10px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;display:inline-block;animation:pr-spin 1s linear infinite}
+@keyframes pr-spin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.card-prs .pr-spin{animation:none}}
+@media (max-width:640px){.card-prs .pr-row{flex-wrap:wrap}.card-prs .pr-name{flex:1 1 100%}.card-prs .pr-outcome{flex:1 1 100%;flex-wrap:wrap}.card-prs .pr-actions{margin-left:0}}
+.review-pair{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;margin-top:8px}
+.review-pair .approve-meaning{flex-basis:100%}
+.review-pair a.review-pair-button{display:inline-flex;align-items:center;gap:4px;border:1px solid currentColor;border-radius:6px;padding:4px 10px;text-decoration:none}
+.review-pair .review-pair-link button{border:0;background:none;box-shadow:none;padding:0;height:auto;text-decoration:underline;color:var(--accent)}
+.review-approved{display:flex;align-items:center;gap:4px;margin-top:8px}

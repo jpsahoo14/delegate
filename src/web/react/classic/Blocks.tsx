@@ -3,7 +3,8 @@ import { Button } from '../components/ui/button.tsx'
 import { Icon } from '../components/ui/icon.tsx'
 import { ActionButton } from '../features/ActionButton.tsx'
 import { Field, Sources } from '../features/CardFields.tsx'
-import type { Action, Entities, Snapshot } from '../domain/contracts.ts'
+import type { Action, Entities, SentRule, Snapshot } from '../domain/contracts.ts'
+import { SentBecause, sentBecauseText } from '../features/SentBecause.tsx'
 import type { CardUi } from '../data/store.ts'
 import { NAME } from '../brand.ts'
 
@@ -14,12 +15,13 @@ export function conversationOf(snapshot: Snapshot | undefined, code: string, fal
 	return { entities, notes: (item?.noteIds ?? (done?.noteIds.length ? done.noteIds : fallbackIds)).map(id => entities.notes[id]) }
 }
 
-export function ClassicWhy({ why, sourceIds, entities, name, open, onToggle }: {
-	why: NonNullable<Entities['doneEntries'][string]['why']>; sourceIds: string[]; entities: Entities; name: string; open: boolean; onToggle: (open: boolean) => void
+// D-A281 B1 (CR 19:19:08): a reply his line sent leads with its frozen line, plain in the summary and linked as the first line inside.
+export function ClassicWhy({ why, sourceIds, entities, name, open, onToggle, sentBecause }: {
+	why: NonNullable<Entities['doneEntries'][string]['why']>; sourceIds: string[]; entities: Entities; name: string; open: boolean; onToggle: (open: boolean) => void; sentBecause?: SentRule
 }) {
 	return <details className="classic-why" open={open} onToggle={event => { if (open !== event.currentTarget.open) onToggle(event.currentTarget.open) }}>
-		<summary><Icon name="right" /><span><b>Why:</b> {why.reason || 'The sources behind this draft'}</span>{why.confidence === 'low' && <small>{NAME} isn&apos;t sure this reply is right</small>}{sourceIds.length > 0 && <small>{sourceIds.length} source{sourceIds.length === 1 ? '' : 's'}</small>}</summary>
-		<div className="classic-source-rows">{sourceIds.map(id => {
+		<summary><Icon name="right" /><span><b>Why:</b> {sentBecause ? sentBecauseText(sentBecause) : why.reason || 'The sources behind this draft'}</span>{why.confidence === 'low' && <small>{NAME} isn&apos;t sure this reply is right</small>}{sourceIds.length > 0 && <small>{sourceIds.length} source{sourceIds.length === 1 ? '' : 's'}</small>}</summary>
+		<div className="classic-source-rows">{sentBecause && <p className="classic-sent-because"><SentBecause rule={sentBecause} /></p>}{sourceIds.map(id => {
 			const source = entities.sources[id]
 			return <div className="classic-source-row" key={id}><span className="classic-source-kind">{source.kind}</span>{source.href ? <a href={source.href} target="_blank" rel="noopener noreferrer">{source.label}</a> : <span>{source.label}</span>}<small>{source.stale && 'May be out of date · '}{source.locked ? `Not visible to ${name.split(' ')[0]}` : source.kind === 'In the chat' ? `Visible to ${name.split(' ')[0]}` : ''}</small></div>
 		})}{why.searched?.length ? <p>Looked up: {why.searched.join(', ')}</p> : null}{why.gaps.length > 0 && <p>Could not read: {why.gaps.join(', ')}</p>}</div>

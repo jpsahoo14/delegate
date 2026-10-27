@@ -14,15 +14,22 @@ export function Header({ current, move, snapshot, offline, notices = [] }: { cur
 	const reading = snapshot?.status.reading
 	// The next Teams check, honestly, while a runner is reading (latency c).
 	const next = snapshot?.status.state === 'on' && (reading?.state === 'ok' || reading?.state === 'late') ? nextCheck(reading.next) : undefined
-	const status = offline ? 'Offline' : !snapshot ? 'Connecting' : snapshot.status.state === 'paused' ? 'Paused' :
-		snapshot.status.state === 'stopped' ? 'Stopped' : reading?.state === 'never' ? 'Not checked yet' :
+	// D-WATCH' (PM N3, PE §8.6): after Offline, Connecting and the engine's Stopped, "Checking off" (+ " · Paused"), not bad, with no
+	// next check and no reading warning: the gap is his choice. PM N7 (PE §8.11): unless no machine has cycled for an hour (reading off,
+	// from runner-cycle evidence while Off): then it says so, bad, without " · Paused".
+	const off = snapshot?.status.watching?.on === false, alsoPaused = snapshot?.status.state === 'paused' ? ' · Paused' : ''
+	const silent = off && reading?.state === 'off', offWords = silent ? `Checking off · ${NAME} isn't running on any machine` : `Checking off${alsoPaused}`
+	const status = offline ? 'Offline' : !snapshot ? 'Connecting' : snapshot.status.state === 'stopped' ? 'Stopped' : off ? offWords : snapshot.status.state === 'paused' ? 'Paused' :
+		reading?.state === 'never' ? 'Not checked yet' :
 			`${reading?.state === 'off' ? 'Not checked since' : 'Checked'} ${when(reading?.at)}${next ? ` · ${next}` : ''}`
-	const bad = offline || snapshot?.status.state !== 'on' || !!Object.keys(snapshot?.entities.health ?? {}).length || reading?.state === 'off' || reading?.state === 'never'
-	const shortStatus = offline ? 'Offline' : !snapshot ? 'Connecting' : snapshot.status.state === 'paused' ? 'Paused' :
-		snapshot.status.state === 'stopped' ? 'Stopped' : reading?.state === 'never' || reading?.state === 'off' ? 'Not checked' :
+	const bad = offline || snapshot?.status.state === 'stopped' || (off ? silent || Object.keys(snapshot?.entities.health ?? {}).some(key => key !== 'paused')
+		: snapshot?.status.state !== 'on' || !!Object.keys(snapshot?.entities.health ?? {}).length || reading?.state === 'off' || reading?.state === 'never')
+	const shortStatus = offline ? 'Offline' : !snapshot ? 'Connecting' : snapshot.status.state === 'stopped' ? 'Stopped' : off ? silent ? 'Not running' : `Checking off${alsoPaused}` : snapshot.status.state === 'paused' ? 'Paused' :
+		reading?.state === 'never' || reading?.state === 'off' ? 'Not checked' :
 			reading?.state === 'late' ? 'Late' : bad ? 'Attention' : ''
-	const fullStatus = [shortStatus && !status.startsWith(shortStatus) ? shortStatus : undefined, status,
-		(offline || snapshot?.status.state !== 'on') && reading?.at ? `Last checked ${when(reading.at)}` : undefined, reading?.machine].filter(Boolean).join(' - ')
+	const fullStatus = off && !offline && snapshot && snapshot.status.state !== 'stopped' ? status
+		: [shortStatus && !status.startsWith(shortStatus) ? shortStatus : undefined, status,
+			(offline || snapshot?.status.state !== 'on') && reading?.at ? `Last checked ${when(reading.at)}` : undefined, reading?.machine].filter(Boolean).join(' - ')
 	const themeLabel = THEME_LABEL[themeChoice]
 	const themeIcon = themeChoice === 'auto' ? 'auto' : themeChoice === 'light' ? 'sun' : 'moon'
 	const changeTheme = () => setThemeChoice(themeChoice === 'auto' ? 'light' : themeChoice === 'light' ? 'dark' : 'auto')

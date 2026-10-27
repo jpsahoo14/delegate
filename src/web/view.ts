@@ -16,11 +16,14 @@ import type { versionInfo } from '../os/autoupdate.ts'
 import type { settingsView } from './settings.ts'
 import type { UiChoice } from '../store/state.ts'
 import { place, snapshot, type NextView, type Snap } from './next.ts'
+import { existsSync, readdirSync } from 'node:fs'
+import { join } from 'node:path'
 import { leftForYou } from '../core/whose.ts'
 import { currentDraft } from '../core/policy.ts'
 import { htmlToText, isPersona } from '../core/intake.ts'
 import { placeOf, type Place } from './model/place.ts'
 import { homeTiles, type ChangeKind, type DoneFilter } from './react/domain/done.ts'
+import { reviewMoved } from '../core/card-facts.ts'
 
 // The one shape every surface renders: the browser page, the chat panel, and the synced snapshot (design-spec/data.md).
 // Only what the owner should see: no ids, paths, or raw citations.
@@ -71,7 +74,8 @@ export type View = {
 	// Home's Catch up card: what Delegate read for the owner since they last looked, worth knowing first (design-spec/catch-up.md).
 	catchUp: { count: number; top: DoneRow[] }
 	details?: { runner: string; log: string[] }
-	status: { state: 'on' | 'paused' | 'stopped'; autoSend: boolean; runs: number; cap: number; reading: Reading }
+	// watching (D-WATCH): the synced Control fact; machines counts the machines that keep a seen file (· <machine> shows with 2+).
+	status: { state: 'on' | 'paused' | 'stopped'; autoSend: boolean; runs: number; cap: number; reading: Reading; watching: { on: boolean; since?: string; machine?: string; machines: number } }
 	health: { key: string; text: string; since: string; fix?: { label: string; command: string } }[]
 	version?: ReturnType<typeof versionInfo>
 	settings?: ReturnType<typeof settingsView>
@@ -115,11 +119,21 @@ export function debugLines(w: Workflow): string[] {
 const SKIP = new Set(['state', 'outcome'])
 // Bet 1: whether chats are being read, from the last good read (the lease is written even when a read fails).
 export type Reading = { state: 'ok' | 'late' | 'off' | 'never'; machine?: string; at?: string; here?: string; next?: string }
+// D-WATCH: an absent watching is On (until the runner's first tick writes it); machines = the machines with a state/seen file.
+export function watchingOf(store: Store): View['status']['watching'] {
+	const w = store.control().watching, dir = join(store.root, 'state', 'seen')
+	const machines = existsSync(dir) ? readdirSync(dir).filter(f => f.endsWith('.json')).length : 0
+	return { on: w?.on !== false, ...(w?.since ? { since: w.since } : {}), ...(w?.machine ? { machine: w.machine } : {}), machines }
+}
 // here: the machine serving this page, so a page can tell whether the runner is on another machine (spec S7).
+// D-WATCH' (PE engineer-d-watch §8.9(c)/§8.10(c)): while Teams checking is off nothing reads chats, so ok/late/off is classified from
+// runner-cycle evidence instead: endAt, stamped by every cycle that ran (falling back to the last read). `at` stays the last good read.
+// So while Off, "off" means no machine has cycled for an hour. On is unchanged.
 export function readingOf(store: Store, now = Date.now()): Reading {
 	const c = store.chats(), at = c.goodAt ?? c.readAt, machine = store.lease()?.machine, here = store.machine, next = store.schedule().nextAt
-	if (!at) return { state: 'never', machine, here }
-	const min = (now - Date.parse(at)) / 60_000
+	const evidence = store.control().watching?.on === false ? c.endAt ?? at : at
+	if (!evidence) return { state: 'never', machine, here }
+	const min = (now - Date.parse(evidence)) / 60_000
 	return { state: min < 20 ? 'ok' : min < 60 ? 'late' : 'off', machine, at, here, ...(next ? { next } : {}) }
 }
 
@@ -179,8 +193,9 @@ function nextSteps(w: Workflow): Pick<ItemCard, 'replyOnly' | 'reviewAgain'> {
 		// Never while a question is open: every ok is refused then (a stale vote after a change run, a refusedAsk; review chui P2-1).
 		// Nor on a draft with a blank, which every ok refuses too (re-review N4).
 		...(left.length && w.draft?.text && !/_{3,}/.test(w.draft.text) && !w.sent && !w.question && (failed || dropped) ? { replyOnly: `ok ${w.code} except ${left.map((_, i) => i + 1).join(' ')}` } : {}),
-		// P0-10 (A R27): a head that moved during the review sets wf.reviewAgain with no question; it offers Review again too.
-		...(asksReviewAgain(w.code, w.question) || w.reviewAgain ? { reviewAgain: reviewAgainCmd(w.code) } : {}),
+		// P0-10 (A R27): a head that moved during the review offers Review again too: HOST's unit again mark, or on an item without units
+		// its retained scalar (CR B1, D-A239).
+		...(asksReviewAgain(w.code, w.question) || reviewMoved(w) ? { reviewAgain: reviewAgainCmd(w.code) } : {}),
 	}
 }
 
@@ -219,7 +234,7 @@ export function knowledge(p: Proposal): KnowledgeCard {
 const TASK = /task|work ?item|bug/i, PR = /pull|(^|_)pr($|_)|create_pr/i, INVITE = /calendar|invite|event|meeting/i, COMMENT = /comment|review/i
 
 // The Done filters, which "seen" is kept for. Rows of a kind count as new after the owner last looked at its filter.
-export const SEEN_KEYS = ['replies', 'reviews', 'changes', 'reminders', 'learned', 'catchup']
+export const SEEN_KEYS = ['replies', 'reviews', 'changes', 'reminders', 'learned', 'catchup', 'wdd']
 // The ask on one line, without the greeting, for list rows: "Hi Robin, which date…" reads "which date…".
 const askLine = (t = '') => htmlToText(t).replace(/^\s*(hi|hello|hey|hii+|good (morning|afternoon|evening))\b[^,.!:\n]{0,40}[,.!:]?\s*/i, '').replace(/\s+/g, ' ').trim().slice(0, 160)
 const short = (t = '') => htmlToText(t).replace(/\s+/g, ' ').trim().slice(0, 200)
@@ -330,7 +345,7 @@ export function view(store: Store, since: string | undefined, now = new Date(), 
 	const left = placements.filter(r => leftForYou(r.rule)).length
 	return {
 		now: now.toISOString(), since, owner: cfg.owner.name,
-		status: { state, autoSend: !!c.autoSend, runs: store.runsToday(), cap: cfg.dailyRuns ?? 200, reading: readingOf(store) },
+		status: { state, autoSend: !!c.autoSend, runs: store.runsToday(), cap: cfg.dailyRuns ?? 200, reading: readingOf(store), watching: watchingOf(store) },
 		health, tiles: snap ? [] : [{ key: 'needs', count: needs.length, label: needs.length === 1 ? 'needs you' : 'need you' }, ...homeTiles(done, from)],
 		also: [
 			{ key: 'knowledge', count: kp.length, label: kp.length === 1 ? 'to learn' : 'to learn' },

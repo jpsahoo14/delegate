@@ -1,0 +1,9 @@
+/* D-COST PE §9 / Designer URΔ4: the Numbers window select and its Custom range popover (New and Classic). */
+.window-pick{position:relative;display:inline-block}
+.window-range{position:absolute;right:0;top:calc(100% + 6px);z-index:20;display:grid;grid-template-columns:auto 1fr;align-items:center;gap:8px 10px;width:min(300px,calc(100vw - 32px));padding:12px;border:1px solid var(--border-strong,var(--border));border-radius:8px;background:var(--surface,var(--bg,#fff));color:var(--text);box-shadow:0 4px 16px rgb(0 0 0 / .15);font-size:13.5px}
+.window-range label{color:var(--text-2)}
+.window-range input{font:inherit;color:inherit;background:var(--surface-2,transparent);border:1px solid var(--border-strong,var(--border));border-radius:6px;padding:3px 6px;min-width:0}
+.window-range-error{grid-column:1 / -1;margin:0;color:var(--warn);font-size:12.5px}
+.window-range-actions{grid-column:1 / -1;display:flex;gap:8px;justify-content:flex-end}
+/* Narrow: the header stacks and the select sits at the left, so the popover opens from its left edge. */
+@media (max-width:560px){.window-range{left:0;right:auto}}

@@ -21,6 +21,9 @@ export type CardUi = {
 	// "Left for you" (#44(2)): the to-dos he ticked, by their place in the list; and the ones he marked done, held here for 6 s so Undo
 	// sends nothing (PM 18:40). Kept with the card's revision, as every other unsent choice is.
 	ticked?: number[]; marking?: { picks: number[]; texts: string[]; until: number }
+	// WYS N1 (I32): the changes he ticked by consent id (absent: the card's defaults), option groups he turned off, and whether he
+	// opened Send anyway's inline confirm past the consistency check.
+	included?: string[]; groupOff?: string[]; claimConfirm?: boolean
 }
 type Pinned = { rev: string; snapshot: Snapshot; actionRev?: string }
 export type DataState = {
@@ -40,7 +43,7 @@ export function pinnedPlacements(state: Pick<DataState, 'pinned'>): Record<strin
 	}
 	return rows
 }
-export const dirty = (ui: CardUi) => !!(ui.editing || ui.composing || ui.interacting || ui.focusedField || ui.feedbackKind || ui.feedback || ui.watchText !== undefined || ui.watchUntil !== undefined || ui.watchBy !== undefined || ui.answer || ui.ask || ui.report || ui.pending || ui.picks || ui.excluded || ui.other || ui.ticked?.length || ui.marking)
+export const dirty = (ui: CardUi) => !!(ui.editing || ui.composing || ui.interacting || ui.focusedField || ui.feedbackKind || ui.feedback || ui.watchText !== undefined || ui.watchUntil !== undefined || ui.watchBy !== undefined || ui.answer || ui.ask || ui.report || ui.pending || ui.picks || ui.excluded || ui.other || ui.ticked?.length || ui.marking || ui.included !== undefined || ui.groupOff?.length || ui.claimConfirm)
 function share<T>(before: Record<string, T>, after: Record<string, T>): Record<string, T> {
 	let equal = Object.keys(before).length === Object.keys(after).length
 	const result: Record<string, T> = {}

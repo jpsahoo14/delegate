@@ -12,12 +12,13 @@ import { StyleEditor } from '../features/StyleEditor.tsx'
 import { CLASSIC_LOOK, ToolsSettings } from '../features/ToolsSettings.tsx'
 import { CodeFolders } from '../features/CodeFolders.tsx'
 import { BoundLine, WaysSection } from '../features/Ways.tsx'
+import { CheckingOffNote } from '../features/WatchingControl.tsx'
 
 function Setting({ row }: { row: SettingsData['rows'][number] }) {
 	const state = useSetting(row), id = `ct-set-${row.key}`
 	const options = row.options ?? (row.kind === 'bool' ? [{ value: 'false', label: 'Off' }, { value: 'true', label: 'On' }] : undefined)
 	if (row.kind === 'switch') return <div className="ct-setting-row ct-switch-row" id={`setting-${row.key}`}><div><strong id={`${id}-label`}>{row.label}</strong><p className="ct-muted" id={`${id}-help`}>{row.help}</p><BoundLine settingKey={row.key} />{state.text && <p role={state.error ? 'alert' : 'status'}>{state.text}</p>}</div><button type="button" className="ct-switch" role="switch" aria-checked={state.value === 'true'} aria-labelledby={`${id}-label`} aria-describedby={`${id}-help`} disabled={state.busy} onClick={state.toggle}><span>{state.busy ? 'Saving...' : state.value === 'true' ? 'On' : 'Off'}</span><span className="ct-switch-track" aria-hidden="true"><i /></span></button></div>
-	return <div className="ct-setting-row" id={`setting-${row.key}`}><label htmlFor={id}><strong>{row.label}</strong><span className="ct-muted">{row.help}</span></label>
+	return <div className="ct-setting-row" id={`setting-${row.key}`}><label htmlFor={id}><strong>{row.label}</strong><span className="ct-muted">{row.help}</span>{row.key === 'pollIdle' && <CheckingOffNote as="span" className="ct-muted" />}</label>
 		{options ? <select id={id} value={state.value} onChange={event => state.setValue(event.target.value)}>{options.map(option => <option value={option.value} key={option.value}>{option.label}</option>)}</select> :
 			row.kind === 'text' || row.kind === 'list' ? <textarea id={id} value={state.value} onChange={event => state.setValue(event.target.value)} rows={row.kind === 'text' ? 4 : 2} /> :
 				<input id={id} value={state.value} inputMode={row.kind === 'number' ? 'decimal' : undefined} onChange={event => state.setValue(event.target.value)} />}

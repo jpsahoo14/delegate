@@ -368,8 +368,6 @@ function itemRow(s: Snap, p: Placed, w: Workflow): Body {
 	const base = { who: whoOf(w.asker?.name), facts, chips: chipsOf(w, j), teams: teamsLink(w), rev: w.revAt ?? w.updatedAt }
 	const open: RowAction = { label: 'Open' }
 	const goal = (t?: string): Note[] => t ? [{ label: 'Goal', text: clip(t, 200) }] : []
-// C4: "Tue 20 Oct" in his time zone, the day the work began waiting on him: ownerStepSince (waitingOn.since, else the last step, else when the item began; PE 15:01:41Z).
-const ownerDay = (s: Snap, at: string) => Number.isFinite(Date.parse(at)) ? new Date(at).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', ...(s.tz ? { timeZone: s.tz } : {}) }).replace(',', '') : at.slice(0, 10)
 	// A rule send, minutes before it goes. While paused a rule never schedules one (runner/autosend.ts), so nothing here
 	// promises a send after resume (PM verification of N1a).
 	if (w.state === 'scheduled') {
@@ -564,3 +562,6 @@ export function nextView(store: Store, now = Date.now(), options: { snapshot?: S
 	// One thread (#27 step 2) has no page-wide counts: they read every proposal and a week of logs.
 	return { move, left, working, waiting, catchup: { count: cu.length, worth: cu.filter(r => high(r) === 0).length, rows: options.allCatchup ? cu : cu.slice(0, 3) }, minute: options.only ? { facts: 0, suggestions: 0 } : { facts: store.proposals().filter(p => p.state === 'needs_human').length, suggestions: store.habits().filter(h => h.state === 'suggested').length }, ...(off ? { off } : {}), ...(store.control().paused || store.config().paused ? { paused: true } : {}), handled: options.only ? 0 : handledThisWeek(store, s.workflows, new Date(now)) }
 }
+// C4: "Tue 20 Oct" in his time zone, the day the work began waiting on him: ownerStepSince (waitingOn.since, else the last step, else when the item began; PE 15:01:41Z).
+// Module level and exported so WDD's ledger-start date uses the same owner-zone day (PE v1.135 item 4: no new formatter).
+export const ownerDay = (s: Pick<Snap, 'tz'>, at: string) => Number.isFinite(Date.parse(at)) ? new Date(at).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', ...(s.tz ? { timeZone: s.tz } : {}) }).replace(',', '') : at.slice(0, 10)

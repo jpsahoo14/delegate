@@ -23,9 +23,26 @@ const numberRow = z.object({
 	code: text, kind: text, sentence: text, who: z.object({ name: text, initials: text, hue: z.number() }), at: text, by: text,
 	teams: optional, href: optional, ask: optional, said: optional, gist: optional, work: optional, inTeams: z.boolean().optional(),
 })
+const usageCell = z.object({ text, title: optional, unknown: z.literal(true).optional(), muted: z.literal(true).optional() })
+// UR1.3/URΔ3: stacked token bars and credit bars, by week or by day.
+const usageBar = z.object({ key: text, label: text, value: optional, segs: z.array(z.number()), whole: z.literal(true).optional(), off: optional, since: z.boolean(), alt: text })
+const usageBars = z.object({ caption: text, tokens: z.array(usageBar), credits: z.array(usageBar) })
+const usageTable = z.object({ columns: z.array(z.object({ text, title: text })), rows: z.array(z.object({ label: text, cells: z.array(usageCell) })), total: z.object({ cells: z.array(usageCell), note: optional }) })
+const usageChoice = z.object({ options: z.array(z.object({ value: text, text })), value: optional })
+// D-COST (UR1/URΔ): the Today line, the earlier-use line, the window's credits (figure or "not reported", coverage, help) and two tables
+// with their own columns: by kind (tokens in · cached · out · runs · re-runs · Credits) and by model (AU3 + Credits · ≈ $). URΔ4: the
+// filters' choices and the query that refetches this window with them (GET /api/v1/numbers/usage).
+export const usageSchema = z.object({
+	state: z.enum(['before', 'after']), note: optional, earlier: optional, today: z.object({ text, atCap: z.boolean() }).optional(),
+	headline: optional, coverage: optional, credits: z.object({ text, coverage: optional, help: text }).optional(),
+	unreported: z.object({ text, title: text }).optional(),
+	bars: z.object({ week: usageBars, day: usageBars.optional() }).optional(),
+	kinds: usageTable, models: usageTable,
+	query: text, filters: z.object({ model: usageChoice, kind: usageChoice, machine: usageChoice.optional() }),
+})
 export const numbersSchema = z.object({
 	model: z.object({
-		window: z.object({ key: z.enum(['this', 'last', '4w', 'all']), label: text }),
+		window: z.object({ key: z.enum(['this', 'last', '4w', 'all', 'custom']), label: text }),
 		handled: z.object({
 			main: link, trend: z.object({ text, dir: z.enum(['up', 'down', 'same']).optional() }).optional(),
 			kinds: z.array(link), check: link.optional(), all: link.optional(),
@@ -38,18 +55,12 @@ export const numbersSchema = z.object({
 		cards: z.array(z.object({ rule: text, title: text, main: link, meter: z.object({ n: z.number(), of: z.number() }).optional(), lines: z.array(z.array(link)), four: link })),
 		unknown: link.optional(), corrections: z.array(link), promises: text, summary: text,
 	}),
+	// CR COST4d B1: today in the owner's zone (the server's day), for the custom-range picker.
+	today: text,
 	rules: z.record(text, text),
 	lists: z.record(text, z.object({ title: text, groups: z.array(z.object({ title: optional, codes: strings, keys: strings.optional() })) })),
 	rows: z.record(text, numberRow), missed: z.record(text, z.object({ at: text, teams: optional })),
-	usage: z.object({
-		credits: text, state: z.enum(['before', 'after']), note: optional, headline: optional, coverage: optional,
-		unreported: z.object({ text, title: text }).optional(),
-		bars: z.array(z.object({ week: text, label: text, n: z.number().optional(), height: z.number(), since: z.boolean(), alt: text })).optional(),
-		columns: z.array(z.object({ text, title: text })),
-		kinds: z.array(z.object({ label: text, cells: z.array(z.object({ text, title: optional, unknown: z.literal(true).optional() })) })),
-		models: z.array(z.object({ label: text, cells: z.array(z.object({ text, title: optional, unknown: z.literal(true).optional() })) })),
-		total: z.object({ cells: z.array(z.object({ text, title: optional, unknown: z.literal(true).optional() })), note: optional }),
-	}).optional(),
+	usage: usageSchema.optional(),
 })
 export type Settings = z.infer<typeof settingsSchema>
 export type Numbers = z.infer<typeof numbersSchema>

@@ -13,11 +13,16 @@ import { Icon } from '../components/ui/icon.tsx'
 import { Field, Sources } from './CardFields.tsx'
 import { SentTime } from './SentTime.tsx'
 import { copyText, ItemCode } from './ItemCode.tsx'
-import { useLiveVoteCheck } from './vote-check.ts'
+import { useActionCheck, useLiveVoteCheck } from './vote-check.ts'
+import { holdDismiss, undoDismissHold, useSuggestionHolds, type SuggestionHold } from '../data/suggestion-holds.ts'
 import './card.css'
 import { useScreenNavigation } from '../classic/navigation.tsx'
+import { SentBecause, toWay } from './SentBecause.tsx'
 import { useSetting } from '../data/screens.ts'
 import { markTodos, undoMark } from '../data/todo-marks.ts'
+import { useHold } from '../data/hide-holds.ts'
+import { HeldLine } from './HeldLine.tsx'
+import { closeMenuOf, useMenuChoice } from './card-more.ts'
 import { displayedAt as sentAt } from '../domain/needs-order.ts'
 export { sentAt }
 
@@ -57,6 +62,13 @@ function MarkerState({ id, marker, edited }: { id: string; marker: string; edite
 }
 // label/controlsId/noun (A76, designer-sent-reply SR3/SR5): a sent reply reuses this same S9 clamp with its own accessible name, a toggle
 // that names its count and points at the bubble, and "reply" for "message". Their message passes none, so its markup is unchanged.
+// B1: a PR review's wait line, linked by its kind: none → Add a line (nothing prefilled), waiting / off → that line; covered has no link.
+function ReviewWait({ wait }: { wait: NonNullable<Item['why']['reviewWait']> }) {
+	const { href } = useScreenNavigation()
+	const target = wait.kind === 'none' ? 'way-add' : (wait.kind === 'waiting' || wait.kind === 'off') && wait.lineId ? `way-${wait.lineId}` : undefined
+	return target ? <a href={href('settings/ways')} onClick={() => toWay(target)}>{wait.text}</a> : <>{wait.text}</>
+}
+
 export function MessageBubble({ text: raw, teams, open, onToggle, label, controlsId, noun = 'message' }: { text: string; teams?: string; open: boolean; onToggle: (open: boolean) => void; label?: string; controlsId?: string; noun?: 'message' | 'reply' }) {
 	// L7c: a run of blank lines reads as one before the clamp, so a short message isn't cut to two visible lines.
 	const text = messageText(raw).replace(/\n[ \t]*(?:\n[ \t]*)+\n/g, '\n\n')
@@ -92,6 +104,8 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 	const liveEdit = useEdit(code, item?.rev ?? ''), showLatest = useShowLatest(code), busy = useItemBusy(code), article = useRef<HTMLElement>(null)
 	const edit = readOnly ? (patch: Partial<CardUi>) => setLocalUi(previous => ({ ...previous, ...patch })) : liveEdit
 	const chatEdit = useEditInChat(), detailsCopy = useCopyDetails()
+	// D-MORE-MENU §3.4/§5.4: an accepted choice in ⋯ closes it (G2: never while pending, refused, errored or uncertain).
+	const moreRef = useRef<HTMLDetailsElement>(null), menuChosen = useMenuChoice(moreRef)
 	const pendingAsk = !!item && !!entities && item.noteIds.some(id => entities.notes[id]?.answer === undefined)
 	// A working card says when it is taking longer than usual (PM 19:50: after 3 minutes), so it reads the clock while it works.
 	const [now, setNow] = useState(Date.now), working = !!item?.working
@@ -105,6 +119,14 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 	useEffect(() => { if (pendingAsk && ui.folds?.details === undefined) edit({ folds: { ...ui.folds, details: true } }) }, [pendingAsk, ui.folds, edit])
 	// A37 (b): the vote-claim check again on his edited reply, as he types (PM A R37).
 	const live = useLiveVoteCheck(code, !readOnly && ui.editing && ui.editText !== undefined ? ui.editText : undefined, !!item?.voteGap)
+	// WYS N1: the exact set Send names, and SEND's consistency check on the reply against it (W4), live as he ticks or edits.
+	const dismissing = useSuggestionHolds(state => state.holds)
+	const wys = wysSelection(item, entities, ui, dismissing)
+	const claimCheck = useActionCheck(code, ui.editing ? ui.editText : undefined, wys && !readOnly && item?.draftId && !item.sent ? wys.effective : undefined)
+	const claim = claimCheck.action
+	// A58 S-A2: a held Close it shows its Undo line in the card's place (decision 54); after every hook, so the hook order never changes.
+	const held = useHold(code)
+	if (held && !readOnly) return <section className="item-card"><HeldLine item={code} /></section>
 	if (!item || !entities) return <p role="status">This item is no longer open. Refresh the list to see where it moved.</p>
 	const person = entities.people[item.personId], chat = entities.chats[item.chatId], first = firstName(person.name)
 	const placement = placementId ? entities.placements[placementId] : undefined
@@ -130,9 +152,11 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 	const marker = draft?.marker && draft.sendText?.endsWith(draft.marker) ? draft.marker : undefined
 	const body = marker ? draft!.sendText!.slice(0, -marker.length).trimEnd() : draft?.sendText ?? draft?.text ?? ''
 	const replyText = ui.editText ?? body
-	const input: Intent['input'] = primary?.kind === 'send-edit' ? { text: replyText, excluded: ui.excluded } :
+	// WYS N1-3 (I32): on an origin-bearing item every Send names exactly what is ticked; past the consistency check, Send anyway adds its token.
+	const selection: Intent['input'] = wys ? { include: wys.effective, ...(ui.claimConfirm && claim ? { claimReview: claim.review } : {}) } : { excluded: ui.excluded }
+	const input: Intent['input'] = primary?.kind === 'send-edit' ? { text: replyText, ...selection } :
 		primary?.kind === 'pick' ? { picks: ui.picks ?? item.picked ?? [] } :
-			primary?.input === 'text' ? { text: ui.answer ?? '' } : { excluded: ui.excluded }
+			primary?.input === 'text' ? { text: ui.answer ?? '' } : selection
 	const invalid = primary?.input === 'text' && primary.kind !== 'send-edit' && !ui.answer?.trim() || primary?.kind === 'pick' && !input.picks?.length ||
 		primary?.kind === 'send-edit' && !replyText.trim()
 	// L1b: Send stays off until he changes the reply (editing makes Send your version the primary); the line's sentence is its hover.
@@ -143,6 +167,12 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 	const voteBlocked = !!item.voteGap && primary?.kind === 'approve' || primary?.kind === 'send-edit' && editedHeld
 	// Answering on 2a after editing the reply: the send next to Answer sends the edit, never the original draft.
 	const editedAside = boxMode === 'answer' && ui.editing && sendEdit ? sendEdit : undefined
+	// WYS W4/O5: the action Send anyway confirms (the primary Send), whether a claim holds it, and the unticked changes Tick it includes.
+	const claimTarget = primary && ['approve', 'send-edit'].includes(primary.kind) ? primary : undefined
+	const claimBlocked = !!claim && !!claimTarget, nothingChosen = !!wys && !draft && primary?.kind === 'approve' && !wys.effective.length
+	const tickable = claim && wys ? claim.effectIds.filter(id => wys.choosable.some(change => change.changeId === id)) : []
+	const tickIt = () => wys && edit({ included: [...new Set([...wys.picked, ...tickable])], claimConfirm: undefined, folds: { ...ui.folds, wys: true },
+		groupOff: ui.groupOff?.filter(group => !tickable.some(id => wys.choosable.find(change => change.changeId === id)?.group?.id === group)) })
 	const sent = sentAt(item), replyWhere = chat.group ? `in ${chat.place?.sentence ?? chat.name}` : 'in your 1:1'
 	const avatar: CSSProperties & { '--hue': number } = { '--hue': person.hue }
 	const continueAction = actions.find(action => action.kind === 'continue')
@@ -151,12 +181,14 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 	// reason is in Details › Why it waited. Nothing else here draws a warn line.
 	const warnings = [item.attention].filter((line): line is string => !!line && line !== item.voteGap?.text)
 	const earlier = item.thread.length
-	const block1 = <section className="card-block card-message" aria-label={`${person.name}'s message`}>
+	// D-MORE-MENU MM1 (PE §5.1): ⋯ is the head line's last child, after Open in Teams; it is built below with block 4's names.
+	const block1 = (moreMenu: ReactNode) => <section className="card-block card-message" aria-label={`${person.name}'s message`}>
 		<div className="card-head"><span className="card-avatar" style={avatar} aria-hidden="true">{person.initials}</span>
 			<h2 id={`card-title-${code}`} className="card-who">{person.name}</h2><span className="card-where" title={chat.place?.title}>· {whereOf(chat)} ·</span>
 			<SentTime at={sent.at} added={sent.added} full /><span className="card-sep" aria-hidden="true">·</span><ItemCode code={code} />
 			{chat.guests && <Hint text={chipHover('guests')}><span className="chip">Guests in chat</span></Hint>}
 			<span className="card-head-end">{item.teams && <Hint text="Open this message in Teams, in a new tab."><a className="card-teams" href={item.teams} target="_blank" rel="noopener noreferrer">Open in Teams <Icon name="ext" /></a></Hint>}</span>
+			{moreMenu}
 		</div>
 		{item.ask && <MessageBubble text={item.ask} teams={item.teams} open={ui.folds?.ask ?? false} onToggle={open => fold('ask', open)} />}
 		{earlier > 0 && <details className="card-thread" open={ui.folds?.thread ?? false} onToggle={event => fold('thread', event.currentTarget.open)}>
@@ -164,9 +196,12 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 			<ol className="thread-list">{item.thread.map((message, n) => <li key={n}><strong>{message.who}</strong> <time dateTime={message.at}>{when(message.at)}</time>			<p>{clip(messageText(message.text))}</p></li>)}</ol>
 		</details>}
 		{/* L7d: every warn line shares one box, one line each (L4 leaves at most one from the card's state). */}
-		{(newer || warnings.length > 0 || placement?.chips.some(chip => chip.kind === 'retrying')) && <div className="warnbox">
+		{(newer || warnings.length > 0 || !!item.stop || placement?.chips.some(chip => chip.kind === 'retrying')) && <div className="warnbox">
 			{newer && <p role="status" className="warnline"><Icon name="warn" /> Changed since you looked. Your current text is kept. <Button variant="outline" onClick={showLatest} disabled={busy}>Show new version</Button></p>}
 			{warnings.map((line, n) => <p key={n} className="warnline"><Icon name="warn" /> {line}</p>)}
+			{/* D-COST JB1/JBΔ: under a stop's warn line, the asker's news since the stop (↗ that message), then what the job tried first. */}
+			{item.stop?.news && <p className="muted stop-news">{item.stop.news.who} {item.stop.news.again ? 'asked again' : 'added something'} · {when(item.stop.news.at)}{item.stop.news.teams && <> <a href={item.stop.news.teams} target="_blank" rel="noopener noreferrer" aria-label="Open that message in Teams, in a new tab">↗</a></>}</p>}
+			{item.stop?.tried?.length ? <p className="muted stop-tried">{item.stop.tried[0]} · <a href={`#stop-tried-${code}`} onClick={event => { event.preventDefault(); fold('details', true); setTimeout(() => { const details = document.getElementById(`stop-tried-${code}`) as HTMLDetailsElement | null; if (details) { details.open = true; details.scrollIntoView({ block: 'nearest' }) } }, 0) }}>What it tried ({item.stop.tried.length})</a></p> : null}
 			{placement?.chips.some(chip => chip.kind === 'retrying') && <p className="warnline">Retrying{placement.nextText ? `: ${placement.nextText.replace('{at}', placement.next?.at ? when(placement.next.at) : 'soon')}` : ''}</p>}
 		</div>}
 		{item.openOn && item.mode !== 'in-terminal' && <p className="card-status">Open in a terminal on {item.openOn} · {NAME} waits until you close it</p>}
@@ -226,19 +261,22 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 	const focusField = (field: string) => setTimeout(() => document.getElementById(`${code}-${item.rev}-${field}`)?.focus(), 0)
 	// A PR review (S9): Delegate's review in its own block; the comments and vote go to the PR, the reply goes to the chat.
 	const changes = item.changeIds.map(id => entities.changes[id])
-	const prOf = (change: Entities['changes'][string]) => Number(/\bPR (\d+)\b/.exec(`${change.target} ${change.summary}`)?.[1] ?? /pullRequestId: (\d+)/.exec(change.detail ?? '')?.[1] ?? 0) || undefined
-	const isVote = (change: Entities['changes'][string]) => /\b(vote|approve|reject|waiting for author)\b/i.test(change.action) && !/comment/i.test(change.action)
-	const prChanges = changes.filter(change => /azure|ado/i.test(change.system) && (prOf(change) || /comment|vote|approve/i.test(change.action)))
+	// N1-3 (CR note 05:30): a change's PR and whether it is a vote come from its call (the projection's pr and vote), never its words.
+	const prOf = (change: Entities['changes'][string]) => change.pr
+	const isVote = (change: Entities['changes'][string]) => !!change.vote
+	const prChanges = changes.filter(change => change.pr !== undefined || !!change.vote)
 	const prNumber = prChanges.map(prOf).find(Boolean)
 	const findings = prChanges.filter(change => !isVote(change))
 	const vote = prChanges.find(isVote)
-	const included = (change: Entities['changes'][string]) => !(ui.excluded ?? []).includes(change.n)
+	const included = (change: Entities['changes'][string]) => wys ? wys.effective.includes(change.changeId ?? '') : !(ui.excluded ?? []).includes(change.n)
 	// #28 B1 (PE 01:10): what Send does on the PR is read from the changes it will make: included (ticked), pending and not refused.
 	const posting = prChanges.filter(change => included(change) && !change.error && change.state !== 'made' && change.state !== 'left-out')
 	// findingFor move (PE 01:22): the projection matched each finding to its pending comment change as SEND does (posts, changeId); the
 	// card adds only whether that change is still ticked and postable.
 	const postsComment = (finding: NonNullable<Item['prReview']>['findings'][number]) => !!finding.posts && posting.some(change => change.id === finding.changeId)
-	const review = item.mode !== 'review-done' && !item.reviewDone?.closed && (prChanges.length > 0 && (item.job || findings.length > 0) || !!item.prReview?.findings.length) && <section className="card-block card-review"><h3>{NAME}'s review{prNumber ?? item.prReview?.pr ? ` of PR ${prNumber ?? item.prReview?.pr}` : ''}</h3>
+	// D-A239 MP2 / CR B3: an ask with a review per PR shows those blocks (below) instead of one item-level review of an arbitrary PR.
+	const perPr = (item.reviews?.length ?? 0) >= 2
+	const review = !perPr && item.mode !== 'review-done' && !item.reviewDone?.closed && (prChanges.length > 0 && (item.job || findings.length > 0) || !!item.prReview?.findings.length) && <section className="card-block card-review"><h3>{NAME}'s review{prNumber ?? item.prReview?.pr ? ` of PR ${prNumber ?? item.prReview?.pr}` : ''}</h3>
 		<p className="verdict"><span className={`verdict-chip ${vote && /approve/i.test(vote.action) ? 'ready' : 'not-ready'}`}>{vote && /approve/i.test(vote.action) ? 'Ready to approve' : 'Not ready'}</span> <span>{item.job ?? item.why.reason}</span></p>
 		{vote?.meaning?.filter(part => !part.warn).map((part, n) => <p key={n} className="muted pr-line">{part.text}</p>)}
 		{/* #28 (owner A61): each finding says whether it is already an open thread on the PR, or Send posts it as a new comment; any other
@@ -298,10 +336,11 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 		</section>}
 		{/* A76 (decision 55; designer-sent-reply SR2-SR4): the reply that went, in the reply slot, as the same S9 bubble with the PM's head
 		    line. No "Your reply to" heading and no pre-send count; the delivered text shows as sent, marker included. Unsent drafts are
-		    unchanged (never clamped). The rule's "because you wrote…" line has no frozen source yet, so it is omitted. */}
+		    unchanged (never clamped). D-A281 B3: a reply a line sent says which, from the line frozen at send (SR2's muted line). */}
 		{item.sent && <section className="card-block reply-section card-sent">
 			<h3 className="sent-head"><strong>{item.sent.by === 'rule' ? `${NAME} replied to ${first} by itself` : item.sent.holding ? `You sent a holding reply to ${first}` : `You replied to ${first}`}</strong>
 				{' · '}<time dateTime={item.sent.at}>{when(item.sent.at)}</time>{item.sent.teams && <> <a href={item.sent.teams} target="_blank" rel="noopener noreferrer" title="Open this reply in Teams, in a new tab." aria-label="Open this reply in Teams">↗</a></>}</h3>
+			{item.sent.rule && <p className="muted sent-because"><SentBecause rule={item.sent.rule} /></p>}
 			<MessageBubble text={item.sent.text} open={ui.folds?.sent ?? false} onToggle={open => fold('sent', open)} noun="reply" controlsId={`${code}-sent`}
 				label={`${item.sent.by === 'rule' ? `${NAME} replied to ${first} by itself` : item.sent.holding ? `You sent a holding reply to ${first}` : `You replied to ${first}`}, sent ${when(item.sent.at)}`} />
 		</section>}
@@ -320,7 +359,15 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 			{/* L1b (joint C2): the vote-claim line is about his text, so it sits right under the editor, not in block 1. */}
 			{/* A37 (b): live while he edits; once no claim is left the line says so, muted, and Send enables (PM A R37). */}
 			<div aria-live="polite">{voteLine ? <p className="warnline card-vote-claim" role="note"><Icon name="warn" /> {voteLine}</p>
-				: ui.editing && live.cleared && <p className="muted card-vote-claim card-vote-cleared">✓ The reply no longer mentions a vote.</p>}</div>
+				: ui.editing && live.cleared && <p className="muted card-vote-claim card-vote-cleared">✓ The reply no longer mentions a vote.</p>}
+				{/* WYS W4 (S1-4): the consistency check sits in the same slot, stacked under the vote line; Send waits until one is done.
+				    Send anyway (⋯, O5) confirms here, on the exact words and ticks, with focus on Cancel. */}
+				{claim && !ui.claimConfirm && <div className="warnline card-action-claim" role="alert"><p><Icon name="warn" /> {claim.line}</p>
+					<p className="wys-claim-actions">{tickable.length > 0 && <button type="button" className="link-button" onClick={tickIt}>Tick it</button>}
+						<button type="button" className="link-button" onClick={() => editable ? focusField('editText') : undefined}>Edit the reply</button></p></div>}
+				{claim && ui.claimConfirm && claimTarget && <div className="warnline card-action-claim" role="group" aria-label="Send anyway"><p>{claim.confirm}</p>
+					<p className="wys-claim-actions"><Button variant="outline" autoFocus onClick={() => edit({ claimConfirm: undefined })}>Cancel</Button>
+						<ActionButton action={claimTarget} label="Send anyway" input={claimTarget.kind === 'send-edit' ? { text: replyText, ...selection } : selection} disabled={newer || claimCheck.pending} disabledReason={newer ? 'stale' : 'Checking your reply...'} /></p></div>}</div>
 			{replyText.length > 400 && <p className="muted reply-count">{replyText.length.toLocaleString()} characters · the whole reply is shown above before you send</p>}
 			{draft.preview && !ui.editing && <p className="muted"><Icon name="spark" />{' '}{item.picked?.length ? 'The reply for your pick' : 'New draft from your answer'}. Not sent yet.</p>}
 			{boxMode === 'reply' && <p className="also-asks">💬 <strong>{NAME} also asks:</strong> {item.question}{' '}
@@ -340,19 +387,61 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 	const reviewed = item.mode === 'review-done' || item.reviewDone?.closed ? item.reviewDone : undefined
 	const approvePr = actions.find(action => action.kind === 'approve-pr'), postWaiting = actions.find(action => action.kind === 'post-waiting')
 	// R10b B1 (PE 02:06): votes of any value are never waiting comments (card-facts' `waiting` counts non-votes only).
-	const waitingComments = reviewed && !reviewed.closed ? changes.filter(change => !reviewed.voteChangeIds?.includes(change.id) && change.state !== 'made' && change.state !== 'left-out') : []
+	const waitingAll = reviewed && !reviewed.closed ? changes.filter(change => !reviewed.voteChangeIds?.includes(change.id) && change.state !== 'made' && change.state !== 'left-out') : []
 	const postedN = reviewed ? reviewed.counts.high + reviewed.counts.medium + reviewed.counts.low : 0
+	// ✕ (W2, [Designer] "Don't suggest this"; CR B4 20:27:10Z): every suggested complete change with its bound dismissal offer, whether a
+	// line, a group option or a waiting review comment, hides with the same 6 s client-held Undo; never a group scope, never a vote.
+	const dismissButton = (change: Change) => { const action = wys && change.origin === 'suggested' && !change.vote && change.dismissActionId ? entities.actions[change.dismissActionId] : undefined
+		return action && !readOnly && <button type="button" className="wys-dismiss" aria-label={`Don't suggest this: ${change.action}`} title={action.meaning} disabled={busy || newer}
+			onClick={() => { edit({ included: wys!.picked.filter(id => id !== change.changeId), claimConfirm: undefined }); holdDismiss(action, change.changeId!, act) }}>✕</button> }
+	const heldLine = ({ change, hold }: { change: Change; hold: SuggestionHold }) => <p key={change.id} role="status" className="wys-dismissed">Won't suggest this: {change.action}{!hold.sent && <> · <button type="button" className="link-button" autoFocus onClick={() => undoDismissHold(item.code, change.changeId!)}>Undo</button></>}</p>
+	const heldIds = new Set(wys?.held.map(({ change }) => change.id))
+	const waitingComments = waitingAll.filter(change => !heldIds.has(change.id))
 	const reviewBlock = reviewed && <section className="card-block card-review-done" aria-label={`Review of PR ${reviewed.pr}`}>
 		<p className="card-status">{reviewed.closed ? item.status : <>{NAME} reviewed the newest changes ({when(reviewed.reviewedAt)}), {postedN ? `posted ${postedN} comment${postedN === 1 ? '' : 's'}` : 'found nothing to comment on'}{reviewed.reply ? ` and replied to ${reviewed.to}` : ''}.</>}</p>
 		<ReviewPosted review={reviewed} />
-		{waitingComments.length > 0 && <div className="review-waiting"><p>Waiting for your OK: {waitingComments.length} more comment{waitingComments.length === 1 ? '' : 's'}.</p>
-			<ul>{waitingComments.map(change => <li key={change.id}>{change.action}</li>)}</ul>
-			{postWaiting && !readOnly && <ActionButton action={postWaiting} input={{ excluded: [] }} disabled={newer} disabledReason="stale" />}</div>}
+		{(waitingComments.length > 0 || waitingAll.length > 0) && <div className="review-waiting"><p>Waiting for your OK: {waitingComments.length} more comment{waitingComments.length === 1 ? '' : 's'}.</p>
+			{/* CR B2 (19:22:04Z): on an origin-bearing review each waiting comment has its tick (the item's own selection), and Post them
+			    sends exactly the ticked ones, never every comment. */}
+			<ul>{waitingComments.map(change => <li key={change.id}>{wys && change.changeId && !change.vote ? <label><input type="checkbox" checked={wys.picked.includes(change.changeId)} disabled={readOnly || busy || newer}
+				onChange={() => edit({ included: wys.picked.includes(change.changeId!) ? wys.picked.filter(id => id !== change.changeId) : [...wys.picked, change.changeId!] })} /> {change.action}</label> : change.action}{dismissButton(change)}</li>)}</ul>
+			{wys?.held.filter(({ change }) => waitingAll.includes(change)).map(heldLine)}
+			{postWaiting && !readOnly && <ActionButton action={postWaiting} input={wys ? selection : { excluded: [] }} disabled={newer || !!wys && !wys.effective.length} disabledReason={newer ? 'stale' : 'Tick a change first.'} />}</div>}
 		{reviewed.reply && <><h3>Sent to {reviewed.to}</h3><p className="review-reply">{reviewed.reply.text}</p>
 			{reviewed.reply.teams && <a className="card-teams" href={reviewed.reply.teams} target="_blank" rel="noopener noreferrer">Open in Teams <Icon name="ext" /></a>}</>}
 		{reviewed.fallback && <p className="muted">{reviewed.fallback}</p>}
 	</section>
-	const openPr = (variant: 'default' | 'outline') => reviewed?.prUrl && <Button asChild variant={variant} data-primary={variant === 'default' || undefined}>
+	// D-A239 MP2 (Designer): two or more reviewed PRs: one "Delegate's review of PR <n>" block each, in ask order, with that PR's waiting
+	// comments and its own approval pair by C2's findings rule (no High: outline Approve PR <n> + link Open PR to approve; any High: the
+	// reverse) and A5's meaning line under it, every time. The bar carries no Approve and no Open PR. One reply for the whole ask.
+	// CR B3: from the per-unit reviews whatever the reply's mode; with a reply awaiting his OK the bar's Send leads and the comments are in
+	// "When you send", so a block shows what was posted and Open PR to approve (the projection offers Approve only when it is vote-only).
+	const pairFor = (review: NonNullable<Item['reviews']>[number]) => {
+		const approve = review.approveActionId ? entities.actions[review.approveActionId] : undefined
+		const open = review.prUrl && <a className={review.counts.high ? 'review-pair-button' : 'review-pair-link'} href={review.prUrl} target="_blank" rel="noopener noreferrer" title="Opens the PR in Azure DevOps, where you approve it yourself." aria-label={`Open PR ${review.pr} to approve`}>Open PR to approve <Icon name="ext" /></a>
+		const vote = approve && <span className={review.counts.high ? 'review-pair-link' : undefined}><ActionButton action={approve} disabled={newer} disabledReason="stale" /></span>
+		return <div className="review-pair">{review.counts.high ? <>{open}{vote}</> : <>{vote}{open}</>}{approve?.meaning && <p className="muted approve-meaning">{approve.meaning}</p>}</div>
+	}
+	const perPrBlocks = perPr && <>{item.reviews!.map(review => {
+		const n = review.counts.high + review.counts.medium + review.counts.low, mine = waitingComments.filter(change => change.pr === review.pr)
+		return <section key={review.pr} className="card-block card-review-done" aria-labelledby={`review-${code}-${review.pr}`}>
+			<h3 id={`review-${code}-${review.pr}`}>{NAME}&apos;s review of PR {review.pr}</h3>
+			<p className="card-status">{NAME} reviewed the newest changes ({when(review.reviewedAt)}), {n ? `posted ${n} comment${n === 1 ? '' : 's'}` : 'found nothing to comment on'}.</p>
+			<ReviewPosted review={review} />
+			{mine.length > 0 && <div className="review-waiting"><p>Waiting for your OK: {mine.length} more comment{mine.length === 1 ? '' : 's'}.</p>
+				<ul>{mine.map(change => <li key={change.id}>{wys && change.changeId ? <label><input type="checkbox" checked={wys.picked.includes(change.changeId)} disabled={readOnly || busy || newer}
+					onChange={() => edit({ included: wys.picked.includes(change.changeId!) ? wys.picked.filter(id => id !== change.changeId) : [...wys.picked, change.changeId!] })} /> {change.action}</label> : change.action}{dismissButton(change)}</li>)}</ul></div>}
+			{review.approveActionId && !review.closed && !readOnly ? pairFor(review) : review.approved ? <p className="review-approved" role="status"><Icon name="check" /> Approved PR {review.pr} · {when(review.approved)}</p> : !review.closed && !readOnly && pairFor(review)}
+		</section>
+	})}
+		{/* Comments of no listed PR, the held ✕ lines and the one Post them (it posts exactly what is ticked, across the blocks). */}
+		{(waitingAll.length > 0) && <div className="card-block review-waiting">{(rest => rest.length > 0 && <><p>Waiting for your OK: {rest.length} more comment{rest.length === 1 ? '' : 's'}.</p><ul>{rest.map(change => <li key={change.id}>{change.action}{dismissButton(change)}</li>)}</ul></>)(waitingComments.filter(change => !item.reviews!.some(review => review.pr === change.pr)))}
+			{wys?.held.filter(({ change }) => waitingAll.includes(change)).map(heldLine)}
+			{postWaiting && !readOnly && <ActionButton action={postWaiting} input={wys ? selection : { excluded: [] }} disabled={newer || !!wys && !wys.effective.length} disabledReason={newer ? 'stale' : 'Tick a change first.'} />}</div>}
+		{(sent => sent?.reply && <section className="card-block"><h3>Sent to {sent.to}</h3><p className="review-reply">{sent.reply.text}</p>
+			{sent.reply.teams && <a className="card-teams" href={sent.reply.teams} target="_blank" rel="noopener noreferrer">Open in Teams <Icon name="ext" /></a>}</section>)(item.reviews!.find(review => review.reply))}
+	</>
+	const openPr = (variant: 'default' | 'outline') => !perPr && reviewed?.prUrl && <Button asChild variant={variant} data-primary={variant === 'default' || undefined}>
 		<a href={reviewed.prUrl} target="_blank" rel="noopener noreferrer" title="Opens the PR in Azure DevOps, where you approve it yourself.">Open PR to approve <Icon name="ext" /></a></Button>
 	const handled = item.effectIds?.filter(id => !item.changeIds.includes(id)) ?? []
 	const keep = draft && (editable || readOnly) ? item.todos ?? [] : []
@@ -418,6 +507,80 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 		{primary?.kind !== 'todo-done' && shownCount > 0 && <div className="action-bar">{doneButton(false)}</div>}
 		{todoAction && <ActionState item={todoAction.item} rev={todoAction.rev} />}</section>
 
+	// WYS N1-2 (W1, W2, W11; slice 1, no note box): one "When you send" block, collapsed to its summary unless something needs his eye,
+	// with up to three groups: Delegate will (asked, promised, note, rule; ticked), Suggested (unticked, its reason inline) and Left for
+	// you. An option group is one line whose checkbox waits for enough options. Votes are never ticked here (Approve, L1); a holding
+	// reply has no block, only what happens next. Old originless items keep the block above (R4).
+	const wysBlock = (() => {
+		// A review that waits for his approval ticks its comments in its own list (CR B2), so it has no second block here.
+		if (!wys || reviewed) return undefined
+		// CR B3: a holding reply keeps his Left-for-you lines under its Then line. On a stopped job nothing runs on its own, so the line names
+		// the one press that runs it again (PM FINAL 06:05:34 (1)), whether he sends the drafted or his edited text.
+		if (draft?.holding && !wys.choosable.length && !wys.held.length) return <><p className="card-block muted wys-then">{item.stop ? `Then: nothing more runs until you press ${item.stop.kind === 'budget' ? 'Run it once more' : 'Try again'}.` : `Then: ${NAME} keeps working on it and comes back with the answer.`}</p>{earlierTodos}</>
+		type Unit = { kind: 'line'; change: Change } | { kind: 'group'; id: string; question: string; min: number; options: Change[] }
+		const units: Unit[] = []
+		for (const change of wys.choosable) {
+			const group = change.group
+			if (!group) { units.push({ kind: 'line', change }); continue }
+			const unit = units.find(unit => unit.kind === 'group' && unit.id === group.id)
+			if (unit?.kind === 'group') { unit.options.push(change); unit.min = Math.max(unit.min, group.min) } else units.push({ kind: 'group', id: group.id, question: group.question, min: group.min, options: [change] })
+		}
+		const originOf = (unit: Unit) => unit.kind === 'line' ? unit.change.origin : unit.options[0].origin
+		const will = units.filter(unit => originOf(unit) !== 'suggested'), suggested = units.filter(unit => originOf(unit) === 'suggested')
+		// The turned-down line keeps its place with Undo while held (focus stays on the line, W7); after the window, no Undo.
+		const dismissed = wys.held.map(heldLine)
+		const votes = item.prReview ? [] : wys.changes.filter(change => change.vote)
+		const toggle = (id: string) => edit({ included: wys.picked.includes(id) ? wys.picked.filter(other => other !== id) : [...wys.picked, id], claimConfirm: undefined })
+		const off = readOnly || busy || newer
+		const facts = (change: Change) => <>
+			<p className="muted">{change.target}: {change.summary}</p>
+			{change.meaning?.filter(part => !part.warn).map((part, n) => <p key={n} className="muted">{part.text}</p>)}
+			{change.state === 'uncertain' && <p className="warnline">This may already have been made. Check before approving any retry.</p>}
+			{change.error && <p role="alert" className="error">{change.state === 'uncertain' ? 'Could not confirm' : 'Not made'}: {change.error}</p>}
+			{change.detail && <details><summary>Exact change details</summary><pre>{change.detail}</pre></details>}</>
+		const why = (change: Change) => change.why && (change.origin === 'suggested' ? <span id={`${change.id}-why`} className="muted wys-reason">{change.why}</span>
+			: <details className="wys-why"><summary>Why?</summary><span id={`${change.id}-why`}>{change.why}</span></details>)
+		const line = (change: Change) => <div className="change wys-line" key={change.id}><div className="wys-line-head"><label><input type="checkbox" checked={wys.picked.includes(change.changeId!)}
+			disabled={off || change.state === 'approved'} aria-describedby={change.why ? `${change.id}-why` : undefined} onChange={() => toggle(change.changeId!)} /> {change.action}</label>{why(change)}{dismissButton(change)}</div>{facts(change)}</div>
+		const group = (unit: Extract<Unit, { kind: 'group' }>) => {
+			const picked = unit.options.filter(option => wys.picked.includes(option.changeId!)).length, ready = picked >= unit.min, on = ready && !ui.groupOff?.includes(unit.id)
+			const summary = unit.options.every(option => option.summary === unit.options[0].summary) ? unit.options[0].summary : unit.question
+			return <div className="change wys-line wys-group" key={unit.id} role="group" aria-label={unit.question}>
+				<div className="wys-line-head"><label title={ready ? undefined : `Choose first: ${unit.question}`}><input type="checkbox" checked={on} disabled={off || !ready} aria-describedby={summary !== unit.question || !ready ? `${code}-${unit.id}-q` : undefined}
+					onChange={() => edit({ groupOff: on ? [...(ui.groupOff ?? []), unit.id] : (ui.groupOff ?? []).filter(id => id !== unit.id), claimConfirm: undefined })} /> {summary}</label>{why(unit.options[0])}</div>
+				{/* The line names the shared summary when the options have one; otherwise the question is the line, said once. */}
+				{(summary !== unit.question || !ready) && <p id={`${code}-${unit.id}-q`} className={ready ? 'muted wys-question' : 'warnline wys-question'}>{summary !== unit.question ? unit.question : ''}{!ready && `${summary !== unit.question ? ' (' : ''}Choose at least ${unit.min === 1 ? 'one' : unit.min}${summary !== unit.question ? ')' : ''}`}</p>}
+				<div className="wys-options">{unit.options.map(option => <span key={option.id} className="wys-option"><label className="option"><input type="checkbox" checked={wys.picked.includes(option.changeId!)} disabled={off}
+					onChange={() => toggle(option.changeId!)} /> {option.target || option.action}</label>{dismissButton(option)}</span>)}</div></div>
+		}
+		const unitOf = (unit: Unit) => unit.kind === 'line' ? line(unit.change) : group(unit)
+		const openLeftCount = kept + openLines.length
+		const extras = !!item.follow || !!nothingPosted || noVote || !!item.repaired || votes.length > 0
+		// W11: a reply-only card gains one muted line and no control; a card with neither a reply nor a change keeps its own layout.
+		if (!units.length && !dismissed.length && !openLeftCount && !extras && !leftLines.length) return draft && !item.sent ? <><p className="card-block muted wys-summary-line">When you send: just the reply</p>{earlierTodos}</> : undefined
+		const named = will.flatMap(unit => unit.kind === 'line' ? wys.effective.includes(unit.change.changeId!) ? [unit.change.action] : [] : unit.options.filter(option => wys.effective.includes(option.changeId!)).map(option => option.action))
+			.map(text => text.replace(/^./, first => first.toLowerCase()))
+		const summaryText = `${draft ? 'When you send' : 'When you approve'}: ${[named.length ? `${named.slice(0, 2).join(', ')}${named.length > 2 ? ` +${named.length - 2}` : ''}` : draft ? 'just the reply' : '',
+			suggested.length ? `${suggested.length} suggestion${suggested.length === 1 ? '' : 's'}` : '', openLeftCount ? `${openLeftCount} left for you` : ''].filter(Boolean).join(' · ')}`
+		const needsEye = will.some(unit => unit.kind === 'group' && unit.options.filter(option => wys.picked.includes(option.changeId!)).length < unit.min) || !!claim || openLeftCount > 0 || !!item.reviewDone
+		const open = ui.folds?.wys ?? needsEye
+		return <section className="card-block card-after wys-block" role="region" aria-label={draft ? 'When you send' : 'When you approve'}>
+			<button type="button" className="wys-summary" aria-expanded={open} onClick={() => fold('wys', !open)}><span>{summaryText}</span><span aria-hidden="true">{open ? '▾' : '▸'}</span></button>
+			{open && <>
+				{item.repaired && <p className="card-status">The comment format was wrong and is fixed. Post them now?</p>}
+				{(will.length > 0 || votes.length > 0) && <div role="group" aria-labelledby={`${code}-wys-will`} className="wys-group-block"><h4 id={`${code}-wys-will`} className="wys-sub">{NAME} will · {will.length + votes.length}</h4>
+					{will.map(unitOf)}
+					{votes.map(change => <div className="change wys-line" key={change.id}><p>{change.action}</p><p className="muted">Only with its Approve button, never from this list.</p></div>)}</div>}
+				{(suggested.length > 0 || dismissed.length > 0) && <div role="group" aria-labelledby={`${code}-wys-suggested`} className="wys-group-block"><h4 id={`${code}-wys-suggested`} className="wys-sub">Suggested · {suggested.length} <span className="wys-sub-hint">tick to include</span></h4>
+					{suggested.map(unitOf)}{dismissed}</div>}
+				{item.follow && <p><Icon name="clock" /> Watch {item.follow.target} until {item.follow.until}</p>}
+				{nothingPosted && <p className="nothing-posted">{nothingPosted}</p>}
+				{noVote && <p className="no-vote">On PR {replyPr} when you send: No vote{item.prReview && !item.prReview.voteRecommended ? ' (not ready)' : ''}</p>}
+				{earlierTodos}
+			</>}
+		</section>
+	})()
+
 	// An approved batch that partly ran: one plain line above the actions says what was done and what was not, and why (queue-new #7D).
 	const allChanges = [...new Set([...item.changeIds, ...(item.effectIds ?? [])])].map(id => entities.changes[id]).filter(Boolean)
 	const made = allChanges.filter(change => change.state === 'made'), notDone = allChanges.filter(change => change.state !== 'made' && change.state !== 'left-out' && change.error)
@@ -425,7 +588,11 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 		<strong>Done:</strong> {made.map(change => change.action).join('; ')}. <strong>Not done:</strong> {notDone.map(change => `${change.action}, ${change.error!.replace(/\.$/, '').replace(/^Error: /, '')}`).join('; ')}.</p>
 
 	// Block 4: one primary that says its result, Later, and ⋯ (Edit in Teams, Dismiss, Continue in a terminal).
-	const primaryLabel = report && primary?.id === report.id ? `Draft the update to ${first}` : reviewLabel ?? (draft?.holding && primary?.kind === 'approve' && !item.changeIds.length ? 'Send holding reply' : decision && primary?.kind === 'answer' ? 'Send decision'
+	// WYS O6: the primary counts exactly the included changes ("Send reply" / "Send and make N change(s)" / "Make N change(s)").
+	const changeWord = (n: number) => `${n} change${n === 1 ? '' : 's'}`
+	const counted = wys && primary && ['approve', 'send-edit'].includes(primary.kind) ? draft ? wys.effective.length ? `Send and make ${changeWord(wys.effective.length)}`
+		: primary.kind === 'send-edit' ? undefined : draft.holding ? 'Send holding reply' : 'Send reply' : wys.effective.length ? `Make ${changeWord(wys.effective.length)}` : 'Nothing selected' : undefined
+	const primaryLabel = report && primary?.id === report.id ? `Draft the update to ${first}` : reviewLabel ?? counted ?? (draft?.holding && primary?.kind === 'approve' && !item.changeIds.length ? 'Send holding reply' : decision && primary?.kind === 'answer' ? 'Send decision'
 		: primary?.kind === 'answer' && answerBox ? draft ? 'Answer and redraft' : 'Answer and draft reply' : undefined)
 	// Write the reply yourself opens an empty box first; the box's own button sends it (designer failure pattern, check 4).
 	// #48b (PM A R21): during a redraft it appears at 3 minutes (a retry after a failure shows it throughout); it opens the editor with the
@@ -441,7 +608,7 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 			: <span><strong>{NAME} is working on it</strong> · back to you when there's something to send
 				<small className="card-working-what">{[item.working.doing, item.working.since && `started ${when(item.working.since)}`].filter(Boolean).join(' · ')}</small></span>}</div>}
 		{primary && primary.kind !== 'write-own' && primary.kind !== 'todo-done' && <ActionButton primary action={primary} label={primaryLabel} input={report && primary.id === report.id ? { result: ui.resultKind, text: ui.report } : input}
-			disabled={report && primary.id === report.id ? !ui.resultKind : !!invalid || newer || voteBlocked} disabledReason={newer ? 'stale' : voteBlocked ? voteReason : report && primary.id === report.id ? 'Pick how it went first.' : primary.kind === 'pick' || item.choices && !ui.other ? 'pick' : 'Type your answer first.'} />}
+			disabled={report && primary.id === report.id ? !ui.resultKind : !!invalid || newer || voteBlocked || claimBlocked || nothingChosen} disabledReason={newer ? 'stale' : voteBlocked ? voteReason : claimBlocked ? claim!.line : nothingChosen ? 'Tick a change first.' : report && primary.id === report.id ? 'Pick how it went first.' : primary.kind === 'pick' || item.choices && !ui.other ? 'pick' : 'Type your answer first.'} />}
 		{primary?.kind === 'write-own' && writeButton}
 		{reviewed?.openPr === 'primary' && openPr('default')}
 		{approvePr && approvePr.id !== primary?.id && <ActionButton action={approvePr} disabled={newer} disabledReason="stale" />}
@@ -449,41 +616,49 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 		{primary?.kind === 'todo-done' && doneButton(true)}
 		{report && primary?.id !== report.id && <ActionButton primary action={report} label={`Draft the update to ${first}`} input={{ result: ui.resultKind, text: ui.report }} disabled={!ui.resultKind} disabledReason="Pick how it went first." />}
 		{/* An offered send is never hidden: when another action leads, it sits next to it (#33). */}
-		{actions.filter(action => ['approve', 'approve-again'].includes(action.kind) && action.id !== primary?.id).map(action => action.kind === 'approve' && editedAside ? <ActionButton key={editedAside.id} action={editedAside} label="Send your edited reply" input={{ text: replyText, excluded: ui.excluded }} disabled={newer || !replyText.trim() || editedHeld} disabledReason={newer ? 'stale' : editedHeld ? voteReason : 'Type your reply first.'} /> : <ActionButton key={action.id} action={action} label={draft?.holding && action.kind === 'approve' && !item.changeIds.length ? 'Send holding reply' : undefined} input={{ excluded: ui.excluded }} disabled={newer || action.kind === 'approve' && !!item.voteGap} disabledReason={newer ? 'stale' : item.voteGap?.text ?? 'stale'} />)}
-		{actions.filter(action => ['try-again', 'review-again', 'send-anyway', 'redraft', 'add-vote', 'keep-waiting'].includes(action.kind) && action.id !== primary?.id && !((item.voteGap || ui.editing) && action.kind === 'send-anyway') && !(reviewed && action.kind === 'review-again')).map(action => <ActionButton key={action.id} action={action} disabled={newer && action.staleness === 'exact'} disabledReason="stale" />)}
+		{actions.filter(action => ['approve', 'approve-again'].includes(action.kind) && action.id !== primary?.id).map(action => action.kind === 'approve' && editedAside ? <ActionButton key={editedAside.id} action={editedAside} label="Send your edited reply" input={{ text: replyText, ...selection }} disabled={newer || !replyText.trim() || editedHeld} disabledReason={newer ? 'stale' : editedHeld ? voteReason : 'Type your reply first.'} /> : <ActionButton key={action.id} action={action} label={draft?.holding && action.kind === 'approve' && !item.changeIds.length ? 'Send holding reply' : undefined} input={selection} disabled={newer || action.kind === 'approve' && (!!item.voteGap || claimBlocked)} disabledReason={newer ? 'stale' : item.voteGap?.text ?? claim?.line ?? 'stale'} />)}
+		{actions.filter(action => ['try-again', 'one-more', 'review-again', 'send-anyway', 'redraft', 'add-vote', 'keep-waiting'].includes(action.kind) && action.id !== primary?.id && !((item.voteGap || ui.editing) && action.kind === 'send-anyway') && !(reviewed && action.kind === 'review-again')).map(action => <ActionButton key={action.id} action={action} input={action.kind === 'send-anyway' ? selection : undefined} disabled={newer && action.staleness === 'exact'} disabledReason="stale" />)}
 		{primary?.kind !== 'write-own' && writeButton}
 		{item.mode === 'held' && actions.filter(action => action.kind === 'dismiss' && action.label === 'Skip').map(action => <ActionButton key={action.id} action={action} disabled={newer && action.staleness === 'exact'} disabledReason="stale" />)}
 		{actions.filter(action => action.kind === 'later').map(action => <ActionButton key={action.id} action={action} />)}
-		<details className="card-more-menu"><summary aria-label="More" title="More: Edit in Teams, Dismiss, Continue in a terminal"><Icon name="more" /></summary><div className="card-more-content">
-			{item.teams && draft && <Button variant="outline" title="Open Teams with this draft so you can change and send it there. Delegate sees that you replied." onClick={() => void chatEdit.open(ui.editing ? ui.editText ?? draft.text : draft.text, item.teams!)}>Edit in Teams</Button>}
-			{actions.filter(action => ['dismiss', 'reply-only'].includes(action.kind) && !(item.mode === 'held' && action.kind === 'dismiss' && action.label === 'Skip')).map(action => <ActionButton key={action.id} action={action} disabled={newer && action.staleness === 'exact'} disabledReason="stale" />)}
-			{/* R10b: ⋯ Review again, unless new changes made it the primary. */}
-			{reviewed && actions.filter(action => action.kind === 'review-again' && action.id !== primary?.id).map(action => <ActionButton key={action.id} action={action} />)}
-			{/* L1b: past a vote claim, Send anyway is in ⋯ and asks again with the same sentence. */}
-			{/* V1 (PE 01:56): never while the editor differs from the draft; it would send the words he just removed. */}
-			{item.voteGap && !ui.editing && actions.filter(action => action.kind === 'send-anyway' && action.id !== primary?.id).map(action => <ActionButton key={action.id} action={action} disabled={newer} disabledReason="stale" />)}
-			{item.ownReply && reopen && <div className="card-reopen"><Field code={code} rev={item.rev} field="answer" label="Reopen: what should the new reply say?" value={ui.answer ?? ''} edit={edit} rows={2} />
-				<ActionButton action={reopen} input={{ text: ui.answer ?? '' }} disabled={!ui.answer?.trim()} disabledReason="Write what the reply should say first." /></div>}
-			{continueAction && <ActionButton action={continueAction} />}
-			{item.debug && <><pre>{item.debug.join('\n')}</pre><Button variant="outline" onClick={() => void detailsCopy.copy(item.debug!.join('\n'))}>Copy details</Button>{detailsCopy.message && <p role="status">{detailsCopy.message}</p>}</>}
-		</div></details>
 		{/* DD4-C1: under the report form's button, on its own row in the bar; it wraps at 400 px. */}
 		{report && <p className="muted bar-note">{NAME} drafts it from your result. Nothing is sent until you press Send.</p>}
 	</div>
-	const others = actions.filter(action => action.id !== primary?.id && action.id !== report?.id && !(report && action.id === declared?.id) && !['approve', 'approve-again', 'send-edit', 'answer', 'pick', 'ask', 'later', 'dismiss', 'continue', 'todo-done', 'reply-only', 'review-again', 'try-again', 'write-own', 'send-anyway', 'redraft', 'add-vote', 'approve-pr', 'post-waiting', 'keep-waiting'].includes(action.kind) && !(item.ownReply && action.kind === 'reopen'))
+	const moreMenu = <details ref={moreRef} className="card-more-menu"><summary aria-label="More" title="More: Edit in Teams, Dismiss, Continue in a terminal"><Icon name="more" /></summary><div className="card-more-content">
+		{item.teams && draft && <Button variant="outline" title="Open Teams with this draft so you can change and send it there. Delegate sees that you replied." onClick={event => { closeMenuOf(event.currentTarget, true); void chatEdit.open(ui.editing ? ui.editText ?? draft.text : draft.text, item.teams!) }}>Edit in Teams</Button>}
+		{actions.filter(action => ['dismiss', 'reply-only'].includes(action.kind) && !(item.mode === 'held' && action.kind === 'dismiss' && action.label === 'Skip')).map(action => <ActionButton onSubmitted={menuChosen} key={action.id} action={action} disabled={newer && action.staleness === 'exact'} disabledReason="stale" />)}
+		{/* R10b: ⋯ Review again, unless new changes made it the primary. */}
+		{reviewed && actions.filter(action => action.kind === 'review-again' && action.id !== primary?.id).map(action => <ActionButton onSubmitted={menuChosen} key={action.id} action={action} />)}
+		{/* L1b: past a vote claim, Send anyway is in ⋯ and asks again with the same sentence. */}
+		{/* V1 (PE 01:56): never while the editor differs from the draft; it would send the words he just removed. */}
+		{item.voteGap && !ui.editing && actions.filter(action => action.kind === 'send-anyway' && action.id !== primary?.id).map(action => <ActionButton onSubmitted={menuChosen} key={action.id} action={action} input={selection} disabled={newer} disabledReason="stale" />)}
+		{/* WYS O5: past the consistency check, Send anyway opens its confirm in the warn's slot. */}
+		{claim && !ui.claimConfirm && claimTarget && <Button variant="outline" onClick={event => { closeMenuOf(event.currentTarget, false); edit({ claimConfirm: true }) }}>Send anyway</Button>}
+		{item.ownReply && reopen && <div className="card-reopen"><Field code={code} rev={item.rev} field="answer" label="Reopen: what should the new reply say?" value={ui.answer ?? ''} edit={edit} rows={2} />
+			<ActionButton onSubmitted={menuChosen} action={reopen} input={{ text: ui.answer ?? '' }} disabled={!ui.answer?.trim()} disabledReason="Write what the reply should say first." /></div>}
+		{continueAction && <ActionButton onSubmitted={menuChosen} action={continueAction} />}
+		{item.debug && <><pre>{item.debug.join('\n')}</pre><Button variant="outline" onClick={() => void detailsCopy.copy(item.debug!.join('\n'))}>Copy details</Button>{detailsCopy.message && <p role="status">{detailsCopy.message}</p>}</>}
+	</div></details>
+	const others = actions.filter(action => action.id !== primary?.id && action.id !== report?.id && !(report && action.id === declared?.id) && !['approve', 'approve-again', 'send-edit', 'answer', 'pick', 'ask', 'later', 'dismiss', 'continue', 'todo-done', 'reply-only', 'review-again', 'try-again', 'one-more', 'write-own', 'send-anyway', 'redraft', 'add-vote', 'approve-pr', 'post-waiting', 'keep-waiting'].includes(action.kind) && !(item.ownReply && action.kind === 'reopen'))
 	// Every action the projection offers is drawn somewhere (engineer-card-state-devspec.md §4, invariant 4); one that isn't is marked.
 	const drawn = (kind: string) => ({ answer: !!answerBox || !!decision || both || primary?.kind === 'answer', pick: !!item.choices, 'send-edit': !!draft && editable, 'todo-done': todoIds.length > 0 || openLines.length > 0 } as Record<string, boolean>)[kind] ?? true
 	const undrawn = readOnly ? [] : actions.filter(action => !drawn(action.kind)).map(action => action.kind)
 
 	// Block 5: Details, one collapsed line: why, sources, progress and history, changes already handled, and Ask Delegate.
-	const parts = [(item.why.reason || item.why.waited) && 'why', item.sourceIds.length > 0 && `${item.sourceIds.length} source${item.sourceIds.length === 1 ? '' : 's'}`, (work?.planIds.length || timeline?.stepIds.length || item.earlier) && 'history', `ask ${NAME}`].filter(Boolean)
+	const hasWhy = !!(item.why.reason || item.why.waited || item.why.reviewWait || item.sent?.rule)
+	const parts = [hasWhy && 'why', item.sourceIds.length > 0 && `${item.sourceIds.length} source${item.sourceIds.length === 1 ? '' : 's'}`, (work?.planIds.length || timeline?.stepIds.length || item.earlier) && 'history', `ask ${NAME}`].filter(Boolean)
 	const sub = (key: string, title: string, inner: ReactNode) => <details className="card-subfold" open={ui.folds?.[key] ?? false} onToggle={event => fold(key, event.currentTarget.open)}><summary>{title}</summary>{inner}</details>
 	const block5 = <details className="card-block card-details" open={ui.folds?.details ?? false} onToggle={event => fold('details', event.currentTarget.open)}><summary>Details: {parts.join(' · ')}</summary>
-		{(item.why.reason || item.why.confidence === 'low' || item.why.waited) && <h4>Why</h4>}
+		{(hasWhy || item.why.confidence === 'low') && <h4>Why</h4>}
+		{/* D-A281 B3: Why's first line, for a reply one of his lines sent. */}
+		{item.sent?.rule && <p><SentBecause rule={item.sent.rule} /></p>}
 		{item.why.reason && <p>{item.why.reason}</p>}
 		{/* L6: never the word "Confidence"; only a low one is worth a line. */}
 		{item.why.confidence === 'low' && <p>{NAME} isn&apos;t sure this reply is right.</p>}
 		{item.why.waited && <p className="card-why-waited">{item.why.waited}</p>}
+		{item.why.reviewWait && <p className="card-why-waited"><ReviewWait wait={item.why.reviewWait} /></p>}
+		{/* D-COST JB1: Details › What it tried (N), for a stopped job. */}
+		{item.stop?.tried?.length ? <details id={`stop-tried-${code}`} className="card-tried"><summary>What it tried ({item.stop.tried.length})</summary><ul>{item.stop.tried.map((route, n) => <li key={n}>{route}</li>)}</ul></details> : null}
 		{/* L7a: Why stays open; Looked up, Progress and What happened are sub-folds with counts. The S9 caps stay inside them. */}
 		{(lookedUp => lookedUp > 0 && sub('lookedUp', `Looked up (${lookedUp})`, <>
 			{item.sourceIds.length > 0 && <><Sources ids={ui.folds?.sources ? item.sourceIds : item.sourceIds.slice(0, 5)} entities={entities} />
@@ -542,15 +717,41 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 			}
 		}}>
 		{asks ? <AsksList codes={asks.codes} current={code} entities={entities} onOpen={asks.onOpen} /> : placement && placement.subjects.length >= 2 && <AsksList codes={placement.subjects} current={code} entities={entities} />}
-		{block1}{answered}{failed}{found}{item.mode === 'working' && writeBox && <section className="card-block card-write-own">{writeBox}</section>}<fieldset className="card-readonly" disabled={readOnly}>{block2}{reviewBlock}{block3}</fieldset>{earlierTodos}{doneSoFar}{!readOnly && block4}
+		{block1(!readOnly && moreMenu)}{item.prs && item.prs.length >= 2 && <PrsInAsk code={code} prs={item.prs} entities={entities} readOnly={readOnly} newer={newer} />}{answered}{failed}{found}{item.mode === 'working' && writeBox && <section className="card-block card-write-own">{writeBox}</section>}<fieldset className="card-readonly" disabled={readOnly}>{perPr && perPrBlocks}{block2}{!perPr && reviewBlock}{wysBlock === undefined ? block3 : wysBlock}</fieldset>{wysBlock === undefined && earlierTodos}{doneSoFar}{!readOnly && block4}
 		{/* R10b (joint C2): Approve's meaning line, always visible directly under the bar, whichever role Approve has. */}
 		{!readOnly && approvePr?.meaning && <p className="muted approve-meaning">{approvePr.meaning}</p>}
+		{/* D-COST JB1/JB2: the retry's caption under the bar (one press is one run, nothing is sent); at the daily limit, why it is off. */}
+		{!readOnly && !!item.stop && (retry => retry && <p className="muted approve-meaning" role={retry.unavailable ? 'status' : undefined}>{retry.unavailable?.reason ?? retry.meaning}</p>)(actions.find(action => action.kind === 'try-again' || action.kind === 'one-more'))}
 		{chatEdit.message && <p role="status">{chatEdit.message}</p>}
 		{others.map(action => <div key={action.id}>{action.meaning && <p>{action.meaning}</p>}<ActionButton action={action} disabled={newer && action.staleness === 'exact' || action.effect !== 'local' && !action.meaning} disabledReason={newer ? 'stale' : undefined} /></div>)}
 		{!readOnly && <ActionState item={code} rev={item.rev} />}
 		{primary && primary.rev !== item.rev && <ActionState item={primary.item} rev={primary.rev} />}
 		{block5}
 	</article>
+}
+
+// D-A239 MP1 (Designer; PM §1 words, built on the server from HOST's typed units): "PRs in this ask (n)" directly after their message,
+// when the ask names two or more PRs. One row per PR in ask order: PR <n> · title (clipped), the outcome as an icon plus words (never
+// colour alone; a static spinner under reduced motion), ↗ Open PR, and the PR's own outline action at the end, named with its PR.
+// MP5: a list named with its count; an outcome that changes while the card is open is announced once, politely; checking never is.
+function PrsInAsk({ code, prs, entities, readOnly, newer }: { code: string; prs: NonNullable<Item['prs']>; entities: Entities; readOnly: boolean; newer: boolean }) {
+	const seen = useRef(new Map(prs.map(pr => [pr.pr, pr.outcome]))), [said, setSaid] = useState('')
+	useEffect(() => {
+		const changed = prs.filter(pr => seen.current.get(pr.pr) !== undefined && seen.current.get(pr.pr) !== pr.outcome && pr.outcome !== 'checking')
+		seen.current = new Map(prs.map(pr => [pr.pr, pr.outcome]))
+		if (changed.length) setSaid(changed.map(pr => `PR ${pr.pr}: ${pr.line}`).join('. '))
+	}, [prs])
+	const mark = (outcome: NonNullable<Item['prs']>[number]['outcome']) => outcome === 'checking' ? <span className="pr-spin" aria-hidden="true" />
+		: outcome === 'reviewing' || outcome === 'reviewed' ? <Icon name="check" /> : outcome === 'not-reviewing' ? <span aria-hidden="true">–</span> : <Icon name="warn" />
+	return <section className="card-block card-prs" aria-labelledby={`prs-${code}`}><h3 id={`prs-${code}`}>PRs in this ask ({prs.length})</h3>
+		<ul aria-label={`PRs in this ask, ${prs.length}`}>{prs.map(pr => <li key={pr.pr} className="pr-row" data-outcome={pr.outcome}>
+			<span className="pr-name">PR {pr.pr}{pr.title && <><span aria-hidden="true"> · </span><span className="pr-title" title={pr.title}>{pr.title}</span></>}<span className="sr-only">,</span></span>
+			<span className="pr-outcome" title={pr.detail}>{mark(pr.outcome)} {pr.line}</span>
+			{pr.url && <a className="pr-open" href={pr.url} target="_blank" rel="noopener noreferrer" aria-label={`Open PR ${pr.pr} in a new tab`}><Icon name="ext" /> Open PR</a>}
+			{!readOnly && !!pr.actionIds?.length && <span className="pr-actions">{pr.actionIds.map(id => entities.actions[id] && <ActionButton key={id} action={entities.actions[id]} ariaLabel={`${entities.actions[id].label}, PR ${pr.pr}`} disabled={newer} disabledReason="stale" />)}</span>}
+		</li>)}</ul>
+		<p className="sr-only" role="status" aria-live="polite">{said}</p>
+	</section>
 }
 
 // A "Left for you" line from wf.left (PM A R35 (d)): what he does, a quote as a quotation, a muted source line (its link opens the
@@ -614,4 +815,21 @@ export function ReviewPosted({ review }: { review: NonNullable<Item['reviewDone'
 			{comment.file && <> · <code>{comment.file}{comment.line ? `:${comment.line}` : ''}</code></>} · {comment.text}
 			{comment.thread && <> · <a href={comment.thread} target="_blank" rel="noopener noreferrer">Thread <Icon name="ext" /></a></>}</li>)}</ul>
 		{review.more > 0 && <p className="muted">and {review.more} more</p>}</>
+}
+
+type Change = Entities['changes'][string]
+// WYS N1-1 (I32, O6): what Send names on an origin-bearing item. picked is his ticks (or the defaults: asked/promised/note/rule, not in a
+// group, plus changes already approved); an option group counts only once enough of its options are picked and its line is on. Votes
+// are never in it (their own Approve, L1). Undefined for old originless items (R4).
+export function wysSelection(item: Item | undefined, entities: Entities | undefined, ui: CardUi, dismissing: Record<string, SuggestionHold> = {}) {
+	if (item?.wys !== 'groups' || !entities) return undefined
+	const changes = item.changeIds.map(id => entities.changes[id]).filter((change): change is Change => !!change?.changeId)
+	// A suggestion he is turning down (✕, held 6 s) is neither shown nor sent.
+	const held = changes.filter(change => !!dismissing[`${item.code}|${change.changeId}`])
+	const choosable = changes.filter(change => !change.vote && !held.includes(change))
+	const picked = ui.included ?? choosable.filter(change => change.ticked || change.state === 'approved').map(change => change.changeId!)
+	const minOf = (group: string) => Math.max(...choosable.filter(change => change.group?.id === group).map(change => change.group!.min))
+	const ready = (group: string) => picked.filter(id => choosable.find(change => change.changeId === id)?.group?.id === group).length >= minOf(group)
+	const effective = picked.filter(id => { const change = choosable.find(other => other.changeId === id); return !!change && (!change.group || ready(change.group.id) && !ui.groupOff?.includes(change.group.id)) })
+	return { changes, choosable, picked, effective, held: held.map(change => ({ change, hold: dismissing[`${item.code}|${change.changeId}`] })) }
 }

@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { create } from 'zustand'
 import type { Entities, Receipt } from '../domain/contracts.ts'
+import { wddUndoFailed } from '../domain/wdd-words.ts'
 import { useData } from './store.ts'
 
 // The page's result line (#47, PE 19:30). Clearing is this tab's own state, never stored: the line the owner closed, and the
@@ -29,6 +30,12 @@ const until = (at?: string) => at && Number.isFinite(Date.parse(at)) ? new Date(
 export function resultWords(r: Receipt, entities: Entities): string | undefined {
 	const o = r.outcome
 	if (!o) return undefined
+	// N2 (PE v1.137 item 3, D8 O1): an Undo of what Delegate did reads its typed result, never the text. A result the runner couldn't
+	// record, or a refusal without a reason, gives no line here (the row and the Health hold say what is known).
+	if (o.action === 'wdd-undo') {
+		const u = o.undo
+		return !u || u.recorded === false ? undefined : u.outcome === 'undone' ? 'Taken back.' : u.reason === 'too-late' ? 'Too late to take it back.' : u.outcome === 'failed' ? wddUndoFailed(u.reason) : undefined
+	}
 	const item = entities.items[r.item], to = whoAndChat(entities, r.item, r)
 	const first = item ? entities.people[item.personId]?.name.split(/\s+/)[0] : r.who
 	const chat = item ? (c => c?.group ? c.name : undefined)(entities.chats[item.chatId]) : r.chat
@@ -48,6 +55,10 @@ export function resultWords(r: Receipt, entities: Entities): string | undefined 
 	if (a && (TODOS.has(a) || a === 'classic-close' && o.count)) return o.count && o.count > 1 ? `Marked ${o.count} tasks done.` : o.count === 1 ? 'Marked the task done.' : 'Marked the tasks done.'
 	if (a === 'reopen' && message) return `Reopened ${message}.`
 	if (a === 'watch-fyi' && o.watch) return `Watching ${bare(o.watch.target)}${o.watch.until ? ` until ${until(o.watch.until)}` : ''}.`
+	// D-WATCH' (PM N2, identical to HOST-W1b's replies): the direction is the saved receipt's own rev, the state its press was made on
+	// (CR B2): never a later press, and it survives a reload while pending.
+	if (a === 'watching' && o.kind === 'done' && r.rev === 'watching:on') return 'Stopped checking Teams. Your setting is kept for when you start again.'
+	if (a === 'watching' && o.kind === 'done' && r.rev === 'watching:off') return 'Checking Teams again: next check now.'
 	if (o.kind === 'queued') return `Working on it${to ? ` for ${to}` : ''}…`
 	return `Done${forWho}.`
 }

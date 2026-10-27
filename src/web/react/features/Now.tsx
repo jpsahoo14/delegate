@@ -16,8 +16,13 @@ import { SentTime } from './SentTime.tsx'
 import { CODE, ItemCode } from './ItemCode.tsx'
 import { busyWords } from '../data/busy.ts'
 import { WaysLink, waysLinkShown } from './Ways.tsx'
+import { HeldLine } from './HeldLine.tsx'
+import { WatchingControl } from './WatchingControl.tsx'
+import { WddSection } from './WddSection.tsx'
+import { useHold } from '../data/hide-holds.ts'
 import { isolateRowControls } from './row-navigation.ts'
 import './rows.css'
+import { manyPrs, prsName, PrsLine } from './PrsLine.tsx'
 
 // "Delegate is on it" (spec S3): running now (live runs and working rows) and in line (rows waiting on Delegate).
 function workingCounts(ids: string[], entities: Entities, running: number) {
@@ -142,7 +147,10 @@ export const NowRow = memo(function NowRow({ id, day }: { id: string; day?: stri
 	// While Delegate works on it, line 3 says so and turns to "Still trying" after 3 minutes (PM 19:50), so the row reads the clock.
 	const since = item?.mode === 'working' ? item.working?.since : undefined, [now, setNow] = useState(Date.now)
 	useEffect(() => { if (!since) return; const timer = setInterval(() => setNow(Date.now()), 15_000); return () => clearInterval(timer) }, [since])
+	const held = useHold(row?.act)
 	if (!row) return null
+	// A58 S-A2: a held Close it / Stop waiting / Stop watching shows its Undo line in the row's place (decision 54).
+	if (held) return <article className="now-row row-held" data-code={row.code}><HeldLine item={row.act} /></article>
 	// #48b (PM A R21): a redraft says it redrafts from his answer; a retry (and any other run) says Trying again; both after 3 minutes say Still.
 	const stale = !!since && now - Date.parse(since) >= 3 * 60_000, redraft = item?.working?.kind === 'redraft'
 	const trying: [string, string] | undefined = item?.mode === 'working' ? [redraft ? stale ? 'Still redrafting' : 'Redrafting from your answer' : stale ? 'Still trying' : 'Trying again', since ? `started ${when(since)}` : ''] : undefined
@@ -165,7 +173,9 @@ export const NowRow = memo(function NowRow({ id, day }: { id: string; day?: stri
 			: draft && ['reply', 'holding', 'review'].includes(row.kind) ? [draft.holding ? 'Holding reply' : 'Your reply', `${draft.marker && draft.sendText?.endsWith(draft.marker) ? draft.sendText.slice(0, -draft.marker.length).trimEnd() : draft.sendText ?? draft.text}${item?.changeIds.length ? ` · plus ${item.changeIds.length} ${item.changeIds.length === 1 ? 'change' : 'changes'}` : ''}`]
 				: item?.question && row.kind === 'question' ? [`${NAME} needs to know`, item.question]
 					: row.kind === 'todo' && item && (lines => lines.length > 0 && ['Left for you', `${lines[0]}${lines.length > 1 ? ` (+${lines.length - 1} more)` : ''}`] as [string, string])([...item.todoIds.map(id => entities?.todos[id]?.text).filter((text): text is string => !!text), ...(item.leftLines ?? []).filter(line => !line.seen).map(line => line.text)]) || undefined
-	const who = person?.name ?? row.facts.who
+	const who = person?.name ?? row.facts.who, prs = row.section === 'done' ? undefined : manyPrs(item)
+	// D-COST JB1/JB2: a stopped job's row reads its stop on line 3, in the warn token, whatever reply waits.
+	const stopRow = row.section === 'move' ? item?.stop?.row : undefined
 	return <article className={`now-row${open ? ' row-open' : ''}`} data-code={row.code} data-row-kind={row.kind} onClick={row.kind === 'catchup' ? isolateRowControls : undefined}>
 		<div className="row-content" onClick={row.section === 'waiting' ? event => { if (!(event.target instanceof Element && event.target.closest('a, button, input, textarea, select'))) toggle() } : undefined}>
 			{person && !icon ? <span className="row-avatar" style={avatarStyle} aria-hidden="true">{person.initials}</span> : <span className="row-icon"><Icon name={icon ?? 'clock'} /></span>}
@@ -175,8 +185,9 @@ export const NowRow = memo(function NowRow({ id, day }: { id: string; day?: stri
 					{row.teams && <a className="row-teams" href={row.teams} target="_blank" rel="noopener noreferrer" aria-label="Open in Teams" title="Open this message in Teams, in a new tab."><Icon name="ext" /></a>}
 					{row.chips.map((chip, n) => <span key={`${chip.kind}-${n}`} className={`chip chip-${chip.kind}`} title={chipHover(chip.kind)}>{chip.text}</span>)}</div>
 				{message && <p className="row-message">{message}</p>}
-				<h3 className="row-line3"><button className="row-title" aria-label={`${open ? 'Hide' : 'Open'} ${trying ? trying.filter(Boolean).join(' · ') : mine ? `${mine[0]}: ${mine[1]}` : row.headline}`} onClick={toggle} aria-expanded={open}>
-					{trying ? <><b>{trying[0]}</b>{trying[1] && <> · {trying[1]}</>}</> : mine ? <><b>{mine[0]}:</b> {mine[1]}</> : row.headline}</button></h3>
+				{/* D-A239 MP3: an ask naming two or more PRs reads "PRs: <n> <outcome> · … · +N" on line 3. */}
+				<h3 className="row-line3"><button className="row-title" aria-label={`${open ? 'Hide' : 'Open'} ${stopRow ?? (prs ? prsName(prs) : undefined) ?? (trying ? trying.filter(Boolean).join(' · ') : mine ? `${mine[0]}: ${mine[1]}` : row.headline)}`} onClick={toggle} aria-expanded={open}>
+					{stopRow ? <span className="row-stop">{stopRow}</span> : prs ? <PrsLine prs={prs} /> : trying ? <><b>{trying[0]}</b>{trying[1] && <> · {trying[1]}</>}</> : mine ? <><b>{mine[0]}:</b> {mine[1]}</> : row.headline}</button></h3>
 				<RowFacts row={row} day={day ?? calendarKey()} />
 				{row.gist && <p>{row.gist}</p>}
 				{row.warn && <p className="row-warning"><Icon name="warn" /><span>{row.warn}</span></p>}
@@ -251,6 +262,7 @@ export default function Now({ sections }: { sections: Snapshot['sections'] | und
 	const quiet = sections.every(section => !(section.total ?? section.ids.length)) && !running.length && !snapshot.summary.minute.facts && !snapshot.summary.minute.suggestions
 	return <>
 		<h1 className="now-title">Now</h1>
+		<div className="now-watching-row"><WatchingControl /></div>
 		<label className="find-field" htmlFor="find"><span>Find a person, chat, PR or number, or paste a Teams link</span><input id="find" value={input} autoComplete="off" placeholder="Find a person, chat, PR or number, or paste a Teams link"
 			onChange={event => { setInput(event.target.value); if (!composing.current) setFind(event.target.value) }}
 			onCompositionStart={() => { composing.current = true }}
@@ -285,7 +297,7 @@ export default function Now({ sections }: { sections: Snapshot['sections'] | und
 				? <a href="#now/waiting" onClick={event => { event.preventDefault(); focusRow(placementId) }}>Open</a> : <a href={`#now/${placementId}`} onClick={() => setFind('')}>Open</a>
 			return <section><h2>In Ongoing</h2><p><span>{ongoing.text}</span>{open && <> {open}</>} <ItemCode code={exactCode} /></p></section>
 		})()}		{!find && !quiet && <p className="since-line summary-line" aria-label="Now summary">
-			{snapshot.summary.off && !snapshot.summary.paused && <span className="chip">{snapshot.summary.off.text}{snapshot.summary.off.since ? ` since ${when(snapshot.summary.off.since)}` : ''}</span>}
+			{snapshot.summary.off && !snapshot.summary.paused && snapshot.status.watching?.on !== false && <span className="chip">{snapshot.summary.off.text}{snapshot.summary.off.since ? ` since ${when(snapshot.summary.off.since)}` : ''}</span>}
 			{!!snapshot.sinceLine?.parts.length && <><span className="summary-part">Since {when(snapshot.sinceLine.at)}: </span>{snapshot.sinceLine.parts.map((part, index) => <Fragment key={part.href}>{index > 0 && <span className="summary-separator"> · </span>}<a className="summary-part" href={part.href}>{part.text}{part.href === '#numbers' && <span aria-hidden="true"> ›</span>}</a></Fragment>)}<span className="summary-separator"> · </span></>}
 			{(() => {
 				// Spec S3: "N need you · Delegate: A now, B in line · C waiting on others", then Catch up; each part opens its section.
@@ -312,18 +324,20 @@ export default function Now({ sections }: { sections: Snapshot['sections'] | und
 			const busy = section.id === 'working' ? workingCounts(section.ids, entities, running.length) : undefined
 			// R11(1): "Delegate is on it · 3 working now · 15 queued", the reason under it; the same words as Classic's tile.
 			const words = section.id === 'working' && snapshot.busy ? busyWords(snapshot.busy) : undefined
-			return <section key={section.id} className="now-section" data-selected={find || selected === section.id ? 'true' : 'false'} aria-labelledby={`section-${section.id}`}>
+			const element = <section key={section.id} className="now-section" data-selected={find || selected === section.id ? 'true' : 'false'} aria-labelledby={`section-${section.id}`}>
 				<h2 id={`section-${section.id}`} title={words?.title}>{section.label}<span className="section-count"> · {words ? words.line : busy ? `${busy.now} now · ${busy.line} in line` : search ? matches : section.total ?? ids.length}{retained > 0 && ` + ${retained} kept`}</span></h2>
 				{words?.sub && <p className="muted section-reason">{words.sub}</p>}
 				{words?.also && <p className="muted section-reason">{words.also}</p>}
 				{section.id === 'working' && snapshot.summary.paused && <p className="warning">Paused: drafts go on, nothing is sent.</p>}
-				{section.id === 'working' && !snapshot.summary.paused && snapshot.summary.off && !ids.length && !runs.length && <p className="muted">{snapshot.summary.off.text}{snapshot.summary.off.since ? ` since ${when(snapshot.summary.off.since)}` : ''}</p>}
+				{section.id === 'working' && !snapshot.summary.paused && snapshot.summary.off && snapshot.status.watching?.on !== false && !ids.length && !runs.length && <p className="muted">{snapshot.summary.off.text}{snapshot.summary.off.since ? ` since ${when(snapshot.summary.off.since)}` : ''}</p>}
 				{ids.length ? <ViewportList className="rows" ids={ids} estimate={112} retained={Object.keys(pinnedPlacements({ pinned: activePins }))} target={ids.includes(sub) ? sub : undefined}
 					render={id => <NowRow id={id} day={day} />} /> : section.id === 'move' ? <p className="empty">{find ? 'No matching open items.' : quiet ? 'Quiet. Nothing needs you, and nothing is waiting.' : `Nothing needs you. ${waitingSummary || 'Nothing is waiting either.'}`}</p> : null}
 				{runs.map((run, n) => <article className="bootstrap-progress" key={`${run.what}-${n}`}><h3>{run.what}</h3><p className="muted">Since <time dateTime={run.since}>{when(run.since)}</time></p><progress max={1} value={run.progress} aria-label={run.what} /></article>)}
 				{section.id === 'catchup' && (section.total ?? 0) > ids.length && !find && <Button variant="outline" onClick={() => navigate('done/catchup')}>Show all Catch up</Button>}
 				{section.id === 'catchup' && (section.total ?? 0) > 0 && snapshot.pageActionIds?.filter(id => entities.actions[id].kind === 'mark-all-read').map(id => <ActionButton key={id} action={entities.actions[id]} input={{ seenAt: snapshot.now }} />)}
 			</section>
+			// WDD N1 (Designer D1): "Done for you" right after Waiting on you; not while Find filters the page.
+			return section.id === 'working' ? <Fragment key={section.id}>{!find && <WddSection />}{element}</Fragment> : element
 		})}
 		{/* R12c (C1): Your way of working's link leads; the old habit-suggestion count goes once the engine's suggestions are ready. */}
 		{(() => {

@@ -5,11 +5,13 @@ import { useAppData, useEntities, useLatestError, useLatestResult, usePendingRec
 import { useHashNavigation, useNavigation } from '../data/navigation.ts'
 import { THEME_LABEL, useInterface } from '../data/interface.ts'
 import { useData } from '../data/store.ts'
+import { noticeHealth } from '../data/watching.ts'
 import { useVersionUpdate } from '../data/update.ts'
 import { Button, Hint } from '../components/ui/button.tsx'
 import { chipHover } from '../domain/hover.ts'
 import { Icon } from '../components/ui/icon.tsx'
 import { ActionButton } from '../features/ActionButton.tsx'
+import { closeOpenCardMenu, useCardMenuDismiss } from '../features/card-more.ts'
 import { NoticeAnnouncer, NoticeSlot, pageLines, pageNotices, useParkedUpdate, usePendingLines, useResultLine } from '../features/PageNotices.tsx'
 import { staticSnapshot } from '../services/api.ts'
 import { NAME } from '../brand.ts'
@@ -77,10 +79,13 @@ export default function Classic() {
 		addEventListener('pointerdown', outside)
 		return () => removeEventListener('pointerdown', outside)
 	}, [menu, setMenu])
+	// D-MORE-MENU (PE §3.2, §5.3): a card ⋯ opening closes ≡, and ≡ opening closes any open ⋯.
+	useCardMenuDismiss(() => useNavigation.getState().setMenu(false))
+	useEffect(() => { if (menu) closeOpenCardMenu(false) }, [menu])
 	const health = Object.values(entities.health), parked = useParkedUpdate(update.available)
 	const pendingLines = usePendingLines('classic'), resultLine = useResultLine(result, 'classic', reopenedQuestion ? 'Nothing is sent yet. You will see the reply first.' : undefined)
 	// PE decision 46 / Designer: Classic's health banner, offline and refresh alerts and "Updated to…" are the header slot's state now.
-	const notices = pageNotices({ online: !offline, health, fetchedAt: snapshot?.fetchedAt,
+	const notices = pageNotices({ online: !offline, health: noticeHealth(health, snapshot), fetchedAt: snapshot?.fetchedAt,
 		refresh: query.error ? { message: query.error.message, retry: () => void query.refetch() } : undefined,
 		update: update.available ? { version: update.available, reload: update.reload, ...parked } : undefined,
 		refreshWords: message => `Offline or unable to refresh: ${message}. Your last view is kept.`,
@@ -88,10 +93,16 @@ export default function Classic() {
 		errors: pageLines({ storage: pendingError, interface: error, seen: seenError, action: actionError }), pending: pendingLines, result: resultLine })
 	const disconnected = offline || !!query.error
 	const reading = snapshot?.status.reading
-	const status = disconnected ? 'Offline' : !snapshot ? 'Connecting' : snapshot.status.state === 'paused' ? 'Paused' : snapshot.status.state === 'stopped' ? 'Stopped' :
+	// D-WATCH' (PM N3, PE §8.6): "Checking off" (+ " · Paused") after Offline, Connecting and Stopped; not bad, no next check and no
+	// reading warning. PM N7 (PE §8.11): unless no machine has cycled for an hour (reading off, from runner-cycle evidence while Off): then
+	// it says so, short "Not running", bad, without " · Paused".
+	const off = snapshot?.status.watching?.on === false, alsoPaused = snapshot?.status.state === 'paused' ? ' · Paused' : ''
+	const silent = off && reading?.state === 'off', offWords = silent ? `Checking off · ${NAME} isn't running on any machine` : `Checking off${alsoPaused}`
+	const status = disconnected ? 'Offline' : !snapshot ? 'Connecting' : snapshot.status.state === 'stopped' ? 'Stopped' : off ? offWords : snapshot.status.state === 'paused' ? 'Paused' :
 		reading?.state === 'never' ? 'Not checked yet' : reading?.state === 'off' ? `Not checked since ${when(reading.at)}` : `On · ${snapshot.status.runs} run${snapshot.status.runs === 1 ? '' : 's'} today${(n => n ? ` · ${n}` : '')(nextCheck(reading?.next))}`
-	const bad = disconnected || snapshot?.status.state !== 'on' || health.length > 0 || reading?.state === 'off' || reading?.state === 'never'
-	const fullStatus = [status, reading?.at ? `Last checked ${when(reading.at)}` : undefined, reading?.machine].filter(Boolean).join(' · ')
+	const bad = disconnected || snapshot?.status.state === 'stopped' || (off ? silent || health.some(h => h.id !== 'paused') : snapshot?.status.state !== 'on' || health.length > 0 || reading?.state === 'off' || reading?.state === 'never')
+	const fullStatus = off && !disconnected && snapshot && snapshot.status.state !== 'stopped' ? status
+		: [status, reading?.at ? `Last checked ${when(reading.at)}` : undefined, reading?.machine].filter(Boolean).join(' · ')
 	const themeLabel = THEME_LABEL[themeChoice]
 	return <div className="classic-experience">
 		<a className="skip-link" href="#main" onClick={event => { event.preventDefault(); main.current?.focus() }}>Skip to content</a>
@@ -102,7 +113,7 @@ export default function Classic() {
 				{!readOnly && <div className="version-controls"><ExperienceToggle disabled={disconnected} /></div>}
 			</div>
 			<span className="classic-view-title">{tabs.find(([id]) => id === screen)?.[1] ?? 'Home'}</span>
-			<NoticeSlot className="classic-status" base={{ text: status, compact: status, full: fullStatus, bad }} notices={notices} />
+			<NoticeSlot className="classic-status" base={{ text: status, compact: status === offWords && silent ? 'Not running' : status, full: fullStatus, bad }} notices={notices} />
 			{!readOnly && <div className="classic-desktop-experience"><ExperienceToggle disabled={disconnected} /></div>}
 			<Button variant="ghost" className="theme-button" aria-label={`Theme: ${themeLabel}`} title={`Theme: ${themeLabel}`} onClick={() => setThemeChoice(themeChoice === 'auto' ? 'light' : themeChoice === 'light' ? 'dark' : 'auto')}><Icon name={themeChoice === 'auto' ? 'auto' : themeChoice === 'light' ? 'sun' : 'moon'} /></Button>
 			<Button variant="ghost" className="mobile-view-button" aria-label="Views" aria-expanded={menu} aria-controls="classic-view-menu" onClick={() => setMenu(!menu)}><Icon name="menu" /></Button>

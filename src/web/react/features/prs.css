@@ -1,0 +1,7 @@
+/* D-A239 MP3: "PRs: 5520 reviewing · 5521 not reviewing · +1". The outcomes ellipsize; "+N" never truncates. */
+.prs-line{display:flex;min-width:0;max-width:100%}
+.prs-line .prs-shown{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.prs-line .prs-more{flex:none;white-space:nowrap}
+.classic-queue-prs{display:block;min-width:0;font-size:13px;color:var(--text-2)}
+/* D-COST JB1/JB2: a stopped job's row line, in the NX7 warn token. */
+.row-stop{color:var(--warn)}

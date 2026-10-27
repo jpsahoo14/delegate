@@ -33,6 +33,8 @@ export function useSeen() {
 		}, latest.current.snapshot?.now ?? snapshot.now)
 		if (route.startsWith('done')) {
 			const filter = route.split('/')[1] ?? 'all'
+			// WDD: By Delegate saves its own look (data/wdd-look.ts).
+			if (filter === 'by-delegate') return
 			const filters = filter === 'all' ? ['replies', 'reviews', 'changes', 'reminders', 'learned', 'catchup'] : [filter === 'closed' ? 'catchup' : filter]
 			const timer = setTimeout(() => save(filters), 1500)
 			return () => clearTimeout(timer)

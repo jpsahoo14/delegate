@@ -14,12 +14,21 @@ const owner = z.discriminatedUnion('kind', [
 	z.object({ kind: z.literal('nobody') }), z.object({ kind: z.literal('others'), text }),
 ])
 const source = z.object({ id: text, itemId: text, kind: z.enum(['Knowledge', 'In the chat', 'Private', 'Record']), label: text, href: optional, stale: z.boolean().optional(), locked: z.boolean().optional() })
-const why = z.object({ reason: optional, confidence: optional, gaps: strings, searched: strings.optional(), waited: optional })
+// D-A281 B1 (PE v1.148 §17.6): a PR review's wait line, typed by SEND's reviewWaitOf; the page links it by kind, never by its words.
+const why = z.object({ reason: optional, confidence: optional, gaps: strings, searched: strings.optional(), waited: optional,
+	reviewWait: z.object({ kind: z.enum(['covered', 'waiting', 'off', 'none']), text, lineId: optional }).optional() })
 const change = z.object({
 	id: text, itemId: text, rev: text, n: z.number(), summary: text, target: text, system: text, action: text, detail: optional,
 	meaning: z.array(z.object({ text, warn: z.boolean().optional() })).optional(),
 	error: optional,
 	state: z.enum(['proposed', 'approved', 'made', 'uncertain', 'left-out']),
+	// WYS N1 (I32): its consent id, whether it is a vote and its PR (from the call), its verified origin and default tick, its option
+	// group (one complete change per option) and the Why? words.
+	changeId: optional, vote: z.boolean().optional(), pr: z.number().optional(),
+	origin: z.enum(['asked', 'promised', 'note', 'rule', 'suggested']).optional(), ticked: z.boolean().optional(),
+	group: z.object({ id: text, question: text, min: z.number().int().positive() }).optional(), why: optional,
+	// ✕: the offer that turns this suggestion down (HOST dont-suggest), on a card waiting for him.
+	dismissActionId: optional,
 })
 const draft = z.object({ id: text, itemId: text, rev: text, text, sendText: optional, marker: optional, commitment: z.boolean(), preview: z.boolean(), holding: z.boolean().optional() })
 const choice = z.object({ id: optional, label: text, note: optional, reply: optional })
@@ -36,6 +45,14 @@ const leftLine = z.object({
 		z.object({ kind: z.literal('action'), actionId: text }),
 	]).optional(),
 })
+// R10b: a review posted under his rule that waits for his approval (SEND's reviewDone, from receipts).
+const reviewDone = z.object({ pr: z.number(), reviewedAt: text, counts: z.object({ high: z.number(), medium: z.number(), low: z.number() }),
+	posted: z.array(z.object({ severity: z.enum(['High', 'Medium', 'Low']), file: optional, line: z.number().optional(), text, thread: optional })), more: z.number(),
+	to: text, reply: z.object({ text, teams: optional }).optional(), clean: z.boolean().optional(), fallback: optional, prUrl: optional,
+	openPr: z.enum(['primary', 'secondary']).optional(), voteChangeIds: strings.optional(), closed: z.boolean().optional() })
+// D-A281 B3: the line a reply was sent by, as frozen at send (wf.sent.rule), with that line's state now (WDD's edited since / deleted).
+const sentRule = z.object({ text, lineId: optional, state: z.enum(['current', 'edited', 'deleted']) })
+export type SentRule = z.infer<typeof sentRule>
 const item = z.object({
 	id: text, code: text, rev: text, type: text,
 	personId: text, chatId: text, at: text, askAt: optional, ask: optional, thread: z.array(thread), newCount: z.number(), earlier: optional, before: optional,
@@ -44,16 +61,24 @@ const item = z.object({
 	changeIds: strings, effectIds: strings.optional(), sourceIds: strings, noteIds: strings, todoIds: strings, actionIds: strings, primaryActionId: optional, workId: optional,
 	job: optional, why, status: text, attention: optional, attentionKind: z.enum(['reply-changed', 'run-failed', 'agent-setup', 'reason']).optional(), voteGap: z.object({ text, held: z.boolean(), quote: optional }).optional(), returned: z.object({ machine: text, at: text, report: z.boolean() }).optional(),
 	prReview: z.object({ pr: z.number(), voteRecommended: z.boolean(), findings: z.array(z.object({ text, file: optional, line: z.number().optional(), thread: z.object({ author: text, at: text, url: optional }).optional(), posts: z.boolean().optional(), changeId: optional })) }).optional(), mode: optional, editor: z.enum(['reply', 'answer', 'none']).optional(), block3: z.enum(['when-you-send', 'none']).optional(), openOn: optional, teams: optional, debug: strings.optional(),
+	// WYS N1: 'groups' when its changes carry origins (Delegate will / Suggested / Left for you, positive inclusion); absent for old items (R4).
+	wys: z.literal('groups').optional(),
 	promise: z.object({ said: text, failed: optional }).optional(), todos: strings.optional(), leftLines: z.array(leftLine).optional(), repaired: z.boolean().optional(),
 	// A76 (decision 55): the delivered reply, from wf.sent only; absent before delivery, during Undo, or once a newer turn exists.
-	sent: z.object({ at: text, teams: optional, text, by: z.enum(['you', 'rule']), holding: z.boolean().optional() }).optional(),
+	// D-A281 B3: rule, the line it was sent by as frozen at send (sent.rule), with that line's state now (WDD's edited since / deleted).
+	sent: z.object({ at: text, teams: optional, text, by: z.enum(['you', 'rule']), holding: z.boolean().optional(), rule: sentRule.optional() }).optional(),
 	// COST-USAGE AU4: "What it used: …", from the runs attributed to this item; absent when none were.
 	used: optional,
-	// R10b: a review posted under his rule that waits for his approval (SEND's reviewDone, from receipts).
-	reviewDone: z.object({ pr: z.number(), reviewedAt: text, counts: z.object({ high: z.number(), medium: z.number(), low: z.number() }),
-		posted: z.array(z.object({ severity: z.enum(['High', 'Medium', 'Low']), file: optional, line: z.number().optional(), text, thread: optional })), more: z.number(),
-		to: text, reply: z.object({ text, teams: optional }).optional(), clean: z.boolean().optional(), fallback: optional, prUrl: optional,
-		openPr: z.enum(['primary', 'secondary']).optional(), voteChangeIds: strings.optional(), closed: z.boolean().optional() }).optional(),
+	reviewDone: reviewDone.optional(),
+	// D-COST New-COST-1: a stopped job: its row line, the asker's news since the stop (with the message in Teams), and what it tried.
+	stop: z.object({ kind: z.enum(['capability', 'budget']), row: text, tried: strings.optional(),
+		news: z.object({ who: text, at: text, again: z.boolean(), teams: optional }).optional() }).optional(),
+	// D-A239 MP1: the PRs an ask names (two or more), in ask order: HOST's typed outcome in the PM's words, its short form for the row,
+	// a failed read's raw detail, and the PR's own actions (Try now / Try again / Skip this PR).
+	prs: z.array(z.object({ pr: z.number(), outcome: z.enum(['checking', 'reviewing', 'reviewed', 'not-reviewing', 'couldnt-read', 'gave-up']), line: text, short: text,
+		title: optional, url: optional, detail: optional, actionIds: strings.optional() })).optional(),
+	// D-A239 MP2: with two or more reviewed PRs, one review per PR, each with its own Approve PR <n> and when it was approved.
+	reviews: z.array(reviewDone.extend({ approveActionId: optional, approved: optional })).optional(),
 	runFailed: z.object({ at: text, line: optional, why: text, tried: strings.optional(), review: optional, toolsOff: z.boolean().optional() }).optional(), prLabel: optional,
 	ownReply: z.object({ text, at: text, teams: optional }).optional(), unsent: optional,
 	follow: z.object({ target: text, until: text, everyHours: z.number() }).optional(),
@@ -64,6 +89,8 @@ const item = z.object({
 const action = z.object({
 	id: text, item: text, rev: text, kind: text, label: text,
 	effect: z.enum(['local', 'sends', 'changes-system']),
+	// A58 S-A2 (decision 54): a hide verb; the client holds it 6 s with this Undo line and dispatches only when the window ends.
+	hold: z.object({ line: text }).optional(),
 	staleness: z.enum(['exact', 'none']), expect: optional,
 	todoIds: strings.optional(),
 	recovery: z.boolean().optional(),
@@ -104,6 +131,8 @@ const done = z.object({
 	checks: strings.optional(),
 	used: optional,
 	change: z.enum(['task', 'pr', 'invite', 'other']).optional(), comments: z.number().optional(), facts: z.number().optional(),
+	// D-A281 B1 (CR 19:19:08): the frozen line of THIS activity's own send, only when it is the item's current sent reply.
+	sentBecause: sentRule.optional(),
 })
 const watch = z.object({ id: text, code: text, what: text, last: text, changedAt: optional, update: z.boolean(), rev: text, every: z.number().optional(), endsAt: optional, by: optional, nextAt: optional, from: optional, actionIds: strings })
 const automation = z.object({ id: text, code: text, sentence: text, to: text, text, when: text, state: text, why: optional, next: optional, count: z.number(), rev: text, actionIds: strings })
@@ -113,6 +142,8 @@ const readBack = z.tuple([text, text, text])
 const wayLine = z.object({
 	id: text, text, textHash: text, source: z.enum(['owner', 'learned', 'setting']), group: z.enum(['needs-him', 'doing', 'off']),
 	status: z.enum(['reading', 'doing', 'waiting', 'off', 'limited', 'partly', 'cant-yet', 'unclear', 'conflict']), readBack,
+	// D-A239 MP4 (SEND a23bf49d): the line's one state; New and Classic render from it.
+	state: z.enum(['on', 'waiting', 'part', 'guidance', 'not-in-effect', 'reading', 'off']).optional(),
 	readBackLabel: text, readBackValue: text, statusText: text, redirect: z.literal(true).optional(), ruleIds: strings.optional(),
 	notYet: z.array(z.object({ clause: text, untilThen: text })).optional(), limited: strings.optional(), question: optional, setting: optional,
 	confirmedAt: optional, usedThisWeek: z.number(), conflictWith: strings.optional(),
@@ -129,7 +160,9 @@ export const entitiesSchema = z.object({
 	placements: table(placement), actions: table(action), doneEntries: table(done), watches: table(watch), automations: table(automation),
 	knowledgeProposals: table(z.object({ id: text, code: text, rev: text, topic: text, home: text, state: optional, factIds: strings, actionIds: strings })),
 	facts: table(z.object({ id: text, proposalId: text, type: text, text, who: optional, date: text, href: optional, private: z.boolean(), replaces: optional })),
-	health: table(z.object({ id: text, text, since: text, actionIds: strings })),
+	// D-COST JB3: short is the pill's words when they differ from the popover line; settings links the line to that Settings section.
+	// lead: the line's words before its "Settings ›" link, so the popover draws the PM sentence with the link in place.
+	health: table(z.object({ id: text, text, since: optional, short: optional, settings: optional, lead: optional, actionIds: strings })),
 	channels: table(z.object({ id: text, name: text, link: text, actionIds: strings })),
 	waiting: table(z.object({ id: text, code: text, to: text, chat: text, text, at: text, link: optional, actionIds: strings })),
 })
@@ -139,6 +172,8 @@ export const snapshotSchema = z.object({
 	seen: table(text), status: z.object({
 		state: z.enum(['on', 'paused', 'stopped']), autoSend: z.boolean(), runs: z.number(), cap: z.number(),
 		reading: z.object({ state: text, machine: optional, at: optional, here: optional, next: optional }),
+		// D-WATCH: the synced Watching fact (absent: On); machines counts machines with a seen file.
+		watching: z.object({ on: z.boolean(), since: optional, machine: optional, machines: z.number() }).optional(),
 	}),
 	summary: z.object({
 		off: z.object({ text, since: optional }).optional(), paused: z.boolean().optional(), handled: z.number(),
@@ -155,6 +190,28 @@ export const snapshotSchema = z.object({
 	busy: z.object({ now: z.number(), queued: z.number(), max: z.number(), scheduled: z.object({ n: z.number(), at: text, to: optional }).optional(), reason: z.object({ kind: z.enum(['ai', 'paused', 'off', 'slots']), at: optional, text: optional }).optional() }).optional(),
 	version: z.object({ version: optional, code: optional, fullCode: optional, tag: optional, auto: z.boolean(), channel: text, everyMin: z.number(), checkedAt: optional, failed: optional, last: z.object({ to: text, rolledBack: optional }).optional() }).optional(),
 	sinceLine: z.object({ at: text, parts: z.array(z.object({ text, href: text })) }).optional(),
+	// WDD N1 (joint-what-delegate-did.md): what Delegate did by itself, last 30 days, as facts (web/wdd.ts). Never in a snapshot page.
+	wdd: z.object({
+		from: text, since: optional, sinceDay: optional, section: strings, fresh: z.number(), undoable: z.number(),
+		rows: z.array(z.object({
+			id: text, kind: z.enum(['reply', 'ack', 'review', 'reminder', 'change']), at: text,
+			chat: z.object({ name: text, group: z.boolean() }), to: optional, item: optional, itemOpen: z.literal(true).optional(), check: optional,
+			parts: z.array(z.object({
+				kind: z.enum(['message', 'comment', 'thread']), text, outcome: z.enum(['posted', 'failed', 'unconfirmed']), why: optional, link: optional,
+				pr: z.number().optional(), file: optional, line: z.number().optional(), severity: z.enum(['high', 'medium', 'low']).optional(),
+			})),
+			because: z.discriminatedUnion('kind', [
+				z.object({ kind: z.literal('line'), lineId: text, text, state: z.enum(['current', 'edited', 'deleted']), lineHash: optional }),
+				z.object({ kind: z.literal('setting'), key: text, label: text, reminder: optional }),
+				z.object({ kind: z.literal('unknown') }),
+			]),
+			undoUntil: optional, undone: z.object({ at: text }).optional(), undoFailed: z.object({ why: optional }).optional(),
+			stopped: z.object({ lineId: text, mode: z.enum(['added', 'turned-off']), text, hash: text }).optional(), corrected: optional,
+			reminderStopped: z.object({ state: z.enum(['paused', 'ended']), at: text }).optional(),
+			reviewed: z.literal(true).optional(), fresh: z.boolean(), actionIds: strings.optional(), stoppable: z.literal(true).optional(),
+			preview: (plan => z.object({ chat: plan, person: plan, never: plan }).optional())(z.object({ mode: z.enum(['added', 'turned-off']), text }).optional()),
+		})),
+	}).optional(),
 	settingsActions: z.record(text, strings).optional(),
 	// R12b (PE A R28): Settings › Your way of working, exactly as SEND's ways.ts returns it (the page computes no status, grouping or
 	// read-back); limits from limitsCard(cfg); needsHim is the Settings nav count, toCheck SEND's linesToCheck. Absent while the engine says "not yet".
@@ -200,6 +257,8 @@ export const intentSchema = z.object({
 	input: z.object({
 		text: text.max(15_000).optional(), picks: z.array(z.number().int().positive()).max(100).optional(),
 		excluded: z.array(z.number().int().positive()).max(100).optional(),
+		// WYS N1-3: the exact changes he ticked (pageChangeId), and Send anyway's token past the consistency check.
+		include: z.array(text.regex(/^[0-9a-f]{64}$/)).max(100).optional(), claimReview: text.regex(/^[0-9a-f]{64}$/).optional(),
 		result: z.enum(['Both work', 'Issues found', 'Blocked']).optional(),
 		to: text.max(300).optional(), recipientId: text.max(200).optional(),
 		every: z.enum(['day', 'weekday', 'week']).optional(), at: text.max(5).optional(), day: z.number().int().min(0).max(6).optional(),
@@ -214,7 +273,9 @@ export const receiptSchema = z.object({
 	at: optional,
 	// What the click came to, saved when the runner completed it (#47): the page line is built from this, never from text.
 	outcome: z.object({ kind: z.enum(['sent', 'held', 'refused', 'queued', 'done', 'failed']), reasons: strings.optional(), send: z.literal(true).optional(),
-		action: optional, count: z.number().optional(), watch: z.object({ target: text, until: optional }).optional(), stale: z.literal(true).optional() }).optional(),
+		action: optional, count: z.number().optional(), watch: z.object({ target: text, until: optional }).optional(), stale: z.literal(true).optional(),
+		// HOST H0 (PE v1.137): an Undo's typed result; the page reads this, never the text.
+		undo: z.object({ outcome: z.enum(['undone', 'refused', 'failed']), reason: z.enum(['forbidden', 'replied-to', 'edited', 'other', 'too-late']).optional(), recorded: z.literal(false).optional() }).optional() }).optional(),
 	who: optional, chat: optional,
 })
 export type Snapshot = z.infer<typeof snapshotSchema>
@@ -231,5 +292,6 @@ export const emptyEntities = (): Entities => ({
 })
 
 // A37 (b) / PM A R37: the live vote-claim re-check on edited text (POST /api/v1/vote-check), the same rule as the card and Send.
-export const voteCheckSchema = z.object({ claim: z.object({ line: text, confirm: text, words: text, quote: text, pr: z.number().optional() }).optional() })
+export const voteCheckSchema = z.object({ claim: z.object({ line: text, confirm: text, words: text, quote: text, pr: z.number().optional() }).optional(),
+	action: z.object({ line: text, confirm: text, review: text, effectIds: strings }).optional() })
 export type VoteCheck = z.infer<typeof voteCheckSchema>

@@ -18,6 +18,8 @@ import { MessageBubble, messageText, ReviewPosted } from '../features/ItemCard.t
 import { SentTime } from '../features/SentTime.tsx'
 import { CODE, ItemCode } from '../features/ItemCode.tsx'
 import { DONE_FILTERS, isDoneFilter, matchesDone, type DoneFilter } from '../domain/done.ts'
+import { ByDelegateChip, WddKindChips, WddList } from '../features/WddList.tsx'
+import { wddSubline } from '../domain/wdd-words.ts'
 
 const filters = DONE_FILTERS
 const marks = [
@@ -71,7 +73,7 @@ export function ActivityRow({ supplied, first = false, last = false }: { supplie
 			<div className="classic-card classic-history">
 				{row.checks?.map((check, index) => <p key={index} className="classic-activity-meta classic-check">{check}</p>)}
 				{posted}
-				{row.why && <section className="classic-card-section classic-why-section"><ClassicWhy why={row.why} sourceIds={row.sourceIds} entities={entities} name={person.name} open={!!ui.folds?.why} onToggle={value => fold('why', value)} /></section>}
+				{(row.why || row.sentBecause) && <section className="classic-card-section classic-why-section"><ClassicWhy why={row.why ?? { gaps: [] }} sentBecause={row.sentBecause} sourceIds={row.sourceIds} entities={entities} name={person.name} open={!!ui.folds?.why} onToggle={value => fold('why', value)} /></section>}
 				{actions.some(action => marks.some(mark => mark.kind === action.kind)) && <section className="classic-card-section classic-feedback">
 					{!mark ? <Button variant="ghost" aria-label={person?.name ? `Tell ${NAME} the reply to ${person.name.split(' ')[0]} was not right` : 'Not right?'} disabled={blocked || busy} onClick={() => edit({ feedbackKind: 'wrong' })}>Not right?</Button> : <fieldset disabled={blocked || busy}><legend className="sr-only">What was not right</legend>
 						<div className="classic-segments" role="group" aria-label="What was not right">{marks.filter(mark => actions.some(action => action.kind === mark.kind)).map(choice => <Button key={choice.kind} variant="ghost" aria-pressed={ui.feedbackKind === choice.kind} onClick={() => edit({ feedbackKind: choice.kind })}>{choice.label}</Button>)}</div>
@@ -97,8 +99,11 @@ export function ActivityRow({ supplied, first = false, last = false }: { supplie
 }
 
 function RecentDone() {
-	const entities = useEntities(), entries = useDoneEntries(), fresh = useDoneLook(), { route } = useScreenNavigation()
+	const entities = useEntities(), entries = useDoneEntries(), fresh = useDoneLook(), { route } = useScreenNavigation(), wddNow = useSnapshot()
 	const requested = route.split('/')[1] ?? 'all', filter = requested === 'closed' ? 'catchup' : isDoneFilter(requested) ? requested : 'all'
+	// WDD N1 (Designer D1): By Delegate in Classic Done, the same rows and chips as New.
+	if (requested === 'by-delegate') return <section className="classic-done"><header className="classic-list-head"><div><h1>Done</h1><p>{wddSubline(wddNow?.wdd, wddNow?.now)}</p></div></header>
+		<nav className="classic-done-filters" aria-label="Done filters"><ByDelegateChip classic /><WddKindChips classic /></nav><div className="classic-done-stream"><WddList classic /></div></section>
 	// R12b step 3: done/rule/<ids> lists only what a line's grants sent (Settings › Your way of working links here with the line's ruleIds).
 	const ruleIds = requested === 'rule' ? (route.split('/')[2] ?? '').split(',').map(decodeURIComponent).filter(Boolean) : undefined
 	const rows = Object.values(entries).filter(row => ruleIds ? !!row.rule && ruleIds.includes(row.rule) : matchesDone(row, filter))
@@ -106,7 +111,7 @@ function RecentDone() {
 	const groups = [{ title: newer.length && earlier.length ? 'New' : '', rows: newer }, { title: newer.length && earlier.length ? 'Earlier this week' : '', rows: earlier }]
 	const closed = Object.values(entries).filter(row => row.kind === 'closed')
 	return <section className="classic-done"><header className="classic-list-head"><div><h1>Done</h1><p>{filter === 'catchup' ? 'What Delegate read for you and closed with no reply. Click a row to open it in Teams.' : 'The last 7 days. Open a reply to see what was sent and why.'}</p>{ruleIds && <p>Only what one of your lines did, the last 7 days · <a href="#classic/done">Show all</a></p>}</div></header>
-		<nav className="classic-done-filters" aria-label="Done filters">{Object.entries(filters).map(([key, value]) => {
+		<nav className="classic-done-filters" aria-label="Done filters"><ByDelegateChip classic />{Object.entries(filters).map(([key, value]) => {
 			const live = Object.values(entities.doneEntries).filter(row => value.kinds.includes(row.kind)), count = live.length, countNew = live.filter(row => fresh.has(row.id)).length
 			return count || key === filter && rows.length ? <a key={key} href={`#classic/done/${key}`} aria-current={filter === key ? 'page' : undefined} aria-pressed={filter === key}>{value.label} <span>{count}</span>{countNew > 0 && <small>{countNew} new</small>}</a> : null
 		})}</nav>

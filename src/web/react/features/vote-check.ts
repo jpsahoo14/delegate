@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { checkVoteClaim } from '../services/api.ts'
+import { checkActionClaim, checkVoteClaim } from '../services/api.ts'
 import type { VoteCheck } from '../domain/contracts.ts'
 
 type Claim = NonNullable<VoteCheck['claim']>
@@ -27,4 +27,25 @@ export function useLiveVoteCheck(code: string, text: string | undefined, hadClai
 	const current = result?.text === text ? result : undefined
 	if (current?.claim) seen.current = true
 	return { ...(current?.claim ? { claim: current.claim } : {}), cleared: !!current && !current.claim && !current.failed && seen.current, pending: !current && seen.current }
+}
+
+export type ActionCheck = NonNullable<VoteCheck['action']>
+// WYS (S1-4/S1-5, W4): the consistency check on the reply Send would send (his edit, else the stored draft) against exactly what is
+// ticked, run on the server with SEND's actionClaimGap so the card and Send agree. Until the first answer for the current words and
+// ticks, the last known result stands; the engine's own Send check holds anything typed or ticked faster than this.
+export function useActionCheck(code: string, text: string | undefined, include: string[] | undefined): { action?: ActionCheck; pending: boolean } {
+	const key = include === undefined ? undefined : JSON.stringify([text ?? null, [...include].sort()])
+	const [result, setResult] = useState<{ key: string; action?: ActionCheck }>()
+	useEffect(() => {
+		if (key === undefined || !include) { setResult(undefined); return }
+		const abort = new AbortController()
+		const timer = setTimeout(() => {
+			checkActionClaim(code, text, include, abort.signal).then(found => { if (!abort.signal.aborted) setResult({ key, ...(found.action ? { action: found.action } : {}) }) })
+				.catch(() => { if (!abort.signal.aborted) setResult(previous => previous && { ...previous, key: '' }) })
+		}, text === undefined ? 0 : 500)
+		return () => { clearTimeout(timer); abort.abort() }
+	// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [code, key])
+	if (key === undefined) return { pending: false }
+	return { ...(result?.action ? { action: result.action } : {}), pending: result?.key !== key }
 }

@@ -5,8 +5,8 @@ import type { NumbersPage, WindowKey } from './types.ts'
 
 export const SMALL = 10
 export const WINDOWS: WindowKey[] = ['this', 'last', '4w', 'all']
-export const WINDOW_LABEL: Record<WindowKey, string> = { this: 'This week', last: 'Last week', '4w': 'Last 4 weeks', all: 'Since you started' }
-const WHEN: Record<WindowKey, string> = { this: 'this week', last: 'last week', '4w': 'in the last 4 weeks', all: 'since you started' }
+export const WINDOW_LABEL: Record<WindowKey, string> = { this: 'This week', last: 'Last week', '4w': 'Last 4 weeks', all: 'Since you started', custom: 'Custom range' }
+const WHEN: Record<WindowKey, string> = { this: 'this week', last: 'last week', '4w': 'in the last 4 weeks', all: 'since you started', custom: 'in this range' }
 // The span a trend compares with: as long as the window, just before it.
 const PRIOR: Partial<Record<WindowKey, string>> = { this: 'last week', last: 'the week before', '4w': 'the 4 weeks before' }
 export const FIRST_WEEK = 'Your first week. Trends start next week.'

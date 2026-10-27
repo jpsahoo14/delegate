@@ -5,9 +5,9 @@
 import { shareHoldText, type ShareHold } from './share.ts'
 import type { FailureCause } from './normalize-report.ts'
 
-export type ActionKind = 'take-back' | 'approve' | 'send-anyway' | 'redraft' | 'send-edit' | 'answer' | 'pick' | 'later' | 'dismiss' | 'try-again' | 'write-own' | 'review-again' | 'reply-only' | 'reopen' | 'report' | 'todo-done' | 'add-vote'
+export type ActionKind = 'take-back' | 'approve' | 'send-anyway' | 'redraft' | 'send-edit' | 'answer' | 'pick' | 'later' | 'dismiss' | 'try-again' | 'write-own' | 'review-again' | 'reply-only' | 'reopen' | 'report' | 'todo-done' | 'add-vote' | 'one-more'
 	| 'approve-pr' | 'post-waiting'
-export type Mode = 'in-terminal' | 'agent-wait' | 'own-reply' | 'review-again' | 'review-done' | 'failed' | 'working' | 'declined' | 'held' | 'your-step' | 'choices' | 'answer' | 'answer-with-holding'
+export type Mode = 'in-terminal' | 'agent-wait' | 'own-reply' | 'review-again' | 'review-done' | 'failed' | 'working' | 'declined' | 'held' | 'your-step' | 'choices' | 'answer' | 'answer-with-holding' | 'stopped'
 	| 'reply-with-question' | 'changes' | 'reply' | 'holding' | 'not-sent' | 'todo' | 'unknown'
 export type HeldReason = { kind: 'ask-edited' | 'asker-wrote-again' | 'no-reply-needed'; changed?: string; why?: string; count?: number; at?: string }
 // PE A R31: SEND's ReportFailure.cause (core/normalize-report.ts), structured; target is page-safe.
@@ -59,6 +59,16 @@ export type CardFacts = {
 	reviewDone?: { high: number; approvable: boolean; moved?: { at?: string }; waiting: number }
 	// P0-10 (A R27): the PR's head moved during the review (wf.reviewAgain) and nothing asks the question; Review again still leads.
 	reviewAgain?: boolean
+	// D-COST New-COST-1: the item's job stopped (HOST's sticky job.stopped): no tool can do a step, or it reached its per-job limit.
+	stop?: JobStop
+}
+// The stop the card shows, from the job's typed fields only: its kind and need, the per-job limit and what the job spent, his asker
+// (a holding reply is then drafted for his OK), and the asker's newest message since the stop (news; nothing restarts on it).
+export type JobStop = { kind: 'capability' | 'budget'; need?: string; at: string; runs?: number; tokens?: number; asker: boolean; news?: { who: string; at: string; again: boolean } }
+// The PM's words (pm-cost-control.md, PM FINAL 04:03:13 / R3): the card's warn line for each stop.
+export function stopLine(s: JobStop): string {
+	if (s.kind === 'budget') return `Delegate stopped this job at its limit: ${s.runs ?? 0} AI runs, ${(s.tokens ?? 0).toLocaleString('en-US')} tokens. Nothing more runs unless you say so.`
+	return `Delegate can't do this: none of its tools can ${s.need ?? 'do this step'}. It stopped and didn't retry.`
 }
 export type CardState = {
 	mode: Mode; primary?: ActionKind; secondary: ActionKind[]; more: ActionKind[]
@@ -157,6 +167,16 @@ export const RULES: Rule[] = [
 	{ mode: 'in-terminal', when: f => f.hold?.kind === 'window', build: f => ({ primary: 'take-back', secondary: [], more: [], editor: 'none', warn: `Open in a terminal on ${f.hold!.machine ?? 'another machine'}${sinceWords(f.hold!.since)} · Delegate waits until you close it.` }) },
 	{ mode: 'agent-wait', when: f => f.hold?.kind === 'agent', build: f => ({ primary: 'write-own', secondary: [], more: ['dismiss'], editor: 'none', warn: f.hold!.text }) },
 	{ mode: 'own-reply', when: f => !!f.ownReply, build: () => ({ secondary: [], more: ['reopen'], editor: 'none' }) },
+	// D-COST JB1/JB2/JBΔ (Designer; PM R3): a stopped job waits for him and nothing restarts by itself. With an asker the holding reply
+	// is drafted in the one editor and Send holding reply leads; Try again (Can't do) or Run it once more (limit) is the outline next to
+	// it, and leads once the asker wrote again (the news line). Without an asker the retry leads. Close it is in ⋯.
+	// CR COST1 B3: a held holding reply keeps the held card (its reasons, Send anyway / Redraft and their digest), with the retry added.
+	{ mode: 'stopped', when: f => !!f.stop && !(f.held && f.draft), build: f => {
+		const s = f.stop!, retry: ActionKind = s.kind === 'budget' ? 'one-more' : 'try-again', warn = stopLine(s)
+		if (f.draft) return s.news ? { primary: retry, secondary: ['approve', 'later'], more: ['dismiss'], editor: 'reply', warn } : { primary: 'approve', secondary: [retry, 'later'], more: ['dismiss'], editor: 'reply', warn }
+		if (s.asker && s.kind === 'capability' && !s.news) return { primary: 'write-own', secondary: [retry, 'later'], more: ['dismiss'], editor: 'none', warn }
+		return { primary: retry, secondary: ['later'], more: ['dismiss'], editor: 'none', warn }
+	} },
 	{ mode: 'failed', when: f => !!f.failure || !!f.promiseFailed && !f.draft, build: f => {
 		// A failed check of the owner's own promise is checked again, as its own action does.
 		if (!f.failure) return { primary: 'approve', secondary: ['later'], more: ['dismiss'], editor: 'none', warn: `Couldn't check what your reply promised: ${f.promiseFailed}.` }
@@ -188,7 +208,9 @@ export const RULES: Rule[] = [
 		const asks = reasons.filter(r => r.kind !== 'no-reply-needed'), noReply = reasons.some(r => r.kind === 'no-reply-needed')
 		const primary: ActionKind = asks.some(r => r.changed) ? 'redraft' : 'send-anyway'
 		const other: ActionKind[] = primary === 'redraft' ? ['send-anyway'] : asks.length ? ['redraft'] : []
-		const secondary: ActionKind[] = [...other, ...(noReply ? ['dismiss' as const] : []), 'later']
+		// CR COST1 B3: on a stopped job the held card also offers its one retry (Try again / Run it once more).
+		const retry: ActionKind[] = f.stop ? [f.stop.kind === 'budget' ? 'one-more' : 'try-again'] : []
+		const secondary: ActionKind[] = [...other, ...retry, ...(noReply ? ['dismiss' as const] : []), 'later']
 		const said = heldLine(h.who, reasons)
 		return { primary, secondary, more: noReply ? [] : ['dismiss'], editor: 'reply', warn: said.line, ...(said.full ? { waited: `Why it waited:\n${said.full}` } : {}) }
 	} },
@@ -270,6 +292,8 @@ export function checkCard(f: CardFacts, s: CardState): string[] {
 	if (f.failure && f.draft && Date.parse(f.draft.at) > Date.parse(f.failure.at) && s.mode === 'failed') out.push('a failure older than the draft decided the card')
 	if (s.mode === 'unknown') out.push('no mode fits')
 	if (f.todos && s.mode === 'unknown') out.push('open to-dos have no card')
+	if (f.stop && !['in-terminal', 'agent-wait', 'own-reply', 'stopped', 'held'].includes(s.mode)) out.push('a stopped job has no stop card')
+	if (f.stop && s.mode === 'held' && !all.includes(f.stop.kind === 'budget' ? 'one-more' : 'try-again')) out.push('a held stopped job offers no retry')
 	if (f.working && !['in-terminal', 'agent-wait', 'own-reply', 'failed', 'working'].includes(s.mode)) out.push('a working item has no working card')
 	if (s.warn && LEAK.test(s.warn)) out.push('the warning leaks an id or an error')
 	if (s.editor === 'answer' && s.primary !== 'answer') out.push('an answer box without Answer')

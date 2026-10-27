@@ -3,6 +3,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { useAction, useSnapshot } from '../data/hooks.ts'
 import { saveSeen } from '../services/api.ts'
 import { useNavigation } from '../data/navigation.ts'
+import { closeOpenCardMenu } from '../features/card-more.ts'
 import { useNowLook } from '../data/look.ts'
 import { useScreenNavigation } from './navigation.tsx'
 import { useData } from '../data/store.ts'
@@ -33,6 +34,8 @@ export function useClassicSeen() {
 	useEffect(() => {
 		if (!snapshot) return
 		const filter = route.startsWith('done') ? route.split('/')[1] ?? 'all' : undefined
+		// WDD: By Delegate saves its own look (data/wdd-look.ts).
+		if (filter === 'by-delegate') return
 		const code = route.startsWith('focus/') ? route.split('/')[1] : route === 'focus' ? snapshot.classic?.needsIds[0] : undefined
 		const filters = filter ? filter === 'all' ? ['replies', 'reviews', 'changes', 'reminders', 'learned', 'catchup'] : [filter === 'closed' ? 'catchup' : filter] : code ? [`item:${code}`] : []
 		if (!filters.length) return
@@ -83,6 +86,8 @@ export function useClassicKeyboard(offline: boolean, queue: ClassicQueue) {
 			if (event.key === 'Escape') {
 				if (element?.closest('dialog')) return
 				if (useNavigation.getState().menu) { useNavigation.getState().setMenu(false); return }
+				// D-MORE-MENU (PE §3.3): an open card menu closes first, focusing its ⋯; Escape never leaves the page while one is open.
+				if (closeOpenCardMenu(true)) { event.preventDefault(); return }
 				if (field) { field.blur(); document.querySelector<HTMLElement>('.classic-open-card .item-card')?.focus({ preventScroll: true }); return }
 				useNavigation.getState().setMenu(false)
 				navigate('home'); return

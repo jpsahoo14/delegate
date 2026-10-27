@@ -40,3 +40,5 @@
 .ways-more>summary{list-style:none;cursor:pointer}.ways-more>summary::-webkit-details-marker{display:none}
 .ways-failed{display:flex;gap:6px;align-items:center;margin:0;color:var(--warn)}
 .ways-notes ul{list-style:none;padding:0;margin:6px 0 0;display:grid;gap:10px}.ways-note{border-left:2px solid var(--border-strong);padding-left:10px}.ways-note-text{white-space:pre-wrap;margin:0 0 4px}
+/* D-A239 MP4: Not in effect reads in the warn token, with its ✕. */
+.ways-row[data-state=not-in-effect] .ways-line3{color:var(--warn)}

@@ -9,6 +9,7 @@ import { NAME } from '../brand.ts'
 import { useSnapshot } from '../data/hooks.ts'
 import { Entry } from './Done.tsx'
 import { AiUse } from './AiUse.tsx'
+import { customOf, WindowPick } from './WindowPick.tsx'
 
 type NumberLink = NumbersData['model']['handled']['main']
 const number = (value: NumberLink, all = false) => value.key ? <a className={`num-link${all ? ' num-all' : ''}`} href={`#numbers/${value.key}`}>{value.text}{all && <Icon name="right" />}</a> : <span>{value.text}</span>
@@ -51,13 +52,13 @@ export default function Numbers() {
 	useEffect(() => { if (sub) heading.current?.focus() }, [sub, listKey, query.isFetching])
 	return <div className="new-numbers" aria-busy={query.isFetching}>
 		<header className="numbers-heading"><div><h1>Numbers</h1><p>Counted from {NAME}'s own log on all your machines. Nothing is estimated.</p></div>
-			<div className="num-pick"><label><span className="sr-only">Window</span><select value={window} onChange={event => { setWindow(event.target.value); navigate('numbers') }}>{[['this', 'This week'], ['last', 'Last week'], ['4w', 'Last 4 weeks'], ['all', 'Since you started']].map(([id, label]) => <option value={id} key={id}>{label}</option>)}</select></label>{range && <span className="num-range">{range}</span>}</div>
+			<div className="num-pick"><WindowPick window={window} setWindow={setWindow} hiddenLabel="sr-only" onPicked={() => navigate('numbers')} today={data?.today} />{range && !customOf(window) && <span className="num-range">{range}</span>}</div>
 		</header>
 		{query.error ? <div role="alert" className="num-fail"><p><strong>Could not load the numbers.</strong> {NAME} could not be reached from this page, so nothing was counted. Nothing is lost: they load when you open this tab or change the window.</p><p>{query.error.message}</p><Button variant="outline" onClick={() => void query.refetch()}>Try again</Button></div>
 			: !data || query.isFetching ? <p role="status">Counting…</p>
 				: sub ? <><a className="num-back" href="#numbers"><Icon name="left" />All numbers</a>{!selected ? <p>That list is not on this tab.</p> : <>
 					<h2 className="num-list-h" tabIndex={-1} ref={heading}>{selected.title} <span>{selected.groups.reduce((sum, group) => sum + group.codes.length, 0)}</span></h2>
-					{!selected.groups.some(group => group.codes.length) ? <p>Nothing counted here {({ this: 'this week', last: 'last week', '4w': 'last 4 weeks', all: 'since you started' } as const)[data.model.window.key]}.</p> : selected.groups.filter(group => group.codes.length).map((group, index) => <div key={index}>{selected.groups.length > 1 && <h3 className="section-h">{group.title} · {group.codes.length}</h3>}<CountedRows data={data} codes={group.keys ?? group.codes} /></div>)}
+					{!selected.groups.some(group => group.codes.length) ? <p>Nothing counted here {({ this: 'this week', last: 'last week', '4w': 'last 4 weeks', all: 'since you started', custom: 'in this range' } as const)[data.model.window.key]}.</p> : selected.groups.filter(group => group.codes.length).map((group, index) => <div key={index}>{selected.groups.length > 1 && <h3 className="section-h">{group.title} · {group.codes.length}</h3>}<CountedRows data={data} codes={group.keys ?? group.codes} /></div>)}
 				</>}</> : <>
 					<section className="num-card num-hero"><h2 className="num-t">Handled for you</h2>
 						<div className="num-head"><span className="num-big">{number(data.model.handled.main)}</span>{data.model.handled.trend && <span className={`num-trend ${data.model.handled.trend.dir ?? ''}`}>{data.model.handled.trend.text}</span>}</div>

@@ -51,32 +51,40 @@ function Verb({ action, label, primary = false, input, variant, onDone, onBefore
 }
 
 // The box that grows with its text: Enter saves, Shift+Enter is a new line, Esc cancels (C1).
-function LineBox({ value, onChange, onEnter, onEscape, onBlur, label, placeholder, autoFocus = false, disabled = false }: { value: string; onChange: (text: string) => void; onEnter: () => void; onEscape?: () => void; onBlur?: () => void; label: string; placeholder?: string; autoFocus?: boolean; disabled?: boolean }) {
+function LineBox({ value, onChange, onEnter, onEscape, onBlur, label, placeholder, autoFocus = false, disabled = false, id }: { value: string; onChange: (text: string) => void; onEnter: () => void; onEscape?: () => void; onBlur?: () => void; label: string; placeholder?: string; autoFocus?: boolean; disabled?: boolean; id?: string }) {
 	const ref = useRef<HTMLTextAreaElement>(null)
 	useEffect(() => { const box = ref.current; if (box) { box.style.height = 'auto'; box.style.height = `${box.scrollHeight}px` } }, [value])
 	const keys = (event: KeyboardEvent<HTMLTextAreaElement>) => {
 		if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); onEnter() }
 		else if (event.key === 'Escape' && onEscape) { event.preventDefault(); onEscape() }
 	}
-	return <textarea ref={ref} className="ways-box" rows={1} aria-label={label} placeholder={placeholder} value={value} autoFocus={autoFocus} disabled={disabled}
+	return <textarea ref={ref} id={id} className="ways-box" rows={1} aria-label={label} placeholder={placeholder} value={value} autoFocus={autoFocus} disabled={disabled}
 		onChange={event => onChange(event.currentTarget.value)} onKeyDown={keys} onBlur={onBlur} />
 }
 
-function Row({ line, lines, onDeleted }: { line: Line; lines: Line[]; onDeleted: (line: Line) => void }) {
+function Row({ line, lines, onDeleted, turnedOn, onTurnedOn }: { line: Line; lines: Line[]; onDeleted: (line: Line) => void; turnedOn: boolean; onTurnedOn: () => void }) {
 	const action = useWayActions(), act = useAction(), accepted = useAccepted(), { href } = useScreenNavigation(), key = wayKey(line.id)
 	const [editing, setEditing] = useState<string>(), [answer, setAnswer] = useState('')
 	// Step 3 (SEND a58444d8): only redirect:true is the Settings-only line (no switch, no grant); setting is the bound key for both.
 	const reading = line.status === 'reading', setting = !!line.redirect
-	const on = line.group !== 'off' && line.status !== 'off'
-	const toggle = action(key, on ? 'way-off' : 'way-on'), edit = action(key, 'way-edit'), remove = action(key, 'way-delete')
+	// CR B5 (D-A239 MP4): the switch shows SEND's effective state: On only for a line in effect (on, part, guidance). A line waiting for
+	// his OK, not in effect, or still being read never looks On; it has no switch action (Turn on / Not now / Read it again do that).
+	// Without a state (an older provider) the group/status reading stays.
+	const on = line.state ? ['on', 'part', 'guidance'].includes(line.state) : line.group !== 'off' && line.status !== 'off'
+	const pending = line.state === 'waiting' || line.state === 'not-in-effect' || line.state === 'reading'
+	// D-A239 MP4: Not in effect is a warn status (icon plus words) with its switch disabled and an outline Read it again; Turn on of a
+	// review line says what it now does for about 4 s (held by the section: the line moves to Doing), then settles to SEND's Doing this.
+	const notInEffect = line.state === 'not-in-effect', readAgain = action(key, 'way-read-again'), statusId = `way-status-${line.id}`
+	const toggle = pending ? undefined : action(key, on ? 'way-off' : 'way-on'), edit = action(key, 'way-edit'), remove = action(key, 'way-delete')
 	const save = async () => { const text = editing?.trim(); if (!text || text === line.text || !edit) { setEditing(undefined); return } if (await accepted(edit, { text })) setEditing(undefined) }
 	// Lines 2 and 3 are SEND's readBackLabel / readBackValue / statusText as given (no parsing). Doing's status links to Done, filtered to the
 	// line's grants (ruleIds), when usedThisWeek says it acted. Conflict: a link to the other line (by conflictWith), which flashes it (C1).
 	const used = line.status === 'doing' && line.usedThisWeek > 0 && !!line.ruleIds?.length
 	const other = line.status === 'conflict' ? lines.find(candidate => candidate.id === line.conflictWith?.[0]) : undefined
-	return <li className="ways-row" id={`way-${line.id}`} data-status={line.status} data-off={!on || undefined}>
-		<div className="ways-switch">{!setting && <Button variant="ghost" role="switch" aria-checked={on} aria-label={on ? 'On' : 'Off'} disabled={reading || !toggle}
-			title={reading ? `${NAME} is still reading this line.` : !toggle ? `${NAME} can't save this here yet.` : undefined} onClick={() => toggle && void act(toggle, {})}><span className="setting-switch-track" aria-hidden="true"><i /></span></Button>}</div>
+	return <li className="ways-row" id={`way-${line.id}`} tabIndex={-1} data-status={line.status} data-state={line.state} data-off={!on || undefined}>
+		<div className="ways-switch">{!setting && <Button variant="ghost" role="switch" aria-checked={on} aria-label={on ? 'On' : 'Off'} disabled={reading || pending || !toggle}
+			aria-describedby={pending && !reading && line.statusText ? statusId : undefined}
+			title={reading ? `${NAME} is still reading this line.` : pending ? line.statusText : !toggle ? `${NAME} can't save this here yet.` : undefined} onClick={() => toggle && void act(toggle, {})}><span className="setting-switch-track" aria-hidden="true"><i /></span></Button>}</div>
 		<div className="ways-text">
 			<div className="ways-line1">{editing !== undefined
 				? <LineBox value={editing} onChange={setEditing} onEnter={save} onBlur={save} onEscape={() => setEditing(undefined)} label="Edit this line" autoFocus />
@@ -84,9 +92,11 @@ function Row({ line, lines, onDeleted }: { line: Line; lines: Line[]; onDeleted:
 				<span className="chip ways-source">{SOURCE[line.source]}</span></div>
 			<p className="ways-line2">{reading ? <><span className="ways-spinner" aria-hidden="true" />{line.readBackValue || 'Reading…'}</>
 				: setting && line.setting ? <a href={href(`settings/${line.setting}`)}>{line.readBackValue}</a> : <>{line.readBackLabel && <strong>{line.readBackLabel}</strong>} {line.readBackValue}</>}</p>
-			{!reading && line.statusText && <p className="ways-line3">{used ? <a href={href(`done/rule/${line.ruleIds!.map(encodeURIComponent).join(',')}`)} title="See what it did in Done">{line.statusText}</a> : line.statusText}
+			{turnedOn ? <p className="ways-line3" role="status">On. {NAME} now reviews PRs as your line says. It never votes or approves.</p>
+				: !reading && line.statusText && <p className="ways-line3" id={statusId}>{notInEffect ? <span><span aria-hidden="true">✕ </span>{line.statusText}</span> : used ? <a href={href(`done/rule/${line.ruleIds!.map(encodeURIComponent).join(',')}`)} title="See what it did in Done">{line.statusText}</a> : line.statusText}
 				{other && <a href={`#way-${other.id}`} onClick={event => { event.preventDefault(); flashLine(other.id) }}>Show that line</a>}
-				{line.status === 'waiting' && <span className="ways-inline"><Verb action={action(key, 'way-confirm')} label="Turn on" primary /><Verb action={action(key, 'way-not-now')} label="Not now" variant="ghost" /></span>}</p>}
+				{notInEffect && readAgain && <span className="ways-inline"><Verb action={readAgain} label="Read it again" /></span>}
+				{line.status === 'waiting' && <span className="ways-inline"><Verb action={action(key, 'way-confirm')} label="Turn on" primary {...(line.setting === 'reviewRule' ? { onDone: onTurnedOn } : {})} /><Verb action={action(key, 'way-not-now')} label="Not now" variant="ghost" /></span>}</p>}
 			{line.status === 'unclear' && !reading && <div className="ways-answer"><LineBox value={answer} onChange={setAnswer} onEnter={async () => { const verb = action(key, 'way-answer'); if (verb && answer.trim() && await accepted(verb, { text: answer.trim() })) setAnswer('') }} label="Your answer" placeholder="Your answer" />
 				<Verb action={action(key, 'way-answer')} label="Save" input={{ text: answer.trim() }} /></div>}
 			{action(key, 'way-edit') && <ActionState item={action(key, 'way-edit')!.item} rev={action(key, 'way-edit')!.rev} />}
@@ -118,6 +128,9 @@ function SuggestionCard({ suggestion, onDismissed, onAccepting, onAccepted }: { 
 export function WaysSection({ classic = false }: { classic?: boolean }) {
 	const ways = useSnapshot()?.ways, action = useWayActions(), accepted = useAccepted()
 	const [draft, setDraft] = useState(''), [deleted, setDeleted] = useState<{ line: Line; until: number }[]>([]), [dismissed, setDismissed] = useState<{ id: string; how: 'not-now' | 'never'; until: number }>()
+	// D-A239 MP4: the line just turned on (a review line), whose confirmation replaces its line 3 for about 4 s.
+	const [turnedOn, setTurnedOn] = useState<string>()
+	useEffect(() => { if (!turnedOn) return; const timer = setTimeout(() => setTurnedOn(undefined), 4000); return () => clearTimeout(timer) }, [turnedOn])
 	const [, tick] = useState(0)
 	useEffect(() => { if (!deleted.length && !dismissed) return; const timer = setInterval(() => tick(n => n + 1), 1000); return () => clearInterval(timer) }, [deleted.length, !!dismissed])
 	// PM A R32 / PE A R33: after an unchanged Add it, "Added to your way of working." stands in the card's place for 6 s (paused while
@@ -150,7 +163,8 @@ export function WaysSection({ classic = false }: { classic?: boolean }) {
 		{/* PE 05:24 B1: a real engine error says so here; the old lists never stand in for it. */}
 		{ways.failed && <p className="ways-failed" role="alert"><Icon name="warn" /> Your way of working couldn&apos;t be read just now. Nothing was changed.</p>}
 		
-		<div className="ways-add"><LineBox value={draft} onChange={setDraft} onEnter={addLine} label="Add a line" placeholder="Add a line, e.g. “Always ask me before replying to anyone at Acme.”" />
+		{/* D-A281 B1: a PR review waiting on "none of your lines covers this" links here (id way-add), focused, nothing prefilled. */}
+		<div className="ways-add"><LineBox id="way-add" value={draft} onChange={setDraft} onEnter={addLine} label="Add a line" placeholder="Add a line, e.g. “Always ask me before replying to anyone at Acme.”" />
 			<Verb action={add} label="Add" input={{ text: draft.trim() }} />{add && <ActionState item={add.item} rev={add.rev} />}</div>
 		{added ? <p className="ways-undo ways-added" role="status" tabIndex={0} onMouseEnter={() => setAdded(state => state && { ...state, paused: true })} onMouseLeave={() => setAdded(state => state && { ...state, paused: false })}
 			onFocus={() => setAdded(state => state && { ...state, paused: true })} onBlur={() => setAdded(state => state && { ...state, paused: false })}><Icon name="check" /> {added.receipt ?? 'Added to your way of working.'}{undoAdd && <> · <Verb action={undoAdd} label="Undo" variant="ghost" onDone={() => setAdded(undefined)} /><ActionState item={undoAdd.item} rev={undoAdd.rev} /></>}</p>
@@ -159,7 +173,8 @@ export function WaysSection({ classic = false }: { classic?: boolean }) {
 				onAccepting={() => { beforeAdd.current = ways.lines.map(line => line.id) }} onAccepted={(receipt, edited) => setAdded({ before: beforeAdd.current, left: UNDO_MS, paused: false, edited, ...(receipt ? { receipt } : {}) })} />}
 		{live.map(({ line }) => <p key={line.id} className="ways-undo" role="status">Deleted · <Verb action={restore} label="Undo" variant="ghost" input={{ text: `${line.id}\n${line.textHash}` }}
 			onDone={() => setDeleted(list => list.filter(entry => entry.line.id !== line.id))} /></p>)}
-		{groups.map((rows, n) => <ul className="ways-list" key={n}>{rows.map(line => <Row key={line.id} line={line} lines={ways.lines} onDeleted={gone => setDeleted(list => [...list, { line: gone, until: Date.now() + UNDO_MS }])} />)}</ul>)}
+		{groups.map((rows, n) => <ul className="ways-list" key={n}>{rows.map(line => <Row key={line.id} line={line} lines={ways.lines} onDeleted={gone => setDeleted(list => [...list, { line: gone, until: Date.now() + UNDO_MS }])}
+			turnedOn={turnedOn === line.id} onTurnedOn={() => setTurnedOn(line.id)} />)}</ul>)}
 		{/* PE S3 (b): his old prose paragraphs are notes, not lines: shown once, collapsed, verbatim, each with Make it a line (the normal Add a
 		    line path) and Remove. The page says the list above is what Delegate does and the notes change nothing. */}
 		{(ways.notes?.length ?? 0) > 0 && <details className="ways-notes"><summary>Your notes from before ({ways.notes!.length})</summary>

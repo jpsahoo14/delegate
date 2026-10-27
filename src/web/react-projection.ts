@@ -1,9 +1,12 @@
-import type { Store } from '../store/state.ts'
+import { BUSY, type Store } from '../store/state.ts'
+import { amendActions } from '../store/actions.ts'
 import type { Parsed } from '../core/verbs.ts'
 import { parseVerbs } from '../core/verbs.ts'
 import { hashOf } from '../knowledge/format.ts'
 import { card, knowledge as knowledgeCard, readingOf, view, who as displayWho, type ItemCard, type SourceRow, type Who } from './view.ts'
-import { firstLeft, nextView, snapshot as placementSnapshot, place, todoHeadline, type NextRow } from './next.ts'
+import { every, firstLeft, nextView, ownerDay, snapshot as placementSnapshot, place, todoHeadline, type NextRow } from './next.ts'
+import { DEFAULT_POLL } from '../core/schedule.ts'
+import { wddView } from './wdd.ts'
 import { emptyEntities, IMAGE_TOKEN, snapshotSchema, type Action, type Intent, type Snapshot } from './react/domain/contracts.ts'
 import { knowledgeOf } from '../runner/proposals.ts'
 import { find, teamsMessage } from './model/find.ts'
@@ -11,9 +14,11 @@ import { freshOf, rowMark } from './model/derive.ts'
 import { NAME } from '../brand.ts'
 import { toolServerKey, toolsView } from './settings.ts'
 import { ignoreServer, retryServer } from '../runner/catalog.ts'
-import { whyWaited } from '../core/policy.ts'
-import { cardContext, cardFacts } from '../core/card-facts.ts'
-import { normalizeReport } from '../core/normalize-report.ts'
+import { reviewWaitOf, whyWaited } from '../core/policy.ts'
+import { ruleLines, ruleTextHash } from '../store/rules.ts'
+import { cardContext, cardFacts, itemReview, itemReviews, jobStopOf, reviewApproval } from '../core/card-facts.ts'
+import { legacyEffectOrigins, normalizeReport } from '../core/normalize-report.ts'
+import { actionClaimConfirmation, actionClaimGap, actionClaimReview } from '../core/action-claims.ts'
 import { usedLines } from './numbers.ts'
 import { displayedAt, needsOrder } from './react/domain/needs-order.ts'
 // #50 (SEND 7533bea1): the status an item gets when its comments were repaired and wait to be posted.
@@ -29,6 +34,9 @@ function waysFailed(store: Store, fn: string, error: unknown) {
 }
 // R10b (joint C2): Approve's meaning line, shown under the bar whichever role Approve has.
 const APPROVE_PR_MEANING = 'Approves as you. The PR is unchanged since the review.'
+// D-COST New-COST-1: HOST-COST-1's page verb for one more run (PE §8.3/§8.4), declared; the Verb union carries it once HOST's
+// reviewed types are merged, and this cast goes then.
+const ONE_MORE = 'one-more' as string as Parsed['verb']
 // 0.2.43 (PE A R22): the words card-state builds its warn and strip from go through the same id net as the page's text, so no id or
 // key=value pair reaches a warn line (and checkCard's "the warning leaks an id" stops). Digests and times are left as they are.
 function scrubFacts(f: CardFacts): CardFacts {
@@ -48,12 +56,13 @@ function scrubFacts(f: CardFacts): CardFacts {
 		...(f.voteGap ? { voteGap: { ...f.voteGap, text: idNet(f.voteGap.text) } } : {}),
 	}
 }
-import { cardState, checkCard, failLine, type ActionKind, type CardFacts } from '../core/card-state.ts'
+import { cardState, checkCard, failLine, type ActionKind, type CardFacts, type JobStop } from '../core/card-state.ts'
 import { policyContext } from '../runner/autosend.ts'
 import { isPersona } from '../core/intake.ts'
 import { PAGE_REPLY_CHANGED, automationApprovalRev, pageChangeId, pageDigest, pageOptionId, leftRev, proposalApprovalRev, workflowApprovalRev } from '../core/page-approval.ts'
-import type { Config, PageApproval, Workflow } from '../core/types.ts'
-import { isVote, meaningParts, pendingEffects, refusal, shown, voteValue } from '../core/effects.ts'
+import type { Config, Effect, PageApproval, Workflow } from '../core/types.ts'
+import { PAGE_CONTROL_VERBS } from '../core/types.ts'
+import { effectCapability, isVote, meaningParts, pendingEffects, prIdOf, refusal, sameHead, shown, voteValue } from '../core/effects.ts'
 import { byDate, forPage, sourceChip } from './model/format.ts'
 import { isNew, itemSeen, newCount, seenIn, sinceOf } from './model/derive.ts'
 import { byEnd, watchItemTarget, watchTarget } from '../runner/track.ts'
@@ -68,12 +77,12 @@ import { stillApproved } from '../runner/jobs.ts'
 import { prOf, prTarget } from '../runner/probe.ts'
 import { aboutPr } from '../runner/apply.ts'
 import { findingFor } from '../runner/review-autonomy.ts'
-import { acceptSuggestion, addLine, answerLine, confirmLine, deleteLine, deleteNote, dismissSuggestion, editLine, limitsCard, linesToCheck, makeNoteLine, needsHim, reconsiderSuggestion, restoreLine, setLineOff, suggestions, undoAcceptSuggestion, undoDismiss, wayLines, wayNotes, type WayTurnedDown, type WayWriteResult } from '../core/ways.ts'
+import { stopFromAction, WAY_CHANGED, acceptSuggestion, addLine, answerLine, confirmLine, deleteLine, readLineAgain, deleteNote, dismissSuggestion, editLine, limitsCard, linesToCheck, makeNoteLine, needsHim, reconsiderSuggestion, restoreLine, setLineOff, suggestions, undoAcceptSuggestion, undoDismiss, wayLines, wayNotes, type WayTurnedDown, type WayWriteResult } from '../core/ways.ts'
 import { APPROVAL_WORD, voteMention } from '../core/vote-claims.ts'
 import { personName } from '../core/format.ts'
 import { placeOf } from './model/place.ts'
 import { leftSourceWords, leftWords } from './model/left-words.ts'
-import { groupChoices } from '../runner/review-gate.ts'
+import { groupChoices, unitOutcome } from '../runner/review-gate.ts'
 import { restoreOffRecord } from '../runner/offrecord.ts'
 import { chatIdNet, idNet, pageText, takePageTextLeaks } from './page-text.ts'
 import { pageManagementRev, workflowManagementRev } from '../store/page-revision.ts'
@@ -81,10 +90,14 @@ import { active, isNonAdoPrLink, openLeft, pendingParts, voteClaimGap, voteSente
 import { heldBy } from '../runner/owner.ts'
 import { voteClaimReview } from '../runner/vote-claim.ts'
 import { voteHold } from '../core/owner-send.ts'
-import { habitUndoable, undoMs } from '../runner/habits.ts'
+import { dismissKey, habitUndoable, undoMs } from '../runner/habits.ts'
+import { scrub } from '../core/secrets.ts'
 
 type Immediate = { accepted: boolean; text: string }
-export type Binding = { action: Action; resolve: (input: Intent['input']) => Parsed; execute?: (input: Intent['input']) => Immediate; management?: boolean }
+// WYS N1-3 (I32, PE 16:25:46Z I-a): a page approval on an origin-bearing revision names exactly the changes he ticked (include, by
+// pageChangeId) and, past the consistency check, the Send anyway token (actionClaimReview). They ride with the parsed verb to the answer.
+export type PageParsed = Parsed & { include?: string[]; actionClaimReview?: string }
+export type Binding = { action: Action; resolve: (input: Intent['input']) => PageParsed; execute?: (input: Intent['input']) => Immediate; management?: boolean }
 export class IntentError extends Error {
 	readonly status: number
 	constructor(status: number, message: string) { super(message); this.status = status }
@@ -193,11 +206,17 @@ const answerChips = (code: string, question?: string) => [...new Set([...(questi
 const hintChips = (wf: Workflow, code: string, question?: string) => wf.questionHint === undefined ? answerChips(code, question)
 	: wf.question?.trim() ? [...new Set((wf.questionHint.answers ?? []).map(text => text.trim()).filter(Boolean))].map(text => ({ label: text.replace(/^./, first => first.toUpperCase()), text })) : []
 // The live re-check on edited text (POST /api/v1/vote-check): the same rule, on the text he is typing, for an item waiting on him.
-export function voteCheck(store: Store, code: string, text: string): { claim?: VoteClaim } {
+// WYS (S1-4/S1-5, W4): with the ticked set (include), also SEND's consistency check on the same words, and the exact Send anyway token
+// for them; without text it checks the stored draft, the words Send would send. Old originless revisions keep the engine's own check.
+export type ActionCheck = { line: string; confirm: string; review: string; effectIds: string[] }
+export function voteCheck(store: Store, code: string, text?: string, include?: string[]): { claim?: VoteClaim; action?: ActionCheck } {
 	const wf = store.byCode(code)
 	if (!wf || wf.state !== 'needs_human') return {}
-	const claim = voteClaimOf(store, wf, text)
-	return claim ? { claim: { ...claim, line: pageText(claim.line), confirm: pageText(claim.confirm) } } : {}
+	const words = text ?? wf.draft?.text ?? ''
+	const claim = text === undefined ? undefined : voteClaimOf(store, wf, words)
+	const gap = include && !legacyEffectOrigins(wf) ? actionClaimGap(words, wf.effects ?? [], include) : undefined
+	return { ...(claim ? { claim: { ...claim, line: pageText(claim.line), confirm: pageText(claim.confirm) } } : {}),
+		...(gap ? { action: { line: pageText(gap.why), confirm: pageText(actionClaimConfirmation(gap)), review: actionClaimReview(wf, words, include!), effectIds: gap.effectIds } } : {}) }
 }
 
 export function reactProjection(store: Store, query = '', visit?: { since?: string; fallbackSince: string }, opts: { only?: string } = {}): { snapshot: Snapshot; bindings: Map<string, Binding> } {
@@ -243,7 +262,7 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 			return id
 		})
 	}
-	function offer(item: string, rev: string, kind: string, label: string, resolve: Binding['resolve'], options: Partial<Pick<Action, 'input' | 'effect' | 'staleness' | 'expect' | 'todoIds' | 'unavailable' | 'needsConfirm' | 'meaning' | 'expiresAt' | 'selection' | 'recovery' | 'reviewed'>> = {}, prefix = item): string {
+	function offer(item: string, rev: string, kind: string, label: string, resolve: Binding['resolve'], options: Partial<Pick<Action, 'input' | 'effect' | 'staleness' | 'expect' | 'todoIds' | 'unavailable' | 'needsConfirm' | 'meaning' | 'expiresAt' | 'selection' | 'recovery' | 'reviewed' | 'hold'>> = {}, prefix = item): string {
 		const id = `${prefix}/${kind}`
 		if (options.staleness === undefined && !managementRevisions.has(item)) {
 			const workflow = byCode.get(item)
@@ -377,10 +396,20 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 	// An item open in a terminal has one page step, Take it back (#43), whatever its state.
 	const editable = new Set([...workflows.filter(workflow => workflow.state === 'needs_human' || workflow.openOn && workflow.state !== 'done').map(workflow => workflow.code), ...stoppedCodes])
 	const ownerRules = store.rules()
+	// D-A281 (PE v1.148 §17.6): a grant or line id resolves to his line (its own id, or one of the grant ids it carries).
+	let ruleLinesNow: ReturnType<typeof ruleLines> | undefined
+	const lineOf = (id: string) => (lines => lines.find(line => line.id === id) ?? lines.find(line => line.grantIds?.includes(id) || line.compile?.grants.some(grant => grant.id === id)))(ruleLinesNow ??= ruleLines(store))
+	// D-A281 B3: the line a reply was sent by, frozen at send (SEND's wf.sent.rule): his own words exactly as written (CR 19:19:08 B3: owner
+	// content, escaped by the page, never the engine-hint sentence filter), and that line now: its id, or "edited" / "deleted".
+	const frozenRule = (rule: NonNullable<NonNullable<Workflow['sent']>['rule']>) => (line => ({ text: rule.text, ...(line ? { lineId: line.id } : {}),
+		state: !line ? 'deleted' as const : ruleTextHash(line.text) !== rule.hash ? 'edited' as const : 'current' as const }))(lineOf(rule.id))
 	// R11(3): the W entries a follow-up may return to, and the items by id (a shared job's other parents), read once.
 	const waitLinks = store.waiting(), byId = new Map(workflows.map(w => [w.id, w]))
 	// R10b: the row line of a review that waits for his approval, by item code (PM §2).
 	const reviewRows = new Map<string, string>()
+	// D-COST JB1/JB2: a stopped job's row line 3, by item code; and the daily AI run limit, read once (PM A3).
+	const stopRows = new Map<string, string>(), dailyCap = cfg.dailyRuns ?? 200, dailyFull = store.runsToday() >= dailyCap
+	const DAILY_LEAD = `Daily AI run limit reached (${dailyCap}). New AI work starts tomorrow. Change the limit in`, DAILY_WORDS = `${DAILY_LEAD} Settings`
 	for (const wf of workflows) {
 		const c = readyCards.get(wf.code) ?? card(store, wf, knowledge), id = c.code, rev = presentationRev(wf, cfg)
 		const { who, chat, draft, changes, notes: cardNotes, why, work, replyOnly, reviewAgain, ...rest } = c
@@ -395,10 +424,21 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 		}
 		const pending = (wf.effects ?? []).filter(effect => !effect.done && !effect.off)
 		const approved = stillApproved(wf, wf.job ? facts.jobs.get(wf.job) : undefined)
+		// WYS N1-1: what each change is, from its structured fields only: its consent id, origin and default tick (asked/promised/note/rule
+		// and not in a group), its option group, and the Why? words (PM round 2). Votes and PRs come from the call, never the line's words (N1-3).
+		const asker = personName(wf.asker?.name ?? '').split(/\s+/)[0] || undefined
+		const wysOf = (effect: Effect) => {
+			const reason = effect.reason?.text ? pageText(effect.reason.text).replace(/^Suggested:\s*/i, '') : undefined
+			const why = effect.origin === 'asked' && effect.askQuote ? `${asker ?? 'They'} asked: "${pageText(effect.askQuote)}"`
+				: effect.origin === 'suggested' ? effect.reason?.kind === 'asked' ? `Suggested: ${asker ? `${asker}'s` : 'Their'} message may ask for this.` : reason ? `Suggested: ${reason}` : undefined : reason
+			return { changeId: pageChangeId(effect), vote: isVote(effect.call), ...((pr => (pr ? { pr } : {}))(prIdOf(effect.call))),
+				...(effect.origin ? { origin: effect.origin, ticked: ['asked', 'promised', 'note', 'rule'].includes(effect.origin) && !effect.group && !isVote(effect.call) } : {}),
+				...(effect.group ? { group: { id: effect.group.id, question: pageText(effect.group.question), min: effect.group.min } } : {}), ...(why ? { why } : {}) }
+		}
 		const changeIds = changes.map((change, n) => {
 			const key = `${id}/change/${pageChangeId(pending[n])}`
 			const blocked = refusal(cfg, pending[n], prTarget(store, wf))
-			entities.changes[key] = { ...change, id: key, itemId: id, rev, state: maybeOf(store, pending[n]) ? 'uncertain' : approved ? 'approved' : 'proposed',
+			entities.changes[key] = { ...change, ...wysOf(pending[n]), id: key, itemId: id, rev, state: maybeOf(store, pending[n]) ? 'uncertain' : approved ? 'approved' : 'proposed',
 				error: blocked ? `This change cannot be made: ${blocked}.` : pending[n].error ? pageText(pending[n].error) || 'The change could not be confirmed. Check the target before retrying.' : undefined }
 			return key
 		})
@@ -407,7 +447,7 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 			if (!entities.changes[key]) {
 				const display = shown(effect)
 				entities.changes[key] = {
-					id: key, itemId: id, rev, n: index + 1, summary: display.text, target: display.loc || display.system, system: display.system,
+					...wysOf(effect), id: key, itemId: id, rev, n: index + 1, summary: display.text, target: display.loc || display.system, system: display.system,
 					action: display.line, detail: display.detail || undefined, meaning: meaningParts(effect),
 					state: effect.done || madeBefore(store, effect) ? 'made' : effect.off ? 'left-out' : maybeOf(store, effect) ? 'uncertain' : approved ? 'approved' : 'proposed',
 				}
@@ -440,7 +480,32 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 		const actionIds: string[] = []
 		const expect = rev
 		expectations.set(id, expect)
-		const approval = (input: Intent['input']): Parsed => {
+		// WYS N1-3 (I32): an origin-bearing revision is approved by naming exactly what he ticked; votes are never in that list (they keep
+		// their Approve action). Without a selection the page refuses rather than narrowing, unless there is nothing to choose. Old
+		// originless revisions keep "all except" (R4).
+		const positive = !legacyEffectOrigins(wf), offeredIds = new Set(pending.filter(effect => !isVote(effect.call)).map(pageChangeId))
+		const chosen = (input: Intent['input']): Pick<PageParsed, 'include' | 'actionClaimReview'> => {
+			if (!positive) return {}
+			if (input?.excluded?.length) throw new IntentError(422, 'Choose the changes on the current page first.')
+			if (input?.include === undefined && offeredIds.size) throw new IntentError(422, 'Choose the changes on the current page first.')
+			const include = [...new Set(input?.include ?? [])]
+			if (include.some(change => !offeredIds.has(change))) throw new IntentError(422, 'That change is not offered.')
+			return { include, ...(input?.claimReview ? { actionClaimReview: input.claimReview } : {}) }
+		}
+		// WYS N1-2 ✕ (PE 16:55:13Z (B); HOST 29809a29, SEND f99097d7): each suggestion he may turn down has a local offer on the exact
+		// card revision. Its resolve holds the effect, so it sends HOST's own scope key and the scrubbed summary HOST checks; no change ids,
+		// no approval digest. The page holds it 6 s with Undo (decision 59) before dispatch.
+		if (wf.state === 'needs_human') pending.forEach((effect, n) => {
+			if (effect.origin !== 'suggested' || isVote(effect.call) || !changeIds[n]) return
+			const key = dismissKey(effectCapability(effect), effect.target), label = scrub(effect.summary)
+			entities.changes[changeIds[n]].dismissActionId = offer(id, rev, `dismiss-suggestion-${n + 1}`, "Don't suggest this", () => ({ code: id, verb: 'dont-suggest', key, label }),
+				{ staleness: 'exact', expect, meaning: `${NAME} stops suggesting this here. It is listed in Settings › Suggestions you turned down, where you can Reconsider it. Nothing is sent.` })
+		})
+		const approval = (input: Intent['input']): PageParsed => {
+			if (positive) {
+				if (input?.text !== undefined) throw new IntentError(422, 'Use Send your version to send an edit.')
+				return { code: id, verb: 'ok', ...chosen(input) }
+			}
 			const excluded = [...new Set(input?.excluded ?? [])]
 			if (excluded.some(n => !changes.some(change => change.n === n))) throw new IntentError(422, 'That change is not offered.')
 			if (input?.text !== undefined) throw new IntentError(422, 'Use Send your version to send an edit.')
@@ -502,19 +567,40 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 		// L2b B1 (PE 00:30): with a draft the draft decides the card (Send and the editor lead): the group question reaches card-state as
 		// a question, and the picker sits in "Delegate also asks" with its own Save. Without a draft it is the card's choices (Save leads).
 		const groupAside = !!groupPick && !!draft
-		const fx = scrubFacts(cardFacts({ wf, job, ...(wf.openOn && wf.state !== 'done' ? { window: { machine: wf.openOn, ...(windowRec?.since ? { since: windowRec.since } : {}) } } : {}), card: { question: groupAside ? groupPick.prompt : groupPick ? undefined : c.question, draft, choices: groupAside ? c.choices : choices, ownReply: c.ownReply, promise: c.promise, reviewAgain }, changes: changes.length, agentWait, todos: todoIds.length, warns, ...(voteGap ? { voteGap: { ...voteGap, why: voteClaim?.line ?? voteGap.why } } : {}), voteRecommended }))
+		// D-COST New-COST-1 (PE §8.3, declared shape): the item's one stopped job (its own, or a PR unit's), never several. With an asker,
+		// news is his newest message since the stop: "asked again" when it repeats an ask the job already has, else "added something".
+		// New-SKIP (PE §14.6 (b)): a skipped PR unit's job no longer counts, so after its Skip the card leaves stopped mode unless another stops.
+		const stopJob = (jobs => (jobs.length === 1 ? jobs[0] : undefined))([...new Set([wf.job, ...(wf.prs ?? []).filter(unit => !unit.skip).map(unit => unit.job)])].flatMap(jobId => {
+			const candidate = jobId ? facts.jobs.get(jobId) : undefined
+			return candidate && jobStopOf(candidate).stopped ? [candidate] : []
+		}))
+		const stopped = stopJob ? jobStopOf(stopJob) : undefined
+		const stopNews = stopped?.stopped && wf.asker && wf.startedBy !== 'owner' ? store.thread(wf.id).filter(message => !message.byOwner && message.at > stopped.stopped!.at).at(-1) : undefined
+		const stop: JobStop | undefined = stopped?.stopped && {
+			kind: stopped.stopped.kind, at: stopped.stopped.at, asker: !!wf.asker && wf.startedBy !== 'owner',
+			...((need => (need ? { need } : {}))(pageText(stopped.stopped.need))),
+			...(stopped.stopped.kind === 'budget' && stopped.spent ? { runs: stopped.spent.runs, tokens: stopped.spent.tokensIn + stopped.spent.tokensOut } : {}),
+			...(stopNews ? { news: { who: stopNews.from.name.split(/\s+/)[0] || 'They', at: stopNews.at, again: stopJob!.asks.filter(ask => ask === `${wf.asker!.name}: ${stopNews.text}`).length > 1 } } : {}),
+		}
+		const fx = scrubFacts(cardFacts({ wf, job, ...(stop ? { stop } : {}), ...(wf.openOn && wf.state !== 'done' ? { window: { machine: wf.openOn, ...(windowRec?.since ? { since: windowRec.since } : {}) } } : {}), card: { question: groupAside ? groupPick.prompt : groupPick ? undefined : c.question, draft, choices: groupAside ? c.choices : choices, ownReply: c.ownReply, promise: c.promise, reviewAgain }, changes: changes.length, agentWait, todos: todoIds.length, warns, ...(voteGap ? { voteGap: { ...voteGap, why: voteClaim?.line ?? voteGap.why } } : {}), voteRecommended }))
 		// F1 (PE decision 47, CR 02:50): the consent a held card's Send anyway or send-edit returns: on a vote-held card exactly what
 		// apply.ts compares (voteClaimReview), else the held digest the card shows.
 		const reviewedHold = voteHold(wf) ? voteClaimReview(wf) : fx.held?.digest
 		const cs = cardState(fx)
 		// R10b: the review-done card. Approve PR <n> makes only his proposed approve vote (every other change left out), on this exact
 		// revision; Post them posts the comments still waiting, never the vote.
-		const rd = cs.mode === 'review-done' ? wf.reviewDone : undefined
-		const voteAt = rd ? pending.findIndex(effect => isVote(effect.call) && (voteValue(effect.call) ?? 0) >= 5 && !effect.error) : -1
+		// D-A239 frame-new: the reviewed unit's frame (card-facts' itemReview), with its PR; its Approve is that PR's vote.
+		const review = itemReview(wf), reviewed = review && { pr: review.pr, ...review.done }
+		const rd = cs.mode === 'review-done' ? reviewed : undefined
+		const voteAt = rd ? pending.findIndex(effect => isVote(effect.call) && (voteValue(effect.call) ?? 0) >= 5 && !effect.error && prIdOf(effect.call) === rd.pr) : -1
 		const voteN = voteAt >= 0 ? changes[voteAt]?.n : undefined
 		// R10b B1 (PE 02:06): every pending vote, of any value, is never a waiting comment: Post them leaves them all out.
 		const voteKs = rd ? pending.flatMap((effect, k) => isVote(effect.call) ? [k] : []) : []
 		const voteNs = voteKs.map(k => changes[k]?.n).filter((n): n is number => n !== undefined)
+		// D-A239 MP1 (New-A239-1): an ask naming two or more PRs lists each, in ask order, with HOST's typed outcome. MP2: with two or
+		// more reviewed PRs each has its own review block and its own Approve, and the bar carries no Approve.
+		const units = (wf.prs?.length ?? 0) >= 2 ? wf.prs : undefined
+		const manyReviews = units ? itemReviews(wf) : [], perPr = manyReviews.length >= 2
 		if (editable.has(id)) {
 			const broken = checkCard(fx, cs)
 			if (broken.length && !brokenSeen.has(`${id}@${rev}`)) { brokenSeen.add(`${id}@${rev}`); try { store.log({ event: 'invariant-broken', code: id, mode: cs.mode, broken }) } catch { /* best effort */ } }
@@ -530,8 +616,8 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 					}))
 				},
 				'send-edit': () => actionIds.push(offer(id, rev, 'send-edit', changes.length ? 'Preview your version with changes' : 'Send your version', input => {
-					if (input?.excluded?.length) throw new IntentError(422, 'Change the reply and leave out changes one at a time.')
-					return { code: id, verb: 'send', text: requiredText(input) }
+					if (!positive && input?.excluded?.length) throw new IntentError(422, 'Change the reply and leave out changes one at a time.')
+					return { code: id, verb: 'send', text: requiredText(input), ...chosen(input) }
 				}, { effect: changes.length ? 'local' : 'sends', staleness: 'exact', expect, input: 'text', ...(reviewedHold ? { reviewed: reviewedHold } : {}) })),
 				answer: () => actionIds.push(offer(id, rev, 'answer', cs.primary === 'answer' ? 'Draft reply' : 'Answer instead', input => ({ code: id, verb: 'answer', text: requiredText(input) }), { input: 'text', recovery: failed || undefined })),
 				pick: () => { if (choices) actionIds.push(offer(id, rev, 'pick', groupPick ? 'Save' : 'Preview reply', input => {
@@ -569,19 +655,32 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 				},
 				later: () => actionIds.push(offer(id, rev, 'later', 'Later', () => ({ code: id, verb: 'later' }))),
 				dismiss: () => actionIds.push(rd ? offer(id, rev, 'dismiss', 'Not approving it now', () => ({ code: id, verb: 'skip' }), { meaning: "I'll handle it in Azure DevOps." })
+					: cs.mode === 'stopped' ? offer(id, rev, 'dismiss', 'Close it', () => ({ code: id, verb: 'skip' }), { staleness: 'exact', expect: rev, hold: { line: 'Closed' } })
 					: offer(id, rev, 'dismiss', failed || c.promise || fx.held?.reasons.some(r => r.kind === 'no-reply-needed') ? 'Skip' : 'Dismiss', () => ({ code: id, verb: 'skip' }))),
 				// A run that gave no result (queue-new #11): Try again re-runs it as it was; a job that ran out of routes is queued again (#17 b).
-				'try-again': () => actionIds.push(offer(id, rev, 'try-again', 'Try again', () => ({ code: id, verb: 'answer', text: 'try again' }), { staleness: 'exact', expect })),
+				// D-COST: on a stopped job Try again is one run (HOST's existing answer path), captioned by the PM; at the daily limit it is
+				// unavailable with the daily-limit words, so a press starts nothing.
+				'try-again': () => actionIds.push(offer(id, rev, 'try-again', 'Try again', () => ({ code: id, verb: 'answer', text: 'try again' }), { staleness: 'exact', expect,
+					...(stop && (cs.mode === 'stopped' || cs.mode === 'held') ? { meaning: stop?.news ? `Runs it once more with what ${stop.news.who} added · nothing is sent` : 'Runs it once more · nothing is sent', ...(dailyFull ? { unavailable: { label: 'Try again', reason: `${DAILY_WORDS}.` } } : {}) } : {}) })),
+				// D-COST JB2: Run it once more is exactly one run on a job stopped at its limit (HOST-COST-1's one-more verb, declared shape).
+				'one-more': () => actionIds.push(offer(id, rev, 'one-more', 'Run it once more', () => ({ code: id, verb: ONE_MORE }), { staleness: 'exact', expect,
+					meaning: 'One more AI run · nothing is sent', ...(dailyFull ? { unavailable: { label: 'Run it once more', reason: `${DAILY_WORDS}.` } } : {}) })),
 				'write-own': () => actionIds.push(offer(id, rev, 'write-own', 'Write the reply yourself', input => ({ code: id, verb: 'send', text: requiredText(input) }), { effect: 'sends', staleness: 'exact', expect, input: 'text' })),
 				'review-again': () => actionIds.push(offer(id, rev, 'review-again', 'Review again', () => ({ code: id, verb: 'answer', text: 'review again' }))),
-				'approve-pr': () => { if (rd && voteN !== undefined) actionIds.push(offer(id, rev, 'approve-pr', `Approve PR ${rd.pr}`,
-					() => ({ code: id, verb: 'ok', ...((except => (except.length ? { except } : {}))(changes.filter(change => change.n !== voteN).map(change => change.n))) }),
+				'approve-pr': () => { if (rd && voteN !== undefined && !perPr) actionIds.push(offer(id, rev, 'approve-pr', `Approve PR ${rd.pr}`,
+					// PE 19:29:07Z: on an origin-bearing revision Approve sends only the vote, by its id, with nothing else included ({ok,
+					// include: [], vote}); include never carries a vote (I7/I8/W5). Legacy keeps "all except the vote" by number.
+					() => (positive ? { code: id, verb: 'ok', include: [], vote: pageChangeId(pending[voteAt]) }
+						: { code: id, verb: 'ok', ...((except => (except.length ? { except } : {}))(changes.filter(change => change.n !== voteN).map(change => change.n))) }),
 					{ effect: 'changes-system', staleness: 'exact', expect, meaning: APPROVE_PR_MEANING })) },
 				'post-waiting': () => { if (rd) actionIds.push(offer(id, rev, 'post-waiting', 'Post them', input => {
+					// CR B1 (19:22:04Z): an origin-bearing revision posts exactly what is ticked (include; votes are never offered there). The
+					// vote exclusion by number is the legacy path only.
+					if (positive) return approval(input)
 					const asked = approval(input), except = [...new Set([...(asked.except ?? []), ...voteNs])]
 					return { ...asked, ...(except.length ? { except } : {}) }
 				}, { effect: 'changes-system', staleness: 'exact', expect, input: 'approval' })) },
-				'reply-only': () => actionIds.push(offer(id, rev, 'reply-only', 'Send reply only', () => ({ code: id, verb: 'ok', except: changes.map(change => change.n) }), { staleness: 'exact', expect, effect: 'sends' })),
+				'reply-only': () => actionIds.push(offer(id, rev, 'reply-only', 'Send reply only', () => (positive ? { code: id, verb: 'ok', include: [] } : { code: id, verb: 'ok', except: changes.map(change => change.n) }), { staleness: 'exact', expect, effect: 'sends' })),
 			}
 			const kinds = new Set([cs.primary, ...cs.secondary, ...cs.more].filter((k): k is ActionKind => !!k))
 			// L2b B1: beside a draft, the group question is answered by its picker (Save), not by Answer instead.
@@ -611,6 +710,32 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 		})()
 		if (keepWaiting) actionIds.push(offer(id, rev, 'keep-waiting', 'Keep waiting instead', () => ({ code: id, verb: 'wait' }), { staleness: 'exact', expect,
 			meaning: `Closes this follow-up without sending it. ${keepWaiting.to.map(name => name.trim().split(/[\s,]+/)[0]).filter(Boolean).join(', ') || 'They'} ${keepWaiting.to.length > 1 ? 'go' : 'goes'} back to Waiting on others.` }))
+		// D-A239 MP1: a PR's own read action on its row of "PRs in this ask": HOST's pr-retry / pr-skip with the PR in nums, on this exact
+		// revision (Try now when a read failed; Try again and Skip this PR once it gave up). MP2: each reviewed PR's Approve PR <n> is that
+		// PR's vote only (never batched), offered while that PR is approvable (card-facts reviewApproval).
+		const unitActions = new Map<number, string[]>(), approveOf = new Map<number, string>()
+		// CR B6: the per-PR offers keep the card's hold eligibility: none while a terminal holds the item (card-state's in-terminal offers only
+		// Take it back, and the engine refuses them); the review blocks and the PRs list still show.
+		const unitOffers = cs.mode !== 'in-terminal'
+		if (units && unitOffers && wf.state !== 'done' && !wf.redacted) for (const unit of units) {
+			const outcome = unitOutcome(unit).outcome
+			const verb = (kind: 'pr-retry' | 'pr-skip', label: string) => offer(id, rev, kind, label, () => ({ code: id, verb: kind, nums: [unit.id] }), { staleness: 'exact', expect }, `${id}/pr-${unit.id}`)
+			// New-SKIP (PE §14.6 (a)): an unskipped unit whose review job stopped offers Skip this PR only; the stop's retry stays on the bar.
+			const unitJob = !unit.skip && unit.job ? facts.jobs.get(unit.job) : undefined
+			const ids = unitJob && jobStopOf(unitJob).stopped ? [verb('pr-skip', 'Skip this PR')]
+				: outcome === 'couldnt-read' ? [verb('pr-retry', 'Try now')] : outcome === 'gave-up' ? [verb('pr-retry', 'Try again'), verb('pr-skip', 'Skip this PR')] : []
+			if (ids.length) unitActions.set(unit.id, ids)
+		}
+		// CR B3: the per-PR offers come from each unit's own review, whatever the reply's mode. Approve stays vote-only: an ok on an item whose
+		// reply awaits his OK also sends that reply (apply.ts), so while a reply draft waits each block offers Open PR to approve only.
+		if (perPr && unitOffers && editable.has(id) && wf.state === 'needs_human' && !wf.redacted && !draft) for (const review of manyReviews) {
+			const k = pending.findIndex(effect => isVote(effect.call) && (voteValue(effect.call) ?? 0) >= 5 && !effect.error && prIdOf(effect.call) === review.pr)
+			if (k < 0 || !reviewApproval(wf, review).approvable) continue
+			const n = changes[k]?.n
+			approveOf.set(review.pr, offer(id, rev, 'approve-pr', `Approve PR ${review.pr}`, () => (positive ? { code: id, verb: 'ok', include: [], vote: pageChangeId(pending[k]) }
+				: { code: id, verb: 'ok', ...((except => (except.length ? { except } : {}))(changes.filter(change => change.n !== n).map(change => change.n))) }),
+			{ effect: 'changes-system', staleness: 'exact', expect, meaning: APPROVE_PR_MEANING }, `${id}/pr-${review.pr}`))
+		}
 		actionIds.push(offer(id, rev, 'ask', `Ask ${NAME}`, input => ({ code: id, verb: 'ask', text: requiredText(input) }), { input: 'text' }))
 		if (reopenable(wf, 'answer')) actionIds.push(offer(id, rev, 'reopen', 'Reopen and draft reply', input => ({ code: id, verb: 'answer', text: requiredText(input) }), { input: 'text', staleness: 'exact', expect }))
 		const noteIds = notes(id, id, cardNotes)
@@ -632,7 +757,14 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 		const notSent = !replyChanged && wf.state === 'needs_human' && wf.statusReason?.kind !== 'vote-claim' && (!!draft && /^(?:Not sent: |Not sure it was sent)/.test(wf.status) || /^Could not start: /.test(wf.status))
 		// Why a waiting draft didn't go out by itself, from the rules and checks that would have sent it (#33).
 		// Not for one thread (#27 step 2): its hourly count reads every item, and an action never needs the line.
-		const waited = !onlyWfs && draft && wf.state === 'needs_human' && !wf.sent ? whyWaited(wf, ownerRules, policyContext(store, cfg, wf)).map(pageText) : []
+		const waitCtx = !onlyWfs && draft && wf.state === 'needs_human' && !wf.sent ? policyContext(store, cfg, wf) : undefined
+		const waited = waitCtx ? whyWaited(wf, ownerRules, waitCtx).map(pageText) : []
+		// D-A281 B1 (PE v1.148 §17.6; SEND's reviewed reviewWaitOf): a PR review's wait line is typed, so the card links it by its kind (none →
+		// Add a line; waiting / off → that line). It is the very line whyWaited returned, matched as a whole, never read for its words.
+		const reviewWait = waitCtx && wf.intent === 'pr_review' ? (wait => waited.includes(pageText(wait.text))
+			? { kind: wait.kind, text: pageText(wait.text), ...(wait.kind === 'waiting' || wait.kind === 'off' ? (line => (line ? { lineId: line.id } : {}))(lineOf(wait.grantId)) : {}) } : undefined)(
+			reviewWaitOf('guests' in waitCtx ? { ...wf, chat: { ...wf.chat, guests: waitCtx.guests } } : wf, ownerRules)) : undefined
+		const waitedShown = reviewWait ? waited.filter(line => line !== reviewWait.text) : waited
 		// The card's single warning line comes from its state; a run that started nothing, and a job that ended with nothing to reply,
 		// still say so where no mode names it.
 		const shownWarn = cs.warn ? pageText(cs.warn) : undefined
@@ -641,18 +773,63 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 		// L4 B1 (PE 22:12): card-state took its warn out of Why it waited, so a warn this card shows in its place (the reply changed) goes
 		// back there first. Not in failed mode: there the warn is the failure's own line, which the failure block draws.
 		const lostWarn = shownWarn && attention !== shownWarn && !(cs.mode === 'failed' && fx.failure) ? shownWarn : undefined
+		// R10b (PM §2, joint C2): what a review posted, H→M→L (the chip carries the severity, not the "[High]" bracket), five then "and N
+		// more"; the reply sent; the PR link. D-A239 MP2 draws one per reviewed PR from the same fields.
+		// CR B2: a review block's link is its own PR's (the unit's reference; the item's PR read only when it is that same PR), never the
+		// item-level scalar of a multi-unit ask.
+		const prUrlOf = (pr: number) => wf.prs ? safeLink(wf.prs.find(unit => unit.id === pr)?.ref?.url) ?? (ref => (ref?.id === pr ? safeLink(ref.url) : undefined))(prOf(store, wf)) : safeLink(prOf(store, wf)?.url)
+		const reviewView = (rd: NonNullable<typeof reviewed>, prUrl?: string) => {
+			const order = { High: 0, Medium: 1, Low: 2 }
+			const posted = rd.posted.toSorted((a, b) => order[a.severity] - order[b.severity]).map(comment => ({ severity: comment.severity, ...(comment.file ? { file: comment.file } : {}), ...(comment.line ? { line: comment.line } : {}),
+				text: pageText(comment.text.split('\n')[0].replace(/^\s*\[(?:High|Medium|Low)\]\s*/i, '')), ...((url => (url ? { thread: url } : {}))(safeLink(comment.thread))) }))
+			return { pr: rd.pr, reviewedAt: rd.reviewedAt, counts: rd.counts, posted: posted.slice(0, 5), more: Math.max(0, posted.length - 5), to: wf.asker?.name?.split(/\s+/)[0] || 'them',
+				...(rd.reply ? { reply: { text: pageText(rd.reply.text), ...((url => (url ? { teams: url } : {}))(safeLink(rd.reply.teams))) } } : {}),
+				...(rd.clean ? { clean: true } : {}), ...(rd.fallback ? { fallback: pageText(rd.fallback) } : {}), ...(prUrl ? { prUrl } : {}) }
+		}
+		// D-A239 MP1: each PR's outcome in the PM's words, from HOST's typed unit (unitOutcome; the gate reason, tries, skip). A failed
+		// read's raw error is only its detail (Details), never the line. Done row (PM rule 6): one sentence from the same units.
+		const prRows = units?.map(unit => {
+			const { outcome, reason } = unitOutcome(unit)
+			const why = reason === 'author' ? "it's your PR" : reason === 'declined' ? 'you declined it in Azure DevOps' : reason === 'group-approved' ? 'your group already approved it'
+				: reason === 'no-link' ? `there's no link to it, so ${NAME} can't open it` : reason === 'owner' ? 'you skipped it' : reason === 'not-asked' ? 'nobody asked you to review it' : "you aren't a reviewer on it"
+			const line = outcome === 'checking' ? "checking you're a reviewer…" : outcome === 'reviewing' || outcome === 'reviewed' ? outcome : outcome === 'not-reviewing' ? `not reviewing: ${why}`
+				: outcome === 'couldnt-read' ? `couldn't read it. ${NAME} tries again at the next check.` : `couldn't read it after ${unit.tries} tries.`
+			const short = { checking: 'checking', reviewing: 'reviewing', reviewed: 'reviewed', 'not-reviewing': 'not reviewing', 'couldnt-read': "couldn't read", 'gave-up': 'gave up' }[outcome]
+			return { pr: unit.id, outcome, line, short, ...((title => (title ? { title } : {}))(pageText(unit.title))), ...((url => (url ? { url } : {}))(safeLink(unit.ref?.url))),
+				...(outcome === 'couldnt-read' || outcome === 'gave-up' ? (detail => (detail ? { detail } : {}))(pageText(unit.failure)) : {}), ...((ids => (ids ? { actionIds: ids } : {}))(unitActions.get(unit.id))) }
+		})
+		if (prRows && wf.state === 'done' && manyReviews.length) {
+			const comments = manyReviews.reduce((sum, review) => sum + review.done.posted.length, 0), skipped = prRows.filter(row => row.outcome !== 'reviewed').map(row => `PR ${row.pr}`)
+			const list = (names: string[]) => names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names.at(-1)}` : names[0]
+			reviewRows.set(id, [`Reviewed ${list(manyReviews.map(review => `PR ${review.pr}`))}${wf.asker?.name ? ` for ${wf.asker.name.split(/\s+/)[0]}` : ''}`, `${comments} comment${comments === 1 ? '' : 's'}`,
+				...(wf.sent ? ['replied'] : []), ...(skipped.length ? [`${list(skipped)} not reviewed`] : [])].join(' · '))
+		}
+		// D-COST JB1/JB2 row (PM R3/A2 words): "Can't do: no tool can <need> · <day>" (or "no tool for this step"), or "Stopped: it reached
+		// its limit of <N> AI runs · <day>" (… of <T> tokens when the token limit was the one reached).
+		const stopRow = stop && stopped?.stopped ? (stop.kind === 'capability' ? `Can't do: ${stop.need ? `no tool can ${stop.need}` : 'no tool for this step'}`
+			: (limit => limit?.runs !== undefined && (stop.runs ?? 0) >= limit.runs || limit?.tokens === undefined ? `Stopped: it reached its limit of ${limit?.runs ?? stop.runs ?? 0} AI runs` : `Stopped: it reached its limit of ${limit.tokens.toLocaleString('en-US')} tokens`)(stopped.stopped.limit)) + ` · ${shortDay(stop.at)}` : undefined
+		if (stopRow && (cs.mode === 'stopped' || cs.mode === 'held')) stopRows.set(id, stopRow)
+		// CR COST1 B1: what the stopped job tried, through the canonical stored-report reader: its report's blocker (a sticky stop is a goal
+		// not met) with any retry history it kept, read in plain words.
+		const stopTried = stopJob ? normalizeReport({ key: stopJob.key, state: stopJob.state, updatedAt: stopJob.updatedAt, ...(stopJob.retry ? { retry: stopJob.retry } : {}),
+			...(stopJob.result ? { result: { ...stopJob.result, goalMet: false } } : {}) }).failure?.tried ?? stopJob.retry?.tried ?? [] : []
+		// A76 sent history (decision 55): the reply that actually went, once its Undo window is over and no newer turn replaced it. Only from
+		// wf.sent's typed fields, never from read-only status, copy or status text; otherwise undefined and today's card stays.
+		const shownSent = (sent => sent && sent.msgId && !(sent.undoUntil && Date.parse(sent.undoUntil) > Date.now()) && (sent.sendText ?? sent.text) && (!wf.revAt || wf.revAt <= sent.at) ? sent : undefined)(wf.sent)
 		entities.items[id] = {
-			...rest, rev, id, personId, chatId, draftId, changeIds, effectIds, todoIds, workId, actionIds,
+			// CR COST1 B2: a stopped job nobody waits on shows no draft or editor.
+			...rest, rev, id, personId, chatId, draftId: stop && cs.mode === 'stopped' && !stop.asker ? undefined : draftId, changeIds, effectIds, todoIds, workId, actionIds, ...(positive ? { wys: 'groups' as const } : {}),
 			context,
 			earlier: earlierLine(rest.earlier, id),
 			askAt: asksAt.get(id),
 			// COST-USAGE AU4: what this item's attributed runs used (web/numbers.ts usedLines); none when no run was attributed.
 			...((used => (used ? { used } : {}))(usedOf.get(wf.id))),
-			// A76 sent history (decision 55): the reply that actually went, once its Undo window is over and no newer turn replaced it.
-			// Only from wf.sent's typed fields, never from read-only status, copy or status text; otherwise omitted and today's card stays.
-			...((sent => sent && sent.msgId && !(sent.undoUntil && Date.parse(sent.undoUntil) > Date.now()) && (sent.sendText ?? sent.text) && (!wf.revAt || wf.revAt <= sent.at)
+			// A76 sent history (decision 55): the reply that actually went (shownSent, below), from wf.sent's typed fields only.
+			...((sent => sent
 				? { sent: { at: sent.at, text: (sent.sendText ?? sent.text)!, by: sent.byRule ? 'rule' as const : 'you' as const, ...(sent.holding ? { holding: true } : {}),
-					...((teams => (teams ? { teams } : {}))(wf.chat.id && (!wf.chat.test || teamsChat(wf.chat.id)) ? safeLink(messageLink(wf.chat.id, sent.msgId)) : undefined)) } } : {})(wf.sent)),
+					// D-A281 B3: the line it was sent by, as frozen at send, and that line now: its link, or "(edited since)" / "(line deleted)".
+					...(sent.byRule && sent.rule ? { rule: frozenRule(sent.rule) } : {}),
+					...((teams => (teams ? { teams } : {}))(wf.chat.id && (!wf.chat.test || teamsChat(wf.chat.id)) ? safeLink(messageLink(wf.chat.id, sent.msgId)) : undefined)) } } : {})(shownSent)),
 			status: pageText(c.status),
 			attention,
 			// Step 6: back from his terminal window, a status line only.
@@ -679,20 +856,27 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 			// #50: SEND's repaired comments (its exact status); the card says so above them and offers the post on this revision.
 			...(wf.status === REPAIRED ? { repaired: true } : {}),
 			// R10b (PM §2, joint C2): what the review posted, H→M→L (the chip carries the severity, not the "[High]" bracket), five then
-			// "and N more"; the reply sent; the PR link; where Open PR sits; and which change is the vote Approve makes. Closed (HOST's close
-			// on his vote or the PR closing, 02:02 contract): the Done card keeps the Posted list and the reply, read-only, under its status.
+			// Closed (HOST's close on his vote or the PR closing, 02:02 contract): the Done card keeps the Posted list and the reply, read-only,
+			// under its status. Open: where Open PR sits, and which changes are votes (never waiting comments).
 			...((rd => rd ? { reviewDone: (() => {
-				const order = { High: 0, Medium: 1, Low: 2 }, closed = wf.state === 'done'
-				const posted = rd.posted.toSorted((a, b) => order[a.severity] - order[b.severity]).map(comment => ({ severity: comment.severity, ...(comment.file ? { file: comment.file } : {}), ...(comment.line ? { line: comment.line } : {}),
-					text: pageText(comment.text.split('\n')[0].replace(/^\s*\[(?:High|Medium|Low)\]\s*/i, '')), ...((url => (url ? { thread: url } : {}))(safeLink(comment.thread))) }))
-				const to = wf.asker?.name?.split(/\s+/)[0] || 'them', prUrl = safeLink(prOf(store, wf)?.url)
-				const n = posted.length, counts = rd.counts
-				if (!closed) reviewRows.set(id, `PR ${rd.pr} waits for your approval · ${n ? `posted ${n} comment${n === 1 ? '' : 's'} (${counts.high} high, ${counts.medium} medium, ${counts.low} low)` : 'no comments needed'}${rd.reply ? ` · replied to ${to}` : ''}`)
-				return { pr: rd.pr, reviewedAt: rd.reviewedAt, counts, posted: posted.slice(0, 5), more: Math.max(0, n - 5), to,
-					...(rd.reply ? { reply: { text: pageText(rd.reply.text), ...((url => (url ? { teams: url } : {}))(safeLink(rd.reply.teams))) } } : {}),
-					...(rd.clean ? { clean: true } : {}), ...(rd.fallback ? { fallback: pageText(rd.fallback) } : {}), ...(prUrl ? { prUrl } : {}),
-					...(closed ? { closed: true } : { ...(cs.openPr ? { openPr: cs.openPr } : {}), ...(voteKs.length ? { voteChangeIds: voteKs.map(k => changeIds[k]) } : {}) }) }
-			})() } : {})(rd ?? (wf.state === 'done' ? wf.reviewDone : undefined))),
+				const closed = wf.state === 'done', view = reviewView(rd, prUrlOf(rd.pr))
+				const n = view.posted.length + view.more, counts = rd.counts
+				if (!closed && !perPr) reviewRows.set(id, `PR ${rd.pr} waits for your approval · ${n ? `posted ${n} comment${n === 1 ? '' : 's'} (${counts.high} high, ${counts.medium} medium, ${counts.low} low)` : 'no comments needed'}${rd.reply ? ` · replied to ${view.to}` : ''}`)
+				return { ...view, ...(closed ? { closed: true } : { ...(cs.openPr ? { openPr: cs.openPr } : {}), ...(voteKs.length ? { voteChangeIds: voteKs.map(k => changeIds[k]) } : {}) }) }
+			})() } : {})(rd ?? (wf.state === 'done' ? reviewed : undefined))),
+			// D-COST: the stop the card and its row show: the row line, the asker's news (with its message in Teams) and what the job tried.
+			...(stopRow && (cs.mode === 'stopped' || cs.mode === 'held') ? { stop: { kind: stop!.kind, row: stopRow, ...((tried => (tried.length ? { tried } : {}))(stopTried.map(pageText).filter(Boolean))),
+				...(stop!.news ? { news: { who: stop!.news.who, at: stop!.news.at, again: stop!.news.again, ...((teams => (teams ? { teams } : {}))(wf.chat.id && (!wf.chat.test || teamsChat(wf.chat.id)) ? safeLink(messageLink(wf.chat.id, stopNews!.id)) : undefined)) } } : {}) } } : {}),
+			// D-A239 MP1/MP2: the PRs in this ask, and one review per reviewed PR (in ask order) with its own Approve and, once made, when.
+			...(prRows ? { prs: prRows } : {}),
+			// CR B3: shown whatever the reply's mode. CR B4: "Approved" only from a made positive vote on this PR for the reviewed head, made
+			// after that review; history (another head, a non-approving vote, a vote with no head) never claims it or hides a current offer.
+			...(perPr ? { reviews: manyReviews.map(review => {
+				const approved = (wf.effects ?? []).find(effect => effect.done && !effect.error && isVote(effect.call) && (voteValue(effect.call) ?? 0) >= 5 && prIdOf(effect.call) === review.pr &&
+					!!effect.head && sameHead(effect.head, review.done.head) && effect.done.at >= review.done.reviewedAt)?.done?.at
+				return { ...reviewView({ pr: review.pr, ...review.done }, prUrlOf(review.pr)), ...(wf.state === 'done' ? { closed: true } : {}),
+					...((actionId => (actionId ? { approveActionId: actionId } : {}))(approveOf.get(review.pr))), ...(approved && !approveOf.has(review.pr) ? { approved } : {}) }
+			}) } : {}),
 			// #28 (owner A61, SEND eee5639d): what the review found, each new or already an open thread on the PR, and whether a vote was
 			// recommended, so the card can say what Send does on the PR. The PR meaning comes from here, not from effectLine (PE 19:12).
 			...((pr => pr && job?.result?.findings ? { prReview: { pr, voteRecommended: !!job.result.voteRecommendation && !['none', 'NoVote'].includes(job.result.voteRecommendation.vote),
@@ -709,12 +893,17 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 			sourceIds: sources(id, id, why.sources), noteIds,
 			primaryActionId: (editable.has(id) || cs.mode === 'todo' ? [cs.primary ?? ''] : c.ownReply ? [] : ['reopen']).map(kind => `${id}/${kind}`).find(key => actionIds.includes(key)),
 			// A holding reply's reason is part of Why, not a warning (rule 13).
-			why: { reason: asSentence(why.reason) ?? (cs.mode === 'holding' ? pageText(wf.status) || undefined : undefined), confidence: why.confidence, gaps: why.gaps, searched: why.searched,
+			// CR 19:19:08 B2: where the card shows the bound source (a reply his line sent: its frozen line; a PR review's typed wait line), the
+			// engine's stored permission reason (wf.decision.reason, which may name a rule id) is not shown as Why. CR 20:44:27 B2: only when
+			// that source is actually shown for the current turn (the same shownSent fact as the bubble); a newer draft after an older automatic
+			// reply keeps its own public Why.
+			why: { reason: shownSent?.byRule && shownSent.rule || reviewWait ? undefined : asSentence(why.reason) ?? (cs.mode === 'holding' ? pageText(wf.status) || undefined : undefined), confidence: why.confidence, gaps: why.gaps, searched: why.searched,
 				// Details › Why it waited: the card's own lines (the ones not shown as the warn), then the rules that kept it from sending,
 				// one sentence per line (L6).
 				...(lines => lines.length ? { waited: lines.join('\n') } : {})((own => [...(own.length ? ['Why it waited:', ...own] : []),
-					...(waited.length ? [...(own.length ? [] : ['Why it waited:']), ...waited.map(line => asSentence(line)!).filter(Boolean)] : [])])(
-					[...(lostWarn ? [lostWarn] : []), ...(cs.waited ? cs.waited.replace(/^Why it waited:\n/, '').split('\n').map(line => pageText(line)).filter(Boolean) : [])])) }, teams: safeLink(c.teams),
+					...(waitedShown.length || reviewWait ? [...(own.length ? [] : ['Why it waited:']), ...waitedShown.map(line => asSentence(line)!).filter(Boolean)] : [])])(
+					[...(lostWarn ? [lostWarn] : []), ...(cs.waited ? cs.waited.replace(/^Why it waited:\n/, '').split('\n').map(line => pageText(line)).filter(Boolean) : [])])),
+				...(reviewWait ? { reviewWait } : {}) }, teams: safeLink(c.teams),
 		}
 	}
 	// Spec S3: the sections say whose move it is, Delegate's queued rows say Delegate does them, and a group message is "Posted to everyone".
@@ -808,7 +997,7 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 			const waitEntry = row.act.startsWith('W') ? base.waiting.find(w => w.code === row.act) : undefined
 			const waitLine = waitEntry && `Waiting on ${waitEntry.to.split(/,\s*/).map(name => firstOf(name)).filter(Boolean).join(', ') || 'them'} since ${shortDay(waitEntry.at)} · asked: "${waitEntry.text.replace(/\s+/g, ' ').trim().slice(0, 80)}${waitEntry.text.length > 80 ? '…' : ''}"`
 			const headline = (failedJobDirections(workflow) && row.kind === 'question' ? forPage(row.headline) :
-				pageText(reviewRows.get(row.act) ?? waitLine ?? (row.kind === 'todo' ? todoHeadline(firstLeft(byCode.get(row.act)!)!.text) : row.headline.replace(/: nudge, wait, or close\?$/, ': follow up, wait, or close?')))) || 'Review this item'
+				pageText(stopRows.get(row.act) ?? reviewRows.get(row.act) ?? waitLine ?? (row.kind === 'todo' ? todoHeadline(firstLeft(byCode.get(row.act)!)!.text) : row.headline.replace(/: nudge, wait, or close\?$/, ': follow up, wait, or close?')))) || 'Review this item'
 			const nextWhat = pageText(row.next?.what).replace(/\s+/g, ' ').trim(), owner = row.next?.owner
 			const terminalSince = row.kind === 'in-terminal' && workflow ? (store.openWindow(workflow.id) ?? (workflow.job ? store.openWindow(workflow.job) : undefined))?.since : undefined
 			const nextText = !owner ? undefined : owner.kind === 'others' ? pageText(owner.text).replace(/\s+/g, ' ').trim() :
@@ -853,7 +1042,7 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 	const closed = placed.filter(placement => placement.section === 'done')
 	for (const [position, placement] of closed.entries()) entities.placements[placement.code] = {
 		id: placement.code, code: placement.code, act: placement.act, section: placement.section, rule: placement.rule, subjects: placement.subjects,
-		position, kind: 'closed', headline: placement.title, facts: { who: placement.who, where: placement.chat, at: placement.at },
+		position, kind: 'closed', headline: reviewRows.get(placement.act) ?? placement.title, facts: { who: placement.who, where: placement.chat, at: placement.at },
 		chips: [], todoIds: [], actionIds: [],
 	}
 	sections.push({ id: 'done', label: 'Done', total: closed.length, ids: closed.map(placement => placement.code) })
@@ -879,7 +1068,13 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 			}))
 		}
 		const current = wf?.sent?.at === row.at && (row.kind === 'reply' || row.kind === 'review'), checks = current ? wf!.sent!.checks?.map(check => pageText(`Sent. ${check}`)).filter(Boolean) : undefined
-		entities.doneEntries[id] = { ...rest, text: current ? wf!.sent!.sendText ?? rest.text : rest.text, ...(checks?.length ? { checks } : {}), fresh: isNew(row, seenIn(base), itemSeen(base)), ...((used => (used ? { used } : {}))(wf ? usedOf.get(wf.id) : undefined)), id, personId: person(row.code, who), actionIds, sourceIds: sources(row.code, id, why?.sources ?? []), noteIds: notes(row.code, id, historyNotes ?? []), why: why && { reason: why.reason, confidence: why.confidence, gaps: why.gaps, searched: why.searched }, teams: safeLink(row.teams), href: safeLink(row.href) }
+		// D-A239 MP3 Done row: a closed ask that named two or more PRs reads the PM's one sentence (the reply he sent stays under it).
+		const prsDone = current && wf!.state === 'done' && (wf!.prs?.length ?? 0) >= 2 ? reviewRows.get(row.code) : undefined
+		if (prsDone) { rest.sentence = prsDone; rest.ask = undefined }
+		// CR 19:19:08 B1/B2: THIS activity's own send by his line (it is the item's current sent reply, same message), with its frozen line;
+		// then its Why does not show the engine's stored permission reason. An older activity never borrows a newer reply's line.
+		const sentBecause = current && wf!.sent!.byRule && wf!.sent!.rule && (!row.sentId || row.sentId === wf!.sent!.msgId) ? frozenRule(wf!.sent!.rule) : undefined
+		entities.doneEntries[id] = { ...rest, text: current ? wf!.sent!.sendText ?? rest.text : rest.text, ...(checks?.length ? { checks } : {}), ...(sentBecause ? { sentBecause } : {}), fresh: isNew(row, seenIn(base), itemSeen(base)), ...((used => (used ? { used } : {}))(wf ? usedOf.get(wf.id) : undefined)), id, personId: person(row.code, who), actionIds, sourceIds: sources(row.code, id, why?.sources ?? []), noteIds: notes(row.code, id, historyNotes ?? []), why: why && { reason: sentBecause ? undefined : why.reason, confidence: why.confidence, gaps: why.gaps, searched: why.searched }, teams: safeLink(row.teams), href: safeLink(row.href) }
 	}
 	for (const w of base.watching) entities.watches[w.code] = {
 		...w, id: w.code, actionIds: [
@@ -914,6 +1109,9 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 		] : proposal.state === 'applied' ? [offer(k.code, revision, 'undo-facts', 'Undo learned facts', () => ({ code: k.code, verb: 'undo' }), { staleness: 'exact', expect: revision })] : []
 		entities.knowledgeProposals[k.code] = { id: k.code, code: k.code, rev: revision, topic: k.topic, home: k.home, state: proposal.state, factIds, actionIds }
 	}
+	// D-COST JB3 (Designer; PM A3): the daily AI run limit, reached, is a Health fact in the header pill: never dismissable, gone the next
+	// day by itself. Its popover line links to the limit's row in Settings.
+	if (dailyFull) entities.health['daily-limit'] = { id: 'daily-limit', short: 'Daily AI limit reached', text: `${DAILY_WORDS} ›`, lead: DAILY_LEAD, settings: 'system', actionIds: [] }
 	for (const h of base.health) {
 		const actionIds = h.fix ? [tool('', `health:${h.key}`, h.fix.label, () => actResult(store, h.fix!.command, undefined, 'page'), undefined, 'page', pageDigest(h))] : []
 		entities.health[h.key] = { id: h.key, text: h.text, since: h.since, actionIds }
@@ -930,8 +1128,71 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 			return { accepted: true, text: watchChannel(store, ch.link, true) }
 		}, undefined, id, pageDigest(ch))] }
 	}
+	const wdd = wddView(store, base.seen ?? {})
+	// WDD N2 (Designer D3/D8; PE E5, v1.98): Not right? › "It shouldn't have done this by itself" › Stop doing this, through the reviewed W5
+	// ways.stopFromAction, exact on his line's current text; then its 6 s Undo through the existing delete / turn-on, exact on the stop
+	// line. Reminders (Pause / End) and Wrong / Incomplete come with HOST H3.
+	const wddActionIds = new Map<string, string[]>()
+	for (const row of wdd.rows) {
+		const key = `wdd:${row.id}`, ids: string[] = [], b = row.because
+		if (row.stoppable && b.kind === 'line' && b.lineHash && !row.stopped) {
+			const hash = b.lineHash
+			ids.push(tool(key, 'wdd-stop', 'Stop doing this', input => {
+				const scope = requiredText(input)
+				if (scope !== 'chat' && scope !== 'person' && scope !== 'never') throw new IntentError(422, 'Choose where to stop doing this.')
+				const done = stopFromAction(store, row.id, scope, hash)
+				if (!done.ok) throw new IntentError(done.why === WAY_CHANGED ? 409 : 422, done.why)
+				if (!('line' in done)) throw new IntentError(422, 'Change this action in Settings.')
+				return { accepted: true, text: done.mode === 'turned-off' ? `Turned off: "${done.line.text}"` : `Stopped: "${done.line.text}"` }
+			}, 'text', key, hash))
+		}
+		if (row.stopped) {
+			const stop = row.stopped
+			ids.push(tool(key, 'wdd-stop-undo', 'Undo', () => {
+				const back = stop.mode === 'turned-off' ? setLineOff(store, stop.lineId, false, stop.hash) : deleteLine(store, stop.lineId, stop.hash)
+				if (!back.ok) throw new IntentError(back.why === WAY_CHANGED ? 409 : 422, back.why)
+				return { accepted: true, text: 'Back.' }
+			}, undefined, key, stop.hash))
+		}
+		// N2 (D8 O1; SEND's W4 page binding, HOST's H0): Undo while the record's window is open, exact on the record's approval revision.
+		// It queues `undo-action <recordId>` for the owner-command runner; nothing is deleted here.
+		if (row.undoUntil && row.undoRev) {
+			const until = row.undoUntil, rev = row.undoRev
+			ids.push(offer(key, rev, 'wdd-undo', 'Undo', () => ({ code: '', verb: 'undo-action', text: row.id }),
+				{ staleness: 'exact', expect: rev, effect: 'changes-system', expiresAt: until, meaning: 'Removes this reply from the chat. Changes already made are not reversed.' }, key))
+		}
+		// H3(a) (PE v1.146 item 2): Wrong / Incomplete on the record of the item's current sent reply, as the existing page feedback answer on
+		// that item, exact on workflowApprovalRev; resolvePageIntent gives it feedback-send with the current sentMessageId, and HOST's mark
+		// drafts the correction as an item waiting on him. Nothing posts. "Not needed" is never offered on a row.
+		const wf = row.correctable && row.item ? store.byCode(row.item) : undefined
+		if (wf) {
+			const rev = workflowApprovalRev(wf)
+			for (const [kind, verb, label] of [['wdd-wrong', 'wrong', 'Wrong'], ['wdd-incomplete', 'incomplete', 'Incomplete']] as const)
+				ids.push(offer(wf.code, rev, kind, label, input => ({ code: wf.code, verb, text: input?.text }),
+					{ input: 'feedback', staleness: 'exact', expect: rev, effect: 'local', meaning: 'Drafts a follow-up for your approval. Nothing is sent yet.' }, key))
+		}
+		// H3(b): a reminder's Pause / End are the existing automation verbs with this record as their text, exact on automationApprovalRev
+		// (HOST appends `stopped`). After his stop, its Undo is the page resume, exact on the stopped state's revision (endedFrom bound),
+		// for 6 s from the stop.
+		const auto = b.kind === 'setting' && b.reminder ? store.automation(b.reminder) : undefined
+		if (auto && !row.reminderStopped && (auto.state === 'active' || auto.state === 'paused')) {
+			const rev = automationApprovalRev(auto)
+			if (auto.state === 'active') ids.push(offer(auto.code, rev, 'wdd-pause', 'Pause', () => ({ code: auto.code, verb: 'pause', text: row.id }), { staleness: 'exact', expect: rev }, key))
+			ids.push(offer(auto.code, rev, 'wdd-end', 'End', () => ({ code: auto.code, verb: 'skip', text: row.id }), { staleness: 'exact', expect: rev }, key))
+		}
+		if (auto && row.reminderStopped && Date.parse(row.reminderStopped.at) + 6000 > Date.now()) {
+			const rev = automationApprovalRev(auto), until = new Date(Date.parse(row.reminderStopped.at) + 6000).toISOString()
+			ids.push(offer(auto.code, rev, 'wdd-reminder-undo', 'Undo', () => ({ code: auto.code, verb: 'resume' }), { staleness: 'exact', expect: rev, expiresAt: until }, key))
+		}
+		if (ids.length) wddActionIds.set(row.id, ids)
+	}
 	const pageActionIds = [
 		offer('', '', 'pause-resume', base.status.state === 'on' ? 'Pause' : 'Resume', () => ({ verb: base.status.state === 'on' ? 'pause' : 'resume' }), { staleness: 'exact', expect: pageDigest(base.status.state) }, 'page'),
+		// D-WATCH' (PE engineer-d-watch §8.2/§8.6/§8.7; PM N2): Stop / Start checking Teams on the exact state; the caption is its meaning.
+		// Its rev is the state it was pressed on, so each saved receipt says which press it was (CR B2 on 332441fc); a press on the
+		// other state is refused as changed since you looked. Check now stays (PM N3).
+		((w => offer('', `watching:${w.on ? 'on' : 'off'}`, 'watching', w.on ? 'Stop' : 'Start', () => ({ verb: w.on ? 'watch-off' : 'watch-on' }), { staleness: 'exact', expect: pageDigest({ on: w.on, since: w.since }),
+			meaning: w.on ? 'Stops checking Teams for new messages. Your clicks and everything already here still work.' : `Checks Teams again ${every((store.config().poll ?? DEFAULT_POLL).idleMin)}, from your setting.` }, 'page'))(base.status.watching)),
 		tool('', 'retry-source', 'Check now', () => actResult(store, 'retry', undefined, 'page')),
 		tool('', 'check-update', 'Check for updates', () => actResult(store, 'check update', undefined, 'page')),
 		tool('', 'mark-all-read', 'Mark all read', input => {
@@ -939,13 +1200,31 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 			store.saveSeen(['catchup'], new Date(input.seenAt).toISOString())
 			return { accepted: true, text: 'Marked the displayed Catch up items read.' }
 		}),
+		// WDD N1 (Designer D1/D7.7): Mark all reviewed, on exactly the rows the section showed (its rev is their digest, so a row that
+		// arrived since is refused as changed). The page holds it 6 s with Undo before sending (the A58 hold on its own item, `wdd`), with the
+		// PM FINAL line "Marked <N> as reviewed. · Undo" (HeldLine adds the period).
+		...(wdd.section.length ? [(id => (Object.assign(entities.actions[id], { hold: { line: `Marked ${wdd.section.length} as reviewed` } }), id))(tool('wdd', 'wdd-reviewed', 'Mark all reviewed', () => {
+			const current = wddView(store, store.seen())
+			if (pageDigest(current.section) !== pageDigest(wdd.section)) throw new IntentError(409, 'Changed since you looked. Open the new version first.')
+			// PE v1.136 (CR 14:10:15 B1): all or nothing. One call to SEND's reviewed amendActions with one shared `at`: it takes every month's
+			// lock and resolves every ref before it writes, so a refusal is true by construction (nothing was written).
+			const at = new Date().toISOString()
+			const saved = amendActions(store, current.section.map(ref => ({ v: 1 as const, ref, at, by: 'owner' as const, kind: 'reviewed' as const })))
+			if (saved === BUSY) throw new IntentError(409, 'Another change to this list is being saved. Try again.')
+			if (!Array.isArray(saved)) throw new IntentError(409, 'Changed since you looked. Open the new version first.')
+			if (saved.length !== current.section.length) throw new Error(`Mark all reviewed saved ${saved.length} of ${current.section.length} rows.`)
+			return { accepted: true, text: `Marked ${saved.length} as reviewed.` }
+		}, undefined, 'page', pageDigest(wdd.section)))] : []),
 		tool('', 'report-problem', 'Report a problem', input => ({ accepted: true, text: reportProblem(store, requiredText(input)) }), 'text'),
 		tool('', 'paste-missed', 'Make it an item', input => {
 			const link = requiredText(input).trim()
 			if (!/^https:\/\/teams\.microsoft\.com\/l\/message\/[^/?#]+\/[^/?#]+/i.test(link)) throw new IntentError(422, 'Paste a Teams message link.')
 			const existing = knownMessageCode(store, link)
 			if (existing) return { accepted: true, text: `This message is already ${existing}. Open the existing item.` }
-			store.addMissed({ link, at: new Date().toISOString() }); store.saveKick()
+			// PE engineer-d-watch §8.13: the queued link file IS the owner's read request (the runner reads queued links even while Teams
+			// checking is off), so there is no separate stamp. A generic wake follows; a busy kick file is ignored, the link stands.
+			store.addMissed({ link, at: new Date().toISOString() })
+			wakeKick(store)
 			return { accepted: true, text: 'Saved. It becomes an item on the next read. Nothing is sent.' }
 		}, 'text'),
 		tool('', 'watch-something', 'Start watching', input => {
@@ -1011,16 +1290,16 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 		for (const id of server.actionIds) {
 			const kind = id.slice(key.length + 1)
 			if (kind === 'server-retry') tool(key, kind, 'Retry', () => {
-				retryServer(name); store.saveKick()
+				retryServer(name); wakeKick(store)
 				return { accepted: true, text: `${NAME} tries ${name} again at the next check, in a moment.` }
 			}, undefined, key)
 			else if (kind === 'server-ignore') tool(key, kind, "Don't use this server", () => {
-				ignoreServer(name, true); store.setHealth(`catalog:${name}`); store.saveKick()
+				ignoreServer(name, true); store.setHealth(`catalog:${name}`); wakeKick(store)
 				store.log({ event: 'tool-server-ignored', server: name })
 				return { accepted: true, text: `${name} isn't used on ${store.machine} any more: ${NAME} won't start it or offer its tools here.` }
 			}, undefined, key)
 			else if (kind === 'server-use') tool(key, kind, 'Use this server again', () => {
-				ignoreServer(name, false); retryServer(name); store.saveKick()
+				ignoreServer(name, false); retryServer(name); wakeKick(store)
 				store.log({ event: 'tool-server-used', server: name })
 				return { accepted: true, text: `${NAME} uses ${name} on ${store.machine} again, from the next check.` }
 			}, undefined, key)
@@ -1079,7 +1358,13 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 		for (const line of ways.lines) {
 			const key = `way:${line.id}`, rev = line.textHash
 			verb(key, 'way-edit', 'Save', rev, input => said('editLine', () => editLine(store, line.id, text(input), rev), `Saved. ${NAME} is reading it again.`), 'text')
-			if (line.status !== 'reading') verb(key, line.group === 'off' || line.status === 'off' ? 'way-on' : 'way-off', line.group === 'off' || line.status === 'off' ? 'Turn on' : 'Turn off', rev,
+			// D-A239 MP4: a line not in effect has no switch (it grants nothing); a line that couldn't be read, or reads as nothing supported, is
+			// read again on his Read it again (SEND readLineAgain: one compile, landing in Waiting for your OK or back to Not in effect).
+			const notInEffect = line.state === 'not-in-effect'
+			if (notInEffect && line.status === 'cant-yet') verb(key, 'way-read-again', 'Read it again', rev, () => said('readLineAgain', () => readLineAgain(store, line.id, rev), `${NAME} is reading it again.`))
+			// CR B5: no switch verb for a line that isn't in effect yet (waiting for his OK, not in effect, reading); Turn on, Not now and
+			// Read it again are its actions.
+			if (line.status !== 'reading' && !notInEffect && line.state !== 'waiting' && line.state !== 'reading') verb(key, line.group === 'off' || line.status === 'off' ? 'way-on' : 'way-off', line.group === 'off' || line.status === 'off' ? 'Turn on' : 'Turn off', rev,
 				() => { const off = !(line.group === 'off' || line.status === 'off'); return said('setLineOff', () => setLineOff(store, line.id, off, rev), off ? 'Off · kept so you can turn it on again.' : 'On.') })
 			if (line.status === 'waiting') {
 				verb(key, 'way-confirm', 'Turn on', rev, () => said('confirmLine', () => confirmLine(store, line.id, rev), 'Turned on.'))
@@ -1212,7 +1497,10 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 		pageActionIds, reminderDefaults: newReminder(''), recipients: peopleOf(base).map(person => ({ id: hashOf(person.chat), name: person.name, group: person.group })),
 		// An empty list says why, so the owner knows to type a name (reminder recipients, 10-23).
 		...(base.people.length ? {} : { recipientsNote: `No one to choose yet: reminders go to people and group chats ${NAME} has seen asks from.${workflows.some(w => w.chat.test && !w.chat.group && w.asker && isPersona(w.asker.id)) ? ' People played with "[as Name]" in test chats are not real, so they are not listed.' : ''} They appear here once they write to you.` }),
-		settingsActions, ...(ways ? { ways } : {}), doneNew: newCount(base), sinceLine: sinceOf({ ...base, since: base.since ?? visit?.fallbackSince, next }),
+		settingsActions, ...(ways ? { ways } : {}), wdd: { ...wdd, ...(wdd.since ? { sinceDay: ownerDay(facts, wdd.since) } : {}), rows: wdd.rows.map(({ undoRev: _rev, correctable: _correctable, ...row }) => ({ ...row, chat: { ...row.chat, name: pageText(row.chat.name) ?? '' }, ...(row.to ? { to: pageText(row.to) } : {}),
+			parts: row.parts.map(part => ({ ...part, text: pageText(part.text) ?? '', ...(part.why ? { why: pageText(part.why) } : {}), ...(part.link ? { link: safeLink(part.link) } : {}) })),
+			because: row.because.kind === 'line' ? { ...row.because, text: pageText(row.because.text) ?? '' } : row.because.kind === 'setting' ? { ...row.because, label: pageText(row.because.label) ?? '' } : row.because,
+			...(row.undoFailed?.why ? { undoFailed: { why: pageText(row.undoFailed.why) } } : {}), ...(row.check ? { check: safeLink(row.check) } : {}), ...(row.preview ? { preview: Object.fromEntries(Object.entries(row.preview).map(([scope, plan]) => [scope, { ...plan, text: pageText(plan.text) ?? '' }])) } : {}), ...(row.stopped ? { stopped: { ...row.stopped, text: pageText(row.stopped.text) } } : {}), ...(wddActionIds.has(row.id) ? { actionIds: wddActionIds.get(row.id) } : {}) })) }, doneNew: newCount(base), sinceLine: sinceOf({ ...base, since: base.since ?? visit?.fallbackSince, next }),
 		summary: { minute: next.minute, handled: next.handled, catchup: { count: next.catchup.count, worth: next.catchup.worth }, off: next.off, paused: next.paused },
 		showExperienceNote: !store.ui().noted,
 		search: found ? {
@@ -1224,6 +1512,15 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 	const leaks = Object.entries(takePageTextLeaks())
 	if (leaks.length && Date.now() - leakLoggedAt > 3_600_000) { leakLoggedAt = Date.now(); for (const [kind, n] of leaks) try { store.log({ event: 'page-text-leak', kind, n }) } catch { /* best effort */ } }
 	return { snapshot, bindings }
+}
+
+// PE engineer-d-watch §8.10/§8.13 (CR 11:35:06 B1 on 44c14b24): the provider's saveKick throws exactly this when another writer holds
+// the kick file. A generic wake after a change that already stands ignores it (the runner's own cycle picks the change up); any other
+// error is rethrown.
+const KICK_BUSY = 'Another runner wake-up is being saved. Try again.'
+const kickBusy = (error: unknown) => error instanceof Error && error.message === KICK_BUSY
+function wakeKick(store: Store) {
+	try { store.saveKick() } catch (error) { if (!kickBusy(error)) throw error }
 }
 
 export function resolvePageIntent(store: Store, intent: Intent): { parsed?: Parsed; execute?: () => Immediate; shownAt?: string; page?: PageApproval } {
@@ -1241,11 +1538,17 @@ export function resolvePageIntent(store: Store, intent: Intent): { parsed?: Pars
 	if (binding.execute) return { execute: () => binding.execute!(intent.input) }
 	const parsed = binding.resolve(intent.input)
 	if (binding.management) return { parsed, page: { kind: 'manage', expect: binding.action.expect! } }
+	// N2: a record's Undo carries its offer's exact record revision as SEND's undo-action guard; no item, workflow or fresh token.
+	if (parsed.verb === 'undo-action') return { parsed, page: { kind: 'undo-action', expect: binding.action.expect! } }
+	// D-WATCH (PE §6, SEND-W/HOST-W1): Stop / Start watching carries its offer's exact state digest, which HOST-W1 checks against the
+	// current Control before it changes anything.
+	if ((PAGE_CONTROL_VERBS as readonly string[]).includes(parsed.verb)) return { parsed, page: { kind: 'manage', expect: binding.action.expect! } }
 	// A workflow wins (see expect below), so a reminder or proposal is looked up only when the item is neither: a proposal lookup
 	// reads every proposal (#27 step 2).
 	const workflow = store.byCode(intent.item), automation = workflow ? undefined : store.automation(intent.item), proposal = workflow || automation ? undefined : store.proposal(intent.item)
 	let page: PageApproval | undefined
-	if (binding.action.staleness === 'exact') {
+	// ✕ (PE 16:55:13Z (B)): a suggestion dismissal binds to the card revision through its offer's exact expect only, never an approval digest.
+	if (binding.action.staleness === 'exact' && parsed.verb !== 'dont-suggest') {
 		// Decision 53: a mark of his to-dos and the two line verbs bind to SEND's separate leftRev; every other page answer keeps
 		// workflowApprovalRev, so Send and approve consent are unchanged.
 		const lineBound = !!workflow && (!!binding.action.todoIds?.length || parsed.verb === 'left-ask-again' || parsed.verb === 'left-draft-invite')

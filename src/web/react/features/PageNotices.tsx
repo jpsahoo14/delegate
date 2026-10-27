@@ -10,6 +10,7 @@ import { useNavigation } from '../data/navigation.ts'
 import type { Receipt } from '../domain/contracts.ts'
 import { useEntities } from '../data/hooks.ts'
 import { codeHover } from '../domain/hover.ts'
+import { useScreenNavigation } from '../classic/navigation.tsx'
 
 // PE decision 46 / I28, Designer designer-page-notices.md: a page-level notice never goes into the page. Offline, can't refresh,
 // Health and update ready all become the header status slot's state (reserved space: the header's height never changes), most severe
@@ -21,6 +22,7 @@ export type PageNotice = {
 	say: string // the full sentence, announced once and shown in the popover
 	alert?: boolean // offline and Health: role=alert when they first appear
 	actions?: ReactNode
+	body?: ReactNode // the popover's line when it carries a link (D-COST JB3); say stays the announced text
 	later?: () => void // update ready: "Later" keeps it as a small ↻ in the slot
 	glyph?: string // the pill's icon when it isn't the warn sign: ↻ (update, pending), ✓ (a click's result that succeeded), NEUTRAL (the dot)
 	resultTone?: 'muted' | 'warn'; title?: string // a click's result: its #47 tone, and its item code as the tooltip (never in the words)
@@ -54,8 +56,10 @@ export function pageNotices({ online, refresh, health, update, fetchedAt, refres
 	const out: PageNotice[] = []
 	if (!online) out.push({ id: 'offline', severity: 50, tone: 'warn', alert: true, short: 'Offline · edits kept', say: 'Offline. Your last view and unsent edits are kept. Reconnect to act.' })
 	for (const problem of health) out.push({
-		id: `health:${problem.id}`, severity: 40, tone: 'warn', alert: true, short: problem.text,
+		id: `health:${problem.id}`, severity: 40, tone: 'warn', alert: true, short: problem.short ?? problem.text,
 		say: `${problem.text}${problem.since ? ` Since ${when(problem.since)}.` : ''}`,
+		// D-COST JB3: a Health line about a setting ends in its "Settings ›" link, in the sentence (the announcement keeps the whole text).
+		...(problem.settings && problem.lead ? { body: <>{problem.lead} <SettingsLink section={problem.settings} /></> } : {}),
 		actions: problem.actionIds.length > 0 ? <HealthActions ids={problem.actionIds} /> : undefined,
 	})
 	if (refresh && online) out.push({
@@ -79,6 +83,10 @@ export function pageNotices({ online, refresh, health, update, fetchedAt, refres
 	return out.sort((a, b) => b.severity - a.severity)
 }
 
+function SettingsLink({ section }: { section: string }) {
+	const { href } = useScreenNavigation()
+	return <a href={href(`settings/${section}`)}>Settings ›</a>
+}
 function HealthActions({ ids }: { ids: string[] }) {
 	const actions = useEntitiesActions(ids)
 	return <>{actions.map(action => <ActionButton key={action.id} action={action} />)}</>
@@ -152,7 +160,7 @@ function NoticePopover({ anchor, notices, base, close }: { anchor: RefObject<HTM
 	return createPortal(<div ref={box} className="notice-popover" role="dialog" aria-label="Notices" aria-modal="false" tabIndex={-1} onClick={ran}
 		style={place ? { position: 'fixed', top: place.top, ...(place.wide ? { left: 8, right: 8 } : { right: place.right }), maxHeight: place.maxHeight } : { position: 'fixed', visibility: 'hidden' }}>
 		{notices.length === 0 ? <p className="notice-line">{base.full}</p> : notices.map(notice => <div key={notice.id} className={`notice-line notice-${notice.tone}${notice.id.startsWith('result:') ? ' live-result' : ''}`} data-notice={notice.id} data-tone={notice.resultTone} title={notice.title}>
-			<p>{notice.say}</p>{notice.actions && <div className="notice-actions">{notice.actions}</div>}</div>)}
+			<p>{notice.body ?? notice.say}</p>{notice.actions && <div className="notice-actions">{notice.actions}</div>}</div>)}
 	</div>, document.body)
 }
 

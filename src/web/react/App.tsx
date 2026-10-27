@@ -4,6 +4,7 @@ import { CLASSIC_VIEWS, NEW_VIEWS } from './data/views.ts'
 import { Button } from './components/ui/button.tsx'
 import { useInterface } from './data/interface.ts'
 import { useAction, useAppData, useCardUi, useLatestError, useLatestResult, useNowSections, usePendingReceipts, useSnapshot } from './data/hooks.ts'
+import { noticeHealth } from './data/watching.ts'
 import { useHashNavigation, useNavigation } from './data/navigation.ts'
 import { NAME } from './brand.ts'
 import './foundation.css'
@@ -16,6 +17,7 @@ import { Header } from './features/Header.tsx'
 import { ActionButton, ActionState, useOnline } from './features/ActionButton.tsx'
 import { versionLabel, versionTitle } from './domain/version.ts'
 import { pageLines, pageNotices, useParkedUpdate, usePendingLines, useResultLine } from './features/PageNotices.tsx'
+import { closeOpenCardMenu, useCardMenuDismiss } from './features/card-more.ts'
 import { useStableOrder } from './data/stable-order.ts'
 
 const Now = preloadable(NEW_VIEWS.now)
@@ -42,7 +44,7 @@ function NewApp() {
 	const update = useVersionUpdate(), online = useOnline(), parked = useParkedUpdate(update.available)
 	const pendingLines = usePendingLines('new'), resultLine = useResultLine(updateResult ? undefined : result, 'new')
 	// PE decision 46: the page-level notices live in the header slot; none is inserted above the cards.
-	const notices = pageNotices({ online, health: Object.values(snapshot?.entities.health ?? {}), fetchedAt: snapshot?.fetchedAt,
+	const notices = pageNotices({ online, health: noticeHealth(Object.values(snapshot?.entities.health ?? {}), snapshot), fetchedAt: snapshot?.fetchedAt,
 		refresh: query.error ? { message: query.error.message, retry: () => void query.refetch() } : undefined,
 		update: update.available ? { version: update.available, reload: update.reload, ...parked } : undefined,
 		refreshWords: message => `Could not refresh your items: ${message}. Your last view is kept.`,
@@ -73,13 +75,7 @@ function NewApp() {
 			if (event.key === 'Escape') {
 				if (menu) { setMenu(false); return }
 				if (help) { event.preventDefault(); setHelp(false); return }
-				const more = document.querySelector<HTMLDetailsElement>('details.card-more-menu[open]')
-				if (more) {
-					more.open = false
-					more.querySelector('summary')?.focus()
-					event.preventDefault()
-					return
-				}
+				if (closeOpenCardMenu(true)) { event.preventDefault(); return }
 				if (field instanceof HTMLElement) {
 					if (field.id === 'find') useNavigation.getState().setFind('')
 					field.blur(); const card = field.closest<HTMLElement>('.item-card'); (card ?? main.current)?.focus({ preventScroll: true }); return
@@ -127,6 +123,9 @@ function NewApp() {
 		addEventListener('pointerdown', outside)
 		return () => removeEventListener('pointerdown', outside)
 	}, [menu, setMenu])
+	// D-MORE-MENU (PE §3.2, §5.3): a card ⋯ opening closes ≡, and ≡ opening closes any open ⋯.
+	useCardMenuDismiss(() => setMenu(false))
+	useEffect(() => { if (menu) closeOpenCardMenu(false) }, [menu])
 	useEffect(() => {
 		if (help && !dialog.current?.open) {
 			helpTrigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : null

@@ -1,0 +1,5 @@
+/* A58 S-A2 (decision 54): the held hide verb's Undo line in the item's place, as #38's Undo line. */
+.held-line{margin:0;padding:10px 12px;font-size:13.5px;color:var(--text-2)}
+.held-line .link-button{border:0;background:none;padding:2px 0;color:var(--accent);cursor:pointer;font:inherit;font-weight:600}
+.held-line .link-button:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:3px}
+.now-row.row-held,.ongoing-held{min-height:0}

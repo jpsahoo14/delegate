@@ -1,0 +1,19 @@
+/* D-WATCH' (Designer WS1, WS delta; PE §8.7): the Checking Teams control, right-aligned on its row at 1280; a full-width block (status left, button right) at
+   400 px. Off is a chosen state: neutral text tokens, never warn or danger. */
+.watching{display:flex;flex-direction:column;align-items:flex-end;gap:2px;margin-left:auto;text-align:right}
+.watching .watching-line{display:flex;align-items:center;gap:10px}
+.watching .watching-status{display:inline-flex;align-items:center;gap:6px;font-size:13.5px;color:var(--text)}
+.watching .watching-status svg{width:15px;height:15px;flex:none;color:var(--text-2)}
+.watching .watching-line>button{flex:none}
+/* Offline (CR B3): unavailable but focusable, so it reads its reason; it looks like any unavailable button. */
+.watching button[aria-disabled=true]{opacity:.45;cursor:not-allowed}
+.watching .watching-caption,.watching .watching-home,.classic-hello .watching .watching-caption,.classic-hello .watching .watching-home{margin:0;font-size:12.5px;color:var(--text-2);max-width:60ch}
+.now-watching-row{display:flex;justify-content:flex-end;margin:0 0 10px}
+.classic-hello-row{display:flex;align-items:flex-start;justify-content:space-between;gap:8px 16px;flex-wrap:wrap}
+@media (max-width:560px){
+	.now-watching-row,.classic-hello-row .watching{width:100%}
+	.watching{align-items:stretch;text-align:left;margin-left:0}
+	.watching .watching-line{justify-content:space-between;align-items:flex-start}
+	.watching .watching-status{flex:1 1 auto;min-width:0;align-items:flex-start}
+	.watching .watching-caption,.watching .watching-home,.classic-hello .watching .watching-caption,.classic-hello .watching .watching-home{max-width:none}
+}

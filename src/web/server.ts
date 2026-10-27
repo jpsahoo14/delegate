@@ -8,6 +8,8 @@ import { hashOf } from '../knowledge/format.ts'
 import { fsTime, readScope, writeText } from '../store/fs.ts'
 import { actResult } from '../mcp/server.ts'
 import { SEEN_KEYS, view } from './view.ts'
+import { WDD_SEEN, wddView } from './wdd.ts'
+import { telemetryEvent } from '../core/telemetry.ts'
 import { answerAutomation, propose as proposeAutomation, type AutomateInput } from '../runner/automations.ts'
 import { NAME, CMD } from '../brand.ts'
 import { onUpdateApplied, versionInfoLater, versionStatus } from '../os/autoupdate.ts'
@@ -15,7 +17,9 @@ import { saveSetting, settingsView } from './settings.ts'
 import { adoProbe, type BuildProbe } from '../runner/probe.ts'
 import type { Config } from '../core/types.ts'
 import { numbersPage, usageModel, USAGE_RULE } from './numbers.ts'
-import { WINDOWS, type WindowKey } from '../core/numbers.ts'
+import { WINDOWS, USAGE_KINDS, validRange, type WindowKey, type Span } from '../core/numbers.ts'
+import { dayIn } from '../core/schedule.ts'
+const CUSTOM_REFUSED = 'Choose a range whose first day is on or before its last day, and no later than today.'
 import { nextView } from './next.ts'
 import { reactAsset, reactPage, snapshotPage, SNAPSHOT_TEMPLATE } from './react-build.ts'
 import { chatNormalActionId, reactProjection, IntentError, voteCheck } from './react-projection.ts'
@@ -65,7 +69,10 @@ export function saveSeenFrom(s: Store, body: unknown) {
 	const item = (f: string) => /^item:[A-Za-z]+\d+$/.test(f) && live.has(f.slice(5).toUpperCase())
 	const ok = Array.isArray(filters) ? [...new Set(filters.filter((f): f is string => typeof f === 'string' && (SEEN_KEYS.includes(f) || item(f))).map(f => (f.startsWith('item:') ? `item:${f.slice(5).toUpperCase()}` : f)))] : []
 	const iso = new Date(now).toISOString(), t = typeof at === 'string' && !Number.isNaN(Date.parse(at)) ? new Date(at).toISOString() : iso
+	// WDD N1: how many records he hadn't seen (or marked reviewed) before this look (metadata only).
+	const looked = ok.includes(WDD_SEEN) ? wddView(s, s.seen(), now).rows.filter(row => row.fresh && !row.reviewed && row.at <= (t < iso ? t : iso)).length : 0
 	s.saveSeen(ok, t < iso ? t : iso, k => !k.startsWith('item:') || live.has(k.slice(5)))
+	if (looked) s.log(telemetryEvent('wdd-review', { rows: looked }))
 }
 // POST /ui and the panel's ui_save: the choice, the React page's experience, or that the first-time note was closed.
 export function saveUiFrom(s: Store, body: unknown): { ok: boolean; ui?: ReturnType<Store['ui']> } {
@@ -149,12 +156,32 @@ export async function serveInbox(get: () => Store, port = 0, token = randomBytes
 				}) } catch (error) { failure(error) }
 				return
 			}
-			if (req.method === 'GET' && u.pathname === '/api/v1/numbers') {
-				const key = u.searchParams.get('window') ?? 'this'
-				if (!(WINDOWS as string[]).includes(key)) { json(422, { text: 'Choose a supported Numbers window.' }); return }
+			// D-COST URΔ4: Numbers › AI USE for one window with its filters (model, kind, machine), every figure summing the filtered runs.
+			// D-COST PE §9: a custom window names its inclusive local days, from <= to <= today in his zone.
+			const customOf = (): Span | undefined | false => {
+				if (u.searchParams.get('window') !== 'custom') return undefined
+				const from = u.searchParams.get('from') ?? undefined, to = u.searchParams.get('to') ?? undefined
+				return validRange(from, to, dayIn(new Date(), get().config()?.tz)) ? { from, to: to! } : false
+			}
+			if (req.method === 'GET' && u.pathname === '/api/v1/numbers/usage') {
+				const key = u.searchParams.get('window') ?? 'this', pick = (k: string) => u.searchParams.get(k) || undefined, custom = customOf()
+				const filter = { model: pick('model'), kind: pick('kind'), machine: pick('machine') }
+				if (custom === false) { json(422, { text: CUSTOM_REFUSED }); return }
+				if (!custom && !(WINDOWS as string[]).includes(key) || (filter.kind !== undefined && !USAGE_KINDS.some(k => k.label === filter.kind))) { json(422, { text: 'Choose a supported Numbers window and filter.' }); return }
 				try {
-					const page = readScope(() => numbersPage(get(), key as WindowKey))
-					json(200, { model: numbersModel(page, NAME), lists: listsOf(page), rows: page.rows, missed: page.missed, rules: { ...NUMBER_RULES(NAME), usage: USAGE_RULE }, ...(page.usage ? { usage: usageModel(page.usage, key as WindowKey, get().config()?.tz) } : {}) })
+					const page = readScope(() => numbersPage(get(), key as WindowKey, new Date(), filter, custom))
+					json(200, usageModel(page.usage!, key as WindowKey, get().config()?.tz, { runs: get().runsToday(), cap: get().config()?.dailyRuns ?? 200 }, filter, custom))
+				} catch (error) { failure(error) }
+				return
+			}
+			if (req.method === 'GET' && u.pathname === '/api/v1/numbers') {
+				const key = u.searchParams.get('window') ?? 'this', custom = customOf()
+				if (custom === false) { json(422, { text: CUSTOM_REFUSED }); return }
+				if (!custom && !(WINDOWS as string[]).includes(key)) { json(422, { text: 'Choose a supported Numbers window.' }); return }
+				try {
+					const page = readScope(() => numbersPage(get(), key as WindowKey, new Date(), undefined, custom))
+					// CR COST4d B1: today in his zone, the one day the custom-range picker and this validation both use.
+					json(200, { model: numbersModel(page, NAME), today: dayIn(new Date(), get().config()?.tz), lists: listsOf(page), rows: page.rows, missed: page.missed, rules: { ...NUMBER_RULES(NAME), usage: USAGE_RULE }, ...(page.usage ? { usage: usageModel(page.usage, key as WindowKey, get().config()?.tz, { runs: get().runsToday(), cap: get().config()?.dailyRuns ?? 200 }, {}, custom) } : {}) })
 				} catch (error) { failure(error) }
 				return
 			}
@@ -203,11 +230,13 @@ export async function serveInbox(get: () => Store, port = 0, token = randomBytes
 				})
 				req.on('end', () => {
 					if (tooLarge) return
-					let raw: { code?: unknown; text?: unknown }
+					let raw: { code?: unknown; text?: unknown; include?: unknown }
 					try { raw = JSON.parse(body) } catch { json(422, { text: 'Could not read that check.' }); return }
-					if (typeof raw?.code !== 'string' || !/^A\d+$/i.test(raw.code) || typeof raw.text !== 'string') { json(422, { text: 'That check has invalid fields.' }); return }
-					const { code, text } = raw as { code: string; text: string }
-					try { json(200, readScope(() => voteCheck(get(), code.toUpperCase(), text))) } catch (error) { failure(error) }
+					// WYS (W4): include is the ticked set (pageChangeId); text may be absent, meaning the stored draft Send would send.
+					const include = raw?.include, ids = Array.isArray(include) && include.length <= 100 && include.every(id => typeof id === 'string' && /^[0-9a-f]{64}$/.test(id)) ? include as string[] : undefined
+					if (typeof raw?.code !== 'string' || !/^A\d+$/i.test(raw.code) || raw.text !== undefined && typeof raw.text !== 'string' || raw.text === undefined && !ids || include !== undefined && !ids) { json(422, { text: 'That check has invalid fields.' }); return }
+					const { code, text } = raw as { code: string; text?: string }
+					try { json(200, readScope(() => voteCheck(get(), code.toUpperCase(), text, ids))) } catch (error) { failure(error) }
 				})
 				return
 			}
@@ -345,7 +374,8 @@ export function writeSnapshot(store: Store): boolean {
 		const snapshot = readScope(() => reactProjection(store, '', { since: store.lastViewed(), fallbackSince: new Date(Date.now() - 86_400_000).toISOString() }).snapshot)
 		const key = hashOf(JSON.stringify({ ...snapshot, now: '', fetchedAt: '' }))
 		if (store.notify().snapshot === key) return false
-		writeText(join(store.root, 'inbox.html'), snapshotPage(snapshot), store.machine)
+		// WDD (PE E7): what Delegate did quotes chats and his rules together, so a shareable snapshot never carries it.
+		writeText(join(store.root, 'inbox.html'), snapshotPage({ ...snapshot, wdd: undefined }), store.machine)
 		store.saveNotify({ ...store.notify(), snapshot: key })
 		return true
 	} catch (error) {

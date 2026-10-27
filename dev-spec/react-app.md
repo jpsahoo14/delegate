@@ -5875,3 +5875,982 @@ When it holds, workOf attaches no report (so no reportActionId, New and Classic 
 the review count label or C2's approval. The your-step row's primary becomes Open (no Update button or row box). The context line, kind,
 headline and placement are unchanged; after his OK the step stays in Left for you with Open until the next worker turn or news. No
 engine, Settings, action-kind, consent or card-layout change; the S2-b layout moves are not part of this change.
+
+## 0.2.48 WYS N1: "When you send" groups, positive inclusion and the consistency check (joint-when-you-send.md N1-1..N1-3, W1-W11, PM round 2; PE I-a/I-b 16:25:46Z, 16:43:48Z; SEND S1-3/S1-4/S1-5/S1-6 dev-spec)
+
+Base: reviewed SEND a87d86c7 (whole S1-1..S1-6, H1-3 and S1-2 provider chain) merged by id into the .48 New tip f5ae9725.
+Projection: every change carries its consent id (pageChangeId), vote and PR from the call (isVote, prIdOf; N1-3, never its words),
+its verified origin, default tick (asked/promised/note/rule and not in a group), option group and Why? words: "<asker> asked:
+"<askQuote>"", a downgraded ask "Suggested: <asker>'s message may ask for this.", otherwise "Suggested: <reason>". An item whose
+effects carry origins (SEND's legacyEffectOrigins false) is wys 'groups'. Its approve, send-edit, send-anyway, approve-again,
+post-waiting and reply-only resolvers take include (the ticked pageChangeIds; votes never offered), refuse a missing selection
+when there is something to choose, and pass Send anyway's claimReview as actionClaimReview (PageParsed). Old originless items keep
+"all except" (R4). The live check (POST /api/v1/vote-check) also takes include and returns SEND's actionClaimGap on the reply Send
+would send (his edit, else the stored draft) with actionClaimConfirmation and the exact actionClaimReview token.
+Card (New and Classic, one component): block 3 is one "When you send" region. Its summary ("When you send: <up to 2 Delegate will
+lines> · N suggestions · N left for you") is a disclosure that opens by itself for an unpicked option group, a consistency claim, an
+open Left-for-you line or a review-done card; otherwise his choice per card. Groups: Delegate will · N (ticked; asked lines have
+Why?), Suggested · N (unticked, reason inline), Left for you (the existing section, as group 3). An option group is one line whose
+checkbox waits for enough options; votes are a plain line, never a checkbox. A reply-only card shows only "When you send: just the
+reply"; a holding reply with no changes "Then: Delegate keeps working on it and comes back with the answer." The primary counts the
+included set: Send reply / Send and make N change(s) / Make N change(s). The consistency warn sits under the reply in the vote
+line's slot with Tick it and Edit the reply; Send waits. ⋯ Send anyway opens the PM's confirm there, focus on Cancel, and sends with
+the token. No note box (slice 1). ✕ (dont-suggest) is not built: it waits HOST's reviewed verb.
+Ways (I-b): "Suggestions you turned down" accepts SEND's union row {kind 'suggestion', key, label, at}, shown by label under a
+hashed id; Reconsider calls reconsiderSuggestion(store, key, 'suggestion'); the key stays on the server.
+Transport (not New's files): include and actionClaimReview are on the resolved PageParsed, but mcp/server.ts enqueueParsed writes
+neither to the Answer yet, so an origin-bearing page Send is refused by effectConsent ("Choose the changes on the current page
+first."), fail-closed, until that write lands (Q to PE).
+Old data: none (legacy items unchanged).
+
+## 0.2.48 WYS N1 ✕: turn a suggestion down (PE 16:55:13Z (B); HOST 29809a29 carrier, SEND f99097d7 admission; decision 59)
+
+Each pending suggested change on a card waiting for him gets a local offer (dismiss-suggestion-<n>, exact on the card revision,
+no approval digest: resolvePageIntent attaches no PageApproval to dont-suggest). Its server-side resolve holds the effect and sends
+HOST's own scope key, dismissKey(effectCapability(effect), effect.target), and the scrubbed summary HOST checks; no change ids.
+The card shows ✕ ("Don't suggest this: <line>", the meaning as hover) on Suggested lines only. ✕ unticks it and replaces the line
+with "Won't suggest this: <line> · Undo" (role=status, focus on Undo) for 6 s, client-held (data/suggestion-holds.ts): nothing is
+dispatched until the window ends, Undo sends nothing, and a held line is neither shown nor sent. After the window the line stays
+hidden until the suggestion leaves the page, or the press fails or is declined on the page (then it returns at once, with the note).
+Old data: none.
+
+## 0.2.48 WYS N1 corrections (CR 2026-10-25T19:22:04Z B1-B3 on 32d479ba)
+
+B1: on an origin-bearing review, Post them resolves include-only (votes are never offered there); the vote exclusion by number stays
+the legacy path. B2: the review's "Waiting for your OK" list gives each waiting non-vote comment its tick (the item's own selection,
+default by origin), and Post them sends exactly the ticked ids; it is disabled with nothing ticked; there is no second block on a
+review. B3: a holding reply with no changes keeps its Left-for-you section under the Then line, and a reply-only card keeps it under
+"When you send: just the reply".
+
+## 0.2.48 WYS N1 dedicated vote (PE 2026-10-25T19:29:07Z; SEND e54e7d88)
+
+On an origin-bearing review, Approve PR <n> resolves to {ok, include: [], vote: pageChangeId(vote)}: only the vote, by its id,
+with nothing else included; include never carries a vote (I7/I8/W5 unchanged). Legacy revisions keep "all except the vote" by
+number. A vote change is never default-ticked in the projection.
+
+## 0.2.48 WYS N1 correction (CR 2026-10-25T20:27:10Z B4)
+
+Every suggested complete change with its bound dismissal offer has ✕: a plain Suggested line, each Suggested group option, and each
+suggested waiting comment on a review. Each hides with the same 6 s client-held Undo ("Won't suggest this: <line> · Undo"), in its
+own place (Suggested group or the review's waiting list), and is then neither shown, ticked nor posted; no group scope, never a vote.
+
+## 0.2.48 D-A239 frame-new readers (New, Coordinator 03:25:39; PE engineer-d-a239 §8 step 4)
+
+After SEND 5974137d (per-unit `review` frame, CR 02:45:17) and HOST 4c26c6c4 (migration and probe, CR 03:11:49), New's readers take a review from the frame:
+
+- `core/card-facts.ts` `itemReviews(wf)`: one entry per reviewed unit (`reviewedUnits`): `{pr, done, basis, again, head}`. The head is the unit's own probe head when `read === 'ok'`, otherwise `wf.prRead`.
+  - An item with no `wf.prs` (closed before the migration, which runs only on open items) reads the old `reviewDone`/`reviewBasis`/`reviewAgain` scalars.
+  - A migrated item never reads the scalars.
+- `itemReview(wf)` is the newest by `reviewedAt`. The `reviewDone` fact and the projection's review block and Approve read it.
+  - Approve's vote is that PR's vote (`prIdOf`).
+  - "Moved" is the unit's `again` or a head that differs from the reviewed head.
+- `card-state.ts` reads only the facts, so it is unchanged.
+- A multi-unit item shows its newest reviewed PR until New-A239-1 (per-PR blocks, MP1/MP2) is built. That work is New's but is not part of this activation.
+
+## 0.2.48 D-A239 2.4 MP1-MP3: several PRs in one ask (New, New and Classic; Designer designer-a239-multi-pr MP1-MP3, PM pm-review-multi-pr §1)
+
+The projection reads HOST's typed per-PR units (`wf.prs`, `unitOutcome`) and SEND's per-unit review frame (card-facts `itemReviews`). Nothing is parsed from copy.
+
+- **MP1, "PRs in this ask (n)".** Shown only when an ask names two or more PRs, directly after their message.
+  - `item.prs` lists the PRs in ask order. Each has its outcome in the PM's words:
+    - checking you're a reviewer…;
+    - reviewing / reviewed;
+    - not reviewing: <gate reason, no-link, you skipped it>;
+    - couldn't read it. Delegate tries again at the next check.;
+    - couldn't read it after <k> tries.
+  - Each also has a short form for rows, the PR link, and the PR's own offers: Try now (failed read), or Try again and Skip this PR (gave up). These are HOST's `pr-retry`/`pr-skip` with the PR in `nums`, on the exact revision, with ids `<code>/pr-<n>/<verb>`.
+  - A failed read's raw error is only a tooltip detail; HOST has no typed plain reason yet.
+  - Icon plus words, never colour alone; a static spinner under reduced motion. The list is named with its count, and an outcome change is announced once, politely.
+- **MP2, per-PR Approve.** With two or more reviewed PRs:
+  - `item.reviews` gives one "Delegate's review of PR <n>" block per PR. Each has its posted list, its waiting comments, and its own approval pair by C2's findings rule. The meaning line is always under the pair.
+  - Each PR's Approve resolves to that PR's vote only (`{ok, include: [], vote}`, or the legacy "all except"). It is offered while card-facts `reviewApproval` says that PR is approvable.
+  - The bar has no Approve and no Open PR. The client never promotes a fallback primary there, so the only filled button is a declared one, such as Send on a reply that awaits his OK.
+  - After one Approve, only that block says "Approved PR <n> · <time>".
+  - With exactly one reviewed PR, C2 is unchanged.
+- **MP3, the row.** New's line 3 and Classic's queue, Home and Ongoing rows read "PRs: <n> <short> · <n> <short> · +N" (features/PrsLine.tsx).
+  - A PR that couldn't be read or gave up is listed first.
+  - "+N" never truncates; the outcomes before it ellipsize.
+  - The full list is the accessible name.
+- **Done row.** The PM's one sentence, e.g. "Reviewed PR 5550 for Kim · 1 comment · replied · PR 5551 not reviewed". It is used for the closed placement and the Done list row; the reply he sent stays under it.
+- **MP4** (Settings line states) waits for SEND 2.3's line-state field.
+## 0.2.48 D-A239 2.4 MP4: "Not in effect" on Settings › Your way of working (New, New and Classic; Designer MP4/MP5, PM §2)
+
+This merges reviewed SEND a23bf49d (the 2.3 line-state provider, CR 03:57:58). The page renders SEND's `WayLine.state` and adds no status of its own. Classic Settings uses the same `WaysSection`, so Classic needs no file of its own.
+
+- **The line's state.** The page contract carries `state`: on, waiting, part, guidance, not-in-effect, reading or off.
+- **A not-in-effect line:**
+  - shows SEND's status words with a ✕, in the warn token;
+  - has a disabled switch, described by that status (the projection offers it no on/off verb);
+  - sits in SEND's needs-him group, and counts in the Settings nav count.
+- **Read it again.** Offered when the line couldn't be read or reads as nothing supported (status `cant-yet`). It is an outline button that calls SEND's `readLineAgain` on the line's textHash. The line then shows Reading…, and SEND's one compile lands it in Waiting for your OK or back in Not in effect.
+- **Turn on a review line** (`setting === 'reviewRule'`). Line 3 reads "On. Delegate now reviews PRs as your line says. It never votes or approves." for about 4 s (`role=status`, no Undo). It then settles to SEND's "✓ Doing this". The section holds this state, because the row moves to the Doing group.
+## 0.2.48 D-A239 CR corrections B1-B4 (CR 04:35:12 on 23e02f14, CR 05:29:02 on ba81a167)
+
+- **B1. Moved head.** card-facts `reviewMoved(wf)`: on an item with units, only the units' own `again` marks count. The retained `wf.reviewAgain` scalar is read only for an item HOST left without units. The question flag, the no-question Review-again flag and view.ts `nextSteps` (`card.reviewAgain`) all use it.
+- **B2. A review block's PR link** is its own PR's: the unit's `ref.url`, or the item's PR read only when it is that same PR. This applies to the single review block (including a multi-unit ask with one reviewed PR) and to each per-PR block. An item without units keeps `prOf`.
+- **B3. Per-PR reviews in every mode.** They come from the units' own reviews whatever the reply's mode, including a reply that awaits his OK and the gave-up case.
+  - The per-PR blocks sit after the PRs list and before the reply. They replace the item-level S9 review of one PR.
+  - Approve PR <n> stays vote-only. While a reply draft waits, an `ok` also sends that reply (apply.ts), so in that state each block offers Open PR to approve only, and Send leads.
+- **B4. "Approved PR <n>"** comes only from a made, positive (≥ 5), error-free vote on that PR whose `head` is the reviewed head, made after that review. Older-head, non-approving or headless history never claims it. A current Approve offer is always shown in preference.
+## 0.2.48 D-COST New-COST-1: stopped jobs and the daily-limit pill (New and Classic; PE engineer-d-cost §7.1/§8.3, Designer JB/JBΔ, PM R3/A2/A3 FINAL)
+
+New builds against the declared shapes (PE §8.3). These are `job.stopped = {kind: 'capability' | 'budget', need?, at, limit?: {runs?, tokens?}}` and `job.spent = {runs, tokensIn, tokensOut, creditsNano?, unknownRuns, since}`, and the `one-more` verb.
+- card-facts has `JobStopped`, `JobSpent` and `jobStopOf`. The projection holds one cast for the verb. Both go once HOST-COST-1's reviewed types are merged.
+- New writes none of these.
+
+**The fact.** The projection finds the item's ONE stopped job: its own job, or a PR unit's; several is not one. That gives `CardFacts.stop`:
+- kind and need (scrubbed for the page);
+- runs, and tokens in plus out, for a limit stop;
+- whether the item has an asker;
+- the asker's newest message since the stop, as news. It is "asked again" when it repeats an ask the job already has, else "added something".
+
+**card-state mode `stopped`** (after the terminal, agent and own-reply holds):
+- the warn line in the PM's words;
+- the retry: Try again (capability) or Run it once more (`one-more`, limit);
+- with a holding draft, Send holding reply leads and the retry is the outline beside it. With news, the retry leads;
+- with an asker and no draft (capability), Write the reply yourself leads;
+- otherwise the retry leads;
+- Close it is in ⋯;
+- `checkCard` flags a stopped job without a stop card.
+
+**Offers:**
+- Try again is HOST's existing "try again" answer, and `one-more` is `{code, verb: 'one-more'}`. Each is exact-revision, so one press is one run.
+- The captions are "Runs it once more · nothing is sent" (or "… with what <first name> added …") and "One more AI run · nothing is sent".
+- At the daily limit both are `unavailable`, with the PM's daily-limit sentence, so a press starts nothing.
+
+**Card:**
+- under the warn line, the news line (↗ that message in Teams), then the first thing it tried · "What it tried (N)", which opens Details › What it tried;
+- the retry's caption (or the daily-limit words) sits under the bar.
+
+**Rows:** "Can't do: no tool can <need> · <day>" (or "… no tool for this step · <day>"), or "Stopped: it reached its limit of <N> AI runs · <day>" (the token form when the token limit was the one reached). It appears on:
+- New's line 3, in the warn token;
+- Classic's queue and Ongoing rows.
+
+**Daily limit:** when today's runs reach the cap, a Health fact puts "Daily AI limit reached" in the header pill. Its popover line is "Daily AI run limit reached (<cap>). New AI work starts tomorrow. Change the limit in Settings ›", with "Settings ›" linking to Settings › Updates and system. It can't be dismissed, and nothing is drawn above the cards.
+
+**Not here:**
+- "Found so far (not finished)" on a limit stop, which needs HOST-COST-2's findings on that stop;
+- the per-job Settings row, held for the owner's defaults;
+- per-job "What it used" sublines (New-COST-4).
+## 0.2.48 D-COST New-COST-4, slice a: credits, the Today line, five kinds, per-model credits, earlier use (PE engineer-d-cost §6, §7.4, §7.6, §7.7, §11; PM FINAL credits; Designer UR1/URΔ)
+
+This is built against the declared HOST-COST-4 RunUse (not merged; Co 05:19:33 holds its consumption). New edits no runinfo.ts.
+
+**core/numbers.ts**
+- A run carries its cached input, `creditsNano`/`creditsStatus`, the key's kind, re-runs (`session.why` retry/catalog/requeue/relay, or outcome retry), and `backfill`. Model entries carry their own numbers.
+- Every field is presence-gated: absent is unknown or "not reported", never 0.
+- `Use.credits` sums the nano-credits of complete runs, counts own-key runs as 0, and counts the runs with a known figure.
+- `AI_CREDIT_LIST_USD = 0.01` (PE §7.6).
+- The PM's five kinds:
+  - Replies: draft, ask, owner-reply;
+  - Reviews: review, and a job on a PR key;
+  - Background jobs: job, reminder, promise;
+  - Rule reading: rule;
+  - Other.
+- Per model: each model entry's own numbers, so credits sum to the Total. An older run counts whole for its first model.
+- Today's use. Earlier use counts from the first backfilled run (§7.7).
+
+**web/numbers.ts and AiUse.tsx** (New and Classic share them):
+- The Today line, in warn tone at the daily cap: "Today: <in> tokens in (<cached> from cache | cache not reported) · <out> out · <N> AI runs · <N> of <cap> daily runs · <C> credits".
+- The window headline adds "<C> AI credits · ≈ $<D> at list rate", or "Credits: not reported for these runs" (or "0 · own key · no credits"). Then "<X> of <Y> runs reported credits" when some didn't, and an ⓘ button that opens the PM's help in a non-modal dialog (Esc returns focus).
+- The earlier-use line takes the "Counted since" slot.
+- By kind: tokens in · cached · out · runs · re-runs · Credits. By model: the AU3 columns + Credits + ≈ $. Each table has its own Total.
+- The per-item "What it used" line adds "· <C> credits".
+- The .47 "Credits aren't shown" line is withdrawn.
+
+**Next slices:**
+- the stacked day/week bars and the Tokens/Credits switch;
+- the filters (model, kind, machine);
+- Custom range (§9);
+- the three "Most used" lists;
+- the per-job "What it used" sublines.
+## 0.2.48 D-COST New-COST-1 CR corrections B1-B3 (CR 06:07:58 on 1501b672)
+
+- **B1. What it tried.** It is read through the canonical stored-report reader (`normalizeReport`) for the selected stopped job: its report's blocker (a sticky stop is a goal not met), with any retry history it kept, in plain words. An active retry is no longer required; HOST clears it on a capability stop.
+- **B2. A stopped job nobody waits on** (no asker) has no draft or editor, even when the producer left a holding draft.
+  - card-facts drops the draft from the facts, and the projection drops it from the item, so the retry leads and nothing can send.
+  - With an asker, the holding reply and edited-reply behaviour are unchanged.
+- **B3. A held holding reply on a stopped job keeps the held card.** Its reasons, Redraft / Send anyway bound to the hold's digest, and the existing invariants all stay; the card adds the stop's one retry.
+  - The stop's row, news and what-it-tried lines still show.
+  - `checkCard` allows held for a stop and flags a held stop without its retry.
+## 0.2.48 D-COST New-COST-4, slice b: stacked day/week bars and Show: Tokens / Credits (Designer UR1.3, UR3, URΔ3; PE §6(c), §9 bars, §11 (1))
+
+This is built against the declared HOST-COST-4 RunUse, like slice a. New edits no runinfo.ts.
+
+**core/numbers.ts**
+- A run carries the declared `tokenDetail {input, cacheRead, cacheWrite, output}` (§11 (1)) only when all four are numbers; otherwise it has none.
+- `Use.split` sums the categories of the runs that have one, and counts them.
+- `usageWindow` adds `days`: the last 14 local days to today. Like the weeks, a day before counting was complete has no value, and the day it became complete is marked.
+
+**web/numbers.ts** builds `bars: {week, day}`. Each set has a tokens view and a credits view, and a caption ("the last 8 weeks" / "the last 14 days (<d MMM> to today)").
+- **Tokens:** a bar stacks in (not cached) = input + cache write, cached = cache read, and out. All three come from the categories, never by subtraction.
+  - The split shows only when every reporting run in that period split its tokens.
+  - Otherwise the bar draws the reported in and out whole. The legend then adds "in, cache not reported".
+- **Credits:** one segment of the period's Σ complete nano-credits.
+  - A period with runs but no credit coverage is an empty dashed "not reported" bar, never a 0 bar.
+  - Own-key-only periods read 0.
+- **Every bar:**
+  - A counted period with no runs is a true 0 ("no AI runs"). One before counting began is "not counted".
+  - Its text alternative reads "<period>: <in> in (<cached> cached | cache not reported) · <out> out · <N> AI runs", with its usage or credit coverage and "Counted since" on the first counted period.
+
+**AiUse.tsx and ai-use.css** (New and Classic share them):
+- two switches, "By day (14) · By week" (default By week) and "Show: Tokens · Credits" (default Tokens). Each is `role=radiogroup` with radios, the arrow keys move the selection, and `aria-checked` announces it;
+- each segment has its own fill AND pattern: in solid, cached hatched, out dotted, whole-in striped. Colour is never the only cue;
+- a text legend, which adds the not-counted / not-reported marks when they are shown;
+- 14 day columns. At 400 px the figures turn vertical and nothing scrolls sideways.
+- The old runs-per-week bar is replaced.
+
+**Next slices:** the filters (model, kind, machine); Custom range (§9); the three "Most used" lists; the per-job "What it used" sublines.
+## 0.2.48 D-COST New-COST-1: the stopped-job Then line (PM FINAL 06:05:34)
+
+- On a stopped job, the holding reply's Then line names the one press that runs it again:
+  - Can't do: "Then: nothing more runs until you press Try again.";
+  - its limit: "Then: nothing more runs until you press Run it once more.".
+- The line is the same for the drafted and the edited text, and whether or not news made the retry lead.
+- The #31 "keeps working on it and comes back" line never shows on a stop. Every other holding reply is unchanged.
+- The card warn line without a need already reads the PM FINAL (2) words: "Delegate can't do this: none of its tools can do this step. It stopped and didn't retry."
+- Close it's 6 s Undo (PM 06:42:46, decision 54) and the stopped-PR-unit gap wait for Ready.
+## 0.2.48 D-COST New-COST-4, slice c: the AI USE filters (Designer URΔ4/URΔ6; PE §7.4, §9 "filters apply within the span, and the sums match", §11 (2))
+
+**core/numbers.ts**
+- `usageWindow(..., filter)` takes `{model?, kind?, machine?}` and keeps only the runs that match, so every figure is over the filtered runs: Today, headline, credits, coverage, bars and both tables.
+- **Kind** is one of the five labels (`rowOf`). **Machine** is the run's machine.
+- **Model** keeps a run's part for that model (§11 (2)):
+  - a one-model run is wholly that model's;
+  - a run whose models carry their own numbers keeps only that entry's calls, tokens and credits. Its tool calls, time and token split belong to no single model, so they stay unknown, never split;
+  - an older run counts whole for its first model, as in the by-model table. So the filtered headline equals that model's unfiltered row.
+- `options` lists the window's models and machines before any filter.
+
+**web/numbers.ts** gives `query` (the window) and `filters`: Model and Kind (each "All" plus its choices) and Machine, only when 2 or more machines ran something in the window or one is chosen. The daily-runs part of Today stays whole.
+
+**web/server.ts:** `GET /api/v1/numbers/usage?window&model&kind&machine` returns that section. An unknown window or kind is a 422.
+
+**AiUse.tsx** (New and Classic):
+- a filter row under the AI USE header, above Today: Model, Kind, Machine, each a single-select with a visible label and "All" by default;
+- active filters as chip buttons "Remove filter: <value>", plus one Clear filters link;
+- with a filter on, it refetches this section only, keeping the last figures while loading (aria-busy);
+- at 400 px, a two-column grid.
+
+Filters are not persisted.
+
+**Next slices:** Custom range (§9); the three "Most used" lists; the per-job "What it used" sublines.
+## 0.2.48 D-COST New-COST-4a CR corrections B1/B2 (CR 06:36:51 on ea4109e4)
+
+- **B1. A model's credits follow its run's** (PM FINAL: an incomplete run's credits are not reported).
+  - A model entry carries its run's credit status, and its figure counts only when the run is complete; an own-key run counts 0.
+  - So a partial run's models (one complete, one not) add nothing to any model row, and the rows sum to the Total and the headline.
+  - The partial run stays in coverage only, never 0. Its model and token facts are unchanged.
+  - The model filter uses the same rule.
+- **B2. Same-run supplements merge into one run.**
+  - A run's lines with the same runId (a synced copy, or HOST's later backfill supplement with `backfill: true`) are one run, never summed.
+  - The original line (not a backfill, else the earlier) keeps its time and what it served.
+  - The other line adds what it measured (credits, cache, models, split) and its backfill mark. So earlier use counts from the real backfilled run.
+  - Filters decide on the merged run, and each line keeps its own machine for the coverage rule.
+## 0.2.48 D-COST New-COST-4b CR correction B1 (CR 06:53:52 on dbabb27b)
+
+- **A complete category split is the bar's whole source:** its total, its segments (input + cache write · cache read · output) and its text ("<input + cache write + cache read> in (<cache read> cached) · <output> out").
+  - This holds whether or not the flat input and output counts were reported, since HOST may send `tokenDetail` without `usage.inputTokens`.
+  - The flat counts draw only the unsplit fallback, and "not reported" only when neither exists.
+- A run whose only usage is that split counts as having reported usage, so its split can be complete.
+## 0.2.48 D-COST H: the reusable S-A2 hide hold (PE engineer-d-cost §14.1, §14.3 (1), §14.6; decision 54)
+
+This carries the .49 hold mechanism into .48 with no `hold` on any offer, so nothing changes until C.
+- `data/hide-holds.ts` is byte-identical to 887e54a2 (holdHide / undoHide / useHold; the timer outside the row; dispatch only when the `UNDO_MS` window ends; the CR B1 release on a local refusal; the 30 s settle limit).
+- contracts `Action.hold {line}`. The projection's `offer()` options admit `hold`.
+- ActionButton: a held action calls `focusNext` and `holdHide` instead of dispatching. S-A's caption and S-B's `onPress` are not carried.
+- `features/HeldLine.tsx` has 795c168f's HeldLine body, plus the one bound addition (§14.6 check b): after Undo, on the next frame, focus goes to the restored card's ⋯, else the restored row's title.
+- `held-line.css` has 795c168f's four rules verbatim.
+- Held renders:
+  - ItemCard's card place (New and Classic). On .48 the early return comes after the card's WYS hooks, so the hook order never changes;
+  - the Now row;
+  - Classic Ongoing `Holdable` (progress rows, waiting cards, watches).
+- No engine change. The deferred `act` carries no input, and the hold never writes the card's edit state, so Undo restores his edited text and its label.
+- At .49 composition, NextActions imports this HeldLine and next-line.css drops the four moved rules (§14.3 (3)).
+## 0.2.48 D-COST New-COST-4a CR correction B3 (CR 07:09:58 on 90c327fa)
+
+- In a complete (or own-key) run, an own-key model keeps its own-key status: 0 credits, "0 · own key · no credits" in its cell and in a model-filtered headline. A paid model counts its own figure.
+- A partial or unreported run's models stay unreported, as B1 fixed; no credit amount changes.
+- `modelCredits` serves both `perModel` (the by-model table) and `modelPart` (the model filter).
+## 0.2.48 D-COST New-COST-4, slice d: Custom range on Numbers (PE engineer-d-cost §9; Designer URΔ4)
+
+**core/numbers.ts**
+- `WindowKey` gains `'custom'`, with its span passed in. `validRange(from, to, today)` requires real local dates with from <= to <= today. `WINDOWS` stays the four fixed windows.
+- Every section counts within the one span. There is no comparison span, as with "all".
+- The label is "Custom range (<Ddd Mmm d> to <Ddd Mmm d | today>)", the existing format.
+- `usageWindow(..., custom)`:
+  - the AI USE week bars clip to the range (a clipped week carries its span);
+  - By day shows each day of a range of 31 days or less, and is absent for a longer one.
+
+**web/numbers.ts**
+- `numbersPage(..., custom)` and `usageModel(..., custom)`.
+- The headline reads "Custom range: …". The query carries `window=custom&from&to` for the filter refetch.
+- Captions read "by day / by week, <Mmm d> to <Mmm d>". A clipped week is named by its days.
+- A run of more than 14 bars labels every k-th; each bar's text still names its period.
+
+**web/model/numbers.ts:** "Custom range" and "in this range" in its two window maps.
+
+**web/server.ts:** both Numbers endpoints take `window=custom&from&to`, checked against today in his zone. A reversed, future or malformed range is a 422: "Choose a range whose first day is on or before its last day, and no later than today."
+
+**Client (New and Classic share `features/WindowPick.tsx` and `window-pick.css`):**
+- The window select ends with "Custom range…". It opens a non-modal popover with labelled From and To date fields (max today, focus on From).
+- An invalid range says why inline (role=alert) and blocks Apply. Esc or Cancel returns focus to the select.
+- Applied, the select shows "<Ddd Mmm d> to <Ddd Mmm d | today>". At 400 px the popover opens from its left edge.
+- The window is `custom:<from>:<to>` on the page and `?w=custom&from&to` in the URL, beside the token. It is not saved elsewhere, so a reload keeps it and a fixed window clears it.
+- The day switch counts its bars: "By day (<n>)".
+- "Nothing counted here in this range."
+
+**Next slices:** the three "Most used" lists (they need usage-day key resolution); the per-job "What it used" sublines.
+## 0.2.48 D-COST H CR correction B1 (CR 07:22:17 on f8f166cb)
+
+- A held press on Classic's Needs-you card hands focus to that page's existing next-item control: the pager's Next item, else Previous item when Next is off.
+  - The card stands alone under its pager, with none of the row ancestors the other surfaces use.
+- Now rows and Classic Ongoing rows and cards keep the carried document-order rule unchanged.
+## 0.2.48 D-COST New-COST-4d CR correction B1 (CR 07:48:30 on 4421a6bc)
+
+- The Numbers response carries `today`: his day in his configured zone, the same day the server's custom-range check uses.
+- The custom-range picker takes every day from it: the From/To defaults, the date fields' max, the "up to today" check, and "… to today" in the select. The browser's calendar is never used.
+- Until a response has arrived, "Custom range…" is disabled.
+- The Today line inside a custom range is PE's open question (CR Q 07:48:30); its behaviour is unchanged here.
+## 0.2.48 D-COST C: cost Close it takes the 6 s Undo (PE engineer-d-cost §14.3 (2); decision 54)
+
+- The stopped job's Close it offer is `{ staleness: 'exact', expect: rev, hold: { line: 'Closed' } }`. Nothing else changes.
+- "Closed. · Undo" takes the card's or row's place, and `skip` is dispatched only after 6 s. Undo sends nothing and restores his edits.
+- With exact staleness, an item that changed inside the window makes the deferred `skip` refuse (409). H's release then brings the card back.
+- **Noted for PE:** a new message in the thread alone shows as news on the card but leaves the item's rev unchanged. So the refusal comes once the engine saves the item (its new ask), not from the thread line by itself.
+## 0.2.48 D-COST New-SKIP: Skip this PR for a stopped PR unit (PE engineer-d-cost §14.6 (a)/(b), §14.7)
+
+On the reviewed HOST-SKIP, merged as cc0c6f7d with HOST's reviewed cost line through 0364760f. Its one conflict was in runner/rule-compile.ts: the reviewed A239 failure helper is kept, with HOST-COST-5's `chooseSession`.
+- **(a)** A PR unit that is not skipped and whose review job (`unit.job`) stopped offers only "Skip this PR" (HOST's pr-skip). There is no row retry; the stop's Try again / Run it once more stays on the bar.
+- **(b)** The card's stop selection counts `wf.job` and the jobs of units without `skip`.
+  - After the Skip, the card leaves stopped mode unless another job is still stopped.
+  - With two stopped units, each offers Skip and the card names no single stop. After one Skip, the other becomes the card's stop.
+- No CSS or string change.
+- The declared-shape mirrors (`JobStopped`/`JobSpent`/`jobStopOf`, the `ONE_MORE` cast) still compile against HOST's merged types. Removing them is a separate step.
+## 0.2.48 D-COST: standing Today depends only on its own day's coverage (PE engineer-d-cost §9.1/§9.2)
+
+- `usageWindow`'s Today runs use the By-day rule for today alone: `todaySince` is the coverage of today's own lines, with the active filters and the owner-zone day. They never use the selected span's `after`/`since`.
+- `usageModel` emits the Today line in either state. So a custom range wholly before coverage still shows a covered Today, in its existing slot beside the "before" note.
+- There are no new words, and the span-based sections are unchanged.
+## 0.2.48 D-WATCH New-W: the Watching switch, both shells (PE engineer-d-watch §6; Designer WS1-WS5; PM FINAL 07:34:35 and 07:58:26)
+
+On the reviewed SEND-W, merged as 386d60c3: c95d8e68 with HOST-W1's input 145ec07d.
+- Merge conflicts:
+  - core/types.ts: the `Verb` union keeps `one-more` and adds `pr-approve`, `watch-off` and `watch-on`;
+  - worker/prompt.ts takes SEND's reviewed `standingInstructionsBlock`.
+
+**Server**
+- **view.ts:** `status.watching { on, since?, machine?, machines }`. An absent `watching` is On. `machines` counts the `state/seen/*.json` files.
+- **next.ts:** runner fact `watching-off` right after `stopped` (whose.ts admits it, and `startsNext` runs nothing for it). `delegateNext` reads "tries again when watching is on" for a retry and "starts when watching is on" otherwise.
+- **react-projection.ts:**
+  - the page offer `watching`, Stop / Start: `watch-off` / `watch-on` on `pageDigest({ on, since })`, with the PM caption as its meaning;
+  - `resolvePageIntent` gives a page-control verb a `manage` packet with that exact expect, the digest HOST-W1 checks;
+  - Check now is not offered while Off;
+  - MP1's failed read reads "couldn't read it. Tries again when watching is on.";
+  - `busy.reason` kind `watching` comes first while Off.
+- **settings.ts:** a tool server's "tries again at the next check" reads "Tries again when watching is on." while Off.
+
+**Page**
+- **`features/WatchingControl.tsx` + `watching.css`, on New's Now (its own row above Find) and Classic Home's hello row; absent in read-only:**
+  - `role=group` "Watching";
+  - "Watching: On since <time>" or "Watching: Off since <time> · <machine>" (the machine only with 2+ machines);
+  - an outline Stop or a filled Start, named "Stop / Start watching Teams and Azure DevOps", with the caption as the button's description;
+  - while Off, the Home line "Delegate isn't reading your chats or PRs and makes no AI calls on its own.";
+  - focus returns to the button after the press. There is no confirm and no Undo.
+- **Receipts:** "Watching off. Nothing new is read until you start it." / "Watching on. Catching up from <time>.", in the header slot. They are built from the saved outcome plus the page's own press fact (data/watching.ts, which holds the Off since that HOST checked), never from text.
+- **Header and Classic pill:** after Offline, Connecting and Stopped comes "Watching off" (+ " · Paused"), non-bad, with no reading warning. The full text adds "since <time>" and the machine.
+- **Elsewhere:**
+  - Now's summary `off` chip is not shown for a deliberate Off;
+  - busy.ts: "watching is off";
+  - a Classic Ongoing automation row: "Waits: watching is off".
+## 0.2.48 D-WATCH New-W': Checking Teams on Home, narrowed (PE engineer-d-watch §8.2, §8.6, §8.7; PM FINAL NARROWED N1-N6; Designer WS delta; CR B1-B3 on 332441fc)
+
+This supersedes the New-W section above for .48. Off now means only that Delegate doesn't check Teams for new messages on its own.
+
+**Merge.** The reviewed SEND 6cbdcf11 (the W1b input copy plus SEND-W' removal) is merged as 416d86f9. The merged `src/runner` delta's stable patch id equals c95d8e68..6cbdcf11 exactly.
+
+**Reverted from 332441fc** (back to 386d60c3 byte for byte):
+- core/whose.ts and web/next.ts: the `watching-off` runner fact, its `runnerWhy` entry and the `delegateNext` waits;
+- web/settings.ts: the `toolsView` `off` parameter and its words;
+- data/busy.ts, and the busy-reason enum member in contracts.ts;
+- classic/Ongoing.tsx: "Waits: watching is off".
+
+In react-projection.ts, the MP1 tail, the busy `watching` reason and the `toolsView` argument are reverted, and Check now is offered again in both states.
+
+**Kept:**
+- `status.watching`;
+- the page offer and its `manage` packet;
+- placement in New Now and Classic Home, with Now's summary chip suppressed;
+- the header precedence.
+
+**Offer** (react-projection.ts):
+- kind `watching`, Stop / Start (`watch-off` / `watch-on`), on `pageDigest({ on, since })`;
+- its rev is the state it was pressed on, `watching:on` / `watching:off`. A press made on the other state is refused 409 "Changed since you looked";
+- its meaning is the PM N2 caption: On "Stops checking Teams for new messages. Your clicks and everything already here still work."; Off "Checks Teams again <every>, from your setting.", with `every()` of the saved `poll.idleMin`.
+
+**Receipts** (CR B2), from data/result-line.ts:
+- Stop: "Stopped checking Teams. Your setting is kept for when you start again."
+- Start: "Checking Teams again: next check now."
+- Both are identical to HOST-W1b's replies.
+- The direction is the saved receipt's own `rev`. It is server-side and bound to the submission, so a reload while pending keeps it, and a refused or later press never relabels another receipt. A receipt without it reads "Done.".
+- data/watching.ts keeps only the accepted submission (from the data store's pending click, never the press itself), for WS4 focus return.
+
+**WatchingControl** (both shells):
+- `role=group` "Checking Teams";
+- status "Checking Teams: On", or "Checking Teams: Off since <time> · <machine>" (the machine only with 2+ machines);
+- buttons named "Stop checking Teams" / "Start checking Teams", with `id="checking-teams-button"`;
+- the Off-only Home line "Delegate isn't checking Teams for new messages. Your clicks and everything already here still work.";
+- at 400 px the status wraps in its column and the button keeps the first line.
+
+**Offline** (CR B3, §8.7(1)):
+- `ActionButton` gains `softDisabled?: string`. It renders `aria-disabled`, not `disabled`, uses that reason as the title and description, and returns from pointer-down and click before the guard, any capture or `act`.
+- Only WatchingControl sets it, with "Offline: can't change Teams checking now.", which the caption slot shows. Without the prop, `ActionButton` behaves as before.
+- In Classic the whole content is inside the existing `<fieldset disabled={offline}>`, so there the button is natively unavailable, as every Classic control is offline.
+
+**Header and Classic pill** (PM N3; CR B1):
+- After Offline, Connecting and Stopped comes "Checking off" (" · Paused" with Pause). It is not bad, and has no next check, no "Not checked" and no reading warning. The full text is the same words.
+- `data/watching.ts` `noticeHealth` drops only the intentional `paused` Health line from the page notices in Off+Paused (App.tsx and Classic.tsx). Real problems, Pause alone and Stopped are unchanged.
+
+**Settings** (§8.7(2)):
+- For row `pollIdle`, only while Off, a muted second line beside the help (New `<small className="muted">`, Classic `<span className="ct-muted">`): "Not used while Teams checking is off. Start it on Home."
+- Home goes to that shell's Home and focuses `#checking-teams-button`, held a few frames past the route's own main focus.
+- settings.ts:140's help is unchanged.
+
+**Not here:** PE §8.8's `saveKick('missed')` at react-projection.ts follows the reviewed HOST provider merge.
+## 0.2.48 D-WATCH §8.8: corrected provider input copy and New's missed-link consumer (PE engineer-d-watch §8.8; CR 11:11:32)
+
+**Provider input copy.** The reviewed, corrected HOST provider is copied in, not merged by ancestry:
+- 154ad8b1 plus 26bfc668, whose B1 CR closed at 11:11:32;
+- `src/store/state.ts` only: `git diff e14969a9 26bfc668 -- src/store/state.ts`, applied cleanly, with a stable patch id equal to HOST's.
+
+It brings:
+- the kick file `{ at, checkAt?, missedAt? }`;
+- `saveKick(check?: 'all' | 'missed')`, which keeps pending request timestamps under the record lock and throws an explicit retry error when another writer holds it;
+- `checkKickedAt(kind)`.
+
+`kickedAt()` is unchanged. The tick predicates (HOST W2' e14969a9/154ad8b1 `tick.ts`) aren't integrated here: e14969a9 has no CR verdict, and `src/runner` is HOST's. So on this branch the request timestamps are written but read by nothing, and wake behaviour is unchanged.
+
+**Consumer.** react-projection.ts `paste-missed` (the page's "Make it an item" for a missed Teams link) calls `saveKick('missed')`. While Teams checking is off, that link is an explicit request to read that message, which lifts `takeMissed` only. The tool-server Retry / Don't use / Use again kicks stay generic. SEND owns the `kickTick` kinds in mcp/server.ts.
+## 0.2.48 D-WATCH New-W' CR B3 correction (CR 11:30:25 on 03bd3e73; PE engineer-d-watch §8.7(1), §8.12)
+
+With `softDisabled`, `ActionButton` never renders native `disabled`, not even when a pending click makes it busy: `disabled={softDisabled ? undefined : off}`. The button stays focusable, `aria-disabled`, with the offline reason. Its early returns from pointer-down and click are unchanged, so a press while offline does nothing.
+
+Without the prop, behaviour is unchanged. Online, a pending press still natively disables the button as before. Classic's offline fieldset is the accepted exception (Coordinator 11:23:57, PE §8.12).
+## 0.2.48 D-WATCH (c) commit: consumer BUSY handling, runner-cycle reading while Off, and the N7 header (PE engineer-d-watch §8.9(c), §8.10, §8.11, §8.13; CR 11:35:06 B1 on 44c14b24)
+
+**Missed links (§8.13, superseding §8.8's `'missed'` kind and §8.10's paste row).**
+- Every queued missed link is the owner's explicit read request, and the runner reads queued links even while Teams checking is off (HOST W2'). So paste-missed does `store.addMissed(…)` first, then a **generic** wake.
+- There is no stamp and no 409. The receipt "Saved. It becomes an item on the next read." stays true.
+- No `saveKick('missed')` or `checkKickedAt` caller remains in src outside the provider.
+
+**Generic kicks (§8.10).** paste-missed and the tool-server Retry / Don't use / Use again call `wakeKick(store)`.
+- It ignores only the provider's exact `Another runner wake-up is being saved. Try again.`: the change already stands, and the runner's own cycle picks it up.
+- Any other error is rethrown unchanged.
+- So a busy kick file no longer turns a completed change into a 500. On is otherwise unchanged.
+
+**Reading while Off (§8.9(c), §8.10(c)).** view.ts `readingOf` keeps its 20/60-minute thresholds. While `watching.on === false`, it classifies them from `chats.endAt`, the runner-cycle stamp written every cycle that ran; with no `endAt` it falls back to the last read.
+- `at`, `machine`, `here` and `next` are unchanged, so `at` is still the last good read.
+- While Off, "not reading now", the busy reason `off` and the terminal offer's "isn't running on any machine" fire only when no machine has cycled for an hour.
+- On is byte-identical.
+
+**Header N7 (§8.11; PM N7).** While Off **and** `reading.state === 'off'`, Header.tsx and Classic.tsx show:
+- full `Checking off · ${NAME} isn't running on any machine`;
+- short "Not running" (Classic's compact text too);
+- bad, with no " · Paused".
+
+Offline, Connecting and engine Stopped still outrank it; while Stopped, its existing Health notice holds the pill. Off with an ok or late reading keeps the neutral §8.6 header, and On is unchanged.
+## 0.2.48 WDD N1 (projection): what Delegate did for you, from the reviewed action ledger (joint-what-delegate-did.md; backlog 5.3)
+
+This is the projection half of N1, over the reviewed W1 facade (`store/actions.ts`, via ff61591f, with W5 through 4c093ea2) on this branch. The page halves (Now's "Done for you" section, Done's By Delegate chip, the Classic tile, landing and the rows UI) follow.
+
+**`web/wdd.ts` `wddView(store, seen, now)`** turns the last 30 days of `readActions` into rows of facts only; the page composes the words. Each row carries:
+- `kind`, `at`, `chat {name, group}`, `to` (first name) and `item`;
+- `itemOpen`, while the item still waits on him (needs_human or waiting_on_*);
+- `parts`: kind, text, outcome, why, link, pr, file, line and severity;
+- `because`:
+  - a line, with its frozen text and a state: current, edited (hash differs) or deleted (gone);
+  - or a setting, with `reminder` when the key is an automation;
+  - or unknown;
+- `undoUntil`, only when the W1 `undoableAction` test passes;
+- the latest of `undone`, `undoFailed {why}`, `stopped {lineId, mode}`, `corrected` and `reviewed`;
+- `fresh`: after the `wdd` seen mark.
+
+**The Now section** holds rows that are:
+- not `itemOpen` (exactly once);
+- not reviewed;
+- and either still undoable or not yet seen.
+
+So a row leaves only when its window has closed **and** it was seen on an earlier look (Designer D1). Counts give `fresh` and `undoable`.
+
+**Mark all reviewed** (page tool `wdd/wdd-reviewed`, D1/D7.7):
+- It is offered only while the section has rows. Its rev is `pageDigest(section)`, so a row that arrived after the page showed it refuses 409 "Changed since you looked", and nothing is marked.
+- It writes an owner `reviewed` amendment for each shown row. A busy ledger refuses explicitly.
+- It carries the A58 hold, `Marked all reviewed.`, so the page holds it 6 s with Undo before anything is written.
+
+**Look and telemetry.** `SEEN_KEYS` gains `wdd`. `saveSeenFrom` logs `wdd-review {rows}` (metadata) with the number of rows he hadn't seen or marked reviewed before the look.
+
+**Privacy (PE E7).** Snapshot text goes through `pageText`/`safeLink`. `writeSnapshot` writes the shareable snapshot page with `wdd: undefined`.
+## 0.2.48 WDD N1 page halves and N2 display (joint-what-delegate-did.md D1/D2/D5/D8; PM FINAL 14:01:45, 14:05:55; PE v1.135 item 4)
+
+These follow the N1 projection 4e53c70c. CR 14:10:15 B1 (Mark all reviewed's per-month amendment loop) stays open for PE's batch/partial contract; this change doesn't alter that loop.
+
+**Rows** (`features/WddRow.tsx`, `domain/wdd-words.ts`, `wdd.css`) are the same in New and Classic, Now and Done.
+- **Line 1:** "✦ <what> · in <chat> | 1:1 · <time> ↗", then "Taken back · <time>" and "New". The ✦ wraps with the words.
+  - what: "Replied to <first>" (an ack is a reply, PM FINAL 2); "Posted <n> comments on PR <pr> and replied to <first>", or "Posted <k> of <n> comments…" when partial; "Sent your reminder to <first>".
+- **Line 2:** the exact message words, 2 lines, then Show all / Show less in place.
+- **Line 3:** the first that applies:
+  - "Turned off: "<his line>" ›" or "Stopped: "<new line>" ›";
+  - "Because you wrote: "<line>"", plus " (edited since)" or " (line deleted)"; › goes to the line in Your way of working, except a deleted one;
+  - "Because you set up this reminder: "<text>" ›";
+  - "Because you turned on: <setting>";
+  - "Delegate didn't record why this was allowed.".
+- **Undo failed:** "Couldn't take it back: <reason>. Use Not right? › Wrong to send a correction." (PM O1 reasons).
+- **Item still open:** "Waiting for your approval ›".
+- **Bundle:** "Show the N parts", each part as severity · file:line · first line · Thread ↗ · posted / failed: <reason> / couldn't confirm · Check ↗, then "What was already posted stays on the PR.".
+- **Not yet:** Undo and Not right? wait for their providers (W4 page binding + H0; H3; Stop doing this next).
+
+**Now › "Done for you"** (`WddSection.tsx`) sits right after Waiting on you, and is hidden while Find filters.
+- Header: "Done for you · <N> new".
+- It shows the newest 3, then "+ N more ›" to Done › By Delegate.
+- Mark all reviewed sits on the right, held 6 s as "Marked <N> as reviewed. · Undo" (PM FINAL 1; N = the guarded section rows).
+- It isn't drawn when empty.
+
+**Done › By Delegate** (`WddList.tsx`), in both shells:
+- A By Delegate chip/link leads the filter row. While it's on, its kind chips (All, Replies, Reviews, Changes, Reminders) filter the ledger rows. The view is grouped by day.
+- Routes: `done/by-delegate/<record id>` focuses that row with its parts open; an unknown id reads "This action is older than 30 days"; `/<YYYY-MM-DD>` lands on that day.
+- **Subline and empty line (PE v1.135 item 4 / PM 14:05:55):** while the ledger's start is unknown, they read "What Delegate did for you" and "Nothing yet.". SEND's `ledgerStart` export isn't on this branch, so that's always the case for now.
+
+**Classic Home tile:** "Delegate did <N> things for you", linking to Done › By Delegate, drawn only when the section has rows. Its "can still be taken back" subline waits for Undo.
+
+**The look** (`data/wdd-look.ts`, D1/D5):
+- 1.5 s visible counts the list as seen, but the `wdd` mark is saved when the look ends: leaving, the tab hidden, or pagehide. Until then the projection's section stays exactly what's on screen, so Mark all reviewed's count and guard match the shown rows, and nothing leaves under him.
+- New marks and shown rows stay stable during a look.
+- The generic Done seen marks skip `by-delegate`.
+
+**Projection changes:** the window field is renamed `since` → `from`; PE's `since` (ledger start) will come from SEND's export. The hold line follows PM FINAL.
+## 0.2.48 WDD N2: Not right? › "It shouldn't have done this by itself" › Stop doing this (Designer D3/D8; PE E5, v1.98; reviewed W5)
+
+**Projection** (`web/wdd.ts`):
+- `stoppable` holds only when the reviewed W5 `stopFromAction` can act:
+  - a reply, ack or review;
+  - whose frozen line is current, on and turned on (`lineConfirmed`);
+  - with the very grant (`grantId`, matching kind) that allowed it.
+
+  So Stop doing this is never offered just to be refused.
+- `because.lineHash` is the line's current hash.
+- `stopped` shows only while in effect: an added line still there and on, or his line still off. It carries that line's current text and hash. After its Undo, the row reads as before the stop.
+
+**Page verbs** (`react-projection.ts`, per row, on item `wdd:<id>`):
+- `wdd-stop`, Stop doing this, input = scope (`chat` | `person` | `never`):
+  - exact on his line's current hash;
+  - calls `stopFromAction`, the same way projection already calls `core/ways` for Your way of working;
+  - SEND's own refusal words, 409 when the line changed.
+- `wdd-stop-undo`, Undo:
+  - exact on the stop line's hash;
+  - the existing `deleteLine` for an added line, or `setLineOff(…, false)` for a turned-off line.
+
+**Page** (`WddRow.tsx`):
+- **Not right?** (ghost; its name carries the person and chat) opens inline. Focus goes to the first choice, and Esc or Cancel returns it to the button.
+- **The choice now:** "It shouldn't have done this by itself". Wrong, Incomplete and reminders' Pause/End come with HOST H3.
+- **Scopes** (PM/Designer words; default = the chat, the narrowest):
+  - reply/ack: "Only in <chat>" · "For <first>, anywhere" · "Never reply by itself";
+  - review: "Not for <first>'s PRs" · "Not in <chat>" · "Turn off your PR-review line".
+- **Note:** "What was already sent stays." (review: "What was already posted stays on the PR.").
+- **After Stop doing this:**
+  - the panel closes;
+  - line 3 reads "Stopped: "<new line>" ›" or "Turned off: "<his line>" ›";
+  - Undo shows for 6 s, then goes.
+- **Not yet:**
+  - each radio's second line, with the exact resulting line or "Turns off: …" (D8), waits for a pure preview export from SEND (W5 computes its text and cover inside the write; New won't copy SEND's templates);
+  - "☑ Also take this reply back" waits for W4 Undo + H0.
+
+## 0.2.48 WDD: the ledger's start date on Done › By Delegate (PE v1.135 items 2 and 4; CR 14:24:56 on SEND fd9687c4; PM 14:05:55)
+
+**Input copy.** The reviewed SEND fd9687c4 is copied in (`git diff fd9687c4~1 fd9687c4 -- src/store/actions.ts`), with a stable patch id equal to SEND's (bacd2d00). It adds `LEDGER_START`, `markLedgerStart` and `ledgerStart`; `appendAction` marks the start first.
+
+**Consumer:**
+- `web/wdd.ts` sets `since = ledgerStart(store)`, read only through SEND's export.
+- The projection adds `sinceDay = ownerDay(facts, since)`. `ownerDay` (next.ts, the C4 owner-zone day "Sun 26 Oct") moves to module level, unchanged and exported; no new formatter.
+- The subline and empty line, in both shells (`wddSubline` / `wddEmpty`):
+
+| Start | Subline | Empty line |
+|---|---|---|
+| unknown | "What Delegate did for you" | "Nothing yet." |
+| under 30 days | "What Delegate did for you · since <day>" | "Nothing yet. Delegate lists what it does for you from <day>." |
+| 30 days or more | "… · last 30 days" | "Nothing done by Delegate in the last 30 days." |
+
+## 0.2.48 WDD N1 B1 correction: Mark all reviewed is all-or-nothing (PE v1.136; CR 14:10:15 B1; CR 14:36:20 on SEND 206ecb4e)
+
+**Input copy.** The reviewed SEND 206ecb4e is copied in (`git diff 206ecb4e~1 206ecb4e -- src/store/actions.ts`), with a stable patch id equal to SEND's (ab9c53d4). It adds `amendActions`: every ref is resolved and every month's lock taken before anything is written. It returns BUSY or `{ missing }` with nothing written; `amendAction` is unchanged.
+
+**Consumer** (`wdd/wdd-reviewed`). After the existing digest check, it makes one `amendActions` call with one shared `at` for every shown section row:
+- BUSY → 409 "Another change to this list is being saved. Try again.";
+- `{ missing }` → 409 "Changed since you looked. Open the new version first.";
+- success asserts that the saved count equals the section's, then returns "Marked <N> as reviewed.".
+
+A refusal is therefore true by construction. The per-row loop, its partial commits and its counted missing refs are gone. The hold, digest, receipt store and react-submissions are unchanged.
+
+The CR 14:36:20 B3/B4 look/hold seam waits for PE's contract.
+
+## 0.2.48 WDD Stop doing this: the 1:1 scope words (PM FINAL 1:1 scope, 14:37:26)
+
+In a 1:1 the chat scope reads "Only in your 1:1 with <first>" (reply/ack, the default) and "Not in your 1:1 with <first>" (review), never the person as if a chat. Group chats and channels keep "Only in <chat>" / "Not in <chat>". The other scopes are unchanged.
+
+## 0.2.48 WDD automatic look and the Mark all reviewed hold (PE v1.141; CR 14:36:20 B3/B4)
+
+One global `wdd` seen time marks every row up to it, so `useWddSeen` takes a `complete` input. It records the 1.5 s look only if that input is still true when the timer fires.
+- Now: complete when every row with `fresh && !reviewed && !itemOpen` is among the 3 rendered, and the hold line is not showing.
+- Done › By Delegate: complete when there is no id/day landing target and every fresh row is rendered (a kind chip can hide one).
+- The Classic tile never looks.
+
+An incomplete look saves nothing: hidden rows stay New and stay in the section.
+
+When the look ends (leave or tab hidden) while `useHolds` has a `wdd` hold, the recorded time is kept and saved once that hold entry is removed (Undo, or the press settled), so the look never shrinks the section under his own press. `pagehide` saves at once. The exact/digest checks, the one `amendActions` call and the words are unchanged.
+Granted check at 4313220a (ONCE): sequence 2 passed; sequence 1 failed on a source defect, now corrected. Leaving By Delegate after a complete look saved seen, but Now's next look began, in its mount effect, from the cached snapshot taken before that save, so the look store froze the 5 covered rows in as shown and New. The look store now keeps `saved`, set when a look is recorded (the open look keeps its own rows and New marks, so nothing changes under him), and `useWddAfterSave` applies the projection's rule to the cached data until it catches up: a row at or before `saved` is not fresh, and stays in the section only while its Undo window is open. A failed save restores the previous value. Sequences 3 and 4 never pressed: the one-off clicked without the existing machinery's scroll-into-view and 750 ms wait, so Decision 46's 600 ms shift-then-press guard refused the press. Rerunning sequences 1, 3 and 4 awaits a further disposition.
+## 0.2.48 WDD rows that failed or couldn't be confirmed (PM FINAL B2, 14:51:19; CR 14:36:20 B2)
+
+The rule covers a reply, ack or reminder whose one message part is `failed`, or never completed (the I31 stub stays `unconfirmed`). `wddMissed` reads it from the existing parts; there is no new ledger field.
+- Line 1 never says "Replied" or "Sent". It reads:
+  - "Couldn't reply to <first>" / "Couldn't send your reminder to <first>" (failed; no ↗);
+  - "Couldn't confirm a reply to <first>" / "Couldn't confirm your reminder to <first>" (unconfirmed, with Check ↗ in place of ↗).
+- The where and time are unchanged.
+- Check ↗ is the projection's `check`, set only on such an unconfirmed row in a real Teams chat. It goes to Teams' documented chat link `https://teams.microsoft.com/l/chat/<chatId>/conversations`, or to the channel thread's root (`threadLink`); a made-up demo chat gets none.
+- The quote line labels the words as planned:
+  - "Not sent: <reason>. It was going to say: "<text>"", where the reason is the part's plain `why`, as the bundle parts use it;
+  - "Not sent. It was going to say: …" with no reason;
+  - "It may have gone out. It was going to say: …" when unconfirmed.
+  - It clamps to 2 lines with Show all, as D2.
+- These rows have no Undo (it needs a posted part). The ✦, New, line 3 and Not right? are unchanged. Reviews keep their bundle parts.
+## 0.2.48 WDD Stop doing this: each scope's second line (PE v1.140; SEND 452723d3 input)
+
+SEND's reviewed `stopPreview` (452723d3, CR 14:52:41) is copied in as `core/ways.ts` input; the stable patch id is equal, 4c74a9ef. Its planner is the one `stopFromAction` writes from.
+
+For a stoppable row whose stop is still offered, `wddView` calls `stopPreview` once per scope (chat, person, never) with the row's `because.lineHash`, the hash the button guards. It keeps `added`/`turned-off` results as `preview` facts; the projection passes the text through `pageText`.
+
+`NotRight` offers only the scopes with a preview, defaulting to the narrowest offered. Each radio's second line is the added line in quotes, or "Turns off: "<his line>"". A `why` (or reminder) result has no second line, and that radio isn't offered. The page composes no stop-line text.
+CR 14:59:03 nit: with no recorded person, the 1:1 chat scope's label falls back to the chat's first word ("your 1:1 with <first word>"), the reviewed preview provider's own fallback, never the full chat label.
+### CR 15:12:04 B4/B5 correction
+
+- **B4.** A save held back under the surviving `wdd` hold now lives at module level, with its hold subscription, until it is sent exactly once:
+  - when the hold entry goes (Undo, or the press settled), with a page refresh;
+  - or at `pagehide`, which flushes it regardless of the hold.
+  - The `pagehide` listener belongs to the page, so leaving the list (or hiding the tab, deferring, then closing) no longer loses the save. A look's own recorded time is still sent at once on `pagehide`.
+- **B5.** The look store's `saved` is now the latest `wdd` time the page has sent, set when the save goes out (no longer when a look is recorded), so an open look's section never narrows under him.
+  - `begin()` applies `saved` itself, so a list that rendered before the previous list's save went out still begins after it. This keeps the sequence 1 correction.
+  - Mark all reviewed is offered only while the displayed (cached-narrowed) section equals the raw section the action guards and counts. Otherwise the old offer is withheld until matching page data arrives. No replacement token is minted, and the server's exact/digest checks are unchanged.
+### CR 15:24:37 B2/B6 corrections
+
+- **B2.** A part's `why` is shown only when `wddPlainWhy` accepts it as a plain reason. That means it starts with a letter, is at most 120 characters, and has none of:
+  - error words: error, exception, errno, stack, undefined, null, timeout, http(s), status, or "at …";
+  - capital codes;
+  - 3-digit numbers or `:digit`;
+  - path or code symbols;
+  - file extensions.
+  Otherwise the row uses PM's no-reason words ("Not sent. It was going to say: …") and keeps the planned-text label. The bundle parts' "failed: <reason>" uses the same rule, as PM's FINAL defines it.
+- **B6.** The Stop panel keeps a valid pick; otherwise it selects the chat (the narrowest; review rows list the person first), and falls back to the first offered scope only when chat isn't offered.
+### CR 15:37:28 B5 correction
+
+Mark all reviewed is offered only while the raw section it guards and counts is exactly the set of rows Done for you retains and shows: `ids`, before the first-3 cut, including the look's retained rows after the reviewed/itemOpen filter. While they differ, the old offer is withheld. That covers a sent save the page data doesn't carry yet, and rows the look keeps (a closed-window row) that the section has dropped. The server token/digest, the bulk facade and row retention are unchanged.
+### CR 15:49:01 B2 correction
+
+`wddPlainWhy` no longer uses a denylist. It recognises a reason positively, only as one PM has written: O1's reason class keys (`forbidden`, `replied-to`, `edited`) or their exact words ("Teams didn't allow it", …), case-insensitive, ignoring a trailing period, with typographic apostrophes allowed. The lookup is guarded with `Object.hasOwn`. Anything else falls back to PM's no-reason words, in both the quote lead and the bundle parts' "failed": a diagnostic like "TypeError: Failed to fetch", "socket hang up", or an unknown phrase. The Undo-failed line reads the same map. Words for further send/comment reasons wait on PM/SEND.
+CR 15:59:17 nit: the class keys are case-folded like the words, so "FORBIDDEN" reads as "Teams didn't allow it". The Undo-failed line keeps its exact key lookup.
+## 0.2.48 Input: SEND's record Undo engine and page binding, HOST's H0 runner (a669a889, 120552b8, d31634ef, e7a5ef89, 50b1f018)
+
+These are reviewed provider deltas, copied in unchanged for WDD N2 (HOST 16:03:05 handoff; CR 15:54:22 closes H0 admission B1).
+- `core/page-approval.ts`, `mcp/server.ts`, `runner/send.ts`, `runner/apply.ts` and `store/state.ts` are byte-equal to the providers' cumulative diff a669a889~1..50b1f018.
+- `core/types.ts` adds the same `'undo-action'` verb and approval kind, and `UndoReceipt`. Its only difference from the provider's patch is the existing `'one-more'` verb in the context line.
+- The engine and binding contract are SEND's (its W4 dev-spec note on a669a889, not copied here): `undoAction`, `actionApprovalRev`, the `undo-action` page answer with `code: ''`. HOST's H0 routes it in the serialized runner, and `completePageSubmission(..., undo)` puts the typed `outcome.undo` on the receipt.
+- Nothing here is New's authoring.
+## 0.2.48 WDD N2: the send's own Undo on a row (D8 O1; PE v1.137 item 3; SEND's W4 page binding; HOST H0)
+
+**Offer.** A row whose record is still `undoableAction` gets `wdd-undo` ("Undo", with its countdown) on item `wdd:<recordId>`. It is exact on SEND's `actionApprovalRev(record)`, which `wddView` computes as the server-only `undoRev` (stripped from the snapshot), and expires at `undo.until`.
+- It resolves to `{verb: 'undo-action', text: recordId}`, and `resolvePageIntent` passes `{kind: 'undo-action', expect}`.
+- SEND's `enqueueParsed` then queues the `code: ''` panel answer for HOST's runner. Nothing is deleted on the page path.
+
+**Row (`SendUndo` / `SendUndoState`, New and Classic).** Undo sits in the same right-aligned actions bar as Not right? and the stop's Undo; the bar collapses when it's empty.
+- While the runner works, the button reads "Taking it back…".
+- At `undo.until` the button disappears, and focus moves to Not right? (else the row) if Undo had it.
+- "Taken back · <time>" and "Couldn't take it back: <reason>. …" stay the ledger's (`undone` / `undoFailed`).
+- "Too late to take it back" shows for the receipt's typed `too-late`, or for a reasonless refusal saved at or after the window's end. That refusal comes from SEND's enqueue-time check, which carries no `undo` facts.
+- A result the runner couldn't record (`recorded: false`) takes Undo away and makes no row claim; SEND's Health hold says what happened.
+- After an undone reply whose item is open again, line 4 reads "The draft is in Waiting on you ›" only when the page proves it (CR 17:09:59 B8, below); otherwise it reads "Open ›".
+
+**Result line.** The receipt contract carries HOST's `outcome.undo`. `resultWords` gives "Taken back." / "Too late to take it back." / the PM's undo-failed line from it, and nothing for `recorded: false` or a reasonless refusal. The runner's text is never read or shown.
+
+Not in this slice: the Stop panel's "Also take this reply back", and the N3 strip fold.
+
+## 0.2.48 WDD N2 corrections: the Undo's own receipt slot, the draft claim (CR 17:09:59 B7/B8 on fea75933)
+
+**B7, the receipt slot.** `SendUndo` / `SendUndoState` read the slot of the Undo that was actually submitted, not the current offer.
+- At press (`prepareInput`), the row records the submitted Undo's item, action id and rev. That record lives outside the component, so the row on Now and in Done › By Delegate read the same click.
+- Pending, result and error lookups use that `item@rev`, which is where `useAction` stores them. So a late, too-late, refused or failed answer still lands on its row after the offer is revised, or withdrawn at `undo.until`.
+- After a reload, a restored pending click is found by its saved action id and adopted.
+- With no submission, the lookup is the current offer's slot, or nothing at all; never the empty `@` slot.
+- Showing and sending Undo stay with the current offer alone: its eligibility, its window and its exact revision.
+
+**B8, the draft claim.** On an undone row, line 4 says "The draft is in Waiting on you ›" only when the page's structured facts prove it:
+- the item's current `draftId` resolves in `entities.drafts`;
+- the item has a placement in Waiting on you (`section: 'move'`).
+
+Any other open item gets the neutral "Open ›" to the same item. That covers an item waiting on a job or the sender, a question without a draft, or a newer turn the runner deliberately left alone (H0's protection). No receipt text, item status or prose is read.
+
+## 0.2.48 WDD N2 E5: "Also take this reply back" (PE v1.150, binding (a); D8 E5)
+
+**The box.** In Not right?'s panel, under "What was already sent stays.", the box "Also take this reply back" is drawn only while the row shows its own Undo offer (`wdd-undo`, window open).
+- It starts unticked, because taking a message back is destructive (PM/Designer asked, nonblocking).
+- It goes when the window closes (a timer at `undo.until`), and it resets when the panel closes.
+
+**One press, two exact requests in order (New only; no SEND, HOST or server change).**
+1. At the press, the stop button's `prepareInput` arms the chain only when the box is ticked and the window is still open. It records the stop's slot, the Undo offer's id, its pre-stop rev and its end.
+2. Stop doing this is sent exactly as before. The chain attaches to that click's own pending submission. If the click was refused (busy, guard), the chain is dropped.
+3. Only an accepted, applied stop that is neither refused nor uncertain goes on. Anything else drops the chain and sends no Undo, and the row's own Undo stays at its unchanged rev:
+   - a 409/422 refusal (including the history-failed 422);
+   - a 4xx error;
+   - a pending that turns queued, unknown or unreached;
+   - a lost tab.
+4. The stop's `stopped` amendment changes `actionApprovalRev`, so the chain waits for page data fetched after the stop's receipt. It sends only that row's `wdd-undo` offer for the same record, and only with a rev different from the pre-stop one, inside its `expiresAt`. It never sends the pre-stop rev. The submitted identity goes to B7's slot record, so O1's states ("Taking it back…", "Taken back", the undo-failed line, "Too late…") read on line 4 as for the row's own Undo.
+5. If the window closed in between (no refreshed offer while the row shows its stop, or the end has passed), nothing is sent. Line 4 reads "Too late to take it back" beside line 3's "Stopped: …" and its 6 s Undo, and the stop is never rolled back. An `undone` or `undo-failed` row drops the chain.
+6. Residuals, as PE disclosed:
+   - the stop's Undo pressed during a pending take-back gets the existing pending-other line;
+   - the chain isn't kept across a reload;
+   - `wdd-stop` and `wdd-undo` stay separate events.
+
+**Proof.** Static only. PE item 9's runtime checks run on the existing N2 one-off only with a Coordinator grant, which is requested. The unchanged regression one-offs run with the box unticked.
+
+## 0.2.48 WDD N2 B7, kept across reload and remount (CR 18:12:11 on e7908203)
+
+What an Undo was sent with is kept in tab storage (`sessionStorage`, key `delegate-react-wdd-undo-v1`), per row, beside the pending clicks: the item, the action id, the rev and the window's end it was pressed in. It is written at the press and by E5's chained Undo, and when a restored click is adopted.
+- After a reload with no live offer, the restored pending click (`restorePending`) is read from that `item@rev`, so its late, refused or failed answer still reaches its row.
+- `SendUndoState`'s reasonless late refusal takes its deadline from that record, not from a component ref, so a remount after expiry (Now › By Delegate) still has it.
+- Lookup never depends on the current offer. The current offer, its window and its exact rev remain the only authority to show or send Undo; nothing expired is resent, and the empty slot is never read.
+- Entries more than a day past their window are dropped when a new one is written. Unreadable storage keeps memory-only behaviour, and the click itself already needs tab storage.
+
+## 0.2.48 WDD N2 E5 B1: O1's suppression gates the box (CR 18:22:50 on dc0082d4)
+
+One test, `unrecorded`, is O1's own suppression: a take-back whose result the runner couldn't record (`outcome.undo.recorded: false`), read from the row's submitted Undo slot (B7). It now gates four things together:
+- the row's Undo;
+- E5's box, which is drawn only while the offer is live, inside its window and not suppressed;
+- the press-time arming, which reads the submitted slot fresh;
+- the chain's final send, where a refreshed offer for a suppressed row drops the chain before anything is sent or the submitted identity is replaced.
+
+Stop doing this itself stays usable. The refreshed exact token and window, and SEND's in-process/Health hold, are unchanged. Proof is static: the E5 check grant is exhausted, so this suppression path wasn't exercised at runtime.
+
+## 0.2.48 Input: SEND's D-A281 A1 and typed review waits (0ab185f4, ec161d94)
+
+These are input copies, unchanged, of SEND's reviewed `0ab185f4` (A1: a PR-review result stays under its review line; CR ok 18:12:11) and `ec161d94` (v1.148 §17.6 B1 + B5; CR ok 18:12:11), applied in order with `git apply --3way`. Each of the three files equals SEND's cumulative `0ab185f4~1..ec161d94` by stable patch id: `core/policy.ts`, `core/rule-lines.ts` and `runner/autosend.ts`.
+- `reviewWaitOf` returns `{kind: covered | waiting | off | none, grantId?, text}` for New's consumer.
+- A newly read widening "my team" grant becomes Unclear.
+
+## 0.2.48 WDD N2 B7, a pending Undo's record outlives the cleanup (CR 18:42:18 on 445f0f1d)
+
+- **The cleanup keeps unresolved clicks.** Writing a sent-Undo record drops old ones (more than a day past their window) only when no saved pending click (`pendingSubmissions`) is on their `item@rev`. If the pending clicks can't be read, nothing is dropped. The window's end limits whether Undo may be sent; it never limits finding the answer to a click still waiting. That covers a long runner outage followed by another press and a reload.
+- **Unreadable storage is said (nit).** A missing record reads as empty. Unreadable or partly unreadable records are logged as such and ignored, never silently taken for empty.
+
+## 0.2.48 D-A281 New/Classic consumer: typed review waits and "Sent because you wrote" (PE v1.148 §17.6 B1/B3; SEND ec161d94 input)
+
+**B1, a PR review's wait line.**
+- The projection calls SEND's `reviewWaitOf` for a `pr_review` card whose Why it waited it already computes, with the same guests context `whyWaited` uses. When that very line is among `whyWaited`'s lines (matched whole, never read for its words), it moves out of `why.waited` into `why.reviewWait = {kind, text, lineId?}`.
+- `lineId` comes from the grant through his lines (the line's own id, `grantIds` or its compiled grants). "Why it waited:" still heads it.
+- The card (New and Classic share `ItemCard`) links it by `kind`, never its words:
+  - `none` goes to Settings › Your way of working with the Add a line box (`id="way-add"`, new in `Ways.tsx`) focused and nothing prefilled;
+  - `waiting` and `off` go to his line (`way-<lineId>`, now `tabIndex=-1` so it can take focus);
+  - `covered`, or a line not found, has no link.
+- The link is the whole sentence. Splitting off "Settings › Your way of working ›" would mean reading SEND's words. The target is scrolled to and focused once the settings view has rendered.
+
+**B3, "Sent because you wrote".**
+- For a reply one of his lines sent (`wf.sent.byRule` with SEND's frozen `wf.sent.rule`), `item.sent.rule = {text, lineId?, state}`:
+  - `text` is the line as it read at send;
+  - `state` is `current`, or `edited` when the line's text hash now differs, or `deleted` when no line resolves.
+- It shows as SR2's muted line under the sent head, and as Details › Why's first line: 'Sent because you wrote: "<text>"' with " (edited since)" and " ›", linked to `way-<lineId>`, or " (line deleted)" with no link (WDD's forms).
+- Never a rule id, code or `decision.reason`. The stale "no frozen source yet" note is gone.
+
+**Proof** (own fictional one-off): the projection gives `none`/`waiting`/`off` with the resolved lines, the line out of Why it waited, and no rule id or "rule" wording, plus `current`/`edited`/`deleted`. In the browser, New and Classic land on `way-add` (empty) or his line, focused. B3's SR2 line, Why first line, its link, "(edited since)" and "(line deleted)" with no link were checked through Classic's focus route; Done renders the same `ItemCard`.
+
+## 0.2.48 Input: H3's types and the endedFrom-bound approval revision (HOST 500b02c5 + 36d5e997, SEND a922460e; selected files)
+
+This is a selected input copy, unchanged, for New's H3 consumer:
+- `core/types.ts`: H1 `recordTries` and H3 `Automation.endedFrom`. It equals HOST's cumulative `500b02c5~1..a922460e` by stable patch id.
+- `core/page-approval.ts`: SEND `a922460e`, `automationApprovalRev` binding `endedFrom` (CR ok 18:42:18; HOST's adoption CR ok 18:52:42). It equals HOST's cumulative patch by stable patch id.
+
+The runner files (`automations.ts`, `apply.ts`) are not copied. They depend on SEND commits not in this tree (`c835efc8`'s `action-record.ts` and its telemetry event), so they stay HOST's to compose. New's consumer compiles against the types and revision only.
+
+## 0.2.48 WDD H3 consumer: Wrong / Incomplete, reminder Pause / End, and Not right? only with a choice (PE v1.146 + v1.149; PM 17:18:54; Designer 17:19:58)
+
+**H3(a), Wrong / Incomplete.**
+- `wdd.ts` marks a row `correctable` (server-only; the snapshot strips it like `undoRev`) when all of these hold:
+  - the record has an item;
+  - the item's workflow is `done` or `open`;
+  - the record isn't undone;
+  - one of its message parts, or its Undo target, is the workflow's current `wf.sent.msgId`.
+- The projection then offers `wdd-wrong` / `wdd-incomplete`. They are the existing page feedback answer on that item (`{code, verb: wrong | incomplete, text: note}`), exact on `workflowApprovalRev`, so `resolvePageIntent` gives `feedback-send` with the current `sentMessageId`. HOST's `mark` drafts the correction as an item waiting on him; nothing posts.
+- A superseded send, an undone record or a reminder is not offered. "Not needed" is never offered on a row.
+
+**H3(b), reminders.**
+- An active reminder's row offers Pause (`{code, verb: pause, text: recordId}`); an active or paused one offers End (`{code, verb: skip, text: recordId}`). Both are exact on `automationApprovalRev`, which binds `endedFrom` (input `f6279b1e`).
+- `wdd.ts` derives `reminderStopped {state, at}` from a `stopped` amendment with no line, while the live automation is paused or ended. Line 3 then reads 'Reminder paused: "<frozen label>" ›' or 'Reminder ended: …' (to the reminder); otherwise the Because line.
+- A natural end without his stop keeps the Because line, and "Reminder ended" stays if resume leaves it ended.
+- For 6 s from the stop, the row offers Undo, the page `resume`, exact on that stopped state's revision (expiresAt = stop + 6 s). `ReminderUndo` hides it at its end, and moves focus on as the send's Undo does.
+
+**Not right? (Designer 17:19:58).**
+- It is drawn only when the row offers a choice. The panel lists only offered choices, in D3's order:
+  - Wrong, "Draft a correction";
+  - Incomplete, "Draft what was missing";
+  - "It shouldn't have done this by itself": the line's scopes, or a reminder's Pause / End.
+- Focus goes to the first. Wrong and Incomplete take an optional note, with "Drafts a follow-up for your approval. Nothing is sent yet."
+- It is never removed while the button or its open panel holds focus. The last offers, previews included, stay, and a press on a changed record gets the existing exact-revision refusal.
+- When the stop's 6 s Undo ends while it has focus, focus moves to Not right? or the row (NR5).
+- The undo-failed line keeps "Use Not right? › Wrong to send a correction." only when the row offers Wrong (PE v1.149 / PM flag).
+
+**Not in this tree:** HOST's runner (`automations.ts`, `apply.ts`) that writes `stopped` / `corrected` composes with the cut. Its failure words are its reply's. The page result line's undo-failed sentence keeps today's form.
+
+**Proof** (own fictional one-off): 26/26, New and Classic.
+- Offers and exact tokens.
+- Superseded and undone rows not offered; `correctable` server-only.
+- Reminder offers, stopped state, Undo and natural end.
+- NR1-NR3; the undo-failed variant; line 3 words.
+- The Wrong note and Pause queued as the bound answers.
+
+Regression one-offs were updated where the bindings change behaviour (a reminder now offers Pause / End; an item-less undo-failed row drops the Wrong pointer): Stop 24/24, Undo 40/40, N1 17/17, B2 18/18.
+
+## 0.2.48 D-A281 consumer corrections (CR 19:19:08 B1/B2/B3 on 77ffdc4e)
+
+- **B3, the frozen words exactly.** `frozenRule` (one helper for the card and Done) carries `wf.sent.rule.text` as his own words, escaped by the page as Ways' line text is. It is never `pageText`, whose engine-hint filter dropped whole sentences such as '… reply with "Reviewed."'. The current edited line is never substituted; "(edited since)" says so.
+- **B2, no stored permission reason.** Where the bound source is shown, the item's and the Done row's `why.reason` (from `wf.decision.reason`, which can name a rule id) is omitted. That covers a reply his line sent (its frozen line) and a PR review's typed wait line. Sources, confidence, gaps and Why it waited's safety lines stay.
+- **B1, the actual Done renderers.**
+  - `doneEntries[].sentBecause` is set only for the activity that IS the item's current sent reply, by his line: `current`, with a `sentId` equal to `wf.sent.msgId` when there is one. An older activity never borrows a newer reply's line.
+  - New Done (both views) leads its Why with it.
+  - Classic Done's `ClassicWhy` puts it in the summary as plain text (a link can't sit in a summary) and as the first, linked line inside.
+  - The rendering is shared: `features/SentBecause.tsx` (`SentBecause`, `sentBecauseText`, `toWay`), now also used by the card.
+
+**Proof** (own fictional one-off, 26/26, New and Classic):
+- the hint-shaped line kept whole on the card;
+- no "Review rule g-…" on the card, the typed-wait cards or the Done entry;
+- the New Done Why led by the linked line (to his line), and Classic Done's summary and linked body line.
+
+Fail-first on the previous source: the frozen text was empty, the permission reason was shown on the card and in Done, and New Done had no line.
+
+## 0.2.48 WDD H3 consumer B2: Not right? keeps what he is looking at (CR 19:52:50 B2 on e3b59682)
+
+- **Held offers.** While the Not right? button holds focus or its panel is open, what it shows (choices, actions, their revisions, previews) is held as it was when it took focus or opened. A partial withdrawal (Wrong / Incomplete gone, Stop still offered) or a full one never switches the choice or removes a focused note. A press on the withdrawn or changed record gets the existing refusal, and the panel stays.
+- **Closing.** The panel closes only on Cancel / Esc, or on this panel's own accepted press (watched on its slot: a new result, accepted, not refused or uncertain). A stop arriving from elsewhere no longer closes it under him.
+- **Focus.** Cancel / Esc returns focus to Not right?, or to the row when no opener remains. After his own accepted press, focus rests on the row: Not right? may be leaving with its offers, and holding focus on it moved the stop's Undo under his pointer (found by the Stop one-off).
+- **H3 B1 is not in this change.** The reminder stopped-state association waits for PE's collision-safe binding (PE 19:57:52 returned).
+
+**Proof** (own fictional one-off, page poll delivers the server change), New and Classic:
+- with the note focused, Wrong / Incomplete withdrawn: panel, choice and focused note stay;
+- its press is refused ("That action is no longer offered…") and nothing is queued;
+- a stop from elsewhere leaves the open panel open;
+- Cancel with no opener left focuses the row.
+
+Fail-first on e3b59682: the note panel switched under him.
+
+
+## 0.2.48 D-A239 CR corrections B5 and B6 (CR 05:47:46 on 35fb2a1b, CR 05:55:24 on e07e7b23)
+
+- **B5. The Ways switch shows SEND's effective state.**
+  - It is On only for a line in effect (`state` on, part or guidance).
+  - A line waiting for his OK, not in effect, or being read is Off and disabled, and is described by its status line. The projection offers it no switch verb; Turn on / Not now / Read it again are its actions.
+  - An off line keeps Turn on.
+  - With no `state` (an older provider), the group/status reading stays.
+  - This applies to New and Classic (the shared WaysSection).
+- **B6. The per-PR offers keep the card's hold eligibility.** On a terminal-held card (card-state in-terminal: Take it back only, and the engine refuses the rest), no per-PR Approve and no Try now / Try again / Skip this PR are offered. The PRs list and the per-PR review blocks still show. Other modes are unchanged; the engine accepts a PR read or a vote outside a terminal hold.
+
+## 0.2.48 D-A281 B2, scoped to the source actually shown (CR 20:44:27 on 51510b51)
+
+The card's stored-reason suppression now keys on what the card actually renders for the current turn.
+- **One fact.** `shownSent` is the A76 eligibility: the sent reply, its Undo window over, and no newer turn. It feeds both the sent bubble and the guard, so `why.reason` is omitted only when that shown reply carries its frozen line, or when a PR review's typed wait is shown.
+- **Newer drafts keep their Why.** A newer draft after an older automatic reply keeps its public reason (for example "Auto-send is off."). No old sent bubble or line is brought onto the newer draft.
+- Done is unchanged: an activity's `sentBecause` is already its own current send.
+
+**Proof:** a new case in the D-A281 one-off (27/27). It fails on 63e93692: the reason was gone.
+
+## 0.2.48 Input: H3 B1's reviewed `Automation.stop` type (HOST de28fd52; selected file)
+
+This is a selected input copy, unchanged, per PE v1.166's order. `core/types.ts` gains `Automation.stop?: {recordId, produced: 'paused' | 'ended', at}`, HOST de28fd52 (CR ok 20:54:28), and equals HOST's `de28fd52~1..de28fd52` patch by stable patch id.
+
+The writer (`automations.ts`, the clear-on-save in `store/state.ts`) is not copied; it stays HOST's to compose with the cut. New's B1 (c') consumer follows after this copy's CR.
+
+## 0.2.48 WDD H3 consumer B1: a reminder stop is the reminder's current stop (PE v1.165/v1.166 (c'); CR 19:52:50 B1 on e3b59682)
+
+`wdd.ts` shows `reminderStopped` (line 3 "Reminder paused/ended: "<frozen label>" ›", and the projection's 6 s resume Undo) only when the reminder holds THIS stop, all three of:
+- (a) `automation.stop.recordId` is this record's id;
+- (b) the live `automation.state` is `stop.produced`;
+- (c') the record has a line-less `stopped` amendment whose `at` is exactly `stop.at`.
+
+That amendment's `at` gives the label and the 6 s window. The Undo stays exact on the current `automationApprovalRev`. Never a timestamp-equality test with a save, prose, or an older amendment.
+
+HOST's writer (de28fd52: page Pause/End save the stop and append at that `at`; every other save clears it) composes with the cut; New has only the type (ff4a5146). So:
+- End from paused, then Undo: stop cleared, so no label and no second Undo.
+- A stale stop whose produced state isn't live: no match.
+- Stop → resume → stop with a failed second append: the older amendment never stands in.
+- Pre-correction data with no stop: never matches.
+
+**Proof** (own fictional one-off, 38/38): those four counterexamples plus the in-effect pause, with its label and its Undo on the paused revision for 6 s. Fail-first on ff4a5146: all four failed, End-from-paused offering a second Undo.
+
+## 0.2.48 WDD H3 consumer B2: the panel closes only for its own submission (CR 22:21:19 on c76bbfc5)
+
+"This panel's own accepted press" is now its actual submission.
+- **Arming.** At the press, the native `submissionId` is taken right after `useAction` records the pending click (a microtask after the press). A click `useAction` refuses (busy, guard, storage) records none, so nothing is watched. The watcher also keeps the panel's open generation, which goes up each time the panel opens.
+- **Closing.** Only that submission's own receipt, accepted and not refused or uncertain, closes the panel, and only while the same opening is still open.
+- **Disarming.** Cancel / Esc, or the submission ending without its receipt (a 4xx, a release, an error), disarm only this local watcher. So an earlier panel's late receipt, or another control's receipt in a shared revision slot, can neither close a reopened panel nor move its focus.
+- The submission itself, pending or in flight, is never touched by Cancel, and nothing expired is resent.
+
+**Proof** (own fictional one-off, H3 40/40): Wrong pressed, then Cancel while it is pending, reopen, type a new note; the earlier submission's accepted receipt arrives, and the reopened panel, its note and its focus stay. Fail-first on e30fc144 (c76's watcher): the late receipt closed the reopened panel. Stop 24/24 (own accepted stop still closes the panel, the stop's Undo still clickable), Undo 40/40.
+
+## 0.2.48 WDD H3 consumer B2: armed only by the submission this press created (CR 22:42:56 on ca15516c)
+
+- **The signal.** `useAction` takes an optional `onSubmitted(submissionId)`, called once and synchronously only when that call creates a new submission: after every guard (restored pending, busy, already done, confirm), and after the click is kept in tab storage and set pending. `ActionButton` passes it through as `onSubmitted`.
+- **The watcher.** NotRight's close watcher is armed from that callback only, with the panel's open generation. A press `useAction` refuses arms nothing, including when it restores another tab's or an earlier pending submission and refuses as already pending. Observing a changed shared slot is gone.
+- **Unchanged.** The generation, Cancel / Esc and terminal disarm, and all native pending / in-flight / receipt provenance stay as they were.
+
+**Proof** (own fictional one-off, H3 42/42, New and Classic): submission X from another tab is restored from tab storage without a reload. It makes this tab's Draft press refuse, and X's accepted receipt leaves this panel and its note alone. Fail-first on ca15516c: X's receipt closed the panel.
+
+## 0.2.48 D-MORE-MENU: the card's ⋯ at the head line's top-right, closing on outside press (PE engineer-d-more-menu §1-§6; Designer MM1-MM4, MM-i, MM-j)
+
+- **Placement (MM1, PE §5.1).** The card's `details.card-more-menu` (same items, order, `More` label and title) leaves the action bar and becomes `.card-head`'s last child, after Open in Teams. It is held at line 1's right edge (`position:absolute; top:0; right:0`) with a padding-right column. `--more-target` is 34 px, or 44 px at ≤ 560 px; the head's `min-height` equals it, so ⋯ is centred on the name line (MM-i). Read-only cards still show no ⋯. Shared ItemCard, so New and Classic both.
+- **Popup (MM2).** It opens down from ⋯ and right-aligned (`right:0; top:100%; z-index:25`), at most `min(480px, 60vh)` tall and `min(360px, 100vw - 28px)` wide.
+- **One helper (`features/card-more.ts`), mounted once by New's App and once by Classic.**
+  - A capture-phase pointerdown outside an open menu closes it without `preventDefault`, so the press still acts. A pointerdown inside it, including on its ⋯, never closes it.
+  - Focus is moved to ⋯ only if it was inside the menu and then fell to `body`, null or a detached node.
+  - Opening one card menu closes any other, and the header ≡. Opening ≡ closes any open ⋯. Ways' `ways-more` shares the class, so it gets the same behaviour; its layout is unchanged.
+- **Escape.**
+  - New's App now calls `closeOpenCardMenu(true)` in place of its inline branch; the precedence is unchanged.
+  - Classic now closes an open card menu after its dialog and ≡ checks and before field blur and `navigate('home')`. Escape no longer leaves the page while a menu is open.
+- **Choosing (G2 kept, PE §5.4).**
+  - **In-menu ActionButtons** (Dismiss / Reply only, Review again, Send anyway, the Reopen submit, Continue) pass `onSubmitted`. The menu closes, focusing ⋯, only when the receipt for the submission that press created is accepted and neither refused nor uncertain. While that click is pending, refused, errored or uncertain the menu stays open with its line.
+  - **No submission, nothing closes:** a cancelled confirm, a held hide verb or a refused press.
+  - **Focus while open (MM-j).** While the menu stays open and mounted, a button that turns disabled or unmounts and drops focus to `body` hands it to ⋯.
+  - **Edit in Teams** closes at once and focuses ⋯. The consistency Send anyway still closes itself, and its confirm autofocuses its first control.
+- **Not changed.** Words, the action set and order, native disabled or pending semantics, `ActionButton`, projection and server.
+
+**Checks:** build and types clean. The own static one-off fails 20 of 21 checks on the 215d source and passes 21/21 here; a blind close-on-choose mutant fails it. The MM-a to MM-j fictional-root proof is not run: it needs its own grant.
+
+## 0.2.48 D-MORE-MENU correction (CR 00:34:04 B1/B2 on c75e0885)
+
+- **B1, a choice belongs to its opening.** Every close of a card menu ends its current opening: the helper's own closes (Escape, an outside press, ≡ opening, another menu opening, an accepted choice) through one `shut`, and a native close (its ⋯, Send anyway's `removeAttribute`) from the toggle listener. `useMenuChoice` arms with the submission id, the menu element and that opening. A receipt from an earlier opening does nothing, so a reopened menu and his focus or Reopen typing are left alone. Native pending, in-flight and receipt data, typed Reopen text, the current opening's own accepted close, and G2's pending/refused/error/uncertain lines are unchanged.
+- **B2, never clipped.** New's Now list `.rows` rounds its corners with `overflow:hidden`, and it is the inline card's ancestor. While a card menu inside it is open it gets `overflow:visible; display:flow-root`; flow-root keeps its formatting context, so nothing in the list moves. This is one rule in `card.css`: no wrapper, portal or new file. Possible look while open: a row background at the list's rounded corners may show square.
+
+**Checks:** build and types clean. The static one-off fails the 4 new items on c75e and passes 25/25 here; a mutant without the opening check fails it. No browser or MM proof. Gaps (b), header stacking, and (c), route-unmount focus, remain unverified.
+
+## 0.2.48 D-MORE-MENU remaining B1: a native close is recorded at the close itself (CR 00:44:37 on e783be74)
+
+- **Problem.** The toggle notification is queued and can be coalesced, so a native close followed by a reopen could be missed. An earlier choice's late accepted receipt could then still close the reopened menu and take focus.
+- **The native boundary.** A capture-phase `click` on an open card menu's own ⋯ ends its opening at once, before the summary's activation closes it; pointer, Enter and Space all click the summary.
+  - The toggle listener no longer ends openings; it only enforces single-open and closes ≡. So a delayed old notification can never invalidate a new opening's own submission.
+  - The one programmatic native close, Send anyway's `removeAttribute('open')`, now goes through `closeMenuOf(…, false)`, the same `shut` boundary. Its confirm still autofocuses Cancel.
+- **Unchanged.** Native details activation, the outside-press close, G2 lines, his focus and Reopen text, native pending, in-flight and receipt data, and the B2 rule.
+
+**Checks:** build and types clean. The static one-off fails 3 of its updated items on e783 and passes 26/26 here; a mutant without the click boundary fails it. This is source text only: no DOM sequence was executed.
+
+## 0.2.48 current-main composition of the reviewed card, usage and automatic-action views
+
+The original producer implementations are retained; copied inputs do not replace them. The current Home tiles keep their shared
+Done predicate, route-carried filter and since, and change/comment/fact metadata. By Delegate remains an independent ledger view
+in the ordinary Done branch, not the scoped tile destination. Its Home tile is separate from the scoped Done tiles. The typed
+report-form suppression remains in the projection. No Needs ordering change, hold-attribution correction or runtime acceptance
+is included in this composition. Old-data read-time behavior and the existing separate visual and release obligations are unchanged.
+
+The subsequent current-main merge retains the already-landed Needs ordering: one shared displayed-time comparator with numeric
+code ties, no meeting exception, and a stable shown cohort shared by each interface's visual queue and keyboard/pager. The shared
+time reader stays exported as `sentAt` for existing card callers. These landed rules coexist with the PR, Watching and menu
+additions; they do not activate the later hold-attribution correction or grant runtime acceptance.

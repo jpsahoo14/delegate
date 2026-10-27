@@ -10,6 +10,7 @@ import { useScreenNavigation } from './navigation.tsx'
 import { useSnapshot } from '../data/hooks.ts'
 import { ActivityRow } from './Done.tsx'
 import { AiUse } from '../features/AiUse.tsx'
+import { customOf, WindowPick } from '../features/WindowPick.tsx'
 import './tools.css'
 
 type NumberLink = NumbersData['model']['handled']['main']
@@ -50,12 +51,12 @@ export default function Numbers() {
 	}
 	const range = data?.model.window.label.match(/\(([^)]*)\)$/)?.[1]
 	return <div className="ct-tools ct-numbers" aria-busy={query.isFetching}>
-		<header className="ct-tools-head"><div><h1>Numbers</h1><p>Counted from {NAME}'s own log on all your machines. Nothing is estimated.</p></div><div className="ct-num-pick"><label><span className="ct-visually-hidden">Window</span><select value={window} onChange={event => { setWindow(event.target.value); navigate('numbers') }}>{windows.map(([id, text]) => <option key={id} value={id}>{text}</option>)}</select></label>{range && <span className="ct-muted">{range}</span>}</div></header>
+		<header className="ct-tools-head"><div><h1>Numbers</h1><p>Counted from {NAME}'s own log on all your machines. Nothing is estimated.</p></div><div className="ct-num-pick"><WindowPick window={window} setWindow={setWindow} hiddenLabel="ct-visually-hidden" onPicked={() => navigate('numbers')} today={data?.today} />{range && !customOf(window) && <span className="ct-muted">{range}</span>}</div></header>
 		{query.error && <div role="alert"><p>Could not load the numbers: {query.error.message}. Nothing is lost.</p><Button variant="outline" onClick={() => void query.refetch()}>Try again</Button></div>}
 		{!data ? <p role="status">Counting...</p> : key ? <>
 			<a className="ct-num-back" href={href('numbers')}><Icon name="left" /> All numbers</a>
 			{selected ? <><h2 className="ct-num-list-title">{selected.title} <span>{selected.groups.reduce((n, group) => n + group.codes.length, 0)}</span></h2>
-				{selected.groups.every(group => !group.codes.length) ? <p className="ct-muted">Nothing counted here {windows.find(([id]) => id === window)?.[1].toLowerCase()}.</p> : selected.groups.filter(group => group.codes.length).map((group, i) => <section key={i}>{selected.groups.length > 1 && <h3 className="ct-section-title">{group.title} · {group.codes.length}</h3>}{rows(group.keys ?? group.codes)}</section>)}
+				{selected.groups.every(group => !group.codes.length) ? <p className="ct-muted">Nothing counted here {customOf(window) ? 'in this range' : windows.find(([id]) => id === window)?.[1].toLowerCase()}.</p> : selected.groups.filter(group => group.codes.length).map((group, i) => <section key={i}>{selected.groups.length > 1 && <h3 className="ct-section-title">{group.title} · {group.codes.length}</h3>}{rows(group.keys ?? group.codes)}</section>)}
 			</> : <p>That list is not on this tab.</p>}
 		</> : <>
 			<section className="ct-num-card" aria-labelledby="ct-handled"><h2 className="ct-num-title" id="ct-handled">Handled for you</h2><div className="ct-num-hero"><span>{link(data.model.handled.main)}</span>{data.model.handled.trend && <small>{data.model.handled.trend.text}</small>}</div>{how('handled')}

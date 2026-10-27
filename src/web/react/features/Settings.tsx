@@ -11,6 +11,7 @@ import { CheckNow } from './CheckNow.tsx'
 import { NEW_LOOK, ToolsSettings } from './ToolsSettings.tsx'
 import { CodeFolders } from './CodeFolders.tsx'
 import { BoundLine, WaysSection } from './Ways.tsx'
+import { CheckingOffNote } from './WatchingControl.tsx'
 
 function Setting({ row }: { row: SettingsData['rows'][number] }) {
 	const state = useSetting(row), id = `set-${row.key}`
@@ -19,7 +20,7 @@ function Setting({ row }: { row: SettingsData['rows'][number] }) {
 		<Button variant="ghost" role="switch" aria-checked={state.value === 'true'} aria-labelledby={`${id}-label`} aria-describedby={`${id}-help`} disabled={state.busy} onClick={state.toggle}><span>{state.busy ? 'Saving...' : state.value === 'true' ? 'On' : 'Off'}</span><span className="setting-switch-track" aria-hidden="true"><i /></span></Button>
 		{state.text && <p role={state.error ? 'alert' : 'status'}>{state.text}</p>}
 	</div>
-	return <div className="setting-row" id={`setting-${row.key}`}><label className="field-label" htmlFor={id}><strong>{row.label}</strong><small>{row.help}</small>
+	return <div className="setting-row" id={`setting-${row.key}`}><label className="field-label" htmlFor={id}><strong>{row.label}</strong><small>{row.help}</small>{row.key === 'pollIdle' && <CheckingOffNote as="small" className="muted" />}
 		{options ? <select id={id} value={state.value} onChange={event => state.setValue(event.target.value)}>{options.map(option => <option value={option.value} key={option.value}>{option.label}</option>)}</select> :
 			row.kind === 'text' ? <textarea id={id} value={state.value} onChange={event => state.setValue(event.target.value)} rows={4} /> :
 				<input id={id} value={state.value} inputMode={row.kind === 'number' ? 'decimal' : undefined} onChange={event => state.setValue(event.target.value)} />}
