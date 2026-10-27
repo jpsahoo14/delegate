@@ -15,7 +15,7 @@ import { staticSnapshot } from '../services/api.ts'
 import { NAME } from '../brand.ts'
 import { nextCheck, when } from '../domain/time.ts'
 import { ExperienceToggle, useScreenNavigation } from './navigation.tsx'
-import { useClassicKeyboard, useClassicOffline, useClassicSeen } from './data.ts'
+import { useClassicKeyboard, useClassicOffline, useClassicQueue, useClassicSeen } from './data.ts'
 import Home from './Home.tsx'
 import Focus from './Focus.tsx'
 import { ClassicCard } from './Card.tsx'
@@ -45,7 +45,8 @@ export default function Classic() {
 	const main = useRef<HTMLElement>(null), dialog = useRef<HTMLDialogElement>(null)
 	const previousScreen = useRef<string | undefined>(undefined)
 	useHashNavigation()
-	useClassicKeyboard(offline)
+	const queue = useClassicQueue()
+	useClassicKeyboard(offline, queue)
 	const screen = route.split('/')[0] === 'automations' ? 'ongoing' : route.split('/')[0], readOnly = screen === 'snapshot'
 	const needs = snapshot?.classic?.needsIds.length ?? 0, knowledge = snapshot?.classic?.also.find(tile => tile.key === 'knowledge')?.count ?? 0
 	const resultItem = result && entities.items[result.item]
@@ -108,7 +109,7 @@ export default function Classic() {
 		</div></header>
 		<main id="main" tabIndex={-1} ref={main}>
 			<fieldset disabled={offline} className="classic-connection">
-			{!snapshot ? <p role="status">Loading your items...</p> : <Suspense fallback={<p role="status">Loading this view...</p>}>{screen === 'home' ? <Home /> : screen === 'focus' ? <Focus /> : screen === 'ongoing' ? <Ongoing /> : screen === 'done' ? <Done /> : screen === 'numbers' ? <Numbers /> : screen === 'settings' ? <Settings /> : screen === 'knowledge' ? <Knowledge /> : readOnly ? <Snapshot /> : <><h1>View not found</h1><Button onClick={() => navigate('home')}>Home</Button></>}</Suspense>}
+			{!snapshot ? <p role="status">Loading your items...</p> : <Suspense fallback={<p role="status">Loading this view...</p>}>{screen === 'home' ? <Home /> : screen === 'focus' ? <Focus queue={queue} /> : screen === 'ongoing' ? <Ongoing /> : screen === 'done' ? <Done /> : screen === 'numbers' ? <Numbers /> : screen === 'settings' ? <Settings /> : screen === 'knowledge' ? <Knowledge /> : readOnly ? <Snapshot /> : <><h1>View not found</h1><Button onClick={() => navigate('home')}>Home</Button></>}</Suspense>}
 			</fieldset>
 		</main>
 		<dialog ref={dialog} onClose={() => setHelp(false)} onCancel={() => setHelp(false)} aria-labelledby="classic-keyboard-title"><h2 id="classic-keyboard-title">Keyboard shortcuts</h2><dl><dt>k or →</dt><dd>Next item</dd><dt>j or ←</dt><dd>Previous item</dd><dt>Ctrl+Enter / Command+Enter</dt><dd>Primary action in the open card</dd><dt>1-9</dt><dd>Choose an answer</dd><dt>e / a / l / u</dt><dd>Edit / ask / later / undo</dd><dt>g then h</dt><dd>Home</dd><dt>Escape</dt><dd>Close a sheet, leave a field, or go Home</dd><dt>?</dt><dd>This list</dd></dl><Button variant="outline" onClick={() => setHelp(false)}>Close</Button></dialog>

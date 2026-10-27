@@ -1,14 +1,14 @@
 import { Fragment, memo, useEffect, useRef, useState, type ComponentProps, type CSSProperties, type ReactNode } from 'react'
 import { chipHover } from '../domain/hover.ts'
 import { Button } from '../components/ui/button.tsx'
-import { useCardPresentation, useCardUi, useEdit, useEntities, useExperienceNote, useItemCard, useNowSections, usePlacement, useSnapshot } from '../data/hooks.ts'
+import { useCardPresentation, useCardUi, useEdit, useEntities, useExperienceNote, useItemCard, usePlacement, useSnapshot } from '../data/hooks.ts'
 import { useNavigation } from '../data/navigation.ts'
 import { ActionButton, ActionState } from './ActionButton.tsx'
 import { ItemCard } from './ItemCard.tsx'
 import { dirty, pinnedPlacements, useData } from '../data/store.ts'
 import { NAME } from '../brand.ts'
 import { when, time } from '../domain/time.ts'
-import { revisionKey, type Entities, type Placement } from '../domain/contracts.ts'
+import { revisionKey, type Entities, type Placement, type Snapshot } from '../domain/contracts.ts'
 import { Icon } from '../components/ui/icon.tsx'
 import { ViewportList } from '../components/ViewportList.tsx'
 import { firstName, messageText, sentAt, whereOf } from './ItemCard.tsx'
@@ -193,8 +193,8 @@ export const NowRow = memo(function NowRow({ id, day }: { id: string; day?: stri
 	</article>
 })
 
-export default function Now() {
-	const sections = useNowSections(), snapshot = useSnapshot(), entities = useEntities()
+export default function Now({ sections }: { sections: Snapshot['sections'] | undefined }) {
+	const snapshot = useSnapshot(), entities = useEntities()
 	const pinned = useData(state => state.pinned), byRevision = useData(state => state.byRevision)
 	const note = useExperienceNote()
 	const find = useNavigation(state => state.find), setFind = useNavigation(state => state.setFind), navigate = useNavigation(state => state.navigate)

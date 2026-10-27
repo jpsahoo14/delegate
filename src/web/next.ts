@@ -550,13 +550,11 @@ export function rowsOf(s: Snap, placed: Placed[]): NextRow[] {
 export function nextView(store: Store, now = Date.now(), options: { snapshot?: Snap; allCatchup?: boolean; only?: boolean } = {}): NextView {
 	const s = options.snapshot ?? snapshot(store, now), rows = rowsOf(s, place(s))
 	const of = (sec: Section) => rows.filter(r => r.section === sec)
-	// Your move: meetings that start within 2 hours first, then the oldest ask first.
-	const soon = (r: NextRow) => r.kind === 'meeting' && !!r.when && Date.parse(r.when) - now < 2 * 3_600_000 ? 0 : 1
-	const move = of('move').sort((a, b) => soon(a) - soon(b) || a.facts.at.localeCompare(b.facts.at))
+	const move = of('move')
 	const changed = (r: NextRow) => r.chips.some(c => c.kind === 'changed') ? 0 : 1
 	const waiting = of('waiting').sort((a, b) => changed(a) - changed(b) || b.facts.at.localeCompare(a.facts.at))
 	const working = of('working').sort((a, b) => b.facts.at.localeCompare(a.facts.at))
-	// Designer CC4 (c): his steps are obligations, so the oldest first (ties: the item opened first), as in Your move.
+	// Designer CC4 (c): his steps are obligations, so the oldest first (ties: the item opened first).
 	const left = of('left').sort((a, b) => a.facts.at.localeCompare(b.facts.at) || (a.fresh?.born ?? '').localeCompare(b.fresh?.born ?? ''))
 	const high = (r: NextRow) => s.workflows.find(w => w.code === r.act)?.fyi?.weight === 'high' ? 0 : 1
 	const cu = of('catchup').sort((a, b) => high(a) - high(b) || b.facts.at.localeCompare(a.facts.at))

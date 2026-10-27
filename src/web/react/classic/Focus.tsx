@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useEffect, useMemo, useState } from 'react'
 import { useCardPresentation, useEntities, useSnapshot } from '../data/hooks.ts'
 import { ClassicCard } from './Card.tsx'
 import { Button } from '../components/ui/button.tsx'
@@ -7,12 +7,13 @@ import { Icon } from '../components/ui/icon.tsx'
 import { Avatar } from './Avatar.tsx'
 import { useData } from '../data/store.ts'
 import { useNavigation } from '../data/navigation.ts'
-import type { Entities, Snapshot } from '../domain/contracts.ts'
+import type { Entities } from '../domain/contracts.ts'
 import { ViewportList } from '../components/ViewportList.tsx'
 import { messageText, sentAt } from '../features/ItemCard.tsx'
 import { SentTime } from '../features/SentTime.tsx'
 import { ItemCode } from '../features/ItemCode.tsx'
 import { NAME } from '../brand.ts'
+import type { ClassicQueue } from './data.ts'
 
 // A row the owner acted on stays in the queue; how it looks comes from the item now (#48, PE 19:40): ticked and struck only when it is
 // finished for him (sent, dismissed, done), a clock and no strike while Delegate works on it, plain otherwise.
@@ -24,8 +25,8 @@ const QueueItem = memo(function QueueItem({ item, person, chat, look, current }:
 	</a>{item.teams && <Button asChild variant="ghost" size="icon-xs" aria-label="Open in Teams"><a href={item.teams} target="_blank" rel="noopener noreferrer"><Icon name="ext" /></a></Button>}<ItemCode code={item.code} /></div>
 })
 
-export default function Focus() {
-	const snapshot = useSnapshot(), entities = useEntities(), { route, navigate } = useScreenNavigation()
+export default function Focus({ queue }: { queue: ClassicQueue }) {
+	const snapshot = useSnapshot(), entities = useEntities(), { navigate } = useScreenNavigation()
 	const pins = useData(state => state.pinned), setHelp = useNavigation(state => state.setHelp)
 	const [wide, setWide] = useState(() => matchMedia('(min-width:961px)').matches)
 	useEffect(() => {
@@ -34,13 +35,9 @@ export default function Focus() {
 		return () => media.removeEventListener('change', changed)
 	}, [])
 	const incoming = snapshot?.classic?.needsIds ?? []
-	const visited = useRef<{ order: string[]; snapshots: Record<string, Snapshot> }>({ order: incoming, snapshots: {} })
-	const visit = visited.current
-	useEffect(() => {
-		if (snapshot) visited.current = { order: [...new Set([...visited.current.order, ...incoming])], snapshots: { ...visited.current.snapshots, ...Object.fromEntries(incoming.map(code => [code, snapshot])) } }
-	}, [snapshot])
-	const shown = [...new Set([...visit.order, ...incoming])].filter(code => entities.items[code] || pins[code]?.snapshot.entities.items[code] || visit.snapshots[code]?.entities.items[code])
-	const code = route.split('/')[1] ?? shown.find(code => incoming.includes(code)) ?? shown[0]
+	const visit = queue
+	const shown = visit.order.filter(code => entities.items[code] || pins[code]?.snapshot.entities.items[code] || visit.snapshots[code]?.entities.items[code])
+	const code = queue.code ?? shown.find(code => incoming.includes(code)) ?? shown[0]
 	const { primary } = useCardPresentation(code ?? '', undefined, visit.snapshots[code ?? ''])
 	const live = shown.filter(code => incoming.includes(code)), index = live.indexOf(code)
 	// The item as the page has it now: gone from Now, or placed in Done / Catch up, is finished; a working card, or a click whose

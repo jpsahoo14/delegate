@@ -59072,8 +59072,7 @@ function rowsOf(s3, placed) {
 function nextView(store2, now = Date.now(), options = {}) {
   const s3 = options.snapshot ?? snapshot(store2, now), rows = rowsOf(s3, place(s3));
   const of = (sec) => rows.filter((r) => r.section === sec);
-  const soon = (r) => r.kind === "meeting" && !!r.when && Date.parse(r.when) - now < 2 * 36e5 ? 0 : 1;
-  const move2 = of("move").sort((a, b) => soon(a) - soon(b) || a.facts.at.localeCompare(b.facts.at));
+  const move2 = of("move");
   const changed = (r) => r.chips.some((c) => c.kind === "changed") ? 0 : 1;
   const waiting = of("waiting").sort((a, b) => changed(a) - changed(b) || b.facts.at.localeCompare(a.facts.at));
   const working = of("working").sort((a, b) => b.facts.at.localeCompare(a.facts.at));
@@ -65132,6 +65131,15 @@ function usedLines(store2, now = /* @__PURE__ */ new Date()) {
   return lines;
 }
 
+// src/web/react/domain/needs-order.ts
+function displayedAt(item2) {
+  const theirs = item2.newCount > 0 ? [...item2.thread].reverse().find((message) => !message.owner)?.at : void 0;
+  return theirs ? { at: theirs, added: false } : item2.askAt ? { at: item2.askAt, added: false } : { at: item2.at, added: true };
+}
+function needsOrder(a, b) {
+  return b.at.localeCompare(a.at) || b.code.localeCompare(a.code, void 0, { numeric: true });
+}
+
 // src/web/react-projection.ts
 init_autosend();
 init_intake();
@@ -66036,6 +66044,17 @@ function reactProjection(store2, query = "", visit2, opts = {}) {
       return row.code;
     })
   }));
+  const moveSection = sections.find((section) => section.id === "move");
+  if (moveSection) {
+    const key = (id) => {
+      const row = entities.placements[id], item2 = entities.items[row.act];
+      return { at: item2 ? displayedAt(item2).at : row.facts.at, code: item2?.code ?? row.act };
+    };
+    moveSection.ids.sort((a, b) => needsOrder(key(a), key(b)));
+    moveSection.ids.forEach((id, position) => {
+      entities.placements[id].position = position;
+    });
+  }
   const leftSection = sections.find((section) => section.id === "left");
   if (leftSection) {
     const key = (id) => [entities.placements[id].facts.at, byCode.get(entities.placements[id].act)?.createdAt ?? ""];
@@ -66380,7 +66399,7 @@ function reactProjection(store2, query = "", visit2, opts = {}) {
   const busy2 = { now: busyNow, queued: busyQueued, max: maxParallel, ...scheduledSends.length ? { scheduled: { n: scheduledSends.length, at: nextSend.sendAt, ...nextSend.asker?.name ? { to: nextSend.asker.name.split(/\s+/)[0] } : {} } } : {}, ...busyQueued ? { reason: facts.agentWait ? { kind: "ai", ...facts.agentWait.retryAt ? { at: facts.agentWait.retryAt } : {} } : facts.runner === "paused" ? { kind: "paused" } : facts.runner !== "ok" && next2.off ? { kind: "off", text: next2.off.text.replace(/^Daily/, "daily") } : { kind: "slots" } } : {} };
   const classic = {
     // COUNT58 (PE decision 58, Designer CC2.6): open in a terminal is in Ongoing, in neither need you nor left for you.
-    needsIds: [.../* @__PURE__ */ new Set([...base2.needs.map((item2) => item2.code), ...stoppedCodes, ...workflows.filter((workflow) => workflow.partOf && workflow.state === "needs_human").map((workflow) => workflow.code)])].filter((code) => !(byCode.get(code)?.openOn && byCode.get(code)?.state !== "done")).sort((a, b) => byCode.get(a).createdAt.localeCompare(byCode.get(b).createdAt)),
+    needsIds: [.../* @__PURE__ */ new Set([...base2.needs.map((item2) => item2.code), ...stoppedCodes, ...workflows.filter((workflow) => workflow.partOf && workflow.state === "needs_human").map((workflow) => workflow.code)])].filter((code) => !(byCode.get(code)?.openOn && byCode.get(code)?.state !== "done")).sort((a, b) => needsOrder({ at: displayedAt(entities.items[a]).at, code: a }, { at: displayedAt(entities.items[b]).at, code: b })),
     tiles: base2.tiles,
     also: [...base2.also.map((tile) => tile.key === "running" ? { ...tile, count: busyNow + busyQueued + scheduledSends.length } : tile), ...base2.also.some((tile) => tile.key === "running") ? [] : [{ key: "running", count: 0, label: "running" }]],
     catchupIds: base2.catchUp.top.map((row) => Object.values(entities.doneEntries).find((entry2) => entry2.code === row.code && entry2.kind === row.kind && entry2.at === row.at)?.id).filter((id) => !!id),

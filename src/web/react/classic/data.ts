@@ -5,6 +5,27 @@ import { saveSeen } from '../services/api.ts'
 import { useNavigation } from '../data/navigation.ts'
 import { useNowLook } from '../data/look.ts'
 import { useScreenNavigation } from './navigation.tsx'
+import { useData } from '../data/store.ts'
+import { useStableOrder } from '../data/stable-order.ts'
+import type { Snapshot } from '../domain/contracts.ts'
+
+export type ClassicQueue = { order: string[]; snapshots: Record<string, Snapshot>; code?: string }
+
+export function useClassicQueue(): ClassicQueue {
+	const snapshot = useSnapshot(), { route } = useScreenNavigation(), pins = useData(state => state.pinned)
+	const active = route.startsWith('focus'), incoming = active ? snapshot?.classic?.needsIds ?? [] : []
+	const history = useRef<ClassicQueue>({ order: [], snapshots: {} })
+	const selection = useRef<{ route: string; code?: string }>({ route: '' })
+	const snapshots = !active ? {} : snapshot
+		? { ...history.current.snapshots, ...Object.fromEntries(incoming.map(code => [code, snapshot])) }
+		: history.current.snapshots
+	const retained = active ? history.current.order.filter(code => snapshot?.entities.items[code] || pins[code]?.snapshot.entities.items[code] || snapshots[code]?.entities.items[code]) : []
+	const order = useStableOrder([...incoming, ...retained])
+	const code = !active ? undefined : route.split('/')[1] ?? (selection.current.route === route ? selection.current.code : undefined) ?? order.find(id => incoming.includes(id)) ?? order[0]
+	useEffect(() => { history.current = { order, snapshots } }, [order, snapshots])
+	useEffect(() => { selection.current = { route, code } }, [route, code])
+	return { order, snapshots, code }
+}
 
 export function useClassicSeen() {
 	const snapshot = useSnapshot(), { route } = useScreenNavigation(), { error, mark } = useClassicMarkSeen()
@@ -48,13 +69,10 @@ export function useClassicOffline() {
 	return offline
 }
 
-export function useClassicKeyboard(offline: boolean) {
+export function useClassicKeyboard(offline: boolean, queue: ClassicQueue) {
 	const { route, navigate } = useScreenNavigation(), setHelp = useNavigation(state => state.setHelp)
 	const snapshot = useSnapshot(), act = useAction()
-	const order = useRef<string[]>([])
-	useEffect(() => {
-		order.current = route.startsWith('focus') ? [...new Set([...order.current, ...(snapshot?.classic?.needsIds ?? [])])] : []
-	}, [route, snapshot?.classic?.needsIds])
+	const { order } = queue
 	useEffect(() => {
 		let prefix = ''
 		const key = (event: KeyboardEvent) => {
@@ -78,9 +96,9 @@ export function useClassicKeyboard(offline: boolean) {
 			// Owner 13:41 (25 Oct): k = next, j = previous; the arrows stay spatial, → next and ← previous (PM 08:15:34Z).
 			const direction = ['k', 'ArrowRight'].includes(event.key) ? 1 : ['j', 'ArrowLeft'].includes(event.key) ? -1 : 0
 			if (route.startsWith('focus') && direction) {
-				const ids = snapshot?.classic?.needsIds ?? []
-				const code = route.split('/')[1] ?? ids[0], index = ids.indexOf(code), next = ids[index + direction]
-				const afterHandled = index < 0 && direction > 0 ? order.current.slice(order.current.indexOf(code) + 1).find(id => ids.includes(id)) ?? ids[0] : undefined
+				const live = snapshot?.classic?.needsIds ?? [], ids = order.filter(id => live.includes(id))
+				const code = queue.code ?? ids[0], index = ids.indexOf(code), next = ids[index + direction]
+				const afterHandled = index < 0 && direction > 0 ? order.slice(order.indexOf(code) + 1).find(id => ids.includes(id)) ?? ids[0] : undefined
 				if (afterHandled || next) { event.preventDefault(); navigate(`focus/${afterHandled ?? next}`) }
 			}
 			const card = document.querySelector<HTMLElement>('.classic-open-card .item-card')
@@ -100,5 +118,5 @@ export function useClassicKeyboard(offline: boolean) {
 		}
 		addEventListener('keydown', key)
 		return () => removeEventListener('keydown', key)
-	}, [route, navigate, snapshot, act, setHelp, offline])
+	}, [route, navigate, snapshot, act, setHelp, offline, order, queue.code])
 }

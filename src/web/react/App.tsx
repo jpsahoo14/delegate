@@ -1,4 +1,4 @@
-import { Suspense, useEffect, useLayoutEffect, useRef } from 'react'
+import { Suspense, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 import { preloadable } from './components/preloadable.ts'
 import { CLASSIC_VIEWS, NEW_VIEWS } from './data/views.ts'
 import { Button } from './components/ui/button.tsx'
@@ -16,6 +16,7 @@ import { Header } from './features/Header.tsx'
 import { ActionButton, ActionState, useOnline } from './features/ActionButton.tsx'
 import { versionLabel, versionTitle } from './domain/version.ts'
 import { pageLines, pageNotices, useParkedUpdate, usePendingLines, useResultLine } from './features/PageNotices.tsx'
+import { useStableOrder } from './data/stable-order.ts'
 
 const Now = preloadable(NEW_VIEWS.now)
 const Done = preloadable(NEW_VIEWS.done)
@@ -37,7 +38,7 @@ function NewApp() {
 	const updateResult = !!updateCheck && pageUi.lastAction === updateCheck.id && result?.submissionId === pageUi.result?.submissionId
 	const seenError = useSeen()
 	const actionError = useLatestError()
-	const nowSections = useNowSections()
+	const incomingSections = useNowSections()
 	const update = useVersionUpdate(), online = useOnline(), parked = useParkedUpdate(update.available)
 	const pendingLines = usePendingLines('new'), resultLine = useResultLine(updateResult ? undefined : result, 'new')
 	// PE decision 46: the page-level notices live in the header slot; none is inserted above the cards.
@@ -58,6 +59,8 @@ function NewApp() {
 		}
 	}, [snapshot])
 	const base = route.split('/')[0], current = ['done', 'numbers', 'settings', 'knowledge'].includes(base) ? base : 'now'
+	const moveOrder = useStableOrder(current === 'now' ? incomingSections?.find(section => section.id === 'move')?.ids ?? [] : [])
+	const nowSections = useMemo(() => current !== 'now' ? incomingSections : incomingSections?.map(section => section.id === 'move' ? { ...section, ids: moveOrder } : section), [incomingSections, moveOrder, current])
 	const move = snapshot?.sections.find(section => section.id === 'move')?.total ?? 0
 	useEffect(() => {
 		document.title = `${NAME} - ${current === 'now' ? move ? `${move} your move` : 'Now' : current === 'knowledge' ? 'To learn' : current[0].toUpperCase() + current.slice(1)}`
@@ -140,7 +143,7 @@ function NewApp() {
 		<Header current={current} move={move} snapshot={snapshot} offline={!!query.error || !online} notices={notices} />
 		<main id="main" data-ui="new" tabIndex={-1} ref={main}>
 			{!snapshot ? <p role="status">Loading your items...</p> : <Suspense fallback={<p role="status">Loading this view...</p>}>
-				{current === 'now' ? <Now /> : current === 'done' ? <Done /> : current === 'numbers' ? <Numbers /> : current === 'settings' ? <Settings /> : <Knowledge />}
+				{current === 'now' ? <Now sections={nowSections} /> : current === 'done' ? <Done /> : current === 'numbers' ? <Numbers /> : current === 'settings' ? <Settings /> : <Knowledge />}
 			</Suspense>}
 			{snapshot && current === 'now' && <footer><PageTools quiet showDetails={false} kinds={['remind-someone', 'report-problem']}>
 				{versionLabel(snapshot.version) && <span className="muted" title={versionTitle(snapshot.version)}>{versionLabel(snapshot.version)}</span>}

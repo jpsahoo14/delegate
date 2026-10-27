@@ -15,6 +15,7 @@ import { whyWaited } from '../core/policy.ts'
 import { cardContext, cardFacts } from '../core/card-facts.ts'
 import { normalizeReport } from '../core/normalize-report.ts'
 import { usedLines } from './numbers.ts'
+import { displayedAt, needsOrder } from './react/domain/needs-order.ts'
 // #50 (SEND 7533bea1): the status an item gets when its comments were repaired and wait to be posted.
 const REPAIRED = 'The comment format was wrong and is fixed. Post them now?'
 // R12b: ways.ts's stubs throw exactly "not yet" until the engine lands; anything else is a real failure, logged by its shape (its error
@@ -832,6 +833,15 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 			return row.code
 		}),
 	}))
+	const moveSection = sections.find(section => section.id === 'move')
+	if (moveSection) {
+		const key = (id: string) => {
+			const row = entities.placements[id], item = entities.items[row.act]
+			return { at: item ? displayedAt(item).at : row.facts.at, code: item?.code ?? row.act }
+		}
+		moveSection.ids.sort((a, b) => needsOrder(key(a), key(b)))
+		moveSection.ids.forEach((id, position) => { entities.placements[id].position = position })
+	}
 	// Designer CC4 (c): Left for you lists the oldest step first by the date its row shows ("from <first>, <day>"), ties by the item's
 	// opened time; positions follow the order.
 	const leftSection = sections.find(section => section.id === 'left')
@@ -1143,7 +1153,7 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 		: facts.runner === 'paused' ? { kind: 'paused' as const } : facts.runner !== 'ok' && next.off ? { kind: 'off' as const, text: next.off.text.replace(/^Daily/, 'daily') } : { kind: 'slots' as const } } : {}) }
 	const classic: Snapshot['classic'] = {
 		// COUNT58 (PE decision 58, Designer CC2.6): open in a terminal is in Ongoing, in neither need you nor left for you.
-		needsIds: [...new Set([...base.needs.map(item => item.code), ...stoppedCodes, ...workflows.filter(workflow => workflow.partOf && workflow.state === 'needs_human').map(workflow => workflow.code)])].filter(code => !(byCode.get(code)?.openOn && byCode.get(code)?.state !== 'done')).sort((a, b) => byCode.get(a)!.createdAt.localeCompare(byCode.get(b)!.createdAt)), tiles: base.tiles,
+		needsIds: [...new Set([...base.needs.map(item => item.code), ...stoppedCodes, ...workflows.filter(workflow => workflow.partOf && workflow.state === 'needs_human').map(workflow => workflow.code)])].filter(code => !(byCode.get(code)?.openOn && byCode.get(code)?.state !== 'done')).sort((a, b) => needsOrder({ at: displayedAt(entities.items[a]).at, code: a }, { at: displayedAt(entities.items[b]).at, code: b })), tiles: base.tiles,
 		also: [...base.also.map(tile => tile.key === 'running' ? { ...tile, count: busyNow + busyQueued + scheduledSends.length } : tile), ...(base.also.some(tile => tile.key === 'running') ? [] : [{ key: 'running', count: 0, label: 'running' }])],
 		catchupIds: base.catchUp.top.map(row => Object.values(entities.doneEntries).find(entry => entry.code === row.code && entry.kind === row.kind && entry.at === row.at)?.id).filter((id): id is string => !!id),
 		// Sends going out by themselves first (R11(1b): with their Undo/Stop), soonest first, then the working ones, then the queued (R11(1)).

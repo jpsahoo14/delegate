@@ -18,18 +18,14 @@ import './card.css'
 import { useScreenNavigation } from '../classic/navigation.tsx'
 import { useSetting } from '../data/screens.ts'
 import { markTodos, undoMark } from '../data/todo-marks.ts'
+import { displayedAt as sentAt } from '../domain/needs-order.ts'
+export { sentAt }
 
 // The card (spec S1, design-spec/mockups/card-redesign.html): the same blocks in New's opened row and Classic's Needs-you card.
 // 1 their message · 2 what you'll send · 3 what happens when you send · 4 actions · 5 Details.
 export const firstName = (name: string) => name.split(/\s+/)[0] || name
 // A120 / PM A R36: an untitled group is named by its other members, in the server's words (head: 2 names, row: 1 name).
 export const whereOf = (chat: Entities['chats'][string], form: 'head' | 'row' = 'head') => chat.group ? chat.place?.[form] ?? `in ${chat.name}` : '1:1 chat'
-// The time the person wrote: their newest message after the draft when they wrote again, else the ask; never Delegate's own times.
-export function sentAt(item: Item): { at: string; added: boolean } {
-	const theirs = item.newCount > 0 ? [...item.thread].reverse().find(message => !message.owner)?.at : undefined
-	return theirs ? { at: theirs, added: false } : item.askAt ? { at: item.askAt, added: false } : { at: item.at, added: true }
-}
-
 // Their message (spec S9): up to 6 lines, then "Show the whole message (N characters)", opened in a box that scrolls. Above
 // 20,000 characters only the first 2,000 ever reach the page, with Open in Teams for the rest.
 // The row shows up to 200 of its characters, so the page never holds more than 2,000 of a huge message.
