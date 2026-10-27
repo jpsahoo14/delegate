@@ -66,10 +66,13 @@ async function tickInPhases(store: Store, deps: Parameters<typeof tick>[1] = {})
 	const empty = { commands: 0, answers: 0, asks: 0, runs: 0, nudged: false }
 	const cfg = store.config()
 	if (!cfg) throw new Error(`No config.json in ${store.root}. Run "${CMD} init".`)
+	const watchingOff = () => freshRead(() => store.control().watching?.on === false)
 	// A check asked for on any machine, or an answer or missed link waiting, is due at once: the page may run on another machine than the runner.
 	// Waiting answers never override a backoff or an outage: Teams is not called every minute while it is down (review 10-20).
 	const waiting = (store.answers().length > 0 || store.missed().length > 0) && !store.schedule().backoff && !store.health().source
 	const kicked = store.kickedAt() > (store.lease()?.at ?? '')
+	const checkAll = store.checkKickedAt('all') > (store.lease()?.at ?? '')
+	const checkTeams = () => checkAll || !watchingOff()
 	const asked = kicked || waiting
 	if (!deps.force && !asked && !isDue(store.schedule(), new Date())) return { skipped: 'not due', ...empty, ms: Date.now() - t0 }
 	const pinned = store.config().runner
@@ -164,10 +167,12 @@ async function tickInPhases(store: Store, deps: Parameters<typeof tick>[1] = {})
 			return { skipped: 'source unavailable', ...empty, ms: Date.now() - t0 }
 		}
 		const initial = await phase('controls-and-answers', async () => {
-			let commands: number
-			try { commands = await measuredStep('controls-and-answers', 'readOwnerCommands', () => readOwnerCommands(store, src, cursors)) } catch (e) { return { ok: false as const, result: await down(e, true) } }
-			// Saved at once: answers are queued, so a later failure must not re-read the same commands.
-			commitCursors()
+			let commands = 0
+			if (checkTeams()) {
+				try { commands = await measuredStep('controls-and-answers', 'readOwnerCommands', () => readOwnerCommands(store, src, cursors)) } catch (e) { return { ok: false as const, result: await down(e, true) } }
+				// Saved at once: answers are queued, so a later failure must not re-read the same commands.
+				commitCursors()
+			}
 			// Finished reports land before the owner's answers, so an ok never acts on a turn that news already replaced (review P0.4).
 			const jobsEarly = await measuredStep('controls-and-answers', 'checkJobs', () => checkJobs(store, src, cfg, procs, deps.probe))
 			measuredStep('controls-and-answers', 'legacyEffects', () => legacyEffects(store))
@@ -207,6 +212,10 @@ async function tickInPhases(store: Store, deps: Parameters<typeof tick>[1] = {})
 		if (store.control().stopped) { closeProbe(); store.setHealth('source'); checkOpen(store, procs, procs.bootMs?.()); await checkJobs(store, src, cfg, procs, deps.probe); reschedule(store, cfg, t0); return { skipped: 'stopped', commands, answers, asks: 0, runs: 0, nudged: false, ms: Date.now() - t0 } }
 		const listing = process.env.NODE_TEST_CONTEXT ? Promise.resolve(0) : phase('catalog', () => refreshCatalogs(store, cfg, Date.now(), false, hostOff(cfg) ? undefined : hostLister(store, cfg))).catch(e => { store.log({ event: 'catalog-failed', error: String(e).slice(0, 300) }); return 0 })
 		const ingested = await phase('intake', async () => {
+			if (!checkTeams()) {
+				await measuredStep('intake', 'retryOwnerReplies', () => retryOwnerReplies(store, cfg, t0))
+				return { ok: true as const, asks: 0 }
+			}
 			planSweep(store)
 			let found: Awaited<ReturnType<typeof discover>>, asks: number
 			const before = store.chats()
@@ -233,7 +242,7 @@ async function tickInPhases(store: Store, deps: Parameters<typeof tick>[1] = {})
 		const { asks } = ingested
 		const { missed, probed, due } = await phase('sweep-and-probes', async () => {
 			const missed = await takeMissed(store, src, cfg).catch(e => { store.log({ event: 'missed-failed', error: String(e).slice(0, 300) }); return 0 })
-			await sweep(store, src, cfg).catch(e => store.log({ event: 'sweep-failed', error: String(e).slice(0, 300) }))
+			if (checkTeams()) await sweep(store, src, cfg).catch(e => store.log({ event: 'sweep-failed', error: String(e).slice(0, 300) }))
 			const probed = await probeBuilds(store, probe).catch(e => { store.log({ event: 'probe-failed', error: String(e).slice(0, 300) }); return 0 })
 			await describeDeploys(store, probe).catch(e => store.log({ event: 'probe-failed', error: String(e).slice(0, 300) }))
 			await describeTargets(store, probe).catch(e => store.log({ event: 'probe-failed', error: String(e).slice(0, 300) }))
@@ -261,16 +270,16 @@ async function tickInPhases(store: Store, deps: Parameters<typeof tick>[1] = {})
 			saveLearned(store)
 			try { closeDead(store.root, store.machine) } catch (e) { store.log({ event: 'sessions-sweep-failed', error: String(e).slice(0, 200) }) }
 			const h = deps.history ?? historyFor(cfg)
-			try { if (!sweeping(store)) await planChats(store, h, new Date()) } catch (e) { store.log({ event: 'harvest-plan-failed', error: String(e).slice(0, 300) }) } finally { if (!deps.history) await h?.close() }
+			try { if (checkTeams() && !sweeping(store)) await planChats(store, h, new Date()) } catch (e) { store.log({ event: 'harvest-plan-failed', error: String(e).slice(0, 300) }) } finally { if (!deps.history) await h?.close() }
 			// A plan that could not run this time waits for the next cycle; it never falls back to one run over 50 chats.
 			const madeDirect = await direct()
 			for (const wf of store.workflows().filter(wf => wf.intent === 'pr_review' && wf.prs?.length)) advanceReviewUnits(store, cfg, wf)
 			await reviewCommentHook(store, src, cfg, { probe: deps.probe, call: mcpCaller(cfg) })
-			const jobsStarted = madeDirect + await startJobs(store, cfg, procs, h?.conversations ? ['bootstrap:chats'] : [], deps.probe)
+			const jobsStarted = madeDirect + await startJobs(store, cfg, procs, h?.conversations || !checkTeams() ? ['bootstrap:chats'] : [], deps.probe)
 			capHealth(store, cfg)
 			// A pause or stop typed while drafts were being written applies before anything goes out (review 10-20 R1d).
 			const now = Date.now()
-			if (store.workflows().some(w => w.state === 'scheduled' && w.sendAt && Date.parse(w.sendAt) <= now) || store.automations().some(a => a.state === 'active' && a.next && Date.parse(a.next) <= now)) {
+			if (checkTeams() && (store.workflows().some(w => w.state === 'scheduled' && w.sendAt && Date.parse(w.sendAt) <= now) || store.automations().some(a => a.state === 'active' && a.next && Date.parse(a.next) <= now))) {
 				try { await readOwnerCommands(store, src, cursors); commitCursors() } catch (e) { store.log({ event: 'controls-reread-failed', error: String(e).slice(0, 200) }) }
 			}
 			const lateAnswers = await applyAnswers(store, src, cfg, procs, true)

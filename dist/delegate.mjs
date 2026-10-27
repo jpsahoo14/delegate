@@ -67129,8 +67129,11 @@ async function tickInPhases(store2, deps = {}) {
   const empty2 = { commands: 0, answers: 0, asks: 0, runs: 0, nudged: false };
   const cfg = store2.config();
   if (!cfg) throw new Error(`No config.json in ${store2.root}. Run "${CMD} init".`);
+  const watchingOff = () => freshRead(() => store2.control().watching?.on === false);
   const waiting = (store2.answers().length > 0 || store2.missed().length > 0) && !store2.schedule().backoff && !store2.health().source;
   const kicked = store2.kickedAt() > (store2.lease()?.at ?? "");
+  const checkAll = store2.checkKickedAt("all") > (store2.lease()?.at ?? "");
+  const checkTeams = () => checkAll || !watchingOff();
   const asked3 = kicked || waiting;
   if (!deps.force && !asked3 && !isDue(store2.schedule(), /* @__PURE__ */ new Date())) return { skipped: "not due", ...empty2, ms: Date.now() - t0 };
   const pinned2 = store2.config().runner;
@@ -67240,13 +67243,15 @@ async function tickInPhases(store2, deps = {}) {
       return { skipped: "source unavailable", ...empty2, ms: Date.now() - t0 };
     };
     const initial = await phase("controls-and-answers", async () => {
-      let commands2;
-      try {
-        commands2 = await measuredStep("controls-and-answers", "readOwnerCommands", () => readOwnerCommands(store2, src, cursors));
-      } catch (e) {
-        return { ok: false, result: await down(e, true) };
+      let commands2 = 0;
+      if (checkTeams()) {
+        try {
+          commands2 = await measuredStep("controls-and-answers", "readOwnerCommands", () => readOwnerCommands(store2, src, cursors));
+        } catch (e) {
+          return { ok: false, result: await down(e, true) };
+        }
+        commitCursors();
       }
-      commitCursors();
       const jobsEarly2 = await measuredStep("controls-and-answers", "checkJobs", () => checkJobs(store2, src, cfg, procs, deps.probe));
       measuredStep("controls-and-answers", "legacyEffects", () => legacyEffects(store2));
       measuredStep("controls-and-answers", "migrateWorkflows", () => migrateWorkflows(store2));
@@ -67302,6 +67307,10 @@ async function tickInPhases(store2, deps = {}) {
       return 0;
     });
     const ingested = await phase("intake", async () => {
+      if (!checkTeams()) {
+        await measuredStep("intake", "retryOwnerReplies", () => retryOwnerReplies(store2, cfg, t0));
+        return { ok: true, asks: 0 };
+      }
       planSweep(store2);
       let found, asks2;
       const before = store2.chats();
@@ -67334,7 +67343,7 @@ async function tickInPhases(store2, deps = {}) {
         store2.log({ event: "missed-failed", error: String(e).slice(0, 300) });
         return 0;
       });
-      await sweep(store2, src, cfg).catch((e) => store2.log({ event: "sweep-failed", error: String(e).slice(0, 300) }));
+      if (checkTeams()) await sweep(store2, src, cfg).catch((e) => store2.log({ event: "sweep-failed", error: String(e).slice(0, 300) }));
       const probed2 = await probeBuilds(store2, probe).catch((e) => {
         store2.log({ event: "probe-failed", error: String(e).slice(0, 300) });
         return 0;
@@ -67367,7 +67376,7 @@ async function tickInPhases(store2, deps = {}) {
       }
       const h = deps.history ?? historyFor(cfg);
       try {
-        if (!sweeping(store2)) await planChats(store2, h, /* @__PURE__ */ new Date());
+        if (checkTeams() && !sweeping(store2)) await planChats(store2, h, /* @__PURE__ */ new Date());
       } catch (e) {
         store2.log({ event: "harvest-plan-failed", error: String(e).slice(0, 300) });
       } finally {
@@ -67376,10 +67385,10 @@ async function tickInPhases(store2, deps = {}) {
       const madeDirect = await direct();
       for (const wf of store2.workflows().filter((wf2) => wf2.intent === "pr_review" && wf2.prs?.length)) advanceReviewUnits(store2, cfg, wf);
       await reviewCommentHook(store2, src, cfg, { probe: deps.probe, call: mcpCaller(cfg) });
-      const jobsStarted2 = madeDirect + await startJobs(store2, cfg, procs, h?.conversations ? ["bootstrap:chats"] : [], deps.probe);
+      const jobsStarted2 = madeDirect + await startJobs(store2, cfg, procs, h?.conversations || !checkTeams() ? ["bootstrap:chats"] : [], deps.probe);
       capHealth(store2, cfg);
       const now = Date.now();
-      if (store2.workflows().some((w) => w.state === "scheduled" && w.sendAt && Date.parse(w.sendAt) <= now) || store2.automations().some((a) => a.state === "active" && a.next && Date.parse(a.next) <= now)) {
+      if (checkTeams() && (store2.workflows().some((w) => w.state === "scheduled" && w.sendAt && Date.parse(w.sendAt) <= now) || store2.automations().some((a) => a.state === "active" && a.next && Date.parse(a.next) <= now))) {
         try {
           await readOwnerCommands(store2, src, cursors);
           commitCursors();
