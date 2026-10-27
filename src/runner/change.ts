@@ -77,12 +77,18 @@ function changeRefusal(store: Store, cfg: Config, wf: Workflow, effect: Effect):
 	return undefined
 }
 
+export function changeReason(error: string): string | undefined {
+	const match = /^Change \d+ cannot be made: ([^\r\n]+)\.$/.exec(error)
+	return match?.[0] === error ? match[1] : undefined
+}
+
 // The change run's only write: one approved change, exactly as approved, through the owner's own tool server (next action, R-HIL-21).
 // "calling" is recorded before the call and the result after, so a run that dies mid-call is never taken for one that did nothing.
 // probe: the PR read; a vote reads its PR again right before the call (review 10-21 P1-3).
-export async function makeChange(store: Store, jobId: string, runId: string, index: number, call: Caller, probe?: BuildProbe): Promise<{ ref?: string; error?: string }> {
+export async function makeChange(store: Store, jobId: string, runId: string, index: number, call: Caller, probe?: BuildProbe, voteConsent?: Workflow): Promise<{ ref?: string; error?: string }> {
 	const job = store.job(jobId), e = job?.result?.effects[index]
 	if (!job || !e) return { error: `There is no change ${index}.` }
+	if (voteConsent && (!isVote(e.call) || !job.parents.includes(voteConsent.id))) return { error: `Change ${index} is not a vote.` }
 	if (isInternal(e)) return { error: `Change ${index} is made by ${NAME} after the reply is sent, not by the change run.` }
 	if (e.done) return { ref: e.done.ref }
 	const had = store.changes(jobId, runId)[index]
@@ -93,7 +99,7 @@ export async function makeChange(store: Store, jobId: string, runId: string, ind
 	// One that may have been made in an earlier run waits until the owner says to make it again (P2-7).
 	if (e.maybe) return { error: `Change ${index} may have been made already. The owner must check, then say to make it again.` }
 	// The item whose ok covers this change: its PR is the one checked, whatever the order of the job's items (review 10-21b P2-4).
-	const owner = parentsOf(store, job).find(p => stillApproved(p, job))
+	const owner = voteConsent ?? parentsOf(store, job).find(p => stillApproved(p, job))
 	if (!pendingEffects([e]).length || !owner) return { error: `Change ${index} was not approved by the owner.` }
 	const cfg = store.config()
 	const why = changeRefusal(store, cfg, owner, e)

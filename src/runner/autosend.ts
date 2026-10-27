@@ -1,6 +1,6 @@
 import type { Config, Draft, ResultFacts, Workflow } from '../core/types.ts'
 import { markedHold, membersOf, membershipUnknown, membershipWait } from './sharing.ts'
-import { authorizeReply, confidence, DEFAULT_POLICY, decide, inQuietHours, REPLY_BLANK, replyGap, ruleFor, signatureOf, withMarker, type Decision, type PolicyContext } from '../core/policy.ts'
+import { authorizeReply, confidence, DEFAULT_POLICY, decide, inQuietHours, REPLY_BLANK, replyGap, reviewWaitOf, ruleFor, signatureOf, withMarker, type Decision, type PolicyContext } from '../core/policy.ts'
 import { pendingEffects, sameHead } from '../core/effects.ts'
 import type { Source } from '../adapters/source.ts'
 import type { Store } from '../store/state.ts'
@@ -13,6 +13,7 @@ import { recordCommit } from './commit.ts'
 import { stateFields, statusFields } from '../core/upgrades.ts'
 import { hourlyCap } from '../core/limits.ts'
 import { telemetryEvent } from '../core/telemetry.ts'
+import { frameOf } from '../core/review.ts'
 
 const policy = (cfg: Config) => ({ ...DEFAULT_POLICY, ...cfg.policy })
 // What the owner's rules are judged with for this item: the page's "why it waited" uses the same (#33).
@@ -55,12 +56,17 @@ export function decideResult(store: Store, cfg: Config, wf: Workflow, reply: Dra
 	if (facts.blocker) return hold('The result is blocked')
 	if (facts.goalMet === false || [...(facts.context ?? []), ...(wf.context ?? [])].some(f => /^not reached$/i.test(f.label.trim())))
 		return hold('The result did not reach its goal')
+	if ((wf.prs?.filter(unit => unit.ref && !unit.skip).length ?? 0) > 1 && !facts.review)
+		return hold('A multi-PR result has no single verified review; it waits for you')
 	if (wf.intent === 'pr_review' || facts.review) {
-		const basis = wf.reviewBasis
-		if (wf.reviewAgain || !basis || !facts.review || facts.review.pr !== basis.pr || !sameHead(facts.review.head, basis.head))
+		const unit = wf.prs?.find(unit => unit.id === facts.review?.pr)
+		const completed = facts.review && frameOf(wf, facts.review.pr)?.completed
+		if (!facts.review || !unit?.ref || unit.skip || unit.again || unit.read !== 'ok' || !completed?.verified ||
+			!sameHead(facts.review.head, completed.head) || !sameHead(facts.review.head, unit.head))
 			return hold('The reviewed revision could not be verified')
 	}
 	const current = { ...wf, draft: reply }, rules = store.rules()
+	if (wf.intent === 'pr_review') return hold(reviewWaitOf(current, rules, confidence(reply.sources)).text)
 	const decision = decide(current, rules, ctx, 'result')
 	if (membershipUnknown(store, wf.chat.id) && ctx.autoSend) {
 		const known = decision.blockedBy === 'sharing' ? undefined : decide(current, rules, { ...ctx, guests: false }, 'result')

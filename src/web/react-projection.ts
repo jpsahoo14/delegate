@@ -67,7 +67,7 @@ import { stillApproved } from '../runner/jobs.ts'
 import { prOf, prTarget } from '../runner/probe.ts'
 import { aboutPr } from '../runner/apply.ts'
 import { findingFor } from '../runner/review-autonomy.ts'
-import { acceptSuggestion, addLine, answerLine, confirmLine, deleteLine, deleteNote, dismissSuggestion, editLine, limitsCard, linesToCheck, makeNoteLine, needsHim, reconsiderSuggestion, restoreLine, setLineOff, suggestions, undoAcceptSuggestion, undoDismiss, wayLines, wayNotes, type WayWriteResult } from '../core/ways.ts'
+import { acceptSuggestion, addLine, answerLine, confirmLine, deleteLine, deleteNote, dismissSuggestion, editLine, limitsCard, linesToCheck, makeNoteLine, needsHim, reconsiderSuggestion, restoreLine, setLineOff, suggestions, undoAcceptSuggestion, undoDismiss, wayLines, wayNotes, type WayTurnedDown, type WayWriteResult } from '../core/ways.ts'
 import { APPROVAL_WORD, voteMention } from '../core/vote-claims.ts'
 import { personName } from '../core/format.ts'
 import { placeOf } from './model/place.ts'
@@ -733,6 +733,8 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 	const sections: Snapshot['sections'] = ([
 		['move', 'Waiting on you', next.move], ['working', `${NAME} is on it`, [...next.working, ...next.waiting.filter(onDelegate).map(row => ({ ...row, section: 'working' as NextRow['section'] }))]],
 		['waiting', 'Waiting on others', next.waiting.filter(row => !onDelegate(row))], ['catchup', 'Catch up', next.catchup.rows],
+		// COUNT58 B3-min (Designer CC1, DD3): his own steps that ask nothing now, a collapsed group at the end of Now, not in need you.
+		['left', 'Left for you', next.left],
 	] as const).map(([id, label, rows]) => ({
 		id, label, total: rows.length, ids: rows.map(s3).map((row, position) => {
 			const { who, primary, more, draft: _draft, rev: rowRev, work, todos, ...rest } = row
@@ -770,6 +772,8 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 				}, `row:${row.code}`))
 			}
 			if (row.section === 'waiting') actionIds.push(...(entities.items[row.act]?.actionIds.filter(id => ['extend-watch', 'stop-watch'].includes(entities.actions[id].kind)) ?? []))
+			// COUNT58 (Designer CC2.6): open in a terminal, the row's one step is Take it back; nothing is sent.
+			if (row.kind === 'in-terminal') actionIds.unshift(...(entities.items[row.act]?.actionIds.filter(id => entities.actions[id].kind === 'take-back') ?? []))
 			const todoIds = (todos ?? []).map(todo => {
 				const key = `${todo.code}/todo/${todo.id}`
 				// The item's own entry (with where it came from) wins over the row's plain copy of the same to-do.
@@ -805,12 +809,13 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 			const headline = (failedJobDirections(workflow) && row.kind === 'question' ? forPage(row.headline) :
 				pageText(reviewRows.get(row.act) ?? waitLine ?? (row.kind === 'todo' ? todoHeadline(firstLeft(byCode.get(row.act)!)!.text) : row.headline.replace(/: nudge, wait, or close\?$/, ': follow up, wait, or close?')))) || 'Review this item'
 			const nextWhat = pageText(row.next?.what).replace(/\s+/g, ' ').trim(), owner = row.next?.owner
+			const terminalSince = row.kind === 'in-terminal' && workflow ? (store.openWindow(workflow.id) ?? (workflow.job ? store.openWindow(workflow.job) : undefined))?.since : undefined
 			const nextText = !owner ? undefined : owner.kind === 'others' ? pageText(owner.text).replace(/\s+/g, ' ').trim() :
 				owner.kind === 'you' ? nextWhat ? `You: ${nextWhat}` : 'You' :
 					owner.kind === 'nobody' ? nextWhat || `nobody has started this; Do it now hands it to ${NAME}` :
 						!nextWhat ? NAME : /^(after|back)\b/.test(nextWhat) ? nextWhat : `${NAME} ${nextWhat}`
 			entities.placements[row.code] = {
-				...rest, headline, nextText, warn: row.warn ? pageText(row.warn) : undefined, facts: {
+				...rest, ...(terminalSince && rest.next ? { next: { ...rest.next, at: terminalSince } } : {}), headline, nextText: row.kind === 'in-terminal' ? `You're working on this in a terminal${terminalSince ? ' · since {at}' : ''}` : nextText, warn: row.warn ? pageText(row.warn) : undefined, facts: {
 					...row.facts, ...(row.facts.verb === 'asked' && workflow ? { at: askedAt ?? workflow.createdAt, verb: askedAt ? 'asked' : 'item created' } : {}),
 					notes: row.facts.notes?.map(note => ({ ...note, text: pageText(note.text) })),
 				},
@@ -827,6 +832,14 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 			return row.code
 		}),
 	}))
+	// Designer CC4 (c): Left for you lists the oldest step first by the date its row shows ("from <first>, <day>"), ties by the item's
+	// opened time; positions follow the order.
+	const leftSection = sections.find(section => section.id === 'left')
+	if (leftSection) {
+		const key = (id: string) => [entities.placements[id].facts.at, byCode.get(entities.placements[id].act)?.createdAt ?? ''] as const
+		leftSection.ids.sort((a, b) => key(a)[0].localeCompare(key(b)[0]) || key(a)[1].localeCompare(key(b)[1]))
+		leftSection.ids.forEach((id, position) => { entities.placements[id].position = position })
+	}
 	const closed = placed.filter(placement => placement.section === 'done')
 	for (const [position, placement] of closed.entries()) entities.placements[placement.code] = {
 		id: placement.code, code: placement.code, act: placement.act, section: placement.section, rule: placement.rule, subjects: placement.subjects,
@@ -1009,6 +1022,7 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 	// Step 3 (SEND a58444d8): the lines, needsHim and linesToCheck are real; the suggestion facade may still say "not yet", which means
 	// only "no suggestions from the engine yet" (suggestionsReady false: the old habit-suggestion list stays). "not yet" from the lines
 	// means no section; any other error is a real failure: logged by shape only, and the section says so (PE 05:06/05:24).
+	const dismissalKeys = new Map<string, string>(), dismissalId = (key: string) => hashOf(`dismissal|${key}`)
 	const ways: Snapshot['ways'] = (() => {
 		const cfg = store.config(), limits = limitsCard(cfg).map(limit => ({ id: limit.id, page: limit.page }))
 		let fn = 'wayLines'
@@ -1020,7 +1034,10 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 			fn = 'wayNotes'; const notes = wayNotes(store)
 			fn = 'suggestions'
 			const open = (() => { try { return suggestions(store) } catch (error) { if (notYet(error)) return undefined; throw error } })()
-			return { lines, ...(open?.open ? { open: open.open } : {}), turnedDown: open?.turnedDown ?? [], limits, needsHim: count, toCheck, ...(open ? { suggestionsReady: true } : {}),
+			// I-b: SEND's union; a dismissed suggestion scope is listed by its label, its key kept here for Reconsider.
+			const turned: WayTurnedDown[] = open?.turnedDown ?? []
+			for (const row of turned) if (row.kind === 'suggestion') dismissalKeys.set(dismissalId(row.key), row.key)
+			return { lines, ...(open?.open ? { open: open.open } : {}), turnedDown: turned.map(row => row.kind === 'suggestion' ? { kind: 'suggestion' as const, id: dismissalId(row.key), label: pageText(row.label), at: row.at } : row), limits, needsHim: count, toCheck, ...(open ? { suggestionsReady: true } : {}),
 				...(notes.length ? { notes: notes.map(note => ({ id: note.id, text: note.text, textHash: note.textHash, ...(note.review ? { review: true } : {}) })) } : {}) }
 		} catch (error) {
 			if (notYet(error)) return undefined
@@ -1083,7 +1100,14 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 			verb(key, 'note-to-line', 'Make it a line', rev, () => said('makeNoteLine', () => makeNoteLine(store, note.id, rev), `Made it a line. ${NAME} is reading it.`))
 			verb(key, 'note-remove', 'Remove', rev, () => said('deleteNote', () => deleteNote(store, note.id, rev), 'Removed.'))
 		}
-		for (const { suggestion } of ways.turnedDown) {
+		for (const row of ways.turnedDown) {
+			if (row.kind === 'suggestion') {
+				// I-b: Reconsider routes the scope key to HOST's scoped dismissal writer (SEND reconsiderSuggestion, kind 'suggestion').
+				const key = `way-dismissal:${row.id}`, scope = dismissalKeys.get(row.id)!
+				verb(key, 'suggestion-reconsider', 'Reconsider', pageDigest([row.id, row.at]), () => said('reconsiderSuggestion', () => reconsiderSuggestion(store, scope, 'suggestion'), `${NAME} can suggest this again.`))
+				continue
+			}
+			const { suggestion } = row
 			const key = `way-suggestion:${suggestion.id}`, rev = suggestion.textHash
 			verb(key, 'suggestion-undo', 'Undo', rev, () => said('undoDismiss', () => undoDismiss(store, suggestion.id), 'Back.'))
 			verb(key, 'suggestion-reconsider', 'Reconsider', rev, () => said('reconsiderSuggestion', () => reconsiderSuggestion(store, suggestion.id), 'Back as a suggestion.'))
@@ -1118,7 +1142,8 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 	const busy: Snapshot['busy'] = { now: busyNow, queued: busyQueued, max: maxParallel, ...(scheduledSends.length ? { scheduled: { n: scheduledSends.length, at: nextSend!.sendAt!, ...(nextSend!.asker?.name ? { to: nextSend!.asker.name.split(/\s+/)[0] } : {}) } } : {}), ...(busyQueued ? { reason: facts.agentWait ? { kind: 'ai' as const, ...(facts.agentWait.retryAt ? { at: facts.agentWait.retryAt } : {}) }
 		: facts.runner === 'paused' ? { kind: 'paused' as const } : facts.runner !== 'ok' && next.off ? { kind: 'off' as const, text: next.off.text.replace(/^Daily/, 'daily') } : { kind: 'slots' as const } } : {}) }
 	const classic: Snapshot['classic'] = {
-		needsIds: [...new Set([...base.needs.map(item => item.code), ...stoppedCodes, ...workflows.filter(workflow => workflow.openOn && workflow.state !== 'done').map(workflow => workflow.code), ...workflows.filter(workflow => workflow.partOf && workflow.state === 'needs_human').map(workflow => workflow.code)])].sort((a, b) => byCode.get(a)!.createdAt.localeCompare(byCode.get(b)!.createdAt)), tiles: base.tiles,
+		// COUNT58 (PE decision 58, Designer CC2.6): open in a terminal is in Ongoing, in neither need you nor left for you.
+		needsIds: [...new Set([...base.needs.map(item => item.code), ...stoppedCodes, ...workflows.filter(workflow => workflow.partOf && workflow.state === 'needs_human').map(workflow => workflow.code)])].filter(code => !(byCode.get(code)?.openOn && byCode.get(code)?.state !== 'done')).sort((a, b) => byCode.get(a)!.createdAt.localeCompare(byCode.get(b)!.createdAt)), tiles: base.tiles,
 		also: [...base.also.map(tile => tile.key === 'running' ? { ...tile, count: busyNow + busyQueued + scheduledSends.length } : tile), ...(base.also.some(tile => tile.key === 'running') ? [] : [{ key: 'running', count: 0, label: 'running' }])],
 		catchupIds: base.catchUp.top.map(row => Object.values(entities.doneEntries).find(entry => entry.code === row.code && entry.kind === row.kind && entry.at === row.at)?.id).filter((id): id is string => !!id),
 		// Sends going out by themselves first (R11(1b): with their Undo/Stop), soonest first, then the working ones, then the queued (R11(1)).
@@ -1148,6 +1173,7 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 				...(row.every ? [offer(row.code, row.rev, 'classic-interval', 'Save interval', input => ({ code: row.code, verb: 'every', text: requiredText(input) }), { input: 'interval' })] : []),
 				...(row.endsAt ? [offer(row.code, row.rev, 'classic-extend', 'Extend 7 days', () => ({ code: row.code, verb: 'extend' }))] : []),
 				...(entities.actions[`${row.code}/stop-watch`] ? [`${row.code}/stop-watch`] : []),
+				...(row.terminal ? entities.items[row.code]?.actionIds.filter(id => entities.actions[id].kind === 'take-back') ?? [] : []),
 			],
 		})),
 		workActionIds: Object.fromEntries(base.needs.filter(card => card.work?.due).map(card => {

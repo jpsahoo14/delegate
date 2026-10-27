@@ -4,8 +4,9 @@ import type { Confidence, Config, Job, Person, Rule, Source, Workflow } from './
 import { voteMention } from './vote-claims.ts'
 import { scrub } from './secrets.ts'
 import { authorize, hourlyCap, MAX_AUTO_PER_CHAT_HOUR, type LimitId } from './limits.ts'
-import { compareGrants } from './capabilities.ts'
-import { grantConfirmed } from './rule-lines.ts'
+import { compareGrants, ruleInLane } from './capabilities.ts'
+import { grantConfirmed, type RuleInstruction } from './rule-lines.ts'
+import { NAME } from '../brand.ts'
 
 export function currentDraft(workflow: Workflow, job?: Job) {
 	if (workflow.ownerSend && (!workflow.sent || workflow.sent.at < workflow.ownerSend.at)) return workflow.draft ?? workflow.ownerSend.draft
@@ -55,23 +56,36 @@ function matchesScope(r: Rule, wf: Workflow, conf: Confidence): boolean {
 	const who = !!wf.asker && (!!r.who.accounts?.some(a => a.id === wf.asker!.id) ||
 		internalGroup(r, wf))
 	if (!who) return false
-	if (r.when.intent && r.when.intent !== wf.intent) return false
+	const groups = (r.then === 'review' || r.then === 'draft' && r.when.lane === 'review') && wf.reviewReply
+		? wf.reviewReply.units.map(id => wf.prs?.find(unit => unit.id === id)?.groups) : [wf.prGroups]
+	return matchesWhen(r.when, wf, conf, groups, r.then === 'review')
+}
+function matchesWhen(when: Rule['when'], wf: Workflow, conf: Confidence, groups: (string[] | undefined)[], review: boolean): boolean {
+	if (when.intent && when.intent !== wf.intent) return false
 	// "direct": any one-to-one chat with these people, so a rule needs no chat ID found in advance (dogfood 10-19).
-	if (r.when.chat === 'direct') { if (wf.chat.group || wf.chat.test || wf.chat.id.startsWith('ch|')) return false }
-	else if (r.when.chat && r.when.chat !== wf.chat.id) return false
-	if (r.when.reviewerGroup) {
-		const matches = (groups?: string[]) => !!groups?.some(g => groupName(g) === groupName(r.when.reviewerGroup!))
-		if (r.then === 'review' && wf.reviewReply) {
-			if (!wf.reviewReply.units.length || !wf.reviewReply.units.every(id => matches(wf.prs?.find(unit => unit.id === id)?.groups))) return false
-		} else if (!matches(wf.prGroups)) return false
-	}
-	return r.then === 'review' || !r.when.minConfidence || RANK[conf] >= RANK[r.when.minConfidence]
+	if (when.chat === 'direct') { if (wf.chat.group || wf.chat.test || wf.chat.id.startsWith('ch|')) return false }
+	else if (when.chat && when.chat !== wf.chat.id) return false
+	if (when.reviewerGroup && (!groups.length ||
+		!groups.every(names => names?.some(name => groupName(name) === groupName(when.reviewerGroup!))))) return false
+	return review || !when.minConfidence || RANK[conf] >= RANK[when.minConfidence]
 }
 const groupName = (name: string) => name.split('\\').at(-1)!.normalize('NFKC').trim().toLowerCase()
-const inLane = (r: Rule, wf: Workflow, mode: 'reply' | 'result' = 'reply') => (mode === 'result' ?
-	r.then !== 'review' && (r.then !== 'send' || !!r.when.results) :
-	wf.intent === 'pr_review' ? r.then !== 'send' && r.then !== 'ack' : r.then !== 'review') &&
-	(r.then !== 'review' || r.review?.comments === 'post' && r.review.reply === 'send')
+const laneOf = (wf: Workflow, mode: 'reply' | 'result') =>
+	mode === 'result' ? 'result' : wf.intent === 'pr_review' ? 'review' : 'reply'
+export function instructionScopeMatches(instruction: Pick<RuleInstruction, 'who' | 'when'> | Rule, wf: Workflow, pr?: number,
+	mode: 'reply' | 'result' = 'reply'): boolean {
+	const who = instruction.who, when = instruction.when ?? {}
+	if (who?.accounts?.length) {
+		if (!wf.asker || !who.accounts.some(account => account.id === wf.asker!.id)) return false
+	} else if (who?.group && (who.group !== 'org' || !wf.asker || wf.chat.guests !== false)) return false
+	if (when.results && mode !== 'result') return false
+	if ('lane' in when && when.lane && when.lane !== laneOf(wf, mode)) return false
+	const units = wf.prs?.filter(unit => unit.ref && !unit.skip && (pr === undefined || unit.id === pr))
+	if (pr !== undefined && !units?.length) return false
+	return matchesWhen(when, wf, confidence(wf.draft?.sources ?? []),
+		units?.map(unit => unit.groups) ?? [wf.prGroups], 'then' in instruction && instruction.then === 'review')
+}
+const inLane = (r: Rule, wf: Workflow, mode: 'reply' | 'result' = 'reply') => ruleInLane(r, laneOf(wf, mode))
 export function ruleFor(wf: Workflow, rules: Rule[], conf = confidence(wf.draft?.sources ?? []), mode: 'reply' | 'result' = 'reply'): Rule | undefined {
 	return rules.filter(r => !r.off && grantConfirmed(r) && !r.style && matchesScope(r, wf, conf) && inLane(r, wf, mode))
 		.sort(compareGrants)[0]
@@ -79,6 +93,18 @@ export function ruleFor(wf: Workflow, rules: Rule[], conf = confidence(wf.draft?
 export const reviewRuleFor = (wf: Workflow, rules: Rule[]) => {
 	const rule = wf.intent === 'pr_review' ? ruleFor(wf, rules) : undefined
 	return rule?.then === 'review' ? rule : undefined
+}
+export type ReviewWait = { kind: 'covered'; grantId: string; text: string } |
+	{ kind: 'waiting'; grantId: string; text: string } |
+	{ kind: 'off'; grantId: string; text: string } | { kind: 'none'; text: string }
+export function reviewWaitOf(wf: Workflow, rules: Rule[], conf = confidence(wf.draft?.sources ?? [])): ReviewWait {
+	const covered = ruleFor(wf, rules, conf)
+	if (covered?.then === 'review') return { kind: 'covered', grantId: covered.id, text: `${NAME} is posting the review comments; the reply follows.` }
+	const waiting = rules.filter(rule => rule.then === 'review' && !grantConfirmed(rule) && matchesScope(rule, wf, conf)).sort(compareGrants)[0]
+	if (waiting) return { kind: 'waiting', grantId: waiting.id, text: "Your PR review line isn't on yet. Turn it on in Settings \u203a Your way of working \u203a" }
+	const off = ruleFor(wf, rules.map(r => ({ ...r, off: undefined })), conf)
+	if (off?.then === 'review') return { kind: 'off', grantId: off.id, text: 'Your PR review line is off.' }
+	return { kind: 'none', text: `PR reviews wait for you: none of your lines covers this. To let ${NAME} review, post comments and reply by itself, say so in Settings \u203a Your way of working \u203a` }
 }
 
 // The strictest matching rule decides; every check that blocks an automatic send names its reason (R-POL-01). A drafting style
@@ -131,7 +157,7 @@ export function decide(wf: Workflow, rules: Rule[], ctx: PolicyContext, mode: 'r
 	if (mode !== 'result' && (wf.work || wf.partOf)) return d('draft', 'Replies on open work always wait for you')
 	if (wf.shareHold) return d('draft', shareHoldText(wf.shareHold)!)
 	if ((!reviewReply && pendingEffects(wf.effects).some(e => e.origin !== 'suggested')) || wf.todos?.length || wf.follow) return d('draft', 'It promises changes, a follow-up, or something you must do')
-	if (mode !== 'result' && wf.intent === 'pr_review' && !review && !rule) return d('draft', 'PR reviews wait for you; no review rule covers this.')
+	if (mode !== 'result' && wf.intent === 'pr_review' && !review && !rule) return d('draft', reviewWaitOf(current, rules, conf).text)
 	if (review && shared?.phase === 'replied') return d('draft', 'The review reply was sent; approving stays yours.')
 	if (voteMention(wf.draft?.text ?? '')) return d('draft', 'It speaks of an approval or a vote, so it waits for you')
 	if (!rule) return d('draft', mode === 'result' ? 'No rule sends results in this chat' : 'No rule covers this sender and ask')
@@ -147,7 +173,7 @@ export function decide(wf: Workflow, rules: Rule[], ctx: PolicyContext, mode: 'r
 	if (labeledToGuests(wf)) return d('draft', 'It quotes labeled content, and this chat has guests')
 	if (wf.gaps?.length) return d('draft', `It could not read ${wf.gaps.join(', ')}`)
 	if (wf.draft?.sources.some(s => s.tier === 'private')) return d('draft', 'It uses a private source')
-	if (review) return reviewReply ? d('send', `Review rule ${review.id}: posted comments and receipt-built reply`) : d('draft', 'The review comments must be posted before its rule can send a reply')
+	if (review) return reviewReply ? d('send', `Review rule ${review.id}: posted comments and receipt-built reply`) : d('draft', reviewWaitOf(current, rules, conf).text)
 	if (conf === 'low') return d('draft', 'Not enough evidence to send on its own')
 	return d('send', `Rule ${rule.id}, confidence ${conf}`)
 }
@@ -157,17 +183,15 @@ export function decide(wf: Workflow, rules: Rule[], ctx: PolicyContext, mode: 'r
 // part alone makes it wait; the checks are the ones decide() and the send gate apply.
 export function whyWaited(wf: Workflow, rules: Rule[], ctx: PolicyContext): string[] {
 	if ('guests' in ctx) wf = { ...wf, chat: { ...wf.chat, guests: ctx.guests } }
+	const conf = confidence(wf.draft?.sources ?? [])
 	const decision = decide(wf, rules, ctx)
 	if (decision.blockedBy) return [decision.reason]
-	if (decision.ruleId && !ruleFor(wf, rules)) return [decision.reason]
 	if (wf.intent === 'pr_review') {
-		const review = reviewRuleFor(wf, rules)
-		if (ruleFor(wf, rules) && !review) return [decision.reason]
-		const off = !review && reviewRuleFor(wf, rules.map(r => ({ ...r, off: undefined })))
-		if (!review) return [off ? `Your PR review rule ${off.id} is off.` : 'PR reviews wait for you; no review rule covers this.']
+		const wait = reviewWaitOf(wf, rules, conf)
+		if (wait.kind !== 'covered') return [wait.text]
 		return decision.action === 'send' ? [] : [decision.reason]
 	}
-	const conf = confidence(wf.draft?.sources ?? [])
+	if (decision.ruleId && !ruleFor(wf, rules)) return [decision.reason]
 	const first = wf.asker?.name?.split(/\s+/)[0] || 'this person'
 	const auto = rules.filter(r => !r.off && !r.style && r.then !== 'ignore')
 	const named = auto.filter(r => !!wf.asker && (!!r.who.accounts?.some(a => a.id === wf.asker!.id) || internalGroup(r, wf)))

@@ -1,5 +1,13 @@
 # Engine fixes
 
+2026-10-25 (COUNT58 B1 HOST reader, 0.2.48): Owner-step questions use the existing owner choices even
+without a waiting-person record, with one shared waiting/last-step/created date fallback. New's paired
+page reader correction is still required; no owner-step union or stored data is changed.
+
+2026-10-25 (COUNT58 producer, 0.2.48 HOST): Define shared Needs-you/Left-for-you rule predicates,
+the left section and setup-hold distinction, with one owner-step helper. New and SEND consumers remain
+required in the same cut; no old-data repair, closure or send behavior is added.
+
 2026-10-25 (measurable usage logging, 0.2.47 HOST): Keep a run kind even without reported usage;
 record owner-reply and promise checks, and classify rule compilation. Missing measurements stay absent.
 The clean usage-first line excludes deferred WDD work; New's aggregated view is the required same-cut companion.

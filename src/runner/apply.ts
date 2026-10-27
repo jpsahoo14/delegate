@@ -1,4 +1,5 @@
 import { okSendGate, ownWords, rememberSend, heldSend, threadSince, send, undo } from './send.ts'
+import { basename } from 'node:path'
 export { send, replyContext, aboutPr, type SendBy } from './send.ts'
 import { answerHabitResult, dismissKey, dismissSuggestion, outcome } from './habits.ts'
 
@@ -10,7 +11,7 @@ import { settingKey } from '../core/setting-keys.ts'
 import { leftActionText } from '../core/left-lines.ts'
 import { telemetryEvent } from '../core/telemetry.ts'
 import { placeOf } from '../web/model/place.ts'
-import type { Answer, Config, Effect, Workflow } from '../core/types.ts'
+import { PAGE_CONTROL_VERBS, type Answer, type Config, type Effect, type Workflow } from '../core/types.ts'
 
 import { contentKey, htmlToText } from '../core/intake.ts'
 
@@ -42,7 +43,7 @@ import { adoProbe, prRefOf, probePRs, probePrUnits, prTarget, recheckDeploy, rec
 import { deployRunning, isValidate, reportsResult, saysTested, testedAsk } from './validate.ts'
 import { checkAgain, dropPromise, notePromise, reopenPromise, rest } from './promise.ts'
 import { isDeploy } from '../core/deploy.ts'
-import { pageAnswerRefusal, pageChangeId } from '../core/page-approval.ts'
+import { pageAnswerRefusal, pageChangeId, pageDigest } from '../core/page-approval.ts'
 import { pageManagementRev } from '../store/page-revision.ts'
 import { holdReplyGap } from './reply-gap.ts'
 import { clearHold, clearVoteHold, holdReasons, reasonMessages, restampReasons, reviewedReasons, voteHold } from '../core/owner-send.ts'
@@ -99,13 +100,15 @@ function recordSelection(store: Store, cfg: Config, wf: Workflow, before: Effect
 export async function applyAnswers(store: Store, src: Source, cfg: Config, procs: Procs = realProcs, controlsOnly = false, probe?: BuildProbe, quick?: Quick): Promise<number> {
 	let n = 0
 	for (const { file, answer } of store.answers()) {
-		if (controlsOnly && !isControl(answer.verb)) continue
+		const pageControl = (PAGE_CONTROL_VERBS as readonly string[]).includes(answer.verb)
+		if (controlsOnly && !isControl(answer.verb) && !pageControl) continue
 		const wf = answer.code ? freshRead(() => store.byCode(answer.code)) : undefined
 		try {
 			const kp = answer.code?.startsWith('K') ? store.proposal(answer.code) : undefined
 			if (answer.page) {
 				if (store.answered(answer.id)) { store.doneAnswer(file); continue }
-				const refusal = pageAnswerRefusal(answer, wf, answer.code?.startsWith('R') ? store.automation(answer.code) : undefined, kp, cfg, answer.page.kind === 'manage' ? pageManagementRev(store, answer.code ?? '') : undefined, wf?.job ? store.job(wf.job) : undefined)
+				// Watching checks its own synced-state digest in the handler.
+				const refusal = pageControl ? undefined : pageAnswerRefusal(answer, wf, answer.code?.startsWith('R') ? store.automation(answer.code) : undefined, kp, cfg, answer.page.kind === 'manage' ? pageManagementRev(store, answer.code ?? '') : undefined, wf?.job ? store.job(wf.job) : undefined)
 				if (refusal) {
 					await reply(store, src, answer, `${MARK} ${refusal}`, true)
 					store.doneAnswer(file)
@@ -132,6 +135,7 @@ export async function applyAnswers(store: Store, src: Source, cfg: Config, procs
 			else if (wt) await reply(store, src, answer, `${MARK} ${await followUp(store, src, cfg, wt, answer)}`)
 			else if (auto) await reply(store, src, answer, `${MARK} ${answerAutomation(store, auto, answer)}`)
 			else if (isControl(answer.verb)) await control(store, src, answer, procs)
+			else if (pageControl) await watching(store, src, answer, basename(file).slice(27, -5))
 			// Knowledge proposals are not chat replies: their own handler, never the send path (review 01-04 entry condition).
 			else if (kp) await reply(store, src, answer, plain(`${MARK} ${answerProposal(store, knowledgeOf(store, cfg), kp, answer)}${answer.verb === 'more' || answer.verb === 'undo' ? '' : `\n\n${nextProposal(store, kp.code, answer.surface === 'self' ? 6 : Infinity)}`}`).slice(0, 1800))
 			else if (!wf) await reply(store, src, answer, `${MARK} I can't find item ${answer.code}.`)
@@ -868,6 +872,25 @@ async function control(store: Store, src: Source, a: Answer, procs: Procs) {
 	// Resume sends nothing; what was held waits for the owner's Send, no longer marked as held by the pause.
 	if (v === 'resume') for (const w of store.workflows().filter(w => w.held)) { w.held = undefined; if (w.statusReason?.kind === 'not-sent') { w.status = 'Ready to send: held while you were paused'; w.statusReason = undefined }; store.save(w) }
 	await reply(store, src, a, `${MARK} ${CONTROL_REPLY[v]}`)
+}
+
+async function watching(store: Store, src: Source, a: Answer, writer: string) {
+	const c = freshRead(() => store.control()), now = new Date()
+	const changed = `${MARK} Changed since you looked. Nothing was sent or changed. Open the new version first.`
+	if (!a.page || a.code || a.page.expect !== pageDigest({ on: c.watching?.on !== false, since: c.watching?.since }))
+		return reply(store, src, a, changed, true)
+	if (a.verb === 'watch-off') {
+		if (c.watching?.on === false) return reply(store, src, a, changed, true)
+		store.saveControl({ ...c, watching: { on: false, since: now.toISOString(), machine: writer } })
+		store.log({ event: 'watch-off', by: 'owner', machine: writer, at: now.toISOString() })
+		return reply(store, src, a, `${MARK} Stopped checking Teams. Your setting is kept for when you start again.`)
+	}
+	const off = c.watching
+	if (!off || off.on) return reply(store, src, a, changed, true)
+	store.saveControl({ ...c, watching: { on: true, since: now.toISOString(), machine: writer } })
+	store.saveKick()
+	store.log({ event: 'watch-on', by: 'owner', machine: writer, at: now.toISOString(), offSince: off.since })
+	return reply(store, src, a, `${MARK} Checking Teams again: next check now.`)
 }
 
 // After the undo window, the owner can still post a correction under the sent reply. The owner wrote it, so no marker.

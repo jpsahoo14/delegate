@@ -6,7 +6,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod'
 import { effectLine, renderList, renderMore } from '../core/render.ts'
-import type { Config, Entry } from '../core/types.ts'
+import { PAGE_CONTROL_VERBS, type Config, type Entry } from '../core/types.ts'
 import { answerHabit } from '../runner/habits.ts'
 import { fromOffChat, recordRead, setChatLevel, type Look } from '../runner/sharing.ts'
 import { heldLevel, offRecord } from '../core/levels.ts'
@@ -21,6 +21,7 @@ import { statusText } from '../runner/status.ts'
 import { makeChange, mcpCaller } from '../runner/change.ts'
 import { adoProbe } from '../runner/probe.ts'
 import { serveInbox } from '../web/server.ts'
+import { IntentError } from '../web/react-projection.ts'
 import { openUrl } from '../os/window.ts'
 import { parseVerbs, type Parsed } from '../core/verbs.ts'
 import type { Store } from '../store/state.ts'
@@ -39,6 +40,8 @@ import { ClaimSchema, ReportSchema } from '../core/report.ts'
 import { DOCUMENT_DESCRIPTION, DOCUMENT_INPUT, documentReader, IMAGE_DESCRIPTION, IMAGE_LINK, readImage, reportTaker, SUBMIT_DESCRIPTION } from '../worker/tools.ts'
 import { NAME } from '../brand.ts'
 import { placeOf } from '../web/model/place.ts'
+import { readActions, undoableAction } from '../store/actions.ts'
+import { ACTION_UNDO_TOO_LATE, actionUndoRefusal, pageAnswerRefusal } from '../core/page-approval.ts'
 
 const text = (t: string) => ({ content: [{ type: 'text' as const, text: t }] })
 
@@ -250,7 +253,7 @@ export function act(store: Store, command: string, seenAt?: string, from: 'chat'
 
 // accepted is false when nothing was queued or shown, so the page and panel keep the item on screen (tester 06-07 P2-5).
 export function actResult(store: Store, command: string, shownAt?: string, from: 'chat' | 'page' = 'chat'): { text: string; accepted: boolean; ids: string[] } {
-	if (command.trim() === 'retry') { kickTick(store); const r = store.config().runner; return { text: r && r !== store.machine ? `Asked ${r} to check now. It does within a minute.` : 'Checking now.', accepted: true, ids: [] } }
+	if (command.trim() === 'retry') { kickTick(store, 'all'); const r = store.config().runner; return { text: r && r !== store.machine ? `Asked ${r} to check now. It does within a minute.` : 'Checking now.', accepted: true, ids: [] } }
 	const unwatch = command.trim().match(/^unwatch\s+(https:\/\/\S+)$/i)
 	if (unwatch) return { text: watchChannel(store, unwatch[1], true), accepted: true, ids: [] }
 	const rep = command.trim().match(REPORT)
@@ -276,11 +279,32 @@ export function actResult(store: Store, command: string, shownAt?: string, from:
 // Typed page intents enter after chat parsing so user text remains one field.
 export function enqueueParsed(store: Store, parsed: Parsed[], shownAt?: string, from: 'chat' | 'page' = 'page', answerId?: string, page?: import('../core/types.ts').PageApproval, pageSubmissionId?: string): { text: string; accepted: boolean; ids: string[] } {
 	if (answerId && parsed.length !== 1) throw new Error('A page submission must target exactly one action.')
+	if ((page?.kind === 'undo-action' || parsed.some(part => part.verb === 'undo-action')) &&
+		(from !== 'page' || parsed.length !== 1 || parsed[0].verb !== 'undo-action' || page?.kind !== 'undo-action'))
+		return { text: 'Invalid action approval. Nothing was deleted. Open the current action first.', accepted: false, ids: [] }
 	const write = (answer: Parameters<Store['writeAnswer']>[0]) => store.writeAnswer({ ...answer, ...(page ? { page, ...(page.todoIds ? { todos: page.todoIds } : {}) } : {}), ...(pageSubmissionId ? { pageSubmissionId } : {}) }, answerId)
 	let shown = 0
 	const out: string[] = []
 	const ids: string[] = []
 	for (const p of parsed) {
+		if (PAGE_CONTROL_VERBS.some(verb => verb === p.verb)) {
+			if (from !== 'page' || !page || p.code) { out.push('Choose Start or Stop watching on the refreshed Home page. Nothing changed.'); continue }
+			ids.push(write({ code: '', verb: p.verb, surface: 'chat' }).id)
+			out.push(`${p.verb}: applying now.`)
+			continue
+		}
+		if (p.verb === 'undo-action' && page?.kind === 'undo-action') {
+			const input = { code: '', verb: p.verb, text: p.text, surface: 'panel' as const, page }
+			const invalid = pageAnswerRefusal({ ...input, id: '', at: shownAt ?? new Date().toISOString() })
+			if (invalid) { out.push(invalid); continue }
+			const action = readActions(store, { since: new Date(Date.now() - 30 * 86_400_000).toISOString() }).find(action => action.id === p.text)
+			const refusal = action ? actionUndoRefusal(action, page.expect) : ACTION_UNDO_TOO_LATE
+			if (refusal) { out.push(refusal); continue }
+			if (!action || !undoableAction(action)) { out.push('The record does not confirm a reply that can still be taken back. Nothing was deleted.'); continue }
+			ids.push(write(input).id)
+			out.push('Taking it back through the owner-command runner.')
+			continue
+		}
 		if (isControl(p.verb) && !p.code) { ids.push(write({ code: '', verb: p.verb, surface: 'chat' }).id); out.push(`${p.verb}: applying now.`); continue }
 		const code = p.code ?? latestPreview(store, 'chat')
 		const wt = code?.startsWith('W') ? store.waiting().find(w => w.code === code) : undefined
@@ -335,8 +359,22 @@ export function enqueueParsed(store: Store, parsed: Parsed[], shownAt?: string, 
 		if (wf.state === 'done' && !leftAction && !reopenable(wf, p.verb) && !(p.verb === 'mine' && wf.fyi) && !['undo', 'ask', 'wrong', 'incomplete', 'unneeded'].includes(p.verb) && !(p.verb === 'send' && wf.sent)) { out.push(`${wf.code} is already done: ${wf.status}`); shown++; continue }
 		if (p.verb === 'mine' && (wf.state !== 'done' || !wf.fyi)) { out.push(`${wf.code} is not in Catch up, so nothing changed.`); shown++; continue }
 		// Every sent reply can be undone inside its window, as the page offers; the runner says when it has closed (owner 10-21; review react-spec P0-2).
-		if (p.verb === 'undo' && !wf.sent) { out.push(`${wf.code}: has not been sent, so there is nothing to undo.`); shown++; continue }
+		if (p.verb === 'undo' && !wf.sent && (from === 'page' ||
+			!readActions(store, { since: new Date(Date.now() - 30 * 86_400_000).toISOString() }).some(action => action.item?.wf === wf.id && undoableAction(action)))) {
+			out.push(`${wf.code}: has no reply that can still be taken back.`); shown++; continue
+		}
 		if (from === 'page' && p.verb === 'undo' && (!wf.sent?.undoUntil || Date.parse(wf.sent.undoUntil) <= Date.now())) { out.push(`${wf.code}: the undo window has closed. The reply stays in the chat.`); continue }
+		if (p.verb === 'pr-retry' || p.verb === 'pr-skip' || p.verb === 'pr-approve') {
+			const pr = p.nums?.[0]
+			if (from !== 'page' || !page || p.nums?.length !== 1 || typeof pr !== 'number' || !Number.isSafeInteger(pr) || pr <= 0 || !wf.prs?.some(unit => unit.id === pr) || p.verb === 'pr-approve' && typeof p.vote !== 'string') {
+				out.push(`${wf.code}: choose one PR from the refreshed item. Nothing changed.`)
+				continue
+			}
+			ids.push(write({ code: wf.code, verb: p.verb, nums: [pr], ...(p.verb === 'pr-approve' ? { vote: p.vote } : {}), surface: 'chat', seenAt: shownAt ?? store.seenRev(wf.code) }).id)
+			out.push(p.verb === 'pr-approve' ? `${wf.code}: PR ${pr} will be approved. No reply is sent by this action.`
+				: `${wf.code}: PR ${pr} ${p.verb === 'pr-retry' ? 'will be checked again' : 'will be skipped'}. Nothing is sent by this action.`)
+			continue
+		}
 		ids.push(write({ code: wf.code, verb: p.verb, text: p.text, nums: p.nums, except: p.except, again: p.again, ...(p.verb === 'dont-suggest' ? { key: p.key, label: p.label } : {}), ...(from === 'page' ? { include: p.include, vote: p.vote, actionClaimReview: p.actionClaimReview } : {}), surface: 'chat', seenAt: shownAt ?? store.seenRev(wf.code) }).id)
 		if (p.verb === 'dont-suggest') { out.push(`${wf.code} will turn down this suggestion. Nothing is sent.`); continue }
 		const ask = wf.lastAsk ? ` (${wf.asker?.name}: "${wf.lastAsk.slice(0, 80)}")` : ''
@@ -354,8 +392,11 @@ export function enqueueParsed(store: Store, parsed: Parsed[], shownAt?: string, 
 	return { text: out.join('\n'), accepted: ids.length + shown > 0, ids }
 }
 
-function kickTick(store: Store) {
-	store.saveKick()
+function kickTick(store: Store, check?: 'all' | 'missed') {
+	try { store.saveKick(check) } catch (error) {
+		if (!(error instanceof Error) || error.message !== 'Another runner wake-up is being saved. Try again.') throw error
+		if (check) throw new IntentError(409, error.message)
+	}
 	if (process.env.DELEGATE_NO_KICK) return
 	spawn(process.execPath, [CLI, 'tick', '--force'], { detached: true, stdio: 'ignore', env: process.env }).unref()
 }

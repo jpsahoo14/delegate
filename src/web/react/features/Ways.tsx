@@ -168,8 +168,10 @@ export function WaysSection({ classic = false }: { classic?: boolean }) {
 				<p className="ways-note-text">{note.text}</p>{note.review && <p className="muted">Not on. Make it a line to have {NAME} review PRs this way.</p>}
 				<span className="ways-inline"><Verb action={action(noteKey(note.id), 'note-to-line')} label="Make it a line" /><Verb action={action(noteKey(note.id), 'note-remove')} label="Remove" variant="ghost" /></span>
 				{action(noteKey(note.id), 'note-to-line') && <ActionState item={noteKey(note.id)} rev={note.textHash} />}</li>)}</ul></details>}
-		{ways.turnedDown.length > 0 && <details className="ways-turned-down"><summary>Suggestions you turned down ({ways.turnedDown.length})</summary><ul>{ways.turnedDown.map(({ suggestion, at }) => <li key={suggestion.id}>
-			<span>{suggestion.text}</span><small className="muted">turned down {when(at)}</small><Verb action={action(suggestionKey(suggestion.id), 'suggestion-reconsider')} label="Reconsider" /></li>)}</ul></details>}
+		{ways.turnedDown.length > 0 && <details className="ways-turned-down"><summary>Suggestions you turned down ({ways.turnedDown.length})</summary><ul>{ways.turnedDown.map(row => row.kind === 'suggestion'
+			// I-b: a suggestion he turned down on a card (✕), by its label; Reconsider lets Delegate suggest it again.
+			? <li key={row.id}><span>{row.label}</span><small className="muted">turned down {when(row.at)}</small><Verb action={action(`way-dismissal:${row.id}`, 'suggestion-reconsider')} label="Reconsider" /></li>
+			: <li key={row.suggestion.id}><span>{row.suggestion.text}</span><small className="muted">turned down {when(row.at)}</small><Verb action={action(suggestionKey(row.suggestion.id), 'suggestion-reconsider')} label="Reconsider" /></li>)}</ul></details>}
 		<section className="ways-limits" aria-label={`${NAME} never does these by itself`}><h3><Icon name="lock" /> {NAME} never does these by itself</h3>
 			<ol>{ways.limits.map(limit => <li key={limit.id}>{limit.page}</li>)}</ol></section>
 	</div>

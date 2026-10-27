@@ -1,5 +1,6 @@
 import { stateFields } from '../core/upgrades.ts'
 import { clearHold } from '../core/owner-send.ts'
+import { ownerNext, ownerStepSince } from '../core/whose.ts'
 import type { PlanStep, Report, Step, Workflow, WorkReport } from '../core/types.ts'
 import type { Store } from '../store/state.ts'
 import { canonicalKey } from './jobs.ts'
@@ -261,8 +262,7 @@ export function due(wf: Workflow, now = Date.now(), store?: Store): boolean {
 	return true
 }
 export function waitsOnOwner(wf: Workflow, me: string[]): boolean {
-	const on = wf.work?.waitingOn?.who.trim().toLowerCase()
-	return !!on && me.some(name => name.trim().toLowerCase() === on)
+	return !!wf.work && ownerNext(wf.work, me) === 'you'
 }
 
 export function askWhatNext(wf: Workflow, store?: Store) {
@@ -270,8 +270,8 @@ export function askWhatNext(wf: Workflow, store?: Store) {
 	const since = (store && lastActivity(store, wf) || k.steps.at(-1)?.at || '').slice(0, 10)
 	const waiting = k.waitingOn, cfg = waiting ? store?.config() : undefined
 	const ownerWait = waitsOnOwner(wf, cfg ? [cfg.owner.name, cfg.owner.name.split(/\s+/)[0], ...(cfg.aliases ?? [])] : [])
-	const question = ownerWait && waiting
-		? `Still on your list since ${waiting.since.slice(0, 10)}: ${(k.next?.what ?? k.goal).replace(/[.\s]+$/, '')}. Report how it went with "${wf.code}: what happened". Remind me in 3 days with "wait ${wf.code}: 3d", or Close it with "close ${wf.code}".`
+	const question = ownerWait
+		? `Still on your list since ${ownerStepSince(k, wf.createdAt).slice(0, 10)}: ${(k.next?.what ?? k.goal).replace(/[.\s]+$/, '')}. Report how it went with "${wf.code}: what happened". Remind me in 3 days with "wait ${wf.code}: 3d", or Close it with "close ${wf.code}".`
 		: `No news on "${k.goal}" since ${since}${k.waitingOn ? `; waiting on ${k.waitingOn.who}` : ''}. Answer "${wf.code}: nudge them" for a drafted follow-up, "wait ${wf.code}: 3d", or "close ${wf.code}".`
 	newTurn(wf, true)
 	Object.assign(wf, {

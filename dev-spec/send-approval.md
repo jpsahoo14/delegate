@@ -972,6 +972,19 @@ not select changes, reconstruct a token or relax the existing approval gate.
 The named carrier exception changes only the `Parsed` type line; its owner
 retains the rest of the parser and no new chat syntax is introduced.
 
+### Slice 1: dismissed suggestions in Ways
+
+Ways keeps the existing habit rows and appends genuine unexpired suggestion
+dismissals as `{kind: 'suggestion', key, label, at}` from the typed sidecar
+reader. This read does not create a Habit or Rule, change the open-habit
+suggestion, count dismissals as work needing the owner, or alter expiry.
+
+The same cut includes the reviewed narrow I-b consumer: it renders the saved
+label, exposes only a hashed row id and retains the canonical key server-side
+for the real kind-aware Reconsider action. Existing habit routes stay intact.
+The broader consumer corrections and the separate dismissal control are not
+prerequisites or implied approvals.
+
 ### Slice 1: dedicated page vote consent
 
 Origin-bearing page approvals carry a dedicated `vote` containing the vote's
@@ -1175,3 +1188,214 @@ Old scalar review state is not read as automatic permission. HOST's reviewed
 load-time migration supplies native frames, or the review stays with the owner.
 This source handoff does not waive remaining HOST reader integration or coupled
 runtime acceptance, and introduces no new schema or migration.
+
+### Rule-state and compile provider (A239)
+
+Per-PR page retry/skip admission carries exactly one existing unit id in
+`nums: [pr]` and requires the page's existing approval binding. It queues the
+existing serialized HOST handlers; it does not itself post or send, reopen a
+closed item, change membership, or widen a vote permission.
+
+`WayLine.state` is the shared New/Classic rendering contract:
+`on | waiting | part | guidance | not-in-effect | reading | off`. Existing
+`status` remains available during consumer integration. Waiting and
+not-in-effect lines count in needs-him. Guidance is explicitly not permission.
+The compiled instruction contains optional task/output, required constraints,
+and optional who/when scope; those scopes reuse the grant schema and known
+account validation. Missing scope means unrestricted guidance, not an inferred
+grant. Gates still consume only deterministic grants.
+
+Legacy notes appear as main-list lines on read, with stable ids. The existing
+locked rules writer canonicalizes them once, records `notesMigrated: 1`, and
+queues their existing compile path under its unchanged daily AI-run cap.
+Migrated grants remain disabled and unconfirmed until the owner's Turn on.
+Compile failures persist as not-in-effect rather than retrying each tick.
+Their displayed status uses the approved "Not in effect" wording without
+inserting the raw compile error. The diagnostic remains stored on the line.
+`readLineAgain(store, id, expectHash)` clears that failure and old confirmation
+through the same locked writer, for one explicitly requested re-read.
+
+This is the provider boundary, not prompt-consumer activation: New owns both
+shells' rendering; scoped prompt injection follows the reviewed compile provider
+and HOST's actual data-only scoped-list call-argument handoff. No raw-rule
+replacement, posting authorization, coupled acceptance, or release is implied.
+
+### Scoped instruction API (A239)
+
+`standingInstructions(store, scopes, mode = 'reply')` returns typed
+`StandingInstruction[]`, with each entry tagged `Active` or `Guidance`.
+`scopes` contains the actual `{workflow, pr?}` inputs, not synthetic workflow
+copies. A selected PR must be a referenced, non-skipped native unit. Native
+reviewer-group matching reads that unit's groups; without a selected PR it must
+match every referenced, non-skipped unit. Legacy items retain their existing
+group metadata. Person, organization, direct-chat, intent and confidence checks
+share the policy's scope semantics; result-only instructions require the
+existing result lane. Unknown team/outside membership never becomes a match.
+
+Only on, part and guidance lines contribute. Waiting, reading, off, failed,
+unbound, unclear and setting-redirect lines contribute nothing. Active
+instructions must also fit an enabled grant's scope, so an omitted instruction
+scope cannot widen a line's audience. A combined worker gets only instructions
+that fit every supplied scope. With no scopes, only genuinely unrestricted
+guidance is returned. This function is read-only: it does not scan usage logs,
+compile, confirm or enable a line, and does not decide permission.
+
+`standingInstructionsBlock(instructions)` in the worker prompt module validates
+the typed list and renders "Your standing instructions that apply here", the
+Active/Guidance labels and task/constraints/output. It explicitly states that
+these are not permissions. Raw line text, grant ids and granting capabilities
+are not rendered.
+
+Instruction WHEN confidence applies even to PR-review workflows. Only an
+actual review grant receives the existing policy confidence exception during
+the separate Active grant intersection; guidance and other grant kinds do not.
+
+These exports are the API boundary, not worker activation. The existing
+builders are unchanged until the required New/Classic display source and
+reviewed provider are available, followed by SEND's prompt replacement and
+HOST's actual scoped-list arguments. HOST passes the real scopes and uses the
+same returned list at the owner-worker call; it must not reconstruct permission
+from this output. Reply, ask, promise, review, work/tracker, execute and
+suggestion calls all remain in that consumer follow-through; compile is
+excluded. No isolated API check is coupled/runtime acceptance.
+
+### Manual-completion consumer (A239)
+
+The existing native posting hook consumes `unit.review.completed` from the
+reviewed writer: a verified receipt at the current unit and basis heads, the
+original completed work job and matching result timestamp. It never treats
+`basis` alone as completion, invents a rule id, or changes manual approval.
+Queued comments retain the exact unit epoch/effect subset; the last-write check
+rechecks current completion, role, head, privacy, catalog and permission.
+
+Both the initial consumer and its last-write check use the existing configured
+read-only PR adapter when no probe was injected. They close only the adapter
+they created; injected adapters remain caller-owned. Missing adapters and
+failed reads still hold the comments with the existing visible reason. This
+closes the ordinary-tick path that previously required an injected probe, not
+a new writer, caller, producer or authorization path.
+
+### WDD remaining provider boundary
+
+The action-store facade is carried forward from the reviewed W1/W2/W4 engine
+source at `300e973b`, without replaying its automatic writers, Undo engine,
+page binding or HOST bridge. The only schema extension is optional
+`mode: 'added' | 'turned-off'` on a `stopped` amendment, as required by W5.
+Existing stopped rows remain readable; paired consumers must use this updated
+facade before the new provider is activated.
+
+`ways.stopFromAction(store, recordId, scope, expectHash)` accepts
+`scope: 'chat' | 'person' | 'never'`. The last choice means turning off the
+permitting line, for replies and reviews alike. It returns
+`{ok:true, mode:'added'|'turned-off', line:WayLine}`, or
+`{ok:true, reminder:code}` for HOST's existing reminder verbs, or an explicit
+`{ok:false, why}`. Unknown provenance, missing recipients, changed line text or
+grant, and an inactive line refuse rather than guess.
+
+The current text hash and exact permitting grant are rechecked inside the
+existing rules lock. A covering choice switches the original line off.
+Otherwise, a code-built draft-only line is inserted immediately below it at the
+current capability version, with no model compile and no widening permission.
+The original words are unchanged. The returned line id and text hash are the
+inputs for the existing delete/turn-on Undo, whose six-second UI window remains
+the caller's responsibility.
+
+A successful stop appends `stopped {lineId,mode}` and emits metadata only.
+Rules and action history are separate files: if recording fails after the
+narrowing write, the narrowing remains, but the call explicitly fails with
+"The line is stopped, but Delegate could not save its history. Check the line
+in Settings." No success or rollback that re-enables permission is fabricated.
+`wdd-stop-record-failed` records only busy/missing/write-failed.
+
+Code-built stop grants carry restriction-only `when.lane` (`reply`, `result`,
+or `review`), valid only on `draft`. AI compilation and instruction input
+reject this field, including the setup MCP's compiled-rule input.
+`StoredRuleSchema` validates code-owned state; ordinary compilation preserves
+lanes only from trusted stored draft grants, never from AI output. This also
+keeps canonical stops intact through legacy rule round-trips.
+The locked stop writer validates and attaches it through that trusted path.
+A narrowing copies the permitting grant's effective intent,
+confidence and reviewer-group conditions, preserves its chat when stopping
+for a person, and applies the chosen chat/person scope. It never copies
+send-only `when.results` onto a draft: that becomes the `result` lane.
+Policy, instruction/grant intersections and line conflict detection respect
+the restriction. Old grants without a lane retain their existing behavior.
+Result-only stop text explicitly says "Don't send review or investigation
+results by yourself", using the PM's final chat/person wording.
+Covering chat/person/never choices still turn the source line off.
+
+Review-lane narrowing omits `minConfidence`: review permissions ignore that
+stored threshold, so enforcing it on their mirrored drafts could let a
+low-confidence review escape the stop. Reply and result lanes retain their
+effective confidence condition. This needs no policy exception or new field,
+and review grants carrying that stored threshold no longer refuse narrowing.
+For a shared review reply, both the review permission and a review-lane draft
+restriction match reviewer groups from the exact native units named by the
+shared reply, not the legacy scalar group field. Missing unit groups do not
+match. This does not extend the review permission's confidence exception to
+draft restrictions.
+
+The W6 metadata catalog includes undo outcome/class, stop kind/scope/mode,
+missing provenance, held-record tries and the explicit stop-history failure.
+No owner text, chat names or rule text are telemetry fields.
+
+`render.actionNudge(records, pageUrl, now)` is W7's provider. It uses completed,
+posted receipts only, ignores taken-back subjects, deduplicates records, and
+links to `#done/by-delegate/<recordId>` or the batch's day. It shows Undo only
+for a real open undo window, counts distinct recorded recipients for reply
+batches, and uses the approved "Review in Delegate" words, never "tap".
+Reminder/review/change bundles use the generic things-done wording rather than
+claiming a chat reply. HOST still owns the actual batching/writers/retention;
+the New/Classic rows and routing are not activated by these exports.
+
+### Missing-capability stop provider (D-COST)
+
+`ReportSchema.blocker` accepts `kind: 'capability'` and optional `need`.
+The shared `blockerNeed` normalizer scrubs secrets, normalizes case and
+whitespace, limits the phrase to 80 characters and drops tool/id/path/URL/error
+shapes. The schema omits a rejected need rather than rejecting the report.
+The existing `BlockerKind` and `Blocker` declarations live in `core/types.ts`;
+only those SEND-owned declarations change there, not HOST's Verb or job types.
+
+Every report-worker playbook receives the same capability classification
+contract, including owner-supplied playbooks. A worker reports capability only
+when none of the listed tools can perform the step after searching by function.
+Missing tools and failed calls otherwise retain the tool classification.
+
+`planRetry` immediately returns `{stop, capability:true}` for a capability
+blocker, using "Can't do: no tool can <need>" or the explicit no-need fallback.
+It normalizes historical needs too. Other non-transient repeat failures compare
+normalized needs when both exist, otherwise the existing why comparison.
+Different routes, access's two-route requirement, transient delays, not-ready
+polls and the total retry/time limits remain unchanged.
+
+The owner-action receipt for a future typed `one-more` says nothing is sent.
+The current MCP enqueue function has no independent page-verb allowlist;
+it consumes typed Parsed actions. This does not add the HOST-owned Verb,
+chat parser, apply handler, sticky stop/spend record, or New's button.
+Those paired consumers remain required before the complete one-more journey.
+No new stop reason text is added to telemetry.
+
+### Frozen rule-send receipts and unit-native result checks (A76-b)
+
+Immediately before a rule send, the sender resolves the permitting line using
+the reviewed WDD `becauseOf` grant-id lookup in one fresh-read scope. It freezes
+`sent.rule = {id,text,hash,source,setting?}` with that line's identity and words.
+The current Settings-created review template records `setting: 'reviewRule'`.
+Owner sends do not receive this field. Unknown provenance keeps the existing
+explicit missing-provenance log and id fallback; it does not invent rule words.
+The receipt is persisted with the send before follow-up work, and never reads
+the current line to display a past send. The nudge quotes these frozen words,
+falling back to the old rule id, and uses the recorded sent text.
+
+Result review checks no longer read scalar `reviewBasis` or `reviewAgain`.
+They require the referenced, unskipped unit's verified `frameOf(...).completed`
+at the result's review head, matching the unit's successfully read current head,
+with no pending unit re-review. A multi-PR result without one review identity
+stays a draft. Missing facts, changed turn/chat, pending effects, remaining
+to-dos, questions, blockers, incomplete goals, membership, rules and quiet-hours
+guards remain in force.
+
+HOST still owns per-parent result send facts, scheduling and admission rechecks.
+New owns the Done rows. This SEND source neither activates those consumers nor
+claims their coupled journey, runtime acceptance or release authorization.

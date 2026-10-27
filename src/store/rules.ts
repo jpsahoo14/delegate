@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto'
+import { isDeepStrictEqual } from 'node:util'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Rule } from '../core/types.ts'
 import { compileRuleLine, confirmRuleLine, editRuleLine, lineGrants, lineNeedsCompile,
 	RuleCompileSchema, ruleTextHash, setRuleLineOff, widening, type RuleLine } from '../core/rule-lines.ts'
-import { CAPABILITY_VERSION, readBack, REVIEW_RULE_TEXT, RuleSchema, voteLimitNotice } from '../core/capabilities.ts'
+import { CAPABILITY_VERSION, readBack, REVIEW_RULE_TEXT, StoredRuleSchema, voteLimitNotice } from '../core/capabilities.ts'
 import { freshRead, readJson, readText, writeJson, writeText } from './fs.ts'
 import { BUSY, withRecordWriteNow, type Store } from './state.ts'
 
@@ -21,6 +22,7 @@ export type RulesFile = {
 	confirmedAt?: string
 	sourceHash?: string
 	notes?: RuleNote[]
+	notesMigrated?: 1
 	legacySource?: true
 	[key: string]: unknown
 }
@@ -47,7 +49,8 @@ export function writeRuleRecord(store: Store, change: (snapshot: RulesSnapshot) 
 		if (new Set(next.file.rules.map(rule => rule.id)).size !== next.file.rules.length ||
 			next.file.lines && new Set(next.file.lines.map(line => line.id)).size !== next.file.lines.length)
 			throw new Error('Rule lines and grants must have unique ids.')
-		const file = { ...next.file, sourceHash: ruleTextHash(next.text) }
+		const migratedNotes = notesOf(snapshot).length > 0 && !notesBlock.test(next.text)
+		const file = { ...next.file, ...(migratedNotes ? { notes: [], notesMigrated: 1 as const } : {}), sourceHash: ruleTextHash(next.text) }
 		if (next.text !== snapshot.text) writeText(join(store.root, 'rules.md'), next.text, store.machine)
 		if (JSON.stringify(file) !== JSON.stringify(snapshot.file)) writeJson(join(store.root, 'rules.compiled.json'), file, store.machine)
 		for (const line of file.lines ?? []) if (line.unbound && !snapshot.file.lines?.some(old => old.id === line.id && old.unbound))
@@ -83,7 +86,7 @@ export function ruleSourceLines(text: string): string[] {
 export function ruleLinesText(lines: RuleLine[], notes: RuleNote[] = []): string {
 	const owner = lines.filter(line => line.source !== 'learned').map(line => bullet(line.text)).join('\n')
 	const learned = lines.filter(line => line.source === 'learned').map(line => bullet(line.text)).join('\n')
-	const kept = notes.length ? `${NOTES_BEGIN}\n## Your notes from before\n\n${notes.map(note => note.text).join('\n\n')}\n${NOTES_END}` : ''
+	const kept = notes.filter(note => !lines.some(line => normalizedRuleText(line.text) === normalizedRuleText(note.text))).map(note => bullet(note.text)).join('\n')
 	return `${[owner, learned ? `${BEGIN}\n## Learned\n\n${learned}\n${END}` : '', kept].filter(Boolean).join('\n\n')}\n`
 }
 
@@ -103,7 +106,8 @@ function notesOf(snapshot: RulesSnapshot): RuleNote[] {
 		return texts.filter(text => text.trim()).map((text, part) => ({ id: `note-${ruleTextHash(text).slice(0, 24)}-${index}-${part}`, text }))
 	})
 }
-export const ruleNotes = (store: Store): RuleNote[] => notesOf(rulesSnapshot(store))
+// Compatibility for old readers: former notes are now main-list rule lines.
+export const ruleNotes = (_store: Store): RuleNote[] => []
 function linesOf(snapshot: RulesSnapshot): RuleLine[] {
 	const used = new Set<string>(), usedGrants = new Set<string>(), occurrences = new Map<string, number>()
 	const previous = new Map<string, RuleLine[]>(), legacyByText = new Map<string, Rule[]>()
@@ -132,7 +136,10 @@ function linesOf(snapshot: RulesSnapshot): RuleLine[] {
 			...(legacy.length && legacy.every(rule => rule.off) ? { off: true } : {}),
 		}
 		if (!legacy.length) return line
-		line = compileRuleLine(line, { grants: legacy }, legacy)
+		line = compileRuleLine(line, { grants: legacy.map(rule => {
+			const { lane, ...when } = rule.when
+			return { ...rule, when }
+		}) }, legacy)
 		const at = snapshot.file.confirmedAt ?? learned?.at
 		// Old global confirmation cannot turn newly supported organization sends on.
 		if (!unbound && at && legacy.every(legacyAllowed)) {
@@ -155,21 +162,28 @@ function linesOf(snapshot: RulesSnapshot): RuleLine[] {
 		}
 	}
 	for (const line of snapshot.file.lines ?? []) if ((line.unbound || line.carried) && !used.has(line.id)) lines.push(line)
+	for (const note of notesOf(snapshot)) {
+		const id = `line-${note.id}`
+		if (lines.some(line => line.id === id) || !notesBlock.test(snapshot.text) &&
+			lines.some(line => normalizedRuleText(line.text) === normalizedRuleText(note.text))) continue
+		lines.push({ id, text: note.text, source: 'owner', needsConfirmation: true })
+	}
 	return lines
 }
 export const ruleLines = (store: Store) => linesOf(rulesSnapshot(store))
 export const activeRuleGrants = (root: string): Rule[] => linesOf(rulesSnapshot({ root })).flatMap(lineGrants)
 
 function lineUpdate(snapshot: RulesSnapshot, lines: RuleLine[], text = snapshot.text, line?: RuleLine, notes = notesOf(snapshot)): RuleUpdate {
+	if (notes.length) text = ruleLinesText(lines)
 	const source = new Set(ruleSourceLines(text))
 	const kept = lines.map(line => line.carried && source.has(line.text) ? { ...line, carried: undefined } : line)
 	const legacySource = (snapshot.file.legacySource || !snapshot.file.lines && !!snapshot.file.confirmedAt) && text === snapshot.text
-	return { ok: true, text, file: { ...snapshot.file, lines: kept, notes, legacySource: legacySource ? true : undefined,
+	return { ok: true, text, file: { ...snapshot.file, lines: kept, notes: [], ...(notes.length ? { notesMigrated: 1 as const } : {}), legacySource: legacySource ? true : undefined,
 		rules: kept.flatMap(lineGrants) }, ...(line ? { line } : {}) }
 }
 export function rulesToCompile(store: Store): RuleLine[] {
 	const snapshot = rulesSnapshot(store), lines = linesOf(snapshot)
-	if (!snapshot.file.lines || snapshot.file.sourceHash !== ruleTextHash(snapshot.text)) {
+	if (!snapshot.file.lines || notesOf(snapshot).length || snapshot.file.sourceHash !== ruleTextHash(snapshot.text)) {
 		const result = writeRuleRecord(store, fresh => lineUpdate(fresh, linesOf(fresh)))
 		if (!result.ok) throw new Error(result.why)
 		return ruleLines(store).filter(lineNeedsCompile)
@@ -177,17 +191,30 @@ export function rulesToCompile(store: Store): RuleLine[] {
 	return lines.filter(lineNeedsCompile)
 }
 export function finishRuleCompile(store: Store, id: string, expectedTextHash: string, rawOutput: unknown): RuleWriteResult {
+	const output = RuleCompileSchema.safeParse(rawOutput)
+	if (!output.success) {
+		store.log({ event: 'rule-compile-refused', id, reason: 'invalid-output', issues: output.error.issues.map(issue => issue.code) })
+		const why = "Couldn't read this line into supported actions; your text is kept."
+		const saved = failRuleCompile(store, id, expectedTextHash, why)
+		return saved.ok ? { ok: false, why } : saved
+	}
 	return writeRuleRecord(store, snapshot => {
 		const lines = linesOf(snapshot), index = lines.findIndex(line => line.id === id)
 		if (index < 0 || ruleTextHash(lines[index].text) !== expectedTextHash) return { ok: false, why: RULE_CHANGED }
 		if (!lineNeedsCompile(lines[index])) return { ok: false, why: 'This line has already been read; its current meaning is kept.' }
-		const output = RuleCompileSchema.safeParse(rawOutput)
-		if (!output.success) {
-			store.log({ event: 'rule-compile-refused', id, reason: 'invalid-output', issues: output.error.issues.map(issue => issue.code) })
-			return { ok: false, why: "Couldn't read this line into supported actions; your text is kept." }
-		}
 		const line = compileRuleLine(lines[index], output.data, lines[index].compile?.grants)
 		lines[index] = line
+		return lineUpdate(snapshot, lines, snapshot.text, line)
+	})
+}
+export function failRuleCompile(store: Store, id: string, expectedTextHash: string, why: string): RuleWriteResult {
+	return writeRuleRecord(store, snapshot => {
+		const lines = linesOf(snapshot), index = lines.findIndex(line => line.id === id)
+		if (index < 0 || ruleTextHash(lines[index].text) !== expectedTextHash || !lineNeedsCompile(lines[index]))
+			return { ok: false, why: RULE_CHANGED }
+		const line = { ...lines[index], compileError: why }
+		lines[index] = line
+		store.log({ event: 'rule-compile-refused', id, reason: 'read-failed' })
 		return lineUpdate(snapshot, lines, snapshot.text, line)
 	})
 }
@@ -197,8 +224,34 @@ export function addRuleLine(store: Store, text: string): RuleWriteResult {
 	const line: RuleLine = { id: `line-${randomUUID()}`, text, source: 'owner' }
 	return writeRuleRecord(store, snapshot => {
 		const lines = [...linesOf(snapshot), line]
-		return lineUpdate(snapshot, lines, ruleLinesText(lines, notesOf(snapshot)), line)
+		return lineUpdate(snapshot, lines, ruleLinesText(lines), line)
 	})
+}
+export function stopRuleLine(store: Store, sourceId: string, grant: Rule, expectedTextHash: string,
+	narrowing?: { id: string; text: string; rule: Rule }): RuleWriteResult {
+	return writeRuleRecord(store, snapshot => {
+		const lines = linesOf(snapshot), index = lines.findIndex(line => line.id === sourceId), source = lines[index]
+		if (!source || !source.compile?.grants.some(current => isDeepStrictEqual(current, grant)))
+			return { ok: false, why: RULE_CHANGED }
+		if (!lineGrants(source).some(current => current.id === grant.id && !current.off))
+			return { ok: false, why: 'This line is no longer on. Check it in Settings.' }
+		if (!narrowing) {
+			const line = setRuleLineOff(source, true)
+			lines[index] = line
+			return lineUpdate(snapshot, lines, ruleLinesText(lines), line)
+		}
+		if (narrowing.rule.then !== 'draft') throw new Error('A stop line can only keep work for the owner.')
+		if (lines.some(line => line.id === narrowing.id))
+			return { ok: false, why: 'This stop line already exists. Check it in Settings.' }
+		const rule = StoredRuleSchema.parse(narrowing.rule), { lane, ...when } = rule.when
+		const line = compileRuleLine({ id: narrowing.id, text: narrowing.text, source: 'owner' }, {
+			grants: [{ ...rule, when }], instruction: { constraints: [narrowing.text], who: rule.who, when },
+		}, [rule])
+		const next = [...lines.slice(0, index + 1), line, ...lines.slice(index + 1)]
+		const update = lineUpdate(snapshot, next, ruleLinesText(next), line)
+		if (update.ok) update.file.deleted = snapshot.file.deleted?.filter(entry => entry.line.id !== line.id)
+		return update
+	}, { id: sourceId, textHash: expectedTextHash })
 }
 export function addSuggestedRuleLine(store: Store, text: string, metadata: {
 	learned: NonNullable<Rule['learned']>; style?: string; ruleId: string
@@ -216,36 +269,39 @@ export function addSuggestedRuleLine(store: Store, text: string, metadata: {
 			...(metadata.style ? { style: metadata.style } : {}), grantIds: [metadata.ruleId],
 		}
 		const next = [...lines, line]
-		return lineUpdate(snapshot, next, ruleLinesText(next, notesOf(snapshot)), line)
+		return lineUpdate(snapshot, next, ruleLinesText(next), line)
 	})
 }
-export type RuleLineChange = 'on' | 'off' | 'confirm' | 'delete' | 'restore' | { text: string }
+export type RuleLineChange = 'on' | 'off' | 'confirm' | 'read-again' | 'delete' | 'restore' | { text: string }
 export function changeRuleLine(store: Store, id: string, change: RuleLineChange, expectedTextHash: string): RuleWriteResult {
 	return writeRuleRecord(store, snapshot => {
 		const lines = linesOf(snapshot)
 		if (change === 'restore') {
 			const entry = snapshot.file.deleted?.find(entry => entry.line.id === id)
 			if (!entry || lines.some(line => line.id === id)) return { ok: false, why: RULE_CHANGED }
-			const next = [...lines, entry.line], update = lineUpdate(snapshot, next, ruleLinesText(next, notesOf(snapshot)), entry.line)
+			const next = [...lines, entry.line], update = lineUpdate(snapshot, next, ruleLinesText(next), entry.line)
 			if (update.ok) update.file.deleted = snapshot.file.deleted?.filter(entry => entry.line.id !== id)
 			return update
 		}
 		const index = lines.findIndex(line => line.id === id), was = lines[index]
 		if (!was) return { ok: false, why: RULE_CHANGED }
 		if (typeof change === 'object' && !change.text.trim()) return { ok: false, why: 'Write a line before saving it.' }
-		if (change === 'confirm' && (lineNeedsCompile(was) || !was.compile?.grants.length || was.compile.question || was.compile.setting))
+		if (change === 'confirm' && (was.compileError || lineNeedsCompile(was) || !was.compile?.grants.length || was.compile.question || was.compile.setting))
 			return { ok: false, why: 'Read this line into supported actions before turning it on.' }
 		if (change === 'delete') {
-			const next = lines.filter(line => line.id !== id), update = lineUpdate(snapshot, next, ruleLinesText(next, notesOf(snapshot)))
+			const next = lines.filter(line => line.id !== id), update = lineUpdate(snapshot, next, ruleLinesText(next))
 			if (update.ok) {
 				update.file.deleted = [...(snapshot.file.deleted ?? []).filter(entry => entry.line.id !== id), { line: was, at: new Date().toISOString() }]
 			}
 			return update
 		}
-		const line = typeof change === 'object' ? editRuleLine(was, change.text) : change === 'confirm' ? confirmRuleLine(was)
+		const line = change === 'read-again' ? { ...was, compile: undefined, compileError: undefined, catalogVersion: undefined,
+			confirmedAt: undefined, confirmedHash: undefined, confirmedCatalogVersion: undefined, needsConfirmation: true as const,
+			grantIds: [...new Set([...(was.grantIds ?? []), ...(was.compile?.grants ?? []).map(grant => grant.id)])] }
+			: typeof change === 'object' ? editRuleLine(was, change.text) : change === 'confirm' ? confirmRuleLine(was)
 			: setRuleLineOff(was, change === 'off')
 		lines[index] = line
-		const update = lineUpdate(snapshot, lines, ruleLinesText(lines, notesOf(snapshot)), line)
+		const update = lineUpdate(snapshot, lines, ruleLinesText(lines), line)
 		if (update.ok && (typeof change === 'object' || change === 'confirm'))
 			update.clearHeld = [...(was.compile?.grants ?? []), ...(line.compile?.grants ?? [])].map(grant => grant.id)
 		return update
@@ -256,16 +312,16 @@ export function changeRuleNote(store: Store, id: string, makeLine: boolean, expe
 	return writeRuleRecord(store, snapshot => {
 		const notes = notesOf(snapshot), note = notes.find(note => note.id === id)
 		if (!note || ruleTextHash(note.text) !== expectedTextHash) return { ok: false, why: RULE_CHANGED }
-		const kept = notes.filter(note => note.id !== id), lines = linesOf(snapshot)
-		const line: RuleLine | undefined = makeLine ? { id: `line-${randomUUID()}`, text: note.text, source: 'owner' } : undefined
-		if (line) lines.push(line)
-		return lineUpdate(snapshot, lines, ruleLinesText(lines, kept), line, kept)
+		const lines = linesOf(snapshot), line = lines.find(line => line.id === `line-${id}`)
+		if (!line) return { ok: false, why: RULE_CHANGED }
+		const next = makeLine ? lines : lines.filter(other => other.id !== line.id)
+		return lineUpdate(snapshot, next, ruleLinesText(next), makeLine ? line : undefined)
 	})
 }
 
 // This entry is for trusted habit acceptance/style edits, not model compile output.
 export function writeHabitRules(store: Store, rules: Rule[]): RuleWriteResult {
-	const learned = rules.filter(rule => rule.learned).map(rule => ({ ...rule, ...RuleSchema.parse(rule) }))
+	const learned = rules.filter(rule => rule.learned).map(rule => ({ ...rule, ...StoredRuleSchema.parse(rule) }))
 	return writeRuleRecord(store, snapshot => {
 		if (snapshot.file.sourceHash && snapshot.file.sourceHash !== ruleTextHash(snapshot.text))
 			return { ok: false, why: RULE_CHANGED }
@@ -275,7 +331,7 @@ export function writeHabitRules(store: Store, rules: Rule[]): RuleWriteResult {
 		const previous = snapshot.file.rules.filter(rule => rule.learned)
 		const changed = new Set([...previous, ...learned].filter(rule =>
 			JSON.stringify(previous.find(old => old.id === rule.id)) !== JSON.stringify(learned.find(next => next.id === rule.id))).map(rule => rule.id))
-		let lines = snapshot.file.lines ?? (snapshot.file.confirmedAt ? linesOf(snapshot) : undefined), text: string
+		let lines = snapshot.file.lines || snapshot.file.confirmedAt ? linesOf(snapshot) : undefined, text: string
 		if (lines) {
 			const oldLearned = lines.filter(line => line.source === 'learned')
 			if (learned.some(rule => oldLearned.some(line => line.learned?.key === rule.learned!.key &&
@@ -305,7 +361,7 @@ export function writeHabitRules(store: Store, rules: Rule[]): RuleWriteResult {
 			const pending = oldLearned.filter(line => !line.compile &&
 				!accepted.some(next => next.id === line.id))
 			lines = [...accepted, ...pending, ...lines.filter(line => line.source !== 'learned')]
-			text = ruleLinesText(lines, notesOf(snapshot))
+			text = ruleLinesText(lines)
 			lines = lines.map(line => ({ ...line, carried: undefined }))
 		} else {
 			const owner = snapshot.text.replace(learnedBlock, '\n').trimEnd()
@@ -324,7 +380,7 @@ function saveRules(snapshot: RulesSnapshot, text: string, rules: Rule[]): { file
 	const grants: Rule[] = rules.map(rule => {
 		const kept = settings.find(old => old.text === rule.text) ??
 			(rule.source === 'settings' && rule.text === REVIEW_RULE_TEXT && rule.textHash === ruleTextHash(rule.text) && present(rule.text) ? rule : undefined)
-		return { ...rule, ...RuleSchema.parse(rule), source: kept?.source, textHash: kept?.textHash }
+		return { ...rule, ...StoredRuleSchema.parse(rule), source: kept?.source, textHash: kept?.textHash }
 	})
 	for (const kept of settings) if (!grants.some(rule => rule.id === kept.id || rule.text === kept.text)) grants.push(kept)
 	const at = new Date().toISOString()
@@ -344,7 +400,7 @@ function saveRules(snapshot: RulesSnapshot, text: string, rules: Rule[]): { file
 		return { ...next, confirmedAt: at, confirmedHash: ruleTextHash(next.text), confirmedCatalogVersion: next.catalogVersion }
 	})
 	const active = lines.flatMap(lineGrants)
-	const source = notes.length || lines.some(line => !sourceLines.has(line.text)) ? ruleLinesText(lines, notes) : text.endsWith('\n') ? text : text + '\n'
+	const source = notes.length || lines.some(line => !sourceLines.has(line.text)) ? ruleLinesText(lines) : text.endsWith('\n') ? text : text + '\n'
 	return { file: { ...snapshot.file, rules: active, confirmedAt: at, lines, notes, legacySource: undefined }, grants: active, text: source }
 }
 export function writeRules(store: Store, text: string, rules: Rule[]): string {
@@ -367,7 +423,7 @@ export function toggleReviewRules(store: Store, on: boolean) {
 				id: line.id, text: line.text, who: { group: 'org' }, when: { intent: 'pr_review' },
 				then: 'review', review: { comments: 'post', reply: 'send' },
 			}] })]
-			text = ruleLinesText(lines, notesOf(snapshot))
+			text = ruleLinesText(lines)
 		}
 		lines = lines.map(line => line.compile?.grants.some(grant => grant.then === 'review') ? setRuleLineOff(line, !on) : line)
 		const grants = lines.flatMap(lineGrants)

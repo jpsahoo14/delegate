@@ -14,10 +14,15 @@ const scopedPeople = (r: Rule) => `${people(r)}${conditions(r) ? ` ${conditions(
 const GRANT_RANK: Record<Rule['then'], number> = { draft: 4, shortcut: 4, ignore: 3, review: 2, ack: 1, send: 0 }
 export const compareGrants = (a: Rule, b: Rule) => GRANT_RANK[b.then] - GRANT_RANK[a.then] ||
 	Number(!!b.who.accounts?.length) - Number(!!a.who.accounts?.length)
+export const ruleInLane = (r: Rule, lane: NonNullable<Rule['when']['lane']>) =>
+	(!r.when.lane || r.when.lane === lane) &&
+	(lane === 'result' ? r.then !== 'review' && (r.then !== 'send' || !!r.when.results) :
+		lane === 'review' ? r.then !== 'send' && r.then !== 'ack' : r.then !== 'review') &&
+	(r.then !== 'review' || r.review?.comments === 'post' && r.review.reply === 'send')
 export const CAPABILITIES = {
 	send: { scope: { ...scope, results: true }, params: empty, readBack: (r: Rule) => `Send replies${r.when.results ? ', including review and investigation results,' : ''} to ${scopedPeople(r)} without asking you.` },
 	ack: { scope, params: empty, readBack: (r: Rule) => `Acknowledge requests from ${scopedPeople(r)} without asking you.` },
-	draft: { scope, params: empty, readBack: (r: Rule) => `Keep replies to ${scopedPeople(r)} as drafts for you.` },
+	draft: { scope, params: empty, readBack: (r: Rule) => `Keep ${r.when.lane === 'result' ? 'review or investigation results' : r.when.lane === 'review' ? 'PR reviews' : 'replies'} to ${scopedPeople(r)} as drafts for you.` },
 	ignore: { scope, params: empty, readBack: (r: Rule) => `Ignore requests from ${scopedPeople(r)} without asking you.` },
 	shortcut: { scope, params: z.object({ goal: z.string() }).strict(), readBack: (r: Rule) => `Propose this shortcut for ${scopedPeople(r)}: ${r.shortcut?.goal ?? 'not specified'}. It waits for your OK.` },
 	review: {
@@ -33,7 +38,7 @@ export const RuleSchema = z.object({
 	id: z.string(), text: z.string(),
 	who: z.object({ accounts: z.array(z.object({ id: z.string().min(1), name: z.string() })).optional(), group: z.enum(['team', 'org', 'outside']).optional() })
 		.refine(w => !!w.accounts?.length || !!w.group, 'A rule must name people by account ID, or a group.'),
-	when: z.object({ intent: z.string().optional(), chat: z.string().optional(), minConfidence: z.enum(['high', 'medium']).optional(), reviewerGroup: z.string().trim().min(1).optional(), results: z.literal(true).optional() }),
+	when: z.object({ intent: z.string().optional(), chat: z.string().optional(), minConfidence: z.enum(['high', 'medium']).optional(), reviewerGroup: z.string().trim().min(1).optional(), results: z.literal(true).optional() }).strict(),
 	then: z.enum(kinds), off: z.literal(true).optional(),
 	review: CAPABILITIES.review.params.optional(), shortcut: CAPABILITIES.shortcut.params.optional(),
 }).superRefine((rule, ctx) => {
@@ -45,6 +50,12 @@ export const RuleSchema = z.object({
 		ctx.addIssue({ code: 'custom', message: 'Review permissions belong only to a review rule.' })
 	if (rule.when.results && rule.then !== 'send')
 		ctx.addIssue({ code: 'custom', message: 'Results scope belongs only to a send rule.' })
+})
+export const StoredRuleSchema = RuleSchema.safeExtend({
+	when: RuleSchema.shape.when.extend({ lane: z.enum(['reply', 'result', 'review']).optional() }),
+}).superRefine((rule, ctx) => {
+	if (rule.when.lane && rule.then !== 'draft')
+		ctx.addIssue({ code: 'custom', message: 'A lane restriction belongs only to a draft rule.' })
 })
 export const readBack = (rule: Rule) => {
 	const capability = CAPABILITIES[rule.then]

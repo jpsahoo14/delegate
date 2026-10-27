@@ -127,6 +127,8 @@ async function tickInPhases(store: Store, deps: Parameters<typeof tick>[1] = {})
 		return value
 	}
 	try {
+		const control = freshRead(() => store.control())
+		if (control.watching === undefined) store.saveControl({ ...control, watching: { on: true, since: new Date().toISOString(), machine: store.machine } })
 		scanCodeFolders(Date.now(), true)
 		for (const wf of store.workflows()) {
 			if (wf.todos?.length) {

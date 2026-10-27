@@ -10,7 +10,7 @@ import { documentKeys, messageDocuments } from '../core/intake.ts'
 import { emptyThreadCache, type ThreadCache } from '../adapters/channels.ts'
 import type { Schedule } from '../core/schedule.ts'
 import type { Habit } from '../runner/habits.ts'
-import { appendLine, assertTestSafe, fsTime, listJson, moveTo, readJson, records, removeFile, strays, writeJson } from './fs.ts'
+import { appendLine, assertTestSafe, fsTime, freshRead, listJson, moveTo, readJson, records, removeFile, strays, writeJson } from './fs.ts'
 import { alive, aliveAs } from '../os/process.ts'
 import { LOCAL_DIR, VERSION } from '../paths.ts'
 import { lessonOf, type Lesson } from './feedback.ts'
@@ -77,7 +77,8 @@ export type PageSubmission = {
 	who?: string
 	chat?: string
 }
-export type Control = { paused: boolean; stopped: boolean; autoSend?: boolean; at?: string }
+export type Control = { paused: boolean; stopped: boolean; autoSend?: boolean; at?: string; watching?: { on: boolean; since: string; machine: string } }
+type Kick = { at?: string; checkAt?: string; missedAt?: string }
 type Notify = { lastNudgeAt?: string; previews?: Record<string, Preview | Preview[]>; snapshot?: string; summaryDay?: string; sweepDay?: string }
 
 export type Missed = { link: string; note?: string; at: string }
@@ -381,9 +382,23 @@ export class Store {
 		if (experienceOf(was) !== experienceOf(next)) this.log({ event: 'experience', from: experienceOf(was), to: experienceOf(next) })
 		return next
 	}
-	// "Check now" from any machine: one file per machine, so two machines never write the same file.
-	saveKick() { this.w(this.p('state', 'kick', `${this.machine}.json`), { at: new Date().toISOString() }) }
+	// Work wakes and explicit checks share a per-machine file, but only explicit checks carry request timestamps.
+	saveKick(check?: 'all' | 'missed') {
+		const path = this.p('state', 'kick', `${this.machine}.json`)
+		const result = withRecordWriteNow(path, () => freshRead(() => {
+			const previous = readJson<Kick>(path, {}), at = new Date().toISOString()
+			this.w(path, { ...previous, at, ...(check === 'all' ? { checkAt: at } : {}), ...(check === 'missed' ? { missedAt: at } : {}) })
+		}))
+		if (result === BUSY) throw new Error('Another runner wake-up is being saved. Try again.')
+	}
 	kickedAt(): string { const dir = this.p('state', 'kick'); return existsSync(dir) ? readdirSync(dir).filter(f => f.endsWith('.json')).map(f => readJson<{ at?: string }>(join(dir, f), {}).at ?? '').sort().at(-1) ?? '' : '' }
+	checkKickedAt(kind: 'all' | 'missed'): string {
+		const dir = this.p('state', 'kick')
+		return existsSync(dir) ? readdirSync(dir).filter(f => f.endsWith('.json')).flatMap(f => {
+			const kick = readJson<Kick>(join(dir, f), {})
+			return kind === 'all' ? [kick.checkAt ?? ''] : [kick.checkAt ?? '', kick.missedAt ?? '']
+		}).sort().at(-1) ?? '' : ''
+	}
 	addMissed(m: Missed) { this.w(this.p('state', 'missed', `${ulid()}-${this.machine}.json`), m) }
 	doneMissed(file: string) { moveTo(file, this.p('state', 'done', 'missed')) }
 	turns(): Record<string, Turn> { return readJson(this.p('state', 'turns.json'), {}) }

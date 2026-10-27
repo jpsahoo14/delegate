@@ -158,7 +158,12 @@ export const snapshotSchema = z.object({
 	// read-back); limits from limitsCard(cfg); needsHim is the Settings nav count, toCheck SEND's linesToCheck. Absent while the engine says "not yet".
 	ways: z.object({
 		lines: z.array(wayLine), open: waySuggestion.optional(),
-		turnedDown: z.array(z.object({ suggestion: waySuggestion, at: text, how: z.enum(['not-now', 'never']) })),
+		// I-b (PE 16:43:48Z, SEND WayTurnedDown): habit rows UNION a dismissed suggestion scope, shown by its label; its id is a hash of
+		// the scope key, which stays on the server (Reconsider's binding holds it).
+		turnedDown: z.array(z.union([
+			z.object({ kind: z.literal('habit').optional(), suggestion: waySuggestion, at: text, how: z.enum(['not-now', 'never']) }),
+			z.object({ kind: z.literal('suggestion'), id: text, label: text, at: text }),
+		])),
 		limits: z.array(z.object({ id: text, page: text })), needsHim: z.number(), toCheck: z.number(), suggestionsReady: z.boolean().optional(), failed: z.boolean().optional(),
 		// PE S3 (b): his old prose paragraphs, verbatim, as notes (no grants); review marks the PR-review paragraph's note.
 		notes: z.array(z.object({ id: text, text, textHash: text, review: z.literal(true).optional() })).optional(),
@@ -175,6 +180,8 @@ export const snapshotSchema = z.object({
 			code: text, who: text, chat: text, goal: text, status: text,
 			last: z.object({ at: text, what: text }).optional(), next: optional, checkAt: optional,
 			every: z.number().optional(), endsAt: optional, rev: text, actionIds: strings,
+			// COUNT58: open in a terminal since (Designer CC2.6); Take it back is in actionIds.
+			terminal: optional,
 		})),
 		watchActionIds: z.record(text, strings),
 		workActionIds: z.record(text, strings).optional(),

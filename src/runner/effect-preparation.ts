@@ -33,7 +33,7 @@ export function suggestionSelector(store: Store, cfg: Config, items: Workflow[],
 	const scopes = items.flatMap(item => {
 		if (item.prs === undefined) return [suggestionScope(item, prTarget(store, item))]
 		const units = item.prs.filter(unit => unit.ref && !unit.skip)
-		return units.length ? units.map(unit => suggestionScope(item, unit.id)) : [suggestionScope(item)]
+		return units.map(unit => suggestionScope(item, unit.id))
 	})
 	const selected = [...existing], accepted = existing.filter(effect => effect.origin === 'suggested')
 	return effect => {

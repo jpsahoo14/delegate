@@ -42,7 +42,7 @@ export type Confidence = 'high' | 'medium' | 'low'
 export type Rule = {
 	id: string; text: string
 	who: { accounts?: Person[]; group?: 'team' | 'org' | 'outside' }
-	when: { intent?: string; chat?: string | 'direct'; minConfidence?: 'high' | 'medium'; reviewerGroup?: string; results?: true }
+	when: { intent?: string; chat?: string | 'direct'; minConfidence?: 'high' | 'medium'; reviewerGroup?: string; results?: true; lane?: 'reply' | 'result' | 'review' }
 	then: Capability
 	off?: true
 	review?: { comments: 'post'; reply: 'send' }
@@ -302,7 +302,7 @@ export type Workflow = {
 	reviewAgain?: { pr: number; head: string; at: string }
 	returnedFrom?: { machine: string; at: string; report: boolean }
 	// holding: the last send was a holding reply; the full answer is still owed and the item stays open (#41).
-	sent?: { msgId: string; at: string; byRule?: string; undoUntil?: string; text?: string; sendText?: string; askMsgId?: string; holding?: true; checks?: string[] }
+	sent?: { msgId: string; at: string; byRule?: string; rule?: { id: string; text: string; hash: string; source: 'owner' | 'learned' | 'settings'; setting?: import('./setting-keys.ts').SettingKey }; undoUntil?: string; text?: string; sendText?: string; askMsgId?: string; holding?: true; checks?: string[] }
 	sendAt?: string
 	acked?: boolean
 	decision?: { action: string; ruleId?: string; reason: string; confidence: Confidence; blockedBy?: import('./limits.ts').LimitId }
@@ -440,14 +440,15 @@ export type Blocker = { kind: BlockerKind; why: string; tried: string[]; need?: 
 // The tries so far for one ask: when the next is due, and what each one met.
 export type Retry = { at: string; n: number; total?: number; firstAt: string; kindAt?: string; last: Blocker; tried: string[] }
 
-export type Verb = 'watch' | 'unwatch' | 'mine' | 'ok' | 'edit' | 'send' | 'later' | 'answer' | 'skip' | 'more' | 'undo' | 'continue' | 'pick' | 'ask' | 'wrong' | 'incomplete' | 'unneeded' | 'every' | 'extend' | 'close' | 'wait' | 'never' | 'pause' | 'resume' | 'stop' | 'auto-on' | 'auto-off' | 'left-ask-again' | 'left-draft-invite' | 'dont-suggest' | 'pr-retry' | 'pr-skip' | 'one-more'
+export type Verb = 'watch' | 'unwatch' | 'mine' | 'ok' | 'edit' | 'send' | 'later' | 'answer' | 'skip' | 'more' | 'undo' | 'undo-action' | 'continue' | 'pick' | 'ask' | 'wrong' | 'incomplete' | 'unneeded' | 'every' | 'extend' | 'close' | 'wait' | 'never' | 'pause' | 'resume' | 'stop' | 'auto-on' | 'auto-off' | 'left-ask-again' | 'left-draft-invite' | 'dont-suggest' | 'pr-retry' | 'pr-skip' | 'pr-approve' | 'watch-off' | 'watch-on' | 'one-more'
 export const CONTROL_VERBS = ['pause', 'resume', 'stop', 'auto-on', 'auto-off'] as const
+export const PAGE_CONTROL_VERBS = ['watch-off', 'watch-on'] as const
 
 // seenAt: when the owner gave the command. An ok older than the item's last change approves nothing (review 01-04 P0).
 // nums: 1-based option numbers for pick, or the only changes an ok approves.
 // again: "ok A1 again", the owner checked that a change which may have been made was not, so it is made once more.
 // todos: on a close from the page, the open to-dos the owner saw, so Mark done marks only those (review N2 P2-1).
-export type PageApproval = { kind: 'send-reply' | 'make-changes' | 'pick' | 'undo-send' | 'feedback-send' | 'mark-todos' | 'approve' | 'manage'; expect: string; sentMessageId?: string; todoIds?: string[]; replyDigest?: string; reviewed?: string }
+export type PageApproval = { kind: 'send-reply' | 'make-changes' | 'pick' | 'undo-send' | 'undo-action' | 'feedback-send' | 'mark-todos' | 'approve' | 'manage'; expect: string; sentMessageId?: string; todoIds?: string[]; replyDigest?: string; reviewed?: string }
 export type Answer = { id: Id; code: Code; verb: Verb; text?: string; nums?: number[]; except?: number[]; include?: string[]; vote?: string; key?: string; label?: string; again?: true; sendReview?: string; actionClaimReview?: string; surface: 'chat' | 'self' | 'panel'; at: string; seenAt?: string; todos?: string[]; page?: PageApproval; pageSubmissionId?: string }
 
 export type WatchedChat = { id: string; name: string; test?: boolean; group?: boolean; since?: string }

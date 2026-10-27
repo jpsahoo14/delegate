@@ -5,11 +5,19 @@ import { legacyEffectOrigins } from './normalize-report.ts'
 import { approvedReplyText, currentDraft } from './policy.ts'
 import { NAME } from '../brand.ts'
 import { openLeft } from '../runner/left.ts'
+import type { FoldedAction } from '../store/actions.ts'
 
 const canonical = (value: unknown): unknown => Array.isArray(value) ? value.map(canonical) :
 	value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical((value as Record<string, unknown>)[key])])) : value
 export const pageDigest = (value: unknown) => createHash('sha256').update(JSON.stringify(canonical(value))).digest('hex')
 export const PAGE_REPLY_CHANGED = 'The reply changed since you approved it. It was not sent. Review the current reply.'
+export const actionApprovalRev = (action: FoldedAction): string => pageDigest(action)
+export const ACTION_UNDO_TOO_LATE = 'Too late to take it back'
+export function actionUndoRefusal(action: FoldedAction, rev: string, now = Date.now()): string | undefined {
+	if (!action.undo || !(now < Date.parse(action.undo.until)) || action.amendments.some(change => change.kind === 'undone')) return ACTION_UNDO_TOO_LATE
+	if (rev !== actionApprovalRev(action)) return 'Changed since you looked. Nothing was deleted. Open the current action first.'
+	return undefined
+}
 
 export const pageChangeId = (effect: Effect) => pageDigest([effect.call ?? effect.payload, effect.system, effect.action, effect.target, effect.head])
 export const pageOptionId = (option: NonNullable<Workflow['choices']>['options'][number]) => pageDigest(option)
@@ -83,7 +91,14 @@ export function effectConsent(workflow: Workflow, answer: Answer): EffectConsent
 
 export function pageAnswerRefusal(answer: Answer, workflow?: Workflow, automation?: Automation, proposal?: Proposal, cfg?: Config, managementRev?: string, job?: Job): string | undefined {
 	const guard = answer.page
-	if (!guard) return undefined
+	if (!guard) return answer.verb === 'undo-action' ? 'Invalid action approval. Nothing was deleted. Open the current action first.' : undefined
+	if (answer.verb === 'undo-action' || guard.kind === 'undo-action') {
+		if (answer.verb !== 'undo-action' || guard.kind !== 'undo-action' ||
+			!/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(answer.text ?? '') || !/^[a-f0-9]{64}$/.test(guard.expect))
+			return 'Invalid action approval. Nothing was deleted. Open the current action first.'
+		// The runner checks the exact folded record again immediately before deletion.
+		return undefined
+	}
 	if (guard.kind === 'manage') return managementRev === guard.expect ? undefined : 'Changed since you looked. Nothing was sent or changed. Open the new version first.'
 	if (guard.kind === 'send-reply' && workflow?.state === 'done') return 'Already sent. Nothing else was sent. Open the current item before posting a correction.'
 	if (guard.kind === 'send-reply' && (!workflow || !currentDraft(workflow, job)?.text)) return 'The latest turn proposes no reply. Nothing was sent. Open the current item.'

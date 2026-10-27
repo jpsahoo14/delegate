@@ -59,6 +59,12 @@ type EventFields = {
 	'wys-include': WysFields
 	'wys-exclude': WysFields
 	'wys-dismiss': WysFields
+	'wdd-amendment-missing': { ref: string; kind: string }
+	'wdd-because-missing': Record<never, never>
+	'wdd-undo': { outcome: 'undone' | 'refused' | 'failed'; class?: 'forbidden' | 'replied-to' | 'edited' | 'other' | 'too-late' }
+	'wdd-stop': { kind: 'reply' | 'ack' | 'review' | 'reminder' | 'change'; scope: 'chat' | 'person' | 'never'; mode: 'added' | 'turned-off' }
+	'wdd-record-held': { tries: number }
+	'wdd-stop-record-failed': { reason: 'busy' | 'missing' | 'write-failed' }
 	'members-shape': { memberKeys: string[]; roles: { array: number; undefined: number; other: number }; roleValues: string[]; tenantIdPresent: number }
 	'forwarded-message-shape': { contentStatus: 'json' | 'invalid-json' | 'value'; shape: { path: string; kind: string }[]; truncated: boolean }
 }
@@ -82,6 +88,12 @@ const metadataEvents = {
 	'wys-include': { privacy: 'metadata', fields: ['code', 'effectKey', 'origin'] },
 	'wys-exclude': { privacy: 'metadata', fields: ['code', 'effectKey', 'origin'] },
 	'wys-dismiss': { privacy: 'metadata', fields: ['code', 'effectKey', 'origin'] },
+	'wdd-amendment-missing': { privacy: 'metadata', fields: ['ref', 'kind'] },
+	'wdd-because-missing': { privacy: 'metadata', fields: [] },
+	'wdd-undo': { privacy: 'metadata', fields: ['outcome', 'class'] },
+	'wdd-stop': { privacy: 'metadata', fields: ['kind', 'scope', 'mode'] },
+	'wdd-record-held': { privacy: 'metadata', fields: ['tries'] },
+	'wdd-stop-record-failed': { privacy: 'metadata', fields: ['reason'] },
 	'members-shape': { privacy: 'metadata', fields: ['memberKeys', 'roles', 'roleValues', 'tenantIdPresent'] },
 	'forwarded-message-shape': { privacy: 'metadata', fields: ['contentStatus', 'shape', 'truncated'] },
 } as const satisfies { [K in keyof EventFields]: { privacy: 'metadata'; fields: readonly (keyof EventFields[K])[] } }

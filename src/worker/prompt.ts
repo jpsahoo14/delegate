@@ -12,6 +12,7 @@ import { scrub } from '../core/secrets.ts'
 import type { Rule } from '../core/types.ts'
 import { stylesFor } from '../runner/habits.ts'
 import { scopeHasTool, suggestionScope, type SuggestionScope } from '../core/suggestion-scope.ts'
+import { StandingInstructionSchema, type StandingInstruction } from '../core/rule-lines.ts'
 
 const compiledRules = (root: string): Rule[] => { try { return (JSON.parse(readFileSync(join(root, 'rules.compiled.json'), 'utf8')) as { rules?: Rule[] }).rules ?? [] } catch { return [] } }
 
@@ -21,7 +22,17 @@ import { SKILL_DIR } from '../paths.ts'
 // The same shape as HOST's Job.run.tools / dispatch offered.
 export type RunTools = { offered: number; scoped: boolean }
 const scopedToolsNote = 'Your tools here are scoped to this ask; if a step needs another kind of tool, report blocker kind `tool` with the need.'
-export type WorkContext = { home?: Workflow; works?: Workflow[]; parts?: Workflow[]; job?: Job; scopes?: { workflow: Workflow; pr?: number }[]; tools?: RunTools }
+export type WorkContext = { home?: Workflow; works?: Workflow[]; parts?: Workflow[]; job?: Job; scopes?: { workflow: Workflow; pr?: number }[]; tools?: RunTools; instructions?: readonly StandingInstruction[] }
+export function standingInstructionsBlock(instructions: readonly StandingInstruction[]): string[] {
+	return [
+		'', 'Your standing instructions that apply here:',
+		'These describe what to do, not permission to send, review, vote or make changes. The gates still decide permission.',
+		...(instructions.length ? instructions.map(value => {
+			const { state, instruction } = StandingInstructionSchema.parse(value)
+			return `[${state}] ${JSON.stringify({ task: instruction.task, constraints: instruction.constraints, output: instruction.output })}`
+		}) : ['None apply here.']),
+	]
+}
 export const replyFacts = (job: Fact[] = [], latest: Fact[] = []): Fact[] =>
 	[...new Map([...job, ...latest].map(f => [f.label, f])).values()].slice(0, 12)
 function inlineFile(root: string, path: string): string {
@@ -40,7 +51,6 @@ function ownerFiles(root: string, cfg: Config): string[] {
 	return [
 		'', 'Owner files (included below; no file read needed):',
 		`Profile:\n${inlineFile(root, 'profile.md')}`,
-		`Rules:\n${inlineFile(root, 'rules.md')}`,
 		`Knowledge index:\n${inlineFile(root, 'knowledge/index.md')}`,
 		...(cfg.cards?.team ? [`Team knowledge index: ${existsSync(join(cfg.cards.team, 'index.md')) ? join(cfg.cards.team, 'index.md') : 'none'}`] : []),
 		knowledgeLine(root, cfg),
@@ -57,6 +67,7 @@ export function buildPrompt(wf: Workflow, thread: Msg[], cfg: Config, root: stri
 		'', 'Gates:', gateBlock(wf.kind),
 		'', contract.trim(),
 		...ownerFiles(root, cfg),
+		...standingInstructionsBlock(ctx.instructions ?? []),
 		...(owners.length ? ['', 'Sessions the owner keeps for kinds of asks. If this ask is one of them, report a job with that owner id:', ...owners.map(o => `- ${o.id}: ${o.what}`)] : []),
 		'', 'Intents (set exactly one):', ...intents(root).map(i => `- ${i.id}: ${i.when}`),
 		'', `Chat: ${wf.chat.name}. Asker: ${[wf.asker, ...(wf.askers ?? [])].filter(Boolean).map(p => p!.name).join(', ') || 'unknown'}.${wf.chat.guests ? ' This chat has guests from outside the organization.' : ''}`,
@@ -115,7 +126,7 @@ export function buildPrompt(wf: Workflow, thread: Msg[], cfg: Config, root: stri
 }
 
 // The owner asks Delegate about an item before deciding. It runs in the item's own session, so it already knows the work (design-spec S12).
-export function buildAskPrompt(wf: Workflow, thread: Msg[], cfg: Config, root: string, o: { tools?: RunTools } = {}): string {
+export function buildAskPrompt(wf: Workflow, thread: Msg[], cfg: Config, root: string, o: { tools?: RunTools; instructions?: readonly StandingInstruction[] } = {}): string {
 	const open = wf.notes?.find(n => n.a === undefined)
 	const earlier = (wf.notes ?? []).filter(n => n.a !== undefined).slice(-4).flatMap(n => [`Owner: ${n.q}`, `You: ${n.a}`])
 	return scrub([
@@ -123,6 +134,7 @@ export function buildAskPrompt(wf: Workflow, thread: Msg[], cfg: Config, root: s
 		'', 'Gates:', gateBlock('ask'),
 		'', playbook(root, 'ask').trim(),
 		...ownerFiles(root, cfg),
+		...standingInstructionsBlock(o.instructions ?? []),
 		'', `Chat: ${wf.chat.name}. Asker: ${wf.asker?.name ?? 'unknown'}.`,
 		'Thread, oldest first:', ...thread.slice(-20).map(m => `- ${m.byOwner ? `${cfg.owner.name} (owner)` : m.from.name}: ${m.text}`),
 		'', `Current draft reply: ${wf.draft?.text ? `"${wf.draft.text}"` : 'none'}`,
@@ -136,11 +148,12 @@ export function buildAskPrompt(wf: Workflow, thread: Msg[], cfg: Config, root: s
 
 // The owner's own words just went out on an item Delegate can change: what do they promise that a listed change can make now (Slice 3)?
 // It runs in the item's own session, so it already knows the work, such as the commit a review read.
-export function buildPromisePrompt(wf: Workflow, thread: Msg[], cfg: Config, root: string, pr?: number): string {
+export function buildPromisePrompt(wf: Workflow, thread: Msg[], cfg: Config, root: string, pr?: number, o: { instructions?: readonly StandingInstruction[] } = {}): string {
 	return scrub([
 		`You are helping ${cfg.owner.name} (the owner) keep what they just told ${wf.asker?.name ?? 'someone'} on item ${wf.code}. Workflow ${wf.id}, kind "promise".`,
 		'', 'Gates:', gateBlock('promise'),
 		'', playbook(root, 'promise').trim(),
+		...standingInstructionsBlock(o.instructions ?? []),
 		'', `Chat: ${wf.chat.name}. Asker: ${wf.asker?.name ?? 'unknown'}.`,
 		'Thread, oldest first:', ...thread.slice(-20).map(m => `- ${m.byOwner ? `${cfg.owner.name} (owner)` : m.from.name}: ${m.text}`),
 		'', `The owner's own words, already sent:`, ...(wf.promise?.text ?? '').split('\n').map(t => `> ${t}`),
@@ -151,13 +164,14 @@ export function buildPromisePrompt(wf: Workflow, thread: Msg[], cfg: Config, roo
 }
 
 // One prompt for both job purposes: do the work, or make the approved changes (dev-spec/slices/04-long-jobs.md).
-export function buildJobPrompt(job: Job, cfg: Config, root: string, o: { clone?: string; telemetry?: string[]; scopes?: WorkContext['scopes']; tools?: RunTools } = {}): string {
+export function buildJobPrompt(job: Job, cfg: Config, root: string, o: { clone?: string; telemetry?: string[]; scopes?: WorkContext['scopes']; tools?: RunTools; instructions?: readonly StandingInstruction[] } = {}): string {
 	const kind = job.purpose === 'execute' ? 'execute' : job.key.startsWith('bootstrap:') ? 'bootstrap' : job.key.startsWith('learn:') ? 'learn' : job.every ? 'tracker' : 'job'
 	const contract = playbook(root, kind)
 	const parts = [
 		`You are working for ${cfg.owner.name} (the owner). Job ${job.id}, about ${job.key}.`,
 		'', 'Gates:', gateBlock(kind),
 		'', contract.trim(),
+		...standingInstructionsBlock(o.instructions ?? []),
 	]
 	if (kind === 'execute') {
 		parts.push('', 'Approved changes, in order:', ...(job.result?.effects ?? []).map((e, i) => e.done || e.off || isInternal(e) ? '' : `${i}. ${JSON.stringify(e)}`).filter(Boolean))

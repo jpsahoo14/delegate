@@ -7,7 +7,7 @@ import { RuleCompileSchema, ruleTextHash, type RuleLine } from '../core/rule-lin
 import type { Config } from '../core/types.ts'
 import { removeRunFiles } from '../adapters/run-files.ts'
 import { writeJson } from '../store/fs.ts'
-import { finishRuleCompile, type RuleWriteResult } from '../store/rules.ts'
+import { failRuleCompile, finishRuleCompile, type RuleWriteResult } from '../store/rules.ts'
 import { LOCAL_DIR, type Store } from '../store/state.ts'
 import { buildRulePrompt } from '../worker/rule-prompt.ts'
 import { holdAgent } from './agent-health.ts'
@@ -15,6 +15,10 @@ import type { RunWorker } from './dispatch.ts'
 
 export async function compileRule(store: Store, cfg: Config, line: RuleLine, run: RunWorker): Promise<RuleWriteResult> {
 	const expectedTextHash = ruleTextHash(line.text), runId = ulid(), sessionId = chooseSession('one-off', { fresh: true })
+	const failed = (why: string): Extract<RuleWriteResult, { ok: false }> => {
+		const saved = failRuleCompile(store, line.id, expectedTextHash, why)
+		return { ok: false, why: saved.ok ? why : `${why} ${saved.why}` }
+	}
 	const cwd = join(LOCAL_DIR, 'sessions'), mcpConfigPath = join(cwd, `mcp-${runId}.json`)
 	const accounts: Record<string, string> = { [cfg.owner.id]: cfg.owner.name }
 	for (const person of cfg.policy?.never ?? []) accounts[person.id] = person.name
@@ -35,9 +39,9 @@ export async function compileRule(store: Store, cfg: Config, line: RuleLine, run
 			const setup = result.setup ?? agentSetupFailure(`${result.error ?? ''}\n${result.summary ?? ''}`)
 			if (!setup) return undefined
 			holdAgent(store, cfg, setup)
-			return { ok: false, why: setup.text }
+			return failed(setup.text)
 		}
-		if (result.exitCode !== 0 || result.error) return setupRefusal() ?? { ok: false, why: result.error || 'The AI could not finish reading this line; your text is kept.' }
+		if (result.exitCode !== 0 || result.error) return setupRefusal() ?? failed(result.error || 'The AI could not finish reading this line; your text is kept.')
 		let rawOutput: unknown
 		try { rawOutput = JSON.parse(result.summary ?? '') }
 		catch {
@@ -46,9 +50,14 @@ export async function compileRule(store: Store, cfg: Config, line: RuleLine, run
 			throw new Error('The AI returned invalid rule JSON; your text is kept.')
 		}
 		const parsed = RuleCompileSchema.safeParse(rawOutput)
-		if (parsed.success && parsed.data.grants.some(grant => grant.who.accounts?.some(account => !Object.hasOwn(accounts, account.id) || account.name !== accounts[account.id]))) {
-			return { ok: false, why: "Couldn't resolve the people in this line; your text is kept." }
+		if (parsed.success && [...parsed.data.grants.flatMap(grant => grant.who.accounts ?? []), ...(parsed.data.instruction?.who?.accounts ?? [])]
+			.some(account => !Object.hasOwn(accounts, account.id) || account.name !== accounts[account.id])) {
+			return failed("Couldn't resolve the people in this line; your text is kept.")
 		}
 		return finishRuleCompile(store, line.id, expectedTextHash, rawOutput)
+	} catch (error) {
+		const saved = failed(`Couldn't read this line; your text is kept. ${String(error).slice(0, 200)}`)
+		store.log({ event: 'rule-compile-failed', id: line.id, textHash: expectedTextHash, error: saved.why })
+		throw error
 	} finally { removeRunFiles(mcpConfigPath) }
 }

@@ -29,7 +29,7 @@ import { prRefOf, prTarget, type BuildProbe } from './probe.ts'
 
 import { notePromise, promiseDue, rest } from './promise.ts'
 
-import { effectConsent, pageChangeId, PAGE_REPLY_CHANGED, pageAnswerRefusal, pageDigest, workflowApprovalRev } from '../core/page-approval.ts'
+import { ACTION_UNDO_TOO_LATE, actionApprovalRev, actionUndoRefusal, effectConsent, pageChangeId, PAGE_REPLY_CHANGED, pageAnswerRefusal, pageDigest, workflowApprovalRev } from '../core/page-approval.ts'
 
 import { holdReplyGap } from './reply-gap.ts'
 import { clearHold, clearVoteHold, holdDigest, holdReasons, reasonMessages, reviewDigest, reviewedReasons, setHoldReasons, voteHold } from '../core/owner-send.ts'
@@ -40,8 +40,90 @@ import { checkVoteClaims, voteClaimDigest, voteClaimReview } from './vote-claim.
 import { voteClaimText } from '../core/vote-claims.ts'
 import { actionClaimApproved, actionClaimContext, actionClaimGap, actionClaimReview, type ActionClaimGap } from '../core/action-claims.ts'
 import { stateFields, statusFields } from '../core/upgrades.ts'
-import { telemetryEvent } from '../core/telemetry.ts'
+import { telemetryError, telemetryEvent } from '../core/telemetry.ts'
 import { reply, closeFamily, only } from './apply.ts'
+import { amendAction, becauseOf, readActions, undoableAction, type FoldedAction } from '../store/actions.ts'
+import { ruleLines, ruleTextHash } from '../store/rules.ts'
+import { BUSY } from '../store/state.ts'
+
+export type UndoFailure = 'forbidden' | 'replied-to' | 'edited' | 'other'
+export type UndoActionResult = ({ ok: true; item?: string; warning?: string } | { ok: false; why: string; reason?: UndoFailure | 'too-late' }) &
+	{ outcome: 'undone' | 'refused' | 'failed'; recorded?: false }
+const undoing = new Set<string>()
+const unrecorded = new Set<string>()
+const tooLate = ACTION_UNDO_TOO_LATE
+const undoReasons: Record<UndoFailure, string> = {
+	forbidden: "Teams didn't allow it", 'replied-to': 'someone already replied to it',
+	edited: 'it was edited after it was sent', other: "Teams couldn't confirm the deletion",
+}
+const undoFailure = (error: unknown): UndoFailure => {
+	const text = error instanceof Error ? error.message : typeof error === 'string' ? error : ''
+	if (/replied[- ]to|already replied|has replies|have replies/i.test(text)) return 'replied-to'
+	if (/\bedited\b|\bmodified after\b/i.test(text)) return 'edited'
+	if (/\b40[13]\b|forbidden|access.?denied|permission.?denied|not allowed|cannot change channel messages/i.test(text)) return 'forbidden'
+	return 'other'
+}
+const undoRefusal = (reason: UndoFailure, outcome: 'refused' | 'failed'): UndoActionResult => ({
+	ok: false, outcome, reason, why: `Couldn't take it back: ${undoReasons[reason]}. Use Not right? > Wrong to send a correction.`,
+})
+const recentActions = (store: Store) => readActions(store, { since: new Date(Date.now() - 30 * 86_400_000).toISOString() })
+
+// Called by the serialized owner-command runner, never directly by a page request.
+export async function undoAction(store: Store, src: Source, cfg: Config, recordId: string, rev: string): Promise<UndoActionResult> {
+	const key = `${store.root}\0${recordId}`, health = `wdd-undo:${recordId}`
+	if (undoing.has(key)) return { ok: false, outcome: 'refused', why: 'Taking it back already. Nothing else was deleted.' }
+	undoing.add(key)
+	try {
+		const action = recentActions(store).find(record => record.id === recordId)
+		if (!action?.undo) return { ok: false, outcome: 'refused', why: tooLate, reason: 'too-late' }
+		const refusal = actionUndoRefusal(action, rev)
+		if (refusal) return { ok: false, outcome: 'refused', why: refusal, ...(refusal === tooLate ? { reason: 'too-late' } : {}) }
+		const failed = action.amendments.findLast(change => change.kind === 'undo-failed')
+		if (failed) return undoRefusal(failed.why === 'forbidden' || failed.why === 'replied-to' || failed.why === 'edited' ? failed.why : 'other', 'refused')
+		if (!undoableAction(action)) return { ok: false, outcome: 'refused', why: 'The record does not confirm a sent message. Nothing was deleted.' }
+		if (unrecorded.has(key) || store.health()[health]) return { ok: false, outcome: 'refused', why: 'The previous deletion result could not be recorded. Check Teams before trying anything else.' }
+		if (!(Date.now() < Date.parse(action.undo.until))) return { ok: false, outcome: 'refused', why: tooLate, reason: 'too-late' }
+		let reason: UndoFailure | undefined
+		try { await src.deleteMessage(action.chat.id, action.undo.msgId) } catch (error) { reason = undoFailure(error) }
+		let recordError: string | undefined
+		try {
+			const saved = amendAction(store, { v: 1, ref: action.id, at: new Date().toISOString(), by: 'owner',
+				...(reason ? { kind: 'undo-failed', why: reason } : { kind: 'undone' }) })
+			if (saved === BUSY || saved === undefined) recordError = saved === BUSY ? 'Record busy.' : 'Record missing.'
+		} catch (error) { recordError = telemetryError(error) }
+		if (recordError) {
+			unrecorded.add(key)
+			try { store.log({ event: 'undo-failed', workflowId: action.item?.wf, code: action.item?.code, error: recordError }) } catch (error) { console.error('Could not record the Undo diagnostic:', error) }
+			try { store.setHealth(health, reason ? 'An Undo failure could not be recorded. Check Teams before trying again.' : 'A message was deleted, but its Undo result could not be recorded. Check Teams before trying again.') } catch (error) { console.error('Could not record the Undo diagnostic:', error) }
+			return { ok: false, outcome: reason ? 'failed' : 'undone', recorded: false, ...(reason ? { reason } : {}), why: reason ?
+				"Couldn't take it back, and couldn't save the result. Check Teams before trying again." :
+				'The message was deleted, but its result could not be saved. Check Teams before trying again.' }
+		}
+		if (reason) return undoRefusal(reason, 'failed')
+		try {
+			withdrawLearning(store, cfg, action.chat.id, action.undo.msgId)
+			return { ok: true, outcome: 'undone', item: restoreActionDraft(store, action) }
+		} catch (error) {
+			try { store.log({ event: 'undo-failed', workflowId: action.item?.wf, code: action.item?.code, error: telemetryError(error) }) } catch (error) { console.error('Could not record the Undo diagnostic:', error) }
+			const warning = 'Taken back, but the draft or its learned source could not be updated. Check the item before sending anything else.'
+			try { store.setHealth(health, warning) } catch (error) { console.error('Could not record the Undo diagnostic:', error) }
+			return { ok: true, outcome: 'undone', warning }
+		}
+	} finally { undoing.delete(key) }
+}
+
+function restoreActionDraft(store: Store, action: FoldedAction): string | undefined {
+	const wf = action.item && freshRead(() => store.workflow(action.item!.wf))
+	if (!wf?.sent || wf.chat.id !== action.chat.id || wf.sent.msgId !== action.undo?.msgId) return undefined
+	const commit = recordCommit(wf, () => store.workflow(wf.id), store.save.bind(store)), sent = wf.sent
+	wf.sent = undefined
+	// A newer turn belongs to its own question and draft, even when an older reply is taken back.
+	if (wf.state !== 'done' || wf.revAt && wf.revAt > sent.at) { commit(false); return undefined }
+	wf.draft ??= { text: sent.text ?? action.parts.find(part => part.kind === 'message' && part.msgId === sent.msgId)!.text, commitment: false, sources: [] }
+	Object.assign(wf, { ...stateFields(wf, 'needs_human'), approved: undefined, sendAt: undefined, status: 'Undone by you. The draft is kept.' })
+	commit(false)
+	return wf.code
+}
 
 export function okSendGate(store: Store, cfg: Config, wf: Workflow, a: Answer): { refuse?: { text: string; refused: boolean }; voteChecks: string[] } {
 	const commit = recordCommit(wf, () => store.workflow(wf.id), store.save.bind(store))
@@ -456,6 +538,16 @@ export async function send(store: Store, src: Source, cfg: Config, wf: Workflow,
 			return false
 		}
 	}
+	const ruleId = by.ruleId
+	const sentRule: NonNullable<Workflow['sent']>['rule'] = ruleId ? freshRead(() => {
+		const because = becauseOf(store, ruleId)
+		if (because.kind !== 'line') return undefined
+		const line = ruleLines(store).find(line => line.id === because.lineId)
+		if (!line || ruleTextHash(line.text) !== because.hash) throw new Error('The permitting line changed before sending.')
+		return { id: line.id, text: because.text, hash: because.hash, source: line.source,
+			...(line.source === 'settings' && line.compile?.grants.some(grant => grant.id === ruleId && grant.then === 'review')
+				? { setting: 'reviewRule' as const } : {}) }
+	}) : undefined
 	try { ({ msgId } = await src.send(wf.chat.id, out!, replyContext(wf, out!, named, cfg.owner.id))) } catch (e) {
 		if (!(e instanceof SendUncertain)) throw e
 		// May have been posted: held for the owner, never sent again by a rule, a retry or a stale ok (bug 10-23 R4).
@@ -480,7 +572,7 @@ export async function send(store: Store, src: Source, cfg: Config, wf: Workflow,
 	wf.statusReason = undefined; wf.reviewAgain = undefined
 	const sendChecks = wf.ownerSend?.checks ?? []
 	wf.ownerSend = undefined; clearHold(wf)
-	wf.sent = { msgId, at: new Date().toISOString(), text, sendText: out !== text ? out : undefined, byRule: by.ruleId, undoUntil: new Date(Date.now() + p.undoMin * 60_000).toISOString(), ...(askMsgId ? { askMsgId } : {}), ...(sendChecks.length ? { checks: sendChecks } : {}), ...(holding ? { holding: true as const } : {}) }
+	wf.sent = { msgId, at: new Date().toISOString(), text, sendText: out !== text ? out : undefined, byRule: by.ruleId, ...(sentRule ? { rule: sentRule } : {}), undoUntil: new Date(Date.now() + p.undoMin * 60_000).toISOString(), ...(askMsgId ? { askMsgId } : {}), ...(sendChecks.length ? { checks: sendChecks } : {}), ...(holding ? { holding: true as const } : {}) }
 	if (wf.approved) wf.approved.replyDigest = undefined
 	commit(false)
 	if (marker) store.log(telemetryEvent('marker', { code: wf.code, applied: marker.applied, why: marker.why }))
@@ -542,6 +634,17 @@ export function replyContext(wf: Workflow, text = '', all: Record<string, string
 // Undo deletes a sent reply during its window, sent by a rule or approved by the owner, and turns the item back into a draft
 // (R-POL-04; owner 10-21). A change already made, such as a vote, is not undone by it.
 export async function undo(store: Store, src: Source, cfg: Config, wf: Workflow, a: Answer) {
+	const actions = recentActions(store).filter(action => action.item?.wf === wf.id)
+	const recorded = wf.sent && actions.find(action => action.parts.some(part => part.kind === 'message' && part.msgId === wf.sent!.msgId))
+	const action = wf.sent ? recorded : actions.find(action => undoableAction(action))
+	if (action) {
+		const result = await undoAction(store, src, cfg, action.id, actionApprovalRev(action))
+		return reply(store, src, a, `${MARK} ${result.ok ? result.warning ?? `Taken back.${result.item ? ` ${result.item} is back in your inbox as a draft.` : ' The current draft and changes were left alone.'} PR comments and other changes stay as they are.` : result.why}`, !result.ok)
+	}
+	if (recorded || !wf.sent && actions.length) return reply(store, src, a, `${MARK} ${tooLate}`, true)
+	if (wf.sent?.byRule && actions.some(action => !action.completedAt && action.at <= wf.sent!.at &&
+		action.because.kind === 'line' && action.because.grantId === wf.sent!.byRule))
+		return reply(store, src, a, `${MARK} The record does not confirm this sent reply. Check Teams before taking it back.`, true)
 	if (!wf.sent) return reply(store, src, a, `${MARK} ${wf.code} has not been sent. Nothing changed.`)
 	if (Date.now() > Date.parse(wf.sent.undoUntil ?? '')) {
 		return reply(store, src, a, `${MARK} The undo window for ${wf.code} has closed. To post a correction, say "send ${wf.code}: <text>".`)

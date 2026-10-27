@@ -52,7 +52,8 @@ const RowFacts = memo(function RowFacts({ row }: { row: Placement; day: string }
 function RowControls({ row, open, toggle }: { row: Placement; open: boolean; toggle: () => void }) {
 	const primary = useData(state => (state.pinned[row.act]?.snapshot.entities.actions ?? state.entities.actions)[row.actionIds[0]])
 	// A206 (R11(3)): a Waiting-on-others row has no action button; the whole row opens its card, so a stray click starts nothing.
-	if (row.section === 'waiting') return <span className="row-chevron" aria-hidden="true">›</span>
+	// COUNT58 (Designer CC2.6, newer than A206 for this row): open in a terminal, its row primary is Take it back.
+	if (row.section === 'waiting' && row.kind !== 'in-terminal') return <span className="row-chevron" aria-hidden="true">›</span>
 	if (!primary || primary.effect !== 'local') return <Button variant={row.section === 'move' && !open ? 'default' : 'outline'} onClick={toggle} aria-expanded={open}>{open ? 'Hide' : 'Open'}</Button>
 	return <LocalRowControls row={row} open={open} toggle={toggle} />
 }
@@ -90,6 +91,45 @@ function Standalone({ id }: { id: string }) {
 		{automation && <p>{automation.sentence}</p>}
 		<div className="action-bar">{actions.map((action, index) => <ActionButton key={action.id} action={action} primary={index === 0} />)}</div>
 		{[...new Map(actions.map(action => [`${action.item}@${action.rev}`, action])).values()].map(action => <ActionState key={`${action.item}@${action.rev}`} item={action.item} rev={action.rev} />)}
+	</section>
+}
+// COUNT58 B3-min (Designer CC1/CC3, DD3; PM label and subline): his own steps that ask nothing now, in one collapsed group at the end of
+// Now, outside "need you". One line per row: the step in his verbs, muted "from <first>, <day>", ↗ to Teams; the line opens the item.
+const stepDay = (at: string) => Number.isFinite(Date.parse(at)) ? new Date(at).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }).replace(',', '') : ''
+const LeftRow = memo(function LeftRow({ id }: { id: string }) {
+	const row = usePlacement(id), card = useItemCard(row?.act ?? '')
+	const route = useNavigation(state => state.route), navigate = useNavigation(state => state.navigate)
+	if (!row) return null
+	const item = card.item, entities = card.entities, person = entities?.people[row.personId ?? item?.personId ?? '']
+	const work = row.workId && entities ? entities.work[row.workId] : undefined
+	const step = (row.kind === 'your-step' ? work?.yours?.what ?? row.headline : row.headline.replace(/^To do: /, '')).replace(/\s+/g, ' ').trim()
+	const from = [person && firstName(person.name), stepDay(row.facts.at)].filter(Boolean).join(', ')
+	const open = route === `now/${id}` || route.startsWith(`now/${id}/`)
+	return <li className={`left-row${open ? ' row-open' : ''}`} data-code={row.code} data-row-kind={row.kind}>
+		<div className="left-line">
+			<button type="button" className="row-title left-open" aria-expanded={open} onClick={() => navigate(open ? 'now' : `now/${id}`)}><span className="left-step">{step}</span>{from && <span className="left-from"> from {from}</span>}</button>
+			{row.teams && <a className="row-teams" href={row.teams} target="_blank" rel="noopener noreferrer" aria-label="Open in Teams" title="Open this message in Teams, in a new tab."><Icon name="ext" /></a>}
+			{CODE.test(row.act) && <ItemCode code={row.act} />}
+		</div>
+		{open && <div className="inline-expansion">{item ? <ItemCard code={row.act} placementId={row.id} inline /> : <Standalone id={id} />}</div>}
+	</li>
+})
+function LeftGroup({ ids, find }: { ids: string[]; find: string }) {
+	const route = useNavigation(state => state.route), navigate = useNavigation(state => state.navigate)
+	const target = ids.find(id => route === `now/${id}` || route.startsWith(`now/${id}/`))
+	// CR 16:05:39Z B3: his own open or collapse holds until there is a new reason to open: another left row's route, or a different
+	// Find. Collapsing with a row open leaves that row's route, so nothing reopens it.
+	const [choice, setChoice] = useState<{ shown: boolean; route: string; find: string }>()
+	const stale = !!choice && ((!!target && route !== choice.route) || find !== choice.find)
+	const shown = choice && !stale ? choice.shown : !!find || !!target
+	const toggle = () => {
+		setChoice({ shown: !shown, route: shown ? 'now' : route, find })
+		if (shown && target) navigate('now')
+	}
+	return <section className="now-section left-group" aria-labelledby="section-left">
+		<h2 id="section-left"><button type="button" className="left-toggle" aria-expanded={shown} aria-controls="left-rows" aria-label={`Left for you, ${ids.length}`} onClick={toggle}>Left for you<span className="section-count"> · {ids.length}</span></button></h2>
+		<p className="muted section-reason">Your own steps. Nothing here needs a decision now.</p>
+		<ul id="left-rows" className="left-rows" hidden={!shown}>{shown && ids.map(id => <LeftRow key={id} id={id} />)}</ul>
 	</section>
 }
 export const NowRow = memo(function NowRow({ id, day }: { id: string; day?: string }) {
@@ -144,6 +184,7 @@ export const NowRow = memo(function NowRow({ id, day }: { id: string; day?: stri
 			</div>
 			{!(open && hasReport) && <div className="row-controls" data-row-controls>
 				<RowControls row={row} open={open} toggle={toggle} />
+				{row.kind === 'in-terminal' && <small className="muted row-caption">Nothing is sent</small>}
 			</div>}
 			{CODE.test(row.act) && <ItemCode code={row.act} />}
 		</div>
@@ -267,6 +308,7 @@ export default function Now() {
 			const retained = search ? ids.length - matches : 0
 			const runs = section.id === 'working' ? running : []
 			if (section.id !== 'move' && section.id !== 'working' && !ids.length && !runs.length) return null
+			if (section.id === 'left') return <LeftGroup key="left" ids={ids} find={find ?? ''} />
 			const busy = section.id === 'working' ? workingCounts(section.ids, entities, running.length) : undefined
 			// R11(1): "Delegate is on it · 3 working now · 15 queued", the reason under it; the same words as Classic's tile.
 			const words = section.id === 'working' && snapshot.busy ? busyWords(snapshot.busy) : undefined

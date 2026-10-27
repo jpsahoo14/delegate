@@ -110,15 +110,24 @@ const covered = (all: Thread[], e: Effect) => object(e.payload) && all.some(t =>
 	t.file.replace(/^[/\\]/, '') === String(e.payload && object(e.payload) ? e.payload.file : '').replace(/^[/\\]/, '') &&
 	t.line === (object(e.payload) ? e.payload.line : undefined) && t.text === clean(String(object(e.payload) ? e.payload.text : '')))
 
-async function live(cfg: Config, unit: PrUnit, probe?: BuildProbe) {
+async function live(store: Store, cfg: Config, unit: PrUnit, probe?: BuildProbe) {
 	const ref = unit.ref
-	if (!ref || !probe?.pr) throw new Error('The PR cannot be checked; comments stay proposed')
-	const st = await probe.pr(ref.project, ref.repo, ref.id)
-	if (!/^active$/i.test(st.status) || !st.head) throw new Error(`PR ${ref.id} is closed or its head could not be read`)
-	const role = await roleOn(cfg, probe, ref, st)
-	if (!MAY_REVIEW.includes(role)) throw new Error(`The owner is not an eligible reviewer on PR ${ref.id} (${role})`)
-	const groups = (st.reviewers ?? []).filter(r => r.group).map(r => r.name.split('\\').at(-1)!.normalize('NFKC').trim())
-	return { ref, head: st.head, groups }
+	if (!ref) throw new Error('The PR cannot be checked; comments stay proposed')
+	let reader = probe
+	try {
+		reader ??= adoProbe(cfg)
+		if (!reader?.pr) throw new Error('The PR cannot be checked; comments stay proposed')
+		const st = await reader.pr(ref.project, ref.repo, ref.id)
+		if (!/^active$/i.test(st.status) || !st.head) throw new Error(`PR ${ref.id} is closed or its head could not be read`)
+		const role = await roleOn(cfg, reader, ref, st)
+		if (!MAY_REVIEW.includes(role)) throw new Error(`The owner is not an eligible reviewer on PR ${ref.id} (${role})`)
+		const groups = (st.reviewers ?? []).filter(r => r.group).map(r => r.name.split('\\').at(-1)!.normalize('NFKC').trim())
+		return { ref, head: st.head, groups }
+	} finally {
+		if (!probe) try { await reader?.close?.() } catch (error) {
+			store.log({ event: 'probe-close-failed', pr: ref.id, error: String(error).slice(0, 200) })
+		}
+	}
 }
 function safety(store: Store, cfg: Config, wf: Workflow, unit: PrUnit, rule: string, groups = unit.groups) {
 	const check = { ...wf, prGroups: groups, draft: { text: 'Review comments.', commitment: false, sources: [] } }
@@ -148,7 +157,7 @@ export async function reviewPostCheck(store: Store, job: Job, e: Effect, call: C
 		const wf = freshRead(() => job.parents.map(id => store.workflow(id)).find(w => w && stillApproved(w, job)))
 		const unit = wf && unitForJob(wf, job.id), run = unit?.review?.run
 		if (!wf || !unit || !run || !verified(unit) || job.byRule !== e.byRule || prIdOf(e.call) !== unit.id) return { error: 'The review comment approval changed; it stays proposed' }
-		const { ref, head, groups } = await live(cfg, unit, probe)
+		const { ref, head, groups } = await live(store, cfg, unit, probe)
 		if (!sameHead(unit.review?.basis?.head, head) || !sameHead(head, run.head) || !sameHead(e.head, head)) return { error: 'New changes since the review; comments stay proposed' }
 		const carrier = store.job(run.carrier)
 		const completed = unit.review?.completed
@@ -224,7 +233,7 @@ export async function reviewCommentHook(store: Store, src: ChatSource, cfg: Conf
 			if (!unit || postingBlocked(store, wf, unit) || !verified(unit) || unit.job !== original.id || unit.review?.epoch !== epoch ||
 				unit.review.completed?.resultAt !== completed.resultAt) continue
 			wf.chat = { ...wf.chat, guests: store.members()[wf.chat.id]?.guests }
-			const { ref, head, groups } = await live(cfg, unit, options.probe)
+			const { ref, head, groups } = await live(store, cfg, unit, options.probe)
 			const rule = reviewRuleFor({ ...wf, prGroups: groups }, store.rules())
 			if (!rule) continue
 			if (!sameHead(head, completed.head)) throw new Error('The reviewed head is missing or changed; comments stay proposed')

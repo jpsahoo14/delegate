@@ -1,12 +1,38 @@
 import { changeSays, isVote, pendingEffects, prIdOf, shown, voteValue } from './effects.ts'
+import { NAME } from '../brand.ts'
 import type { Effect, Msg, Proposal, Workflow } from './types.ts'
 import { normalizeQuestionHint } from './normalize-report.ts'
 import type { Place } from '../web/model/place.ts'
+import { undoableAction, type FoldedAction } from '../store/actions.ts'
 
 export const MARK = 'Assistant ·'
 
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
 const oneLine = (s: string) => s.replace(/\s+/g, ' ').trim()
+
+export function actionNudge(records: readonly FoldedAction[], page: string | undefined, now = Date.now()): string | undefined {
+	if (!Number.isFinite(now)) throw new Error('An action nudge needs a valid time.')
+	const actions = [...new Map(records.filter(action => action.completedAt && action.parts.some(part => part.outcome === 'posted') &&
+		!action.amendments.some(change => change.kind === 'undone')).map(action => [action.id, action])).values()]
+		.sort((a, b) => b.at.localeCompare(a.at))
+	if (!actions.length) return undefined
+	const link = page === undefined ? undefined : new URL(page)
+	if (link && link.protocol !== 'http:' && link.protocol !== 'https:') throw new Error(`An action nudge needs the ${NAME} page URL.`)
+	const first = actions[0], single = actions.length === 1
+	if (link) link.hash = `done/by-delegate/${single ? first.id : first.at.slice(0, 10)}`
+	const replies = actions.every(action => action.kind === 'reply' || action.kind === 'ack')
+	const people = new Set(actions.flatMap(action => action.to ? [action.to.id] : []))
+	const what = single && replies
+		? `${first.kind === 'ack' ? 'Acknowledged a request' : 'Replied'}${first.to ? ` ${first.kind === 'ack' ? 'from' : 'to'} ${first.to.first}` : ''} in ${first.chat.name}`
+		: replies && actions.every(action => action.to)
+			? `Replied to ${people.size} ${people.size === 1 ? 'person' : 'people'} for you`
+			: `${NAME} did ${actions.length} ${single ? 'thing' : 'things'} for you`
+	const undo = single && undoableAction(first, now)
+		? `Undo (${Math.max(1, Math.ceil((Date.parse(first.undo!.until) - now) / 60_000))} min) \u00b7 ` : ''
+	const review = !single && actions.some(action => undoableAction(action, now))
+		? `Undo or review in ${NAME}` : `${undo}Review in ${NAME}`
+	return `${what} \u00b7 ${review}${link ? `: ${link.href}` : '.'}`
+}
 
 export function age(fromIso: string, now: Date): string {
 	const m = Math.max(0, Math.round((now.getTime() - Date.parse(fromIso)) / 60000))
@@ -181,7 +207,7 @@ export function renderNudge(needs: Workflow[], undoable: Workflow[] = [], now = 
 	const lines = needs.slice(0, 6).map(w => `${w.code} ${w.asker?.name ?? 'Someone'}: ${clip(oneLine(w.lastAsk ?? w.status), 70)}${cardLines(w).slice(0, 4).map(l => `\n   ${clip(oneLine(l), 100)}`).join('')}${okWill(w) ? `\n   ${okWill(w)}` : ''}`)
 	const more = needs.length > 6 ? [`and ${needs.length - 6} more`] : []
 	const eg = needs[0] ? `"ok ${needs[0].code}"` : '"ok A1"'
-	const sent = undoable.map(w => `Sent ${w.code} to ${w.asker?.name ?? 'them'} by rule: "${clip(oneLine(w.draft?.text ?? ''), 90)}". Undo for ${Math.max(1, Math.round((Date.parse(w.sent!.undoUntil!) - now.getTime()) / 60000))} more min: reply "undo ${w.code}".`)
+	const sent = undoable.map(w => `Sent ${w.code} to ${w.asker?.name ?? 'them'} by rule "${clip(oneLine(w.sent?.rule?.text ?? w.sent?.byRule ?? ''), 90)}": "${clip(oneLine(w.sent?.text ?? w.draft?.text ?? ''), 90)}". Undo for ${Math.max(1, Math.round((Date.parse(w.sent!.undoUntil!) - now.getTime()) / 60000))} more min: reply "undo ${w.code}".`)
 	const head = needs.length ? `${MARK} ${needs.length} need you` : undoable.length ? `${MARK} ${undoable.length} sent for you` : `${MARK} ${kp.length} topic${kp.length > 1 ? 's' : ''} to learn`
 	const learn = kp.length ? `${kp.length} topic${kp.length > 1 ? 's' : ''} to learn (${kp.slice(0, 4).map(p => p.title).join(', ')}${kp.length > 4 ? ', …' : ''}): "more ${kp[0].code}" or "ok ${kp[0].code}${kp.length > 1 ? `-${kp.at(-1)!.code}` : ''}".` : ''
 	return [head, ...lines, ...more, ...sent, needs.length && learn ? learn : '', needs.length ? `Reply here, for example ${eg}, or ask in your AI chat.` : !undoable.length ? learn : ''].filter(Boolean).join('\n')

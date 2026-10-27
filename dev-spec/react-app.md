@@ -1,5 +1,50 @@
 # React preview
 
+## COUNT58 B1 owner-step reader correction (0.2.48 HOST)
+
+- PE 2026-10-25T15:01:41Z preserves the ownerNext union and names one shared date read:
+  ownerStepSince(work, createdAt) returns waitingOn.since, else the last step's at, else createdAt.
+  It is a pure read, not a new clock, migration or inferred date.
+- askWhatNext selects the owner copy on ownerWait alone, including an explicit owner step without
+  waitingOn. Its existing words and day formatting stay; the date comes from ownerStepSince.
+  Owner choices never fall back to drafting a nudge merely because waitingOn is absent.
+- New owns the paired check-date reader correction in next.ts: replace waitingOn!.since in both
+  the headline and the facts date with ownerStepSince. HOST edits no New source in this correction.
+- CR B1 remains an integration blocker until both owned reader corrections are supplied and reviewed.
+  The helper/HOST copy change is not a page-fix, producer-handoff or standalone shipping claim.
+  Normal OWN checks explicit next.you/no waitingOn: owner copy, last-step date and no page TypeError
+  once New's reader is included. No extra proof, stored-data rewrite or union reversal.
+
+## COUNT58 typed producer (0.2.48 HOST)
+
+- Start from released .47 d23588f8 on an isolated .48 branch. The original conflicted WDD checkout
+  and existing .47 lines stay untouched. This is the producer-first pull, not a WDD/H0 or broader A19 build.
+- core/whose exports Section with left and optional Facts.job.setup. New fills setup with the existing
+  agentSetupFailure classifier; the pure rule layer does not parse job errors or change the job.
+- setup-hold is working only when the existing stopped condition AND job.setup hold; it precedes stopped.
+  A non-setup stopped run remains move. in-terminal becomes waiting; your-step and todo become left.
+  Other rule conditions, including watch waiting and needs-human precedence, stay unchanged.
+- Shared rule-id predicates are needsYou(rule: string) for needs-you/stopped and leftForYou(rule: string)
+  for your-step/todo. They never overlap; setup-hold and in-terminal belong to neither N nor M.
+- URGENCY is move, left, working, waiting, catchup, done. PRECEDENCE is in-terminal, needs-you, stopped,
+  your-step, todo, job-running, starts-next, setup-hold, partner-wait, waiting, catchup, done.
+- PE 2026-10-25T14:43:24Z: ownerNext(work, me) returns you when next.who is you OR waitingOn names
+  the owner; otherwise it returns next.who. Matching uses the shipped C4 trimmed/case-insensitive
+  name/alias comparison. This union keeps owner-waiting work with no next step as the owner's step.
+  HOST's waitsOnOwner uses this one result; New replaces its local nextWho with the reviewed export.
+  No web import is added to core. Explicit owner-next plus another waiting person intentionally gets
+  C4's owner choices; its existing waitingOn.since date remains, a PE-disclosed imprecision.
+- The same PE ruling authorises exactly one adjacent New-owned compile bridge: NAMES.left is
+  LEFT FOR YOU in web/next.ts, the existing uppercase dry-text header map. Nothing else in that file
+  changes in the producer; New retains ownership and builds the actual consumer after the reviewed handoff.
+- New's setup facts, page/Classic N and M grouping, count fixtures and B3-min plus SEND's self-chat
+  implementation remain separately owned consumers of the reviewed DTO. HOST wires its self-chat caller
+  only to the actual reviewed SEND interface, not an invented renderer signature.
+- One coupled .48 cut is required: producer alone must not ship because moving rows to left without
+  the Left-for-you consumer would hide items. Old data uses pure derivation with no migration/repair.
+  Normal build, both typechecks, existing goldens and OWN; no extra test/proof budget. CR checks the
+  no-next/owner-wait, owner-next/other-wait and other-next/other-wait shared-read cases.
+
 ## Carrier reply reason precedence (0.2.48)
 
 - Newly created change carriers have `Job.carrier: true`. They carry an existing
@@ -22,24 +67,6 @@
 - The separate policy change that ignores suggested effects when deciding whether
   a reply promises mandatory changes must compose with this cleanup in review.
   Neither implementation alone is acceptance of the coupled rule path.
-
-## PR-unit provider (0.2.48, first typed slice only)
-
-- `Workflow.prs` holds ask-ordered `PrUnit` records. Each unit has its own reference,
-  read state, consecutive-failure count, successful-read snapshot, decline, skip and job.
-  A skip is not a reviewer role; an unresolved number is pending with a system no-link
-  skip, never a fabricated reference or a failed read.
-- `derivePrUnits` resolves the ask's numbers through `prRefFor`, retaining unit state
-  only for the same verified reference. A later link clears a system no-link skip;
-  an owner's skip survives derivation. Done and redacted items are not re-derived.
-  References prefer the ask and the asker's messages, never another sender's link.
-- Existing imports of `PrRef` from the probe remain valid; its type now lives beside
-  the shared PR-reference helpers. `prTarget` returns the sole unit's number, or no
-  number for a multi-PR set. Legacy items without units retain the scalar path.
-- The `pr-retry` and `pr-skip` verbs are reserved with the existing numeric argument.
-  This provider does not admit those commands, write units, migrate stored records,
-  start jobs or change review permission. Review-frame types, migration, probe/gate,
-  handlers and reply orchestration are the following coupled slices.
 
 ## Per-unit read and gate providers (0.2.48, composition pending)
 
@@ -602,6 +629,72 @@
   After a reminder's successful send and addSent, emit it as auto/marked. This is the named SEND handoff.
 - No message text, user or target enters the event. No new await, change to send order, marker policy, final
   consent check or retry behavior. The existing SEND catalogue/markerFor and New preview remain paired.
+
+## Action-nudge links (W7 provider)
+
+- `actionNudge(records, page, now)` accepts an undefined page URL and then ends with
+  "Review in Delegate." or "Undo or review in Delegate.", preserving the Undo countdown.
+  A supplied URL keeps its existing http(s) validation and record/day hash.
+- The runner's self-chat consumer passes no URL in 0.2.48. A per-launch localhost bearer
+  token is not a durable cross-device link and must not be posted to chat or persisted.
+  Record eligibility, cadence, cursor and daily-summary wiring remain runner-owned.
+
+## Action-ledger start date (0.2.48 provider)
+
+- `store/actions.ts` exports `LEDGER_START`, `markLedgerStart(store, at?)`, and `ledgerStart(store)`.
+  The marker is `actions-ledger-1` in the existing synced upgrade map. A fresh read preserves every other
+  upgrade key and writes this key only while absent. Appending a record marks its timestamp before the ledger write.
+- `ledgerStart` returns the earlier of the marker and the oldest retained record, correcting a later synced
+  marker when older ledger evidence exists. It returns no date when neither exists; no version or date is guessed.
+  It reads the oldest nonempty month, using the shared parsed ledger cache, and writes nothing.
+- HOST separately marks the start after watching initialization on every tick. New separately consumes the
+  exported date and keeps its approved undated fallback until a date exists. This provider neither wires
+  those consumers nor backfills records.
+
+## Bulk action amendments (0.2.48 provider)
+
+- `amendActions(store, changes)` returns saved amendments in input order, `BUSY`, or `{ missing: refs }`.
+  It parses and resolves every input, then takes all subject-month try-locks in sorted path order and
+  rechecks every subject before appending any line. A busy lock or missing subject writes no amendment.
+  Empty input returns an empty array. Missing references use the existing metadata diagnostic.
+- Existing `amendAction` behavior and callers are unchanged. The page separately makes one batch call
+  after its current-list digest check and reconciles the saved count with its receipt.
+- This is all-or-nothing for preflight refusals, not a cross-file crash transaction. A process lost
+  between appends can leave harmless repeated review marks behind a prepared receipt; no journal or
+  rollback is added, and the receipt must not claim an unsaved outcome.
+
+## Action-record Undo engine (W4, 0.2.48 input)
+
+- `runner/send.ts` exports `undoAction(store, source, config, recordId, rev)` for the serialized owner-command runner.
+  `core/page-approval.ts` exports `actionApprovalRev(foldedAction)`; the page must carry that exact record revision,
+  never a freshly reconstructed revision at execution. A changed revision refuses before deletion.
+- Only a confirmed posted message matching the record's `undo.msgId` may be deleted, strictly before `undo.until`.
+  Comments and other effects are untouched. Adapter success appends `undone`; rejection appends `undo-failed` with
+  `why` equal to `forbidden`, `replied-to`, `edited` or `other`. A failed record is not offered for another Undo.
+  Expired/already-undone records refuse with "Too late to take it back". No ledger Undo falls back to editing a message.
+- `undoableAction` is the shared eligibility predicate. Chat `undo <code>` selects the newest eligible record for that
+  workflow only when it no longer has `wf.sent`. When `wf.sent` exists, both page and chat target only that message's
+  matching record, or its legacy path if unrecorded; they never delete an older recorded reply instead.
+  A sent reply found in the ledger never falls through to legacy Undo.
+  Unconfirmed same-grant records also refuse the legacy shortcut. Older sends without a ledger record retain the existing
+  `wf.sent` delete/withdraw behavior; the existing page's latest-sent approval guard remains unchanged.
+- After a confirmed deletion, a still-current finished reply returns to its kept draft. Active work, a newer turn, replacement send or
+  unrelated draft is not overwritten. A ledger-write failure after the adapter result reports what actually happened,
+  raises `wdd-undo:<recordId>` Health and blocks another delete; no external action is retried automatically.
+- Integration dependency: New owns the new record button/countdown and failure-class copy. HOST owns the queued-command
+  bridge in `runner/apply.ts`: it must dispatch the exact `(recordId, rev)` to this facade under the existing tick lock,
+  before workflow-only routing (records can outlive items or have no item). H0 also owns the narrowly limited open-work
+  chat exemption and result metadata. That bridge and New's UI are not installed by this SEND-only slice.
+  Do not call the facade directly from an HTTP request or claim the page is wired.
+- SEND's page-command binding is `enqueueParsed(store, [{verb: 'undo-action', text: recordId}], shownAt, 'page',
+  answerId, {kind: 'undo-action', expect: actionApprovalRev(record)}, pageSubmissionId)`. It accepts exactly one record
+  action, refuses malformed/stale/expired/undone/non-message inputs, and queues without any adapter call.
+  The queued `Answer` has `code: ''`, `verb: 'undo-action'`, `text: recordId`, and the unchanged page guard/token.
+  Repeating the same submission identity keeps the existing answer; it does not enqueue another command.
+  H0 must read that pair from `answer.text` and `answer.page.expect`; it must not resolve `answer.code` or regenerate
+  the token. Pair this binding with H0 before exposing it in New. The runner's same record guard is authoritative
+  if the record changes or the window closes after enqueue. A too-late facade result also carries `reason: 'too-late'`
+  for H0's typed outcome mapping.
 
 ## Suggested-answer hint ownership (SEND, decision 57)
 
@@ -5704,3 +5797,29 @@ reported, plus "(<k> run(s) didn't report usage)" when some didn't; "What it use
 older weeks are counted once until one of their files changes, this week and last on each log change. Projection: Item.used and
 DoneEntry.used; ItemCard draws it last in Details, just before Ask (Classic's pane is the same card); New and Classic Done draw it
 last in the expanded row. Old data: none migrated; pre-0.2.47 windows stay BEFORE.
+
+## 0.2.48 COUNT58 B1, the New reader: C4's date from ownerStepSince (PE 15:01:41Z; CR 14:57:57Z B1; pairs with HOST 0dd125cd)
+
+With HOST's union ownerNext, waitsOnOwner is also true for an explicit next 'you' with no waitingOn, so the check-date row's
+"Still on your list since <day>" headline and its facts date read core/whose.ts ownerStepSince(work, createdAt)
+(waitingOn.since, else the last step, else when the item began) instead of waitingOn!.since: no TypeError on that shape, and the
+last-step date. Words unchanged; ownerNext's three accepted cases unchanged; no migration. The DD4-C1 "yours.since" line already
+reads waitingOn.since only when it names him, so it is unchanged.
+
+## 0.2.48 COUNT58 + B3-min, the New half: "need you" is exactly needsYou; "Left for you · M" (PE decision 58 + 14:43:24Z + 15:01:41Z; Designer CC1-CC3 and DD3; Coordinator 10:47:56Z; on HOST 4603924e/0dd125cd and New e52c63cc)
+
+next.ts factsOf: job.setup when the job's error is an agentSetupFailure (quota, model, sign-in, CLI); work.next is core/whose.ts
+ownerNext (the one derivation C4's waitsOnOwner reads; next.ts's own nextWho is gone, workOf uses ownerNext too). Rows are built by
+rule wherever HOST's rules place them: in-terminal (Waiting on others) "Open in a terminal on <machine>", Next "You're working on
+this in a terminal · since <time>" (the window's since), primary Take it back, caption "Nothing is sent"; your-step and todo
+(Left for you) with today's row bodies; setup-hold (Delegate is on it) with the job's goal, a "Why" note holding the setup failure's
+own text, and Delegate "waits for an available AI model / for AI quota / until the AI is set up on this machine". NextView gains
+left. Projection: section 'left' "Left for you" last; Classic needsIds drops items open in a terminal (Ongoing shows them, with
+progress.terminal and Take it back). New Now: the section header and the summary's "N need you" are the move rows, so N equals its
+rows; "Left for you · M" is a collapsed disclosure (aria-expanded, aria-label "Left for you, M") at the end of Now with the PM
+subline "Your own steps. Nothing here needs a decision now."; each row is one line, the step in his verbs, muted "from <first>,
+<Ddd D Mmm>", ↗ to Teams, and the line opens the item inline. Rows are oldest first by that date, ties by the item's opened time
+(Designer CC4 (c): obligations list the oldest first, as Your move does). The group opens by itself for Find or an open left row; his own
+collapse or open holds until a new reason (another left row's route, a different Find), and collapsing with a row open returns to Now
+(CR 16:05:39Z B3). A Waiting-on-others row keeps A206's no-button rule except in-terminal
+(Designer CC2.6). Classic: the Ongoing summary tile adds "· M left for you", M the same threads as New's group. Old data: none.

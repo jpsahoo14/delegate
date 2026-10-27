@@ -16,6 +16,7 @@ import type { versionInfo } from '../os/autoupdate.ts'
 import type { settingsView } from './settings.ts'
 import type { UiChoice } from '../store/state.ts'
 import { place, snapshot, type NextView, type Snap } from './next.ts'
+import { leftForYou } from '../core/whose.ts'
 import { currentDraft } from '../core/policy.ts'
 import { htmlToText, isPersona } from '../core/intake.ts'
 import { placeOf, type Place } from './model/place.ts'
@@ -77,7 +78,7 @@ export type View = {
 	needs: ItemCard[]; knowledge: KnowledgeCard[]
 	done: DoneRow[]; running: { code: string; what: string; who?: string; since: string; progress?: number }[]
 	watching: { code: string; what: string; last: string; changedAt?: string; update: boolean; rev: string; every?: number; endsAt?: string; by?: string; nextAt?: string; from?: string }[]
-	progress: { code: string; who: Who; chat: string; goal: string; status: string; last?: { at: string; what: string }; next?: string; checkAt?: string; every?: number; endsAt?: string; rev: string }[]
+	progress: { code: string; who: Who; chat: string; goal: string; status: string; last?: { at: string; what: string }; next?: string; checkAt?: string; every?: number; endsAt?: string; rev: string; terminal?: string }[]
 	// Channels the owner named to watch (B5); link is the channel link, so stopping goes through the same path as starting.
 	channels: { name: string; link: string }[]
 	waiting: { code: string; to: string; chat: string; text: string; at: string; link?: string }[]
@@ -328,10 +329,11 @@ export function view(store: Store, since: string | undefined, now = new Date(), 
 	const done = doneRows(store, from < week ? from : week, wfs, !!snap).map(r => ({ ...r, fresh: r.at > from }))
 	const autos = store.automations().filter(a => a.state !== 'ended').map(a => ({ code: a.code, sentence: describe(a).replace(/^R\d+ · /, ''), to: a.to.name, text: a.text, when: when(a.schedule), state: a.state, why: a.why, next: a.next, count: a.count, rev: a.updatedAt }))
 	const watching = g.watching.filter(w => represented.has(w.code) && !todos.has(w.code)).map(w => ({ code: w.code, what: htmlToText((w.lastAsk ?? '').replace(/^Watch /, '').replace(` until ${DEFAULT_UNTIL}`, '')), last: htmlToText(w.status), changedAt: w.changedAt, update: !!w.changedAt && w.changedAt > from && (!w.ackAt || w.changedAt > w.ackAt), rev: w.revAt ?? w.updatedAt , every: (w.job ? store.job(w.job) : undefined)?.every, endsAt: (w.job ? store.job(w.job) : undefined)?.endsAt, by: w.watchBy, nextAt: (w.job ? store.job(w.job) : undefined)?.nextAt, from: w.watchFrom === 'catchup' ? wfs.find(x => x.watchedAs === w.code)?.code : undefined }))
-	const progress = wfs.filter(w => represented.has(w.code) && (todos.has(w.code) || w.state === 'open' || w.state === 'waiting_on_sender')).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map(w => {
+	// COUNT58 (Designer CC2.6): an item open in a terminal is in Ongoing (terminal: since when), in neither need you nor left for you.
+	const progress = wfs.filter(w => represented.has(w.code) && (todos.has(w.code) || w.state === 'open' || w.state === 'waiting_on_sender' || (!!w.openOn && w.state !== 'done'))).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map(w => {
 		const k = homeOf(store, w).work, job = k?.watch ? store.job(k.watch) : undefined, last = k?.steps.at(-1)
 		const next = todos.has(w.code) ? `You: ${openTodos(w).map(t => t.text).join('; ')}` : k ? nextOf(k) : undefined
-		return { code: w.code, who: who(w.asker?.name), chat: placeOf(store, w.chat, w.asker)?.row ?? w.chat.name, goal: htmlToText(k?.goal ?? w.lastAsk ?? w.status), status: htmlToText(w.status), last: last && { at: last.at, what: htmlToText(last.what) }, next: next === undefined ? undefined : htmlToText(next), checkAt: k?.checkAt, every: job?.every, endsAt: job?.every ? job.endsAt : undefined, rev: w.updatedAt }
+		return { code: w.code, who: who(w.asker?.name), chat: placeOf(store, w.chat, w.asker)?.row ?? w.chat.name, goal: htmlToText(k?.goal ?? w.lastAsk ?? w.status), status: htmlToText(w.status), last: last && { at: last.at, what: htmlToText(last.what) }, next: next === undefined ? undefined : htmlToText(next), checkAt: k?.checkAt, every: job?.every, endsAt: job?.every ? job.endsAt : undefined, rev: w.updatedAt, ...(w.openOn && w.state !== 'done' ? { terminal: (store.openWindow(w.id) ?? (w.job ? store.openWindow(w.job) : undefined))?.since ?? w.updatedAt } : {}) }
 	})
 	// An item open in a terminal is not running: Delegate waits for the window (#43).
 	const running = [...g.running.filter(w => represented.has(w.code) && !todos.has(w.code) && !w.openOn).map(w => ({ code: w.code, what: htmlToText(w.status), who: w.asker?.name, since: w.waitingSince ?? w.updatedAt })), ...(snap ? [] : bootLines(store)).map(b => ({ code: '', what: htmlToText(b.what), since: b.since, ...(b.total ? { progress: (b.done ?? 0) / b.total } : {}) }))]
@@ -348,18 +350,20 @@ export function view(store: Store, since: string | undefined, now = new Date(), 
 	const quietSince = (w: ReturnType<Store['waiting']>[number]) => { const f = w.item ? store.byCode(w.item) : undefined; return f ? (f.state === 'done' ? Date.parse(f.updatedAt) : Infinity) : Date.parse(w.at) }
 	const waiting = store.waiting().filter(w => w.state === 'waiting' && quietSince(w) < due).map(w => ({ code: w.code, to: w.to.join(', '), chat: placeOf(store, w.chat, { name: w.to[0] })?.row ?? w.chat.name, text: htmlToText(w.text), at: w.at, link: w.msgId ? messageLink(w.chat.id, w.msgId) : undefined }))
 	const updates = watching.filter(w => w.update).length
+	// COUNT58 (Designer CC1): Classic's Ongoing summary adds "· M left for you", M the same threads as New's Left for you group.
+	const left = placements.filter(r => leftForYou(r.rule)).length
 	return {
 		now: now.toISOString(), since, owner: cfg.owner.name,
 		status: { state, autoSend: !!c.autoSend, runs: store.runsToday(), cap: cfg.dailyRuns ?? 200, reading: readingOf(store) },
 		health, tiles: snap ? [] : tiles(store, from, needs.length, done.filter(r => r.fresh)),
 		also: [
 			{ key: 'knowledge', count: kp.length, label: kp.length === 1 ? 'to learn' : 'to learn' },
-			{ key: 'watching', count: updates, label: updates === 1 ? 'update' : 'updates', sub: [`${watching.length} watched`, ...(progress.length ? [`${progress.length} in progress`] : [])].join(' · ') },
+			{ key: 'watching', count: updates, label: updates === 1 ? 'update' : 'updates', sub: [`${watching.length} watched`, ...(progress.length ? [`${progress.length} in progress`] : []), ...(left ? [`${left} left for you`] : [])].join(' · ') },
 			{ key: 'waiting', count: waiting.length, label: 'waiting on others', sub: waiting[0] ? `${waiting[0].to}, since ${new Date(waiting[0].at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}` : undefined },
 			{ key: 'suggestions', count: store.habits().filter(h => h.state === 'suggested').length, label: 'suggestion', sub: 'From what you usually do' },
 			{ key: 'running', count: running.length, label: 'running' },
 			{ key: 'automations', count: autos.filter(a => a.state !== 'paused').length, label: autos.length === 1 ? 'automation' : 'automations', sub: autos.find(a => a.next) ? `Next: ${autos.find(a => a.next)!.to}` : undefined },
-		].filter(t => t.count > 0 || (t.key === 'watching' && watching.length + progress.length > 0)),
+		].filter(t => t.count > 0 || (t.key === 'watching' && watching.length + progress.length + left > 0)),
 		seen: store.seen(),
 		catchUp: catchUpOf(done.filter(r => r.kind === 'catchup' && r.at > (store.seen().catchup ?? from))),
 		needs, knowledge: kp, done, running, watching, progress, waiting, automations: autos,

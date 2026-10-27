@@ -1,5 +1,16 @@
 # React preview requirements
 
+COUNT58 count parity (0.2.48):
+- Use one rule-id definition for Needs you (needs-you and stopped) and a disjoint Left for you set
+  (your-step and todo). A setup-held stopped job is working; an open terminal is waiting, not in either count.
+- The page, Classic and self-chat use the shared producer contract. The header count must equal its rows.
+  The owner's step has one shared derivation rather than separate page and engine identity checks.
+- Ship the producer and owned consumer halves together with the Left-for-you group; do not hide work
+  through a producer-only release or rewrite old records to manufacture a count.
+- An explicit owner step without a waiting person still offers reporting, waiting or closure, not a
+  nudge. Date it from the last step, or item creation if there is no step; a known waiting-since date wins.
+  Both engine and page readers use that same fallback without changing the owner-step definition.
+
 Measurable AI usage (0.2.47):
 - Count a logged run even when it reported no usage. Unknown calls/tokens/time stay unknown, not zero.
 - Include checking the owner's replies, checking promises and reading rules as distinct run kinds.

@@ -1,7 +1,7 @@
 import type { Store } from '../store/state.ts'
 import type { Automation, Job, PlanStep, Workflow } from '../core/types.ts'
 import type { Waiting } from '../core/waiting.ts'
-import { type Facts, rankOf, type Section, URGENCY, whoseMove } from '../core/whose.ts'
+import { type Facts, ownerNext, ownerStepSince, rankOf, type Section, URGENCY, whoseMove } from '../core/whose.ts'
 import { clock } from '../core/schedule.ts'
 import { meaningOf, pendingEffects, saidLine, shown, asksReviewAgain } from '../core/effects.ts'
 import { messageLink, teamsChat } from '../adapters/channels.ts'
@@ -13,7 +13,7 @@ import { handledThisWeek } from '../store/numbers.ts'
 import { openLeft, openTodos, waitsOnOwner } from '../runner/work.ts'
 import { leftWords } from './model/left-words.ts'
 import { htmlToText } from '../core/intake.ts'
-import { activeAgentHold, type AgentSetupFailure } from '../core/agent-failure.ts'
+import { activeAgentHold, agentSetupFailure, type AgentSetupFailure } from '../core/agent-failure.ts'
 import { placeOf } from './model/place.ts'
 
 // The new experience's placement (dev-spec/new-experience.md §0, phase N0): one thread per home code, in one section, with its Next owner.
@@ -78,9 +78,11 @@ export function factsOf(s: Snap, sub: Subject): Facts {
 	const w = sub.wf, j = w.job ? s.jobs.get(w.job) : undefined
 	return {
 		subject: 'item', state: w.state, runner: s.runner, queue: s.queue.get(w.id), aiBlocked: !!s.agentWait,
-		job: j && { state: j.state, watch: !!j.every, retryLater: !!j.retry && Date.parse(j.retry.at) > s.now, slot: s.slots.has(j.id), retry: !!j.retry },
-		// A step for "them" that waits on the owner by name is the owner's step.
-		work: w.work && { open: !w.work.closed, next: nextWho(s, w.work), waiting: !!w.work.waitingOn },
+		// COUNT58 (PE decision 58 (a)): setup: the job's error is a setup failure (AI quota, model, sign-in, CLI), so a stopped run is held,
+		// Delegate's, not the owner's.
+		job: j && { state: j.state, watch: !!j.every, retryLater: !!j.retry && Date.parse(j.retry.at) > s.now, slot: s.slots.has(j.id), retry: !!j.retry, ...(setupOf(j, s.now) ? { setup: true } : {}) },
+		// Whose step: core/whose.ts ownerNext, the one derivation C4's waitsOnOwner also reads (PE 14:43:24Z).
+		work: w.work && { open: !w.work.closed, next: ownerNext(w.work, s.me), waiting: !!w.work.waitingOn },
 		// PE 07:35:05Z (rule 5): his open wf.left lines are to-dos too, so a done item with one stays a todo row (core/whose.ts:52).
 		todos: openTodos(w).length + openLeft(w).length,
 		fyiUnread: !!w.fyi && (w.fyi.at ?? w.updatedAt) > s.catchupSeen,
@@ -89,7 +91,7 @@ export function factsOf(s: Snap, sub: Subject): Facts {
 }
 
 const isMe = (s: Snap, who?: string) => !!who && s.me.includes(who.toLowerCase())
-const nextWho = (s: Snap, k: NonNullable<Workflow['work']>) => k.next?.who === 'them' && isMe(s, k.waitingOn?.who) ? 'you' : k.next?.who
+const setupOf = (j: Job, now: number) => j.error ? agentSetupFailure(j.error, now) : undefined
 
 const runnerWhy: Record<Exclude<Facts['runner'], 'ok'>, string> = { off: `${NAME} is not reading now`, paused: `${NAME} is paused`, stopped: `${NAME} is stopped`, capped: 'daily limit reached; tomorrow' }
 
@@ -105,8 +107,11 @@ function nextOf(s: Snap, sub: Subject, f: Facts, section: Section): { next?: Pla
 		return { next: { owner: { kind: 'delegate' }, what: `reminds ${a.to.name}${a.next ? ` next ${clock(new Date(a.next), s.tz)}` : ''}` }, why: s.runner === 'ok' ? undefined : runnerWhy[s.runner] }
 	}
 	const w = sub.wf, j = w.job ? s.jobs.get(w.job) : undefined
+	// COUNT58: open in a terminal is his, in Waiting on others, neither need you nor left for you (PM 10:35:17Z, Designer CC2.6).
+	if (f.window) return { next: { owner: { kind: 'you' }, what: "You're working on this in a terminal" } }
+	if (section === 'left') return { next: { owner: { kind: 'you' }, what: f.work?.next === 'you' ? w.work?.next?.what : undefined } }
 	if (section === 'move') return { next: { owner: { kind: 'you' }, what: f.state === 'waiting_on_task' ? `${NAME} stopped: ${(j?.error ?? 'its run ended without a result').slice(0, 120)}` : f.work?.next === 'you' && f.state !== 'needs_human' ? w.work?.next?.what : undefined } }
-	if (section === 'working') return { next: { owner: { kind: 'delegate' } } }
+	if (section === 'working') return { next: { owner: { kind: 'delegate' } }, ...(f.job?.setup && j ? { why: setupOf(j, s.now)?.text } : {}) }
 	const busy = f.state === 'running' || f.state === 'scheduled' || (f.job?.state === 'queued' && !f.job.watch)
 	// Paused, only sends and retries wait on the pause; drafts keep their own reasons (their place in line, the day's limit).
 	const onPause = s.runner === 'paused' && (f.state === 'scheduled' || !!f.job?.retry)
@@ -153,7 +158,7 @@ export function place(s: Snap): Placed[] {
 }
 
 const ownerText = (o: Owner) => (o.kind === 'you' ? 'You' : o.kind === 'delegate' ? NAME : o.kind === 'others' ? o.text : 'nobody is on this yet')
-const NAMES: Record<Section, string> = { move: 'YOUR MOVE', working: `${NAME.toUpperCase()} IS WORKING`, waiting: 'WAITING ON OTHERS', catchup: 'CATCH UP', done: 'DONE' }
+const NAMES: Record<Section, string> = { move: 'YOUR MOVE', left: 'LEFT FOR YOU', working: `${NAME.toUpperCase()} IS WORKING`, waiting: 'WAITING ON OTHERS', catchup: 'CATCH UP', done: 'DONE' }
 
 // `delegate now --dry`: the placement as text, for the owner to check before any page draws it.
 export function dryText(rows: Placed[]): string {
@@ -255,6 +260,8 @@ export type TodoRow = { id: string; text: string; at: string; code: string }
 
 export type NextView = {
 	move: NextRow[]; working: NextRow[]; waiting: NextRow[]
+	// COUNT58 B3-min: his own steps that ask nothing now (rules your-step and todo), outside the need-you count.
+	left: NextRow[]
 	// worth: unread FYIs worth knowing first, for the summary line.
 	catchup: { count: number; worth: number; rows: NextRow[] }
 	// "When you have a minute": facts to approve and habit suggestions, as one line.
@@ -360,7 +367,7 @@ function itemRow(s: Snap, p: Placed, w: Workflow): Body {
 	const base = { who: whoOf(w.asker?.name), facts, chips: chipsOf(w, j), teams: teamsLink(w), rev: w.revAt ?? w.updatedAt }
 	const open: RowAction = { label: 'Open' }
 	const goal = (t?: string): Note[] => t ? [{ label: 'Goal', text: clip(t, 200) }] : []
-// C4: "Tue 20 Oct" in his time zone, the day the work began waiting on him (work.waitingOn.since).
+// C4: "Tue 20 Oct" in his time zone, the day the work began waiting on him: ownerStepSince (waitingOn.since, else the last step, else when the item began; PE 15:01:41Z).
 const ownerDay = (s: Snap, at: string) => Number.isFinite(Date.parse(at)) ? new Date(at).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', ...(s.tz ? { timeZone: s.tz } : {}) }).replace(',', '') : at.slice(0, 10)
 	// A rule send, minutes before it goes. While paused a rule never schedules one (runner/autosend.ts), so nothing here
 	// promises a send after resume (PM verification of N1a).
@@ -371,11 +378,17 @@ const ownerDay = (s: Snap, at: string) => Number.isFinite(Date.parse(at)) ? new 
 		const next = held ? { owner: { kind: 'delegate' } as Owner, what: 'holds it because you are active in Teams; sends it once you step away' } : { owner: { kind: 'delegate' } as Owner, what: 'sends it at {at}', ...(w.sendAt ? { at: w.sendAt } : {}) }
 		return { ...base, ...(held ? { chips: [...base.chips, { kind: 'held', text: 'Held: you are active in Teams' }] } : {}), kind: 'scheduled', headline: `Sends to ${name}${rule}: "${clip(w.draft?.text, 70)}"`, ...(p.section === 'working' ? { next } : {}), primary: { label: 'Hold', command: `later ${c}` } }
 	}
+	// COUNT58 (PE decision 58): placed by rule, whatever the section: in a terminal (Waiting on others), his steps (Left for you), and a
+	// setup hold (Delegate is on it, with its reason).
+	if (p.rule === 'in-terminal') return { ...base, kind: 'in-terminal', headline: `Open in a terminal on ${w.openOn}`, ...(p.next ? { next: p.next } : {}), primary: open }
+	if (p.rule === 'todo') return todoRow(s, base, w)
+	if (p.rule === 'your-step') return { ...base, kind: 'your-step', headline: clip(w.work?.next?.what ?? w.work?.goal, 140), facts: { ...facts, notes: goal(w.work?.goal) }, primary: { label: 'Tell ' + NAME, command: `${c}: {text}` } }
+	if (p.rule === 'setup-hold') {
+		const hold = j && setupOf(j, s.now)
+		return { ...base, kind: 'waiting-delegate', headline: j?.goal ? clip(j.goal, 120) : `Draft a reply to ${name}`, facts: { ...facts, notes: hold ? [{ label: 'Why', text: hold.text }] : [] }, next: { owner: { kind: 'delegate' }, what: hold?.kind === 'model' ? 'waits for an available AI model' : hold?.kind === 'quota' ? 'waits for AI quota' : 'waits until the AI is set up on this machine' } }
+	}
 	if (p.section === 'move') {
-		if (p.rule === 'in-terminal') return { ...base, kind: 'in-terminal', headline: `Open in a terminal on ${w.openOn} · ${NAME} waits until you close it`, primary: open }
 		if (p.rule === 'stopped') return { ...base, kind: 'stopped', headline: `Couldn't finish ${j?.goal ? gerund(clip(j.goal, 100)) : `this for ${name}`}: try again, or do it yourself`, facts: { ...facts, notes: [{ label: 'Why', text: whyOf(j?.error) }] }, primary: { label: 'Try again', command: `${c}: try again` }, more: [{ label: 'Close', command: `close ${c}` }] }
-		if (p.rule === 'todo') return todoRow(s, base, w)
-		if (p.rule === 'your-step') return { ...base, kind: 'your-step', headline: clip(w.work?.next?.what ?? w.work?.goal, 140), facts: { ...facts, notes: goal(w.work?.goal) }, primary: { label: 'Tell ' + NAME, command: `${c}: {text}` } }
 		const kind = moveKind(w), d = w.draft?.text ?? ''
 		const fits = !!d && d.length <= INLINE_MAX && !pendingEffects(w.effects).length && !w.choices && !mustSee(w)
 		const clash = w.context?.find(f => f.tone === 'warn')
@@ -392,7 +405,7 @@ const ownerDay = (s: Snap, at: string) => Number.isFinite(Date.parse(at)) ? new 
 			// C4 (PE 09:25:25Z part (2); PM round 3/4 words): when the open work waits on HIM (HOST's shared waitsOnOwner), no nudge to the
 			// asker: report how it went (the your-step form, the same answer verb), remind me in 3 days (wait), close it (close). Other-person
 			// rows below are unchanged.
-			case 'check-date': if (waitsOnOwner(w, s.me)) return { ...base, kind, headline: `Still on your list since ${ownerDay(s, w.work!.waitingOn!.since)}: ${clip(w.work?.next?.what ?? w.work?.goal, 120).replace(/[.\s]+$/, '')}.`, facts: { ...facts, quote: undefined, verb: undefined, at: w.work!.waitingOn!.since, notes: goal(w.work?.goal) }, primary: { label: 'Report how it went', command: `${c}: {text}` }, more: [{ label: 'Remind me in 3 days', command: `wait ${c}: 3d` }, { label: 'Close it', command: `close ${c}` }] }
+			case 'check-date': if (waitsOnOwner(w, s.me)) return { ...base, kind, headline: `Still on your list since ${ownerDay(s, ownerStepSince(w.work!, w.createdAt))}: ${clip(w.work?.next?.what ?? w.work?.goal, 120).replace(/[.\s]+$/, '')}.`, facts: { ...facts, quote: undefined, verb: undefined, at: ownerStepSince(w.work!, w.createdAt), notes: goal(w.work?.goal) }, primary: { label: 'Report how it went', command: `${c}: {text}` }, more: [{ label: 'Remind me in 3 days', command: `wait ${c}: 3d` }, { label: 'Close it', command: `close ${c}` }] }
 				return { ...base, kind, headline: `No news on "${clip(w.work?.goal, 80)}": nudge, wait, or close?`, facts: { ...facts, quote: undefined, verb: undefined, at: w.work?.steps.at(-1)?.at ?? w.createdAt, notes: w.work?.waitingOn ? [{ label: 'Waiting on', text: clip(w.work.waitingOn.who, 60), since: w.work.waitingOn.since }] : [] }, primary: { label: 'Draft a nudge', command: `${c}: nudge them` }, more: [{ label: 'Wait 3 days', command: `wait ${c}: 3d` }, { label: 'Close', command: `close ${c}` }] }
 			// The reply already went in the owner's words; one button makes the change it promised, its meaning on the row (Slice 3).
 			case 'promise': {
@@ -459,7 +472,7 @@ function todoRow(s: Snap, base: Omit<Body, 'kind' | 'headline'>, w: Workflow): B
 function workOf(s: Snap, p: Placed, w: Workflow, home: Workflow): NextWork | undefined {
 	const k = home.work
 	if (!k || k.closed || k.proposed) return undefined
-	const who = nextWho(s, k), plan = k.plan ?? [], items = new Map(s.workflows.map(x => [x.code, x]))
+	const who = ownerNext(k, s.me), plan = k.plan ?? [], items = new Map(s.workflows.map(x => [x.code, x]))
 	const on = k.waitingOn?.who && !isMe(s, k.waitingOn.who) ? k.waitingOn.who : undefined
 	const named = plan.find(x => !x.done && !!k.next && x.what === k.next.what)
 	const cur = named ?? plan.find(x => !x.done && x.who === who) ?? (who ? undefined : plan.find(x => !x.done))
@@ -530,11 +543,13 @@ export function nextView(store: Store, now = Date.now(), options: { snapshot?: S
 	const changed = (r: NextRow) => r.chips.some(c => c.kind === 'changed') ? 0 : 1
 	const waiting = of('waiting').sort((a, b) => changed(a) - changed(b) || b.facts.at.localeCompare(a.facts.at))
 	const working = of('working').sort((a, b) => b.facts.at.localeCompare(a.facts.at))
+	// Designer CC4 (c): his steps are obligations, so the oldest first (ties: the item opened first), as in Your move.
+	const left = of('left').sort((a, b) => a.facts.at.localeCompare(b.facts.at) || (a.fresh?.born ?? '').localeCompare(b.fresh?.born ?? ''))
 	const high = (r: NextRow) => s.workflows.find(w => w.code === r.act)?.fyi?.weight === 'high' ? 0 : 1
 	const cu = of('catchup').sort((a, b) => high(a) - high(b) || b.facts.at.localeCompare(a.facts.at))
 	const reading = readingOf(store, now)
 	// Paused drafts go on and sends wait (tick.ts drafts every cycle; gate.ts refuses every send).
 	const off = s.runner === 'ok' ? undefined : s.runner === 'paused' ? { text: 'Paused: drafts go on, nothing is sent' } : s.runner === 'off' ? { text: `${NAME} is off`, ...(reading.at ? { since: reading.at } : {}) } : { text: s.runner === 'capped' ? 'Daily limit reached; it runs again tomorrow' : `${NAME} is ${s.runner}` }
 	// One thread (#27 step 2) has no page-wide counts: they read every proposal and a week of logs.
-	return { move, working, waiting, catchup: { count: cu.length, worth: cu.filter(r => high(r) === 0).length, rows: options.allCatchup ? cu : cu.slice(0, 3) }, minute: options.only ? { facts: 0, suggestions: 0 } : { facts: store.proposals().filter(p => p.state === 'needs_human').length, suggestions: store.habits().filter(h => h.state === 'suggested').length }, ...(off ? { off } : {}), ...(store.control().paused || store.config().paused ? { paused: true } : {}), handled: options.only ? 0 : handledThisWeek(store, s.workflows, new Date(now)) }
+	return { move, left, working, waiting, catchup: { count: cu.length, worth: cu.filter(r => high(r) === 0).length, rows: options.allCatchup ? cu : cu.slice(0, 3) }, minute: options.only ? { facts: 0, suggestions: 0 } : { facts: store.proposals().filter(p => p.state === 'needs_human').length, suggestions: store.habits().filter(h => h.state === 'suggested').length }, ...(off ? { off } : {}), ...(store.control().paused || store.config().paused ? { paused: true } : {}), handled: options.only ? 0 : handledThisWeek(store, s.workflows, new Date(now)) }
 }
