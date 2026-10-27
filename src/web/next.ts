@@ -15,6 +15,7 @@ import { leftWords } from './model/left-words.ts'
 import { htmlToText } from '../core/intake.ts'
 import { activeAgentHold, agentSetupFailure, type AgentSetupFailure } from '../core/agent-failure.ts'
 import { placeOf } from './model/place.ts'
+import { currentDraft } from '../core/policy.ts'
 
 // The new experience's placement (dev-spec/new-experience.md §0, phase N0): one thread per home code, in one section, with its Next owner.
 export type Owner = { kind: 'you' } | { kind: 'delegate' } | { kind: 'others'; text: string } | { kind: 'nobody' }
@@ -382,7 +383,7 @@ const ownerDay = (s: Snap, at: string) => Number.isFinite(Date.parse(at)) ? new 
 	// setup hold (Delegate is on it, with its reason).
 	if (p.rule === 'in-terminal') return { ...base, kind: 'in-terminal', headline: `Open in a terminal on ${w.openOn}`, ...(p.next ? { next: p.next } : {}), primary: open }
 	if (p.rule === 'todo') return todoRow(s, base, w)
-	if (p.rule === 'your-step') return { ...base, kind: 'your-step', headline: clip(w.work?.next?.what ?? w.work?.goal, 140), facts: { ...facts, notes: goal(w.work?.goal) }, primary: { label: 'Tell ' + NAME, command: `${c}: {text}` } }
+	if (p.rule === 'your-step') return { ...base, kind: 'your-step', headline: clip(w.work?.next?.what ?? w.work?.goal, 140), facts: { ...facts, notes: goal(w.work?.goal) }, primary: outputAwaitsOk(s, (w.partOf && s.workflows.find(x => x.id === w.partOf)) || w) ? open : { label: 'Tell ' + NAME, command: `${c}: {text}` } }
 	if (p.rule === 'setup-hold') {
 		const hold = j && setupOf(j, s.now)
 		return { ...base, kind: 'waiting-delegate', headline: j?.goal ? clip(j.goal, 120) : `Draft a reply to ${name}`, facts: { ...facts, notes: hold ? [{ label: 'Why', text: hold.text }] : [] }, next: { owner: { kind: 'delegate' }, what: hold?.kind === 'model' ? 'waits for an available AI model' : hold?.kind === 'quota' ? 'waits for AI quota' : 'waits until the AI is set up on this machine' } }
@@ -467,6 +468,18 @@ function todoRow(s: Snap, base: Omit<Body, 'kind' | 'headline'>, w: Workflow): B
 	return { ...base, kind: 'todo', rev: newest, headline: todoHeadline(t.text, t.count - 1), facts: { at: t.at, ...(where ? { where } : {}), promise }, primary: { label: 'Mark done', command: `close ${w.code}` }, more: [{ label: 'Open' }] }
 }
 
+// D-HOW-DID-IT-GO (PE v1.180): his step is to OK Delegate's output, not to report a result, so no "How did it go?" form. Typed state only,
+// never the step's words. P: an unsent non-holding, non-blank draft (the one the card shows) or a pending change (the approval offers all
+// need one). G: he just gave that OK: the newest step is the engine's own record of it (afterSend's sent:<msgId>, a change: or internal:
+// run record); any later news appends a newer step and the form returns.
+function outputAwaitsOk(s: Snap, home: Workflow): boolean {
+	const d = currentDraft(home, home.job ? s.jobs.get(home.job) : undefined)
+	if (d?.text && !d.holding && !/^_{3,}$/.test(d.text.trim())) return true
+	if (pendingEffects(home.effects).length) return true
+	const ref = home.work?.steps.at(-1)?.ref
+	return !!ref && (!!home.sent && !home.sent.holding && ref === `sent:${home.sent.msgId}` || ref.startsWith('change:') || ref.startsWith('internal:'))
+}
+
 // Who does a plan step: the owner, Delegate, or someone else in the AI's words: the person in the chat of a part of this work the
 // step names (not the owner), or for the step the work waits on (its text is Next's), waitingOn. Never a made-up name (review N2 P1-2).
 function workOf(s: Snap, p: Placed, w: Workflow, home: Workflow): NextWork | undefined {
@@ -491,7 +504,7 @@ function workOf(s: Snap, p: Placed, w: Workflow, home: Workflow): NextWork | und
 		...(who === 'you' && k.next ? { yours: { what: htmlToText(k.next.what), ...(k.waitingOn && isMe(s, k.waitingOn.who) ? { since: k.waitingOn.since } : {}), ...(check ? { check } : {}) } } : {}),
 		...(then ? { then } : {}),
 		// C4: the owner-wait check-date row (moveKind, as itemRow picks it) opens the same report form as a your-step row.
-		...((p.rule === 'your-step' || p.section === 'move' && moveKind(w) === 'check-date' && waitsOnOwner(home, s.me)) && w === home ? { report: `${home.code}: {result}: {text}` } : {}),
+		...((p.rule === 'your-step' || p.section === 'move' && moveKind(w) === 'check-date' && waitsOnOwner(home, s.me)) && w === home && !outputAwaitsOk(s, home) ? { report: `${home.code}: {result}: {text}` } : {}),
 		happened: k.steps.slice(-6).reverse().map(x => ({ at: x.at, what: htmlToText(x.what), news: !!x.news })), total: k.steps.length,
 	}
 }

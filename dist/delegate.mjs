@@ -58587,7 +58587,7 @@ function itemRow(s3, p, w) {
   }
   if (p.rule === "in-terminal") return { ...base2, kind: "in-terminal", headline: `Open in a terminal on ${w.openOn}`, ...p.next ? { next: p.next } : {}, primary: open2 };
   if (p.rule === "todo") return todoRow(s3, base2, w);
-  if (p.rule === "your-step") return { ...base2, kind: "your-step", headline: clip2(w.work?.next?.what ?? w.work?.goal, 140), facts: { ...facts, notes: goal(w.work?.goal) }, primary: { label: "Tell " + NAME, command: `${c}: {text}` } };
+  if (p.rule === "your-step") return { ...base2, kind: "your-step", headline: clip2(w.work?.next?.what ?? w.work?.goal, 140), facts: { ...facts, notes: goal(w.work?.goal) }, primary: outputAwaitsOk(s3, w.partOf && s3.workflows.find((x) => x.id === w.partOf) || w) ? open2 : { label: "Tell " + NAME, command: `${c}: {text}` } };
   if (p.rule === "setup-hold") {
     const hold = j && setupOf(j, s3.now);
     return { ...base2, kind: "waiting-delegate", headline: j?.goal ? clip2(j.goal, 120) : `Draft a reply to ${name}`, facts: { ...facts, notes: hold ? [{ label: "Why", text: hold.text }] : [] }, next: { owner: { kind: "delegate" }, what: hold?.kind === "model" ? "waits for an available AI model" : hold?.kind === "quota" ? "waits for AI quota" : "waits until the AI is set up on this machine" } };
@@ -58663,6 +58663,13 @@ function todoRow(s3, base2, w) {
   const promise2 = { ...to ? { to } : {}, at: t2.at, ...t2.why ? { why: clip2(t2.why, 140) } : t2.refusal || CLONE.test(t2.text) ? {} : { why: "no tool can do it" } };
   return { ...base2, kind: "todo", rev: newest2, headline: todoHeadline(t2.text, t2.count - 1), facts: { at: t2.at, ...where ? { where } : {}, promise: promise2 }, primary: { label: "Mark done", command: `close ${w.code}` }, more: [{ label: "Open" }] };
 }
+function outputAwaitsOk(s3, home) {
+  const d = currentDraft(home, home.job ? s3.jobs.get(home.job) : void 0);
+  if (d?.text && !d.holding && !/^_{3,}$/.test(d.text.trim())) return true;
+  if (pendingEffects(home.effects).length) return true;
+  const ref = home.work?.steps.at(-1)?.ref;
+  return !!ref && (!!home.sent && !home.sent.holding && ref === `sent:${home.sent.msgId}` || ref.startsWith("change:") || ref.startsWith("internal:"));
+}
 function workOf(s3, p, w, home) {
   const k = home.work;
   if (!k || k.closed || k.proposed) return void 0;
@@ -58691,7 +58698,7 @@ function workOf(s3, p, w, home) {
     ...who2 === "you" && k.next ? { yours: { what: htmlToText(k.next.what), ...k.waitingOn && isMe(s3, k.waitingOn.who) ? { since: k.waitingOn.since } : {}, ...check2 ? { check: check2 } : {} } } : {},
     ...then ? { then } : {},
     // C4: the owner-wait check-date row (moveKind, as itemRow picks it) opens the same report form as a your-step row.
-    ...(p.rule === "your-step" || p.section === "move" && moveKind(w) === "check-date" && waitsOnOwner(home, s3.me)) && w === home ? { report: `${home.code}: {result}: {text}` } : {},
+    ...(p.rule === "your-step" || p.section === "move" && moveKind(w) === "check-date" && waitsOnOwner(home, s3.me)) && w === home && !outputAwaitsOk(s3, home) ? { report: `${home.code}: {result}: {text}` } : {},
     happened: k.steps.slice(-6).reverse().map((x) => ({ at: x.at, what: htmlToText(x.what), news: !!x.news })),
     total: k.steps.length
   };
@@ -58764,6 +58771,7 @@ var init_next = __esm({
     init_intake();
     init_agent_failure();
     init_place();
+    init_policy();
     isMe = (s3, who2) => !!who2 && s3.me.includes(who2.toLowerCase());
     setupOf = (j, now) => j.error ? agentSetupFailure(j.error, now) : void 0;
     runnerWhy = { off: `${NAME} is not reading now`, paused: `${NAME} is paused`, stopped: `${NAME} is stopped`, capped: "daily limit reached; tomorrow" };

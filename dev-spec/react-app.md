@@ -5823,3 +5823,18 @@ subline "Your own steps. Nothing here needs a decision now."; each row is one li
 collapse or open holds until a new reason (another left row's route, a different Find), and collapsing with a row open returns to Now
 (CR 16:05:39Z B3). A Waiting-on-others row keeps A206's no-button rule except in-terminal
 (Designer CC2.6). Classic: the Ongoing summary tile adds "· M left for you", M the same threads as New's group. Old data: none.
+
+## 0.2.48 D-HOW-DID-IT-GO: no "How did it go?" form when his step is to OK Delegate's output (PE v1.180; Designer S2 variants)
+
+Projection only (web/next.ts). The your-step report form (and the C4 owner-wait check-date form) is offered only when his step is a
+real-world result. outputAwaitsOk(s, home), from typed state only and never the step's words, is P or G:
+- P, Delegate's output waits for his OK: currentDraft(home) is unsent, not holding and not the blank marker, or home has a pending
+  change (pendingEffects: not made, not left out). The C2/MP approval offers all need a pending change, so they need no arm of their own.
+- G, he just gave that OK: the newest home.work.steps entry is the engine's own record of it, ref sent:<home.sent.msgId> with a
+  non-holding send (afterSend), or a change: or internal: run record. Any later news appends a newer step, so a later real step shows
+  the form again.
+
+When it holds, workOf attaches no report (so no reportActionId, New and Classic alike) and the card keeps its declared primary, such as
+the review count label or C2's approval. The your-step row's primary becomes Open (no Update button or row box). The context line, kind,
+headline and placement are unchanged; after his OK the step stays in Left for you with Open until the next worker turn or news. No
+engine, Settings, action-kind, consent or card-layout change; the S2-b layout moves are not part of this change.
