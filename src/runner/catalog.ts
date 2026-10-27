@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync,
 import { homedir } from 'node:os'
 import { basename, join } from 'node:path'
 import { cliConfigPath, clientFor, McpClient, toolServers, unsetVars, type ServerSpec } from '../adapters/mcp-client.ts'
+import { SetupError } from '../adapters/agent.ts'
 import { NAME } from '../brand.ts'
 import { classifyTool, type ToolClass, type ToolInfo } from '../core/tool-class.ts'
 import type { Config } from '../core/types.ts'
@@ -21,8 +22,11 @@ export const DEFAULT_TOOL_FAMILIES: Readonly<Record<string, ToolFamily>> = {
 	word: 'doc', documents: 'doc', calendar: 'calendar', outlook: 'calendar',
 }
 
-export function sourceToolScope(text: string, meeting = false): ToolFamily[] {
-	const families = new Set<ToolFamily>(['teams'])
+export function sourceToolScope(text: string, meeting = false, base: readonly ToolFamily[] = ['teams']): ToolFamily[] {
+	if (!Array.isArray(base) || base.some(family => !TOOL_FAMILIES.has(family)))
+		throw new SetupError('Reply base families must be teams, ado, doc, or calendar.')
+	const families = new Set<ToolFamily>(base)
+	if (/https?:\/\/(?:teams\.microsoft\.com|teams\.cloud\.microsoft)\/l\/(?:message|chat|channel|team)\//i.test(text)) families.add('teams')
 	if (/https?:\/\/[^\s<>"]*(?:dev\.azure\.com|visualstudio\.com)\b/i.test(text)) families.add('ado')
 	if (/\.(?:docx?|pdf|xlsx?|pptx?|odt|rtf)\b|https?:\/\/[^\s<>"]*(?:sharepoint\.com|onedrive\.com|1drv\.ms|docs\.google\.com|drive\.google\.com)\b/i.test(text)) families.add('doc')
 	if (meeting || /https?:\/\/[^\s<>"]*(?:meetup-join|\/calendar\/|teams\.live\.com\/meet)\b/i.test(text)) families.add('calendar')
@@ -33,16 +37,19 @@ export function jobToolScope(key: string): ToolScope | undefined {
 	return /^pr:/i.test(key) ? ['teams', 'ado'] : /^doc:/i.test(key) ? ['teams', 'doc'] : undefined
 }
 
-export function scopeTools(cfg: Config, tools: string[], scope?: ToolScope): string[] {
+export function scopeTools(cfg: Config, tools: string[], scope?: ToolScope, fullOnly?: readonly string[]): string[] {
 	if (!scope) return tools
+	if (fullOnly !== undefined && (!Array.isArray(fullOnly) || fullOnly.some(server => typeof server !== 'string')))
+		throw new SetupError('Reply full-catalog-only servers must be a list of server names.')
 	const custom = cfg.agent.toolFamilies
 	if (custom !== undefined && (!custom || typeof custom !== 'object' || Array.isArray(custom)))
 		throw new Error('Tool families must map server names to teams, ado, doc, or calendar.')
 	for (const [server, family] of Object.entries(custom ?? {}))
 		if (!TOOL_FAMILIES.has(family)) throw new Error(`The tool family for ${server} must be teams, ado, doc, or calendar.`)
-	const servers = [...new Set([...Object.keys(toolServers(cfg)), ...Object.keys(custom ?? {})])].sort((a, b) => b.length - a.length)
+	const servers = [...new Set([...Object.keys(toolServers(cfg)), ...Object.keys(custom ?? {}), ...(fullOnly ?? [])])].sort((a, b) => b.length - a.length)
 	return tools.filter(tool => {
 		const server = servers.find(server => tool.startsWith(`${server}-`))
+		if (server && fullOnly?.includes(server)) return false
 		const family = server ? (custom && Object.hasOwn(custom, server) ? custom[server] : undefined) ??
 			(Object.hasOwn(DEFAULT_TOOL_FAMILIES, server) ? DEFAULT_TOOL_FAMILIES[server] : undefined) : undefined
 		return !family || scope.includes(family)

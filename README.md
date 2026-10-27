@@ -123,6 +123,22 @@ integrity hashes; run it once before `delegate open` from source.
 component tests. The built page is shipped under `dist/web-react`, so
 installed machines do not need the front-end development dependencies.
 
+Internal comparison controls keep the current defaults: `agent.promptDelivery`
+is `file`, `promptDirStable` is false, and reply tools start with the Teams family.
+Delivery switches apply to Copilot worker spawns; Claude, interactive Continue
+and the already-inline host keep their existing delivery paths.
+Opt-in `parts` delivery preserves prompt bytes in line-boundary parts of at most
+16,000 bytes; a longer single line uses the existing file path and records the
+fallback. `mention` is unverified for the CLI and retains `view` as its fallback.
+Stable prompt directories omit only the redundant folder already under the
+worker's current directory. Reply-only `replyScope.base` and `replyScope.fullOnly`
+do not narrow asks, jobs or full-catalog escalation. Invalid internal delivery
+or reply-scope settings produce a permanent setup refusal, including questions
+and detached jobs, instead of retrying the run. Missing usage metrics remain
+absent; delivery diagnostics contain modes, not prompt text. These controls add
+no Settings row or savings claim, and their defaults do not change without the
+separately authorized quality and cost comparison.
+
 ## Use
 
 Type `delegate` in a terminal to open Home in your browser, or ask your AI chat `what needs me?`. In the chat, `/delegate` invokes the skill; plain words work too. Your Teams self-chat takes the same words, so you can answer from your phone.

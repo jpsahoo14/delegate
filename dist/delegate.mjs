@@ -193,7 +193,7 @@ var init_secrets = __esm({
       // A storage or SAS signature, an account key, a connection string's key.
       [/\b(sig|AccountKey|SharedAccessKey|SharedAccessSignature)=[^\s&;"']{8,}/gi, (_, k) => `${k}=${HIDDEN}`],
       // A named secret: "access_token": "…", api-key=…, client_secret: …, password = …, x-ms-…-token: …
-      [/\b((?:access|refresh|id|auth|session)[_-]?token|api[_-]?key|client[_-]?secret|password|passwd|pwd|x-ms-[\w-]*token|authorization|cookie)("?\s*[:=]\s*"?)(?!\[hidden\]|bearer\b|basic\b)[^\s"',;}]{6,}/gi, (_, k, sep) => `${k}${sep}${HIDDEN}`]
+      [/\b((?:access|refresh|id|auth|session)[_-]?token|api[_-]?key|client[_-]?secret|password|passwd|pwd|x-ms-[\w-]*token|authorization|cookie)("?\s*[:=]\s*"?)(?!\[hidden\]|bearer\b|basic\b)[^\s"',;}]{6,}/gi, (_, k, sep2) => `${k}${sep2}${HIDDEN}`]
     ];
   }
 });
@@ -233,21 +233,39 @@ function tokenDetailOf(usage) {
   return detail.input !== void 0 && detail.cacheRead !== void 0 && detail.cacheWrite !== void 0 && detail.output !== void 0 ? { input: detail.input, cacheRead: detail.cacheRead, cacheWrite: detail.cacheWrite, output: detail.output } : void 0;
 }
 function eventsOf(out) {
-  const t2 = out.trim();
-  if (!t2) return [];
+  const diagnostics = [];
+  const t2 = out.trim().split("\n").filter((line3) => {
+    if (!line3.startsWith(`{"type":"${PROMPT_DELIVERY_EVENT}"`)) return true;
+    try {
+      const event = JSON.parse(line3);
+      if (event?.type === PROMPT_DELIVERY_EVENT) {
+        diagnostics.push(event);
+        return false;
+      }
+    } catch {
+    }
+    return true;
+  }).join("\n").trim();
+  if (!t2) return diagnostics;
   if (t2.startsWith("{")) try {
     const one = JSON.parse(t2);
-    if (one && typeof one === "object" && !Array.isArray(one)) return [one];
+    if (one && typeof one === "object" && !Array.isArray(one)) return [...diagnostics, one];
   } catch {
   }
-  return t2.split("\n").flatMap((l) => {
+  return [...diagnostics, ...t2.split("\n").flatMap((l) => {
     try {
       const e = JSON.parse(l);
       return e && typeof e === "object" && !Array.isArray(e) ? [e] : [];
     } catch {
       return [];
     }
-  });
+  })];
+}
+function promptDeliveryOf(value) {
+  const data = obj(value), requested = data.requested, used = data.used;
+  if (!promptMode(requested) || !promptMode(used)) return void 0;
+  if (data.fallback === "long-line") return { requested, used, fallback: "long-line" };
+  return data.fallback === void 0 ? { requested, used } : void 0;
 }
 function sessionEvents(log, since2, until = Infinity) {
   return log.split("\n").filter((l) => WANTED.test(l)).flatMap((l) => {
@@ -283,6 +301,14 @@ function readRun(out, startedAt, env2 = process.env, session = "", until) {
   try {
     const secrets = envSecrets(env2), seen = /* @__PURE__ */ new Set();
     const events = [...session && startedAt !== void 0 ? sessionEvents(session, startedAt, until) : [], ...eventsOf(out)].filter((e) => typeof e.id !== "string" || !seen.has(e.id) && !!seen.add(e.id));
+    let promptDelivery;
+    for (const event of events) {
+      if (event.type !== PROMPT_DELIVERY_EVENT) continue;
+      const at3 = Date.parse(String(event.timestamp));
+      if (!Number.isFinite(at3) || startedAt !== void 0 && at3 < startedAt || until !== void 0 && at3 > until) continue;
+      promptDelivery = promptDeliveryOf(event.data);
+      if (promptDelivery) break;
+    }
     const models = [], weight = /* @__PURE__ */ new Map(), usageByModel = /* @__PURE__ */ new Map();
     const add = (id, name, w = 0) => {
       const i = nameOf(id, ID, secrets), n = nameOf(name, NAME2, secrets);
@@ -321,7 +347,8 @@ function readRun(out, startedAt, env2 = process.env, session = "", until) {
         tokensOut: tokensOut2,
         tokensCacheRead: tokensCacheRead2,
         tokensCacheWrite: tokensCacheWrite2,
-        creditsStatus: "none"
+        creditsStatus: "none",
+        promptDelivery
       }) };
     }
     let calls = 0, selected, timed = false, lastAt, firstCall;
@@ -330,6 +357,7 @@ function readRun(out, startedAt, env2 = process.env, session = "", until) {
     let reportedToolCalls, cliVersion;
     const durations = [], toolCounts = [];
     const toolTokenCounts = [], reasoningCounts = [];
+    const requestCounts = [], availableCounts = [];
     const tools = /* @__PURE__ */ new Map();
     let anon = 0, apiMs;
     const records2 = events.some((e) => typeof e.type === "string" && e.type.endsWith(".usage_record"));
@@ -368,6 +396,8 @@ function readRun(out, startedAt, env2 = process.env, session = "", until) {
         toolTokenCounts.push(num(u.toolTokenCount));
         reasoningCounts.push(num(u.reasoningTokens));
         toolCounts.push(num(u.numToolCalls));
+        requestCounts.push(num(u.requestBodyBytes));
+        availableCounts.push(num(u.availableToolCount));
         if (Number.isFinite(at3)) {
           const s3 = at3 - (ms ?? 0);
           firstCall = Math.min(firstCall ?? s3, s3);
@@ -434,6 +464,9 @@ function readRun(out, startedAt, env2 = process.env, session = "", until) {
       toolMs,
       startMs,
       cliVersion,
+      requestBytes: completeSum(requestCounts),
+      toolsAvailable: completeMax(availableCounts),
+      promptDelivery,
       creditsNano: totalCredits !== void 0 && Number.isSafeInteger(totalCredits) ? totalCredits : void 0,
       creditsStatus: creditsStatus(models),
       tokenDetail
@@ -467,6 +500,8 @@ function mergeUse(uses) {
     };
   });
   const creditsNano = sum(...uses.map((use) => use.creditsNano));
+  const delivery = uses[0]?.promptDelivery;
+  const sameDelivery = delivery && uses.every((use) => use.promptDelivery?.requested === delivery.requested && use.promptDelivery.used === delivery.used && use.promptDelivery.fallback === delivery.fallback);
   return {
     models: models.length ? models : void 0,
     tokensIn: completeSum(uses.map((use) => use.tokensIn)),
@@ -474,6 +509,9 @@ function mergeUse(uses) {
     tokensCacheRead: completeSum(uses.map((use) => use.tokensCacheRead)),
     tokensCacheWrite: completeSum(uses.map((use) => use.tokensCacheWrite)),
     modelCalls: completeSum(uses.map((use) => use.modelCalls)),
+    requestBytes: completeSum(uses.map((use) => use.requestBytes)),
+    toolsAvailable: completeMax(uses.map((use) => use.toolsAvailable)),
+    ...sameDelivery ? { promptDelivery: delivery } : {},
     creditsNano: creditsNano !== void 0 && Number.isSafeInteger(creditsNano) ? creditsNano : void 0,
     creditsStatus: creditsStatus(uses)
   };
@@ -519,11 +557,12 @@ function modelsLine(events) {
   const ms = modelCounts(runsOf(events));
   return `AI models today: ${ms.length ? ms.map(([m, c]) => `${m} (${plural(c, "run")})`).join(", ") : "none recorded yet"}`;
 }
-var usageKey, TOKEN_DETAIL_KIND_KEY, ID, NAME2, SECRET_ENV, envSecrets, num, sum, obj, completeSum, WANTED, KINDS, median, secs, plural;
+var PROMPT_DELIVERY_EVENT, usageKey, TOKEN_DETAIL_KIND_KEY, ID, NAME2, SECRET_ENV, envSecrets, num, sum, obj, completeSum, completeMax, promptMode, WANTED, KINDS, median, secs, plural;
 var init_runinfo = __esm({
   "src/core/runinfo.ts"() {
     "use strict";
     init_secrets();
+    PROMPT_DELIVERY_EVENT = "delegate.prompt_delivery";
     usageKey = (kind, key) => ({ kind, hash: createHash("sha256").update(key).digest("hex").slice(0, 16) });
     TOKEN_DETAIL_KIND_KEY = "tokenType";
     ID = /^[A-Za-z0-9][\w.:/@+-]{0,79}$/;
@@ -537,6 +576,8 @@ var init_runinfo = __esm({
     };
     obj = (v) => v && typeof v === "object" && !Array.isArray(v) ? v : {};
     completeSum = (values) => values.length && values.every((value) => value !== void 0) ? sum(...values) : void 0;
+    completeMax = (values) => values.length && values.every((value) => num(value) !== void 0) ? Math.max(...values) : void 0;
+    promptMode = (value) => value === "file" || value === "parts" || value === "mention";
     WANTED = /"type"\s*:\s*"(session\.(start|resume|usage_record)|assistant\.usage|tool\.execution_(start|complete))"/;
     KINDS = [["draft", "Drafts"], ["review", "Reviews"], ["ask", "Asks"], ["change", "Changes you approved"], ["job", "Tracking and other jobs"], ["reminder", "Replies to your reminders"], ["owner-reply", "Checking your own replies"], ["promise", "Checking promises"], ["rule", "Reading your rules"]];
     median = (ns) => {
@@ -958,6 +999,21 @@ var init_process = __esm({
 // src/adapters/run-files.ts
 import { existsSync as existsSync2, lstatSync, mkdirSync as mkdirSync2, readFileSync as readFileSync3, readdirSync as readdirSync2, rmSync as rmSync2, writeFileSync as writeFileSync2 } from "node:fs";
 import { basename as basename2, dirname as dirname2, join as join3 } from "node:path";
+function promptParts(prompt) {
+  const bytes = Buffer.from(prompt, "utf8"), parts2 = [];
+  let start = 0;
+  do {
+    let end = Math.min(start + 16e3, bytes.length);
+    if (end < bytes.length) {
+      const newline = bytes.lastIndexOf(10, end - 1);
+      if (newline < start) return void 0;
+      end = newline + 1;
+    }
+    parts2.push(bytes.subarray(start, end));
+    start = end;
+  } while (start < bytes.length);
+  return parts2;
+}
 function ownRunFiles(config2, pid, interactive = false) {
   const folder = promptFolder(config2);
   assertTestSafe(folder);
@@ -23135,9 +23191,9 @@ var init_agent_failure = __esm({
 
 // src/adapters/agent.ts
 import { spawn, spawnSync as spawnProcess2 } from "node:child_process";
-import { closeSync as closeSync2, existsSync as existsSync3, openSync as openSync2, readdirSync as readdirSync3, readFileSync as readFileSync4, writeFileSync as writeFileSync3 } from "node:fs";
+import { closeSync as closeSync2, existsSync as existsSync3, openSync as openSync2, readdirSync as readdirSync3, readFileSync as readFileSync4, writeFileSync as writeFileSync3, writeSync } from "node:fs";
 import { homedir as homedir2 } from "node:os";
-import { basename as basename3, dirname as dirname3, join as join4 } from "node:path";
+import { basename as basename3, dirname as dirname3, isAbsolute as isAbsolute3, join as join4, relative, sep } from "node:path";
 function claudeTool(t2) {
   if (t2 === "task_complete") return void 0;
   if (CLAUDE_BUILTIN[t2]) return CLAUDE_BUILTIN[t2];
@@ -23145,7 +23201,22 @@ function claudeTool(t2) {
   if (dash > 0) return `mcp__${t2.slice(0, dash)}__${t2.slice(dash + 1)}`;
   throw new SetupError(`${NAME} cannot give a Claude worker the tool "${t2}": it has no known Claude Code name. Remove it from agent.tools, or use the copilot flavor.`);
 }
+function checkPromptSettings(cfg) {
+  if (cfg.promptDelivery !== void 0 && !["file", "parts", "mention"].includes(cfg.promptDelivery))
+    throw new SetupError("Prompt delivery must be file, parts, or mention.");
+  if (cfg.promptDirStable !== void 0 && typeof cfg.promptDirStable !== "boolean")
+    throw new SetupError("Stable prompt directories must be true or false.");
+}
 function checkAgentTools(cfg) {
+  checkPromptSettings(cfg);
+  const scope2 = cfg.replyScope;
+  if (scope2 !== void 0) {
+    if (!scope2 || typeof scope2 !== "object" || Array.isArray(scope2)) throw new SetupError("Reply scope must be an object.");
+    if (scope2.base !== void 0 && (!Array.isArray(scope2.base) || scope2.base.some((family2) => !["teams", "ado", "doc", "calendar"].includes(family2))))
+      throw new SetupError("Reply base families must be teams, ado, doc, or calendar.");
+    if (scope2.fullOnly !== void 0 && (!Array.isArray(scope2.fullOnly) || scope2.fullOnly.some((server) => typeof server !== "string")))
+      throw new SetupError("Reply full-catalog-only servers must be a list of server names.");
+  }
   if (cfg.flavor === "claude") for (const t2 of cfg.tools) claudeTool(t2);
 }
 function claudeSessionExists(id, home = process.env.CLAUDE_CONFIG_DIR ?? join4(homedir2(), ".claude")) {
@@ -23154,6 +23225,7 @@ function claudeSessionExists(id, home = process.env.CLAUDE_CONFIG_DIR ?? join4(h
   return readdirSync3(projects).some((p) => existsSync3(join4(projects, p, `${id}.jsonl`)));
 }
 function buildArgs(cfg, i, hasSession = claudeSessionExists) {
+  checkAgentTools(cfg);
   const tools = [.../* @__PURE__ */ new Set([...cfg.tools, ...i.extraTools, ...ALWAYS])];
   const dirs2 = (i.dirs ?? []).flatMap((d) => ["--add-dir", d]);
   if (cfg.flavor === "claude") {
@@ -23217,32 +23289,49 @@ function agentProcessLog(flavor, mcpConfigPath) {
   }).join("\n");
 }
 function interactiveCommand(cfg, sessionId, prompt, mcpConfigPath) {
-  const input2 = filePrompt({ sessionId, prompt, mcpConfigPath, cwd: dirname3(mcpConfigPath), extraTools: [] }, cfg.flavor);
+  const { input: input2 } = filePrompt({ sessionId, prompt, mcpConfigPath, cwd: dirname3(mcpConfigPath), extraTools: [] }, cfg.flavor);
   ownRunFiles(mcpConfigPath, process.pid, true);
   const dirs2 = input2.dirs.flatMap((d) => ["--add-dir", d]);
   if (cfg.flavor === "claude") return [...cfg.command, "--resume", sessionId, "--mcp-config", mcpConfigPath, ...dirs2, input2.prompt];
   return [...cfg.command, "--session-id", sessionId, "--additional-mcp-config", `@${mcpConfigPath}`, ...dirs2, "-i", input2.prompt];
 }
-function filePrompt(input2, flavor) {
+function filePrompt(input2, flavor, settings = {}) {
+  checkPromptSettings(settings);
   const parent = dirname3(input2.mcpConfigPath);
   assertTestSafe(parent);
   pruneRunFiles(parent);
   ownRunFiles(input2.mcpConfigPath, process.pid);
   const dir2 = promptFolder(input2.mcpConfigPath), file4 = join4(dir2, "instructions.md");
-  writeFileSync3(file4, input2.prompt, { encoding: "utf8", mode: 384 });
-  return {
+  const requested = flavor === "copilot" ? settings.promptDelivery ?? "file" : "file";
+  const parts2 = requested === "parts" ? promptParts(input2.prompt) : void 0;
+  const used = requested === "parts" && !parts2 ? "file" : requested;
+  const files2 = parts2 ? parts2.map((part2, index) => {
+    const path = join4(dir2, `instructions-${index + 1}.md`);
+    writeFileSync3(path, part2, { mode: 384 });
+    return path;
+  }) : [file4];
+  if (!parts2) writeFileSync3(file4, input2.prompt, { encoding: "utf8", mode: 384 });
+  const prompt = used === "parts" ? `Read the complete instructions in all of these files, in order, in one turn with view: ${files2.map((path) => JSON.stringify(path)).join(", ")}. Then carry out that work.` : used === "mention" ? `Carry out the complete instructions in @${file4}. If they were not included, read ${JSON.stringify(file4)} with view, then carry out that work.` : `Read the complete instructions in ${JSON.stringify(file4)} with ${flavor === "claude" ? "Read" : "view"}, then carry out that work.`;
+  const inside = relative(input2.cwd, dir2);
+  const stable = flavor === "copilot" && settings.promptDirStable === true && !isAbsolute3(inside) && inside !== ".." && !inside.startsWith(`..${sep}`);
+  const delivery = flavor === "copilot" ? { requested, used, ...requested === "parts" && !parts2 ? { fallback: "long-line" } : {} } : void 0;
+  return { input: {
     ...input2,
-    prompt: `Read the complete instructions in ${JSON.stringify(file4)} with ${flavor === "claude" ? "Read" : "view"}, then carry out that work.`,
-    dirs: [.../* @__PURE__ */ new Set([...input2.dirs ?? [], dir2])],
+    prompt,
+    dirs: [.../* @__PURE__ */ new Set([...input2.dirs ?? [], ...stable ? [] : [dir2]])],
     extraTools: [...input2.extraTools, "view"]
-  };
+  }, delivery };
 }
 function startAgent(cfg, i, logPath) {
   const [cmd2, ...pre] = cfg.command;
   let fd;
   try {
-    const args2 = buildArgs(cfg, filePrompt(i, cfg.flavor));
+    const prepared = filePrompt(i, cfg.flavor, cfg), args2 = buildArgs(cfg, prepared.input);
+    assertTestSafe(logPath);
     fd = openSync2(logPath, "a");
+    if (prepared.delivery) writeSync(fd, `
+${JSON.stringify({ type: PROMPT_DELIVERY_EVENT, timestamp: (/* @__PURE__ */ new Date()).toISOString(), data: prepared.delivery })}
+`);
     const p = spawn(cmd2, [...pre, ...args2], { cwd: i.cwd, detached: true, windowsHide: true, stdio: ["ignore", fd, fd], env: workerEnv(process.env) });
     p.once("error", (error62) => {
       console.error(`Could not start ${cmd2}:`, error62);
@@ -23308,8 +23397,11 @@ function runAgent(cfg, i, timeoutMs = 10 * 6e4, graceMs = 5e3) {
   const t0 = Date.now();
   return new Promise((resolve13) => {
     let p;
+    let delivery;
     try {
-      p = spawn(cmd2, [...pre, ...buildArgs(cfg, filePrompt(i, cfg.flavor))], { cwd: i.cwd, detached: true, windowsHide: true, stdio: ["ignore", "pipe", "pipe"], env: workerEnv(process.env) });
+      const prepared = filePrompt(i, cfg.flavor, cfg);
+      delivery = prepared.delivery;
+      p = spawn(cmd2, [...pre, ...buildArgs(cfg, prepared.input)], { cwd: i.cwd, detached: true, windowsHide: true, stdio: ["ignore", "pipe", "pipe"], env: workerEnv(process.env) });
     } catch (error62) {
       const cleanup = cleanRunFiles(i.mcpConfigPath);
       resolve13({ exitCode: -1, ms: Date.now() - t0, error: `${error62 instanceof SetupError ? `Could not start: ${error62.message}` : `Could not start ${cmd2}: ${String(error62)}`}${cleanup ? `. ${cleanup}` : ""}` });
@@ -23343,6 +23435,7 @@ function runAgent(cfg, i, timeoutMs = 10 * 6e4, graceMs = 5e3) {
     p.on("error", (e) => finish({ exitCode: -1, ms: Date.now() - t0, error: `Could not start ${cmd2}: ${e.message}` }));
     p.on("close", (code) => {
       const used = readRun(out, t0, process.env, sessionLog(cfg.flavor, i.sessionId), Date.now()).use;
+      if (delivery) used.promptDelivery = delivery;
       let log;
       try {
         log = agentProcessLog(cfg.flavor, i.mcpConfigPath);
@@ -23432,7 +23525,7 @@ var init_paths = __esm({
 // src/runner/repos.ts
 import { existsSync as existsSync5, readdirSync as readdirSync4, readFileSync as readFileSync6, statSync as statSync3 } from "node:fs";
 import { homedir as homedir4 } from "node:os";
-import { isAbsolute as isAbsolute3, join as join6, resolve as resolve3 } from "node:path";
+import { isAbsolute as isAbsolute4, join as join6, resolve as resolve3 } from "node:path";
 function remoteOf(s3) {
   const t2 = (s3 ?? "").trim();
   const ado = /^(?:https?:\/\/)?(?:[^@/\s]+@)?dev\.azure\.com\/([^/\s]+)\/([^/\s]+)\/_git\/(?:_(?:full|optimized)\/)?([^/\s?#]+)/i.exec(t2) ?? /^(?:https?:\/\/)?(?:[^@/\s]+@)?([\w-]+)\.visualstudio\.com\/(?:DefaultCollection\/)?([^/\s]+)\/_git\/(?:_(?:full|optimized)\/)?([^/\s?#]+)/i.exec(t2) ?? /^(?:[^@\s]+@)?(?:ssh\.dev\.azure\.com|vs-ssh\.visualstudio\.com):v3\/([^/\s]+)\/([^/\s]+)\/(?:_(?:full|optimized)\/)?([^/\s?#]+)/i.exec(t2);
@@ -23443,7 +23536,7 @@ function remoteOf(s3) {
 function repoRef(cfg, s3) {
   const r = remoteOf(s3);
   if (r) return r;
-  if (s3 && isAbsolute3(s3.trim())) return gitInfo(s3.trim())?.remote;
+  if (s3 && isAbsolute4(s3.trim())) return gitInfo(s3.trim())?.remote;
   const name = (s3 ?? "").trim().toLowerCase();
   const hit = name && cfg.repos?.find((x) => x.name.toLowerCase() === name);
   return hit ? remoteOf(hit.remote) : void 0;
@@ -23502,7 +23595,7 @@ function scanClones(folders, depth = 2) {
     }
     for (const n of names) visit2(join6(dir2, n), left - 1);
   };
-  for (const f of folders) if (isAbsolute3(f) && existsSync5(f)) visit2(f, depth);
+  for (const f of folders) if (isAbsolute4(f) && existsSync5(f)) visit2(f, depth);
   return out;
 }
 function scanCodeFolders(now = Date.now(), onlyRequested = false) {
@@ -35809,49 +35902,49 @@ var require_fast_uri = __commonJS({
       schemelessOptions.skipEscape = true;
       return serialize(resolved2, schemelessOptions);
     }
-    function resolveComponent(base2, relative5, options, skipNormalization) {
+    function resolveComponent(base2, relative6, options, skipNormalization) {
       const target2 = {};
       if (!skipNormalization) {
         base2 = parse4(serialize(base2, options), options);
-        relative5 = parse4(serialize(relative5, options), options);
+        relative6 = parse4(serialize(relative6, options), options);
       }
       options = options || {};
-      if (!options.tolerant && relative5.scheme) {
-        target2.scheme = relative5.scheme;
-        target2.userinfo = relative5.userinfo;
-        target2.host = relative5.host;
-        target2.port = relative5.port;
-        target2.path = removeDotSegments(relative5.path || "");
-        target2.query = relative5.query;
+      if (!options.tolerant && relative6.scheme) {
+        target2.scheme = relative6.scheme;
+        target2.userinfo = relative6.userinfo;
+        target2.host = relative6.host;
+        target2.port = relative6.port;
+        target2.path = removeDotSegments(relative6.path || "");
+        target2.query = relative6.query;
       } else {
-        if (relative5.userinfo !== void 0 || relative5.host !== void 0 || relative5.port !== void 0) {
-          target2.userinfo = relative5.userinfo;
-          target2.host = relative5.host;
-          target2.port = relative5.port;
-          target2.path = removeDotSegments(relative5.path || "");
-          target2.query = relative5.query;
+        if (relative6.userinfo !== void 0 || relative6.host !== void 0 || relative6.port !== void 0) {
+          target2.userinfo = relative6.userinfo;
+          target2.host = relative6.host;
+          target2.port = relative6.port;
+          target2.path = removeDotSegments(relative6.path || "");
+          target2.query = relative6.query;
         } else {
-          if (!relative5.path) {
+          if (!relative6.path) {
             target2.path = base2.path;
-            if (relative5.query !== void 0) {
-              target2.query = relative5.query;
+            if (relative6.query !== void 0) {
+              target2.query = relative6.query;
             } else {
               target2.query = base2.query;
             }
           } else {
-            if (relative5.path[0] === "/") {
-              target2.path = removeDotSegments(relative5.path);
+            if (relative6.path[0] === "/") {
+              target2.path = removeDotSegments(relative6.path);
             } else {
               if ((base2.userinfo !== void 0 || base2.host !== void 0 || base2.port !== void 0) && !base2.path) {
-                target2.path = "/" + relative5.path;
+                target2.path = "/" + relative6.path;
               } else if (!base2.path) {
-                target2.path = relative5.path;
+                target2.path = relative6.path;
               } else {
-                target2.path = base2.path.slice(0, base2.path.lastIndexOf("/") + 1) + relative5.path;
+                target2.path = base2.path.slice(0, base2.path.lastIndexOf("/") + 1) + relative6.path;
               }
               target2.path = removeDotSegments(target2.path);
             }
-            target2.query = relative5.query;
+            target2.query = relative6.query;
           }
           target2.userinfo = base2.userinfo;
           target2.host = base2.host;
@@ -35859,7 +35952,7 @@ var require_fast_uri = __commonJS({
         }
         target2.scheme = base2.scheme;
       }
-      target2.fragment = relative5.fragment;
+      target2.fragment = relative6.fragment;
       return target2;
     }
     function equal(uriA, uriB, options) {
@@ -42303,10 +42396,10 @@ var init_upgrades = __esm({
 });
 
 // src/store/state.ts
-import { closeSync as closeSync3, existsSync as existsSync8, mkdirSync as mkdirSync3, openSync as openSync3, readdirSync as readdirSync6, readFileSync as readFileSync9, rmSync as rmSync3, writeSync } from "node:fs";
+import { closeSync as closeSync3, existsSync as existsSync8, mkdirSync as mkdirSync3, openSync as openSync3, readdirSync as readdirSync6, readFileSync as readFileSync9, rmSync as rmSync3, writeSync as writeSync2 } from "node:fs";
 import { hostname as hostname3, uptime } from "node:os";
 import { createHash as createHash6 } from "node:crypto";
-import { basename as basename5, dirname as dirname5, isAbsolute as isAbsolute4, join as join11, relative, resolve as resolve6 } from "node:path";
+import { basename as basename5, dirname as dirname5, isAbsolute as isAbsolute5, join as join11, relative as relative2, resolve as resolve6 } from "node:path";
 function loadLocal() {
   const p = join11(LOCAL_DIR, "local.json");
   const l = readJson(p, {});
@@ -42462,7 +42555,7 @@ async function withTickLock(fn, bootMs = Date.now() - uptime() * 1e3) {
 function tryLock(path, token) {
   try {
     const fd = openSync3(path, "wx");
-    writeSync(fd, token);
+    writeSync2(fd, token);
     closeSync3(fd);
     return true;
   } catch (e) {
@@ -42491,8 +42584,8 @@ var init_state = __esm({
     documentKey = (key) => createHash6("sha256").update(key).digest("hex");
     codeIndex = /* @__PURE__ */ new Map();
     portable = (root, p) => {
-      const r = relative(dirname5(root), p);
-      return r && !r.startsWith("..") && !isAbsolute4(r) ? relative(root, p) : p;
+      const r = relative2(dirname5(root), p);
+      return r && !r.startsWith("..") && !isAbsolute5(r) ? relative2(root, p) : p;
     };
     here2 = (root, p) => resolve6(root, p);
     experienceOf = (c) => c.experience ?? (c.ui === "classic" ? "classic" : "new");
@@ -44817,7 +44910,7 @@ var init_format2 = __esm({
 });
 
 // src/mesh/inbox.mjs
-import { closeSync as closeSync4, existsSync as existsSync11, mkdirSync as mkdirSync4, openSync as openSync4, readdirSync as readdirSync7, readFileSync as readFileSync12, renameSync as renameSync2, rmSync as rmSync4, statSync as statSync7, writeFileSync as writeFileSync4, writeSync as writeSync2 } from "node:fs";
+import { closeSync as closeSync4, existsSync as existsSync11, mkdirSync as mkdirSync4, openSync as openSync4, readdirSync as readdirSync7, readFileSync as readFileSync12, renameSync as renameSync2, rmSync as rmSync4, statSync as statSync7, writeFileSync as writeFileSync4, writeSync as writeSync3 } from "node:fs";
 import { randomBytes as randomBytes2 } from "node:crypto";
 import { dirname as dirname6, join as join15 } from "node:path";
 function readJson2(p) {
@@ -47314,13 +47407,14 @@ function answersOwner(store2, wf) {
   return !!before?.byOwner && Date.parse(thread2[first3].at) - Date.parse(before.at) < 864e5;
 }
 function startFailed(store2, wf, e) {
-  const raw = String(e).replace(/^Error: /, "");
-  const account = agentSetupFailure(raw);
+  const typedSetup = e instanceof SetupError;
+  const raw = typedSetup ? e.message : String(e).replace(/^Error: /, "");
+  const account = typedSetup ? void 0 : agentSetupFailure(raw);
   if (account) {
     holdAgent(store2, store2.config(), account);
     return;
   }
-  const setup = SETUP_REFUSAL.test(raw), why2 = setup ? raw : String(e).slice(0, 160);
+  const setup = typedSetup || SETUP_REFUSAL.test(raw), why2 = setup ? raw : String(e).slice(0, 160);
   store2.log({ event: "run-failed", workflowId: wf.id, code: wf.code, error: why2 });
   const fresh = store2.workflow(wf.id);
   if (fresh && setup) {
@@ -47409,21 +47503,23 @@ function workerMcp(store2, targetId, runId, interactive = false) {
   }));
   return { cwd, mcpConfigPath };
 }
-function refuseStart(cfg, tools, folder) {
+function refuseStart(cfg, offered, folder) {
+  const tools = typeof offered === "function" ? offered() : offered;
   const unsafe = unsafeRead(tools, Object.keys(toolServers(cfg)), catalogInfo(cfg));
   if (unsafe) throw new Error(unsafe);
   checkAgentTools({ ...cfg.agent, tools });
   const shell2 = folder && shellTool(tools);
   if (shell2) throw new Error(shellInClone(shell2));
+  return tools;
 }
-function workflowToolScope(store2, wf) {
+function workflowToolScope(store2, wf, base2) {
   const text5 = [
     wf.lastAsk ?? "",
     ...wf.draft?.sources.map((source3) => source3.ref) ?? [],
     ...store2.thread(wf.id).map((message) => `${message.text}
 ${JSON.stringify(message.attachments ?? [])}`)
   ].join("\n");
-  const scope2 = sourceToolScope(text5, !!wf.meeting);
+  const scope2 = sourceToolScope(text5, !!wf.meeting, base2);
   if ((wf.key.type === "pr" || wf.key.type === "workItem" || wf.prs?.some((unit) => unit.ref)) && !scope2.includes("ado")) scope2.push("ado");
   return scope2;
 }
@@ -47436,9 +47532,14 @@ async function runOne(store2, src, cfg, wf, run2, probe, catalogRetried = false,
     return;
   }
   wf = current3;
-  const full = workerTools(cfg, "reply"), tools = scopeTools(cfg, full, fullCatalog ? void 0 : workflowToolScope(store2, wf));
+  const full = workerTools(cfg, "reply");
+  const tools = refuseStart(cfg, () => scopeTools(
+    cfg,
+    full,
+    fullCatalog ? void 0 : workflowToolScope(store2, wf, cfg.agent.replyScope?.base),
+    cfg.agent.replyScope?.fullOnly
+  ));
   const offered = { offered: tools.length, scoped: tools.length < full.length };
-  refuseStart(cfg, tools);
   if (wf.state !== "running") return runAsk(store2, src, cfg, wf, run2, void 0, fullCatalog);
   const approvedDraft = wf.draft ?? (wf.approved?.text ? { text: wf.approved.text, commitment: false, sources: [] } : void 0);
   if (!wf.ownerSend && approvedDraft && wf.approved) {
@@ -54408,7 +54509,7 @@ import { createHash as createHash12, randomUUID as randomUUID6 } from "node:cryp
 import { existsSync as existsSync20, readFileSync as readFileSync18, renameSync as renameSync4, rmSync as rmSync8, writeFileSync as writeFileSync9 } from "node:fs";
 import { createServer } from "node:http";
 import { homedir as homedir9, tmpdir as tmpdir2 } from "node:os";
-import { isAbsolute as isAbsolute5, join as join25, relative as relative2, resolve as resolve8 } from "node:path";
+import { isAbsolute as isAbsolute6, join as join25, relative as relative3, resolve as resolve8 } from "node:path";
 import { pathToFileURL } from "node:url";
 function envProvider() {
   const e = process.env;
@@ -54831,8 +54932,8 @@ var init_host = __esm({
     under = (path, dirs2) => {
       const p = resolve8(path);
       return dirs2.some((d) => {
-        const r = relative2(resolve8(d), p);
-        return r === "" || !r.startsWith("..") && !isAbsolute5(r);
+        const r = relative3(resolve8(d), p);
+        return r === "" || !r.startsWith("..") && !isAbsolute6(r);
       });
     };
     turnStarted = (log, since2) => log.split("\n").some((l) => {
@@ -55573,7 +55674,7 @@ var init_review_context = __esm({
 // src/runner/jobs.ts
 import { uptime as uptime3 } from "node:os";
 import { existsSync as existsSync21, readFileSync as readFileSync19 } from "node:fs";
-import { isAbsolute as isAbsolute6, join as join28 } from "node:path";
+import { isAbsolute as isAbsolute7, join as join28 } from "node:path";
 function canonicalKey2(key) {
   const k = key.trim().toLowerCase().replace(/\s+/g, "");
   const pr = /^pr:([^/]+)\/(?:.*\/)?(\d+)$/.exec(k);
@@ -55989,7 +56090,7 @@ async function startJobs(store2, cfg, procs, hold = [], probe) {
         continue;
       }
     }
-    if (job.repo && !isAbsolute6(job.repo)) {
+    if (job.repo && !isAbsolute7(job.repo)) {
       Object.assign(job, { remote: job.remote ?? repoRef(cfg, job.repo), repo: void 0 });
       commit();
     }
@@ -56076,6 +56177,7 @@ async function startJobs(store2, cfg, procs, hold = [], probe) {
       n++;
       room--;
     } catch (e) {
+      const setup = e instanceof SetupError;
       if (!pid || procs.kill(pid)) {
         try {
           removeRunFiles(mcpConfigPath);
@@ -56084,9 +56186,9 @@ async function startJobs(store2, cfg, procs, hold = [], probe) {
           store2.setHealth(`worker-files:${runId}`, `Could not remove files for failed worker ${runId}: ${String(error62).slice(0, 160)}`);
         }
       }
-      const account = agentSetupFailure(String(e));
+      const account = setup ? void 0 : agentSetupFailure(String(e));
       if (account) holdJob(store2, cfg, job, account);
-      else failOrRetry(store2, job, `Could not start: ${String(e).slice(0, 120)}`);
+      else failOrRetry(store2, job, `Could not start: ${setup ? e.message : String(e).slice(0, 120)}`, setup);
     }
   }
   return n;
@@ -57190,10 +57292,11 @@ function checkRelay(store2, job) {
   else fail(store2, job, rc?.state === "refused" ? `Your session on ${run2.machine} did not take it: ${rc.why}` : rc?.ended || rc?.recovered ? `Your session on ${run2.machine} took it but recorded no answer (${rc.ended ?? "it restarted"}); look there` : `Your session on ${run2.machine} did not answer within a day`);
   return true;
 }
-function failOrRetry(store2, job, why2) {
+function failOrRetry(store2, job, why2, setup = false) {
   if (job.run?.oneMore) return fail(store2, job, `The extra run didn't finish: ${why2}`, "stopped");
-  if (job.every && job.purpose === "work" && !job.relay && !SETUP_REFUSAL.test(why2)) return missedCheck(store2, job, why2);
-  if (job.purpose !== "work" || job.relay || job.every || isBootstrap(job) || job.key.startsWith("learn:") || SETUP_REFUSAL.test(why2)) return fail(store2, job, why2);
+  const permanent = setup || SETUP_REFUSAL.test(why2);
+  if (job.every && job.purpose === "work" && !job.relay && !permanent) return missedCheck(store2, job, why2);
+  if (job.purpose !== "work" || job.relay || job.every || isBootstrap(job) || job.key.startsWith("learn:") || permanent) return fail(store2, job, why2);
   const p = planRetry(job.retry, { kind: "transient", why: why2, tried: [] });
   if ("stop" in p) return fail(store2, job, p.stop);
   queueRetry(store2, job, p.retry, p.fresh);
@@ -58614,7 +58717,7 @@ var init_view = __esm({
 
 // src/knowledge/index.ts
 import { existsSync as existsSync22, mkdirSync as mkdirSync9, readdirSync as readdirSync9, readFileSync as readFileSync20 } from "node:fs";
-import { dirname as dirname9, join as join29, relative as relative3 } from "node:path";
+import { dirname as dirname9, join as join29, relative as relative4 } from "node:path";
 function newId2(text5) {
   for (; ; ) {
     const id = Math.random().toString(36).slice(2, 6);
@@ -58722,7 +58825,7 @@ var init_knowledge = __esm({
           const lines = readFileSync20(card2.path, "utf8").split("\n"), keep = [];
           lines.forEach((l, at3) => {
             const id = /^- \[/.test(l) ? [...ids].find((i) => new RegExp(`\\s\\^${i}(?:\\s|$)`).test(l)) : void 0;
-            if (id) out.push({ path: relative3(this.root, card2.path), line: l, at: at3 });
+            if (id) out.push({ path: relative4(this.root, card2.path), line: l, at: at3 });
             else keep.push(l);
           });
           writeText(card2.path, keep.join("\n"), this.machine);
@@ -58852,7 +58955,7 @@ var init_knowledge = __esm({
 
 // src/runner/proposals.ts
 import { existsSync as existsSync23 } from "node:fs";
-import { isAbsolute as isAbsolute7, join as join30, relative as relative4, resolve as resolve10 } from "node:path";
+import { isAbsolute as isAbsolute8, join as join30, relative as relative5, resolve as resolve10 } from "node:path";
 function propose2(store2, k, claims2, from, source3) {
   const pending = store2.proposals().filter((p) => p.state === "needs_human").flatMap((p) => p.ops);
   const byTopic = /* @__PURE__ */ new Map();
@@ -59064,8 +59167,8 @@ function resolveEvidence(k, cfg, sources, root = "") {
     if (/^https:\/\//i.test(s3.ref)) return { ...s3, tier: privateLink(s3.ref) || s3.tier === "private" ? "private" : "live", stale: void 0 };
     const path = resolve10(s3.ref);
     const inside = folders.some((f) => {
-      const r = relative4(f, path);
-      return !!r && !r.startsWith("..") && !isAbsolute7(r);
+      const r = relative5(f, path);
+      return !!r && !r.startsWith("..") && !isAbsolute8(r);
     });
     if (inside && existsSync23(path)) return { ...s3, tier: s3.tier === "private" ? "private" : "card", stale: void 0 };
     return { ...s3, stale: true };
@@ -59364,8 +59467,11 @@ import { createHash as createHash13 } from "node:crypto";
 import { existsSync as existsSync25, mkdirSync as mkdirSync11, readdirSync as readdirSync10, readFileSync as readFileSync22, renameSync as renameSync5, statSync as statSync10, writeFileSync as writeFileSync12 } from "node:fs";
 import { homedir as homedir10 } from "node:os";
 import { basename as basename7, join as join33 } from "node:path";
-function sourceToolScope(text5, meeting = false) {
-  const families = /* @__PURE__ */ new Set(["teams"]);
+function sourceToolScope(text5, meeting = false, base2 = ["teams"]) {
+  if (!Array.isArray(base2) || base2.some((family2) => !TOOL_FAMILIES.has(family2)))
+    throw new SetupError("Reply base families must be teams, ado, doc, or calendar.");
+  const families = new Set(base2);
+  if (/https?:\/\/(?:teams\.microsoft\.com|teams\.cloud\.microsoft)\/l\/(?:message|chat|channel|team)\//i.test(text5)) families.add("teams");
   if (/https?:\/\/[^\s<>"]*(?:dev\.azure\.com|visualstudio\.com)\b/i.test(text5)) families.add("ado");
   if (/\.(?:docx?|pdf|xlsx?|pptx?|odt|rtf)\b|https?:\/\/[^\s<>"]*(?:sharepoint\.com|onedrive\.com|1drv\.ms|docs\.google\.com|drive\.google\.com)\b/i.test(text5)) families.add("doc");
   if (meeting || /https?:\/\/[^\s<>"]*(?:meetup-join|\/calendar\/|teams\.live\.com\/meet)\b/i.test(text5)) families.add("calendar");
@@ -59374,16 +59480,19 @@ function sourceToolScope(text5, meeting = false) {
 function jobToolScope(key) {
   return /^pr:/i.test(key) ? ["teams", "ado"] : /^doc:/i.test(key) ? ["teams", "doc"] : void 0;
 }
-function scopeTools(cfg, tools, scope2) {
+function scopeTools(cfg, tools, scope2, fullOnly) {
   if (!scope2) return tools;
+  if (fullOnly !== void 0 && (!Array.isArray(fullOnly) || fullOnly.some((server) => typeof server !== "string")))
+    throw new SetupError("Reply full-catalog-only servers must be a list of server names.");
   const custom2 = cfg.agent.toolFamilies;
   if (custom2 !== void 0 && (!custom2 || typeof custom2 !== "object" || Array.isArray(custom2)))
     throw new Error("Tool families must map server names to teams, ado, doc, or calendar.");
   for (const [server, family2] of Object.entries(custom2 ?? {}))
     if (!TOOL_FAMILIES.has(family2)) throw new Error(`The tool family for ${server} must be teams, ado, doc, or calendar.`);
-  const servers = [.../* @__PURE__ */ new Set([...Object.keys(toolServers(cfg)), ...Object.keys(custom2 ?? {})])].sort((a, b) => b.length - a.length);
+  const servers = [.../* @__PURE__ */ new Set([...Object.keys(toolServers(cfg)), ...Object.keys(custom2 ?? {}), ...fullOnly ?? []])].sort((a, b) => b.length - a.length);
   return tools.filter((tool) => {
     const server = servers.find((server2) => tool.startsWith(`${server2}-`));
+    if (server && fullOnly?.includes(server)) return false;
     const family2 = server ? (custom2 && Object.hasOwn(custom2, server) ? custom2[server] : void 0) ?? (Object.hasOwn(DEFAULT_TOOL_FAMILIES, server) ? DEFAULT_TOOL_FAMILIES[server] : void 0) : void 0;
     return !family2 || scope2.includes(family2);
   });
@@ -59512,6 +59621,7 @@ var init_catalog = __esm({
   "src/runner/catalog.ts"() {
     "use strict";
     init_mcp_client();
+    init_agent();
     init_brand();
     init_tool_class();
     init_state();
@@ -62372,7 +62482,7 @@ init_repos();
 init_state();
 init_brand();
 import { existsSync as existsSync29, readFileSync as readFileSync25, statSync as statSync12, writeFileSync as writeFileSync15 } from "node:fs";
-import { isAbsolute as isAbsolute8, join as join38, resolve as resolve11 } from "node:path";
+import { isAbsolute as isAbsolute9, join as join38, resolve as resolve11 } from "node:path";
 init_runinfo();
 init_habits();
 init_catalog();
@@ -62977,7 +63087,7 @@ async function saveSetting(store2, key, raw, deps = {}) {
   if (key === "code-add" || key === "code-remove") {
     const folder = String(raw ?? "").trim(), folders = codeFolders();
     if (key === "code-add") {
-      if (!isAbsolute8(folder)) return { ok: false, text: "Give an absolute folder path on this computer." };
+      if (!isAbsolute9(folder)) return { ok: false, text: "Give an absolute folder path on this computer." };
       try {
         if (!statSync12(folder).isDirectory()) return { ok: false, text: "That path isn't a folder." };
       } catch (error62) {

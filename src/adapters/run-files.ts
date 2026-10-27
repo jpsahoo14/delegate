@@ -5,6 +5,22 @@ import { assertTestSafe } from '../store/fs.ts'
 
 export const promptFolder = (config: string) => join(dirname(config), `prompt-${basename(config, '.json')}`)
 
+export function promptParts(prompt: string): Buffer[] | undefined {
+	const bytes = Buffer.from(prompt, 'utf8'), parts: Buffer[] = []
+	let start = 0
+	do {
+		let end = Math.min(start + 16_000, bytes.length)
+		if (end < bytes.length) {
+			const newline = bytes.lastIndexOf(10, end - 1)
+			if (newline < start) return undefined
+			end = newline + 1
+		}
+		parts.push(bytes.subarray(start, end))
+		start = end
+	} while (start < bytes.length)
+	return parts
+}
+
 export function ownRunFiles(config: string, pid: number, interactive = false) {
 	const folder = promptFolder(config)
 	assertTestSafe(folder)

@@ -1,14 +1,14 @@
 import { site } from '../core/site.ts'
 import { spawn, spawnSync as spawnProcess } from 'node:child_process'
 import { timedCall } from '../core/io-time.ts'
-import { closeSync, existsSync, openSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, writeFileSync, writeSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { basename, dirname, join } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { NAME } from '../brand.ts'
 import type { Config } from '../core/types.ts'
-import { readRun, type RunUse } from '../core/runinfo.ts'
+import { PROMPT_DELIVERY_EVENT, readRun, type PromptDelivery, type RunUse } from '../core/runinfo.ts'
 import { assertTestSafe } from '../store/fs.ts'
-import { ownRunFiles, promptFolder, pruneRunFiles, removeRunFiles } from './run-files.ts'
+import { ownRunFiles, promptFolder, promptParts, pruneRunFiles, removeRunFiles } from './run-files.ts'
 import { agentSetupFailure, type AgentSetupFailure } from '../core/agent-failure.ts'
 import { scrub } from '../core/secrets.ts'
 const spawnSync = timedCall(() => spawnProcess)
@@ -33,7 +33,26 @@ function claudeTool(t: string): string | undefined {
 	throw new SetupError(`${NAME} cannot give a Claude worker the tool "${t}": it has no known Claude Code name. Remove it from agent.tools, or use the copilot flavor.`)
 }
 // Checked before a run is counted or started (bug 10-23 E33).
-export function checkAgentTools(cfg: Config['agent']) { if (cfg.flavor === 'claude') for (const t of cfg.tools) claudeTool(t) }
+type PromptSettings = Pick<Config['agent'], 'promptDelivery' | 'promptDirStable'>
+function checkPromptSettings(cfg: PromptSettings) {
+	if (cfg.promptDelivery !== undefined && !['file', 'parts', 'mention'].includes(cfg.promptDelivery))
+		throw new SetupError('Prompt delivery must be file, parts, or mention.')
+	if (cfg.promptDirStable !== undefined && typeof cfg.promptDirStable !== 'boolean')
+		throw new SetupError('Stable prompt directories must be true or false.')
+}
+
+export function checkAgentTools(cfg: Config['agent']) {
+	checkPromptSettings(cfg)
+	const scope = cfg.replyScope
+	if (scope !== undefined) {
+		if (!scope || typeof scope !== 'object' || Array.isArray(scope)) throw new SetupError('Reply scope must be an object.')
+		if (scope.base !== undefined && (!Array.isArray(scope.base) || scope.base.some(family => !['teams', 'ado', 'doc', 'calendar'].includes(family))))
+			throw new SetupError('Reply base families must be teams, ado, doc, or calendar.')
+		if (scope.fullOnly !== undefined && (!Array.isArray(scope.fullOnly) || scope.fullOnly.some(server => typeof server !== 'string')))
+			throw new SetupError('Reply full-catalog-only servers must be a list of server names.')
+	}
+	if (cfg.flavor === 'claude') for (const t of cfg.tools) claudeTool(t)
+}
 
 // Claude Code keeps each transcript at <config dir>/projects/<project>/<session-id>.jsonl; --resume finds it in any project.
 export function claudeSessionExists(id: string, home = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')): boolean {
@@ -43,6 +62,7 @@ export function claudeSessionExists(id: string, home = process.env.CLAUDE_CONFIG
 }
 
 export function buildArgs(cfg: Config['agent'], i: RunInput, hasSession: (id: string) => boolean = claudeSessionExists): string[] {
+	checkAgentTools(cfg)
 	const tools = [...new Set([...cfg.tools, ...i.extraTools, ...ALWAYS])]
 	const dirs = (i.dirs ?? []).flatMap(d => ['--add-dir', d])
 	if (cfg.flavor === 'claude') {
@@ -80,22 +100,41 @@ export function agentProcessLog(flavor: string, mcpConfigPath: string): string {
 
 // Continue: the same session, interactive, with every owner tool, opening with an orientation prompt (R-HIL-08, R-HIL-17).
 export function interactiveCommand(cfg: Config['agent'], sessionId: string, prompt: string, mcpConfigPath: string): string[] {
-	const input = filePrompt({ sessionId, prompt, mcpConfigPath, cwd: dirname(mcpConfigPath), extraTools: [] }, cfg.flavor)
+	const { input } = filePrompt({ sessionId, prompt, mcpConfigPath, cwd: dirname(mcpConfigPath), extraTools: [] }, cfg.flavor)
 	ownRunFiles(mcpConfigPath, process.pid, true)
 	const dirs = input.dirs!.flatMap(d => ['--add-dir', d])
 	if (cfg.flavor === 'claude') return [...cfg.command, '--resume', sessionId, '--mcp-config', mcpConfigPath, ...dirs, input.prompt]
 	return [...cfg.command, '--session-id', sessionId, '--additional-mcp-config', `@${mcpConfigPath}`, ...dirs, '-i', input.prompt]
 }
 
-function filePrompt(input: RunInput, flavor: Config['agent']['flavor']): RunInput {
+function filePrompt(input: RunInput, flavor: Config['agent']['flavor'], settings: PromptSettings = {}): { input: RunInput; delivery?: PromptDelivery } {
+	checkPromptSettings(settings)
 	const parent = dirname(input.mcpConfigPath)
 	assertTestSafe(parent)
 	pruneRunFiles(parent)
 	ownRunFiles(input.mcpConfigPath, process.pid)
 	const dir = promptFolder(input.mcpConfigPath), file = join(dir, 'instructions.md')
-	writeFileSync(file, input.prompt, { encoding: 'utf8', mode: 0o600 })
-	return { ...input, prompt: `Read the complete instructions in ${JSON.stringify(file)} with ${flavor === 'claude' ? 'Read' : 'view'}, then carry out that work.`,
-		dirs: [...new Set([...(input.dirs ?? []), dir])], extraTools: [...input.extraTools, 'view'] }
+	const requested = flavor === 'copilot' ? settings.promptDelivery ?? 'file' : 'file'
+	const parts = requested === 'parts' ? promptParts(input.prompt) : undefined
+	const used = requested === 'parts' && !parts ? 'file' : requested
+	const files = parts ? parts.map((part, index) => {
+		const path = join(dir, `instructions-${index + 1}.md`)
+		writeFileSync(path, part, { mode: 0o600 })
+		return path
+	}) : [file]
+	if (!parts) writeFileSync(file, input.prompt, { encoding: 'utf8', mode: 0o600 })
+	const prompt = used === 'parts'
+		? `Read the complete instructions in all of these files, in order, in one turn with view: ${files.map(path => JSON.stringify(path)).join(', ')}. Then carry out that work.`
+		: used === 'mention'
+			? `Carry out the complete instructions in @${file}. If they were not included, read ${JSON.stringify(file)} with view, then carry out that work.`
+			: `Read the complete instructions in ${JSON.stringify(file)} with ${flavor === 'claude' ? 'Read' : 'view'}, then carry out that work.`
+	const inside = relative(input.cwd, dir)
+	const stable = flavor === 'copilot' && settings.promptDirStable === true &&
+		!isAbsolute(inside) && inside !== '..' && !inside.startsWith(`..${sep}`)
+	const delivery: PromptDelivery | undefined = flavor === 'copilot'
+		? { requested, used, ...(requested === 'parts' && !parts ? { fallback: 'long-line' as const } : {}) } : undefined
+	return { input: { ...input, prompt, dirs: [...new Set([...(input.dirs ?? []), ...(stable ? [] : [dir])])],
+		extraTools: [...input.extraTools, 'view'] }, delivery }
 }
 
 // A long job runs detached, so the tick never waits for it (R-LNG-02). Output goes to a log beside the session.
@@ -103,8 +142,10 @@ export function startAgent(cfg: Config['agent'], i: RunInput, logPath: string): 
 	const [cmd, ...pre] = cfg.command
 	let fd: number | undefined
 	try {
-		const args = buildArgs(cfg, filePrompt(i, cfg.flavor))
+		const prepared = filePrompt(i, cfg.flavor, cfg), args = buildArgs(cfg, prepared.input)
+		assertTestSafe(logPath)
 		fd = openSync(logPath, 'a')
+		if (prepared.delivery) writeSync(fd, `\n${JSON.stringify({ type: PROMPT_DELIVERY_EVENT, timestamp: new Date().toISOString(), data: prepared.delivery })}\n`)
 		const p = spawn(cmd, [...pre, ...args], { cwd: i.cwd, detached: true, windowsHide: true, stdio: ['ignore', fd, fd], env: workerEnv(process.env) })
 		p.once('error', error => { console.error(`Could not start ${cmd}:`, error); cleanRunFiles(i.mcpConfigPath) })
 		p.once('close', () => { cleanRunFiles(i.mcpConfigPath) })
@@ -164,8 +205,11 @@ export function runAgent(cfg: Config['agent'], i: RunInput, timeoutMs = 10 * 60_
 	return new Promise(resolve => {
 		// Detached, so the run leads its own process group and a timeout stops everything it started.
 		let p: ReturnType<typeof spawn>
+		let delivery: PromptDelivery | undefined
 		try {
-			p = spawn(cmd, [...pre, ...buildArgs(cfg, filePrompt(i, cfg.flavor))], { cwd: i.cwd, detached: true, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: workerEnv(process.env) })
+			const prepared = filePrompt(i, cfg.flavor, cfg)
+			delivery = prepared.delivery
+			p = spawn(cmd, [...pre, ...buildArgs(cfg, prepared.input)], { cwd: i.cwd, detached: true, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: workerEnv(process.env) })
 		} catch (error) {
 			const cleanup = cleanRunFiles(i.mcpConfigPath)
 			resolve({ exitCode: -1, ms: Date.now() - t0, error: `${error instanceof SetupError ? `Could not start: ${error.message}` : `Could not start ${cmd}: ${String(error)}`}${cleanup ? `. ${cleanup}` : ''}` })
@@ -191,6 +235,7 @@ export function runAgent(cfg: Config['agent'], i: RunInput, timeoutMs = 10 * 60_
 		p.on('close', code => {
 			// Read whatever the run printed, also when its time ran out.
 			const used = readRun(out, t0, process.env, sessionLog(cfg.flavor, i.sessionId), Date.now()).use
+			if (delivery) used.promptDelivery = delivery
 			let log: string
 			try { log = agentProcessLog(cfg.flavor, i.mcpConfigPath) } catch (error) {
 				finish({ exitCode: -1, ms: Date.now() - t0, error: `Could not read the AI run log: ${String(error)}` })

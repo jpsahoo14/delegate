@@ -10,7 +10,7 @@ import { realProcs } from './jobs.ts'
 import { stopWatch } from './track.ts'
 import { draftUse, sharingHold } from './sharing.ts'
 import { readsOf, type Reads } from './provenance.ts'
-import { catalogInfo, scopeTools, sourceToolScope, workerTools, type ToolScope } from './catalog.ts'
+import { catalogInfo, scopeTools, sourceToolScope, workerTools, type ToolFamily, type ToolScope } from './catalog.ts'
 import { existsSync, readFileSync } from 'node:fs'
 import { backupSession, pruneReplySessions, restoreSession } from './own.ts'
 import { mkdirSync, writeFileSync } from 'node:fs'
@@ -22,7 +22,7 @@ import { checkPreservedHold, refreshApprovedHolds } from './send-holds.ts'
 import { describe } from './automations.ts'
 import { ulid } from '../core/ids.ts'
 import { MARK, plain, renderNudge, renderPreview } from '../core/render.ts'
-import { runAgent, sessionLog, checkAgentTools, type RunInput, type RunResult } from '../adapters/agent.ts'
+import { runAgent, sessionLog, checkAgentTools, SetupError, type RunInput, type RunResult } from '../adapters/agent.ts'
 import type { Source } from '../adapters/source.ts'
 import { here, LOCAL_DIR, type Store } from '../store/state.ts'
 import { buildAskPrompt, buildPrompt, replyFacts } from '../worker/prompt.ts'
@@ -245,11 +245,12 @@ const failWhy = (res: RunResult) => {
 }
 
 function startFailed(store: Store, wf: Workflow, e: unknown) {
-	const raw = String(e).replace(/^Error: /, '')
-	const account = agentSetupFailure(raw)
+	const typedSetup = e instanceof SetupError
+	const raw = typedSetup ? e.message : String(e).replace(/^Error: /, '')
+	const account = typedSetup ? undefined : agentSetupFailure(raw)
 	if (account) { holdAgent(store, store.config(), account); return }
 	// A setup refusal is kept whole: its tool name is the fix (bug 10-23 E33).
-	const setup = SETUP_REFUSAL.test(raw), why = setup ? raw : String(e).slice(0, 160)
+	const setup = typedSetup || SETUP_REFUSAL.test(raw), why = setup ? raw : String(e).slice(0, 160)
 	store.log({ event: 'run-failed', workflowId: wf.id, code: wf.code, error: why })
 	const fresh = store.workflow(wf.id)
 	// A setup the owner must change stops the run for the owner at once, a question about the item too (round 2 P2-1, P2-2).
@@ -351,18 +352,20 @@ const lessonFits = (cfg: Config, chat: string | undefined, here: string) => { co
 
 // A setup error that stops a run before it starts, the same for every run: never retried (round 2 P2-1, P2-2).
 // tools: the run's read tools (workerTools, #17).
-function refuseStart(cfg: Config, tools: string[], folder?: string) {
+function refuseStart(cfg: Config, offered: string[] | (() => string[]), folder?: string): string[] {
+	const tools = typeof offered === 'function' ? offered() : offered
 	const unsafe = unsafeRead(tools, Object.keys(toolServers(cfg)), catalogInfo(cfg))
 	if (unsafe) throw new Error(unsafe)
 	checkAgentTools({ ...cfg.agent, tools })
 	const shell = folder && shellTool(tools)
 	if (shell) throw new Error(shellInClone(shell))
+	return tools
 }
 
-function workflowToolScope(store: Store, wf: Workflow): ToolScope {
+function workflowToolScope(store: Store, wf: Workflow, base?: readonly ToolFamily[]): ToolScope {
 	const text = [wf.lastAsk ?? '', ...(wf.draft?.sources.map(source => source.ref) ?? []),
 		...store.thread(wf.id).map(message => `${message.text}\n${JSON.stringify(message.attachments ?? [])}`)].join('\n')
-	const scope = sourceToolScope(text, !!wf.meeting)
+	const scope = sourceToolScope(text, !!wf.meeting, base)
 	if ((wf.key.type === 'pr' || wf.key.type === 'workItem' || wf.prs?.some(unit => unit.ref)) && !scope.includes('ado')) scope.push('ado')
 	return scope
 }
@@ -373,9 +376,10 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 	if (!current) throw new Error('The queued item disappeared before its run')
 	if (wf.state === 'running' && current.state !== 'running') { store.log({ event: 'worker-skipped', code: wf.code, reason: 'state changed before start' }); return }
 	wf = current
-	const full = workerTools(cfg, 'reply'), tools = scopeTools(cfg, full, fullCatalog ? undefined : workflowToolScope(store, wf))
+	const full = workerTools(cfg, 'reply')
+	const tools = refuseStart(cfg, () => scopeTools(cfg, full,
+		fullCatalog ? undefined : workflowToolScope(store, wf, cfg.agent.replyScope?.base), cfg.agent.replyScope?.fullOnly))
 	const offered = { offered: tools.length, scoped: tools.length < full.length }
-	refuseStart(cfg, tools)
 	if (wf.state !== 'running') return runAsk(store, src, cfg, wf, run, undefined, fullCatalog)
 	const approvedDraft = wf.draft ?? (wf.approved?.text ? { text: wf.approved.text, commitment: false, sources: [] } : undefined)
 	if (!wf.ownerSend && approvedDraft && wf.approved) {

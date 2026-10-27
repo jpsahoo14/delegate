@@ -11,6 +11,9 @@ export type Model = { id: string; name?: string; calls?: number; tokensIn?: numb
 export type RunKey = { kind: 'chat' | 'ask' | 'pr' | 'repo' | 'job' | 'run'; hash: string }
 export type RunSession = { id: string; state?: 'new' | 'resumed' | 'rotated'; why?: 'retry' | 'catalog' | 'cap' | 'crash' | 'relay' | 'requeue' | 'age' | 'rules'; ageMin?: number; turn?: number }
 export type RunOutcome = 'done' | 'failed' | 'retry' | 'stopped' | 'budget-stopped'
+export type PromptMode = 'file' | 'parts' | 'mention'
+export type PromptDelivery = { requested: PromptMode; used: PromptMode; fallback?: 'long-line' }
+export const PROMPT_DELIVERY_EVENT = 'delegate.prompt_delivery'
 // Flat input is the CLI's reported count, not a fresh-input estimate. Only tokenDetail.input reports the fresh category.
 // Missing metrics stay absent; partial credits are sums of complete records only, with their status retained.
 export type RunUse = {
@@ -18,6 +21,8 @@ export type RunUse = {
 	tokensIn?: number; tokensOut?: number; tokensCacheRead?: number; tokensCacheWrite?: number
 	firstCallIn?: number; carriedIn?: number; newPromptIn?: number; promptChars?: number
 	toolCalls?: number; toolTokens?: number; reasoningTokens?: number; toolMs?: number; startMs?: number
+	requestBytes?: number; toolsAvailable?: number
+	promptDelivery?: PromptDelivery
 	creditsNano?: number; creditsStatus?: CreditsStatus; tokenDetail?: TokenDetail
 	cliVersion?: string; key?: RunKey; session?: RunSession; outcome?: RunOutcome
 }
@@ -45,6 +50,7 @@ const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v >=
 const sum = (...vs: unknown[]) => { const ns = vs.map(num).filter((n): n is number => n !== undefined); return ns.length ? num(ns.reduce((a, b) => a + b, 0)) : undefined }
 const obj = (v: unknown): Record<string, unknown> => (v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {})
 const completeSum = (values: (number | undefined)[]) => values.length && values.every(value => value !== undefined) ? sum(...values) : undefined
+const completeMax = (values: (number | undefined)[]) => values.length && values.every((value): value is number => num(value) !== undefined) ? Math.max(...values) : undefined
 function creditsOf(usage: Record<string, unknown>): Pick<Model, 'creditsNano' | 'creditsStatus'> {
 	const credits = obj(usage.copilotUsage)
 	if (credits.isByok === true || usage.isByok === true) return { creditsNano: 0, creditsStatus: 'byok' }
@@ -76,10 +82,27 @@ function tokenDetailOf(usage: Record<string, unknown>): TokenDetail | undefined 
 
 // Copilot prints one event per line; Claude prints one result object. Lines that are not JSON objects are skipped.
 function eventsOf(out: string): Record<string, unknown>[] {
-	const t = out.trim()
-	if (!t) return []
-	if (t.startsWith('{')) try { const one = JSON.parse(t); if (one && typeof one === 'object' && !Array.isArray(one)) return [one] } catch { /* JSONL */ }
-	return t.split('\n').flatMap(l => { try { const e = JSON.parse(l); return e && typeof e === 'object' && !Array.isArray(e) ? [e] : [] } catch { return [] } })
+	// Strip detached-run metadata without splitting a CLI's pretty-printed result object.
+	const diagnostics: Record<string, unknown>[] = []
+	const t = out.trim().split('\n').filter(line => {
+		if (!line.startsWith(`{"type":"${PROMPT_DELIVERY_EVENT}"`)) return true
+		try {
+			const event = JSON.parse(line)
+			if (event?.type === PROMPT_DELIVERY_EVENT) { diagnostics.push(event); return false }
+		} catch { /* Preserve malformed output for the normal parser. */ }
+		return true
+	}).join('\n').trim()
+	if (!t) return diagnostics
+	if (t.startsWith('{')) try { const one = JSON.parse(t); if (one && typeof one === 'object' && !Array.isArray(one)) return [...diagnostics, one] } catch { /* JSONL */ }
+	return [...diagnostics, ...t.split('\n').flatMap(l => { try { const e = JSON.parse(l); return e && typeof e === 'object' && !Array.isArray(e) ? [e] : [] } catch { return [] } })]
+}
+
+const promptMode = (value: unknown): value is PromptMode => value === 'file' || value === 'parts' || value === 'mention'
+function promptDeliveryOf(value: unknown): PromptDelivery | undefined {
+	const data = obj(value), requested = data.requested, used = data.used
+	if (!promptMode(requested) || !promptMode(used)) return undefined
+	if (data.fallback === 'long-line') return { requested, used, fallback: 'long-line' }
+	return data.fallback === undefined ? { requested, used } : undefined
 }
 // The session log holds every run of the session: only this run's events, and only lines that may be the kinds read here, are parsed.
 const WANTED = /"type"\s*:\s*"(session\.(start|resume|usage_record)|assistant\.usage|tool\.execution_(start|complete))"/
@@ -113,6 +136,14 @@ export function readRun(out: string, startedAt?: number, env: NodeJS.ProcessEnv 
 	try {
 		const secrets = envSecrets(env), seen = new Set<string>()
 		const events = [...(session && startedAt !== undefined ? sessionEvents(session, startedAt, until) : []), ...eventsOf(out)].filter(e => typeof e.id !== 'string' || (!seen.has(e.id) && !!seen.add(e.id)))
+		let promptDelivery: PromptDelivery | undefined
+		for (const event of events) {
+			if (event.type !== PROMPT_DELIVERY_EVENT) continue
+			const at = Date.parse(String(event.timestamp))
+			if (!Number.isFinite(at) || startedAt !== undefined && at < startedAt || until !== undefined && at > until) continue
+			promptDelivery = promptDeliveryOf(event.data)
+			if (promptDelivery) break
+		}
 		const models: Model[] = [], weight = new Map<string, number>(), usageByModel = new Map<string, CallUse[]>()
 		const add = (id: unknown, name?: unknown, w = 0) => {
 			const i = nameOf(id, ID, secrets), n = nameOf(name, NAME, secrets)
@@ -144,7 +175,7 @@ export function readRun(out: string, startedAt?: number, env: NodeJS.ProcessEnv 
 			const tokensCacheRead = models.length ? completeSum(models.map(m => m.tokensCacheRead)) : num(u.cache_read_input_tokens)
 			const tokensCacheWrite = models.length ? completeSum(models.map(m => m.tokensCacheWrite)) : num(u.cache_creation_input_tokens)
 			return { use: tidy({ models: ranked(), modelCalls: num(result.num_turns), modelMs: num(result.duration_api_ms),
-				tokensIn, tokensOut, tokensCacheRead, tokensCacheWrite, creditsStatus: 'none' }) }
+				tokensIn, tokensOut, tokensCacheRead, tokensCacheWrite, creditsStatus: 'none', promptDelivery }) }
 		}
 		let calls = 0, selected: unknown, timed = false, lastAt: number | undefined, firstCall: number | undefined
 		let modelMs: number | undefined
@@ -152,6 +183,7 @@ export function readRun(out: string, startedAt?: number, env: NodeJS.ProcessEnv 
 		let reportedToolCalls: number | undefined, cliVersion: string | undefined
 		const durations: (number | undefined)[] = [], toolCounts: (number | undefined)[] = []
 		const toolTokenCounts: (number | undefined)[] = [], reasoningCounts: (number | undefined)[] = []
+		const requestCounts: (number | undefined)[] = [], availableCounts: (number | undefined)[] = []
 		const tools = new Map<string, { s?: number; e?: number }>()
 		let anon = 0, apiMs: number | undefined
 		// A CLI that wrote both kinds of usage event would count each call twice: the records win.
@@ -184,6 +216,8 @@ export function readRun(out: string, startedAt?: number, env: NodeJS.ProcessEnv 
 				toolTokenCounts.push(num(u.toolTokenCount))
 				reasoningCounts.push(num(u.reasoningTokens))
 				toolCounts.push(num(u.numToolCalls))
+				requestCounts.push(num(u.requestBodyBytes))
+				availableCounts.push(num(u.availableToolCount))
 				// The record comes when the call ends: the call began its duration earlier.
 				if (Number.isFinite(at)) { const s = at - (ms ?? 0); firstCall = Math.min(firstCall ?? s, s) }
 			} else if (type === 'tool.execution_start' || type === 'tool.execution_complete') {
@@ -230,6 +264,8 @@ export function readRun(out: string, startedAt?: number, env: NodeJS.ProcessEnv 
 		const startMs = firstCall !== undefined && startedAt !== undefined && firstCall >= startedAt ? firstCall - startedAt : undefined
 		return { use: tidy({ models: ranked(), modelCalls: calls || undefined, modelMs, tokensIn, tokensOut, tokensCacheRead, tokensCacheWrite,
 			firstCallIn, toolCalls: reportedToolCalls ?? (tools.size ? tools.size : undefined), toolTokens, reasoningTokens, toolMs, startMs, cliVersion,
+			requestBytes: completeSum(requestCounts), toolsAvailable: completeMax(availableCounts),
+			promptDelivery,
 			creditsNano: totalCredits !== undefined && Number.isSafeInteger(totalCredits) ? totalCredits : undefined,
 			creditsStatus: creditsStatus(models), tokenDetail }), lastAt }
 	} catch { return { use: {} } }
@@ -258,9 +294,14 @@ export function mergeUse(uses: RunUse[]): RunUse {
 			creditsStatus: creditsStatus(rows) }
 	})
 	const creditsNano = sum(...uses.map(use => use.creditsNano))
+	const delivery = uses[0]?.promptDelivery
+	const sameDelivery = delivery && uses.every(use => use.promptDelivery?.requested === delivery.requested &&
+		use.promptDelivery.used === delivery.used && use.promptDelivery.fallback === delivery.fallback)
 	return { models: models.length ? models : undefined, tokensIn: completeSum(uses.map(use => use.tokensIn)),
 		tokensOut: completeSum(uses.map(use => use.tokensOut)), tokensCacheRead: completeSum(uses.map(use => use.tokensCacheRead)),
 		tokensCacheWrite: completeSum(uses.map(use => use.tokensCacheWrite)), modelCalls: completeSum(uses.map(use => use.modelCalls)),
+		requestBytes: completeSum(uses.map(use => use.requestBytes)), toolsAvailable: completeMax(uses.map(use => use.toolsAvailable)),
+		...(sameDelivery ? { promptDelivery: delivery } : {}),
 		creditsNano: creditsNano !== undefined && Number.isSafeInteger(creditsNano) ? creditsNano : undefined, creditsStatus: creditsStatus(uses) }
 }
 

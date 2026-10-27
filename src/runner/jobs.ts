@@ -31,7 +31,7 @@ import type { Call, Config, Effect, Job, PrUnit, Report, Retry, Workflow } from 
 import { ulid } from '../core/ids.ts'
 import { ran, readRun, sessionUse, type RunOutcome } from '../core/runinfo.ts'
 import { jobUsageKey, rememberUsage, takeUsageContext } from './usage-backfill.ts'
-import { agentProcessLog, sessionLog, startAgent, type RunInput } from '../adapters/agent.ts'
+import { agentProcessLog, sessionLog, startAgent, SetupError, type RunInput } from '../adapters/agent.ts'
 import type { Source } from '../adapters/source.ts'
 import { alive, aliveAs, killTree } from '../os/process.ts'
 import { openWindow } from '../os/window.ts'
@@ -580,13 +580,14 @@ export async function startJobs(store: Store, cfg: Config, procs: Procs, hold: s
 			n++
 			room--
 		} catch (e) {
+			const setup = e instanceof SetupError
 			// A run we cannot track must not keep running.
 			if (!pid || procs.kill(pid)) {
 				try { removeRunFiles(mcpConfigPath) } catch (error) { store.log({ event: 'worker-files-cleanup-failed', runId, error: String(error).slice(0, 300) }); store.setHealth(`worker-files:${runId}`, `Could not remove files for failed worker ${runId}: ${String(error).slice(0, 160)}`) }
 			}
-			const account = agentSetupFailure(String(e))
+			const account = setup ? undefined : agentSetupFailure(String(e))
 			if (account) holdJob(store, cfg, job, account)
-			else failOrRetry(store, job, `Could not start: ${String(e).slice(0, 120)}`)
+			else failOrRetry(store, job, `Could not start: ${setup ? e.message : String(e).slice(0, 120)}`, setup)
 		}
 	}
 	return n
@@ -1674,11 +1675,12 @@ function checkRelay(store: Store, job: Job): boolean {
 }
 
 // A work run with no report (it crashed, or could not start) is a busy moment, not an answer: it tries again a few times first.
-function failOrRetry(store: Store, job: Job, why: string) {
+function failOrRetry(store: Store, job: Job, why: string, setup = false) {
 	if (job.run?.oneMore) return fail(store, job, `The extra run didn't finish: ${why}`, 'stopped')
-	if (job.every && job.purpose === 'work' && !job.relay && !SETUP_REFUSAL.test(why)) return missedCheck(store, job, why)
+	const permanent = setup || SETUP_REFUSAL.test(why)
+	if (job.every && job.purpose === 'work' && !job.relay && !permanent) return missedCheck(store, job, why)
 	// A setup error (a tool the AI CLI cannot name) will not pass by trying again.
-	if (job.purpose !== 'work' || job.relay || job.every || isBootstrap(job) || job.key.startsWith('learn:') || SETUP_REFUSAL.test(why)) return fail(store, job, why)
+	if (job.purpose !== 'work' || job.relay || job.every || isBootstrap(job) || job.key.startsWith('learn:') || permanent) return fail(store, job, why)
 	const p = planRetry(job.retry, { kind: 'transient', why, tried: [] })
 	if ('stop' in p) return fail(store, job, p.stop)
 	queueRetry(store, job, p.retry, p.fresh)
