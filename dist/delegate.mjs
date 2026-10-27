@@ -41511,6 +41511,12 @@ var init_rules = __esm({
 // src/store/actions.ts
 import { readdirSync as readdirSync5, readFileSync as readFileSync7, statSync as statSync5 } from "node:fs";
 import { basename as basename4, join as join9, resolve as resolve4 } from "node:path";
+function markLedgerStart(store2, at3 = (/* @__PURE__ */ new Date()).toISOString()) {
+  freshRead(() => {
+    const upgrades = store2.upgrades();
+    if (!Object.hasOwn(upgrades, LEDGER_START)) store2.saveUpgrades({ ...upgrades, [LEDGER_START]: timestamp.parse(at3) });
+  });
+}
 function undoableAction(action2, now = Date.now()) {
   const undo3 = action2.undo;
   return !!undo3 && now < Date.parse(undo3.until) && !action2.amendments.some((change2) => change2.kind === "undone" || change2.kind === "undo-failed") && action2.parts.some((part2) => part2.kind === "message" && part2.outcome === "posted" && part2.msgId === undo3.msgId);
@@ -41631,7 +41637,30 @@ function readActions(store2, range) {
   }
   return structuredClone(range.limit === void 0 ? actions2 : actions2.slice(0, range.limit));
 }
-var timestamp, part, undo, record2, amendmentBase, amendment, entry, months, directory, monthPath;
+function pruneActions(store2, days2 = 30, now = Date.now()) {
+  if (!Number.isFinite(days2) || days2 < 0) throw new Error("Action ledger retention days must be non-negative.");
+  const cutoff = new Date(now - days2 * 864e5).toISOString();
+  let pruned = 0, status3 = "done";
+  for (const name of monthFiles(store2)) {
+    if (name.slice(0, 7) > cutoff.slice(0, 7)) continue;
+    const file4 = join9(directory(store2), name);
+    assertTestSafe(file4);
+    const result2 = withRecordWriteNow(file4, () => {
+      const month = readMonth(store2, file4), kept = new Set(month.actions.filter((action2) => action2.at >= cutoff).map((action2) => action2.id));
+      const removed = month.actions.length - kept.size;
+      const entries = month.entries.filter((value) => kept.has("id" in value ? value.id : value.ref));
+      if (entries.length === month.entries.length) return 0;
+      if (!kept.size) removeFile(file4);
+      else writeText(file4, entries.map((value) => JSON.stringify(value)).join("\n") + "\n", store2.machine);
+      months.delete(file4);
+      return removed;
+    });
+    if (result2 === BUSY) status3 = BUSY;
+    else pruned += result2;
+  }
+  return { pruned, status: status3 };
+}
+var timestamp, part, undo, record2, amendmentBase, amendment, entry, LEDGER_START, months, directory, monthPath;
 var init_actions = __esm({
   "src/store/actions.ts"() {
     "use strict";
@@ -41684,6 +41713,7 @@ var init_actions = __esm({
       amendmentBase.extend({ kind: external_exports.enum(["undone", "undo-failed", "corrected", "reviewed"]) })
     ]);
     entry = external_exports.union([record2, amendment]);
+    LEDGER_START = "actions-ledger-1";
     months = /* @__PURE__ */ new Map();
     directory = (store2) => resolve4(store2.root, "state", "actions");
     monthPath = (store2, at3) => join9(directory(store2), `${at3.slice(0, 7)}.jsonl`);
@@ -41691,6 +41721,21 @@ var init_actions = __esm({
 });
 
 // src/core/render.ts
+function actionNudge(records2, page2, now = Date.now()) {
+  if (!Number.isFinite(now)) throw new Error("An action nudge needs a valid time.");
+  const actions2 = [...new Map(records2.filter((action2) => action2.completedAt && action2.parts.some((part2) => part2.outcome === "posted") && !action2.amendments.some((change2) => change2.kind === "undone")).map((action2) => [action2.id, action2])).values()].sort((a, b) => b.at.localeCompare(a.at));
+  if (!actions2.length) return void 0;
+  const link2 = page2 === void 0 ? void 0 : new URL(page2);
+  if (link2 && link2.protocol !== "http:" && link2.protocol !== "https:") throw new Error(`An action nudge needs the ${NAME} page URL.`);
+  const first3 = actions2[0], single = actions2.length === 1;
+  if (link2) link2.hash = `done/by-delegate/${single ? first3.id : first3.at.slice(0, 10)}`;
+  const replies = actions2.every((action2) => action2.kind === "reply" || action2.kind === "ack");
+  const people2 = new Set(actions2.flatMap((action2) => action2.to ? [action2.to.id] : []));
+  const what = single && replies ? `${first3.kind === "ack" ? "Acknowledged a request" : "Replied"}${first3.to ? ` ${first3.kind === "ack" ? "from" : "to"} ${first3.to.first}` : ""} in ${first3.chat.name}` : replies && actions2.every((action2) => action2.to) ? `Replied to ${people2.size} ${people2.size === 1 ? "person" : "people"} for you` : `${NAME} did ${actions2.length} ${single ? "thing" : "things"} for you`;
+  const undo3 = single && undoableAction(first3, now) ? `Undo (${Math.max(1, Math.ceil((Date.parse(first3.undo.until) - now) / 6e4))} min) \xB7 ` : "";
+  const review = !single && actions2.some((action2) => undoableAction(action2, now)) ? `Undo or review in ${NAME}` : `${undo3}Review in ${NAME}`;
+  return `${what} \xB7 ${review}${link2 ? `: ${link2.href}` : "."}`;
+}
 function age(fromIso, now) {
   const m = Math.max(0, Math.round((now.getTime() - Date.parse(fromIso)) / 6e4));
   if (m < 60) return `${m}m`;
@@ -42424,7 +42469,8 @@ function loadLocal() {
   if (!root) throw new Error(`No storage root. Run "${CMD} init --root <folder>" or set DELEGATE_ROOT.`);
   return { root, machine: l.machine ?? hostname3().split(".")[0] };
 }
-function outcomeOf(wf, a, refused) {
+function outcomeOf(wf, a, refused, undo3) {
+  if (undo3) return { kind: undo3.outcome === "refused" ? "refused" : undo3.outcome === "undone" && undo3.recorded !== false ? "done" : "failed", undo: undo3 };
   const send2 = a.verb === "ok" || a.verb === "send" || !!a.sendReview || a.verb === "answer" && /^send anyway[.!]?$/i.test(a.text?.trim() ?? "");
   if (send2 && wf?.sent && Date.parse(wf.sent.at) >= Date.parse(a.at)) return { kind: "sent" };
   const held = wf?.reasons ?? (wf?.reason ? [wf.reason] : []);
@@ -43117,7 +43163,7 @@ var init_state = __esm({
       savePageSubmission(submission) {
         return this.updatePageSubmission(submission.id, (current3) => mergeSubmission(current3, submission));
       }
-      completePageSubmission(answer, text5, refused = false) {
+      completePageSubmission(answer, text5, refused = false, undo3) {
         if (!answer.pageSubmissionId) return;
         const wf = answer.code ? this.byCode(answer.code) : void 0;
         this.updatePageSubmission(answer.pageSubmissionId, (record4) => {
@@ -43128,7 +43174,7 @@ var init_state = __esm({
           const detail = text5 ? record4.processed ? record4.text === text5 || record4.text.endsWith(` ${text5}`) ? record4.text : `${record4.text} ${text5}` : text5 : record4.processed ? record4.text : "No result detail was recorded. Open the item to verify what happened.";
           const merged = mergeSubmission(record4, { ...record4, phase: "queued", accepted: true, ids: [answer.id], processed: true, text: detail, refused: !!record4.refused || refused }, true);
           const count = answer.page?.todoIds?.length ?? answer.todos?.length;
-          return withReceiptFacts(this, merged, { ...outcomeOf(wf, answer, !!merged.refused), ...count ? { count } : {} });
+          return withReceiptFacts(this, merged, { ...outcomeOf(wf, answer, !!merged.refused, undo3), ...count ? { count } : {} });
         });
       }
       // The same facts for a click the page server decided at once (a stale click refused, a watch started, a terminal taken back).
@@ -48179,21 +48225,54 @@ function applyReport(wf, r, home = wf, allowClose = true, store2) {
     }
   }
 }
+function loadActionNudgeCursor(store2, now) {
+  const file4 = join20(store2.root, "state", "wdd-nudge.json");
+  try {
+    const value = readJson(file4, void 0);
+    if (value !== void 0) return { cursor: actionNudgeCursorSchema.parse(value), initial: false };
+  } catch (error62) {
+    console.error(`${NAME}: could not read the automatic-action nudge cursor; restarting at the current time.`, scrubDeep(String(error62)));
+  }
+  const cursor = { lastRecordAt: now.toISOString(), ids: [] };
+  writeJson(file4, cursor, store2.machine);
+  return { cursor, initial: true };
+}
+function advanceActionNudgeCursor(store2, cursor, records2) {
+  if (!records2.length) return;
+  const lastRecordAt = records2.reduce((latest2, record4) => record4.completedAt > latest2 ? record4.completedAt : latest2, cursor.lastRecordAt);
+  const ids = new Set(lastRecordAt === cursor.lastRecordAt ? cursor.ids : []);
+  for (const record4 of records2) if (record4.completedAt === lastRecordAt) ids.add(record4.id);
+  writeJson(join20(store2.root, "state", "wdd-nudge.json"), { lastRecordAt, ids: [...ids] }, store2.machine);
+}
 async function nudge(store2, src, cfg) {
+  const now = /* @__PURE__ */ new Date();
+  const { cursor, initial } = loadActionNudgeCursor(store2, now);
   const n = store2.notify();
-  if (inQuietHours(/* @__PURE__ */ new Date(), cfg.quiet)) return false;
+  if (inQuietHours(now, cfg.quiet)) return false;
   const all = store2.workflows();
   const needs = all.filter((w) => w.state === "needs_human");
-  const undoable = all.filter((w) => w.sent?.byRule && w.sent.undoUntil && Date.parse(w.sent.undoUntil) > Date.now());
   const kp = store2.proposals().filter((p) => p.state === "needs_human");
-  const fresh = [...needs, ...undoable, ...kp].filter((w) => !n.lastNudgeAt || w.updatedAt > n.lastNudgeAt);
-  const urgent = undoable.some((w) => fresh.includes(w));
-  const due2 = urgent || !n.lastNudgeAt || Date.now() - Date.parse(n.lastNudgeAt) > cfg.nudgeEveryMin * 6e4;
-  if (!fresh.length || !due2) return false;
+  const records2 = initial ? [] : readActions(store2, {
+    since: new Date(Date.parse(cursor.lastRecordAt) - 24 * 36e5).toISOString(),
+    until: now.toISOString()
+  }).filter((record4) => !!record4.completedAt && (record4.completedAt > cursor.lastRecordAt || record4.completedAt === cursor.lastRecordAt && !cursor.ids.includes(record4.id)));
+  const fresh = [...needs, ...kp].filter((w) => !n.lastNudgeAt || w.updatedAt > n.lastNudgeAt);
+  const urgent = records2.some((record4) => undoableAction(record4, now.getTime()));
+  const due2 = urgent || !n.lastNudgeAt || now.getTime() - Date.parse(n.lastNudgeAt) > cfg.nudgeEveryMin * 6e4;
+  if (!fresh.length && !records2.length || !due2) return false;
   if ((await src.presence()).availability === "DoNotDisturb" || await ownerActive(store2, src)) return false;
-  await say(store2, src, renderNudge(needs, undoable, /* @__PURE__ */ new Date(), kp));
+  const actionLine = actionNudge(records2, void 0, now.getTime());
+  const lines = [];
+  if (needs.length || kp.length) lines.push(renderNudge(needs, [], now, kp));
+  if (actionLine) lines.push(lines.length ? actionLine : `${MARK} ${actionLine}`);
+  if (!lines.length) {
+    advanceActionNudgeCursor(store2, cursor, records2);
+    return false;
+  }
+  await say(store2, src, lines.join("\n"));
   store2.markShown(needs.slice(0, 6));
   store2.saveNotify({ ...store2.notify(), lastNudgeAt: (/* @__PURE__ */ new Date()).toISOString() });
+  advanceActionNudgeCursor(store2, cursor, records2);
   return true;
 }
 function family(store2, wf, r) {
@@ -48220,7 +48299,7 @@ function greetBack(wf, text5) {
   const body = OPENERS.test(text5) ? text5[0].toLowerCase() + text5.slice(1) : text5;
   return `Hi ${first3}, ${body}`;
 }
-var AUTH, CATALOG_CHANGED, UNKNOWN_READ_HOLD, BOT, failWhy, readDirs, WORKER_SERVER, WORKER_TOOLS, lessonFits, NO_QUESTION, GREETING2, OPENERS;
+var AUTH, CATALOG_CHANGED, UNKNOWN_READ_HOLD, BOT, failWhy, readDirs, WORKER_SERVER, WORKER_TOOLS, lessonFits, NO_QUESTION, actionNudgeCursorSchema, GREETING2, OPENERS;
 var init_dispatch = __esm({
   "src/runner/dispatch.ts"() {
     "use strict";
@@ -48228,6 +48307,8 @@ var init_dispatch = __esm({
     init_retry();
     init_work();
     init_fs();
+    init_zod();
+    init_actions();
     init_commit();
     init_upgrades();
     init_normalize_report();
@@ -48294,6 +48375,10 @@ var init_dispatch = __esm({
       return !l || l === "private" && chat2 === here3;
     };
     NO_QUESTION = /^\s*(?:none|n\/?a|no(?:ne)?\s*(?:question|questions)?|nothing|-+|—)\s*[.!]?\s*$/i;
+    actionNudgeCursorSchema = external_exports.object({
+      lastRecordAt: external_exports.string().datetime({ offset: true }).transform((at3) => new Date(at3).toISOString()),
+      ids: external_exports.array(external_exports.string().uuid())
+    });
     GREETING2 = /^\s*(hi|hello|hey|hii+|good (morning|afternoon|evening))\b/i;
     OPENERS = /^(Yes|No|Sure|Thanks|Thank|The|It|It's|That|This|Not|Done|Good|Great|Ok|Okay|Will|We|You|Just|Let|Looks|Sounds|All|There|Left|Added|Fixed|Merged|Pushed|Checked|Updated|Replied|Shared|Sent|Got|Happy|Can|Could|Should|Here|Yep|Yeah|Nope)\b/;
   }
@@ -51169,15 +51254,18 @@ async function applyAnswers(store2, src, cfg, procs = realProcs, controlsOnly = 
   for (const { file: file4, answer } of store2.answers()) {
     const pageControl = PAGE_CONTROL_VERBS.includes(answer.verb);
     if (controlsOnly && !isControl(answer.verb) && !pageControl) continue;
-    const wf = answer.code ? freshRead(() => store2.byCode(answer.code)) : void 0;
+    const recordUndo = answer.verb === "undo-action";
+    const recordRequest = recordUndo && answer.text && answer.page ? { id: answer.text, rev: answer.page.expect } : void 0;
+    const wf = !recordUndo && answer.code ? freshRead(() => store2.byCode(answer.code)) : void 0;
+    let undoReceipt;
     try {
-      const kp = answer.code?.startsWith("K") ? store2.proposal(answer.code) : void 0;
-      if (answer.page) {
+      const kp = !recordUndo && answer.code?.startsWith("K") ? store2.proposal(answer.code) : void 0;
+      if (answer.page || recordUndo) {
         if (store2.answered(answer.id)) {
           store2.doneAnswer(file4);
           continue;
         }
-        const refusal2 = pageControl ? void 0 : pageAnswerRefusal(answer, wf, answer.code?.startsWith("R") ? store2.automation(answer.code) : void 0, kp, cfg, answer.page.kind === "manage" ? pageManagementRev(store2, answer.code ?? "") : void 0, wf?.job ? store2.job(wf.job) : void 0);
+        const refusal2 = recordUndo && (answer.code !== "" || answer.surface !== "panel" || !recordRequest) ? "Invalid action approval. Nothing was deleted. Open the current action first." : pageControl ? void 0 : pageAnswerRefusal(answer, wf, answer.code?.startsWith("R") ? store2.automation(answer.code) : void 0, kp, cfg, answer.page?.kind === "manage" ? pageManagementRev(store2, answer.code ?? "") : void 0, wf?.job ? store2.job(wf.job) : void 0);
         if (refusal2) {
           await reply(store2, src, answer, `${MARK} ${refusal2}`, true);
           store2.doneAnswer(file4);
@@ -51195,7 +51283,13 @@ async function applyAnswers(store2, src, cfg, procs = realProcs, controlsOnly = 
       const auto = answer.code?.startsWith("R") ? store2.automation(answer.code) : void 0;
       const wt = answer.code?.startsWith("W") ? store2.waiting().find((w) => w.code === answer.code) : void 0;
       const hb = answer.code?.startsWith("H") ? store2.habit(answer.code) : void 0;
-      if (hb) {
+      if (recordRequest) {
+        const result2 = await undoAction(store2, src, cfg, recordRequest.id, recordRequest.rev);
+        undoReceipt = { outcome: result2.outcome, reason: result2.ok ? void 0 : result2.reason, recorded: result2.recorded };
+        const text5 = result2.ok ? result2.warning : result2.why, refused = result2.outcome === "refused";
+        if (text5) await reply(store2, src, answer, `${MARK} ${text5}`, refused, undoReceipt);
+        else store2.completePageSubmission(answer, void 0, refused, undoReceipt);
+      } else if (hb) {
         const result2 = answerHabitResult(store2, hb, answer.verb, answer.text);
         await reply(store2, src, answer, `${MARK} ${result2.ok ? result2.text : result2.why}`, !result2.ok);
       } else if (wt) await reply(store2, src, answer, `${MARK} ${await followUp(store2, src, cfg, wt, answer)}`);
@@ -51219,7 +51313,7 @@ ${nextProposal(store2, kp.code, answer.surface === "self" ? 6 : Infinity)}`}`).s
     }
     store2.doneAnswer(file4);
     store2.addOutcome(answer.id, "");
-    store2.completePageSubmission(answer);
+    store2.completePageSubmission(answer, void 0, false, undoReceipt);
     store2.log({ event: "answer", workflowId: wf?.id, code: answer.code, verb: answer.verb, surface: answer.surface, text: answer.text });
     n++;
   }
@@ -51566,11 +51660,20 @@ async function applyOne(store2, src, cfg, wf, a, procs, probe, quick2) {
     }
   }
   if (wf.state === "open") {
+    let canUndo = false;
+    if (a.verb === "undo") {
+      const now = Date.now(), sent = wf.sent;
+      const actions2 = readActions(store2, { since: new Date(now - 30 * 864e5).toISOString() }).filter((action2) => action2.item?.wf === wf.id);
+      const recorded = sent && actions2.find((action2) => action2.parts.some((part2) => part2.kind === "message" && part2.msgId === sent.msgId));
+      const target2 = sent ? recorded : actions2.find((action2) => undoableAction(action2, now));
+      const unconfirmed = sent?.byRule && actions2.some((action2) => !action2.completedAt && action2.at <= sent.at && action2.because.kind === "line" && action2.because.grantId === sent.byRule);
+      canUndo = target2 ? undoableAction(target2, now) : !!sent && now < Date.parse(sent.undoUntil ?? "") && !unconfirmed;
+    }
     if ((a.verb === "edit" || a.verb === "send") && a.text) {
       newTurn(wf);
       Object.assign(wf, stateFields(wf, "needs_human"));
     } else if (a.verb === "answer") newTurn(wf);
-    else if (["ok", "pick", "later", "undo"].includes(a.verb)) return reply(store2, src, a, `${MARK} ${wf.code} is in progress (${wf.status}) and has no draft. Say "${wf.code}: what to do next", "wait ${wf.code}: 3d", or "close ${wf.code}".`);
+    else if (["ok", "pick", "later", "undo"].includes(a.verb) && !(a.verb === "undo" && canUndo)) return reply(store2, src, a, `${MARK} ${wf.code} is in progress (${wf.status}) and has no draft. Say "${wf.code}: what to do next", "wait ${wf.code}: 3d", or "close ${wf.code}".`);
   }
   const replied = !!wf.sent && !wf.sent.holding;
   if (wf.state === "done" && a.verb === "send" && replied && a.text) return correct(store2, src, wf, a);
@@ -51845,9 +51948,12 @@ async function applyOne(store2, src, cfg, wf, a, procs, probe, quick2) {
       }
       break;
     }
-    case "undo":
+    case "undo": {
+      const wasOpen = wf.state === "open";
       await undo2(store2, src, cfg, wf, a);
+      if (wasOpen && !wf.sent) Object.assign(wf, { ...stateFields(wf, "open"), status: statusOf(wf) });
       break;
+    }
   }
   wf.newCount = 0;
   commit();
@@ -52035,16 +52141,16 @@ function only(store2, wf, nums, offReason) {
   if (job) store2.saveJob(job);
   return left.filter((e) => !keep.has(e));
 }
-function recordAnswerResult(store2, a, text5, refused = false) {
+function recordAnswerResult(store2, a, text5, refused = false, undo3) {
   const detail = text5.replace(new RegExp(`^${MARK}\\s*`), "");
   if (a.id) {
     store2.addOutcome(a.id, detail, refused);
-    store2.completePageSubmission(a, detail, refused);
+    store2.completePageSubmission(a, detail, refused, undo3);
   }
   return detail;
 }
-async function reply(store2, src, a, text5, refused = false) {
-  const detail = recordAnswerResult(store2, a, text5, refused);
+async function reply(store2, src, a, text5, refused = false, undo3) {
+  const detail = recordAnswerResult(store2, a, text5, refused, undo3);
   if (a.surface === "chat" || a.surface === "panel") {
     store2.addReceipt(detail);
     return true;
@@ -52266,6 +52372,7 @@ var init_apply = __esm({
     init_send_holds();
     init_fs();
     init_commit();
+    init_actions();
     init_vote_claim();
     init_secrets();
     init_normalize_report();
@@ -60866,6 +60973,7 @@ init_discover();
 init_autosend();
 
 // src/runner/daily.ts
+init_brand();
 init_render();
 init_state();
 
@@ -60966,19 +61074,25 @@ init_bootstrap();
 init_numbers2();
 init_numbers();
 init_schedule();
+init_actions();
 function summaryText(store2, now = /* @__PURE__ */ new Date()) {
   const day3 = localDay(now);
   const today = store2.logs(2).filter((e) => localDay(new Date(String(e.at))) === day3);
   const sent = today.filter((e) => e.event === "sent");
   const byRule = sent.filter((e) => String(e.approvedBy ?? "").startsWith("rule:")).length;
+  const actions2 = readActions(store2, {
+    since: new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString(),
+    until: now.toISOString()
+  }).filter((record4) => record4.completedAt && record4.parts.some((part2) => part2.outcome === "posted") && !record4.amendments.some((change2) => change2.kind === "undone")).length;
   const fyi = store2.workflows().filter((w) => w.state === "done" && w.fyi && localDay(new Date(w.updatedAt)) === day3).sort((a, b) => Number(b.fyi.weight === "high") - Number(a.fyi.weight === "high") || b.updatedAt.localeCompare(a.updatedAt));
   const look = fyi.filter((w) => w.fyi.weight === "high").slice(0, 2);
   const needs = store2.workflows().filter((w) => w.state === "needs_human");
   const waiting = needs.filter((w) => now.getTime() - Date.parse(w.revAt ?? w.updatedAt) > 4 * 36e5);
   const week = isFriday(dayIn(now, store2.config()?.tz)) ? weekLine(numbersOf(store2, "this", now)) : void 0;
-  if (!sent.length && !fyi.length && !needs.length && !week) return void 0;
+  if (!sent.length && !fyi.length && !needs.length && !week && !actions2) return void 0;
   return [
     `${MARK} Today: ${sent.length - byRule} sent by you, ${byRule} by your rules. ${needs.length} need${needs.length === 1 ? "s" : ""} you.`,
+    ...actions2 ? [`${NAME} did ${actions2} ${actions2 === 1 ? "thing" : "things"} for you today \xB7 Review in ${NAME}.`] : [],
     ...week ? [week] : [],
     ...fyi.length ? [`Catch up: ${fyi.length} worth knowing${look.length ? `. Worth a look: ${look.map((w) => `${w.asker?.name.split(/\s+/)[0] ?? "Someone"}, ${w.fyi.line.replace(/\.$/, "")} (${w.code})`).join("; ")}` : ""}. Say "what did I miss?" for all of it.`] : [],
     ...waiting.slice(0, 6).map((w) => `${w.code} ${w.asker?.name ?? "Someone"} \xB7 waiting ${age(w.revAt ?? w.updatedAt, now)}`),
@@ -61002,6 +61116,16 @@ async function daily(store2, src, cfg, now = /* @__PURE__ */ new Date()) {
       store2.log({ event: "numbers-failed", error: String(e).slice(0, 200) });
     }
     const n = sweep2(store2, cfg.retentionDays ?? 30, now.getTime());
+    try {
+      const { pruned, status: status3 } = pruneActions(store2, Math.min(cfg.retentionDays ?? 30, 30), now.getTime());
+      if (pruned || status3 === BUSY) store2.log({ event: "actions-pruned", pruned, status: status3 === BUSY ? "busy" : status3 });
+    } catch (error62) {
+      try {
+        store2.log({ event: "actions-prune-failed", error: String(error62).slice(0, 200) });
+      } catch {
+        console.error(`${NAME}: action history pruning failed and its diagnostic could not be saved.`);
+      }
+    }
     store2.saveNotify({ ...store2.notify(), sweepDay: day3 });
     if (n) store2.log({ event: "retention", cleared: n });
     weeklyLearning(store2, now);
@@ -67169,6 +67293,7 @@ init_brand();
 init_io_time();
 init_poll();
 init_usage_backfill();
+init_actions();
 var TAKEOVER_MIN = 30;
 async function tick(store2, deps = {}) {
   return readPhase("tick-setup", () => tickInPhases(store2, deps));
@@ -67258,6 +67383,7 @@ async function tickInPhases(store2, deps = {}) {
   try {
     const control2 = freshRead(() => store2.control());
     if (control2.watching === void 0) store2.saveControl({ ...control2, watching: { on: true, since: (/* @__PURE__ */ new Date()).toISOString(), machine: store2.machine } });
+    markLedgerStart(store2);
     scanCodeFolders(Date.now(), true);
     for (const wf of store2.workflows()) {
       if (wf.todos?.length) {

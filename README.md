@@ -117,6 +117,17 @@ with nothing that sends or changes anything. If it cannot be updated, the
 previous copy stays and Doctor says why. In your AI chat, `inbox` answers in
 text, and `open_inbox` opens this page.
 
+Automatic-action nudges batch newly completed actions into one self-chat message.
+They keep the existing quiet-hours, presence and nudge-interval checks; an action that
+can still be taken back can prompt you sooner. The daily summary counts completed
+actions with a confirmed posted part that have not been taken back. These notices
+say "Review in Delegate" without putting the page's per-launch access URL in chat
+history. The first nudge cycle does not announce older records in a burst: they
+remain available for review and in the daily summary.
+
+Automatic-action history follows your message-retention period, capped at
+30 days. If a month file is busy, its cleanup waits until the next daily sweep.
+
 Development: `npm run build` builds the page into `dist/web-react` and updates
 integrity hashes; run it once before `delegate open` from source.
 `npm run typecheck` covers the server and the page; `npm run test:react` runs the React

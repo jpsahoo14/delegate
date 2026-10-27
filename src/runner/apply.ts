@@ -1,4 +1,4 @@
-import { okSendGate, ownWords, rememberSend, heldSend, threadSince, send, undo } from './send.ts'
+import { okSendGate, ownWords, rememberSend, heldSend, threadSince, send, undo, undoAction } from './send.ts'
 import { basename } from 'node:path'
 export { send, replyContext, aboutPr, type SendBy } from './send.ts'
 import { answerHabitResult, dismissKey, dismissSuggestion, outcome } from './habits.ts'
@@ -11,7 +11,7 @@ import { settingKey } from '../core/setting-keys.ts'
 import { leftActionText } from '../core/left-lines.ts'
 import { telemetryEvent } from '../core/telemetry.ts'
 import { placeOf } from '../web/model/place.ts'
-import { PAGE_CONTROL_VERBS, type Answer, type Change, type Config, type Effect, type Workflow } from '../core/types.ts'
+import { PAGE_CONTROL_VERBS, type Answer, type Change, type Config, type Effect, type UndoReceipt, type Workflow } from '../core/types.ts'
 
 import { contentKey, htmlToText } from '../core/intake.ts'
 
@@ -50,6 +50,7 @@ import { clearHold, clearVoteHold, holdReasons, reasonMessages, restampReasons, 
 import { holdCheck, type Quick } from './send-holds.ts'
 import { freshRead, readPhase } from '../store/fs.ts'
 import { recordCommit } from './commit.ts'
+import { readActions, undoableAction } from '../store/actions.ts'
 import { voteClaimReview } from './vote-claim.ts'
 import { scrub } from '../core/secrets.ts'
 import { legacyEffectOrigins } from '../core/normalize-report.ts'
@@ -102,13 +103,18 @@ export async function applyAnswers(store: Store, src: Source, cfg: Config, procs
 	for (const { file, answer } of store.answers()) {
 		const pageControl = (PAGE_CONTROL_VERBS as readonly string[]).includes(answer.verb)
 		if (controlsOnly && !isControl(answer.verb) && !pageControl) continue
-		const wf = answer.code ? freshRead(() => store.byCode(answer.code)) : undefined
+		const recordUndo = answer.verb === 'undo-action'
+		const recordRequest = recordUndo && answer.text && answer.page ? { id: answer.text, rev: answer.page.expect } : undefined
+		const wf = !recordUndo && answer.code ? freshRead(() => store.byCode(answer.code)) : undefined
+		let undoReceipt: UndoReceipt | undefined
 		try {
-			const kp = answer.code?.startsWith('K') ? store.proposal(answer.code) : undefined
-			if (answer.page) {
+			const kp = !recordUndo && answer.code?.startsWith('K') ? store.proposal(answer.code) : undefined
+			if (answer.page || recordUndo) {
 				if (store.answered(answer.id)) { store.doneAnswer(file); continue }
 				// Watching checks its own synced-state digest in the handler.
-				const refusal = pageControl ? undefined : pageAnswerRefusal(answer, wf, answer.code?.startsWith('R') ? store.automation(answer.code) : undefined, kp, cfg, answer.page.kind === 'manage' ? pageManagementRev(store, answer.code ?? '') : undefined, wf?.job ? store.job(wf.job) : undefined)
+				const refusal = recordUndo && (answer.code !== '' || answer.surface !== 'panel' || !recordRequest)
+					? 'Invalid action approval. Nothing was deleted. Open the current action first.'
+					: pageControl ? undefined : pageAnswerRefusal(answer, wf, answer.code?.startsWith('R') ? store.automation(answer.code) : undefined, kp, cfg, answer.page?.kind === 'manage' ? pageManagementRev(store, answer.code ?? '') : undefined, wf?.job ? store.job(wf.job) : undefined)
 				if (refusal) {
 					await reply(store, src, answer, `${MARK} ${refusal}`, true)
 					store.doneAnswer(file)
@@ -128,7 +134,14 @@ export async function applyAnswers(store: Store, src: Source, cfg: Config, procs
 			const auto = answer.code?.startsWith('R') ? store.automation(answer.code) : undefined
 			const wt = answer.code?.startsWith('W') ? store.waiting().find(w => w.code === answer.code) : undefined
 			const hb = answer.code?.startsWith('H') ? store.habit(answer.code) : undefined
-			if (hb) {
+			if (recordRequest) {
+				const result = await undoAction(store, src, cfg, recordRequest.id, recordRequest.rev)
+				undoReceipt = { outcome: result.outcome, reason: result.ok ? undefined : result.reason, recorded: result.recorded }
+				const text = result.ok ? result.warning : result.why, refused = result.outcome === 'refused'
+				if (text) await reply(store, src, answer, `${MARK} ${text}`, refused, undoReceipt)
+				else store.completePageSubmission(answer, undefined, refused, undoReceipt)
+			}
+			else if (hb) {
 				const result = answerHabitResult(store, hb, answer.verb, answer.text)
 				await reply(store, src, answer, `${MARK} ${result.ok ? result.text : result.why}`, !result.ok)
 			}
@@ -153,7 +166,7 @@ export async function applyAnswers(store: Store, src: Source, cfg: Config, procs
 		}
 		store.doneAnswer(file)
 		store.addOutcome(answer.id, '')
-		store.completePageSubmission(answer)
+		store.completePageSubmission(answer, undefined, false, undoReceipt)
 		store.log({ event: 'answer', workflowId: wf?.id, code: answer.code, verb: answer.verb, surface: answer.surface, text: answer.text })
 		n++
 	}
@@ -475,9 +488,19 @@ async function applyOne(store: Store, src: Source, cfg: Config, wf: Workflow, a:
 	}
 	// Open work has no draft: its next reply starts from the owner's words or the next news (dev-spec/work.md).
 	if (wf.state === 'open') {
+		let canUndo = false
+		if (a.verb === 'undo') {
+			const now = Date.now(), sent = wf.sent
+			const actions = readActions(store, { since: new Date(now - 30 * 86_400_000).toISOString() }).filter(action => action.item?.wf === wf.id)
+			const recorded = sent && actions.find(action => action.parts.some(part => part.kind === 'message' && part.msgId === sent.msgId))
+			const target = sent ? recorded : actions.find(action => undoableAction(action, now))
+			const unconfirmed = sent?.byRule && actions.some(action => !action.completedAt && action.at <= sent.at &&
+				action.because.kind === 'line' && action.because.grantId === sent.byRule)
+			canUndo = target ? undoableAction(target, now) : !!sent && now < Date.parse(sent.undoUntil ?? '') && !unconfirmed
+		}
 		if ((a.verb === 'edit' || a.verb === 'send') && a.text) { newTurn(wf); Object.assign(wf, stateFields(wf, 'needs_human')) }
 		else if (a.verb === 'answer') newTurn(wf)
-		else if (['ok', 'pick', 'later', 'undo'].includes(a.verb)) return reply(store, src, a, `${MARK} ${wf.code} is in progress (${wf.status}) and has no draft. Say "${wf.code}: what to do next", "wait ${wf.code}: 3d", or "close ${wf.code}".`)
+		else if (['ok', 'pick', 'later', 'undo'].includes(a.verb) && !(a.verb === 'undo' && canUndo)) return reply(store, src, a, `${MARK} ${wf.code} is in progress (${wf.status}) and has no draft. Say "${wf.code}: what to do next", "wait ${wf.code}: 3d", or "close ${wf.code}".`)
 	}
 	// A holding reply is not the reply (#41): words after it are the full answer, never a correction of it.
 	const replied = !!wf.sent && !wf.sent.holding
@@ -751,9 +774,12 @@ async function applyOne(store: Store, src: Source, cfg: Config, wf: Workflow, a:
 			}
 			break
 		}
-		case 'undo':
+		case 'undo': {
+			const wasOpen = wf.state === 'open'
 			await undo(store, src, cfg, wf, a)
+			if (wasOpen && !wf.sent) Object.assign(wf, { ...stateFields(wf, 'open'), status: statusOf(wf) })
 			break
+		}
 	}
 	wf.newCount = 0
 	commit()
@@ -914,18 +940,18 @@ export function only(store: Store, wf: Workflow, nums: number[], offReason?: Eff
 	return left.filter(e => !keep.has(e))
 }
 
-function recordAnswerResult(store: Store, a: Answer, text: string, refused = false): string {
+function recordAnswerResult(store: Store, a: Answer, text: string, refused = false, undo?: UndoReceipt): string {
 	const detail = text.replace(new RegExp(`^${MARK}\\s*`), '')
 	if (a.id) {
 		store.addOutcome(a.id, detail, refused)
-		store.completePageSubmission(a, detail, refused)
+		store.completePageSubmission(a, detail, refused, undo)
 	}
 	return detail
 }
 
-export async function reply(store: Store, src: Source, a: Answer, text: string, refused = false) {
+export async function reply(store: Store, src: Source, a: Answer, text: string, refused = false, undo?: UndoReceipt) {
 	// The surface that acted reads its own result, so a refusal is never shown as success (final review P1-2).
-	const detail = recordAnswerResult(store, a, text, refused)
+	const detail = recordAnswerResult(store, a, text, refused, undo)
 	if (a.surface === 'chat' || a.surface === 'panel') { store.addReceipt(detail); return true }
 	if (a.surface !== 'self') return
 	try { await say(store, src, text); return true } catch (e) { store.log({ event: 'ack-failed', code: a.code, error: String(e) }); return false }

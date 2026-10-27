@@ -451,6 +451,8 @@ export const PAGE_CONTROL_VERBS = ['watch-off', 'watch-on'] as const
 // again: "ok A1 again", the owner checked that a change which may have been made was not, so it is made once more.
 // todos: on a close from the page, the open to-dos the owner saw, so Mark done marks only those (review N2 P2-1).
 export type PageApproval = { kind: 'send-reply' | 'make-changes' | 'pick' | 'undo-send' | 'undo-action' | 'feedback-send' | 'mark-todos' | 'approve' | 'manage'; expect: string; sentMessageId?: string; todoIds?: string[]; replyDigest?: string; reviewed?: string }
+// Runner-owned output passed to receipt completion, never read from a stored Answer.
+export type UndoReceipt = { outcome: 'undone' | 'refused' | 'failed'; reason?: 'forbidden' | 'replied-to' | 'edited' | 'other' | 'too-late'; recorded?: false }
 export type Answer = { id: Id; code: Code; verb: Verb; text?: string; nums?: number[]; except?: number[]; include?: string[]; vote?: string; key?: string; label?: string; again?: true; sendReview?: string; actionClaimReview?: string; surface: 'chat' | 'self' | 'panel'; at: string; seenAt?: string; todos?: string[]; page?: PageApproval; pageSubmissionId?: string }
 
 export type WatchedChat = { id: string; name: string; test?: boolean; group?: boolean; since?: string }

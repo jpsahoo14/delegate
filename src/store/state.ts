@@ -2,7 +2,7 @@ import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, 
 import { hostname, uptime } from 'node:os'
 import { createHash } from 'node:crypto'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
-import type { Answer, Automation, CallRec, Change, Config, Job, Local, Msg, Owner, Proposal, Report, Rule, Workflow } from '../core/types.ts'
+import type { Answer, Automation, CallRec, Change, Config, Job, Local, Msg, Owner, Proposal, Report, Rule, UndoReceipt, Workflow } from '../core/types.ts'
 import { itemCode, ulid } from '../core/ids.ts'
 import type { Waiting } from '../core/waiting.ts'
 import type { Turn } from '../core/intake.ts'
@@ -59,7 +59,7 @@ export type Experience = 'new' | 'classic'
 // projection, never from the chat wording in `text`. send: the click was a Send. action: the kind of action clicked ("dismiss",
 // "later"…), for its own past tense (PM 19:12); count: how many to-dos it marked; watch: what it now watches; stale: refused because
 // the item changed since the owner looked.
-export type ReceiptOutcome = { kind: 'sent' | 'held' | 'refused' | 'queued' | 'done' | 'failed'; reasons?: string[]; send?: true
+export type ReceiptOutcome = { kind: 'sent' | 'held' | 'refused' | 'queued' | 'done' | 'failed'; reasons?: string[]; send?: true; undo?: UndoReceipt
 	action?: string; count?: number; watch?: { target: string; until?: string }; stale?: true }
 // experience: New or Classic inside the React page, kept beside ui so an older build still reads ui as before.
 export type UiChoice = { ui: 'new' | 'classic' | 'react'; experience?: Experience; at?: string; tried?: string; noted?: true }
@@ -474,7 +474,7 @@ export class Store {
 	savePageSubmission(submission: PageSubmission): PageSubmission {
 		return this.updatePageSubmission(submission.id, current => mergeSubmission(current, submission))!
 	}
-	completePageSubmission(answer: Answer, text?: string, refused = false): void {
+	completePageSubmission(answer: Answer, text?: string, refused = false, undo?: UndoReceipt): void {
 		if (!answer.pageSubmissionId) return
 		const wf = answer.code ? this.byCode(answer.code) : undefined
 		this.updatePageSubmission(answer.pageSubmissionId, record => {
@@ -483,7 +483,7 @@ export class Store {
 				record.processed ? record.text : 'No result detail was recorded. Open the item to verify what happened.'
 			const merged = mergeSubmission(record, { ...record, phase: 'queued', accepted: true, ids: [answer.id], processed: true, text: detail, refused: !!record.refused || refused }, true)
 			const count = answer.page?.todoIds?.length ?? answer.todos?.length
-			return withReceiptFacts(this, merged, { ...outcomeOf(wf, answer, !!merged.refused), ...(count ? { count } : {}) })
+			return withReceiptFacts(this, merged, { ...outcomeOf(wf, answer, !!merged.refused, undo), ...(count ? { count } : {}) })
 		})
 	}
 	// The same facts for a click the page server decided at once (a stale click refused, a watch started, a terminal taken back).
@@ -612,7 +612,8 @@ export class Store {
 const submissionRank = (r: PageSubmission) => r.uncertain ? 4 : r.refused || r.phase === 'refused' ? 3 : r.processed ? 2 : r.accepted || r.phase === 'queued' ? 1 : 0
 // From the item as the runner left it, never from the reply text. The runner completes a submission more than once (its reply,
 // then once more when the answer is done); each time is decided again, so the last, with the item saved, is the one kept.
-function outcomeOf(wf: Workflow | undefined, a: Answer, refused: boolean): ReceiptOutcome {
+function outcomeOf(wf: Workflow | undefined, a: Answer, refused: boolean, undo?: UndoReceipt): ReceiptOutcome {
+	if (undo) return { kind: undo.outcome === 'refused' ? 'refused' : undo.outcome === 'undone' && undo.recorded !== false ? 'done' : 'failed', undo }
 	const send = a.verb === 'ok' || a.verb === 'send' || !!a.sendReview || a.verb === 'answer' && /^send anyway[.!]?$/i.test(a.text?.trim() ?? '')
 	if (send && wf?.sent && Date.parse(wf.sent.at) >= Date.parse(a.at)) return { kind: 'sent' }
 	const held = wf?.reasons ?? (wf?.reason ? [wf.reason] : [])

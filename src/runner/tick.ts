@@ -49,6 +49,7 @@ import { NAME, CMD } from '../brand.ts'
 import { netTime, timedExternal } from '../core/io-time.ts'
 import { recordSentReplyActivity } from './poll.ts'
 import { backfillUsage, usageDays } from './usage-backfill.ts'
+import { markLedgerStart } from '../store/actions.ts'
 
 export type TickResult = { skipped?: string; commands: number; answers: number; asks: number; runs: number; nudged: boolean; ms: number }
 
@@ -132,6 +133,7 @@ async function tickInPhases(store: Store, deps: Parameters<typeof tick>[1] = {})
 	try {
 		const control = freshRead(() => store.control())
 		if (control.watching === undefined) store.saveControl({ ...control, watching: { on: true, since: new Date().toISOString(), machine: store.machine } })
+		markLedgerStart(store)
 		scanCodeFolders(Date.now(), true)
 		for (const wf of store.workflows()) {
 			if (wf.todos?.length) {

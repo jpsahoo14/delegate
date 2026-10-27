@@ -1,7 +1,9 @@
 import { CMD, NAME } from '../brand.ts'
 import { blockerOf } from './retry.ts'
 import { active, addPart, canCloseReport, hasDecisions, homeOf, joinWhy, mergeReportWork, settle, step } from './work.ts'
-import { assertTestSafe, freshRead, readPhase } from '../store/fs.ts'
+import { assertTestSafe, freshRead, readJson, readPhase, writeJson } from '../store/fs.ts'
+import { z } from 'zod'
+import { readActions, undoableAction, type FoldedAction } from '../store/actions.ts'
 import { recordCommit } from './commit.ts'
 import { stateFields, statusFields } from '../core/upgrades.ts'
 import { normalizeQuestionHint } from '../core/normalize-report.ts'
@@ -21,7 +23,7 @@ import { clearHold, keepApprovedDraft } from '../core/owner-send.ts'
 import { checkPreservedHold, refreshApprovedHolds } from './send-holds.ts'
 import { describe } from './automations.ts'
 import { ulid } from '../core/ids.ts'
-import { MARK, plain, renderNudge, renderPreview } from '../core/render.ts'
+import { actionNudge, MARK, plain, renderNudge, renderPreview } from '../core/render.ts'
 import { runAgent, sessionLog, checkAgentTools, SetupError, type RunInput, type RunResult } from '../adapters/agent.ts'
 import type { Source } from '../adapters/source.ts'
 import { here, LOCAL_DIR, type Store } from '../store/state.ts'
@@ -791,22 +793,62 @@ export function applyReport(wf: Workflow, r: Report, home = wf, allowClose = tru
 	}
 }
 
+// Ledger reads use base at; this cursor tracks completion and keeps same-millisecond arrivals.
+const actionNudgeCursorSchema = z.object({
+	lastRecordAt: z.string().datetime({ offset: true }).transform(at => new Date(at).toISOString()),
+	ids: z.array(z.string().uuid()),
+})
+type ActionNudgeCursor = z.infer<typeof actionNudgeCursorSchema>
+type CompletedAction = FoldedAction & { completedAt: string }
+
+function loadActionNudgeCursor(store: Store, now: Date): { cursor: ActionNudgeCursor; initial: boolean } {
+	const file = join(store.root, 'state', 'wdd-nudge.json')
+	try {
+		const value = readJson<unknown>(file, undefined)
+		if (value !== undefined) return { cursor: actionNudgeCursorSchema.parse(value), initial: false }
+	} catch (error) {
+		console.error(`${NAME}: could not read the automatic-action nudge cursor; restarting at the current time.`, scrubDeep(String(error)))
+	}
+	const cursor = { lastRecordAt: now.toISOString(), ids: [] }
+	writeJson(file, cursor, store.machine)
+	return { cursor, initial: true }
+}
+
+function advanceActionNudgeCursor(store: Store, cursor: ActionNudgeCursor, records: readonly CompletedAction[]): void {
+	if (!records.length) return
+	const lastRecordAt = records.reduce((latest, record) => record.completedAt > latest ? record.completedAt : latest, cursor.lastRecordAt)
+	const ids = new Set(lastRecordAt === cursor.lastRecordAt ? cursor.ids : [])
+	for (const record of records) if (record.completedAt === lastRecordAt) ids.add(record.id)
+	writeJson(join(store.root, 'state', 'wdd-nudge.json'), { lastRecordAt, ids: [...ids] }, store.machine)
+}
+
 export async function nudge(store: Store, src: Source, cfg: Config): Promise<boolean> {
+	const now = new Date()
+	const { cursor, initial } = loadActionNudgeCursor(store, now)
 	const n = store.notify()
-	if (inQuietHours(new Date(), cfg.quiet)) return false
+	if (inQuietHours(now, cfg.quiet)) return false
 	const all = store.workflows()
 	const needs = all.filter(w => w.state === 'needs_human')
-	const undoable = all.filter(w => w.sent?.byRule && w.sent.undoUntil && Date.parse(w.sent.undoUntil) > Date.now())
 	const kp = store.proposals().filter(p => p.state === 'needs_human')
-	const fresh = [...needs, ...undoable, ...kp].filter(w => !n.lastNudgeAt || w.updatedAt > n.lastNudgeAt)
+	const records = initial ? [] : readActions(store, {
+		since: new Date(Date.parse(cursor.lastRecordAt) - 24 * 3_600_000).toISOString(), until: now.toISOString(),
+	}).filter((record): record is CompletedAction => !!record.completedAt &&
+		(record.completedAt > cursor.lastRecordAt || record.completedAt === cursor.lastRecordAt && !cursor.ids.includes(record.id)))
+	const fresh = [...needs, ...kp].filter(w => !n.lastNudgeAt || w.updatedAt > n.lastNudgeAt)
 	// An automatic send nudges at once, because its undo window is shorter than the nudge interval.
-	const urgent = undoable.some(w => fresh.includes(w))
-	const due = urgent || !n.lastNudgeAt || Date.now() - Date.parse(n.lastNudgeAt) > cfg.nudgeEveryMin * 60_000
-	if (!fresh.length || !due) return false
+	const urgent = records.some(record => undoableAction(record, now.getTime()))
+	const due = urgent || !n.lastNudgeAt || now.getTime() - Date.parse(n.lastNudgeAt) > cfg.nudgeEveryMin * 60_000
+	if ((!fresh.length && !records.length) || !due) return false
 	if ((await src.presence()).availability === 'DoNotDisturb' || await ownerActive(store, src)) return false
-	await say(store, src, renderNudge(needs, undoable, new Date(), kp))
+	const actionLine = actionNudge(records, undefined, now.getTime())
+	const lines: string[] = []
+	if (needs.length || kp.length) lines.push(renderNudge(needs, [], now, kp))
+	if (actionLine) lines.push(lines.length ? actionLine : `${MARK} ${actionLine}`)
+	if (!lines.length) { advanceActionNudgeCursor(store, cursor, records); return false }
+	await say(store, src, lines.join('\n'))
 	store.markShown(needs.slice(0, 6))
 	store.saveNotify({ ...store.notify(), lastNudgeAt: new Date().toISOString() })
+	advanceActionNudgeCursor(store, cursor, records)
 	return true
 }
 
