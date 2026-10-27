@@ -168,7 +168,7 @@ a.left-button:hover{background:var(--surface-2)}
 .card-prs .pr-row:first-child{border-top:0}
 .card-prs .pr-name{font-weight:600;flex:0 1 auto;min-width:5em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .card-prs .pr-title{font-weight:400}
-.card-prs .pr-outcome{display:inline-flex;align-items:center;gap:4px;flex:1 0 auto}
+.card-prs .pr-outcome{display:inline-flex;align-items:center;gap:4px;flex:1 1 auto;min-width:0}
 .card-prs [data-outcome=checking] .pr-outcome,.card-prs [data-outcome=not-reviewing] .pr-outcome{color:var(--text-2)}
 .card-prs [data-outcome=couldnt-read] .pr-outcome,.card-prs [data-outcome=gave-up] .pr-outcome{color:var(--warn)}
 .card-prs .pr-open,.card-prs .pr-actions{flex:none;white-space:nowrap}

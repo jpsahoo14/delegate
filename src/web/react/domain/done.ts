@@ -16,7 +16,7 @@ export function matchesDone(row: { kind: string; at: string }, filter: DoneFilte
 }
 
 export type ChangeKind = 'task' | 'pr' | 'invite' | 'other'
-type HomeDoneRow = { kind: string; at: string; who: { name: string }; by: string; change?: ChangeKind; comments?: number; facts?: number }
+type HomeDoneRow = { kind: string; at: string; who: { name: string }; by: string; rule?: string; change?: ChangeKind; comments?: number; facts?: number }
 export type HomeDoneTile = { key: string; filter: DoneFilter; since: string; count: number; label: string; sub?: string }
 
 export function homeTiles(rows: readonly HomeDoneRow[], since: string): HomeDoneTile[] {
@@ -24,7 +24,7 @@ export function homeTiles(rows: readonly HomeDoneRow[], since: string): HomeDone
 	const replies = selected('replies'), reviews = selected('reviews'), changes = selected('changes')
 	const reminders = selected('reminders'), learned = selected('learned')
 	const people = new Set(replies.map(row => row.who.name)).size
-	const byRule = replies.filter(row => row.by.startsWith('by rule')).length
+	const byRule = replies.filter(row => !!row.rule).length
 	const comments = reviews.reduce((count, row) => count + (row.comments ?? 0), 0)
 	const facts = learned.reduce((count, row) => count + (row.facts ?? 0), 0)
 	const breakdown = (['task', 'pr', 'invite', 'other'] as const).flatMap(kind => {

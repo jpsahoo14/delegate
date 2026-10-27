@@ -105,7 +105,8 @@ export function sinceOf(v: Pick<View, 'now' | 'since' | 'done' | 'next'>): { at:
 	const fresh = (v.done ?? []).filter(r => r.at > at)
 	const replies = fresh.filter(r => r.kind === 'reply' && !r.inTeams), people = new Set(replies.map(r => r.who.name)).size
 	// Both numbers count people (review P2-5): three rule replies to Kim are "replied to 1 (1 by rule)".
-	const byRule = new Set(replies.filter(r => r.by.startsWith('by rule')).map(r => r.who.name)).size
+	// A76-b: a rule reply by its typed rule, never its words (they now name the rule).
+	const byRule = new Set(replies.filter(r => !!r.rule).map(r => r.who.name)).size
 	const reviews = fresh.filter(r => r.kind === 'review').length, fyis = fresh.filter(r => r.kind === 'catchup').length, handled = v.next?.handled ?? 0
 	const parts = [
 		people ? { text: `replied to ${people}${byRule ? ` (${byRule} by rule)` : ''}`, href: '#done/replies' } : undefined,

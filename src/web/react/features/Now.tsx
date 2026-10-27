@@ -310,7 +310,7 @@ export default function Now({ sections }: { sections: Snapshot['sections'] | und
 			})()}
 		</p>}
 		{undoable.length > 0 && <section aria-label="Replies you can undo" className="undo-strip">{undoable.map(row => {
-			const first = entities.people[row.personId].name.split(' ')[0], rule = /by rule (\S+)/.exec(row.by)?.[1]
+			const first = entities.people[row.personId].name.split(' ')[0], rule = row.rule
 			return <div className="undo-main" key={row.id} data-code={row.code}><p>{rule ? `Sent for you to ${first} (rule ${rule})` : `Sent to ${first}`}<span className="undo-quote">: "{row.said ?? row.text}"</span></p>{row.actionIds.filter(id => entities.actions[id].kind === 'undo').map(id => <ActionButton key={id} action={entities.actions[id]} />)}<small className="sr-only">Undo available until {time(new Date(row.undoUntil!))}. Changes already made are not reversed.</small></div>
 		})}</section>}
 		{!find && snapshot.showExperienceNote && <aside className="experience-note" role="note"><p>Same items, sorted by whose move it is<span className="note-wide">: yours, someone else's, or {NAME}'s</span>. Switch back any time, <span className="note-wide">top right</span><span className="note-narrow">in ⋯</span>.</p><Button variant="ghost" disabled={note.busy} onClick={note.dismiss}>{note.busy ? 'Saving...' : 'Got it'}</Button>{note.error && <p role="alert">{note.error}</p>}</aside>}

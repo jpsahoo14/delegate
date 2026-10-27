@@ -60,7 +60,7 @@ import { cardState, checkCard, failLine, type ActionKind, type CardFacts, type J
 import { policyContext } from '../runner/autosend.ts'
 import { isPersona } from '../core/intake.ts'
 import { PAGE_REPLY_CHANGED, automationApprovalRev, pageChangeId, pageDigest, pageOptionId, leftRev, proposalApprovalRev, workflowApprovalRev } from '../core/page-approval.ts'
-import type { Config, Effect, PageApproval, Workflow } from '../core/types.ts'
+import type { Config, Effect, PageApproval, ReadFailureKind, Workflow } from '../core/types.ts'
 import { PAGE_CONTROL_VERBS } from '../core/types.ts'
 import { effectCapability, isVote, meaningParts, pendingEffects, prIdOf, refusal, sameHead, shown, voteValue } from '../core/effects.ts'
 import { byDate, forPage, sourceChip } from './model/format.ts'
@@ -82,7 +82,7 @@ import { APPROVAL_WORD, voteMention } from '../core/vote-claims.ts'
 import { personName } from '../core/format.ts'
 import { placeOf } from './model/place.ts'
 import { leftSourceWords, leftWords } from './model/left-words.ts'
-import { groupChoices, unitOutcome } from '../runner/review-gate.ts'
+import { groupChoices, readFailureReason, unitOutcome } from '../runner/review-gate.ts'
 import { restoreOffRecord } from '../runner/offrecord.ts'
 import { chatIdNet, idNet, pageText, takePageTextLeaks } from './page-text.ts'
 import { pageManagementRev, workflowManagementRev } from '../store/page-revision.ts'
@@ -726,15 +726,17 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 				: outcome === 'couldnt-read' ? [verb('pr-retry', 'Try now')] : outcome === 'gave-up' ? [verb('pr-retry', 'Try again'), verb('pr-skip', 'Skip this PR')] : []
 			if (ids.length) unitActions.set(unit.id, ids)
 		}
-		// CR B3: the per-PR offers come from each unit's own review, whatever the reply's mode. Approve stays vote-only: an ok on an item whose
-		// reply awaits his OK also sends that reply (apply.ts), so while a reply draft waits each block offers Open PR to approve only.
-		if (perPr && unitOffers && editable.has(id) && wf.state === 'needs_human' && !wf.redacted && !draft) for (const review of manyReviews) {
+		// CR B3: the per-PR offers come from each unit's own review, whatever the reply's mode. MP2 V (PE engineer-d-a239 §16.6 step 3, on the
+		// reviewed HOST 7845a355): on an origin-bearing rev each block's Approve PR <n> is HOST's page-only pr-approve, that one vote and never
+		// the reply, so it is offered while a reply draft waits too (PM FINAL meaning: "… Your reply isn't sent."). A legacy rev keeps the
+		// ok/except offer, and none while a draft waits (an ok there also sends the reply).
+		if (perPr && unitOffers && editable.has(id) && wf.state === 'needs_human' && !wf.redacted && (positive || !draft)) for (const review of manyReviews) {
 			const k = pending.findIndex(effect => isVote(effect.call) && (voteValue(effect.call) ?? 0) >= 5 && !effect.error && prIdOf(effect.call) === review.pr)
 			if (k < 0 || !reviewApproval(wf, review).approvable) continue
 			const n = changes[k]?.n
-			approveOf.set(review.pr, offer(id, rev, 'approve-pr', `Approve PR ${review.pr}`, () => (positive ? { code: id, verb: 'ok', include: [], vote: pageChangeId(pending[k]) }
+			approveOf.set(review.pr, offer(id, rev, 'approve-pr', `Approve PR ${review.pr}`, () => (positive ? { code: id, verb: 'pr-approve', nums: [review.pr], vote: pageChangeId(pending[k]) }
 				: { code: id, verb: 'ok', ...((except => (except.length ? { except } : {}))(changes.filter(change => change.n !== n).map(change => change.n))) }),
-			{ effect: 'changes-system', staleness: 'exact', expect, meaning: APPROVE_PR_MEANING }, `${id}/pr-${review.pr}`))
+			{ effect: 'changes-system', staleness: 'exact', expect, meaning: draft ? `${APPROVE_PR_MEANING} Your reply isn't sent.` : APPROVE_PR_MEANING }, `${id}/pr-${review.pr}`))
 		}
 		actionIds.push(offer(id, rev, 'ask', `Ask ${NAME}`, input => ({ code: id, verb: 'ask', text: requiredText(input) }), { input: 'text' }))
 		if (reopenable(wf, 'answer')) actionIds.push(offer(id, rev, 'reopen', 'Reopen and draft reply', input => ({ code: id, verb: 'answer', text: requiredText(input) }), { input: 'text', staleness: 'exact', expect }))
@@ -793,7 +795,8 @@ export function reactProjection(store: Store, query = '', visit?: { since?: stri
 			const why = reason === 'author' ? "it's your PR" : reason === 'declined' ? 'you declined it in Azure DevOps' : reason === 'group-approved' ? 'your group already approved it'
 				: reason === 'no-link' ? `there's no link to it, so ${NAME} can't open it` : reason === 'owner' ? 'you skipped it' : reason === 'not-asked' ? 'nobody asked you to review it' : "you aren't a reviewer on it"
 			const line = outcome === 'checking' ? "checking you're a reviewer…" : outcome === 'reviewing' || outcome === 'reviewed' ? outcome : outcome === 'not-reviewing' ? `not reviewing: ${why}`
-				: outcome === 'couldnt-read' ? `couldn't read it. ${NAME} tries again at the next check.` : `couldn't read it after ${unit.tries} tries.`
+				// PE §14.1: HOST's typed read-failure reason, in the PM's words (HOST writes them once); other or old units keep today's line.
+				: (failWhy => outcome === 'couldnt-read' ? `couldn't read it${failWhy ? `: ${failWhy}` : ''}. ${NAME} tries again at the next check.` : `couldn't read it after ${unit.tries} tries${failWhy ? `: ${failWhy}` : ''}.`)(readFailureReason(reason as ReadFailureKind))
 			const short = { checking: 'checking', reviewing: 'reviewing', reviewed: 'reviewed', 'not-reviewing': 'not reviewing', 'couldnt-read': "couldn't read", 'gave-up': 'gave up' }[outcome]
 			return { pr: unit.id, outcome, line, short, ...((title => (title ? { title } : {}))(pageText(unit.title))), ...((url => (url ? { url } : {}))(safeLink(unit.ref?.url))),
 				...(outcome === 'couldnt-read' || outcome === 'gave-up' ? (detail => (detail ? { detail } : {}))(pageText(unit.failure)) : {}), ...((ids => (ids ? { actionIds: ids } : {}))(unitActions.get(unit.id))) }

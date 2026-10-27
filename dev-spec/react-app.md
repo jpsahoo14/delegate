@@ -6854,3 +6854,48 @@ The subsequent current-main merge retains the already-landed Needs ordering: one
 code ties, no meeting exception, and a stable shown cohort shared by each interface's visual queue and keyboard/pager. The shared
 time reader stays exported as `sentAt` for existing card callers. These landed rules coexist with the PR, Watching and menu
 additions; they do not activate the later hold-attribution correction or grant runtime acceptance.
+
+## 0.2.48 D-A239 typed read-failure reason: the New consumer (PE engineer-d-a239 §14.1/§14.2; PM FINAL 05:41:51; reviewed HOST 6fbf9063)
+
+The branch merges HOST 6fbf9063 (CR 06:09:20): `PrUnit.failureKind`, `readFailureKind`, `unitOutcome`'s reason, and `readFailureReason` with the PM's words, written once in HOST's review-gate.ts.
+
+New changes exactly three places:
+- **react-projection.ts:** the MP1 outcome lines take the reason from `readFailureReason(unitOutcome().reason)`.
+  - Couldn't read: "couldn't read it: <reason>. Delegate tries again at the next check."
+  - Gave up: "couldn't read it after <k> tries: <reason>."
+  - `other` or an old unit keeps today's line, with no reason.
+  - The raw failure stays only the tooltip detail.
+- **card.css:** `.pr-outcome` becomes `flex:1 1 auto;min-width:0`, so the reason wraps at any width (MP6 point 1).
+- **ItemCard.tsx PrsInAsk:** the announced key for a couldn't-read PR includes its line. A change of reason is one polite announcement; the same reason again is none (MP6 point 4).
+
+Unchanged: `short`, PrsLine, contracts and Classic (which shares ItemCard).
+## 0.2.48 A76-b New-A76b-1: "Sent by your rule" (decision 50; PE joint-what-delegate-did 04:20:25; reviewed SEND 9ad7e9fd)
+
+- A rule send whose rule SEND froze at send (`wf.sent.rule`, decision 50) reads **Sent by your rule "<rule.text>"** in the Done row (web/view.ts DoneRow, New and Classic Done). It keeps its message link.
+- An older rule send, or one without a frozen rule, keeps "by rule <id>".
+- New reads the reviewed field through a local mirror (`SentRule`/`sentRuleOf` in view.ts) and never writes it. SEND's types.ts line arrives with its own merge, which consumes only that bound delta.
+- The counts that read the row's words now read its typed `rule` id instead, since the words now name the rule: the since-line "(N by rule)" (model/derive.ts), the Done summary "N by your rules" (view.ts) and the undo strip's rule id (Now.tsx).
+
+The current-main composition reads the already-landed, typed `wf.sent.rule` directly rather than retaining the temporary
+local mirror. The current Home tile implementation and its shared Done filter/since/count metadata stay in place; the removed
+legacy tile function is not restored. The Done row retains its landed comment count as well as the new frozen-rule wording.
+The same typed-rule attribution count is applied in the current `homeTiles` reader, not the removed legacy function, so changing
+the displayed rule words does not turn a rule reply into a "by you" count.
+
+## 0.2.48 D-A239 MP2 V step 3: per-PR Approve is HOST's page-only pr-approve (PE engineer-d-a239 §16.6 (3), §16.10)
+
+On the reviewed HOST V, merged as 4f2582a4: 7845a355 with e58ffb51 (the reviewed SEND pr-approve provider) and HOST's reviewed cost line.
+- Merge conflicts:
+  - mcp/server.ts takes HOST's reviewed page-only branch with `pr-approve`;
+  - runner/rule-compile.ts keeps the reviewed A239 failure helper, with HOST-COST-5's `chooseSession`.
+- **react-projection.ts, per-PR mode (two or more reviewed PRs), origin-bearing rev:** each block's "Approve PR <n>" answers `{ code, verb: 'pr-approve', nums: [<pr>], vote: <its pageChangeId> }`. That is exactly one vote, and never the reply or the other PRs' votes.
+  - So it is offered while a reply draft waits, too. Its meaning line is then "Approves as you. The PR is unchanged since the review. Your reply isn't sent." (PM FINAL).
+  - The same effect, exact staleness, expect and key apply.
+- **A legacy rev** keeps the ok/except offer, and none while a draft waits.
+- ItemCard, Classic and contracts are unchanged; they already draw each block's `approveActionId` with its Open PR pair.
+- This replaces the e07e7b23 interim, in which a drafted card's blocks showed Open PR to approve only.
+
+This current-main New6 composition preserves the landed New5, Home and Needs behavior alongside both consumer tails.
+The original producer paths remain unchanged from current main; the historical producer-merge descriptions above are not
+new producer edits. Generated output is rebuilt from the composed source. This is the first U1/U2 composition review, not
+runtime, visual, whole-feature or release acceptance. The later hold-attribution correction remains separate.

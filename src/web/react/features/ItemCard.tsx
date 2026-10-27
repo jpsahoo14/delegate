@@ -735,10 +735,12 @@ export function ItemCard({ code, placementId, inline = false, asks, fallback, re
 // colour alone; a static spinner under reduced motion), ↗ Open PR, and the PR's own outline action at the end, named with its PR.
 // MP5: a list named with its count; an outcome that changes while the card is open is announced once, politely; checking never is.
 function PrsInAsk({ code, prs, entities, readOnly, newer }: { code: string; prs: NonNullable<Item['prs']>; entities: Entities; readOnly: boolean; newer: boolean }) {
-	const seen = useRef(new Map(prs.map(pr => [pr.pr, pr.outcome]))), [said, setSaid] = useState('')
+	// PE §14.2: a couldn't-read PR is keyed by its line too, so a change of reason is one polite announcement; the same reason again is none.
+	const key = (pr: NonNullable<Item['prs']>[number]) => pr.outcome === 'couldnt-read' ? `couldnt-read:${pr.line}` : pr.outcome
+	const seen = useRef(new Map(prs.map(pr => [pr.pr, key(pr)]))), [said, setSaid] = useState('')
 	useEffect(() => {
-		const changed = prs.filter(pr => seen.current.get(pr.pr) !== undefined && seen.current.get(pr.pr) !== pr.outcome && pr.outcome !== 'checking')
-		seen.current = new Map(prs.map(pr => [pr.pr, pr.outcome]))
+		const changed = prs.filter(pr => seen.current.get(pr.pr) !== undefined && seen.current.get(pr.pr) !== key(pr) && pr.outcome !== 'checking')
+		seen.current = new Map(prs.map(pr => [pr.pr, key(pr)]))
 		if (changed.length) setSaid(changed.map(pr => `PR ${pr.pr}: ${pr.line}`).join('. '))
 	}, [prs])
 	const mark = (outcome: NonNullable<Item['prs']>[number]['outcome']) => outcome === 'checking' ? <span className="pr-spin" aria-hidden="true" />

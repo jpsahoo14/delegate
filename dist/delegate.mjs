@@ -59430,7 +59430,7 @@ function homeTiles(rows, since2) {
   const replies = selected("replies"), reviews = selected("reviews"), changes = selected("changes");
   const reminders = selected("reminders"), learned = selected("learned");
   const people2 = new Set(replies.map((row) => row.who.name)).size;
-  const byRule = replies.filter((row) => row.by.startsWith("by rule")).length;
+  const byRule = replies.filter((row) => !!row.rule).length;
   const comments = reviews.reduce((count, row) => count + (row.comments ?? 0), 0);
   const facts = learned.reduce((count, row) => count + (row.facts ?? 0), 0);
   const breakdown2 = ["task", "pr", "invite", "other"].flatMap((kind) => {
@@ -59931,7 +59931,8 @@ function itemRow2(store2, w) {
   const made = (w.effects ?? []).filter((e) => e.done);
   const sent = w.sent?.text ?? w.draft?.text;
   const base2 = { code: w.code, who: who(name), teams: teamsOf(w), ask: w.redacted ? void 0 : askLine(w.lastAsk) || void 0, ...w.msgIds.length ? { msgs: msgKeys(w) } : {} };
-  if (w.sent) return { ...base2, kind: made.length && w.intent === "pr_review" ? "review" : "reply", sentence: made.length && w.intent === "pr_review" ? `Reviewed for ${name} and replied${where}` : `Replied to ${name}${where}`, by: w.sent.byRule ? `by rule ${w.sent.byRule}` : "by you", ...w.sent.byRule ? { rule: w.sent.byRule } : {}, at: w.sent.at, text: w.redacted || sent === void 0 ? void 0 : htmlToText(sent), said: w.redacted ? void 0 : short2(sent), own: !w.sent.byRule, notes: w.notes ?? [], why: { reason: w.decision?.reason, confidence: w.decision?.confidence, sources: (w.draft?.sources ?? []).map((s3) => source(s3.ref, s3.tier, s3.stale, s3.label)), gaps: w.gaps ?? [] }, rule: w.sent.byRule, undoUntil: w.sent.undoUntil, work: workLine(homeOf(store2, w)), comments: made.filter((e) => COMMENT.test(e.action)).length };
+  const frozen = w.sent?.rule;
+  if (w.sent) return { ...base2, kind: made.length && w.intent === "pr_review" ? "review" : "reply", sentence: made.length && w.intent === "pr_review" ? `Reviewed for ${name} and replied${where}` : `Replied to ${name}${where}`, by: w.sent.byRule ? frozen?.text?.trim() ? `Sent by your rule "${frozen.text.trim()}"` : `by rule ${w.sent.byRule}` : "by you", ...w.sent.byRule ? { rule: w.sent.byRule } : {}, at: w.sent.at, text: w.redacted || sent === void 0 ? void 0 : htmlToText(sent), said: w.redacted ? void 0 : short2(sent), own: !w.sent.byRule, notes: w.notes ?? [], why: { reason: w.decision?.reason, confidence: w.decision?.confidence, sources: (w.draft?.sources ?? []).map((s3) => source(s3.ref, s3.tier, s3.stale, s3.label)), gaps: w.gaps ?? [] }, rule: w.sent.byRule, undoUntil: w.sent.undoUntil, work: workLine(homeOf(store2, w)), comments: made.filter((e) => COMMENT.test(e.action)).length };
   if (w.fyi) return { ...base2, kind: "catchup", sentence: htmlToText(w.fyi.line), gist: w.fyi.gist === void 0 ? base2.ask : htmlToText(w.fyi.gist), watch: w.fyi.watch, watchedAs: w.watchedAs, by: `${first3}${w.chat.group ? ` \xB7 ${placeOf(store2, w.chat, w.asker)?.row ?? w.chat.name}` : ""}`, at: w.fyi.at ?? w.updatedAt, high: w.fyi.weight === "high" };
   if (closedHow(w) === "replied") {
     const mine = store2.thread(w.id).filter((m) => m.byOwner).at(-1);
@@ -65254,7 +65255,7 @@ function sinceOf(v) {
   const at3 = v.since ?? new Date(Date.parse(v.now) - 864e5).toISOString();
   const fresh = (v.done ?? []).filter((r) => r.at > at3);
   const replies = fresh.filter((r) => r.kind === "reply" && !r.inTeams), people2 = new Set(replies.map((r) => r.who.name)).size;
-  const byRule = new Set(replies.filter((r) => r.by.startsWith("by rule")).map((r) => r.who.name)).size;
+  const byRule = new Set(replies.filter((r) => !!r.rule).map((r) => r.who.name)).size;
   const reviews = fresh.filter((r) => r.kind === "review").length, fyis = fresh.filter((r) => r.kind === "catchup").length, handled = v.next?.handled ?? 0;
   const parts2 = [
     people2 ? { text: `replied to ${people2}${byRule ? ` (${byRule} by rule)` : ""}`, href: "#done/replies" } : void 0,
@@ -66462,7 +66463,7 @@ function reactProjection(store2, query = "", visit2, opts = {}) {
       const ids = unitJob && jobStopOf(unitJob).stopped ? [verb("pr-skip", "Skip this PR")] : outcome2 === "couldnt-read" ? [verb("pr-retry", "Try now")] : outcome2 === "gave-up" ? [verb("pr-retry", "Try again"), verb("pr-skip", "Skip this PR")] : [];
       if (ids.length) unitActions.set(unit.id, ids);
     }
-    if (perPr && unitOffers && editable.has(id) && wf.state === "needs_human" && !wf.redacted && !draft2) for (const review2 of manyReviews) {
+    if (perPr && unitOffers && editable.has(id) && wf.state === "needs_human" && !wf.redacted && (positive || !draft2)) for (const review2 of manyReviews) {
       const k = pending.findIndex((effect) => isVote(effect.call) && (voteValue(effect.call) ?? 0) >= 5 && !effect.error && prIdOf(effect.call) === review2.pr);
       if (k < 0 || !reviewApproval(wf, review2).approvable) continue;
       const n = changes[k]?.n;
@@ -66471,8 +66472,8 @@ function reactProjection(store2, query = "", visit2, opts = {}) {
         rev,
         "approve-pr",
         `Approve PR ${review2.pr}`,
-        () => positive ? { code: id, verb: "ok", include: [], vote: pageChangeId(pending[k]) } : { code: id, verb: "ok", ...((except) => except.length ? { except } : {})(changes.filter((change2) => change2.n !== n).map((change2) => change2.n)) },
-        { effect: "changes-system", staleness: "exact", expect, meaning: APPROVE_PR_MEANING },
+        () => positive ? { code: id, verb: "pr-approve", nums: [review2.pr], vote: pageChangeId(pending[k]) } : { code: id, verb: "ok", ...((except) => except.length ? { except } : {})(changes.filter((change2) => change2.n !== n).map((change2) => change2.n)) },
+        { effect: "changes-system", staleness: "exact", expect, meaning: draft2 ? `${APPROVE_PR_MEANING} Your reply isn't sent.` : APPROVE_PR_MEANING },
         `${id}/pr-${review2.pr}`
       ));
     }
@@ -66529,7 +66530,7 @@ function reactProjection(store2, query = "", visit2, opts = {}) {
     const prRows = units?.map((unit) => {
       const { outcome: outcome2, reason } = unitOutcome(unit);
       const why3 = reason === "author" ? "it's your PR" : reason === "declined" ? "you declined it in Azure DevOps" : reason === "group-approved" ? "your group already approved it" : reason === "no-link" ? `there's no link to it, so ${NAME} can't open it` : reason === "owner" ? "you skipped it" : reason === "not-asked" ? "nobody asked you to review it" : "you aren't a reviewer on it";
-      const line3 = outcome2 === "checking" ? "checking you're a reviewer\u2026" : outcome2 === "reviewing" || outcome2 === "reviewed" ? outcome2 : outcome2 === "not-reviewing" ? `not reviewing: ${why3}` : outcome2 === "couldnt-read" ? `couldn't read it. ${NAME} tries again at the next check.` : `couldn't read it after ${unit.tries} tries.`;
+      const line3 = outcome2 === "checking" ? "checking you're a reviewer\u2026" : outcome2 === "reviewing" || outcome2 === "reviewed" ? outcome2 : outcome2 === "not-reviewing" ? `not reviewing: ${why3}` : ((failWhy2) => outcome2 === "couldnt-read" ? `couldn't read it${failWhy2 ? `: ${failWhy2}` : ""}. ${NAME} tries again at the next check.` : `couldn't read it after ${unit.tries} tries${failWhy2 ? `: ${failWhy2}` : ""}.`)(readFailureReason(reason));
       const short3 = { checking: "checking", reviewing: "reviewing", reviewed: "reviewed", "not-reviewing": "not reviewing", "couldnt-read": "couldn't read", "gave-up": "gave up" }[outcome2];
       return {
         pr: unit.id,
