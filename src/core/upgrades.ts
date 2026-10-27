@@ -1,7 +1,7 @@
 import { asksReviewAgain, isVote, prIdOf } from './effects.ts'
 import type { Workflow } from './types.ts'
 
-export const WORKFLOW_SCHEMA = 8
+export const WORKFLOW_SCHEMA = 10
 export const LEGACY_FALLBACK = /^(?:Check this item, then answer or skip it|Sign in, then answer or skip this item)$/
 export const LEGACY_STOP = /^(?:Tried \d+ times; |Blocked: |Needs the asker: |Still not ready after \d+ hours; )/
 export const LEGACY_VOTE_DROPPED = /^PR \d+ is \w+, so no vote is needed$/
@@ -29,6 +29,11 @@ export function legacyStatusReason(status: string, at: string): Workflow['status
 export function upgrade(w: Workflow): Workflow {
 	w.schema ??= 1
 	w.msgIds ??= [...w.pending]
+	if (w.approved?.byRule !== undefined) w.approved = undefined
+	for (const unit of w.prs ?? []) if (unit.review) {
+		if (unit.review.epoch === undefined) unit.review = { ...unit.review, epoch: 0, run: undefined }
+		else if (!Number.isSafeInteger(unit.review.epoch) || unit.review.epoch < 0) throw new Error('The stored PR review has an invalid epoch')
+	}
 	if (w.prAnchor && (w.state === 'done' || w.redacted || !w.msgIds.includes(w.prAnchor.msgId))) w.prAnchor = undefined
 	if (w.state === 'running' || w.state === 'waiting_on_task') w.workingSince ??= w.waitingSince ?? w.updatedAt
 	else w.workingSince = undefined

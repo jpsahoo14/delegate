@@ -24,7 +24,9 @@ import { discover } from './discover.ts'
 import { dueSends } from './autosend.ts'
 import { daily } from './daily.ts'
 import { dueAutomations } from './automations.ts'
-import { checkJobs, executeDirect, legacyEffects, realProcs, settleCompleted, startJobs, type Procs } from './jobs.ts'
+import { advanceReviewUnits, checkJobs, executeDirect, legacyEffects, realProcs, settleCompleted, startJobs, type Procs } from './jobs.ts'
+import { reviewCommentHook } from './review-autonomy.ts'
+import { mcpCaller } from './change.ts'
 import { watchDeadline } from './track.ts'
 import type { Caller } from './change.ts'
 import { checkOpen } from './continue.ts'
@@ -46,6 +48,7 @@ import type { Config } from '../core/types.ts'
 import { NAME, CMD } from '../brand.ts'
 import { netTime, timedExternal } from '../core/io-time.ts'
 import { recordSentReplyActivity } from './poll.ts'
+import { backfillUsage, usageDays } from './usage-backfill.ts'
 
 export type TickResult = { skipped?: string; commands: number; answers: number; asks: number; runs: number; nudged: boolean; ms: number }
 
@@ -233,6 +236,7 @@ async function tickInPhases(store: Store, deps: Parameters<typeof tick>[1] = {})
 			await describeDeploys(store, probe).catch(e => store.log({ event: 'probe-failed', error: String(e).slice(0, 300) }))
 			await describeTargets(store, probe).catch(e => store.log({ event: 'probe-failed', error: String(e).slice(0, 300) }))
 			await probePRs(store, cfg, probe, Date.now(), kicked).catch(e => store.log({ event: 'probe-failed', error: String(e).slice(0, 300) }))
+			for (const wf of store.workflows().filter(wf => wf.intent === 'pr_review' && wf.prs?.length)) advanceReviewUnits(store, cfg, wf)
 			await probeLeft(store, cfg, probe, Date.now(), kicked).catch(e => store.log({ event: 'probe-failed', error: String(e).slice(0, 300) }))
 			const due = store.workflows().filter(w => dueWork(w, Date.now(), store))
 			for (const w of due) { askWhatNext(w, store); store.save(w) }
@@ -257,7 +261,10 @@ async function tickInPhases(store: Store, deps: Parameters<typeof tick>[1] = {})
 			const h = deps.history ?? historyFor(cfg)
 			try { if (!sweeping(store)) await planChats(store, h, new Date()) } catch (e) { store.log({ event: 'harvest-plan-failed', error: String(e).slice(0, 300) }) } finally { if (!deps.history) await h?.close() }
 			// A plan that could not run this time waits for the next cycle; it never falls back to one run over 50 chats.
-			const jobsStarted = await direct() + await startJobs(store, cfg, procs, h?.conversations ? ['bootstrap:chats'] : [], deps.probe)
+			const madeDirect = await direct()
+			for (const wf of store.workflows().filter(wf => wf.intent === 'pr_review' && wf.prs?.length)) advanceReviewUnits(store, cfg, wf)
+			await reviewCommentHook(store, src, cfg, { probe: deps.probe, call: mcpCaller(cfg) })
+			const jobsStarted = madeDirect + await startJobs(store, cfg, procs, h?.conversations ? ['bootstrap:chats'] : [], deps.probe)
 			capHealth(store, cfg)
 			// A pause or stop typed while drafts were being written applies before anything goes out (review 10-20 R1d).
 			const now = Date.now()
@@ -300,6 +307,14 @@ async function tickInPhases(store: Store, deps: Parameters<typeof tick>[1] = {})
 		await phase('finalize', async () => {
 			// Every cycle that ran, even stopped or with Teams down, stamps where each item now stands for the new page (N1b).
 			try { stampPlaces(store) } catch (e) { store.log({ event: 'place-failed', error: String(e).slice(0, 300) }) }
+			try {
+				backfillUsage(store)
+				usageDays(store)
+				store.setHealth('usage')
+			} catch (error) {
+				store.log({ event: 'usage-maintenance-failed', error: String(error).slice(0, 300) })
+				store.setHealth('usage', 'AI-use history could not be updated; its coverage may be incomplete.')
+			}
 			// Any cycle that ran, even stopped or with Teams down, shows this machine was awake, unless it slept during the cycle.
 			const now = new Date(), awakeMs = mono() - p0, c = store.chats()
 			const slept = now.getTime() - t0 - awakeMs > 10 * 60_000 && !c.notice ? offNotice(new Date(t0 + awakeMs).toISOString(), now, store.machine, cfg.tz) : undefined

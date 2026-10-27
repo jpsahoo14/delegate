@@ -13,6 +13,41 @@ import { LOCAL_DIR, type Store } from '../store/state.ts'
 import { UNTRACKED } from './sharing.ts'
 
 export type CatalogTool = { name: string; cls: ToolClass; why: string; description?: string; info: ToolInfo }
+export type ToolFamily = 'teams' | 'ado' | 'doc' | 'calendar'
+export type ToolScope = readonly ToolFamily[]
+const TOOL_FAMILIES = new Set<ToolFamily>(['teams', 'ado', 'doc', 'calendar'])
+export const DEFAULT_TOOL_FAMILIES: Readonly<Record<string, ToolFamily>> = {
+	teams: 'teams', ado: 'ado', 'azure-devops': 'ado', sharepoint: 'doc', onedrive: 'doc',
+	word: 'doc', documents: 'doc', calendar: 'calendar', outlook: 'calendar',
+}
+
+export function sourceToolScope(text: string, meeting = false): ToolFamily[] {
+	const families = new Set<ToolFamily>(['teams'])
+	if (/https?:\/\/[^\s<>"]*(?:dev\.azure\.com|visualstudio\.com)\b/i.test(text)) families.add('ado')
+	if (/\.(?:docx?|pdf|xlsx?|pptx?|odt|rtf)\b|https?:\/\/[^\s<>"]*(?:sharepoint\.com|onedrive\.com|1drv\.ms|docs\.google\.com|drive\.google\.com)\b/i.test(text)) families.add('doc')
+	if (meeting || /https?:\/\/[^\s<>"]*(?:meetup-join|\/calendar\/|teams\.live\.com\/meet)\b/i.test(text)) families.add('calendar')
+	return [...families]
+}
+
+export function jobToolScope(key: string): ToolScope | undefined {
+	return /^pr:/i.test(key) ? ['teams', 'ado'] : /^doc:/i.test(key) ? ['teams', 'doc'] : undefined
+}
+
+export function scopeTools(cfg: Config, tools: string[], scope?: ToolScope): string[] {
+	if (!scope) return tools
+	const custom = cfg.agent.toolFamilies
+	if (custom !== undefined && (!custom || typeof custom !== 'object' || Array.isArray(custom)))
+		throw new Error('Tool families must map server names to teams, ado, doc, or calendar.')
+	for (const [server, family] of Object.entries(custom ?? {}))
+		if (!TOOL_FAMILIES.has(family)) throw new Error(`The tool family for ${server} must be teams, ado, doc, or calendar.`)
+	const servers = [...new Set([...Object.keys(toolServers(cfg)), ...Object.keys(custom ?? {})])].sort((a, b) => b.length - a.length)
+	return tools.filter(tool => {
+		const server = servers.find(server => tool.startsWith(`${server}-`))
+		const family = server ? (custom && Object.hasOwn(custom, server) ? custom[server] : undefined) ??
+			(Object.hasOwn(DEFAULT_TOOL_FAMILIES, server) ? DEFAULT_TOOL_FAMILIES[server] : undefined) : undefined
+		return !family || scope.includes(family)
+	})
+}
 // cause: what stopped the server, from diagnose (#24); file: the config that names it; fileStamp: that file as it was when a
 // missing program was found, so the next try waits for an edit; retryNow: the owner pressed Retry.
 export type Cause = 'missing' | 'config' | 'auth' | 'other'
@@ -93,7 +128,7 @@ export const denied = (deny: string[], t: string) => deny.some(d => d === t || (
 // minus what he switched off. A Claude reply run never calls Teams reads directly, so every chat it reads is known (UNTRACKED).
 // Before the tools migration (no deny list yet) it is his old list, as before. A server whose part of a trimmed old list waits for
 // a listing keeps that part (pendingTrim), never all its reads.
-export function workerTools(cfg: Config, kind: 'reply' | 'job'): string[] {
+export function workerTools(cfg: Config, kind: 'reply' | 'job', scope?: ToolScope): string[] {
 	const a = cfg.agent
 	let tools = a.tools
 	if (a.deny) {
@@ -103,7 +138,7 @@ export function workerTools(cfg: Config, kind: 'reply' | 'job'): string[] {
 		tools = [...a.tools, ...reads, ...kept, ...(a.allowRead ?? [])].filter(t => !denied(a.deny!, t))
 	}
 	// Copilot runs read Teams with its own tools; what they read comes from the session log (#21). A Claude run has no such log.
-	return [...new Set(kind === 'reply' && a.flavor !== 'copilot' ? tools.filter(t => !UNTRACKED.test(t)) : tools)]
+	return scopeTools(cfg, [...new Set(kind === 'reply' && a.flavor !== 'copilot' ? tools.filter(t => !UNTRACKED.test(t)) : tools)], scope)
 }
 // Each tool's own listing, for the write backstop (unsafeRead), from the cached catalogs.
 export function catalogInfo(cfg: Config): (server: string, tool: string) => ToolInfo | undefined {

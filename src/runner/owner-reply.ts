@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { chooseSession } from './session-policy.ts'
 import { recordReplyActivity } from './poll.ts'
 import type { Config, Msg, Workflow } from '../core/types.ts'
 import { htmlToText, replyTarget, type RawMsg } from '../core/intake.ts'
@@ -72,7 +72,7 @@ export async function ownerReplies(store: Store, cfg: Config, raw: RawMsg, text:
 		store.setHealth(health, `${OWNER_REPLY_UNCHECKED} The AI budget for today is full.`)
 		return result
 	}
-	const id = `owner-reply-${ulid()}`, runId = ulid(), sessionId = randomUUID()
+	const id = `owner-reply-${ulid()}`, runId = ulid(), sessionId = chooseSession('one-off', { fresh: true })
 	const { cwd, mcpConfigPath } = workerMcp(store, id, runId)
 	const prompt = [
 		`Decide which open asks ${cfg.owner.name}'s newest message actually answers. This is classification only: send nothing and change no item.`,

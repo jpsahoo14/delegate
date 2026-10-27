@@ -10,13 +10,13 @@ import { realProcs } from './jobs.ts'
 import { stopWatch } from './track.ts'
 import { draftUse, sharingHold } from './sharing.ts'
 import { readsOf, type Reads } from './provenance.ts'
-import { catalogInfo, workerTools } from './catalog.ts'
+import { catalogInfo, scopeTools, sourceToolScope, workerTools, type ToolScope } from './catalog.ts'
 import { existsSync, readFileSync } from 'node:fs'
 import { backupSession, pruneReplySessions, restoreSession } from './own.ts'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Automation, Config, Report, Workflow } from '../core/types.ts'
-import { randomUUID } from 'node:crypto'
+import { chooseSession } from './session-policy.ts'
 import { clearHold, keepApprovedDraft } from '../core/owner-send.ts'
 import { checkPreservedHold, refreshApprovedHolds } from './send-holds.ts'
 import { describe } from './automations.ts'
@@ -31,12 +31,12 @@ import { heldLevel } from '../core/levels.ts'
 import { CLI } from '../paths.ts'
 import { auditSkip, joinInto, say, splitOff } from './intake.ts'
 import { ackJob, afterDraft, ownerActive } from './autosend.ts'
-import { attachJob, carry, jobForRecheck, recheckJob } from './jobs.ts'
+import { advanceReviewUnits, attachJob, carry, jobForRecheck, recheckJob } from './jobs.ts'
 import { askedVote, asksInvite, isInvite, isVote, pendingEffects, proposalEffects, refusedAsk, sameHead, sameProposal, vet, voteName, voteValue } from '../core/effects.ts'
 import { allowLeft, settleLeftRetry } from './left.ts'
 import { leaveForYou, reportLeft } from './left-source.ts'
 import { probePRs, prRefOf, prTarget, sameVote, voteNow, type BuildProbe } from './probe.ts'
-import { decline, groupQuestion, isReviewJob, MAY_REVIEW, reviewGate, voteGate } from './review-gate.ts'
+import { decline, groupQuestion, isReviewJob, MAY_REVIEW, reviewAsked, reviewGate, voteGate } from './review-gate.ts'
 import { checkPromise, failPromise, promisesDue } from './promise.ts'
 import { heldBy } from './owner.ts'
 import { knowledgeOf, resolveEvidence } from './proposals.ts'
@@ -47,11 +47,12 @@ import { intents } from '../core/intents.ts'
 import { unsafeRead, SETUP_REFUSAL } from '../core/effects.ts'
 import { shellInClone, shellTool } from './validate.ts'
 import { toolServers } from '../adapters/mcp-client.ts'
-import { ran } from '../core/runinfo.ts'
+import { ran, sessionUse, usageKey } from '../core/runinfo.ts'
 import { agentSetupFailure, unavailableTools } from '../core/agent-failure.ts'
 import { blockedAgent, holdAgent, waitingForAgent } from './agent-health.ts'
 import { askRelation, freshAsk } from './same-ask.ts'
 import { prepareReportCalls } from './effect-preparation.ts'
+import { addInternalSuggestions } from './internal-effects.ts'
 import { compileRule } from './rule-compile.ts'
 import { lineNeedsCompile, ruleTextHash } from '../core/rule-lines.ts'
 import { ruleLines, rulesToCompile } from '../store/rules.ts'
@@ -284,10 +285,15 @@ export async function judgeReply(store: Store, cfg: Config, a: Automation, run: 
 		`Call submit_report once with workflowId "${a.id}", intent "none", state "done", and summary exactly one of: "done", "keep", "later <time>".`,
 	].join('\n')
 	store.addRun()
-	const res = await run(cfg.agent, { workflowId: a.id, runId, sessionId: randomUUID(), prompt, cwd, mcpConfigPath, extraTools: [`${WORKER_SERVER}-submit_report`], dirs: [] })
+	const sessionId = chooseSession('one-off', { fresh: true }), startedAt = new Date().toISOString()
+	const res = await run(cfg.agent, { workflowId: a.id, runId, sessionId, prompt, cwd, mcpConfigPath, extraTools: [`${WORKER_SERVER}-submit_report`], dirs: [] })
+	const endedAt = new Date().toISOString()
 	const said = store.peekReport(a.id, runId)?.summary?.trim() ?? ''
 	store.archiveReport(a.id, runId)
 	const account = !said && (res.setup ?? agentSetupFailure(`${res.error ?? ''}\n${res.summary ?? ''}`))
+	store.log({ event: 'automation-judged', code: a.code, said: said.slice(0, 80), ms: res.ms, runId, sessionId, startedAt, endedAt, tools: { offered: cfg.agent.tools.length, scoped: false },
+		...ran('reminder', res.used, { ...sessionUse(sessionId, '', Date.parse(startedAt), { fresh: true }),
+			key: usageKey('job', `job:${a.id}`), promptChars: prompt.length, outcome: said ? 'done' : 'failed' }) })
 	if (account) {
 		holdAgent(store, cfg, account)
 		store.saveAutomation({ ...(store.automations().find(item => item.id === a.id) ?? a), why: account.text, updatedAt: now.toISOString() })
@@ -301,7 +307,6 @@ export async function judgeReply(store: Store, cfg: Config, a: Automation, run: 
 		: /^keep\b/i.test(said) ? { why: `${first} replied; reminders continue` }
 		: { state: 'paused', next: undefined, why: `${first} replied` }
 	store.saveAutomation({ ...fresh, ...change, heard: undefined, updatedAt: now.toISOString() })
-	store.log({ event: 'automation-judged', code: a.code, said: said.slice(0, 80), ms: res.ms, runId, ...ran('reminder', res.used) })
 }
 
 // The folders a worker may open: the knowledge folders and card roots only, never the rest of the storage folder,
@@ -354,15 +359,24 @@ function refuseStart(cfg: Config, tools: string[], folder?: string) {
 	if (shell) throw new Error(shellInClone(shell))
 }
 
-async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run: RunWorker, probe?: BuildProbe, catalogRetried = false, separate = false, retrySession?: string): Promise<void> {
+function workflowToolScope(store: Store, wf: Workflow): ToolScope {
+	const text = [wf.lastAsk ?? '', ...(wf.draft?.sources.map(source => source.ref) ?? []),
+		...store.thread(wf.id).map(message => `${message.text}\n${JSON.stringify(message.attachments ?? [])}`)].join('\n')
+	const scope = sourceToolScope(text, !!wf.meeting)
+	if ((wf.key.type === 'pr' || wf.key.type === 'workItem' || wf.prs?.some(unit => unit.ref)) && !scope.includes('ado')) scope.push('ado')
+	return scope
+}
+
+async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run: RunWorker, probe?: BuildProbe, catalogRetried = false, separate = false, retrySession?: string, fullCatalog = false): Promise<void> {
 	if (blockedAgent(store, cfg)) return
 	const current = freshRead(() => store.workflow(wf.id))
 	if (!current) throw new Error('The queued item disappeared before its run')
 	if (wf.state === 'running' && current.state !== 'running') { store.log({ event: 'worker-skipped', code: wf.code, reason: 'state changed before start' }); return }
 	wf = current
-	const tools = workerTools(cfg, 'reply')
+	const full = workerTools(cfg, 'reply'), tools = scopeTools(cfg, full, fullCatalog ? undefined : workflowToolScope(store, wf))
+	const offered = { offered: tools.length, scoped: tools.length < full.length }
 	refuseStart(cfg, tools)
-	if (wf.state !== 'running') return runAsk(store, src, cfg, wf, run)
+	if (wf.state !== 'running') return runAsk(store, src, cfg, wf, run, undefined, fullCatalog)
 	const approvedDraft = wf.draft ?? (wf.approved?.text ? { text: wf.approved.text, commitment: false, sources: [] } : undefined)
 	if (!wf.ownerSend && approvedDraft && wf.approved) {
 		const at = wf.approved.at
@@ -375,7 +389,7 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 	if (!(wf.ownerAnswer && wf.prRead && !wf.prUnknown && age >= 0 && age < 10 * 60_000))
 		await probePRs(store, cfg, probe, Date.now(), true, [wf])
 	if (wf.state !== 'running' || blockedAgent(store, cfg)) return
-	const runId = ulid(), sessionId = retrySession ?? randomUUID(), startedAt = new Date().toISOString()
+	const runId = ulid(), sessionId = chooseSession('reply', retrySession != null ? { keep: retrySession } : { fresh: true }), startedAt = new Date().toISOString()
 	const previousDrewOn = wf.draft ? wf.drewOn ?? [] : []
 	const previousShareHold = wf.draft ? wf.shareHold : undefined
 	const previousRecords = wf.draft ? wf.records ?? [] : []
@@ -391,13 +405,20 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 	const home = homeOf(store, wf)
 	// A new item may belong to work that started in another chat; the worker sees the open work to say so (R-WRK-10).
 	const works = !wf.work && !wf.partOf ? store.workflows().filter(w => active(w) && !w.partOf && w.chat.id !== wf.chat.id && !heldLevel(cfg, w.chat.id)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 8) : []
-	const prompt = buildPrompt(wf, store.thread(wf.id), cfg, store.root, store.owners(), others, corrections(store.lessons().filter(l => lessonFits(cfg, (l.detail as { chat?: string } | undefined)?.chat, wf.chat.id)), wf), { home: home === wf ? undefined : home, works, parts: home.work?.parts?.map(id => store.workflow(id)).filter((p): p is Workflow => !!p) ?? [], job: completedJob })
+	const prompt = buildPrompt(wf, store.thread(wf.id), { ...cfg, agent: { ...cfg.agent, tools } }, store.root, store.owners(), others, corrections(store.lessons().filter(l => lessonFits(cfg, (l.detail as { chat?: string } | undefined)?.chat, wf.chat.id)), wf), { home: home === wf ? undefined : home, works, parts: home.work?.parts?.map(id => store.workflow(id)).filter((p): p is Workflow => !!p) ?? [], job: completedJob, scopes: [{ workflow: wf, pr: prTarget(store, wf) }], tools: offered })
+	const usage = { ...sessionUse(sessionId, '', Date.parse(startedAt), { fresh: true, ...(retrySession ? { why: 'catalog' as const } : {}) }),
+		key: usageKey('chat', `chat:${wf.chat.id}`), promptChars: prompt.length }
 	store.addRun()
 	const logStart = 0
 	// What the run read is taken from the AI CLI's own session log (#21), so a reply may read Teams with Teams' own tools.
 	const res = await run({ ...cfg.agent, tools }, { workflowId: wf.id, runId, sessionId, prompt, cwd, mcpConfigPath, extraTools: WORKER_TOOLS, dirs: readDirs(store, cfg) })
+	const endedAt = new Date().toISOString()
 	// The CLI never started: no session to keep and no report to read; it counts toward the start tries.
-	if (res.error?.startsWith('Could not start')) throw new Error(res.error)
+	if (res.error?.startsWith('Could not start')) {
+		store.log({ event: 'worker', workflowId: wf.id, code: wf.code, runId, sessionId, startedAt, endedAt, ms: res.ms,
+			exitCode: res.exitCode, error: res.error, tools: offered, ...ran('draft', res.used, { ...usage, outcome: 'failed' }) })
+		throw new Error(res.error)
+	}
 	const read = runReads(store, cfg, sessionId, logStart)
 	if (read.unknown) store.log({ event: 'reads-unknown', code: wf.code, why: [...new Set(read.calls.map(c => c.unknown).filter(Boolean))] })
 	backupSession(store, sessionId)
@@ -405,7 +426,7 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 	const raw = store.peekReport(wf.id, runId) ? undefined : reportFromText(res.summary, wf.id, intents(store.root).map(i => i.id))
 	const salvaged = raw && scrubDeep(raw)
 	let report = store.peekReport(wf.id, runId) ?? salvaged
-	store.log({ event: 'worker', ...(salvaged ? { salvaged: true } : {}), workflowId: wf.id, code: wf.code, runId, sessionId, fresh: true, inputTokens: res.used?.tokensIn, calls: res.used?.modelCalls, exitCode: res.exitCode, ms: res.ms, ...(res.via ? { via: res.via } : {}), ...(res.via === 'host' ? { warm: !!res.warm } : {}), intent: report?.intent, summary: report?.summary, sources: report?.reply?.sources, commitment: report?.reply?.commitment, error: res.error, ...ran('draft', res.used) })
+	store.log({ event: 'worker', ...(salvaged ? { salvaged: true } : {}), workflowId: wf.id, code: wf.code, runId, sessionId, startedAt, endedAt, fresh: true, inputTokens: res.used?.tokensIn, calls: res.used?.modelCalls, exitCode: res.exitCode, ms: res.ms, tools: offered, ...(res.via ? { via: res.via } : {}), ...(res.via === 'host' ? { warm: !!res.warm } : {}), intent: report?.intent, summary: report?.summary, sources: report?.reply?.sources, commitment: report?.reply?.commitment, error: res.error, ...ran('draft', res.used, { ...usage, outcome: report && report.goalMet !== false ? 'done' : 'failed' }) })
 	const fresh = freshRead(() => store.workflow(wf.id)) ?? wf
 	const commit = recordCommit(fresh, () => store.workflow(fresh.id), store.save.bind(store))
 	const oldSession = fresh.session
@@ -420,12 +441,22 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 		store.archiveReport(wf.id, runId)
 		return
 	}
+	if (offered.scoped && report && (report.blocker?.kind === 'tool' || report.blocker?.kind === 'capability')) {
+		if (fresh.state !== 'running' || heldBy(store, fresh) === 'window') return
+		if (store.runsToday() < (cfg.dailyRuns ?? 200)) {
+			store.archiveReport(wf.id, runId)
+			store.log({ event: 'worker-catalog-escalated', workflowId: wf.id, runId })
+			return runOne(store, src, cfg, fresh, run, probe, catalogRetried, separate, chooseSession('reply', { fresh: true }), true)
+		}
+		store.log({ event: 'worker-catalog-escalation-blocked', workflowId: wf.id, runId, reason: 'daily-run-limit' })
+		report = { ...report, goalMet: false, blocker: { kind: 'budget', why: 'The daily AI run limit prevented the full-catalog check', tried: report.blocker.tried } }
+	}
 	if (!report && !catalogRetried && cfg.agent.flavor === 'copilot' && CATALOG_CHANGED.test(sessionLog(cfg.agent.flavor, sessionId).slice(logStart))) {
 		if (fresh.state !== 'running' || heldBy(store, fresh) === 'window') return
 		if (store.runsToday() < (cfg.dailyRuns ?? 200)) {
-			const nextSessionId = randomUUID()
+			const nextSessionId = chooseSession('reply', { fresh: true })
 			store.log({ event: 'worker-catalog-retry', kind: 'draft', workflowId: wf.id, code: wf.code, runId, sessionId, nextSessionId })
-			return runOne(store, src, cfg, fresh, run, probe, true, separate, nextSessionId)
+			return runOne(store, src, cfg, fresh, run, probe, true, separate, nextSessionId, fullCatalog)
 		}
 		store.log({ event: 'worker-catalog-retry-blocked', kind: 'draft', workflowId: wf.id, code: wf.code, runId, reason: 'daily-run-limit' })
 	}
@@ -454,7 +485,7 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 	if (report?.same && !report.reply && !report.job && report.intent !== 'none') {
 		store.archiveReport(wf.id, runId)
 		store.log({ event: 'report-join-refused', code: fresh.code, target: report.same, reason: 'no eligible same-ask target' })
-		if (!separate && store.runsToday() < (cfg.dailyRuns ?? 200)) return runOne(store, src, cfg, fresh, run, probe, catalogRetried, true)
+		if (!separate && store.runsToday() < (cfg.dailyRuns ?? 200)) return runOne(store, src, cfg, fresh, run, probe, catalogRetried, true, undefined, fullCatalog)
 		Object.assign(fresh, { ...stateFields(fresh, 'needs_human'), status: 'This is a separate ask. The AI did not draft its own answer.', question: 'What would you like to reply to this ask?', questionHint: undefined })
 		commit()
 		return
@@ -468,10 +499,26 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 	// The review gate (owner rule 10-23): a PR review starts only when someone asked the owner (his own ask counts) and he may
 	// review it, on the role this run's PR read stored; otherwise the item says why, with Add me when that can fix it (G1-G13).
 	const reviewRef = job && isReviewJob(job.key, report?.intent) ? prRefOf(store, fresh) : undefined
-	const gate = job && isReviewJob(job.key, report?.intent) ? reviewGate(store, cfg, wf, reviewRef ?? { project: '', repo: '', id: Number(/(\d+)\s*$/.exec(job.key)?.[1] ?? 0) }, undefined, !!probe?.pr) : undefined
+	const wantsReview = !!job && isReviewJob(job.key, report?.intent) ||
+		report?.intent === 'pr_review' && !!fresh.prs?.some(unit => reviewAsked(store, fresh, unit.id, true))
+	const gate = job && isReviewJob(job.key, report?.intent) && reviewRef && !fresh.prs?.length
+		? reviewGate(store, cfg, wf, reviewRef, undefined, !!probe?.pr) : undefined
 	const declined = gate && !gate.ok ? gate : undefined
 	// A run with no result is an error shown as one, with its time and reason, never a question to answer (queue-new #11).
 	if (!report) Object.assign(fresh, { ...stateFields(fresh, 'needs_human'), ...statusFields('not-finished', `${NAME} couldn't draft this: ${failWhy(res)}`), question: undefined, questionHint: undefined, runFailed: { at: new Date().toISOString(), kind: 'other', why: failWhy(res) } })
+	else if (wantsReview && fresh.prs?.length) {
+		fresh.intent = 'pr_review'
+		const h = family(store, fresh, report)
+		mergeReportWork(fresh, report, h, undefined, false)
+		if (h !== fresh) store.save(h)
+		advanceReviewUnits(store, cfg, fresh, { ...report, intent: 'pr_review', job })
+	}
+	else if (wantsReview && !reviewRef) {
+		Object.assign(fresh, { ...stateFields(fresh, 'needs_human'), question: undefined, questionHint: undefined,
+			status: "There's no link to it, so Delegate can't open it", runFailed: { at: new Date().toISOString(), kind: 'setup',
+				why: "there's no link to it, so Delegate can't open it" } })
+		store.log({ event: 'review-target-missing', code: fresh.code })
+	}
 	else if (declined) {
 		fresh.intent = report.intent
 		if (declined.addMe) fresh.job = undefined
@@ -487,8 +534,9 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 	else {
 		// The home is read and written in one synchronous step, so a part's run and the home's run never overwrite each other (review part 2 #4).
 		const h = family(store, fresh, report)
+		fresh.intent = report.intent
 		const todos = report.todos
-		report = { ...prepareReportCalls(store, cfg, [fresh], report).report, todos }
+		report = addInternalSuggestions(store, cfg, [fresh], { ...prepareReportCalls(store, cfg, [fresh], report).report, todos })
 		leaveForYou(store, fresh, reportLeft(report))
 		applyReport(fresh, checked(store, cfg, report), h, canCloseReport(store, h, fresh))
 		if (completedJob?.state === 'done') fresh.context = replyFacts(jobContext, fresh.context)
@@ -504,7 +552,7 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 		// Each promised change must be one the owner allows, on this item's PR; any other becomes a to-do with the reason (next action).
 		const v = vet(cfg, report.goalMet === false ? [] : report.effects, prTarget(store, fresh))
 		// A vote only when he was asked and may review the PR (review gate G11); any other becomes a to-do with the reason.
-		v.effects = voteGate(store, cfg, wf, v.effects, v.todos, true, v.left)
+		v.effects = voteGate(store, cfg, fresh, v.effects, v.todos, true, v.left)
 		// A vote is read against its PR now, so the card shows what it means and the owner's first ok casts it (bug 10-21 A12).
 		// Anything the read would change (a closed PR, new commits) is left to the check at ok, which says why.
 		const read = v.effects.some(e => isVote(e.call)) ? await voteNow(store, cfg, fresh, v.effects, probe) : undefined
@@ -599,39 +647,56 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 	}
 }
 
-async function runAsk(store: Store, src: Source, cfg: Config, wf: Workflow, run: RunWorker, retrySession?: string): Promise<void> {
+async function runAsk(store: Store, src: Source, cfg: Config, wf: Workflow, run: RunWorker, retrySession?: string, fullCatalog = false): Promise<void> {
 	if (blockedAgent(store, cfg)) return
 	const runId = ulid()
 	const job = wf.job ? store.job(wf.job) : undefined
-	const session = retrySession ?? job?.session.id ?? wf.session.id
-	const tools = workerTools(cfg, 'job')
+	const session = chooseSession('ask', { keep: retrySession ?? job?.session.id ?? wf.session.id })
+	const full = workerTools(cfg, 'job'), tools = scopeTools(cfg, full, fullCatalog ? undefined : workflowToolScope(store, wf))
+	const offered = { offered: tools.length, scoped: tools.length < full.length }
 	refuseStart(cfg, tools, job?.repo)
 	const { cwd, mcpConfigPath } = workerMcp(store, wf.id, runId)
 	store.addRun()
 	restoreSession(store, session)
-	const logStart = sessionLog(cfg.agent.flavor, session).length
-	const res = await run({ ...cfg.agent, tools }, { workflowId: wf.id, runId, sessionId: session, prompt: buildAskPrompt(wf, store.thread(wf.id), cfg, store.root), cwd: job?.repo ?? cwd, mcpConfigPath, extraTools: WORKER_TOOLS, dirs: readDirs(store, cfg) })
+	const beforeLog = sessionLog(cfg.agent.flavor, session), logStart = beforeLog.length
+	const prompt = buildAskPrompt(wf, store.thread(wf.id), { ...cfg, agent: { ...cfg.agent, tools } }, store.root, { tools: offered }), startedAt = new Date().toISOString()
+	const usage = { ...sessionUse(session, beforeLog, Date.parse(startedAt), retrySession ? { fresh: true, why: 'catalog' } : {}),
+		key: usageKey('ask', `ask:${wf.id}`), promptChars: prompt.length }
+	const res = await run({ ...cfg.agent, tools }, { workflowId: wf.id, runId, sessionId: session, prompt, cwd: job?.repo ?? cwd, mcpConfigPath, extraTools: WORKER_TOOLS, dirs: readDirs(store, cfg) })
+	const endedAt = new Date().toISOString()
 	backupSession(store, session)
 	const report = store.peekReport(wf.id, runId)
+	store.log({ event: 'ask', workflowId: wf.id, code: wf.code, runId, sessionId: session, startedAt, endedAt, ms: res.ms,
+		tools: offered, ...ran('ask', res.used, { ...usage, outcome: report?.answer ? 'done' : 'failed' }) })
 	const fresh = freshRead(() => store.workflow(wf.id))
 	if (!fresh) throw new Error('The item disappeared before its question could be answered')
 	const commit = recordCommit(fresh, () => store.workflow(fresh.id), store.save.bind(store))
 	const account = !report && (res.setup ?? agentSetupFailure(`${res.error ?? ''}\n${res.summary ?? ''}`))
 	if (account) holdAgent(store, cfg, account)
+	let scopeBlocked: string | undefined
+	if (offered.scoped && report && (report.blocker?.kind === 'tool' || report.blocker?.kind === 'capability')) {
+		if (fresh.state === 'running' || heldBy(store, fresh) === 'window' || fresh.job && store.job(fresh.job)?.state === 'running') return
+		if (store.runsToday() < (cfg.dailyRuns ?? 200)) {
+			store.archiveReport(wf.id, runId)
+			store.log({ event: 'worker-catalog-escalated', workflowId: wf.id, runId })
+			return runAsk(store, src, cfg, fresh, run, chooseSession('ask', { fresh: true }), true)
+		}
+		scopeBlocked = 'The daily AI run limit prevented the full-catalog check.'
+		store.log({ event: 'worker-catalog-escalation-blocked', workflowId: wf.id, runId, reason: 'daily-run-limit' })
+	}
 	if (!report && !account && !retrySession && cfg.agent.flavor === 'copilot' && CATALOG_CHANGED.test(sessionLog(cfg.agent.flavor, session).slice(logStart))) {
 		if (fresh.state === 'running' || heldBy(store, fresh) === 'window' || !fresh.notes?.some(note => note.a === undefined) || fresh.job && store.job(fresh.job)?.state === 'running') return
 		if (store.runsToday() < (cfg.dailyRuns ?? 200)) {
-			const sessionId = randomUUID()
+			const sessionId = chooseSession('ask', { fresh: true })
 			store.log({ event: 'worker-catalog-retry', kind: 'ask', workflowId: wf.id, code: wf.code, runId, sessionId: session, nextSessionId: sessionId })
-			return runAsk(store, src, cfg, fresh, run, sessionId)
+			return runAsk(store, src, cfg, fresh, run, sessionId, fullCatalog)
 		}
 		store.log({ event: 'worker-catalog-retry-blocked', kind: 'ask', workflowId: wf.id, code: wf.code, runId, reason: 'daily-run-limit' })
 	}
 	const note = fresh.notes?.find(n => n.a === undefined)
-	if (note) Object.assign(note, report?.answer ? { a: report.answer, sources: report.reply ? checked(store, cfg, report).reply!.sources : undefined } : { a: account ? account.text : `I could not answer that${res.error ? ` (${res.error.slice(0, 80)})` : ''}. Ask again, or open ${fresh.code} on your computer.` })
+	if (note) Object.assign(note, report?.answer ? { a: report.answer, sources: report.reply ? checked(store, cfg, report).reply!.sources : undefined } : { a: account ? account.text : scopeBlocked ?? `I could not answer that${res.error ? ` (${res.error.slice(0, 80)})` : ''}. Ask again, or open ${fresh.code} on your computer.` })
 	commit()
 	store.archiveReport(wf.id, runId)
-	store.log({ event: 'ask', workflowId: wf.id, code: wf.code, runId, ms: res.ms, ...ran('ask', res.used) })
 	if (note && fresh.answerSurface === 'self') await say(store, src, plain(`${MARK} ${fresh.code} · ${note.q}\n${note.a}`).slice(0, 1800))
 }
 
@@ -646,7 +711,7 @@ export function checked(store: Store, cfg: Config, r: Report): Report {
 export function applyReport(wf: Workflow, r: Report, home = wf, allowClose = true, store?: Store) {
 	if (store) {
 		const todos = r.todos
-		r = { ...prepareReportCalls(store, store.config(), [wf], checked(store, store.config(), r)).report, todos }
+		r = addInternalSuggestions(store, store.config(), [wf], { ...prepareReportCalls(store, store.config(), [wf], checked(store, store.config(), r)).report, todos })
 		leaveForYou(store, wf, reportLeft(r))
 	}
 	wf.returnedFrom = undefined; wf.statusReason = undefined; wf.reviewAgain = undefined

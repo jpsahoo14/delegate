@@ -4,6 +4,8 @@ import { existsSync, readFileSync, statSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { ROOT, VERSION } from '../paths.ts'
 import { scrub } from './secrets.ts'
+import type { OriginDowngrade } from './effects.ts'
+import type { Effect } from './types.ts'
 
 export type TraceContext = Readonly<{ trace: string; runId?: string }>
 const traces = new AsyncLocalStorage<TraceContext>()
@@ -33,6 +35,7 @@ export function traceRun<T>(ctx: TraceContext | { runId: string }, action: () =>
 
 export const telemetryError = (error: unknown): string => scrub(error instanceof Error ? error.message : String(error)).slice(0, 200)
 
+type WysFields = { code: string; effectKey: string; origin: NonNullable<Effect['origin']> }
 type EventFields = {
 	'tick-phase': { name: string; ms: number; fsMs: number; netMs: number; cold: boolean; idleMs?: number; reads: number; stats: number; opens: number; lists: number; hits: number }
 	'tick-step': { phase: string; name: string; ms: number; fsMs: number; netMs: number; cold: boolean; idleMs?: number }
@@ -51,6 +54,11 @@ type EventFields = {
 	marker: { code: string; applied: boolean; why: 'auto' | 'approved' | 'owner-edit' | 'owner-text' | 'off' }
 	'pr-anchor-conflict': { code: string; anchor: number; computed: number }
 	'left-cleared-cap': { code: string; dropped: number }
+	'origin-downgraded': { code: string; capability: string; why: OriginDowngrade }
+	'action-claim-send-anyway': { code: string; capability: string }
+	'wys-include': WysFields
+	'wys-exclude': WysFields
+	'wys-dismiss': WysFields
 	'members-shape': { memberKeys: string[]; roles: { array: number; undefined: number; other: number }; roleValues: string[]; tenantIdPresent: number }
 	'forwarded-message-shape': { contentStatus: 'json' | 'invalid-json' | 'value'; shape: { path: string; kind: string }[]; truncated: boolean }
 }
@@ -69,6 +77,11 @@ const metadataEvents = {
 	marker: { privacy: 'metadata', fields: ['code', 'applied', 'why'] },
 	'pr-anchor-conflict': { privacy: 'metadata', fields: ['code', 'anchor', 'computed'] },
 	'left-cleared-cap': { privacy: 'metadata', fields: ['code', 'dropped'] },
+	'origin-downgraded': { privacy: 'metadata', fields: ['code', 'capability', 'why'] },
+	'action-claim-send-anyway': { privacy: 'metadata', fields: ['code', 'capability'] },
+	'wys-include': { privacy: 'metadata', fields: ['code', 'effectKey', 'origin'] },
+	'wys-exclude': { privacy: 'metadata', fields: ['code', 'effectKey', 'origin'] },
+	'wys-dismiss': { privacy: 'metadata', fields: ['code', 'effectKey', 'origin'] },
 	'members-shape': { privacy: 'metadata', fields: ['memberKeys', 'roles', 'roleValues', 'tenantIdPresent'] },
 	'forwarded-message-shape': { privacy: 'metadata', fields: ['contentStatus', 'shape', 'truncated'] },
 } as const satisfies { [K in keyof EventFields]: { privacy: 'metadata'; fields: readonly (keyof EventFields[K])[] } }

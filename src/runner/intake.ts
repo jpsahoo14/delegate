@@ -5,7 +5,7 @@ import { watchCommand } from './track.ts'
 import { askAtOf } from '../core/numbers.ts'
 import { outcome } from './habits.ts'
 import { answers, askedOf, type Waiting } from '../core/waiting.ts'
-import { randomUUID } from 'node:crypto'
+import { chooseSession } from './session-policy.ts'
 import type { Config, Msg, Person, WatchedChat, Workflow } from '../core/types.ts'
 import { asSpeaker, classify, contentKey, continuesOwner, htmlToText, inlineImages, nextTurn, replyTarget, type RawMsg, type Turn } from '../core/intake.ts'
 import { matchesOwnerDraft, ownReplyText, ownerReplies, rememberOwnerReply } from './owner-reply.ts'
@@ -26,6 +26,7 @@ import { NAME } from '../brand.ts'
 import { prTarget } from './probe.ts'
 import { askRelation, freshAsk } from './same-ask.ts'
 import { BOT } from './dispatch.ts'
+import { clearReviewRequests } from './pr-review-state.ts'
 
 const toMsg = (r: RawMsg, from: { id: string; name: string }, text: string, byOwner: boolean): Msg =>
 	({ id: r.id, at: r.at, editedAt: r.editedAt, contentKey: contentKey(text), from, text, byOwner, ...(r.attachments?.length ? { attachments: r.attachments } : {}) })
@@ -216,6 +217,7 @@ export async function intake(store: Store, src: Source, cfg: Config, cursors: Re
 			if (wf.draft) wf.newCount++
 			wf.pending.push(raw.id)
 			wf.msgIds.push(raw.id)
+			if (c.kind === 'ask') { clearReviewRequests(wf); wf.ownerAnswer = undefined }
 			if (!wf.prAnchor && routed?.item.id === wf.id && routed.anchor) wf.prAnchor = routed.anchor
 			// A new ask withdraws any ok given before it (tester P0).
 			Object.assign(wf, { asker: c.from, lastAsk: c.text, ...stateFields(wf, 'running'), lastMsgId: raw.id, approved: undefined, needsMe: undefined, intakeDeferred: undefined })
@@ -295,7 +297,7 @@ async function create(store: Store, src: Source, cfg: Config, chat: WatchedChat,
 	const wf: Workflow = {
 		schema: WORKFLOW_SCHEMA, id: ulid(), code: store.nextCode(), kind: 'reply', ...stateFields(undefined, 'running'),
 		key: { type: 'thread', id: chat.id }, chat: { id: chat.id, name: chat.name, test: !!chat.test, group: !!chat.group, guests: await hasGuests(src, chat.id) },
-		session: { agent: cfg.agent.flavor, id: randomUUID() },
+		session: { agent: cfg.agent.flavor, id: chooseSession('item', { fresh: true }) },
 		lastMsgId: '', pending: [], msgIds: [], status: 'Drafting a reply', newCount: 0, earlier, createdAt: now, updatedAt: now,
 	}
 	const history = await src.recent(chat.id, 20)
@@ -430,7 +432,7 @@ export function workOfAsk(store: Store, open: Workflow[], raw: RawMsg, text: str
 
 // A close starts with no reason; the caller sets one when it has it, so an earlier close's never carries over.
 export function close(wf: Workflow, status: string) {
-	Object.assign(wf, { ...stateFields(wf, 'done'), status, pending: [], closedBy: undefined, ownerSend: undefined, reason: undefined, reasons: undefined, holdDigest: undefined, holdCheckPending: undefined })
+	Object.assign(wf, { ...stateFields(wf, 'done'), status, pending: [], closedBy: undefined, ownerSend: undefined, reason: undefined, reasons: undefined, holdDigest: undefined, holdCheckPending: undefined, questionOf: undefined })
 }
 
 // Move messages the worker marked as another topic into a new item in the same chat, and queue it (D2).
@@ -445,7 +447,7 @@ export function splitOff(store: Store, cfg: Config, from: Workflow, ids: string[
 	const now = new Date().toISOString()
 	const wf: Workflow = {
 		schema: WORKFLOW_SCHEMA, id: ulid(), code: store.nextCode(), kind: from.kind, ...stateFields(undefined, 'running'), key: from.key, chat: from.chat,
-		asker: msgs[0].from, session: { agent: cfg.agent.flavor, id: randomUUID() }, lastMsgId: last.id, lastAsk: last.text,
+		asker: msgs[0].from, session: { agent: cfg.agent.flavor, id: chooseSession('item', { fresh: true }) }, lastMsgId: last.id, lastAsk: last.text,
 		pending: [...moving], msgIds: [...moving], status: 'Drafting a reply', newCount: 0, createdAt: now, updatedAt: now,
 		// A topic split from the week before keeps its hold.
 		...(from.before ? { before: true as const } : {}),

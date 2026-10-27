@@ -1,15 +1,14 @@
 import { isDeepStrictEqual } from 'node:util'
 import type { Source as ChatSource } from '../adapters/source.ts'
 import { messageLink } from '../adapters/channels.ts'
-import { pendingEffects, isVote, sameChange, sameHead, refusal } from '../core/effects.ts'
+import { pendingEffects, isVote, prIdOf, sameChange, sameHead, refusal } from '../core/effects.ts'
 import { pageChangeId } from '../core/page-approval.ts'
-import { commits, decide, labeledToGuests, replyGap, reviewRuleFor } from '../core/policy.ts'
+import { decide, replyGap, reviewRuleFor } from '../core/policy.ts'
 import { authorize } from '../core/limits.ts'
-import { reviewDoneFacts, reviewFrame } from '../core/review.ts'
+import { reviewDoneFacts, unitForJob } from '../core/review.ts'
 import { scrubDeep } from '../core/secrets.ts'
-import type { Config, Effect, Job, ReviewFinding, Workflow } from '../core/types.ts'
+import type { Config, Effect, Job, PrFacts, PrUnit, ReviewFinding, Workflow } from '../core/types.ts'
 import { stateFields } from '../core/upgrades.ts'
-import { voteMention } from '../core/vote-claims.ts'
 import { freshRead } from '../store/fs.ts'
 import type { Store } from '../store/state.ts'
 import { send } from './apply.ts'
@@ -18,23 +17,24 @@ import { cachedCatalogs } from './catalog.ts'
 import type { Caller } from './change.ts'
 import { recordCommit } from './commit.ts'
 import { buildCommentCall, effectCallProblem, isInlineComment } from './effect-calls.ts'
-import { changesJob, stillApproved } from './jobs.ts'
+import { advanceReviewUnits, createChangeCarrier, keyOf, stillApproved } from './jobs.ts'
 import { madeBefore, maybeOf } from './ledger.ts'
-import { adoProbe, prOf, type BuildProbe, type PrRef } from './probe.ts'
-import { knowledgeOf } from './proposals.ts'
-import { MAY_REVIEW, reviewAsked, roleOn } from './review-gate.ts'
-import { draftUse, membersOf, sharingHold } from './sharing.ts'
+import { adoProbe, factsOf, prOf, type BuildProbe, type PrRef } from './probe.ts'
+import { MAY_REVIEW, roleOn } from './review-gate.ts'
+import { membersOf } from './sharing.ts'
 
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
 const clean = (v: string) => v.replace(/^\[(?:High|Medium|Low)\]\s*/i, '').replace(/\s+/g, ' ').trim()
 const priority = { High: 0, Medium: 1, Low: 2 }
 type Thread = { file: string; line: number; text: string }
 type Options = { probe?: BuildProbe; call: Caller; completed?: { job: Job; effects: Effect[] } }
-export type ReviewCompletion = { pr: number; head?: string; status?: string; at: string; basis?: Workflow['reviewBasis'] }
+export type ReviewCompletion = { pr: number; head?: string; status?: string; at: string; basis?: Workflow['reviewBasis']; facts?: PrFacts }
 
 export async function checkReviewCompletion(store: Store, job: Job, probe?: BuildProbe): Promise<ReviewCompletion | undefined> {
-	const wf = freshRead(() => job.parents.map(id => store.workflow(id)).find(w => w?.intent === 'pr_review'))
-	const ref = wf && prOf(store, wf)
+	const parents = freshRead(() => job.parents.map(id => store.workflow(id)).filter((w): w is Workflow => w?.intent === 'pr_review'))
+	const unit = parents.map(w => unitForJob(w, job.id)).find(unit => unit !== undefined)
+	const legacy = parents.find(w => w.prs === undefined)
+	const ref = unit ? unit.ref : legacy && prOf(store, legacy)
 	if (!ref) return undefined
 	const at = new Date().toISOString()
 	let reader = probe
@@ -44,7 +44,7 @@ export async function checkReviewCompletion(store: Store, job: Job, probe?: Buil
 		const live = await reader.pr(ref.project, ref.repo, ref.id)
 		const start = job.reviewStart
 		const basis = start?.pr === ref.id && sameHead(start.head, live.head) ? { ...start } : undefined
-		return { pr: ref.id, head: live.head, status: live.status, at, basis }
+		return { pr: ref.id, head: live.head, status: live.status, at, basis, facts: factsOf(live) }
 	} catch (error) {
 		store.log({ event: 'review-basis-held', job: job.id, pr: ref.id, reason: String(error).slice(0, 300) })
 		return { pr: ref.id, at }
@@ -64,11 +64,12 @@ function commentCall(cfg: Config, e: Effect, ref: PrRef) {
 	return tool && isInlineComment(e) && !isVote(e.call) && /pull_request_thread_write$/i.test(tool.name) ?
 		buildCommentCall(e.payload, { project: ref.project, repositoryId: ref.repo, pullRequestId: ref.id }, tool).call : undefined
 }
-function shareable(wf: Workflow, f: ReviewFinding, ref: PrRef, reads?: NonNullable<Job['result']>['reviewSources']) {
+function shareable(wf: Workflow, f: ReviewFinding, ref: PrRef, result?: Job['result']) {
+	const reads = result?.reviewSources
 	if (!reads || reads.unknown || reads.restricted || reads.chats.length) return false
 	if (wf.shareHold || wf.records?.some(r => r.audience !== 'org') || wf.drewOn?.length ||
 		wf.looked?.some(r => r.tool !== 'ado' && r.n > 0)) return false
-	const sources = [...(wf.draft?.sources ?? []), ...(f.sources ?? [])]
+	const sources = [...(result?.reply?.sources ?? []), ...(f.sources ?? [])]
 	const root = ref.url?.split('/pullrequest/')[0].toLowerCase()
 	// A chat's audience is not a PR's audience. Only the PR/repository itself is
 	// inherently safe here; other sources need an audience proof, not a chat hold.
@@ -109,43 +110,62 @@ const covered = (all: Thread[], e: Effect) => object(e.payload) && all.some(t =>
 	t.file.replace(/^[/\\]/, '') === String(e.payload && object(e.payload) ? e.payload.file : '').replace(/^[/\\]/, '') &&
 	t.line === (object(e.payload) ? e.payload.line : undefined) && t.text === clean(String(object(e.payload) ? e.payload.text : '')))
 
-async function live(store: Store, cfg: Config, wf: Workflow, probe?: BuildProbe) {
-	const ref = prOf(store, wf)
+async function live(cfg: Config, unit: PrUnit, probe?: BuildProbe) {
+	const ref = unit.ref
 	if (!ref || !probe?.pr) throw new Error('The PR cannot be checked; comments stay proposed')
 	const st = await probe.pr(ref.project, ref.repo, ref.id)
 	if (!/^active$/i.test(st.status) || !st.head) throw new Error(`PR ${ref.id} is closed or its head could not be read`)
 	const role = await roleOn(cfg, probe, ref, st)
 	if (!MAY_REVIEW.includes(role)) throw new Error(`The owner is not an eligible reviewer on PR ${ref.id} (${role})`)
-	wf.prGroups = (st.reviewers ?? []).filter(r => r.group).map(r => r.name.split('\\').at(-1)!.normalize('NFKC').trim())
-	return { ref, head: st.head }
+	const groups = (st.reviewers ?? []).filter(r => r.group).map(r => r.name.split('\\').at(-1)!.normalize('NFKC').trim())
+	return { ref, head: st.head, groups }
 }
-function safety(store: Store, cfg: Config, wf: Workflow) {
-	const check = { ...wf, draft: { text: 'Review comments.', commitment: false, sources: [] } }
+function safety(store: Store, cfg: Config, wf: Workflow, unit: PrUnit, rule: string, groups = unit.groups) {
+	const check = { ...wf, prGroups: groups, draft: { text: 'Review comments.', commitment: false, sources: [] } }
 	const decision = decide(check, store.rules(), policyContext(store, cfg, wf), 'review-comments')
-	wf.decision = decision
-	return decision.action === 'send' ? undefined : decision.reason
+	return decision.action !== 'send' ? decision.reason : decision.ruleId === rule ? undefined : 'The review rule changed; comments stay proposed'
+}
+function verified(unit: PrUnit): boolean {
+	const frame = unit.review, completed = frame?.completed
+	return !!unit.requested && !!unit.ref && unit.read === 'ok' && !unit.skip && !unit.again && !unit.decline &&
+		!!unit.role && MAY_REVIEW.includes(unit.role) && !!completed?.verified &&
+		sameHead(completed.head, unit.head) && sameHead(completed.head, frame?.basis?.head)
+}
+function postingBlocked(store: Store, wf: Workflow, unit: PrUnit): boolean {
+	return wf.state === 'done' || wf.state === 'running' || !!wf.ownerSend || !!wf.approved || !!wf.pending.length ||
+		!!wf.draft?.byOwner || !!wf.draft?.preview || !!store.openWindow(wf.id) ||
+		wf.reviewReply?.phase === 'replied' || !!wf.sent && !wf.sent.holding && wf.sent.askMsgId === wf.lastMsgId ||
+		[unit.job, unit.review?.completed?.job, unit.review?.run?.job, unit.review?.run?.carrier]
+			.some(id => !!id && !!store.openWindow(id))
 }
 
 // Called at the last write boundary as well as before the subset is queued.
 export async function reviewPostCheck(store: Store, job: Job, e: Effect, call: Caller, probe?: BuildProbe): Promise<{ error?: string; duplicate?: true }> {
+	const byRule = job.byRule
+	if (!byRule) return { error: 'The review comment has no rule approval; it stays proposed' }
 	try {
 		const cfg = freshRead(() => store.config())
 		const wf = freshRead(() => job.parents.map(id => store.workflow(id)).find(w => w && stillApproved(w, job)))
-		if (!wf || job.byRule !== e.byRule || !wf.reviewRun || wf.reviewRun.job !== job.id || wf.reviewRun.phase !== 'posting') return { error: 'The review comment approval changed; it stays proposed' }
-		const { ref, head } = await live(store, cfg, wf, probe)
-		if (!wf.reviewBasis || wf.reviewBasis.pr !== ref.id || !sameHead(wf.reviewBasis.head, head) ||
-			ref.id !== wf.reviewRun.pr || !sameHead(head, wf.reviewRun.head) || !sameHead(e.head, head)) return { error: 'New changes since the review; comments stay proposed' }
-		const carrier = store.job(wf.reviewRun.carrier)
+		const unit = wf && unitForJob(wf, job.id), run = unit?.review?.run
+		if (!wf || !unit || !run || !verified(unit) || job.byRule !== e.byRule || prIdOf(e.call) !== unit.id) return { error: 'The review comment approval changed; it stays proposed' }
+		const { ref, head, groups } = await live(cfg, unit, probe)
+		if (!sameHead(unit.review?.basis?.head, head) || !sameHead(head, run.head) || !sameHead(e.head, head)) return { error: 'New changes since the review; comments stay proposed' }
+		const carrier = store.job(run.carrier)
+		const completed = unit.review?.completed
+		if (!carrier?.result || !completed || completed.job !== carrier.id || completed.resultAt !== carrier.result.at ||
+			run.resultAt !== carrier.result.at) return { error: 'The completed review changed; comments stay proposed' }
 		const f = findingFor(e, carrier?.result?.findings)
-		if (!f?.severity || !shareable(wf, f, ref, carrier?.result?.reviewSources) || !isDeepStrictEqual(commentCall(cfg, e, ref), e.call)) return { error: 'The finding or its audience could not be verified; it stays proposed' }
+		if (!f?.severity || !shareable(wf, f, ref, carrier.result) || !isDeepStrictEqual(commentCall(cfg, e, ref), e.call)) return { error: 'The finding or its audience could not be verified; it stays proposed' }
 		const duplicate = covered(await threads(cfg, ref, call), e)
 		return freshRead(() => {
 			const latest = store.workflow(wf.id), currentCfg = store.config(), currentJob = store.job(job.id)
-			if (!latest || latest.state !== 'waiting_on_task' || !currentJob || currentJob.run?.id !== job.run?.id || currentJob.state !== 'running' ||
-				!stillApproved(latest, currentJob) || latest.pending.length || latest.ownerSend ||
-				latest.reviewRun?.turn !== wf.reviewRun!.turn || !sameHead(latest.reviewRun?.head, head)) return { error: 'The review changed while checking; comments stay proposed' }
-			if (!latest.reviewBasis || latest.reviewBasis.pr !== ref.id || !sameHead(latest.reviewBasis.head, head)) return { error: 'The reviewed revision is no longer verified; comments stay proposed' }
-			const now = { ...latest, prGroups: wf.prGroups }
+			const currentUnit = latest && unitForJob(latest, job.id), currentRun = currentUnit?.review?.run
+			if (!latest || !currentUnit || !currentRun || !verified(currentUnit) || postingBlocked(store, latest, currentUnit) || !currentJob || currentJob.run?.id !== job.run?.id || currentJob.state !== 'running' ||
+				!stillApproved(latest, currentJob) ||
+				currentUnit.id !== unit.id || currentRun.carrier !== run.carrier || currentRun.resultAt !== run.resultAt ||
+				currentRun.approval.epoch !== run.approval.epoch || !sameHead(currentRun.head, head)) return { error: 'The review changed while checking; comments stay proposed' }
+			if (!sameHead(currentUnit.review?.basis?.head, head) || !isDeepStrictEqual(currentUnit.ref, ref)) return { error: 'The reviewed revision is no longer verified; comments stay proposed' }
+			const now = { ...latest, prGroups: groups }
 			if (JSON.stringify(cfg.owner) !== JSON.stringify(currentCfg.owner)) return { error: 'Reviewer settings changed while checking; comments stay proposed' }
 			const rule = reviewRuleFor(now, store.rules())
 			if (!rule || rule.id !== job.byRule) return { error: 'The review rule is off or no longer covers this PR; comments stay proposed' }
@@ -160,11 +180,13 @@ export async function reviewPostCheck(store: Store, job: Job, e: Effect, call: C
 				store.log({ event: 'review-comment-held', code: latest.code, byRule: job.byRule, blockedBy: auth.blockedBy, reason: auth.reason })
 				return { error: auth.reason }
 			}
-			const currentCarrier = store.job(latest.reviewRun!.carrier)
+			const currentCarrier = store.job(currentRun.carrier)
 			const currentFinding = findingFor(e, currentCarrier?.result?.findings)
-			if (!currentFinding || !shareable(latest, currentFinding, ref, currentCarrier?.result?.reviewSources) ||
+			const currentCompletion = currentUnit.review?.completed
+			if (!currentCompletion || currentCompletion.job !== currentCarrier?.id || currentCompletion.resultAt !== currentCarrier?.result?.at ||
+				currentRun.resultAt !== currentCarrier?.result?.at || !currentFinding || !shareable(latest, currentFinding, ref, currentCarrier?.result) ||
 				!isDeepStrictEqual(commentCall(currentCfg, e, ref), e.call)) return { error: 'The finding or its audience changed while checking; comments stay proposed' }
-			const error = refusal(currentCfg, e, ref.id) ?? safety(store, currentCfg, now)
+			const error = refusal(currentCfg, e, ref.id) ?? safety(store, currentCfg, now, currentUnit, byRule, groups)
 			return error ? { error } : duplicate ? { duplicate: true as const } : {}
 		})
 	} catch (error) { return { error: String(error).slice(0, 300) } }
@@ -175,51 +197,62 @@ export async function reviewPostCheck(store: Store, job: Job, e: Effect, call: C
 export async function reviewCommentHook(store: Store, src: ChatSource, cfg: Config, options: Options): Promise<void> {
 	if (options.completed) return finishReview(store, src, options.completed.job, options.completed.effects, options.probe)
 	if (!reviewRuleForEnabled(store) || !store.control().autoSend || cfg.paused || store.control().paused || store.control().stopped) return
-	for (const old of store.workflows()) {
-		if (old.intent !== 'pr_review' || old.state !== 'needs_human' || old.ownerSend || old.approved || old.pending.length || old.draft?.preview || old.draft?.byOwner) continue
-		const original = old.job && store.job(old.job)
+	const targets = store.workflows().flatMap(wf => (wf.prs ?? []).map(unit => ({ workflow: wf.id, pr: unit.id })))
+	for (const target of targets) {
+		const old = freshRead(() => store.workflow(target.workflow))
+		if (!old || old.intent !== 'pr_review' || old.state === 'done' || old.state === 'running' || store.openWindow(old.id) ||
+			old.ownerSend || old.approved || old.pending.length || old.draft?.preview || old.draft?.byOwner) continue
+		const prior = old.prs?.find(unit => unit.id === target.pr), completed = prior?.review?.completed
+		if (!prior || postingBlocked(store, old, prior) || !verified(prior) || !completed || prior.job !== completed.job ||
+			!Number.isSafeInteger(prior.review?.epoch) || prior.review!.epoch < 0) continue
+		const epoch = prior.review!.epoch
+		const original = store.job(completed.job)
 		if (!original || original.byRule || original.every || original.state !== 'done' || original.purpose !== 'work' ||
-			!original.result?.findings || !original.result.at || old.reviewRun?.resultAt === original.result.at) continue
-		if (old.reviewAttempt?.job === original.id && old.reviewAttempt.resultAt === original.result.at) continue
-		const cleanReview = original.result.reviewClean === true && original.result.findings.length === 0 && !original.result.effects.length && !old.effects?.length && !old.question && !old.todos?.length
-		if (!cleanReview && !pendingEffects(old.effects).some(e => { const f = findingFor(e, original.result?.findings); return f?.severity && !f.thread && !e.error && !e.maybe && !e.held })) continue
+			!original.result?.findings || original.result.at !== completed.resultAt || prior.review?.run?.resultAt === completed.resultAt) continue
+		const ownEffects = (old.effects ?? []).filter(effect => prIdOf(effect.call) === prior.id)
+		const cleanReview = original.result.reviewClean === true && original.result.findings.length === 0 &&
+			original.result.effects.every(effect => isVote(effect.call) && prIdOf(effect.call) === prior.id) &&
+			ownEffects.every(effect => isVote(effect.call)) && !original.result.question && !original.result.todos?.length
+		if (!cleanReview && !pendingEffects(ownEffects).some(e => { const f = findingFor(e, original.result?.findings); return f?.severity && !f.thread && !e.error && !e.maybe && !e.held })) continue
 		const wf = freshRead(() => store.workflow(old.id))
 		if (!wf) continue
 		const commit = recordCommit(wf, () => store.workflow(wf.id), store.save.bind(store))
-		const reviewedHead = wf.reviewBasis?.head
-		if (!reviewedHead) {
-			wf.reviewAttempt = { job: original.id, resultAt: original.result.at }
-			wf.status = 'Review comments not posted: the reviewed revision was not verified. Review again before posting by rule.'
-			commit()
-			continue
-		}
 		try {
 			await membersOf(store, src, wf.chat.id)
+			commit.refresh()
+			let unit = wf.prs?.find(unit => unit.id === target.pr)
+			if (!unit || postingBlocked(store, wf, unit) || !verified(unit) || unit.job !== original.id || unit.review?.epoch !== epoch ||
+				unit.review.completed?.resultAt !== completed.resultAt) continue
 			wf.chat = { ...wf.chat, guests: store.members()[wf.chat.id]?.guests }
-			const { ref, head } = await live(store, cfg, wf, options.probe)
-			const rule = reviewRuleFor(wf, store.rules())
-			const scope = wf.reviewAsk?.job === original.id && wf.reviewAsk.lastMsgId === wf.lastMsgId ? wf.reviewAsk : undefined
-			if (!rule || !reviewAsked(store, { ...wf, pending: scope?.ids ?? [wf.lastMsgId], ownerAnswer: scope?.ownerAnswer }, ref.id)) continue
-			if (wf.reviewBasis?.pr !== ref.id || !sameHead(head, reviewedHead)) throw new Error('The reviewed head is missing or changed; comments stay proposed')
+			const { ref, head, groups } = await live(cfg, unit, options.probe)
+			const rule = reviewRuleFor({ ...wf, prGroups: groups }, store.rules())
+			if (!rule) continue
+			if (!sameHead(head, completed.head)) throw new Error('The reviewed head is missing or changed; comments stay proposed')
+			const seen = cleanReview ? [] : await threads(cfg, ref, options.call)
+			commit.refresh()
+			unit = wf.prs?.find(unit => unit.id === target.pr)
+			if (!unit || postingBlocked(store, wf, unit) || !verified(unit) || unit.job !== original.id || unit.review?.epoch !== epoch ||
+				unit.review.completed?.resultAt !== completed.resultAt || !isDeepStrictEqual(unit.ref, ref) ||
+				!isDeepStrictEqual(store.config().owner, cfg.owner)) continue
+			const currentOriginal = store.job(original.id)
+			if (currentOriginal?.state !== 'done' || currentOriginal.result?.at !== completed.resultAt ||
+				!isDeepStrictEqual(currentOriginal.result, original.result)) continue
 			if (cleanReview) {
-				commit.refresh()
-				if (wf.state !== 'needs_human' || wf.pending.length || wf.ownerSend || wf.approved || wf.job !== original.id || wf.revAt !== old.revAt || wf.effects?.length) continue
-				wf.reviewRun = { job: original.id, carrier: original.id, resultAt: original.result.at, rule: rule.id, pr: ref.id, head, turn: wf.revAt, phase: 'posting', reply: wf.draft }
-				const error = freshRead(() => safety(store, store.config(), wf))
-				if (error) { wf.reviewRun = undefined; wf.status = `Review waits: ${error}`; commit(); continue }
+				unit.review.run = { job: original.id, carrier: original.id, resultAt: completed.resultAt, rule: rule.id, head, phase: 'posting',
+					approval: { byRule: rule.id, effectIds: [], effects: keyOf([]), epoch } }
+				const error = freshRead(() => safety(store, store.config(), wf, unit!, rule.id, groups))
+				if (error) { unit.review.run = undefined; wf.status = `Review waits: ${error}`; commit(); continue }
 				commit()
 				await finishReview(store, src, original, [], options.probe, true)
 				continue
 			}
-			const seen = await threads(cfg, ref, options.call)
-			commit.refresh()
-			if (wf.state !== 'needs_human' || wf.pending.length || wf.ownerSend || wf.approved || wf.job !== original.id || wf.revAt !== old.revAt) continue
 			const selected: Effect[] = []
 			const effects = (wf.effects ?? []).map(e => {
-				if (!pendingEffects([e]).length || e.error || maybeOf(store, e) || madeBefore(store, e)) return e
+				if (prIdOf(e.call) !== unit.id) return e
+				if (!pendingEffects([e]).length || e.origin === 'suggested' || e.group || e.error || maybeOf(store, e) || madeBefore(store, e)) return e
 				const finding = findingFor(e, original.result!.findings)
 				if (!finding?.severity || finding.thread || !isInlineComment(e)) return e
-				if (!shareable(wf, finding, ref, original.result?.reviewSources)) return { ...e, held: 'sharing' as const }
+				if (!shareable(wf, finding, ref, original.result)) return { ...e, held: 'sharing' as const }
 				const payload = object(e.payload) ? scrubDeep({ ...e.payload, text: `[${finding.severity}] ${clean(finding.text)}` }) : e.payload
 				const candidate = { ...e, payload, head, severity: finding.severity, byRule: rule.id }
 				const call = commentCall(cfg, candidate, ref)
@@ -232,121 +265,118 @@ export async function reviewCommentHook(store: Store, src: ChatSource, cfg: Conf
 			selected.sort((a, b) => priority[a.severity!] - priority[b.severity!])
 			const batch = selected.slice(0, 10)
 			if (!batch.length) { wf.effects = effects; wf.status = 'Review comments wait for you: no new comment with verified severity and audience is ready'; commit(); continue }
-			wf.reviewRun = { job: '', carrier: original.id, resultAt: original.result.at, rule: rule.id, pr: ref.id, head, turn: wf.revAt, phase: 'posting', reply: wf.draft }
-			const error = safety(store, cfg, wf)
-			if (error) { wf.reviewRun = undefined; wf.effects = effects; wf.status = `Review waits: ${error}`; commit(); continue }
+			unit.review.run = { job: '', carrier: original.id, resultAt: completed.resultAt, rule: rule.id, head, phase: 'posting',
+				approval: { byRule: rule.id, effectIds: batch.map(pageChangeId), effects: keyOf(batch), epoch } }
+			const error = safety(store, store.config(), wf, unit, rule.id, groups)
+			if (error) { unit.review.run = undefined; wf.effects = effects; wf.status = `Review waits: ${error}`; commit(); continue }
 			const approvedIds = new Set(batch.map(pageChangeId))
-			wf.effects = effects.map(e => !e.done && !approvedIds.has(pageChangeId(e)) ? { ...e, byRule: undefined } : e)
-			changesJob(store, cfg, wf, batch)
-			const job = store.job(wf.job!)!
+			wf.effects = effects.map(e => prIdOf(e.call) === unit.id && !e.done && !approvedIds.has(pageChangeId(e)) ? { ...e, byRule: undefined } : e)
+			const job = createChangeCarrier(store, cfg, wf, batch, unit)
 			job.byRule = rule.id; job.state = 'queued'; job.purpose = 'execute'
 			job.key = `review-comments:${wf.id}:${job.id}`
 			job.goal = `Post review comments on PR ${ref.id} under rule ${rule.id}`
 			job.result!.summary = 'Comments authorized by the review rule'
-			wf.reviewRun.job = job.id
-			wf.approved = { text: wf.draft?.text ?? '', effects: JSON.stringify(batch.map(e => [e.system, e.action, e.target, e.payload, e.call, e.head])), at: new Date().toISOString(), byRule: rule.id, effectIds: batch.map(pageChangeId) }
+			unit.review.run.job = job.id
 			Object.assign(wf, { ...stateFields(wf, 'waiting_on_task'), status: `Posting review comments on PR ${ref.id}` })
 			store.saveJob(job); commit()
 		} catch (error) {
 			commit.refresh()
-			if (wf.state === 'needs_human' && wf.job === original.id && wf.revAt === old.revAt) {
-				wf.reviewAttempt = { job: original.id, resultAt: original.result.at }
+			if (wf.state !== 'done' && wf.prs?.some(unit => unit.id === target.pr && unit.job === original.id && unit.review?.epoch === epoch)) {
 				wf.status = `Review comments not posted: ${String(error).replace(/^Error: /, '').slice(0, 240)}`
 				commit()
 			}
 			store.log({ event: 'review-autopost-held', code: wf.code, reason: String(error).slice(0, 300) })
 		}
 	}
+	for (const wf of store.workflows().filter(wf => wf.reviewReply?.phase === 'held'))
+		await sendReviewReply(store, src, wf.id, options.probe)
 }
 const reviewRuleForEnabled = (store: Store) => store.rules().some(r => r.then === 'review' && !r.off)
 
 async function finishReview(store: Store, src: ChatSource, job: Job, effects: Effect[], probe?: BuildProbe, cleanReview = false) {
 	for (const id of job.parents) {
 		const wf = freshRead(() => store.workflow(id))
-		if (!wf || wf.reviewRun?.job !== job.id || wf.job !== job.id) continue
+		const unit = wf && unitForJob(wf, job.id), run = unit?.review?.run
+		if (!wf || !unit?.review || !run || run.phase !== 'posting' || run.job !== job.id) continue
 		const commit = recordCommit(wf, () => store.workflow(wf.id), store.save.bind(store))
-		const run = wf.reviewRun
-		const verifiedClean = cleanReview && job.result?.reviewClean === true && job.result.findings?.length === 0 && !job.result.effects.length && !wf.effects?.length &&
-			!wf.pending.length && !wf.ownerSend && !wf.approved && !wf.question && !wf.todos?.length && run.turn === wf.revAt
-		const ok = verifiedClean || !cleanReview && stillApproved(wf, job)
+		const completed = unit.review.completed, original = store.job(run.carrier)
+		const current = wf.state !== 'done' && verified(unit) && unit.review.epoch === run.approval.epoch && completed?.job === run.carrier &&
+			completed.resultAt === run.resultAt && original?.state === 'done' && original.result?.at === run.resultAt &&
+			sameHead(completed.head, run.head)
+		const verifiedClean = cleanReview && current && job.result?.reviewClean === true && job.result.findings?.length === 0 &&
+			job.result.effects.every(effect => isVote(effect.call) && prIdOf(effect.call) === unit.id) &&
+			(wf.effects ?? []).filter(effect => prIdOf(effect.call) === unit.id).every(effect => isVote(effect.call)) &&
+			!wf.pending.length && !wf.ownerSend && !wf.approved && !job.result.question && !job.result.todos?.length
+		const ok = current && (verifiedClean || !cleanReview && stillApproved(wf, job))
+		const ownerBusy = wf.state === 'running' || !!wf.ownerSend || !!wf.approved || !!wf.pending.length || !!wf.draft?.byOwner || !!wf.draft?.preview
 		wf.effects = (wf.effects ?? []).map(e => {
+			if (prIdOf(e.call) !== unit.id) return e
 			const made = effects.find(r => sameChange(r, e))
 			return made ? { ...e, done: made.done, error: made.error, maybe: made.maybe, off: made.off, byRule: made.done?.byRule } : e
 		})
-		const basis = wf.reviewBasis
-		if (!basis || basis.pr !== run.pr || !sameHead(basis.head, run.head)) {
-			wf.approved = undefined
-			wf.reviewRun = { ...run, phase: 'held' }
-			wf.job = run.carrier
-			if (wf.state !== 'done') Object.assign(wf, { ...stateFields(wf, 'needs_human'), status: 'The reviewed revision is no longer verified; check the comment receipts before sending' })
-			commit()
-			continue
-		}
-		const facts = reviewDoneFacts(basis, run.rule, effects)
-		if (verifiedClean) facts.clean = true
-		facts.waiting = (wf.effects ?? []).filter(e => !e.done && !e.off).map(pageChangeId)
-		wf.reviewDone = facts
-		wf.approved = undefined
-		wf.reviewRun = { ...run, phase: 'held' }
-		wf.job = run.carrier
-		const original = store.job(run.carrier)
-		if (original?.result && original.result.at === run.resultAt && original.state === 'done') {
-			original.result.effects = wf.effects
+		unit.review.run = { ...run, phase: 'held' }
+		unit.job = run.carrier
+		const result = original?.result
+		if (result && result.at === run.resultAt && original.state === 'done') {
+			const receipts = effects.filter(effect => prIdOf(effect.call) === unit.id && isInlineComment(effect) &&
+				run.approval.effectIds.includes(pageChangeId(effect)) && (effect.done || effect.error || effect.maybe || effect.off))
+			result.effects = result.effects.map(effect => {
+				if (effect.done || prIdOf(effect.call) !== unit.id || !isInlineComment(effect)) return effect
+				const finding = findingFor(effect, result.findings)
+				const made = receipts.find(receipt => sameChange(receipt, effect) ||
+					finding !== undefined && findingFor(receipt, result.findings) === finding)
+				return made ? { ...effect, done: made.done, error: made.error, maybe: made.maybe, ...(made.off ? { off: true } : {}) } : effect
+			})
 			store.saveJob(original)
 		}
-		const failed = effects.filter(e => e.error || e.maybe).length
-		const skipped = (wf.effects ?? []).filter(isInlineComment).length - facts.posted.length - failed
-		store.log({ event: 'review-autoposted', code: wf.code, pr: run.pr, posted: facts.posted.length, skipped: Math.max(0, skipped), failed, severities: facts.counts, rule: run.rule, byRule: run.rule })
-		if (!ok || wf.state === 'done') {
-			if (wf.state === 'waiting_on_task') Object.assign(wf, { ...stateFields(wf, 'needs_human'), waitingSince: undefined, status: 'The review changed while posting; check its receipts before sending the reply' })
+		if (!ok || !unit.review.basis) {
+			if (wf.state !== 'done' && !ownerBusy)
+				Object.assign(wf, { ...stateFields(wf, 'needs_human'), waitingSince: undefined, status: 'The review changed while posting; check its comment receipts before sending' })
 			commit()
 			continue
 		}
-		Object.assign(wf, { ...stateFields(wf, 'needs_human'), waitingSince: undefined, status: facts.posted.length ? `PR ${run.pr} waits for your approval; posted ${facts.posted.length} comments` : `No review comments posted; the review stays with you` })
+		const { pr, ...facts } = reviewDoneFacts({ pr: unit.id, ...unit.review.basis }, run.rule, effects)
+		if (verifiedClean) facts.clean = true
+		facts.waiting = wf.effects.filter(e => prIdOf(e.call) === unit.id && !e.done && !e.off).map(pageChangeId)
+		unit.review.done = facts
+		const failed = effects.filter(e => e.error || e.maybe).length
+		const skipped = wf.effects.filter(effect => prIdOf(effect.call) === pr && isInlineComment(effect)).length - facts.posted.length - failed
+		store.log({ event: 'review-autoposted', code: wf.code, pr, posted: facts.posted.length, skipped: Math.max(0, skipped), failed, severities: facts.counts, rule: run.rule, byRule: run.rule })
+		if (!ownerBusy)
+			Object.assign(wf, { ...stateFields(wf, 'needs_human'), waitingSince: undefined, status: facts.posted.length ? `PR ${pr} waits for your approval; posted ${facts.posted.length} comments` : `No review comments posted; the review stays with you` })
 		const unsettled = effects.some(e => e.maybe || !e.done && !e.off && !e.error)
-		if (unsettled) wf.status = 'Some review comments have no final receipt; check them before sending the reply'
+		if (unsettled && !ownerBusy) wf.status = 'Some review comments have no final receipt; check them before sending the reply'
 		commit()
-		if ((!facts.posted.length && !facts.clean) || unsettled) continue
-		const frame = reviewFrame(run.pr, facts.counts)
-		const sentence = run.reply?.text.trim().match(/^[^\n]+?[.!?](?:\s|$)|^[^\n]+$/)?.[0].trim()
-		let extra = '', fallback: string | undefined
-		if (sentence) {
-			const candidate = { ...wf, draft: { ...run.reply!, text: sentence } }
-			try {
-				const hold = await sharingHold(store, src, candidate, draftUse(candidate, knowledgeOf(store, store.config()), { chats: wf.drewOn, records: wf.records }))
-				if (voteMention(sentence)) fallback = 'Sent the short version: the longer reply mentioned approving, and Delegate never says that for you.'
-				else if (commits(candidate) || candidate.shareHold || hold || labeledToGuests(candidate) || candidate.draft.sources.some(s => s.tier === 'private' || s.stale) || /\b(?:iteration|reviewed|posted|sent|left)\b|\d|\b[0-9a-f]{7,40}\b/i.test(sentence)) fallback = 'Sent the short version: the longer reply could not pass the commitment, source or audience checks.'
-				else extra = ` ${scrubDeep(sentence)}`
-			} catch (error) {
-				fallback = 'Sent the short version: the longer reply could not pass the source or audience checks.'
-				store.log({ event: 'review-summary-held', code: wf.code, byRule: run.rule, reason: String(error).slice(0, 300) })
-			}
-		}
+		if ((!facts.posted.length && !facts.clean) || unsettled || ownerBusy) continue
+		advanceReviewUnits(store, store.config(), wf)
+		await sendReviewReply(store, src, wf.id, probe)
+	}
+}
+
+async function sendReviewReply(store: Store, src: ChatSource, id: string, probe?: BuildProbe) {
+	const wf = freshRead(() => store.workflow(id)), shared = wf?.reviewReply
+	if (!wf || !shared || shared.phase !== 'held' || wf.state !== 'needs_human' || shared.turn !== wf.revAt ||
+		shared.sendText !== wf.draft?.text || wf.pending.length || wf.ownerSend || wf.approved || wf.draft?.byOwner || wf.draft?.preview ||
+		store.openWindow(wf.id) || wf.prs?.some(unit => shared.units.includes(unit.id) &&
+			[unit.job, unit.review?.completed?.job, unit.review?.run?.job, unit.review?.run?.carrier].some(job => !!job && !!store.openWindow(job)))) return
+	const commit = recordCommit(wf, () => store.workflow(id), store.save.bind(store))
+	const cfg = store.config(), decision = decide(wf, store.rules(), policyContext(store, cfg, wf))
+	wf.decision = decision
+	commit()
+	if (decision.action !== 'send' || decision.ruleId !== shared.rule) return
+	try {
+		if (!await send(store, src, cfg, wf, wf.draft?.text, { ruleId: shared.rule }, probe) || !wf.sent) return
 		commit.refresh()
-		if (wf.state !== 'needs_human' || wf.reviewRun?.job !== job.id || wf.revAt !== run.turn || wf.ownerSend || wf.pending.length) { commit(); continue }
-		wf.draft = { text: frame + extra, commitment: false, sources: extra ? run.reply?.sources ?? [] : [] }
-		wf.reviewRun = { ...wf.reviewRun, sendText: wf.draft.text }
-		wf.reviewDone = facts
-		const cfg = store.config(), rule = reviewRuleFor(wf, store.rules())
-		const decision = decide(wf, store.rules(), policyContext(store, cfg, wf))
-		wf.decision = decision
+		if (wf.reviewReply?.turn !== shared.turn || wf.reviewReply.rule !== shared.rule || wf.pending.length) return
+		wf.reviewReply = { ...wf.reviewReply, phase: 'replied' }
+		for (const unit of wf.prs ?? []) if (shared.units.includes(unit.id) && unit.review?.done?.byRule === shared.rule)
+			unit.review.done.reply = { text: wf.sent.text ?? shared.sendText ?? '', teams: messageLink(wf.chat.id, wf.sent.msgId) }
 		commit()
-		if (rule?.id !== run.rule || decision.action !== 'send') continue
-		try {
-			const sent = await send(store, src, cfg, wf, wf.draft?.text, { ruleId: run.rule }, probe)
-			if (sent && wf.sent) {
-				store.log({ event: 'review-autoreplied', code: wf.code, pr: run.pr, rule: run.rule, byRule: run.rule })
-				commit.refresh()
-				if (wf.reviewRun?.job !== job.id || wf.revAt !== run.turn || wf.pending.length) continue
-				wf.reviewRun = { ...run, phase: 'replied' }
-				wf.reviewDone = { ...facts, ...(fallback ? { fallback } : {}), reply: { text: wf.sent.text ?? frame, teams: messageLink(wf.chat.id, wf.sent.msgId) } }
-				commit()
-			}
-		} catch (error) {
-			commit.refresh()
-			wf.status = `Review comments posted; reply not sent: ${String(error).slice(0, 180)}`
-			commit()
-			store.log({ event: 'review-autoreply-failed', code: wf.code, byRule: run.rule, reason: String(error).slice(0, 300) })
-		}
+		store.log({ event: 'review-autoreplied', code: wf.code, prs: shared.units, rule: shared.rule, byRule: shared.rule })
+	} catch (error) {
+		commit.refresh()
+		wf.status = `Review comments posted; reply not sent: ${String(error).slice(0, 180)}`
+		commit()
+		store.log({ event: 'review-autoreply-failed', code: wf.code, byRule: shared.rule, reason: String(error).slice(0, 300) })
 	}
 }

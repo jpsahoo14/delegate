@@ -9,7 +9,7 @@ import { freshRead, scoped } from '../store/fs.ts'
 import { lineConfirmed, ruleConflicts, ruleLineView, ruleUses, type RuleLine } from './rule-lines.ts'
 import { readBack } from './capabilities.ts'
 import { answerHabitResult, dismissHabit, habitSuggestions, reconsiderHabit, undoAcceptHabit, undoDismiss as undoHabitDismiss,
-	type Habit } from '../runner/habits.ts'
+	reconsiderSuggestion as reconsiderScopeSuggestion, type Habit } from '../runner/habits.ts'
 
 export { productLimits } from './limits.ts'
 
@@ -50,9 +50,11 @@ export const wayNotes = (store: Store): WayNote[] => ruleNotes(store).map(note =
 
 export type WayWriteResult = { ok: true; line?: WayLine } | { ok: false; why: string }
 export type SuggestionDismissal = 'not-now' | 'never'
+export type WayTurnedDownHabit = { kind?: 'habit'; suggestion: WaySuggestion; at: string; how: SuggestionDismissal }
+export type WayTurnedDown = WayTurnedDownHabit | { kind: 'suggestion'; key: string; label: string; at: string }
 export type WaySuggestions = {
 	open?: WaySuggestion
-	turnedDown: { suggestion: WaySuggestion; at: string; how: SuggestionDismissal }[]
+	turnedDown: WayTurnedDownHabit[]
 }
 
 export const WAY_CHANGED = 'This line changed; your text is kept'
@@ -167,7 +169,8 @@ export function undoDismiss(store: Store, id: string): WayWriteResult {
 	const restored = undoHabitDismiss(store, id)
 	return restored.ok ? { ok: true } : restored
 }
-export function reconsiderSuggestion(store: Store, id: string): WayWriteResult {
+export function reconsiderSuggestion(store: Store, id: string, kind?: WayTurnedDown['kind']): WayWriteResult {
+	if (kind === 'suggestion') return reconsiderScopeSuggestion(store, id)
 	const reconsidered = reconsiderHabit(store, id)
 	return reconsidered.ok ? { ok: true } : reconsidered
 }

@@ -1,5 +1,465 @@
 # React preview
 
+## Carrier reply reason precedence (0.2.48)
+
+- Newly created change carriers have `Job.carrier: true`. They carry an existing
+  draft; they are not completed worker results and have no worker send facts.
+  Automatic decisions for those drafts use the normal item policy ordering.
+- Genuine worker results still take the verified-result branch, including its
+  missing-facts hold. Older unmarked carriers retain that conservative hold;
+  no stored record is relabelled and no send permission is widened.
+
+## Rule-send suggestion cleanup (0.2.48, paired policy review required)
+
+- The shared post-send bookkeeping drops an item's unrun suggested effects only
+  when its actual sent receipt matches this send's time and names a rule.
+  This covers ordinary replies, open work and rule review replies through the same
+  existing caller; it does not require a send-path edit or a second send route.
+- Asked, promised and legacy effects stay. Suggestions with actual completion,
+  uncertain-write or failed-attempt history stay as history, not as unrun proposals.
+  Owner sends and failed/held sends do not trigger this cleanup. It never executes
+  a suggestion or grants consent.
+- The separate policy change that ignores suggested effects when deciding whether
+  a reply promises mandatory changes must compose with this cleanup in review.
+  Neither implementation alone is acceptance of the coupled rule path.
+
+## PR-unit provider (0.2.48, first typed slice only)
+
+- `Workflow.prs` holds ask-ordered `PrUnit` records. Each unit has its own reference,
+  read state, consecutive-failure count, successful-read snapshot, decline, skip and job.
+  A skip is not a reviewer role; an unresolved number is pending with a system no-link
+  skip, never a fabricated reference or a failed read.
+- `derivePrUnits` resolves the ask's numbers through `prRefFor`, retaining unit state
+  only for the same verified reference. A later link clears a system no-link skip;
+  an owner's skip survives derivation. Done and redacted items are not re-derived.
+  References prefer the ask and the asker's messages, never another sender's link.
+- Existing imports of `PrRef` from the probe remain valid; its type now lives beside
+  the shared PR-reference helpers. `prTarget` returns the sole unit's number, or no
+  number for a multi-PR set. Legacy items without units retain the scalar path.
+- The `pr-retry` and `pr-skip` verbs are reserved with the existing numeric argument.
+  This provider does not admit those commands, write units, migrate stored records,
+  start jobs or change review permission. Review-frame types, migration, probe/gate,
+  handlers and reply orchestration are the following coupled slices.
+
+## Per-unit read and gate providers (0.2.48, composition pending)
+
+- `probePrUnits` is the typed unit reader for the following migration/caller slice.
+  It re-derives open, unredacted units, reads actual references in batches of four,
+  and retries each failed read after ten minutes. Only an attempted read that throws
+  or returns unusable data increments that unit's counter; the third failure gives up.
+  A missing reader or unresolved reference never counts as a failed read.
+- Successful reads reset the counter and replace only the unit's read snapshot.
+  Errors are scrubbed before the bounded 120-character reason is stored or logged.
+  Owner/system skips and gave-up units are not probed; an explicit force may target
+  one PR without waiting. Concurrent answers, skips, retries and other unit changes
+  are retained through fresh reads, request matching and the existing commit helper.
+- `reviewUnitGate` checks the ask and that unit's successful role snapshot, never
+  legacy scalar permission. Pending, failed, gave-up and skipped units cannot review.
+  Existing role declines and Add me use the same decision helper as the scalar gate.
+- An explicit empty Azure DevOps reviewer list means no reviewers, not a read failure.
+  An active response with its reviewer list missing fails explicitly.
+- The tick/reply probe now initializes newly named units and routes multi-PR reads
+  through the unit reader. Single-PR records take their snapshot from the existing
+  scalar read, not a second request. A per-call promise cache also deduplicates a PR
+  shared between single- and multi-PR items; it adds no retry cooldown.
+- Given-up single units stop automatic reads too. Missing readers return units to
+  pending without a strike. Existing scalar close/vote behavior is otherwise retained;
+  unit job/reply routing is still the coupled follow-up.
+
+## Unit review frames and schema 9 (0.2.48, coupled readers pending)
+
+- `PrUnit.review` and the one item-level `reviewReply` use the shared review module's
+  typed frame/reply contracts. `unitOutcome` exports only the outcome and reason code;
+  pending or failed reads alone are never called reviewed, and a review basis alone
+  is not completion. Section-9 completion receipts retain the factual reviewed outcome
+  with a moved marker when needed. A no-link skip is final not-reviewing, not a failure.
+- The bounded versioned upgrade derives units on open, unredacted items without log
+  scans. It copies no legacy role/read snapshot into permission: units start pending,
+  with zero failed reads, even when a schema-8 record already contains units.
+  The migration clears every unit's prior read timestamp, failure and successful-read
+  snapshot; ordinary same-reference derivation still retains current unit state.
+  Valid historic declines keep their original timestamp.
+  False unread/PR-zero declines are cleared and an otherwise empty blocked turn
+  becomes runnable again. Done records are not upgraded or counted as pending work.
+- Scalar review basis/run/done/again facts move only to the matching numbered unit;
+  job identities are retained only for that PR. Shared reply metadata keeps the
+  actual saved rule/turn and the one numbered unit. Missing legacy turn metadata is
+  logged and cannot create an automatic reply permission. Scalar history remains
+  readable for the still-pending legacy consumer switches, not unit authority.
+- New turns clear unit review frames and the shared reply. A later successful read
+  of a changed reviewed head marks only that unit for review and invalidates the
+  shared reply revision. No workflow is cloned to represent another PR.
+- Unit job orchestration, command routing and the shared reply's actual send path
+  remain coupled follow-ups; this is the fields/migration provider, not whole review
+  runtime or release acceptance.
+
+## Per-PR read actions (0.2.48, coupled admission/orchestration pending)
+
+- The serialized answer handler accepts exactly one current PR number in `nums`.
+  Try now/again applies only to failed or gave-up reads; Skip this PR applies to
+  gave-up reads. Closed/redacted items, stale revisions, open windows and that
+  unit's active job/posting are refused without changing another unit.
+  Both raw selected-unit job ids are checked for window reservations, even when
+  the job record is absent or done and the workflow's legacy job names another PR.
+- Retry resets only the selected read counter and forces one real read of that
+  PR now. A missing reader is an explicit refusal, not a successful check; an
+  actual failed read is reported as failed. The temporary reader is closed.
+  Skip records an owner skip without inventing a reviewer role.
+- Either action invalidates shared reply consent and the unsent generated draft;
+  owner-written drafts and other units' review state are retained. Neither action
+  sends a reply, posts findings or casts a vote. Command admission and the periodic
+  job/reply scheduler remain separate coupled surfaces, not implied by this handler.
+
+## Review-job unit scoping (0.2.48, coupled result routing pending)
+
+- Review jobs resolve their PR through the unit whose job id matches, not the
+  workflow's scalar target. Both the readable reference and the numeric prompt
+  scope have job-aware helpers. An unmatched unit review has no target; it never
+  falls back to another PR. Non-review, change-carrier and legacy-no-unit paths
+  keep their existing scalar behavior.
+- Single-unit attachment records that real job identity. Parent discovery includes
+  unit jobs without replacing the one workflow with several items. The review's
+  live start read and scoped prompt use its actual unit; a multi-PR read never
+  overwrites the shared scalar owner-vote field.
+  A typed work review cannot retain a parent through a stale legacy job pointer;
+  legacy single-unit job aliases migrate only through the existing owned job link.
+- Code-built author questions use the matched unit's reference and author snapshot;
+  conflicting references are refused rather than borrowed from another parent.
+  Unit queueing, result aggregation and reply sending remain coupled follow-ups.
+
+## Factual review completion (0.2.48, section-9 writer)
+
+- A new work review clears only its own unit's old frame. At completion the actual
+  matched unit receives `review.completed` only for a done report, a goal not marked
+  false, review findings or a code-verified clean result, and a live completion head.
+  The receipt and the stored job result share one result timestamp.
+  The same guarded writer runs when an unsent owner draft is preserved: keeping the
+  owner's text and hold never discards a completed review's factual receipt.
+- A verified start/live head comparison also writes the basis. An unverified
+  completion marks that unit for review again; neither invents a rule id, posting
+  receipt or permission. Failed/stopped runs and missing-head results write none.
+- The pure outcome reports the completed review even if its revision has moved,
+  with reason `moved` for an unverified or different head. A basis alone is never
+  completion; successful posting remains the separate rule-owned `done` receipt.
+- The versioned legacy-rule migration derives completion only from the actual
+  matching original job's result, start/head and existing rule-posting receipt.
+  It never manufactures a manual completion from scalar basis data.
+- Multi-job result aggregation and the shared rule-reply guard remain the following
+  coupled routing slice; completion metadata alone does not send anything.
+
+## Unit session and execution ownership (0.2.48)
+
+- Whole-item send/redraft ownership checks include every unit's review job and
+  current posting job, including their raw window reservations. The selected
+  retry/skip handler retains its workflow/legacy fence and checks its own two
+  selected job ids, without inheriting unrelated units' new window restrictions.
+- Typed review work parents require the real unit job association. Posting/change
+  parents also recognize the native unit run job id. Withdrawing the item's OK
+  reaches every linked executor, while another item's valid approval still keeps
+  a shared executor alive as before.
+- The existing execution approval checks remain unchanged. Their per-unit rule
+  successor needs the actual typed approval/turn contract; a completion or posting
+  marker is not substituted for the existing exact batch approval.
+
+## PR-unit provider (0.2.48, first typed slice only)
+
+- `Workflow.prs` holds ask-ordered `PrUnit` records. Each unit has its own reference,
+  read state, consecutive-failure count, successful-read snapshot, decline, skip and job.
+  A skip is not a reviewer role; an unresolved number is pending with a system no-link
+  skip, never a fabricated reference or a failed read.
+- `derivePrUnits` resolves the ask's numbers through `prRefFor`, retaining unit state
+  only for the same verified reference. A later link clears a system no-link skip;
+  an owner's skip survives derivation. Done and redacted items are not re-derived.
+  References prefer the ask and the asker's messages, never another sender's link.
+- Existing imports of `PrRef` from the probe remain valid; its type now lives beside
+  the shared PR-reference helpers. `prTarget` returns the sole unit's number, or no
+  number for a multi-PR set. Legacy items without units retain the scalar path.
+- The `pr-retry` and `pr-skip` verbs are reserved with the existing numeric argument.
+  This provider does not admit those commands, write units, migrate stored records,
+  start jobs or change review permission. Review-frame types, migration, probe/gate,
+  handlers and reply orchestration are the following coupled slices.
+
+## Native per-job results and questions (0.2.48, section 10)
+
+- Work results retain the validated report's state, trimmed question/hint, goal,
+  blocker and vetted todos under their native field names. Stopped goal retries
+  keep those facts too. No send-verification record or generic context label is used.
+- A pure job-result view selects the first unanswered question in unit ask order.
+  Its cached `questionOf` identifies the real job and PR; changing that view changes
+  the item revision. Old jobs without native result fields keep scalar behavior.
+- Answer resumes only that current unit job, clears its answered question and frame,
+  and leaves other jobs and owner wording intact. The next retained question can
+  become current. Stale answers and target windows are refused.
+- `attachJob` now has an actual unit mode: it records that unit's job/frame without
+  replacing shared draft/effects or another unit. Existing session-relay consent is
+  retained and serialized before ordinary result questions; targeted vote/change
+  approvals cannot be interpreted as permission to relay a different PR.
+- `createChangeCarrier` returns the real stored carrier without changing the workflow
+  pointer. Existing `changesJob` keeps its original wrapper behavior. Allocation
+  alone starts no executor and grants no approval.
+- Generic todos remain native job facts. The section-11 composed `wf.todos` view
+  includes only reviewed units in the reply; only an actual send turns them into
+  existing owner-promise Left lines. That composition, the queue and per-unit rule
+  execution remain coupled follow-ups.
+
+## Per-unit posting approval and epoch (0.2.48, section 11)
+
+- `ReviewFrame.epoch` is a validated nonnegative integer. New fact generations
+  increment it; resets retain the counter while clearing the frame. Completion,
+  changed read facts/head/again, retry and skip invalidate only that unit.
+  A routine read timestamp alone does not change the generation.
+- At load, old frames without an epoch receive the explicit legacy generation zero
+  and lose any run permission. Schema 10 increments the generation and drops old
+  runs; scalar by-rule approvals are discarded. No approval is synthesized from
+  a missing epoch or from historical result facts. Manual approvals stay unchanged.
+- Rule `stillApproved` resolves the actual unit job and its required approval.
+  The rule, posting job, epoch, unique pending effect ids for that PR, exact subset
+  digest and job batch must all match; votes cannot enter the batch. Shared reply
+  text/revision is not a comment-posting approval. `keyOf` is the real shared digest
+  API, not a duplicated formatter.
+- Whole-item withdrawal increments every stored unit approval's epoch before
+  deciding whether an execution still has another approving parent. Pause/stop
+  also select open items with native posting approval, persist the revocation,
+  and hold them for the owner. Completed items are not reopened for historical
+  unit packets. Basis, completion, posted history and other parents' approvals
+  remain intact; resume cannot make a revoked packet valid again. This applies
+  to existing packets at the next withdrawal without a repair or migration.
+- The carrier marker is cleared only in the actual work-start commit. Execute runs
+  retain it; reused jobs need no marker repair.
+- Native unit references remain addresses when temporary turn effects are cleared;
+  they never supply read/role/approval authority. Newer ask links still win.
+- The existing pure `factsOf(PrState): PrFacts` normalizer is exported for the
+  completion reader's same-read facts handoff. Its defaults describe meaning,
+  not permission; no additional read, stored grant or migration is introduced.
+- Carrier allocation can bind the real current unit job without changing the shared
+  workflow job pointer. Ownership checks also retain the original completed review
+  job while a posting job is current.
+- Todo composition uses the section-11 `wf.todos` view, not a new Left draft. The
+  actual SEND packet producer and shared-send ports remain paired source
+  successors; the guard itself creates no packet or change execution.
+
+## Native review queue and shared result (0.2.48)
+
+- Section 13 provides `PrUnit.requested?: true` and the pure narrowing-only
+  `askExcludes(text, pr)`. Sentence/semicolon/but/except clauses naming a PR with
+  a negated review directive exclude it; skip/except clauses also narrow.
+  A bare line break continues the directive and its PR/link, rather than
+  separating the negative instruction from its target.
+  Neither helper nor field supplies write permission. The runtime consumes the
+  actual reviewed SEND schema/prompt delta, never its unapproved parent changes.
+  No migration manufactures a request for old data.
+- The owned `Report.reviewPrs?: number[]` type and request selector validate
+  safe positive integers against `askPrs`, log dropped out-of-scope/invalid
+  entries, deduplicate and require both `reviewAsked` and no exclusion.
+  An explicitly empty list remains empty; only absence permits the scalar
+  PR-job fallback. The selector does not mutate units, queue work or grant
+  write permission. That fallback uses the existing canonical job-key
+  normalization, including harmless whitespace/case differences, without
+  widening its single-unit authority. At a classifier report, only that checked conjunction is
+  stored as the unit's requested flag. Background readers use this turn-scoped
+  request proof, not a role grant or a fallback from missing metadata. Owner
+  answers remain valid requests after their processed text leaves ownerAnswer.
+- New asker input or a generic owner answer/choice clears the previous request
+  scope and advances affected epochs before another review can start or rule
+  call can remain approved. Reply-only turn resets do not manufacture or erase
+  the already classified ask. Raw windows are fenced before classifier-driven
+  unit resets, and missing flags never permit old queued work to start.
+- A current unconsumed owner command is exclusion-checked before earlier pending
+  ask text, preserving both current overrides and cancellations. Intake drops
+  an older answer on a new ask; a single-unit answer is consumed
+  once handed to its real job. Handled classifier turns consume pending input
+  even when no job is ready, retaining the checked request proof rather than
+  repeatedly classifying it. A genuine current override remains available while
+  its single unit awaits a real job, and is never promoted over a later ask.
+- Unrequested units are not-reviewing/not-asked, start no new job, and contribute
+  no pending proposals or job question to this reply. Stored jobs and factual
+  history remain available. Unit references and later no-link resolution retain
+  the current ask's request flag rather than inventing or losing a request.
+- Orphaned error/uncertainty history remains stored but off, not a pending
+  proposal reconstructed from failure metadata. Actual receipts and uncertainty
+  metadata are retained without changing a source job or active manifest.
+  A single unrequested unit settles through the same truthful room/direct
+  outcome path as multiple units; it creates no review/completion.
+- The requested flag gates the review intent, not unrelated/custom intent
+  actions that happen to name a PR. Their existing deterministic ask check,
+  actual unit membership, owner approval and write-time checks still apply.
+  Reply-report vote checks use the newly classified workflow, not its stale
+  pre-classification intent snapshot.
+- The dispatcher queues real review jobs for the ask's units through their own
+  read/role gates. Each job retains the shared workflow parent; no workflow is
+  cloned and no missing reference becomes PR zero. Fresh explicit review asks
+  reset only the requested units after active posting/windows have settled.
+- The normal job allocator also handles unit jobs and relay consent. One unit
+  needing an owner answer does not overwrite another unit's normalized result;
+  the existing answer route resumes the selected real job.
+- An old terminal work result without native report state is not a completion
+  grant. After the fresh read/role gate, an unanswered owner question or owner
+  draft is preserved; otherwise the actual review job runs again read-only.
+  An old posting carrier is never reused as the review worker. The new result's
+  native state makes recovery converge without a repair marker or log scan.
+  Both fresh-turn resets and recovery fence the resolved original worker's raw
+  window, including its legacy carrier address, before resetting or requeuing.
+  A native done report missing completion facts is an explicit job failure view,
+  not an endless checking status or a fabricated reviewed result.
+- Unit results contribute partial proposed changes while other reviews continue.
+  Optional Add me still uses the central suggestion selector. A successful Add me
+  marks that unit pending for a real PR read, never grants a role from the receipt.
+- Shared owner execution receipts are mirrored only to matching proposals in the
+  corresponding original unit job. Vote receipts additionally match its head;
+  later live reads clear reset votes from both views. A completed change does not
+  close the multi-PR ask or send a shared reply while another unit is unsettled.
+- The matched completion writer copies the reviewed reader's optional same-read
+  facts into the actual unit completion and title snapshot. Only that unit's
+  votes receive those stored facts as `Effect.pr`, using the existing
+  `prParts`/`prMeaning` rendering path. Old or failed-read receipts keep facts
+  absent. No second read, role grant, head verification or permission is
+  inferred from meaning facts; the real write-time PR read remains authoritative.
+- Once every unit is settled, code composes one outcome per unit in ask order.
+  Gave-up reads can be composed but need owner OK; native questions, active
+  executors and unresolved relays hold the shared reply. Owner-written drafts
+  remain intact. Already-replied turns are not automatically rearmed.
+- The composed reply's todo view is the ordered exact-text union from the
+  reviewed units it includes. No new Left kind or worker-created promise is used.
+  Automatic reply metadata requires verified current-head completion and actual
+  posted receipts from one real rule, all-final outcomes and no question/todos.
+- Selected votes resolve against the actual unit set; combined multi-PR voting
+  needs separate approvals. Existing scalar behavior remains for legacy items.
+  Non-PR calls retain the item's existing single-unit context, so an allowlisted
+  deploy needs no invented pullRequestId. An unmatched PR call still has no
+  target, and missing PR arguments are refused by the existing call validator;
+  a multi-unit item does not supply a guessed deployment PR.
+  After a selected batch ends, unrelated votes rebuild from their original
+  unit proposals and head-checked receipts, not the shared batch's temporary
+  deselection. Source-level off flags/history remain intact. The active manual
+  batch is never rebuilt; its callback also keeps other pending unit votes open
+  rather than letting an immediate shared send close the ask before rebuilding.
+  The actual reviewed selector/write backstops, completion reader and corrected
+  native producer/shared-send successor are consumed as scoped input. This
+  does not itself approve coupled/runtime behavior or grant rule permission.
+- A native `reviewReply` on the current `pr_review` intent uses the existing
+  shared-review policy/final-send path
+  in `automaticDecision`, even when its text equals the original work result or
+  a result-facts turn matches. Presence selects a lane, never permission. Native
+  unit/rule/epoch/head/turn/text/audience/write guards remain in that path.
+  Retained native history on a non-review intent does not select that lane or
+  get cleared to force a decision. Ordinary work results still use `decideResult`
+  and their existing result-fact
+  and scalar legacy review checks; no scalar basis/facts are manufactured for
+  the native reply.
+
+## Origin-bearing report data (0.2.48, first data slice only)
+
+- Effects carry optional origin, reason, exact askQuote and a complete-alternative group
+  (id, question, positive integer min). Omission remains readable for older stored reports.
+  Suggested effects have suggested origin and a required structured reason; the report schema
+  accepts a separate ranked suggested list without executing, vetting or promoting it.
+- normalizeReport retains these fields, including choice effects. Its derived legacyEffects
+  flag and legacyEffectOrigins helper identify origin-less stored revisions without rewriting
+  them. Any origin or a suggested list opts out of legacy consent; mixed revisions are not legacy.
+  No checked/default state is stored, and this slice does not activate include-list approval.
+- Report call preparation verifies asked origin against an exact nonblank substring of an
+  owned message from the item's asker, never another item, the owner, summary or lastAsk.
+  New proposals without evidence become suggested, with catalogued origin-downgraded metadata
+  containing only code, a known capability name (unknown otherwise) and a fixed why. Model-supplied note
+  and rule labels cannot grant authority. Existing draft, approval and execution paths stay.
+- verifyOrigin(effect, ctx) in core/effects accepts optional attributePromise(replyText, effect).
+  It retains promised only when that code-owned attributor returns a nonblank sentence from the
+  actual reply. Without attribution it downgrades with why=no-attribution. The later action-claims
+  slice supplies and wires that callback; no ad hoc parser or bridge is added here.
+  This is the engineering-approved interim contract, not suggestion execution or the UI.
+  The complete first slice must not ship without the action-claims slice; downgrade-only is not released.
+
+## Internal after-Send orchestration (0.2.48 HOST, first slice)
+
+- Only external pending changes queue or count in the existing execute run. Direct calls and
+  worker prompts keep original external indexes; internal-only owner approval uses the existing
+  send-without-change-run path, preserving busy, agreement and pause checks.
+- Take the reviewed in-memory internal receipt after approval is verified, before clearing it.
+  The owner path captures the selected manifest before carrier adoption; the execute completion
+  path captures it while stillApproved is true. No receipt or approval is minted after Send.
+- Pass that same receipt to the reviewed dispatcher only after successful non-holding Send or
+  an approved no-reply rest. Failed/held/stale/review/tracker/deploy-open paths discard it.
+  A retained draft proven equal to the current ask's already-sent text is history, not a second
+  reply on an explicit internal-only retry.
+- Preserve actual internal done/error markers on workflow and carrier, and make failures
+  actionable without counting them as external writes. External ledger, approval and execution
+  order remain unchanged. Internal receipts/history are never folded from that external ledger;
+  all internal execution still uses the reviewed real executor.
+
+## Revision-bound approval caller (0.2.48 HOST, first slice)
+
+- Pass the complete original Answer to `okSendGate` before changing draft text or legacy
+  numeric/except selection, for legacy pages as well as origin-bearing revisions. Preserve
+  include ids, the separate dedicated-page vote id, candidate text, exact page expect, reviewed
+  metadata and consistency consent. The full typed Answer reaches the reviewed gate; its
+  validated vote joins the retained effects there, never the ordinary include array.
+  Refusals remain refusals; no draft-first, changed revision or second late gate is used.
+- Legacy quote decisions use the original numeric selection. Apply it by stable change id
+  and occurrence after the gate's existing self-chat vote omission, never by renumbering the
+  owner's original choices. Votes retain their dedicated path; legacy originless effects
+  receive no invented origin or selection-learning event.
+- Returned omission notices survive a subsequently created owner-send record and its receipt.
+  Accepted verified non-vote selections emit only catalogued include/exclude metadata;
+  informational zero-action results are still returned without continuing to Send.
+
+## Internal suggestions and executor (0.2.48 HOST, first slice)
+
+- `runner/internal-effects` exports `runInternalEffect(store, workflow, effect)` returning a
+  promise of `{ok:true, ref?}` or `{ok:false, error}`. It validates the actual reviewed internal
+  action union and current item targets before calling the existing watch or wait engine.
+  No MCP name, free payload, rule grant or alternate executor is introduced.
+- Check-back requires an active main work item and a representable date. SEND dispatches it
+  after Send and captures its normal receipts: the existing wait verb clears the completed
+  turn; only a draft matching the actual sent text is retained for the existing Undo path.
+  Schedule state is staged until save succeeds, so a failed write is not later committed as
+  a scheduled action. No approval or other cleared turn field is restored. This module does
+  not add that dispatcher or weaken approval/send checks.
+- Code-built watch proposals use shared structured PR/work-item/incident targets and the
+  existing bounded watch, without duplicating an existing watch. Generic waiting main work
+  can instead offer the existing three-day check-back when no future check-back is scheduled.
+  These are always suggested, not preapproved, and share the actual selector's three-row,
+  target, dedupe, dismissal and no-votes rules with worker suggestions.
+- Hooks cover direct reports, job reports and stored-report application. Holding, rule,
+  tracker, execution-output, failed-goal and no-reply/no-requested-change reports generate no extra work.
+  The read-time no-call repair preserves schema-valid code-suggested internal effects on both
+  item and carrier. Actual old originless no-call proposals keep their existing refusal path;
+  there is no relabeling, backfill or one-shot repair.
+  New's display and SEND's reviewed dispatch remain required for the complete slice.
+
+## Dismissed suggestion scopes (0.2.48 HOST, first data slice only)
+
+- The serialized `dont-suggest` answer carries the server-resolved key and scrubbed label.
+  It matches a current pending suggested effect before writing anything, refuses busy or stale
+  items or uncertain writes, and never treats an asked/promised effect as a dismissal. No chat-text syntax is added.
+  The client owns the six-second hide/Undo interval; there is no server timer or restoration.
+- On success the scope store is updated and matching suggested effects are unchecked on both
+  the item and its carrier through the existing selection writer. Other origins and scopes stay.
+  The catalogued `wys-dismiss` event carries only code, call capability plus a bounded target
+  kind, and the stored verified origin; only catalog/config capability names enter that field.
+  It never carries the key, target id, free-text action argument or read-back label.
+  Scope identity uses the reviewed `effectCapability` API for calls and typed internal
+  suggestions; dismissal never executes either. New owns exact-revision resolution and SEND
+  its typed admission/carrier. Internal dispatch remains a separate reviewed implementation.
+- `runner/habits` exports `dismissKey(capability, target)`, using the existing canonical target
+  key, and `isDismissed(store, key, now)` with a numeric lookup time. Only an explicit cross
+  dismisses a suggestion in this slice; inclusion/exclusion learning is not implemented here.
+- `dismissSuggestion(store, key, at, label)` takes an ISO timestamp and the dismissed effect's
+  existing scrubbed summary. It persists one `dont-suggest` scope per key in
+  `state/suggestion-dismissals.json`, expiring exactly 60 days after dismissal.
+  Writers use the existing nonblocking record lock, a fresh read and atomic JSON replacement;
+  a busy writer returns `{ok:false, why}`, never a successful dismissal.
+- `turnedDownSuggestions(store, now)` lists unexpired `SuggestionDismissal {key, label, at, until}`
+  records newest first. `reconsiderSuggestion(store, key)` removes only that suppression. Both mutations return
+  `{ok:true}` or `{ok:false, why}`. Neither expiry nor Reconsider restores a proposal, grants a
+  Rule or runs an action; a future suggestion must be produced again from evidence. Reads exclude
+  expired entries without writing; mutations prune them during their locked update.
+- The sidecar is metadata, not a fake Rule-backed Habit. Existing send/style acceptance,
+  snooze, decline, Undo and learned rules remain unchanged. Roots without the sidecar read
+  as no suppressed scopes; malformed existing data raises an error rather than being erased.
+  The existing Rule-backed Ways adapter is not changed by this producer; its paired adapter
+  unions habit rows with `{kind:'suggestion', key, label, at}`, reads back the label and routes
+  Reconsider to this API. The full slice needs that adapter and its row renderer before shipping.
+
 ## Measurable usage logging (0.2.47 HOST, usage-first cut)
 
 - Build from reviewed Settings input 6c7a04f3 on the clean usage line, not the deferred WDD merge.

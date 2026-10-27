@@ -1,7 +1,7 @@
 import type { Effect, Report, Workflow } from '../core/types.ts'
 import { stateFields, LEGACY_FALLBACK, LEGACY_STOP, WORKFLOW_SCHEMA, statusFields, upgrade } from '../core/upgrades.ts'
 import { agentSetupFailure } from '../core/agent-failure.ts'
-import { sameChange } from '../core/effects.ts'
+import { sameChange, sameHead } from '../core/effects.ts'
 import { join } from 'node:path'
 import { freshRead, listJson, readJson } from '../store/fs.ts'
 import type { Store } from '../store/state.ts'
@@ -11,23 +11,25 @@ import { isReviewJob } from './review-gate.ts'
 import { CHECK_DAYS, joinWhy, lastActivity, ownLinks, statusOf } from './work.ts'
 import { trimReviewContext } from './review-context.ts'
 import { isDeepStrictEqual } from 'node:util'
+import { derivePrUnits } from './probe.ts'
+import { bumpReviewEpoch } from './pr-review-state.ts'
 
 const LIMIT = 50
 const sameLink = (a: string, b: string) => a.split(':')[0].toLowerCase() === b.split(':')[0].toLowerCase() && a.split(/[:/]/).at(-1) === b.split(/[:/]/).at(-1)
 
 export function migrateWorkflows(store: Store, now = Date.now()): number {
-	const pending = store.workflows().filter(w => w.schema < WORKFLOW_SCHEMA).slice(0, LIMIT)
+	const pending = store.workflows().filter(w => w.state !== 'done' && w.schema < WORKFLOW_SCHEMA).slice(0, LIMIT)
 	let logs: ReturnType<Store['logs']> | undefined
 	let workerLogs: ReturnType<Store['logs']> | undefined
 	const history = () => logs ??= store.logs(30)
 	let migrated = 0
 	for (const was of pending) freshRead(() => {
 		const w = store.workflow(was.id)
-		if (!w || w.schema >= WORKFLOW_SCHEMA) return
+		if (!w || w.state === 'done' || w.schema >= WORKFLOW_SCHEMA) return
 		const commit = recordCommit(w, () => store.workflow(w.id), store.save.bind(store))
 		const events: { event: string; code: string; from?: number; to?: number; step?: number; why?: string; migrated?: true;
 			job?: string; dropped?: number; warns?: number; jobDropped?: number; jobWarns?: number }[] = []
-		for (const version of [4, 5, 6, 7, 8]) {
+		for (const version of [4, 5, 6, 7, 8, 9, 10]) {
 			if (w.schema >= version) continue
 			const candidate = structuredClone(w), from = w.schema
 			let skipped: string | undefined
@@ -82,8 +84,8 @@ export function migrateWorkflows(store: Store, now = Date.now()): number {
 				}
 			} else if (version === 7) {
 				const job = w.job ? store.job(w.job) : undefined
-				if (w.state !== 'done' && !job && w.intent === 'pr_review' && (specChoice(w.question ?? '') || w.todos?.some(t => /names no exact call/.test(t)))) skipped = 'the review job is unavailable'
-				if (w.state !== 'done' && job && isReviewJob(job.key, w.intent)) {
+				if (!job && w.intent === 'pr_review' && (specChoice(w.question ?? '') || w.todos?.some(t => /names no exact call/.test(t)))) skipped = 'the review job is unavailable'
+				if (job && isReviewJob(job.key, w.intent)) {
 					const additions: Effect[] = []
 					if (w.question && specChoice(w.question)) {
 						const effect = authorAsk(store, [w], job, w.question)
@@ -145,6 +147,15 @@ export function migrateWorkflows(store: Store, now = Date.now()): number {
 						migrated: true, dropped: trimmed.dropped, warns: trimmed.warns,
 						jobDropped: jobTrimmed.dropped, jobWarns: jobTrimmed.warns })
 				}
+			} else if (version === 9 && !candidate.redacted) {
+				const held = migratePrUnits(store, candidate, now)
+				if (held) events.push({ event: 'review-reply-upgrade-held', code: w.code, step: version, why: held })
+			} else if (version === 10) {
+				if (candidate.approved?.byRule !== undefined) candidate.approved = undefined
+				for (const unit of candidate.prs ?? []) {
+					bumpReviewEpoch(unit)
+					if (unit.review) unit.review.run = undefined
+				}
 			}
 			if (!skipped) Object.assign(w, candidate)
 			w.schema = version
@@ -155,11 +166,62 @@ export function migrateWorkflows(store: Store, now = Date.now()): number {
 		for (const event of events) store.log(event)
 		migrated++
 	})
-	const remaining = pending.length > 0 && store.workflows().some(w => w.schema < WORKFLOW_SCHEMA), key = `schema-${WORKFLOW_SCHEMA}-done`
+	const remaining = pending.length > 0 && store.workflows().some(w => w.state !== 'done' && w.schema < WORKFLOW_SCHEMA), key = `schema-${WORKFLOW_SCHEMA}-done`
 	freshRead(() => {
 		const markers = store.upgrades()
 		if (remaining && markers[key]) { delete markers[key]; store.saveUpgrades(markers) }
 		else if (!remaining && !markers[key]) store.saveUpgrades({ ...markers, [key]: new Date(now).toISOString() })
 	})
 	return migrated
+}
+
+function migratePrUnits(store: Store, w: Workflow, now = Date.now()): string | undefined {
+	if (w.state === 'done' || w.redacted) return undefined
+	w.prs = derivePrUnits(store, w, now).map(unit => ({ ...unit, read: 'pending', tries: 0, readAt: undefined, failure: undefined,
+		role: undefined, groups: undefined, author: undefined, status: undefined, head: undefined, title: undefined }))
+	const job = w.job ? store.job(w.job) : undefined
+	for (const unit of w.prs) {
+		const basis = w.reviewBasis?.pr === unit.id ? w.reviewBasis : undefined
+		const run = w.reviewRun?.pr === unit.id ? w.reviewRun : undefined
+		const done = w.reviewDone?.pr === unit.id ? w.reviewDone : undefined
+		if (basis || run || done) {
+			unit.review ??= { epoch: 0 }
+			if (basis) unit.review.basis ??= { head: basis.head, at: basis.at }
+			if (done) {
+				const { pr, ...facts } = done
+				unit.review.done ??= facts
+				const originalId = run?.carrier ?? (job && /^pr:/i.test(job.key) ? job.id : undefined)
+				const original = originalId ? store.job(originalId) : undefined
+				const result = original?.result
+				if (!unit.review.completed && original?.state === 'done' && original.parents.includes(w.id) &&
+					original.reviewStart?.pr === unit.id && sameHead(original.reviewStart.head, done.head) &&
+					result?.at && result.findings !== undefined && typeof result.reviewHead === 'string' &&
+					sameHead(result.reviewHead, done.head))
+					unit.review.completed = { job: original.id, resultAt: result.at, head: result.reviewHead, verified: true,
+						findings: result.findings.length, ...(result.reviewClean ? { clean: true } : {}) }
+			}
+		}
+		const jobPr = job && /^pr:.*?(\d+)$/.exec(job.key)
+		if (!unit.job && job && !job.carrier && job.purpose === 'work' && job.parents.includes(w.id) &&
+			(jobPr ? Number(jobPr[1]) === unit.id : w.prs.length === 1 && isReviewJob(job.key, job.intent ?? w.intent))) unit.job = job.id
+		if (!unit.job && run?.job) unit.job = run.job
+		if (!unit.again && w.reviewAgain?.pr === unit.id) unit.again = { head: w.reviewAgain.head, at: w.reviewAgain.at }
+		const decline = w.reviewDecline
+		if (!unit.decline && decline?.pr === unit.id && decline.role !== 'unread')
+			unit.decline = { role: decline.role, at: decline.at }
+		bumpReviewEpoch(unit)
+	}
+	const invalidDecline = w.reviewDecline && (w.reviewDecline.pr === 0 || w.reviewDecline.role === 'unread')
+	if (invalidDecline) {
+		w.reviewDecline = undefined
+		if (!w.draft && !w.ownerSend && !w.reviewRun) Object.assign(w, { ...stateFields(w, 'running'), question: undefined, questionHint: undefined,
+			status: 'Checking the PRs in this ask', pending: w.pending.length ? w.pending : w.msgIds.slice(-1) })
+	}
+	const run = w.reviewRun
+	if (!w.reviewReply && run && w.prs.some(unit => unit.id === run.pr) && (run.phase === 'replied' || run.reply || run.sendText)) {
+		if (!run.turn) return 'The legacy review reply has no verified turn; automatic sending stays held'
+		w.reviewReply = { rule: run.rule, turn: run.turn, phase: run.phase === 'replied' ? 'replied' : 'held', units: [run.pr],
+			...(run.reply ? { reply: run.reply } : {}), ...(run.sendText ? { sendText: run.sendText } : {}) }
+	}
+	return undefined
 }

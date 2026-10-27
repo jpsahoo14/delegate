@@ -1,11 +1,13 @@
 import { stateFields } from '../core/upgrades.ts'
 import { NAME } from '../brand.ts'
-import { allows, effectLeftAction, isVote, VOTES } from '../core/effects.ts'
+import { allows, effectLeftAction, isVote, prIdOf, sameHead, VOTES } from '../core/effects.ts'
 import { leftRefusal, type LeftDraft } from '../core/left-lines.ts'
 import { settingKey } from '../core/setting-keys.ts'
-import type { Choices, Config, Effect, PrRole, Workflow } from '../core/types.ts'
+import type { Choices, Config, Effect, PrRole, PrUnit, Report, Workflow } from '../core/types.ts'
 import type { Store } from '../store/state.ts'
-import { prTarget, type BuildProbe, type PrRef, type PrState } from './probe.ts'
+import { prNumbersIn } from '../core/pr-refs.ts'
+import { askPrs, prTarget, type BuildProbe, type PrRef, type PrState } from './probe.ts'
+import { canonicalKey } from './jobs.ts'
 
 // The owner's rule (10-23): Delegate reviews a pull request, or votes on it, only when someone asked him (his own command
 // counts) and he is a reviewer: by name, required or optional and not declined, or as a member of a reviewer team that
@@ -76,9 +78,29 @@ export async function roleOn(cfg: Config, probe: BuildProbe | undefined, ref: Pr
 // Someone asked the owner to review (or recheck, approve, look at) a PR. A message to the whole room counts only when it is about
 // this PR: its number or link is in the same message. The owner's own words (an answer, his message in the thread) count too.
 export const REVIEW_ASK = /\b(?:re-?review|review|re-?check|look at|take a look|have a look|approve|approval|sign[- ]?off|lgtm|can you check|could you check|please check|vote|waiting for (?:the )?author|wait for (?:the )?author|reject)\b/i
-export function reviewAsked(store: Store, wf: Workflow, pr: number): boolean {
-	const pending = store.thread(wf.id).filter(m => wf.pending.includes(m.id))
-	const own = [wf.ownerAnswer ?? '', ...pending.filter(m => m.byOwner).map(m => m.text)].some(t => REVIEW_ASK.test(t))
+export function askExcludes(text: string, pr: number): boolean {
+	return text.split(/(?<=[.!?])\s+|;|\s+(?=(?:but|except)\b)/i).some(clause => {
+		if (!prNumbersIn(clause).includes(pr) && !new RegExp(`\\b${pr}\\b`).test(clause)) return false
+		const negative = /\b(?:do\s+not|don't|dont|no\s+need\s+to|not|skip|except)\b/i.exec(clause)
+		if (!negative) return false
+		const after = clause.slice(negative.index + negative[0].length)
+		return /^(?:skip|except)$/i.test(negative[0]) || REVIEW_ASK.test(after) || /\breviewing\b/i.test(after)
+	})
+}
+
+export function requestedReviewPrs(store: Store, wf: Workflow, report: Pick<Report, 'reviewPrs' | 'job'>, text: string): Set<number> {
+	const ask = new Set(askPrs(store, wf)), scalar = /^pr:.*?(\d+)$/i.exec(canonicalKey(report.job?.key ?? ''))
+	const offered = report.reviewPrs ?? (scalar ? [Number(scalar[1])] : [])
+	const valid = offered.filter(id => Number.isSafeInteger(id) && id > 0 && ask.has(id))
+	if (valid.length !== offered.length) store.log({ event: 'review-request-dropped', code: wf.code, count: offered.length - valid.length })
+	return new Set(valid.filter(id => reviewAsked(store, wf, id) && !askExcludes(text, id)))
+}
+
+export function reviewAsked(store: Store, wf: Workflow, pr: number, current = false): boolean {
+	const ids = new Set(wf.prs && !current ? [...wf.msgIds, ...wf.pending] : wf.pending)
+	const pending = store.thread(wf.id).filter(m => ids.has(m.id))
+	const own = [wf.ownerAnswer ?? '', ...pending.filter(m => m.byOwner).map(m => m.text)].some(t =>
+		REVIEW_ASK.test(t) && (!current || !prNumbersIn(t).length || prNumbersIn(t).includes(pr)))
 	if (own || wf.startedBy === 'owner' && REVIEW_ASK.test(wf.lastAsk ?? '')) return true
 	const theirs = pending.filter(m => !m.byOwner)
 	const about = (t: string) => new RegExp(`(?:\\bPR\\s*#?\\s*${pr}\\b|pullrequest/${pr}\\b|\\b${pr}\\b)`, 'i').test(t)
@@ -92,14 +114,55 @@ export function reviewAsked(store: Store, wf: Workflow, pr: number): boolean {
 const SPLIT_ASK_MS = 15 * 60_000
 
 export type Gate = { ok: true } | { ok: false; role: PrRole | 'unread' | 'not-asked'; status: string; question: string; note?: string; addMe?: Effect }
+type DeclinedUnit = Extract<Gate, { ok: false }> & { role: PrRole | 'not-asked' }
+export type UnitGate = { ok: true } |
+	{ ok: false; reason: 'checking' | 'couldnt-read' | 'gave-up' | 'owner' | 'no-link' } |
+	{ ok: false; reason: 'declined'; gate: DeclinedUnit }
+
+export function unitOutcome(unit: PrUnit): {
+	outcome: 'checking' | 'reviewing' | 'reviewed' | 'not-reviewing' | 'couldnt-read' | 'gave-up'
+	reason?: PrRole | 'not-asked' | 'owner' | 'no-link' | 'moved'
+} {
+	if (!unit.requested) return { outcome: 'not-reviewing', reason: 'not-asked' }
+	if (unit.skip) return { outcome: 'not-reviewing', reason: unit.skip.why }
+	if (unit.decline) return { outcome: 'not-reviewing', reason: unit.decline.role }
+	const review = unit.review, completed = review?.completed
+	if (completed || review?.done) {
+		const head = completed?.head ?? review?.done?.head
+		return { outcome: 'reviewed', ...(completed?.verified === false || !sameHead(unit.head, head) ? { reason: 'moved' as const } : {}) }
+	}
+	if (unit.read === 'failed') return { outcome: 'couldnt-read' }
+	if (unit.read === 'gave-up') return { outcome: 'gave-up' }
+	if (unit.read !== 'ok') return { outcome: 'checking' }
+	return { outcome: unit.job || review?.run ? 'reviewing' : 'checking' }
+}
+
+export function reviewUnitGate(store: Store, cfg: Config, wf: Workflow, unit: PrUnit): UnitGate {
+	if (!unit.requested) return { ok: false, reason: 'declined', gate: notAsked(unit.id) }
+	if (unit.skip) return { ok: false, reason: unit.skip.why }
+	if (unit.read === 'failed') return { ok: false, reason: 'couldnt-read' }
+	if (unit.read === 'gave-up') return { ok: false, reason: 'gave-up' }
+	if (unit.read !== 'ok' || !unit.ref || !unit.role) return { ok: false, reason: 'checking' }
+	const gate = roleGate(cfg, wf, unit.ref, unit.role, unit.title)
+	return gate.ok ? gate : { ok: false, reason: 'declined', gate }
+}
+
+const notAsked = (pr: number): DeclinedUnit => ({ ok: false, role: 'not-asked', status: `Not reviewing PR ${pr}: nobody asked you to review it`,
+	question: `Nobody asked you to review PR ${pr}. Answer "review it" to have ${NAME} review it, or skip.` })
+
 // The decision, from the role this turn's PR read stored on the item (probePRs runs before every reply run). With no Azure DevOps
 // reader set up at all, the reviewer check cannot run; the ask check still does, and no vote can be cast there (change.ts).
 export function reviewGate(store: Store, cfg: Config, wf: Workflow, ref: PrRef, title?: string, canRead = true): Gate {
-	const pr = ref.id, who = wf.asker?.name.split(' ')[0] ?? 'They'
-	if (!reviewAsked(store, wf, pr)) return { ok: false, role: 'not-asked', status: `Not reviewing PR ${pr}: nobody asked you to review it`, question: `Nobody asked you to review PR ${pr}. Answer "review it" to have ${NAME} review it, or skip.` }
+	const pr = ref.id
+	if (!reviewAsked(store, wf, pr)) return notAsked(pr)
 	const role = wf.prUnknown && !wf.prRole ? undefined : wf.prRole
 	if (!role && !canRead) return { ok: true }
 	if (!role) return { ok: false, role: 'unread', status: `Checking you're a reviewer on PR ${pr}: it could not be read; ${NAME} tries again at the next check`, question: `${NAME} could not read PR ${pr} to check you are a reviewer. It tries again by itself; answer to try now, or skip.` }
+	return roleGate(cfg, wf, ref, role, title)
+}
+
+function roleGate(cfg: Config, wf: Workflow, ref: PrRef, role: PrRole, title?: string): { ok: true } | DeclinedUnit {
+	const pr = ref.id, who = wf.asker?.name.split(' ')[0] ?? 'They'
 	if (MAY_REVIEW.includes(role)) return { ok: true }
 	const name = title ? ` "${title}"` : ''
 	if (role === 'author') return { ok: false, role, status: `Not reviewing: PR ${pr} is yours`, question: `${who} wrote about your PR${name}. A review or vote on your own PR is never made; answer with what to do, or skip.` }
@@ -134,6 +197,21 @@ export function decline(store: Store, cfg: Config, wf: Workflow, ref: PrRef | un
 // becomes a to-do with the reason, as a change the owner does not allow does.
 export function voteGate(store: Store, cfg: Config, wf: Workflow, effects: Effect[], todos: string[], checkAsk = true, left: LeftDraft[] = []): Effect[] {
 	if (!effects.some(e => isVote(e.call))) return effects
+	if (wf.prs) return effects.filter(effect => {
+		if (!isVote(effect.call)) return true
+		const pr = prIdOf(effect.call), unit = wf.prs?.find(unit => unit.id === pr)
+		const why = !unit ? 'the vote names no PR in this ask'
+			: checkAsk && !(wf.intent === 'pr_review' ? unit.requested : reviewAsked(store, wf, unit.id)) ? `nobody asked you to review PR ${unit.id}`
+			: unit.read !== 'ok' || !unit.role ? `PR ${unit.id} has not passed the reviewer check`
+			: !MAY_REVIEW.includes(unit.role) ? roleWhy(cfg, unit.role) : undefined
+		if (!why) return true
+		todos.push(`${effect.summary.replace(/[.\s]+$/, '')}. Not made for you: ${why}`)
+		const group = unit?.role === 'group-unknown'
+		left.push(leftRefusal(effectLeftAction(effect, pr), group ? 'setting-off' : 'pr-lifecycle',
+			{ why, ...(group ? { setting: settingKey('reviewerGroups') } : {}) }))
+		store.log({ event: 'vote-gated', workflowId: wf.id, code: wf.code, pr, role: unit?.role, why })
+		return false
+	})
 	const pr = prTarget(store, wf) ?? 0
 	const why = checkAsk && !reviewAsked(store, wf, pr) ? `nobody asked you to review PR ${pr}` : wf.prRole && !MAY_REVIEW.includes(wf.prRole) ? roleWhy(cfg, wf.prRole) : undefined
 	if (!why) return effects

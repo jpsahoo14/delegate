@@ -337,7 +337,8 @@ export function enqueueParsed(store: Store, parsed: Parsed[], shownAt?: string, 
 		// Every sent reply can be undone inside its window, as the page offers; the runner says when it has closed (owner 10-21; review react-spec P0-2).
 		if (p.verb === 'undo' && !wf.sent) { out.push(`${wf.code}: has not been sent, so there is nothing to undo.`); shown++; continue }
 		if (from === 'page' && p.verb === 'undo' && (!wf.sent?.undoUntil || Date.parse(wf.sent.undoUntil) <= Date.now())) { out.push(`${wf.code}: the undo window has closed. The reply stays in the chat.`); continue }
-		ids.push(write({ code: wf.code, verb: p.verb, text: p.text, nums: p.nums, except: p.except, again: p.again, surface: 'chat', seenAt: shownAt ?? store.seenRev(wf.code) }).id)
+		ids.push(write({ code: wf.code, verb: p.verb, text: p.text, nums: p.nums, except: p.except, again: p.again, ...(p.verb === 'dont-suggest' ? { key: p.key, label: p.label } : {}), ...(from === 'page' ? { include: p.include, vote: p.vote, actionClaimReview: p.actionClaimReview } : {}), surface: 'chat', seenAt: shownAt ?? store.seenRev(wf.code) }).id)
+		if (p.verb === 'dont-suggest') { out.push(`${wf.code} will turn down this suggestion. Nothing is sent.`); continue }
 		const ask = wf.lastAsk ? ` (${wf.asker?.name}: "${wf.lastAsk.slice(0, 80)}")` : ''
 		const left = pendingEffects(wf.effects)
 		const changes = left.length ? `will ${effectLine(left)}, then ` : 'will '
@@ -345,6 +346,7 @@ export function enqueueParsed(store: Store, parsed: Parsed[], shownAt?: string, 
 		if (p.verb === 'answer' && wf.choices && /^\s*#?\d+(\s*,\s*#?\d+)*\s*$/.test(p.text ?? '')) Object.assign(p, { verb: 'pick', nums: p.text!.match(/\d+/g)!.map(Number) })
 		const opts = p.nums?.map(n => wf.choices?.options[n - 1]?.label).filter(Boolean).join('", "')
 		if (p.verb === 'left-ask-again' || p.verb === 'left-draft-invite') { out.push(`${wf.code} will draft for your review. Nothing is sent.`); continue }
+		if (['one-more'].includes(p.verb)) { out.push(`${wf.code} will run once more. Nothing is sent.`); continue }
 		const what = { mine: 'will be drafted for you. It waits for your ok', pick: opts ? `will use "${opts}" and show the reply first` : 'has no such option', ask: 'will be answered here. Nothing is sent', ok: `${p.nums?.length ? `will make only change${p.nums.length > 1 ? 's' : ''} ${p.nums.join(', ')}, then ` : changes}send the draft: "${wf.draft?.text?.slice(0, 160) ?? ''}"`, edit: `will change the draft to: "${p.text}". Nothing is sent until you say ok`, send: `${changes}send your words: "${p.text}"`, later: 'stays in your inbox for later', answer: 'will redraft with your answer and show a preview', skip: 'will be dismissed without a reply', unwatch: 'will stop only the check-back; work and to-dos stay open', undo: 'will take back the automatic reply and keep the draft', continue: `will open its session on the computer running ${NAME}`, wrong: 'gets a correction drafted for your ok. Nothing is sent yet', incomplete: 'gets a follow-up with what was missing, drafted for your ok. Nothing is sent yet', unneeded: 'is noted as not needed, and taken back if it still can be', every: 'will check at the new interval', extend: 'keeps watching for 7 more days' }[p.verb as 'ok']
 		out.push(`${wf.code}${ask} ${what}.`)
 	}

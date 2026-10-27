@@ -3,10 +3,12 @@ import { BUSY, withRecordWriteNow, type Store } from '../store/state.ts'
 import { offRecord } from '../core/levels.ts'
 import { messageLink } from '../adapters/channels.ts'
 import { createHash, randomUUID } from 'node:crypto'
-import { freshRead } from '../store/fs.ts'
+import { freshRead, readJson, writeJson } from '../store/fs.ts'
 import { addSuggestedRuleLine, ruleLines, rulesSnapshot, RULE_WRITE_BUSY, writeHabitRules, type RuleWriteResult } from '../store/rules.ts'
 import { lineConfirmed, ruleTextHash } from '../core/rule-lines.ts'
 import { join } from 'node:path'
+import { z } from 'zod'
+import { canonicalKey } from './jobs.ts'
 
 // Habits: steady patterns in what the owner does, offered as standing instructions they accept or not (dev-spec/habits.md).
 // send: let a kind of reply go by itself. style: draft the way the owner keeps editing (edit habits); removes: offer to drop a
@@ -37,6 +39,50 @@ export type Outcome = { how: 'sent' | 'skipped'; chat: string; group: boolean; g
 
 const DAY = 86_400_000
 const norm = (t: string) => t.replace(/\s+/g, ' ').trim().toLowerCase()
+
+const dismissalKey = z.string().refine(key => !!key.trim(), 'A suggestion scope key is required.')
+const suggestionDismissal = z.object({
+	key: dismissalKey, label: z.string().refine(label => !!label.trim(), 'A suggestion summary is required.'),
+	at: z.iso.datetime(), until: z.iso.datetime(),
+}).strict()
+const scopeDismissals = z.array(suggestionDismissal)
+export type SuggestionDismissal = z.infer<typeof suggestionDismissal>
+export type SuggestionDismissalResult = { ok: true } | { ok: false; why: string }
+const dismissalFile = (store: Store) => join(store.root, 'state', 'suggestion-dismissals.json')
+const readDismissals = (store: Store) => scopeDismissals.parse(readJson<unknown>(dismissalFile(store), []))
+
+export function dismissKey(capability: string, target: string): string {
+	const scope = canonicalKey(target)
+	if (!capability.trim() || !scope) throw new Error('A suggestion capability and target are required.')
+	return capability + ':' + scope
+}
+export function isDismissed(store: Store, key: string, now: number): boolean {
+	dismissalKey.parse(key)
+	if (!Number.isFinite(now)) throw new Error('A valid dismissal lookup time is required.')
+	return readDismissals(store).some(row => row.key === key && Date.parse(row.until) > now)
+}
+export function turnedDownSuggestions(store: Store, now: number): SuggestionDismissal[] {
+	if (!Number.isFinite(now)) throw new Error('A valid dismissal lookup time is required.')
+	return readDismissals(store).filter(row => Date.parse(row.until) > now).sort((a, b) => b.at.localeCompare(a.at))
+}
+function changeDismissals(store: Store, change: (rows: SuggestionDismissal[]) => SuggestionDismissal[]): SuggestionDismissalResult {
+	const path = dismissalFile(store)
+	const result = withRecordWriteNow(path, () => freshRead((): SuggestionDismissalResult => {
+		writeJson(path, change(readDismissals(store)), store.machine)
+		return { ok: true }
+	}))
+	return result === BUSY ? { ok: false, why: RULE_WRITE_BUSY } : result
+}
+export function dismissSuggestion(store: Store, key: string, at: string, label: string): SuggestionDismissalResult {
+	const time = Date.parse(z.iso.datetime({ offset: true }).parse(at))
+	const row = suggestionDismissal.parse({ key, label, at: new Date(time).toISOString(), until: new Date(time + 60 * DAY).toISOString() })
+	return changeDismissals(store, rows => [...rows.filter(old => old.key !== key && Date.parse(old.until) > time), row])
+}
+export function reconsiderSuggestion(store: Store, key: string): SuggestionDismissalResult {
+	dismissalKey.parse(key)
+	const now = Date.now()
+	return changeDismissals(store, rows => rows.filter(row => row.key !== key && Date.parse(row.until) > now))
+}
 
 function dismissalHistory(h: Habit): HabitDismissal[] {
 	if (h.dismissals) return h.dismissals

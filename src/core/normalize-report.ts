@@ -13,7 +13,7 @@ export type FailureCause = {
 }
 export type ReportFailure = { kind: 'setup' | 'other' | 'content' | 'tool' | 'stopped'; why: string; tried: string[]; at?: string; cause?: FailureCause }
 export type ReportRefusal = LeftRefusal & { what: string; target: string; reason: string }
-type ReportData = Partial<Pick<Report, 'intent' | 'context' | 'summary' | 'goalMet' | 'blocker' | 'todos' | 'question' | 'questionHint' | 'refused'>>
+type ReportData = Partial<Pick<Report, 'intent' | 'context' | 'summary' | 'goalMet' | 'blocker' | 'todos' | 'question' | 'questionHint' | 'refused' | 'effects' | 'suggested' | 'choices'>>
 export type StoredReport = ReportData & {
 	key?: string
 	every?: number
@@ -28,11 +28,21 @@ export type StoredReport = ReportData & {
 export type NormalizedReport = {
 	question?: Report['question']
 	questionHint?: Report['questionHint']
+	effects?: Report['effects']
+	suggested?: Report['suggested']
+	choices?: Report['choices']
+	legacyEffects?: boolean
 	context: Fact[]
 	findings: Fact[]
 	refused: ReportRefusal[]
 	todos: string[]
 	failure?: ReportFailure
+}
+
+// Read-time compatibility only: a new origin-bearing revision never falls back to legacy consent.
+export function legacyEffectOrigins(report: Pick<Report, 'effects' | 'suggested' | 'choices'>): boolean {
+	return report.suggested === undefined && [...(report.effects ?? []), ...(report.choices?.options.flatMap(option => option.effects ?? []) ?? [])]
+		.every(effect => effect.origin === undefined)
 }
 
 const CI = /\b(?:builds?|CI|pipelines?|checks?|validation)\s+(?:(?:is|are|has|have)\s+)?(?:failed|failing|passed|green|red|pending|running|succeeded|queued)\b|\bcoverage\s+(?:dropped|is below|fell)\b/i
@@ -107,6 +117,10 @@ export function normalizeReport(stored: StoredReport): NormalizedReport {
 	const report = stored.result ?? stored
 	const review = !stored.every && ((stored.intent ?? report.intent) === 'pr_review' || /^pr:/i.test(stored.key?.trim() ?? ''))
 	const normalized: NormalizedReport = { context: [], findings: [], refused: [], todos: [] }
+	if (report.effects?.length) normalized.effects = report.effects
+	if (report.suggested !== undefined) normalized.suggested = report.suggested
+	if (report.choices !== undefined) normalized.choices = report.choices
+	if (normalized.effects || normalized.suggested || normalized.choices) normalized.legacyEffects = legacyEffectOrigins(report)
 	const question = report.question?.trim()
 	if (question) {
 		normalized.question = question

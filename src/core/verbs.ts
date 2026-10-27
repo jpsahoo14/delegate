@@ -4,7 +4,7 @@ const CONTROL = new Set<string>(CONTROL_VERBS)
 // Verbs whose text is the owner's own words, kept whole with every comma (review react-spec P0-1).
 const WORDS = new Set<string>(['send', 'edit', 'answer', 'ask', 'wrong', 'incomplete'])
 
-export type Parsed = { code?: string; verb: Verb; text?: string; nums?: number[]; except?: number[]; again?: true }
+export type Parsed = { code?: string; verb: Verb; text?: string; nums?: number[]; except?: number[]; include?: string[]; vote?: string; key?: string; label?: string; actionClaimReview?: string; again?: true }
 
 const WATCH = /^watch(?:\s+([A-Z]\d+))?(?:\s*:\s*([\s\S]*)|((?:\s+(?:by\s+\d{4}-\d{2}-\d{2}|push))*))$/i
 

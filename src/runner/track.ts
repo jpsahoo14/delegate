@@ -1,5 +1,5 @@
 import { stateFields, WORKFLOW_SCHEMA } from '../core/upgrades.ts'
-import { randomUUID } from 'node:crypto'
+import { chooseSession } from './session-policy.ts'
 import type { Config, Follow, Job, Workflow } from '../core/types.ts'
 import { activeAgentHold } from '../core/agent-failure.ts'
 import { ulid } from '../core/ids.ts'
@@ -42,14 +42,14 @@ export function track(store: Store, t: TrackInput, session?: string, made?: (cod
 	const told = t.link ? `${goal}. It came from this Teams message: ${t.link}` : goal
 	const wf: Workflow = {
 		schema: WORKFLOW_SCHEMA, id: ulid(), code: store.nextCode(), kind: 'tracker', ...stateFields(undefined, 'waiting_on_task'), key: { type: 'thread', id: '' },
-		chat: { id: '', name: 'Watching', test: false }, asker: { id: cfg.owner.id, name: 'You' }, session: { agent: cfg.agent.flavor, id: session ?? randomUUID() },
+		chat: { id: '', name: 'Watching', test: false }, asker: { id: cfg.owner.id, name: 'You' }, session: { agent: cfg.agent.flavor, id: chooseSession('one-off', session != null ? { keep: session } : { fresh: true }) },
 		lastMsgId: '', pending: [], msgIds: [], lastAsk: `Watch ${t.target} until ${until}`, status: `Watching ${t.target} every ${every} min`, waitingSince: now, newCount: 0, createdAt: now, updatedAt: now,
 		...(by ? { watchBy: by } : {}), ...(t.from ? { watchFrom: t.from } : {}),
 	}
 	// Started from a session (for example the one that made the PR), the tracker works in a fork of it, with its context.
 	const fork = session ? forkSession(session) : undefined
 	const job: Job = {
-		schema: 1, id: ulid(), key: `track:${slug(t.target)}:${wf.id}`, goal, repo: fork ? sessionCwd(session!) : undefined, session: { agent: cfg.agent.flavor, id: fork ?? randomUUID() },
+		schema: 1, id: ulid(), key: `track:${slug(t.target)}:${wf.id}`, goal, repo: fork ? sessionCwd(session!) : undefined, session: { agent: cfg.agent.flavor, id: chooseSession('one-off', fork != null ? { keep: fork } : { fresh: true }) },
 		state: 'queued', purpose: 'work', parents: [wf.id], asks: [told], every, until, endsAt, nextAt: now, createdAt: now, updatedAt: now,
 	}
 	wf.job = job.id
@@ -97,9 +97,14 @@ export function watchSomething(store: Store, body?: string): WatchResult {
 	return watchTarget(store, { target: w.target, until: w.until, by: w.by, shepherd: w.push || undefined })
 }
 
+export function watchingTarget(store: Store, input: Pick<TrackInput, 'target' | 'until'>): Workflow | undefined {
+	const until = input.until ?? DEFAULT_UNTIL
+	return store.workflows().find(x => x.kind === 'tracker' && x.state !== 'done' && x.watchFrom === 'owner' && x.lastAsk === `Watch ${input.target} until ${until}`)
+}
+
 export function watchTarget(store: Store, input: Pick<TrackInput, 'target' | 'until' | 'by' | 'shepherd'>): WatchResult {
 	const until = input.until ?? DEFAULT_UNTIL
-	const live = store.workflows().find(x => x.kind === 'tracker' && x.state !== 'done' && x.watchFrom === 'owner' && x.lastAsk === `Watch ${input.target} until ${until}`)
+	const live = watchingTarget(store, input)
 	if (live) return { text: `Already watching ${input.target} as ${live.code}.`, accepted: true, code: live.code }
 	return started(store, { ...input, until, endsAt: input.by ? undefined : weekOut(), from: 'owner' })
 }
@@ -143,7 +148,7 @@ export function startWatch(store: Store, wf: Workflow, f: Follow, now = Date.now
 		if (live.every) { Object.assign(live, { every: undefined, nextAt: undefined, ...(live.state === 'queued' ? { state: 'done' as const } : {}) }); store.saveJob(live) }
 	}
 	const job: Job = {
-		schema: 1, id: ulid(), key, goal, session: { agent: store.config().agent.flavor, id: randomUUID() },
+		schema: 1, id: ulid(), key, goal, session: { agent: store.config().agent.flavor, id: chooseSession('one-off', { fresh: true }) },
 		state: 'queued', purpose: 'work', parents: [wf.id], asks: [goal], every, until: f.until, endsAt, nextAt: at, createdAt: at, updatedAt: at,
 	}
 	store.saveJob(job)

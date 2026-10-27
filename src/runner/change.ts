@@ -1,6 +1,7 @@
 import { cliServers, clientFor, LostResponse, toolServers } from '../adapters/mcp-client.ts'
 import { NAME } from '../brand.ts'
-import { isVote, OLD_INVITE, pendingEffects, prIdOf, refusal, toolShape, voteValue } from '../core/effects.ts'
+import { isInternal, isVote, OLD_INVITE, pendingEffects, prIdOf, refusal, sameHead, toolShape, voteValue } from '../core/effects.ts'
+import { pageDigest } from '../core/page-approval.ts'
 import type { CallRec, Config, Effect, Workflow } from '../core/types.ts'
 import type { Store } from '../store/state.ts'
 import { parentsOf, stillApproved } from './jobs.ts'
@@ -11,10 +12,70 @@ import { callKey, ledgerRec, madeBefore } from './ledger.ts'
 import { staleCatalog } from './catalog.ts'
 import { reviewPostCheck } from './review-autonomy.ts'
 import { scrubDeep } from '../core/secrets.ts'
+import { runInternalEffect } from './internal-effects.ts'
+import { step } from './work.ts'
 export { madeBefore }
+
+export type InternalReceipt = { wfId: string; at: string; items: { index: number; key: string }[] }
+const consumedInternalReceipts = new WeakSet<InternalReceipt>()
+const internalKey = ({ done, error, ...identity }: Effect): string => pageDigest(identity)
+
+// HOST takes this only where the owner's approval has just been verified.
+export function internalReceipt(wf: Workflow): InternalReceipt {
+	return { wfId: wf.id, at: wf.approved?.at ?? wf.updatedAt,
+		items: wf.approved?.byRule ? [] : (wf.effects ?? []).flatMap((effect, index) =>
+			isInternal(effect) && pendingEffects([effect]).length ? [{ index, key: internalKey(effect) }] : []) }
+}
+
+// HOST calls only after a successful send (or the approved no-reply rest), then commits.
+export async function makeInternalChanges(store: Store, wf: Workflow, receipt: InternalReceipt): Promise<void> {
+	if (receipt.wfId !== wf.id || consumedInternalReceipts.has(receipt)) {
+		store.log({ event: 'internal-effects-skipped', code: wf.code, why: receipt.wfId !== wf.id ? 'wrong-item' : 'receipt-consumed' })
+		return
+	}
+	consumedInternalReceipts.add(receipt)
+	for (const item of receipt.items) {
+		const effects = wf.effects, effect = effects?.[item.index]
+		if (!effect || !isInternal(effect) || !pendingEffects([effect]).length || internalKey(effect) !== item.key) {
+			store.log({ event: 'internal-effects-skipped', code: wf.code, index: item.index, why: 'effect-changed' })
+			continue
+		}
+		let result: Awaited<ReturnType<typeof runInternalEffect>>
+		if (effect.maybe) result = { ok: false, error: 'This change may have been made already. Check it before approving it again.' }
+		else {
+			try { result = await runInternalEffect(store, wf, effect) }
+			catch (error) { result = { ok: false, error: String(error).slice(0, 300) } }
+		}
+		// Check-back ends the sent turn; keep its actual change receipt for HOST's commit.
+		if (!wf.effects) wf.effects = effects
+		const at = new Date().toISOString(), summary = effect.summary.replace(/[.\s]+$/, '')
+		if (result.ok) {
+			effect.done = { ref: result.ref, at }
+			effect.error = undefined
+			step(wf, `Made: ${summary}${result.ref && result.ref !== 'done' ? ` (${result.ref})` : ''}`, { at, ref: `internal:${receipt.at}:${item.index}:${item.key}` })
+		} else {
+			effect.error = result.error
+			step(wf, `Not made: ${summary} (${result.error.replace(/^Error: /, '').replace(/\.$/, '')})`, { at, ref: `internal:${receipt.at}:${item.index}:${item.key}` })
+		}
+	}
+}
 
 // Calls one tool on one of the owner's tool servers.
 export type Caller = (server: string, tool: string, args: Record<string, unknown>) => Promise<unknown>
+
+function changeRefusal(store: Store, cfg: Config, wf: Workflow, effect: Effect): string | undefined {
+	const id = prIdOf(effect.call)
+	const unit = wf.prs?.find(unit => unit.id === id && unit.ref)
+	const why = refusal(cfg, effect, wf.prs === undefined || id === undefined ? prTarget(store, wf) : unit?.id)
+	if (why) return why
+	if (wf.prs !== undefined && isVote(effect.call)) {
+		if (!unit?.role || !MAY_REVIEW.includes(unit.role)) return `you are not an eligible reviewer on PR ${prIdOf(effect.call)}`
+		const completed = unit.review?.completed
+		if (!completed?.verified || !sameHead(completed.head, unit.head) || !sameHead(completed.head, effect.head))
+			return `PR ${unit.id} needs a verified review at the commit being approved`
+	}
+	return undefined
+}
 
 // The change run's only write: one approved change, exactly as approved, through the owner's own tool server (next action, R-HIL-21).
 // "calling" is recorded before the call and the result after, so a run that dies mid-call is never taken for one that did nothing.
@@ -22,6 +83,7 @@ export type Caller = (server: string, tool: string, args: Record<string, unknown
 export async function makeChange(store: Store, jobId: string, runId: string, index: number, call: Caller, probe?: BuildProbe): Promise<{ ref?: string; error?: string }> {
 	const job = store.job(jobId), e = job?.result?.effects[index]
 	if (!job || !e) return { error: `There is no change ${index}.` }
+	if (isInternal(e)) return { error: `Change ${index} is made by ${NAME} after the reply is sent, not by the change run.` }
 	if (e.done) return { ref: e.done.ref }
 	const had = store.changes(jobId, runId)[index]
 	if (had?.state === 'done') return { ref: had.ref }
@@ -34,7 +96,7 @@ export async function makeChange(store: Store, jobId: string, runId: string, ind
 	const owner = parentsOf(store, job).find(p => stillApproved(p, job))
 	if (!pendingEffects([e]).length || !owner) return { error: `Change ${index} was not approved by the owner.` }
 	const cfg = store.config()
-	const why = refusal(cfg, e, prTarget(store, owner))
+	const why = changeRefusal(store, cfg, owner, e)
 	if (why) {
 		const error = `Change ${index} cannot be made: ${why}.`
 		// An old invite that cannot be converted is recorded, so the item offers a new draft instead of a retry that cannot work.
@@ -87,7 +149,7 @@ export async function makeChange(store: Store, jobId: string, runId: string, ind
 	store.saveChange(jobId, runId, index, { call: key, state: 'calling', at: at() }); ledger({ state: 'calling' })
 	try {
 		const r = await call(to![0], to![1], scrubDeep(toolShape(e.call)!.args)) as { id?: unknown } | undefined
-		const pr = job.byRule ? prOf(store, owner) : undefined
+		const pr = job.byRule ? owner.prs === undefined ? prOf(store, owner) : owner.prs.find(unit => unit.id === prIdOf(e.call))?.ref : undefined
 		const ref = pr?.url && r?.id !== undefined ? `${pr.url}?discussionId=${encodeURIComponent(String(r.id))}` : String(r?.id ?? 'done')
 		store.saveChange(jobId, runId, index, { call: key, state: 'done', ref, at: at(), ...(job.byRule ? { byRule: job.byRule, severity: e.severity } : {}) }); ledger({ state: 'done', ref })
 		return { ref }
@@ -114,7 +176,8 @@ async function batchVoteBlocked(store: Store, job: NonNullable<ReturnType<Store[
 		const had = store.changes(job.id, runId)[i]
 		if (had?.state === 'failed') return { summary: v.summary, error: had.error ?? 'it failed' }
 		if (had) continue
-		const moved = await voteMoved(store, owner, v, probe)
+		const why = changeRefusal(store, store.config(), owner, v)
+		const moved = why ? { error: why } : await voteMoved(store, owner, v, probe)
 		if (moved && 'error' in moved) {
 			store.saveChange(job.id, runId, i, { call: JSON.stringify(v.call), state: 'failed', error: moved.error, at: new Date().toISOString(), ...(moved.stale ? { stale: true as const } : {}) })
 			store.log({ event: 'batch-vote-blocked', job: job.id, index: i, error: moved.error.slice(0, 200) })
@@ -128,7 +191,9 @@ async function batchVoteBlocked(store: Store, job: NonNullable<ReturnType<Store[
 // A PR that cannot be read gets no vote; one that changed asks the owner to review again (stale).
 // cast: the owner's vote there already says this one, so it is not cast again.
 async function voteMoved(store: Store, wf: Workflow, e: Effect, probe?: BuildProbe): Promise<{ error: string; stale?: boolean } | { cast: true } | undefined> {
-	const c = e.call!, ref = prOf(store, wf) ?? { project: String(c.args.project ?? ''), repo: String(c.args.repositoryId ?? ''), id: prIdOf(c)! }
+	const c = e.call!, ref = wf.prs === undefined ? prOf(store, wf) ?? { project: String(c.args.project ?? ''), repo: String(c.args.repositoryId ?? ''), id: prIdOf(c)! }
+		: wf.prs.find(unit => unit.id === prIdOf(c))?.ref
+	if (!ref) return { error: `PR ${prIdOf(c)} is not a referenced PR in this item.` }
 	if (!probe?.pr) return { error: `PR ${ref.id} could not be read right before the vote: no Azure DevOps server is set up.` }
 	try {
 		const st = await probe.pr(ref.project, ref.repo, ref.id), why = prMoved(st, e)

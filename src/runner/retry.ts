@@ -1,4 +1,5 @@
 import type { Blocker, Retry } from '../core/types.ts'
+import { blockerNeed } from '../core/report.ts'
 
 // When a run falls short of its goal, the next try and its limits (design-spec/goal-retry.md).
 // Delays in minutes, one per allowed try: a tool not found is tried again soon in another way, a busy service later.
@@ -9,23 +10,28 @@ export const MAX_TRIES = 6
 const MAX_HOURS = 24
 const MIN = 60_000
 
-export type Plan = { retry: Retry; fresh: boolean } | { stop: string }
+export type Plan = { retry: Retry; fresh: boolean } | { stop: string; capability?: true }
 
 // "access" is only believed after two different routes; otherwise it is a tool not found (A34: the diff tool existed).
 export function blockerOf(b: Blocker | undefined): Blocker {
 	if (!b) return { kind: 'tool', why: 'The goal was not met', tried: [] }
-	return b.kind === 'access' && new Set(b.tried).size < 2 ? { ...b, kind: 'tool' } : b
+	const { need, ...rest } = b, clean = blockerNeed(need)
+	const normalized = { ...rest, ...(clean ? { need: clean } : {}) }
+	return normalized.kind === 'access' && new Set(normalized.tried).size < 2 ? { ...normalized, kind: 'tool' } : normalized
 }
 
 export function planRetry(prev: Retry | undefined, raw: Blocker | undefined, now = Date.now()): Plan {
-	if (raw?.documentFailure === true) return { stop: `Blocked: ${raw.why}` }
 	const b = blockerOf(raw)
+	if (b.kind === 'capability') return { stop: b.need ? `Can't do: no tool can ${b.need}` : "Can't do: no tool for this step", capability: true }
+	if (raw?.documentFailure === true) return { stop: `Blocked: ${raw.why}` }
 	const tried = [...new Set([...(prev?.tried ?? []), ...b.tried])]
 	const said = `${b.why}${tried.length ? `. Tried: ${tried.join('; ')}` : ''}`
 	if (b.kind === 'access' || b.kind === 'asker') return { stop: b.kind === 'access' ? `Blocked: ${said}` : `Needs the asker: ${said}` }
 	// The same failure again with nothing new tried will not change by trying a third time.
 	// A busy service fails the same way each time, so that kind waits out its tries.
-	if (prev && b.kind !== 'transient' && prev.last.kind === b.kind && prev.last.why === b.why && b.tried.every(t => prev.tried.includes(t))) return { stop: `Tried ${prev.n + 1} times; ${said}` }
+	const previousNeed = blockerNeed(prev?.last.need)
+	const sameFailure = previousNeed && b.need ? previousNeed === b.need : prev?.last.why === b.why
+	if (prev && b.kind !== 'transient' && prev.last.kind === b.kind && sameFailure && b.tried.every(t => prev.tried.includes(t))) return { stop: `Tried ${prev.n + 1} times; ${said}` }
 	// Each kind counts its own tries: polls for a build do not use up the tries for a tool not found.
 	const same = prev?.last.kind === b.kind
 	const n = same ? prev!.n + 1 : 1, total = (prev?.total ?? prev?.n ?? 0) + 1

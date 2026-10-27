@@ -25,7 +25,8 @@ export const policyContext = (store: Store, cfg: Config, wf: Workflow): PolicyCo
 
 export function automaticDecision(store: Store, cfg: Config, wf: Workflow, ctx = policyContext(store, cfg, wf)) {
 	const job = wf.job ? store.job(wf.job) : undefined
-	if (!wf.reviewRun && job?.state === 'done' && job.purpose === 'work' && job.result?.reply && wf.draft) {
+	const nativeReviewReply = wf.intent === 'pr_review' && !!wf.reviewReply
+	if (!wf.reviewRun && !nativeReviewReply && job?.state === 'done' && job.purpose === 'work' && !job.carrier && job.result?.reply && wf.draft) {
 		const facts = job.result.sendFacts?.[wf.id]
 		if (wf.draft.text === job.result.reply.text || !!facts?.turn && facts.turn === wf.revAt) {
 			if (wf.draft.text !== job.result.reply.text)

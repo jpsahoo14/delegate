@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { chooseSession } from './session-policy.ts'
 import type { Claim, Config, EditScope, Job, Workflow } from '../core/types.ts'
 import { ulid } from '../core/ids.ts'
 import type { Store } from '../store/state.ts'
@@ -19,7 +19,7 @@ export function learnFrom(store: Store, cfg: Config, wf: Workflow, draft: string
 	store.log({ event: 'edit-style', at: now, ...scope, kinds: editKinds(draft, sent), ...(link ? { link } : {}) })
 	noticeHabits(store, cfg)
 	const goal = [`Draft: "${draft}"`, `Sent by the owner: "${sent}"`, `Sent message: ${link || 'no link'}, ${now.slice(0, 10)}, ${cfg.owner.name}`, `Chat: ${wf.chat.name}. Asker: ${wf.asker?.name ?? 'unknown'}.`].join('\n')
-	store.saveJob({ schema: 1, id: ulid(), key: `learn:${wf.id}:${ulid()}`, goal, learning: { source: link, text: sent, style: scope }, label: `your edit of ${wf.code}`, session: { agent: cfg.agent.flavor, id: randomUUID() }, state: 'queued', purpose: 'work', parents: [], asks: [], createdAt: now, updatedAt: now })
+	store.saveJob({ schema: 1, id: ulid(), key: `learn:${wf.id}:${ulid()}`, goal, learning: { source: link, text: sent, style: scope }, label: `your edit of ${wf.code}`, session: { agent: cfg.agent.flavor, id: chooseSession('one-off', { fresh: true }) }, state: 'queued', purpose: 'work', parents: [], asks: [], createdAt: now, updatedAt: now })
 }
 
 export function learnedClaims(store: Store, job: Job, claims: Claim[]): Claim[] {

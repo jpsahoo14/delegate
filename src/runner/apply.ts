@@ -1,9 +1,9 @@
 import { okSendGate, ownWords, rememberSend, heldSend, threadSince, send, undo } from './send.ts'
 export { send, replyContext, aboutPr, type SendBy } from './send.ts'
-import { answerHabitResult, outcome } from './habits.ts'
+import { answerHabitResult, dismissKey, dismissSuggestion, outcome } from './habits.ts'
 
 import { active, closeWork, doneTodos, homeOf, inWork, newTurn, openTodos, pendingParts, statusOf, step, wait } from './work.ts'
-import { deployBusyLeft, doLine, isVote, OLD_INVITE, OLD_INVITE_ASK, pendingEffects, prIdOf, proposalEffects, refusal, refusedAsk, sameChange, shown, vet } from '../core/effects.ts'
+import { allows, changeClaim, deployBusyLeft, doLine, effectCapability, externalPending, INTERNAL_ACTIONS, isInternal, isInvite, isVote, OLD_INVITE, OLD_INVITE_ASK, pendingEffects, prIdOf, proposalEffects, refusal, refusedAsk, sameChange, shown, vet } from '../core/effects.ts'
 import { allowLeft, clearLeft, closeLeft, openLeft } from './left.ts'
 import { leaveForYou } from './left-source.ts'
 import { settingKey } from '../core/setting-keys.ts'
@@ -23,25 +23,26 @@ import { type Source } from '../adapters/source.ts'
 import type { Store } from '../store/state.ts'
 import { close, isControl, say } from './intake.ts'
 import { OWNER_REPLY_UNCHECKED } from './owner-reply.ts'
-import { approveEffects, cancelRetry, carry, executing, okRelay, realProcs, stopPromisedWatch, stopTracker, withdraw, type Procs } from './jobs.ts'
+import { approveEffects, cancelRetry, carry, executing, okRelay, realProcs, refreshReviewQuestions, requestOneMore, saveInternalReceipts, stopPromisedWatch, stopStatusText, stopTracker, withdraw, type Procs } from './jobs.ts'
 import { openContinue } from './continue.ts'
-import { heldBy } from './owner.ts'
+import { heldBy, workflowJobIds } from './owner.ts'
+import { bumpReviewEpoch, clearReviewRequests, resetUnitReview } from './pr-review-state.ts'
 
 import { answerAutomation } from './automations.ts'
 import type { Waiting } from '../core/waiting.ts'
 import { kindOf } from './discover.ts'
 import { ulid } from '../core/ids.ts'
-import { randomUUID } from 'node:crypto'
+import { chooseSession } from './session-policy.ts'
 import { answerProposal, knowledgeOf, nextProposal } from './proposals.ts'
 import { CMD, NAME } from '../brand.ts'
 import { groupSelection, isReviewJob, MAY_REVIEW, reviewerGroupMatches } from './review-gate.ts'
 import { askAtOf } from '../core/numbers.ts'
 import { FOLLOW_DAYS, stopWatch, watchCommand } from './track.ts'
-import { adoProbe, prRefOf, probePRs, prTarget, recheckDeploy, recheckPr, type BuildProbe } from './probe.ts'
+import { adoProbe, prRefOf, probePRs, probePrUnits, prTarget, recheckDeploy, recheckPr, type BuildProbe } from './probe.ts'
 import { deployRunning, isValidate, reportsResult, saysTested, testedAsk } from './validate.ts'
 import { checkAgain, dropPromise, notePromise, reopenPromise, rest } from './promise.ts'
 import { isDeploy } from '../core/deploy.ts'
-import { pageAnswerRefusal } from '../core/page-approval.ts'
+import { pageAnswerRefusal, pageChangeId } from '../core/page-approval.ts'
 import { pageManagementRev } from '../store/page-revision.ts'
 import { holdReplyGap } from './reply-gap.ts'
 import { clearHold, clearVoteHold, holdReasons, reasonMessages, restampReasons, reviewedReasons, voteHold } from '../core/owner-send.ts'
@@ -49,8 +50,50 @@ import { holdCheck, type Quick } from './send-holds.ts'
 import { freshRead } from '../store/fs.ts'
 import { recordCommit } from './commit.ts'
 import { voteClaimReview } from './vote-claim.ts'
+import { scrub } from '../core/secrets.ts'
+import { legacyEffectOrigins } from '../core/normalize-report.ts'
+import { internalReceipt, makeInternalChanges } from './change.ts'
 
 import { stateFields, statusFields, WORKFLOW_SCHEMA } from '../core/upgrades.ts'
+
+const suggestionScope = (effect: Effect) => dismissKey(effectCapability(effect), effect.target)
+function selectionEffectKey(cfg: Config, effect: Effect): string {
+	const args = effect.call?.args ?? {}
+	const internal = INTERNAL_ACTIONS.safeParse(effect), target = effect.target.toLowerCase().split(':')[0]
+	const kind = internal.success ? internal.data.action === 'check-back' ? 'item'
+		: target === 'pr' || target === 'incident' ? target : target === 'workitem' ? 'work-item' : 'other'
+		: isDeploy(effect.call) ? 'pipeline' : prIdOf(effect.call) !== undefined ? 'pr' : isInvite(effect) ? 'calendar'
+		: 'incidentId' in args ? 'incident' : 'workItemId' in args || /work_item/i.test(effect.call?.tool ?? '') ? 'work-item'
+		: 'chatId' in args ? 'chat' : 'userId' in args ? 'person' : 'other'
+	// Only catalog/config names enter metadata; action arguments may be free text.
+	const capability = internal.success ? effectCapability(effect)
+		: changeClaim(effect)?.capability ?? cfg.agent.effectTools?.find(entry => effect.call && allows([entry], effect.call)) ?? 'unknown'
+	return `${capability}:${kind}`
+}
+
+function legacySelection(wf: Workflow, answer: Answer) {
+	if (answer.include !== undefined || !legacyEffectOrigins(wf) || !answer.except?.length && !answer.nums?.length) return undefined
+	const pending = pendingEffects(wf.effects), slots = new Map<string, boolean[]>(), removed: Effect[] = []
+	let kept = 0
+	for (const [index, effect] of pending.entries()) {
+		const keep = answer.except?.length ? !answer.except.includes(index + 1) : answer.nums?.includes(index + 1) === true
+		const id = pageChangeId(effect), choices = slots.get(id) ?? []
+		choices.push(keep); slots.set(id, choices)
+		if (keep) kept++
+		else removed.push(effect)
+	}
+	return { slots, removed, kept, refused: wf.statusReason?.kind === 'refused',
+		offVote: !!wf.effects?.some(effect => effect.off && isVote(effect.call)) || removed.some(effect => isVote(effect.call)) }
+}
+
+function recordSelection(store: Store, cfg: Config, wf: Workflow, before: Effect[]) {
+	const included = new Set(pendingEffects(wf.effects).map(pageChangeId))
+	for (const effect of before) {
+		if (!effect.origin || isVote(effect.call)) continue
+		store.log(telemetryEvent(included.has(pageChangeId(effect)) ? 'wys-include' : 'wys-exclude',
+			{ code: wf.code, effectKey: selectionEffectKey(cfg, effect), origin: effect.origin }))
+	}
+}
 
 // Apply owner answers in time order. Effects run here and nowhere else.
 export async function applyAnswers(store: Store, src: Source, cfg: Config, procs: Procs = realProcs, controlsOnly = false, probe?: BuildProbe, quick?: Quick): Promise<number> {
@@ -71,9 +114,9 @@ export async function applyAnswers(store: Store, src: Source, cfg: Config, procs
 					continue
 				}
 			}
-			// "except" names what to leave out; it becomes the list of what to keep.
-			if (answer.except?.length) {
-				const total = kp ? kp.ops.length : wf ? pendingEffects(wf.effects).length : 0
+			// Workflow approvals pass their original selection to the revision-bound gate.
+			if (answer.except?.length && !wf) {
+				const total = kp ? kp.ops.length : 0
 				answer.nums = Array.from({ length: total }, (_, i) => i + 1).filter(n => !answer.except!.includes(n))
 				if (!answer.nums.length) answer.nums = [0]
 			}
@@ -115,6 +158,85 @@ export async function applyAnswers(store: Store, src: Source, cfg: Config, procs
 
 async function applyOne(store: Store, src: Source, cfg: Config, wf: Workflow, a: Answer, procs: Procs, probe?: BuildProbe, quick?: Quick) {
 	const commit = recordCommit(wf, () => store.workflow(wf.id), store.save.bind(store))
+	if (a.verb === 'pr-retry' || a.verb === 'pr-skip') {
+		const id = a.nums?.length === 1 ? a.nums[0] : undefined
+		const units = wf.prs ?? [], unit = units.find(unit => unit.id === id)
+		if (typeof id !== 'number' || !Number.isSafeInteger(id) || id <= 0 || !unit)
+			return reply(store, src, a, `${MARK} Choose one PR from the current item. Nothing changed.`, true)
+		if (wf.state === 'done' || wf.redacted || store.openWindow(wf.id) || wf.job && store.openWindow(wf.job))
+			return reply(store, src, a, `${MARK} ${wf.code} is closed or open elsewhere. Nothing changed.`, true)
+		if (a.seenAt !== undefined && wf.revAt && a.seenAt !== wf.revAt)
+			return reply(store, src, a, `${MARK} This item changed. Open its current PR list.`, true)
+		const jobIds = [...new Set([unit.job, unit.review?.run?.job, unit.review?.completed?.job]
+			.filter((job): job is string => !!job))]
+		if (jobIds.some(id => store.openWindow(id)))
+			return reply(store, src, a, `${MARK} PR ${unit.id} is open in a window. Close it before changing this outcome.`, true)
+		const jobs = jobIds.map(id => store.job(id)).filter(job => job !== undefined)
+		if (unit.review?.run?.phase === 'posting' || jobs.some(job => executing(job) || job.state === 'running' || job.state === 'queued'))
+			return reply(store, src, a, `${MARK} PR ${unit.id} is still working. Wait for its result.`, true)
+		if (a.verb === 'pr-skip' ? unit.read !== 'gave-up' && !jobs.some(job => !!job.stopped) : unit.read !== 'failed' && unit.read !== 'gave-up')
+			return reply(store, src, a, `${MARK} PR ${unit.id} no longer needs this read action. Open its current outcome.`, true)
+		const live = a.verb === 'pr-retry' ? probe ?? adoProbe(cfg) : undefined
+		if (a.verb === 'pr-retry' && !live?.pr)
+			return reply(store, src, a, `${MARK} The PR reader isn't available. PR ${unit.id} was not checked and nothing changed.`, true)
+		const at = new Date(Math.max(Date.now(), (Date.parse(wf.revAt ?? wf.updatedAt) || 0) + 1)).toISOString()
+		wf.prs = units.map(current => {
+			if (current.id !== unit.id) return current
+			const next: typeof current = a.verb === 'pr-skip'
+				? { ...current, skip: { by: 'owner', why: 'owner', at } }
+				: { ...current, read: 'pending', tries: 0, readAt: undefined, failure: undefined, skip: undefined }
+			bumpReviewEpoch(next)
+			return next
+		})
+		if (a.verb === 'pr-skip' && jobs.some(job => !!job.stopped && wf.status === stopStatusText(job)) &&
+			!(wf.job && store.job(wf.job)?.stopped) &&
+			!wf.prs.some(current => !current.skip && current.job && store.job(current.job)?.stopped))
+			wf.status = ''
+		wf.reviewReply = undefined
+		wf.approved = undefined
+		wf.sendAt = undefined
+		wf.revAt = at
+		if (!wf.sent && !wf.ownerSend && !wf.draft?.byOwner) wf.draft = undefined
+		commit()
+		if (a.verb === 'pr-retry') {
+			try { await probePrUnits(store, cfg, live, Date.now(), true, [wf], unit.id) }
+			finally { if (!probe) await live?.close?.() }
+			commit.refresh()
+		}
+		store.log({ event: a.verb, code: wf.code, pr: unit.id })
+		if (a.verb === 'pr-skip')
+			return reply(store, src, a, `${MARK} PR ${unit.id}: not reviewing: you skipped it. Nothing was sent or made.`)
+		const current = wf.prs?.find(candidate => candidate.id === unit.id)
+		if (!current) return reply(store, src, a, `${MARK} The PR list changed. Open the current item. Nothing was sent or made.`, true)
+		const outcome = current?.read === 'ok' ? 'read again' : current?.read === 'failed' || current?.read === 'gave-up'
+			? `couldn't read it${current.failure ? `: ${current.failure}` : ''}` : current?.skip?.why === 'no-link'
+				? "there's no link to it, so Delegate can't open it" : "checking you're a reviewer"
+		return reply(store, src, a, `${MARK} PR ${unit.id}: ${outcome}. Nothing was sent or made.`, current?.read !== 'ok')
+	}
+	if (a.verb === 'dont-suggest') {
+		if (!a.key?.trim() || !a.label?.trim())
+			return reply(store, src, a, `${MARK} Choose a current suggestion to turn down.`, true)
+		const job = wf.job ? store.job(wf.job) : undefined
+		if (heldBy(store, wf) === 'window' || wf.state === 'running' || wf.state === 'waiting_on_task' || job && (executing(job) || job.state === 'running'))
+			return reply(store, src, a, `${MARK} ${wf.code} is still working or open in a window. Wait before turning down a suggestion.`, true)
+		if (a.seenAt !== undefined && wf.revAt && a.seenAt !== wf.revAt)
+			return reply(store, src, a, `${MARK} That suggestion changed. Open the current item.`, true)
+		const pending = pendingEffects(wf.effects)
+		const scope = pending.filter(effect => effect.origin === 'suggested' && suggestionScope(effect) === a.key)
+		if (scope.some(effect => effect.maybe))
+			return reply(store, src, a, `${MARK} A change in this scope may already have been made. Check it before turning down this suggestion.`, true)
+		const effect = scope.find(effect => scrub(effect.summary) === a.label)
+		if (!effect || effect.origin !== 'suggested')
+			return reply(store, src, a, `${MARK} That suggestion changed or is no longer available. Open the current item.`, true)
+		const dismissed = dismissSuggestion(store, a.key, a.at, scrub(effect.summary))
+		if (!dismissed.ok) return reply(store, src, a, `${MARK} ${dismissed.why}`, true)
+		const keep = pending.flatMap((effect, index) => scope.includes(effect) ? [] : [index + 1])
+		const removed = only(store, wf, keep.length ? keep : [0])
+		if (typeof removed === 'string') throw new Error(removed)
+		commit()
+		store.log(telemetryEvent('wys-dismiss', { code: wf.code, effectKey: selectionEffectKey(cfg, effect), origin: effect.origin }))
+		return reply(store, src, a, `${MARK} Suggestion turned down.`)
+	}
 	if (wf.returnedFrom) { wf.returnedFrom = undefined; commit(false) }
 	wf.answerSurface = a.surface
 	if (a.verb === 'left-ask-again' || a.verb === 'left-draft-invite') {
@@ -127,6 +249,7 @@ async function applyOne(store: Store, src: Source, cfg: Config, wf: Workflow, a:
 		if (heldBy(store, wf) === 'window' || wf.state === 'running' || wf.state === 'waiting_on_task' || job && (executing(job) || job.state === 'running'))
 			return reply(store, src, a, `${MARK} ${wf.code} is still working or open in a window. Wait before asking for another proposal.`, true)
 		newTurn(wf, !!wf.sent)
+		clearReviewRequests(wf)
 		Object.assign(wf, { ...stateFields(wf, 'running'), job: undefined, needsMe: true, fyi: undefined, runFailed: undefined,
 			promise: undefined, startedBy: undefined, intent: undefined,
 			leftRetry: { id: line.id, at: new Date().toISOString() }, ownerAnswer: `Propose ${leftActionText(line.action)} again. Draft only; wait for my OK.`,
@@ -160,6 +283,67 @@ async function applyOne(store: Store, src: Source, cfg: Config, wf: Workflow, a:
 		return reply(store, src, a, `${MARK} ${wf.status}`)
 	}
 	const cardAnswer = a.verb === 'answer' && /^(?:try again|redraft|add the vote|send anyway|review again)[.!]?$/i.test(a.text?.trim() ?? '')
+	if (wf.questionOf && a.verb === 'answer' && !cardAnswer) {
+		const target = wf.questionOf, unit = wf.prs?.find(unit => unit.id === target.pr && (unit.review?.completed?.job ?? unit.job) === target.job)
+		const job = unit ? store.job(target.job) : undefined
+		if (wf.state === 'done' || !unit?.requested || !job?.parents.includes(wf.id) || job.byRule || job.carrier ||
+			job.purpose !== 'work' || !job.result?.question?.trim())
+			return reply(store, src, a, `${MARK} That PR question changed. Open the current item. Nothing was sent or made.`, true)
+		if (a.seenAt !== undefined && wf.revAt && a.seenAt !== wf.revAt)
+			return reply(store, src, a, `${MARK} This question changed. Open the current item before answering.`, true)
+		if (store.openWindow(wf.id) || [target.job, unit.job, unit.review?.run?.job].some(id => id && store.openWindow(id)))
+			return reply(store, src, a, `${MARK} PR ${unit.id} is open in a window. Close it before answering.`, true)
+		if (job.state === 'running' || job.state === 'queued')
+			return reply(store, src, a, `${MARK} PR ${unit.id} is already working on your answer. Nothing changed.`, true)
+		if (unit.review?.run?.phase === 'posting')
+			return reply(store, src, a, `${MARK} PR ${unit.id} is still posting its review. Wait for those receipts before answering.`, true)
+		if (!a.text?.trim())
+			return reply(store, src, a, `${MARK} Give an answer to the question on PR ${unit.id}. Nothing changed.`, true)
+		const saveJob = recordCommit(job, () => store.job(job.id), store.saveJob.bind(store))
+		if (job.stopped) {
+			const refusal = requestOneMore(store, cfg, wf, job, a.text)
+			if (refusal) return reply(store, src, a, `${MARK} ${refusal}`, true)
+		} else {
+			job.asks.push(`Owner: ${a.text}`)
+			Object.assign(job, { state: 'queued', purpose: 'work', retry: undefined, nextAt: undefined, error: undefined })
+		}
+		job.result = { ...job.result, question: undefined, questionHint: undefined }
+		saveJob()
+		unit.job = job.id
+		resetUnitReview(unit)
+		wf.questionOf = undefined
+		wf.question = undefined
+		wf.questionHint = undefined
+		wf.reviewReply = undefined
+		wf.sendAt = undefined
+		wf.revAt = new Date(Math.max(Date.now(), (Date.parse(wf.revAt ?? wf.updatedAt) || 0) + 1)).toISOString()
+		Object.assign(wf, { ...stateFields(wf, 'waiting_on_task'), status: `Checking PR ${unit.id} again with your answer` })
+		refreshReviewQuestions(store, wf)
+		if (wf.questionOf && !workflowJobIds(wf).some(id => { const job = store.job(id); return job && executing(job) }))
+			Object.assign(wf, stateFields(wf, 'needs_human'))
+		commit()
+		return reply(store, src, a, `${MARK} PR ${unit.id} is queued with your answer. Nothing was sent or made.`)
+	}
+	const retryStopped = a.verb === 'answer' && /^try again[.!]?$/i.test(a.text?.trim() ?? '')
+	if (a.verb === 'one-more' || retryStopped) {
+		const ids = wf.prs ? wf.prs.filter(unit => unit.requested && !unit.skip && !unit.decline).map(unit => unit.job) : [wf.job ?? wf.runFailed?.job]
+		const stopped = [...new Set(ids)].flatMap(id => {
+			const job = id ? store.job(id) : undefined
+			return job?.stopped && job.parents.includes(wf.id) && !job.carrier && !job.byRule ? [job] : []
+		})
+		if (stopped.length || a.verb === 'one-more') {
+			if (wf.state === 'done' || wf.redacted || stopped.length !== 1)
+				return reply(store, src, a, `${MARK} ${stopped.length > 1 ? 'Several jobs are stopped. Give a new direction for one job instead.' : 'This item no longer has one stopped job. Open the current item.'}`, true)
+			if (a.seenAt !== undefined && wf.revAt && a.seenAt !== wf.revAt)
+				return reply(store, src, a, `${MARK} This item changed. Open its current stop before trying again.`, true)
+			const job = stopped[0], refusal = requestOneMore(store, cfg, wf, job)
+			if (refusal) return reply(store, src, a, `${MARK} ${refusal}`, true)
+			Object.assign(wf, { ...stateFields(wf, 'waiting_on_task'), status: 'Queued one more AI run; nothing is sent',
+				waitingSince: new Date().toISOString(), runFailed: undefined, statusReason: undefined, approved: undefined, sendAt: undefined })
+			commit()
+			return reply(store, src, a, `${MARK} Queued one more run for ${wf.code}. Nothing is sent.`)
+		}
+	}
 	if (wf.groupAsk && !cardAnswer && (a.verb === 'answer' || a.verb === 'pick' && !wf.choices)) {
 		const selected = groupSelection(wf.groupAsk, a.verb === 'pick' ? { nums: a.nums ?? [] } : { text: a.text })
 		if (!selected) return reply(store, src, a, `${MARK} Say which groups you're in, or none.`)
@@ -171,7 +355,7 @@ async function applyOne(store: Store, src: Source, cfg: Config, wf: Workflow, a:
 		store.log({ event: 'run-retried', code: wf.code, why: wf.runFailed.why, ...(wf.runFailed.job ? { job: wf.runFailed.job } : {}) })
 		const job = wf.runFailed.job ? store.job(wf.runFailed.job) : undefined
 		if (job) {
-			Object.assign(job, { state: 'queued', purpose: 'work', retry: undefined, nextAt: undefined, error: undefined, run: undefined, session: { ...job.session, id: randomUUID() } })
+			Object.assign(job, { state: 'queued', purpose: 'work', retry: undefined, nextAt: undefined, error: undefined, run: undefined, session: { ...job.session, id: chooseSession('job', { fresh: true }) } })
 			store.saveJob(job)
 			Object.assign(wf, { job: job.id, ...stateFields(wf, 'waiting_on_task'), runFailed: undefined, statusReason: undefined, reviewAgain: undefined, question: undefined, questionHint: undefined, status: `Working: ${job.goal}`, waitingSince: new Date().toISOString() })
 			commit()
@@ -250,7 +434,11 @@ async function applyOne(store: Store, src: Source, cfg: Config, wf: Workflow, a:
 	if (a.verb === 'ok' && wf.promise?.state === 'failed' && !wf.draft?.text) { const r = checkAgain(store, wf); commit(); return reply(store, src, a, `${MARK} ${r}`) }
 	// The reply already went and the change it promised waits: new words would be a second reply, so they wait until it is settled.
 	if ((a.verb === 'send' || a.verb === 'edit') && a.text && replied && wf.promise?.state === 'offered') return reply(store, src, a, `${MARK} ${wf.code}'s reply already went to ${wf.asker?.name?.split(/\s+/)[0] ?? 'them'}. Say "ok ${wf.code}" to ${doLine(pendingEffects(wf.effects))}, or "skip ${wf.code}".`)
-	if (a.verb === 'ok') { const r = okRelay(store, wf); if (r) { commit(); return reply(store, src, a, `${MARK} ${r}`) } }
+	if (a.verb === 'ok' && ((wf.prs?.length ?? 0) <= 1 ||
+		a.include === undefined && a.vote === undefined && !a.nums?.length && !a.except?.length)) {
+		const r = okRelay(store, wf)
+		if (r) { commit(); return reply(store, src, a, `${MARK} ${r}`) }
+	}
 	// New words on an item with changes are a preview that shows the changes again, never an approval of both (next action).
 	if (a.verb === 'send' && a.text && effectsLeft) a = { ...a, verb: 'edit' }
 	switch (a.verb) {
@@ -308,8 +496,12 @@ async function applyOne(store: Store, src: Source, cfg: Config, wf: Workflow, a:
 			// A tracker's question goes back to its own job, not to the reply worker.
 			if (wf.kind === 'tracker' && wf.job && store.job(wf.job)) {
 				const job = store.job(wf.job)!
+				if (job.stopped) {
+					const refusal = requestOneMore(store, cfg, wf, job, a.text)
+					if (refusal) return reply(store, src, a, `${MARK} ${refusal}`, true)
+				}
 				// A live check keeps running; the answer is picked up by one more run right after it (tester 06-07 P1-3).
-				Object.assign(job, { asks: [...job.asks, `Owner: ${a.text}`], ...(job.state === 'running' ? {} : { state: 'queued', purpose: 'work' }) })
+				else Object.assign(job, { asks: [...job.asks, `Owner: ${a.text}`], ...(job.state === 'running' ? {} : { state: 'queued', purpose: 'work' }) })
 				store.saveJob(job)
 				Object.assign(wf, { ...stateFields(wf, 'waiting_on_task'), statusReason: undefined, reviewAgain: undefined, question: undefined, questionHint: undefined, status: 'Checking again with your answer', waitingSince: new Date().toISOString() })
 				break
@@ -318,11 +510,15 @@ async function applyOne(store: Store, src: Source, cfg: Config, wf: Workflow, a:
 			// the report, held for ok (owned work, R-NEX-05).
 			if (wf.job && store.job(wf.job) && isValidate(store.job(wf.job), wf) && (saysTested(a.text) || reportsResult(a.text))) {
 				const job = store.job(wf.job)!
-				Object.assign(job, { asks: [...job.asks, testedAsk(homeOf(store, wf), a.text!)], ...(job.state === 'running' ? {} : { state: 'queued', purpose: 'work', error: undefined }) })
+				if (job.stopped) {
+					const refusal = requestOneMore(store, cfg, wf, job, testedAsk(homeOf(store, wf), a.text!))
+					if (refusal) return reply(store, src, a, `${MARK} ${refusal}`, true)
+				} else Object.assign(job, { asks: [...job.asks, testedAsk(homeOf(store, wf), a.text!)], ...(job.state === 'running' ? {} : { state: 'queued', purpose: 'work', error: undefined }) })
 				store.saveJob(job)
 				Object.assign(wf, { ...stateFields(wf, 'waiting_on_task'), statusReason: undefined, reviewAgain: undefined, question: undefined, questionHint: undefined, status: 'Reading the results of your test and drafting the report', waitingSince: new Date().toISOString() })
 				break
 			}
+			clearReviewRequests(wf)
 			Object.assign(wf, { ownerAnswer: a.text, ...stateFields(wf, 'running'), statusReason: undefined, reviewAgain: undefined, status: 'Redrafting with your answer' })
 			store.addOutcome(a.id, 'Redrafting with your answer')
 			store.completePageSubmission(a, 'Redrafting with your answer')
@@ -350,6 +546,10 @@ async function applyOne(store: Store, src: Source, cfg: Config, wf: Workflow, a:
 		// falls through
 		case 'send': {
 			if (wf.state === 'waiting_on_task') return reply(store, src, a, `${MARK} ${wf.code} is still working. I'll show the result first.`)
+			const before = pendingEffects(wf.effects), legacy = legacySelection(wf, a)
+			const { refuse, voteChecks } = okSendGate(store, cfg, wf, a)
+			if (!refuse || !refuse.refused) recordSelection(store, cfg, wf, before)
+			if (refuse) return reply(store, src, a, refuse.text, refuse.refused)
 			// The owner's own words: learned from once they really go out (R-LRN-01).
 			if (a.verb === 'send' && a.text) {
 				// A typed chat "send" on a held item is refused before his text replaces the draft the hold is about (PE 0b review, B1).
@@ -363,9 +563,13 @@ async function applyOne(store: Store, src: Source, cfg: Config, wf: Workflow, a:
 			}
 			if (holdReplyGap(store, wf, wf.draft?.text)) return reply(store, src, a, `${MARK} ${REPLY_BLANK}`, true)
 			rememberSend(store, wf)
+			if (wf.ownerSend && voteChecks.length) {
+				wf.ownerSend.checks = [...new Set([...(wf.ownerSend.checks ?? []), ...voteChecks])]
+				commit(false)
+			}
 			// An item with changes on other systems makes them first; the reply follows when all are done (R-HIL-21).
 			// New messages are read first, so a "never mind" stops the changes too (tester P1-4).
-			if (wf.job && (pendingEffects(wf.effects).length > 0)) {
+			if (wf.job && (externalPending(wf.effects).length > 0)) {
 				const t = await threadSince(store, src, cfg, wf, '')
 				if (t.ownerUnknown && !t.ownerReplied) store.log({ event: 'owner-reply-fallback', code: wf.code, before: 'approved-changes', note: OWNER_REPLY_UNCHECKED })
 				if (t.ownerReplied || await heldSend(store, src, wf, a, { messages: t.messages, quick })) {
@@ -376,25 +580,37 @@ async function applyOne(store: Store, src: Source, cfg: Config, wf: Workflow, a:
 				}
 			}
 			// "ok A6 #1 #3" makes only those changes; the rest are unchecked on the item and its job alike (design-spec S6).
-			if (a.nums?.length) {
-				const r = only(store, wf, a.nums)
-				if (typeof r === 'string') return reply(store, src, a, `${MARK} ${r}`)
+			if (legacy) {
+				const keep: number[] = []
+				// The gate may already have omitted self-chat votes; retain original numeric identities.
+				for (const [index, effect] of pendingEffects(wf.effects).entries()) {
+					const chosen = legacy.slots.get(pageChangeId(effect))?.shift()
+					if (chosen === undefined) return reply(store, src, a, `${MARK} Changed since you looked. Nothing was sent or changed. Open the new version first.`, true)
+					if (chosen) keep.push(index + 1)
+				}
+				const selected = only(store, wf, keep.length ? keep : [0])
+				if (typeof selected === 'string') return reply(store, src, a, `${MARK} ${selected}`, true)
+				const r = legacy.removed
 				// Only the reply is left, and it was written counting on the changes left out: it is quoted, and a new ok sends it (review 10-21 P2-10).
 				// The owner's own words too, when a change left out failed, may have been made, or was a vote dropped as not needed: they
 				// still count on it ("Send reply only", review chui P1-1).
 				// A change refused at ok (switched off in Settings, say) and then left out is not made either (re-review N3).
-				const pr = prTarget(store, wf), unmade = r.some(e => e.error || e.maybe || !!refusal(cfg, e, pr)) || wf.statusReason?.kind === 'refused' && (wf.effects ?? []).some(e => e.off && isVote(e.call))
+				const pr = prTarget(store, wf), unmade = r.some(e => e.error || e.maybe || !!refusal(cfg, e, pr)) || legacy.refused && legacy.offVote
 				// Then the reply is quoted even with other changes still to make, whose run would send it by itself (re-review N2).
 				// A change left out by choice, while others are made, stays one ok (design-spec S6).
 				const rest = pendingEffects(wf.effects).length
-				if (wf.draft?.text && (rest ? unmade : !wf.draft.byOwner || unmade)) {
+				if (wf.draft?.text && (legacy.kept ? unmade : !wf.draft.byOwner || unmade)) {
 					wf.revAt = new Date().toISOString()
 					commit(); store.markShown([wf])
 					return reply(store, src, a, `${MARK} ${rest ? `The reply was written counting on the changes you left out, and it says: "${wf.draft.text}" Say "ok ${wf.code}" to make the rest and send it as it is` : `Only the reply goes now, and it says: "${wf.draft.text}" It was written counting on the changes you left out. Say "ok ${wf.code}" to send it as it is`}, or "edit ${wf.code}: <text>" to change it.`)
 				}
 			}
-			const { refuse, voteChecks } = okSendGate(store, cfg, wf, a)
-			if (refuse) return reply(store, src, a, refuse.text, refuse.refused)
+			if (legacy && a.surface === 'self' && !a.page && voteChecks.length && !wf.draft?.text && !pendingEffects(wf.effects).length) {
+				if (wf.promise && wf.sent) rest(store, wf)
+				wf.status = `Nothing was changed. ${voteChecks.join(' ')}`
+				commit()
+				return reply(store, src, a, `${MARK} ${wf.status}`)
+			}
 			// A vote on a pull request is checked against the PR as it is now, after the owner's choice of changes.
 			// A deploy is checked against its ring and PR as they are now; if either moved, it is drawn again, not run (owned work).
 			const stale = await recheckPr(store, wf, probe) ?? await recheckDeploy(store, wf, probe)
@@ -405,6 +621,7 @@ async function applyOne(store: Store, src: Source, cfg: Config, wf: Workflow, a:
 				if (wf.reviewAgain) { const keep = { question: wf.question, questionHint: wf.questionHint, status: wf.status, reviewAgain: wf.reviewAgain }; newTurn(wf); Object.assign(wf, { ...keep, promise: undefined, ...stateFields(wf, 'needs_human'), revAt: new Date().toISOString() }) }
 			}
 			if (stale) { commit(); store.markShown([wf]); return reply(store, src, a, `${MARK} ${stale}`, true) }
+			const receipt = internalReceipt(wf)
 			const held = approveEffects(store, cfg, wf, !!a.again)
 			if (!held && wf.approved) { wf.approved.replyDigest = a.page?.replyDigest; wf.approved.sendReview = a.sendReview }
 			if (held !== undefined) {
@@ -414,8 +631,36 @@ async function applyOne(store: Store, src: Source, cfg: Config, wf: Workflow, a:
 				return reply(store, src, a, `${MARK} ${effectResultLine(wf, held ? wf.effects?.some(e => e.maybe) ? 'unsure' : 'held' : 'running', held, placeOf(store, wf.chat, wf.asker))}${checks.length ? ` ${checks.join(' ')}` : ''}`, !!held)
 			}
 			// The owner left out every change their own words promised, and the reply already went: nothing is left to do (Slice 3).
-			if (wf.promise && wf.sent && !wf.draft?.text) { rest(store, wf); commit(); return reply(store, src, a, `${MARK} Nothing was changed for ${wf.code}; its reply already went.`) }
-			await send(store, src, cfg, wf, wf.draft?.text, { answer: a, quick }, probe)
+			if (wf.promise && wf.sent && !wf.draft?.text) {
+				rest(store, wf)
+				if (!wf.sent?.holding && receipt.items.length) {
+					await makeInternalChanges(store, wf, receipt)
+					saveInternalReceipts(store, wf)
+				}
+				commit()
+				return reply(store, src, a, `${MARK} ${receipt.items.length ? wf.status : `Nothing was changed for ${wf.code}; its reply already went.`}`)
+			}
+			const sentDraft = a.verb === 'ok' && wf.sent && !wf.sent.holding && wf.sent.text !== undefined &&
+				wf.sent.text === wf.draft?.text && wf.sent.askMsgId === wf.lastMsgId && !wf.pending.length
+			if (receipt.items.length && !wf.sent?.holding && (!wf.draft?.text || sentDraft) && !wf.question) {
+				rest(store, wf)
+				await makeInternalChanges(store, wf, receipt)
+				saveInternalReceipts(store, wf)
+				const left = pendingEffects(wf.effects).filter(isInternal)
+				const made = receipt.items.flatMap(item => {
+					const effect = wf.effects?.[item.index]
+					return effect?.done && isInternal(effect) ? [effect.summary] : []
+				})
+				if (!left.length) wf.status = made.length ? `Made: ${made.join('; ')}` : 'The internal changes changed before they could be made. Open the current item.'
+				commit()
+				return reply(store, src, a, `${MARK} ${wf.status}`, left.length > 0 || !made.length)
+			}
+			const sent = await send(store, src, cfg, wf, wf.draft?.text, { answer: a, quick }, probe)
+			if (sent && !wf.sent?.holding && receipt.items.length) {
+				await makeInternalChanges(store, wf, receipt)
+				saveInternalReceipts(store, wf)
+				commit()
+			}
 			break
 		}
 		case 'undo':
@@ -438,7 +683,7 @@ async function followUp(store: Store, src: Source, cfg: Config, w: Waiting, a: A
 	const wf: Workflow = {
 		schema: WORKFLOW_SCHEMA, id: ulid(), code: store.nextCode(), kind: 'reply', ...stateFields(undefined, 'running'), key: { type: 'thread', id: w.chat.id },
 		chat: { id: w.chat.id, name: w.chat.name, test: false, group: kindOf(w.chat.id) !== 'oneOnOne' }, asker: { id: `asked:${w.to[0].toLowerCase()}`, name: who },
-		session: { agent: cfg.agent.flavor, id: randomUUID() }, lastMsgId: w.msgId, pending: [w.msgId], msgIds: [w.msgId], lastAsk: w.text,
+		session: { agent: cfg.agent.flavor, id: chooseSession('item', { fresh: true }) }, lastMsgId: w.msgId, pending: [w.msgId], msgIds: [w.msgId], lastAsk: w.text,
 		followUp: who, status: `Drafting a follow-up to ${who}`, newCount: 0, createdAt: now, updatedAt: now,
 	}
 	const recent = await src.recent(w.chat.id, 20).catch(() => [])
@@ -558,6 +803,7 @@ function pick(store: Store, cfg: Config, wf: Workflow, a: Answer): string | unde
 		if (v) leaveForYou(store, wf, v.left)
 		return undefined
 	}
+	clearReviewRequests(wf)
 	Object.assign(wf, { ownerAnswer: `The owner picked: ${chosen.map(o => o.label).join('; ')}`, picked: nums, ...stateFields(wf, 'running'), status: 'Rewriting with your choice' })
 	return undefined
 }
@@ -612,9 +858,10 @@ async function control(store: Store, src: Source, a: Answer, procs: Procs) {
 	if (v === 'auto-on' || v === 'auto-off') store.saveControl({ ...c, autoSend: v === 'auto-on' })
 	else store.saveControl({ ...c, paused: v !== 'resume', stopped: v === 'stop' })
 	// Paused means nothing is sent, even after resume: scheduled replies go back to the owner (review P1-5).
-	if (v === 'pause' || v === 'stop') for (const w of store.workflows().filter(w => w.state === 'scheduled' || w.approved)) {
+	if (v === 'pause' || v === 'stop') for (const w of store.workflows().filter(w => w.state === 'scheduled' || w.approved ||
+		(w.state !== 'done' && w.prs?.some(unit => unit.review?.run?.phase === 'posting' && unit.review.run.approval)))) {
 		// Pause withdraws every pending ok, and stops change runs nobody else approves (tester P1-2).
-		if (w.approved) withdraw(store, procs, w)
+		withdraw(store, procs, w)
 		Object.assign(w, { ...stateFields(w, 'needs_human'), sendAt: undefined, waitingSince: undefined, held: 'paused', ...statusFields('not-sent', w.job ? `Held: you paused. Some changes may be done; ok ${w.code} retries the rest` : 'Held: you paused') })
 		store.save(w)
 	}

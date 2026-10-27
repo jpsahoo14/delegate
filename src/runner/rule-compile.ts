@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { chooseSession } from './session-policy.ts'
 import { join } from 'node:path'
 import { agentSetupFailure } from '../core/agent-failure.ts'
 import { ran } from '../core/runinfo.ts'
@@ -14,7 +14,7 @@ import { holdAgent } from './agent-health.ts'
 import type { RunWorker } from './dispatch.ts'
 
 export async function compileRule(store: Store, cfg: Config, line: RuleLine, run: RunWorker): Promise<RuleWriteResult> {
-	const expectedTextHash = ruleTextHash(line.text), runId = ulid(), sessionId = randomUUID()
+	const expectedTextHash = ruleTextHash(line.text), runId = ulid(), sessionId = chooseSession('one-off', { fresh: true })
 	const cwd = join(LOCAL_DIR, 'sessions'), mcpConfigPath = join(cwd, `mcp-${runId}.json`)
 	const accounts: Record<string, string> = { [cfg.owner.id]: cfg.owner.name }
 	for (const person of cfg.policy?.never ?? []) accounts[person.id] = person.name

@@ -705,3 +705,473 @@ One read-only E2E check of an edited Test Meeting message is pending: after a
 message is edited in that chat, read it with GetChatMessage and record whether
 `lastEditedDateTime` is present. This proof does not access live Teams or edit
 metadata there; missing metadata is explicitly covered by the content-key fallback.
+
+## WYS Slice 1: positive inclusion (S1-3)
+
+`Answer.include` carries stable `pageChangeId` values from the approve intent.
+`Answer.page` retains its exact `expect` revision, `reviewed` hold digest and reply
+digest. `workflowApprovalRev` now binds origins, evidence, reasons and ambiguity
+groups as well as the calls. Missing metadata leaves legacy revision hashes
+unchanged.
+
+`effectConsent(workflow, answer)` in `core/page-approval.ts` is the pure preflight.
+`okSendGate(store, cfg, workflow, answer)` consumes it and applies the selected
+set to both the item and its carrier through the existing `only` writer. Unknown,
+duplicate or ambiguous ids, insufficient group selections, and included votes
+refuse the entire selection before that writer runs. An empty include list is
+valid and excludes every pending change. Votes use their separate Approve path.
+
+Nonlegacy chat approvals derive only asked/promised/note/rule changes, without
+groups or votes. Suggestions stay excluded and the receipt adds
+`<N> suggestions not included: tick them on Delegate's page.` Rule-driven review
+execution also excludes suggested changes and unresolved groups before building
+its authorized batch.
+
+The policy's pending-change hold ignores suggested effects: a proposal is not a
+promise the reply must carry out. All other pending origins, todos, follow-ups
+and independent automatic-send checks retain their existing holds. HOST's
+separate after-send path drops unrun suggestions on a successful rule send;
+this policy correction neither approves nor executes them. Old items use the
+same read-time origin check without a migration.
+
+Old originless revisions retain the existing numeric/except path through the
+shared `legacyEffectOrigins` read-time predicate. A mixed or origin-bearing
+revision never falls back to that path. There is no migration or repair.
+
+### HOST H1-1 handoff (required before integration)
+
+The approve intent is `{kind: 'approve', expect, include: string[], reviewed?}`.
+Map `include` to `Answer.include` without converting it into numeric exclusions;
+keep `expect` and `reviewed` in `Answer.page`. Keep the existing page guard first.
+For positive-inclusion revisions, invoke `okSendGate` against that guarded,
+unchanged revision **before** numeric/except selection or replacing draft text.
+Its returned `voteChecks` also carries omission notices; retain them in the
+owner-send checks and final receipt even when the owner-send record is created
+after the gate.
+
+The current HOST caller still converts `except`, mutates numeric selection and
+replaces edited reply text before its late gate call. H1-1 must bypass that
+legacy preparation for positive-inclusion revisions and reject nonlegacy
+`except` before its writer runs. Keep the dedicated vote Approve route separate
+from this generic include list. SEND does not edit HOST's caller or New's intent
+producer. This is a reviewed-provider handoff, not completed page wiring; Slice 1
+cannot ship without H1-1, New's consumer, S1-4 and all other slice items.
+
+## WYS Slice 1: action claims and promises (S1-4)
+
+The six built-in write capabilities declare completed verbs, future verbs and
+object words beside their existing catalog lines in `core/effects.ts`.
+`changeClaim(effect)` resolves the descriptor from the exact call, not the
+worker's summary. An unregistered capability supplies no promised attribution.
+Recognized claims without a matching registered change still hold; this is a
+bounded catalog classifier, not model-based language inference.
+
+`core/action-claims.ts` exports:
+
+- `actionClaimGap(text, effects, include)`: the first unsupported first-person
+  completed-action claim, with capability, action, sentence, matching effect ids
+  and warning text. Include uses `pageChangeId` values. Confirmed completed
+  effects support a claim; uncertain, failed or unticked pending effects do not.
+- `replyPromises(text, effects)`: future-action rows from the current draft,
+  including any matching effect ids, for the before-Send projection.
+- `attributePromise(text, effect, effects)`: an actual reply substring only when
+  one distinct structured change is identified. Conditional futures, negations
+  and ambiguous targets do not pre-tick a proposal.
+
+All three reuse the vote classifier's exported `sentencesOf` and `clausesOf`.
+Structured work-item/PR/comment/thread/build/pipeline ids and invitation
+recipients constrain matches. A generic object is attributable only when the
+report offers one distinct matching change. Origin verification runs after call
+preparation so it attributes the final call, including rebuilt comments.
+
+`okSendGate` checks the proposed/edited reply against the include set before
+changing selection or approving execution. The final `send` path checks again
+after the existing live vote-claim check, including automatic replies. A gap
+keeps the draft and holds Send with `statusReason.kind = 'action-claim'`; an
+existing vote-claim hold is never replaced. No migration or repair runs: legacy
+numeric consent is unchanged, while the consistency check reads the current
+reply and actual changes.
+
+New owns the generalized live check endpoint and warning UI. It consumes the
+same pure `actionClaimGap` and `replyPromises` exports on edited text and exact
+include ids, alongside the existing vote result. No endpoint or card branch is
+added by SEND. S1-5 adds the exact-revision Send-anyway path; this intermediate
+source commit is not independently releasable.
+
+## WYS Slice 1: exact-revision consistency override (S1-5)
+
+The generalized check consumer uses `actionClaimConfirmation(gap)` for the PM's
+exact confirmation copy and `actionClaimReview(workflow, text, include)` for its
+review token. Only the confirmed page action carries `Answer.actionClaimReview`,
+with the original exact `page.expect`, proposed reply and explicit include ids.
+The token binds the revision, words and sorted selection. A stale, chat-only or
+no-longer-applicable token refuses without changing or sending anything.
+
+After checking it, `okSendGate` records a metadata-only
+`workflow.actionClaimOverride` receipt and logs the catalogued
+`action-claim-send-anyway {code, capability}` event. The receipt binds the item,
+chat, ask, message ids, turn, reply, existing sent-message id, complete change
+identities and included ids. It deliberately survives only selection flags and
+execution receipts on those same changes: jobs may finish them before the reply
+goes out. A changed reply, new turn, new ask, changed call or extra pending change
+invalidates it. A plain new Send clears it. Old items have no receipt and receive
+no override. No read-time repair or default authorization is added.
+
+The final completed-action check requires actual completed changes, not merely
+pending included changes. The valid owner receipt may bypass this consistency
+hold (including the older unmade-invite consistency hold); rules cannot use it.
+The live vote check still runs and cannot be bypassed by an action-claim token.
+Decision-47 hold review and the post-change reply digest remain independent.
+
+New must carry `actionClaimReview` from the confirmed generalized-check result to
+the page answer without treating it as `sendReview`; HOST must keep the reviewed
+S1-3 gate-before-mutation order. SEND's receipt survives the asynchronous changes
+without a new HOST job field or a second approval writer. The UI confirmation and
+intent producer remain other-owner integration work, not a completed page claim.
+
+The gate's zero-selected-change early return uses the same candidate reply as
+the claim check: `send.text` when supplied, otherwise the stored draft. Thus an
+owner can send new words from a suggested-only item with no stored reply after
+all suggestions are excluded. The caller does not need to change the draft (or
+forge a revision) before checking consent. No candidate words and no selected
+change still returns "Nothing was changed."
+
+S1-4 corrective boundaries: generic "sent you the report" is not invitation
+evidence. Calendar verbs require calendar-object words; "invited" itself is
+invitation evidence and its recipient is checked against the call. Action claims
+use the shared clause splitter's `keepNumberLists` mode, so "work items 4200123,
+4200456" remains one action and both targets must be supported. Vote callers
+retain the original default split, byte-for-byte expression and behavior.
+
+The I-a amendment's unchanged-revision check is the gate's first refusal, also
+for legacy-origin items. A zero-change early return requires both no stored
+draft and no candidate text. HOST passes the existing `Answer.text`; it must not
+replace the stored draft before this check.
+
+## WYS Slice 1: selection event catalog (S1-6)
+
+`telemetryEvent` admits `wys-include`, `wys-exclude` and `wys-dismiss` with
+exactly `{code, effectKey, origin}`. All three are metadata events in
+`TELEMETRY_CATALOG`; other fields are dropped with the existing diagnostic.
+`effectKey` is the capability plus target kind, never the target id, summary,
+reply, note, ask quote or a read-back label. `origin` is the verified effect
+origin, not a new inference or an invented origin for legacy items.
+
+HOST owns emitting these events at the actual serialized selection/dismissal
+intent boundary. This catalog does not generate events from page reads, execute
+changes, suppress suggestions or train habits. The dismissal producer follows
+the reviewed I-b store and its exact-revision intent. `wys-note` and later-slice
+learning are not activated here. Existing content-event retention is unchanged.
+
+## WYS Slice 1: suggestion preparation and internal provider (S1-2)
+
+Draft and work prompts receive actual item scopes from their runner callers.
+The capability list intersects enabled changes with the cached catalog and
+those scopes, rather than advertising every configured write to every item.
+Unknown target kinds are not guessed. An optional calendar change needs a known
+recipient identity; a display name alone is not evidence for another address.
+
+`prepareReportCalls` prepares suggestions separately from requested changes.
+An unbuildable or refused optional change creates no owner to-do or Left-for-you
+line. Surviving suggestions pass `vet`, structured item-target matching, dedupe
+against requested alternatives and each other, the actual reviewed dismissal
+reader, the no-votes rule and a shared cap of three in report order. This also
+covers effects downgraded to suggested origin and suggested choice effects.
+Holding reports and rule reports have no suggestions. Selected proposals join
+the executable `effects` lists with origin `suggested`; `suggested` is emptied
+after preparation so read projections do not add the same proposal twice.
+This does not grant consent: the reviewed inclusion gate still decides what runs.
+
+`effectCapability` supplies the dismissal capability key: the exact call tool
+plus its lower-case action when present, or `delegate:<action>` for an internal
+effect. Its scope key is the reviewed `dismissKey(capability, target)`.
+
+The exported `INTERNAL_ACTIONS` zod union and `InternalEffect` type admit only
+`delegate/watch` with strict `{target, until}` and `delegate/check-back` with
+strict positive-integer `{days}`. Neither permits a call. `internalEffectProblem`
+is shared by refusal and `builtEffectProblem`; unknown actions or payload fields
+are refused without a tool lookup. Internal suggestions are built by HOST, not
+accepted from worker `suggested` data. The ordinary worker call builder still
+requires an exact catalog call.
+
+This is the provider-only order approved by PE: HOST next supplies the reviewed
+`runInternalEffect(store, wf, effect)` executor returning a promise of
+`{ok:true, ref?}` or `{ok:false, error}`. Only then does SEND wire `makeChange`
+and its normal receipts. No internal producer or dispatch is activated here.
+The Ways dismissal union also waits its same-cut New projection/schema consumer;
+no fake Habit, Rule or compatibility reader is supplied.
+`WayTurnedDown` exports that exact union now for the consumer to compile against;
+`WaySuggestions` still returns only its existing habit rows until the reviewed
+consumer can accept the suggestion variant.
+
+### Legacy selection preflight (PE 17:16:59)
+
+The unchanged revision check remains the first refusal in `okSendGate`.
+Only the legacy result from `effectConsent` derives its effective include set
+from the original pending change numbers: `except` leaves those numbers out,
+`nums` keeps those numbers and `[0]` keeps none. The existing range refusal and
+legacy vote path are retained. Claim checking and the denied-change scan use
+that effective set, so an excluded change disabled in Settings does not block
+the owner. Non-legacy revisions still require explicit ids and reject numeric
+or except selection.
+
+This preflight does not perform legacy `only` mutation or quote confirmation:
+HOST must pass the original selection unchanged and call it before mutation,
+then retain the existing legacy quote/vote behavior. It is not a second gate
+to call after a selection has already renumbered pending changes.
+
+### Producer and Ways consumer entry points
+
+HOST's code-built deterministic producer can use `suggestionSelector(store, cfg,
+items, existing)` from effect-preparation. The returned selector shares one
+three-suggestion budget and dedupe set with `existing` and passes each candidate
+through exact-call/internal-schema validation, vetting, item-target matching,
+the actual dismissal store and the no-votes check. An accepted effect is returned
+with suggested origin; a dropped optional candidate returns undefined. Worker
+data still goes through `prepareReportCalls`, which never admits worker internal
+effects. The producer remains responsible for not generating suggestions on
+holding or rule sends, as the report path already enforces for its context.
+
+The New consumer can compile against `WayTurnedDown` before the union producer
+is connected. For its suggestion variant, Reconsider calls
+`reconsiderSuggestion(store, row.key, row.kind)`; this routes directly to HOST's
+real scoped dismissal writer, including its busy result. Existing habit calls
+without that kind retain their existing transition. There is no key guessing,
+fallback reader, fake Rule or second dismissal store. Returning the new rows
+still waits the actual same-cut consumer handoff.
+The bounded prompt also supplies the actual item target identities as data and
+their accepted structured target spellings, so it does not ask the worker to
+guess an id from a display label. These identities are not telemetry.
+
+Preparation failures retain their originating proposal until provenance is
+verified. Only verified requested work can create a refusal, question or
+Left-for-you line. A failed unverified proposal is downgraded and dropped, in
+both the main report and choices. Promise attribution still uses the final
+prepared calls, not an invalid raw call that failed preparation.
+Per the named scope-context exception, the only net host-runner edits are the
+two prompt call arguments supplying workflows and their resolved PR targets.
+Scope construction remains in the prompt/scope API; the host files have no new
+imports or helper logic and remain host-owned.
+
+### Slice 1: suggestion dismissal admission
+
+The page's `dont-suggest` intent uses the real typed Answer/Parsed key and label
+carrier. `enqueueParsed` preserves those fields only for that verb, with the
+existing seen revision and submission identity. Its acknowledgement describes
+a queued suggestion dismissal, never a Send or a completed dismissal.
+The runner remains responsible for checking the current suggested scope,
+scrubbed label, revision, busy state and uncertainty before storing a dismissal.
+There is no chat parser syntax, effect-id mapping, extra PageApproval digest,
+schema duplicate or compatibility bridge.
+
+Page admission also preserves the resolved `include` and `actionClaimReview`
+fields unchanged through the real `Parsed` carrier into the workflow Answer.
+Only `from === 'page'` forwards them; chat answers never do. An empty include
+stays empty, and a missing include or token stays undefined. Admission does
+not select changes, reconstruct a token or relax the existing approval gate.
+The named carrier exception changes only the `Parsed` type line; its owner
+retains the rest of the parser and no new chat syntax is introduced.
+
+### Slice 1: dedicated page vote consent
+
+Origin-bearing page approvals carry a dedicated `vote` containing the vote's
+`pageChangeId`, separate from `include`. Admission forwards it unchanged only
+from the page. The consent gate requires the exact current revision and an
+explicit include list, refuses this carrier on legacy revisions or chat
+answers, and resolves it to exactly one pending effect with a structured vote
+call. Votes in `include` remain refused, including a vote also named by the
+dedicated carrier. Legacy page approvals retain their existing numeric form.
+
+The send gate includes the validated vote in claim checks, pending-change
+selection and refusal checks. An empty include plus a vote is not an empty
+selection. Rule and chat paths do not acquire vote consent. HOST owns its
+approved-selection caller and New owns the dedicated Approve resolver; each
+needs its own reviewed successor. Execution still rereads the PR before
+casting the vote.
+
+### Slice 1: internal changes after Send
+
+External changes keep their existing pre-send approval, execution and call
+ledger. `isInternal` identifies the Delegate namespace, including invalid
+internal proposals so they cannot fall through to an external tool.
+`externalPending` excludes that namespace from the pending external list.
+The execute prompt preserves original change indexes while listing external
+changes only; `makeChange` refuses every internal index without a write.
+
+HOST takes the pure `internalReceipt(wf)` only where approval is verified,
+before clearing it. The receipt contains the item id, the approval timestamp
+(or the stored item's update timestamp on a direct owner send), and pending
+internal indexes with canonical identities excluding done/error. Rule
+approvals produce no internal items. This is an in-memory handoff, not a new
+post-send permission or a persisted approval.
+
+HOST calls `makeInternalChanges` only after a successful Send or its approved
+no-reply rest branches. The dispatcher consumes the receipt once, rechecks
+each current index and identity, and refuses automatic retries of an uncertain
+change. It calls the real typed internal executor and records done/error plus
+the existing Made/Not made history step. Check-back clears the completed turn,
+so its change receipts are retained for HOST's following commit. The dispatcher
+does not set workflow state or use the external call ledger.
+
+HOST owns the execute-decision, external-left-count and caller changes in
+the job/apply paths. Failed-send, stale, held, tracker and other non-send
+branches drop the receipt and leave the internal work pending for a new
+approval. Those callers require their own reviewed successor; this API does
+not activate them or the separate Ways runtime union.
+
+### Per-PR review frame provider
+
+Each PR unit owns its review basis, posting run and completed review facts.
+Only the one asker reply is item-level. `UnitReviewRun`, `UnitReviewDone`,
+`ReviewFrame` and `ReviewReply` define this boundary beside the existing review
+fact helpers. Completed unit facts omit the scalar PR id: the unit owns it.
+
+The pure `frameOf`, `unitForJob` and `reviewedUnits` readers inspect only the
+unit list. Job matching uses `unit.job`, not the item's current job. Generic
+readers preserve the caller's actual unit type without defining HOST's unit
+schema or manufacturing workflow clones. No units means no unit review facts;
+legacy scalar state is not a fallback.
+
+HOST owns the unit fields and one-time migration. The later autonomy, policy
+and send switch must follow that actual typed handoff; these types and readers
+alone do not activate a review, migrate state or grant permission.
+
+`UnitReviewCompleted` is the separate completion receipt on `ReviewFrame.completed`:
+job id, result time, live completion head, verified flag, finding count and an
+optional clean marker. A basis proves a revision, not completion; `done` records
+rule-authorized posting and keeps its required rule id. A manual completion
+never invents a rule id.
+
+HOST owns the writer: only a done report with `goalMet !== false` and a review
+result can produce a completion receipt. Missing, failed or stopped results
+produce none. An unverified completion needs review again; rule posting requires a
+verified completion matching its basis. Old manual items get no guessed
+receipt. This additive type provider alone changes no writer or reader.
+
+### Job-bound review references
+
+Report comment preparation resolves a unit-backed PR review through
+`unitForJob(item, report.workflowId)`. Every parent must resolve to the same
+project, repository and PR before a comment builder receives a reference.
+Missing unit matches or references cannot fall back to a scalar PR target.
+Legacy records without units and non-review reports keep their existing
+reference path.
+
+Review completion likewise uses the actual job's matched review unit before
+considering a legacy parent without units. A matched unit with no reference
+produces no completion rather than borrowing another parent's PR. The live
+completion read and start-head comparison remain unchanged. These readers
+neither write completion receipts nor activate multi-PR orchestration.
+
+### Per-unit rule-posting approval provider
+
+`UnitReviewRun.approval` is required and holds the actual rule id, exact
+effect ids, `keyOf` digest of precisely that posting subset and the unit's
+review epoch. The later producer must write it with the unit's posting batch,
+only for a verified completion matching the review basis. It must not derive
+permission from the shared reply text, item revision or a completion alone.
+
+HOST owns the review epoch and its invalidation, the per-unit execution guard
+and migration. The guard must match the rule, job, epoch, unique pending
+unit-PR effect ids and exact subset/result digests, excluding votes. Manual
+approval and the separate asker-reply guard are unchanged. Old scalar rule
+approvals are dropped fail-closed by that migration, never converted into
+unit permission.
+
+This type-only provider changes no producer, reader, executor or stored data.
+The posting producer still needs the actual reviewed completion writer and
+epoch/guard handoff; this declaration does not activate posting.
+
+### Unit membership and same-read completion facts
+
+The completion reader returns `factsOf(live)` from its existing PR read.
+`ReviewCompletion.facts` and `UnitReviewCompleted.facts` are optional so a
+failed read or an older receipt never acquires invented meaning. HOST owns
+copying those facts and the title into its completion writer, and using the
+unit's completed facts for `prMeaning` and `Effect.pr`. Facts are not permission;
+no second read or data migration is added here.
+
+For items with `prs`, suggestions are scoped to each referenced, unskipped unit.
+A candidate must match a unit scope before the existing exact-call vetting.
+The central three-suggestion cap, duplicate and dismissal checks, preparation,
+owner-only Add me validation and exclusion of votes remain unchanged. Non-PR
+scopes remain available even when there is no eligible PR; legacy items without
+`prs` retain their scalar target.
+
+The change executor still selects the parent whose actual approval covers the
+job. A PR call must belong to a referenced unit when `prs` is present. A vote
+also requires that unit's eligible reviewer role and a verified completion at
+the unit's current head and the effect's reviewed head. The same backstop covers
+votes coupled to other changes in the approved batch. The immediate live vote
+read uses that unit's reference, never a different scalar PR, and remains the
+call-time authority for status, meaning, head and role. Rule comment receipts
+likewise link to their actual unit. Legacy no-unit behavior, the call ledger and
+uncertain-write handling are unchanged.
+
+Deploy and other non-PR calls retain the existing item PR context for validation.
+For a native unit set, that context exists only when there is exactly one unit;
+no PR is chosen from a multi-unit item. Calls naming a PR still require actual
+unit membership, and malformed PR calls without `pullRequestId` remain refused.
+This is a call-time rule for both existing and new items; no stored-data upgrade
+or new pipeline argument is needed.
+
+This is the consumer seam only, not a rule-posting producer or runtime-composition
+approval. HOST's facts/title copy follows the reviewed SEND input separately.
+
+### Requested-unit classifier handoff
+
+The report input schema accepts optional `reviewPrs`, an array of positive
+integer PR numbers. The reply worker reports only PRs the ask requests a review
+of, not excluded PRs or context-only mentions. A review directive followed by
+several links includes each requested linked PR. This is the same classifier
+trust as the existing single `job` key, never permission to review or post.
+
+HOST owns the typed report consumer, validation against the actual ask PR set,
+deduplication, the narrowing-only deterministic exclusion check, per-turn
+`requested` storage and requested-unit-only fan-out. Its existing deterministic
+review-request check is necessary but not sufficient. For old or absent arrays,
+only the scalar job-key unit can be requested, still under both deterministic
+checks; there is no migration or all-unit fallback. This schema/prompt delivery
+does not implement those HOST gates or activate posting.
+
+### Native review posting and the shared reply
+
+Rule posting consumes the current requested unit's actual verified completion,
+original work job, result timestamp, basis, head and required epoch. It never
+derives a request from a rule or a missing classifier field. The actual carrier
+job is bound to that unit without replacing the shared item job. Its approval
+stores the existing `keyOf` digest and unique selected effect ids together with
+the real rule and current epoch, in the same update as the posting batch.
+Only that PR's comments are considered; votes, unrelated units and the owner's
+approval are not changed.
+
+At the write boundary, the existing native `stillApproved` guard and fresh
+unit reference, live head, reviewer role, confirmed rule, audience, exact-call,
+thread-duplicate and ledger checks all still apply. Comment approval does not
+depend on shared reply text or `revAt`. Current owner drafts, pending asks, raw
+worker windows and already-replied turns hold automatic posting.
+
+PR-comment sharing checks use the matched original unit job's reply sources,
+read provenance and finding sources, never the combined draft's source union.
+Unknown, restricted, chat-derived, private, stale or labeled sources still hold
+the comment; the Teams reply retains its combined-draft sharing checks.
+
+Receipts update only the matched unit and its original work provenance. Only
+this batch's matched comment receipts merge into the original proposals; finding
+identity also matches comments whose transport text gained a severity prefix.
+Unrelated non-PR proposals, other units, existing receipts and proposal metadata
+remain intact, including before the Teams reply succeeds. Clean
+reviews need a real verified clean completion; an empty comment batch is never
+an executable approval. Independent owner-only vote proposals stay untouched and
+do not prevent a clean receipt. Uncertain writes retain their receipts and prevent an
+automatic shared reply. HOST's existing composer remains the only reply
+composer. SEND consumes its held `reviewReply`, checking the current turn,
+exact draft, unique complete unit list and each unit's rule, epoch and current
+verified head. The final send repeats those checks through the existing policy,
+audience and send path; it never treats a stored completion or meaning snapshot
+as consent.
+
+Old scalar review state is not read as automatic permission. HOST's reviewed
+load-time migration supplies native frames, or the review stays with the owner.
+This source handoff does not waive remaining HOST reader integration or coupled
+runtime acceptance, and introduces no new schema or migration.

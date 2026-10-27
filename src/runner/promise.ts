@@ -119,7 +119,7 @@ export async function checkPromise(store: Store, src: Source, cfg: Config, wf: W
 		store.addRun()
 		restoreSession(store, session)
 		const res = await run({ ...cfg.agent, tools }, { workflowId: wf.id, runId, sessionId: session, prompt: buildPromisePrompt(wf, store.thread(wf.id), cfg, store.root, prTarget(store, wf)), cwd: job?.repo ?? cwd, mcpConfigPath, extraTools: WORKER_TOOLS, dirs: readDirs(store, cfg) })
-		store.log({ event: 'promise-run', workflowId: wf.id, runId, ms: res.ms, ...ran('promise', res.used) })
+		store.log({ event: 'promise-run', workflowId: wf.id, runId, ms: res.ms, tools: { offered: tools.length, scoped: false }, ...ran('promise', res.used) })
 		backupSession(store, session)
 		report = store.peekReport(wf.id, runId)
 		store.archiveReport(wf.id, runId)

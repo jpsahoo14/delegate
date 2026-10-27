@@ -3,6 +3,15 @@ import { createHash } from 'node:crypto'
 import type { Report } from './types.ts'
 import type { LeftRefusal } from './left-lines.ts'
 import { STATIC_SETTING_KEYS } from './setting-keys.ts'
+import { scrub } from './secrets.ts'
+
+export function blockerNeed(raw: string | undefined): string | undefined {
+	if (!raw) return undefined
+	const text = scrub(raw.normalize('NFKC')).toLowerCase().replace(/\s+/g, ' ').trim().replace(/[.!?]+$/, '')
+	if (/[\w]+-[\w]+_|https?:|[\\/]|\b(error|exception|mcp)\b|_|\b[a-f0-9]{16,}\b|\b[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\b|\b[a-z]+\d+\b/i.test(text) ||
+		!/^\p{L}[\p{L}\p{N} .,'()-]*$/u.test(text)) return undefined
+	return text.slice(0, 80).trim() || undefined
+}
 
 export const SourceSchema = z.object({ ref: z.string(), tier: z.enum(['card', 'live', 'private']), origin: z.enum(['extracted', 'inferred']), label: z.string().optional().describe('The sensitivity label of the file or page, such as Confidential, when it has one') })
 export const ClaimSchema = z.object({
@@ -17,7 +26,23 @@ export const ClaimSchema = z.object({
 
 // The exact tool call that makes a change: the only call a change run may make for it.
 const CallSchema = z.object({ tool: z.string().describe('The listed change tool name, without any :action suffix'), args: z.record(z.string(), z.unknown()).describe('Its exact arguments, with "action" when the tool does several') }).describe('The exact call that makes this change')
-const EffectSchema = z.object({ system: z.string(), action: z.string(), target: z.string(), summary: z.string(), payload: z.unknown().optional(), call: CallSchema.optional(), head: z.string().optional().describe('For a pull request vote: the head commit ID of the iteration your review read. For a deploy: the PR head commit its build is from') })
+const EffectReasonSchema = z.object({
+	kind: z.enum(['asked', 'promised', 'open-item', 'history', 'rule']),
+	text: z.string().min(1).describe('The short reason for proposing this change, not instructions or a claim that it was made'),
+})
+const EffectSchema = z.object({
+	system: z.string(), action: z.string(), target: z.string(), summary: z.string(),
+	payload: z.unknown().optional(), call: CallSchema.optional(),
+	head: z.string().optional().describe('For a pull request vote: the head commit ID of the iteration your review read. For a deploy: the PR head commit its build is from'),
+	origin: z.enum(['asked', 'promised', 'note', 'rule', 'suggested']).optional()
+		.describe('asked only for an explicit request with askQuote; promised only for a reply sentence attributed to this change; otherwise suggested. note and rule are assigned only by code. Origin is verified in code, never trusted from this label.'),
+	reason: EffectReasonSchema.optional(),
+	askQuote: z.string().min(1).optional().describe('An exact, unaltered substring of an owned asker message requesting this change, required for asked origin'),
+	group: z.object({
+		id: z.string().min(1), question: z.string().min(1),
+		min: z.number().int().positive().describe('The minimum number of complete alternatives the owner must choose'),
+	}).optional().describe('An unresolved choice between complete effects. Each effect already has all its arguments; never leave placeholders for a later pick.'),
+})
 const RefusedActionSchema = z.object({
 	key: z.string().default('').describe('Omit this field. Delegate computes the action key in code; a supplied value is ignored.'),
 	verb: z.enum(['reply', 'comment', 'vote', 'merge', 'complete', 'abandon', 'delete', 'reviewer', 'deploy', 'invite', 'change', 'promise']),
@@ -88,20 +113,27 @@ export const ReportSchema = {
 	fyi: z.object({ line: z.string().max(200).describe('Who shared what, and why it matters to the owner, in one line'), gist: z.string().max(220).optional().describe('A second line: what changed or was decided, and whether anything is asked of the owner, so they never need to open it'), watch: z.object({ target: z.string(), until: z.string() }).optional().describe('Only when there is an outcome worth watching (a PR to merge, a promised doc, a decision to be made): what to watch and when it is done'), weight: z.enum(['high', 'normal']).describe('high: a decision, a risk, or a change to the owner\'s own work. normal: everything else worth knowing') }).optional().describe('Only when no reply is needed but the owner should know (a decision, a status on their work, a doc to read, a risk, a cc on their area). Leave out for thanks, emoji, chatter, and anything that needs a reply.'),
 	split: z.array(z.string()).optional().describe('IDs of new messages that are about a different topic from this item. Do not answer them.'),
 	summary: z.string().describe('One line the owner reads first'),
+	reviewPrs: z.array(z.number().int().positive()).optional().describe('Only the PR numbers this ask asks you to review. Omit PRs it says not to review or only mentions. A review directive followed by several links includes every PR it asks to review. This classification does not grant permission to review or post.'),
 	goalMet: z.boolean().optional().describe('false when what you verified does not meet the goal yet; leave out when it does'),
 	blocker: z.object({
-		kind: z.enum(['tool', 'transient', 'not_ready', 'budget', 'access', 'asker']).describe('tool: no tool found or it failed; transient: busy, throttled, timed out; not_ready: the data is not there yet (CI running, doc not shared); budget: out of time; access: denied on two different routes; asker: only the asker has the information'),
+		kind: z.enum(['tool', 'capability', 'transient', 'not_ready', 'budget', 'access', 'asker']).describe('capability: none of the listed tools can do this step, after searching by what they do; tool: a tool was not found or its call failed; transient: busy, throttled, timed out; not_ready: the data is not there yet (CI running, doc not shared); budget: out of time; access: denied on two different routes; asker: only the asker has the information'),
+		need: z.string().optional().describe('The missing capability as a plain lowercase verb phrase, at most 80 characters. No tool name, id, path, URL, secret or error text.'),
 		why: z.string().describe('One plain line, such as "No tool found to read the updated diff"'),
 		tried: z.array(z.string()).max(8).describe('Each route you tried and its result, such as "ado repo_pull_request iterations: no diff in the reply"'),
 		retryAfterMin: z.number().min(2).max(240).optional().describe('not_ready: when to look again'),
 		waitFor: z.string().optional().describe('not_ready: what it waits for, such as "build 991"'),
-	}).optional().describe('With goalMet false: why the goal is not met, so the runner can try again by another route'),
+	}).overwrite(({ need, ...blocker }) => {
+		const clean = blockerNeed(need)
+		return { ...blocker, ...(clean ? { need: clean } : {}) }
+	}).optional().describe('With goalMet false: why the goal is not met; a missing capability stops instead of automatically retrying'),
 	claims: z.array(ClaimSchema).optional().describe('Bootstrap only: lasting facts found in the source'),
 	style: z.object({ tone: z.enum(['casual', 'formal']).optional(), language: z.string().max(40).optional() }).optional().describe('Learn only: "casual" or "formal" when the owner\'s edit clearly changed the tone that way; the language the owner sent in, only when it differs from the draft\'s'),
 	checkpoint: z.string().optional().describe('Bootstrap only: the newest date or ID you read, so a rerun starts after it'),
 	done: z.boolean().optional().describe('Tracker only: true when the stop condition holds'),
 	job: z.object({ key: z.string(), goal: z.string(), repo: z.string().optional().describe('The repo by its remote or its link, never a folder'), branch: z.string().optional().describe('The PR\'s source branch, when the work is a PR'), owner: z.string().optional(), needsCheckout: z.boolean().optional().describe('True only when this job must run local tests or a build. Reading/reviewing a PR through Azure DevOps does not need a checkout.') }).optional().describe('Reply workflow only: this ask needs real work in its own session. Leave out reply.'),
 	effects: z.array(EffectSchema).optional().describe('Job or reply workflow: changes on other systems the reply promises or the job proposes, made by a separate run only after the owner approves. Only with the changes the prompt lists.'),
+	suggested: z.array(EffectSchema.extend({ origin: z.literal('suggested').default('suggested'), reason: EffectReasonSchema })).optional()
+		.describe('Optional helpful changes nobody explicitly requested or promised, ranked most useful first. Complete effects using only listed write capabilities, each with a reason. They are suggestions, not approval or permission to execute. Never put them in effects.'),
 	deployTargets: z.array(z.object({ pipelineId: z.number().int().positive(), ring: z.string(), project: z.string().optional(), from: z.string().optional().describe('The repo file and commit you read it from') })).max(12).optional().describe('Validate jobs, when the prompt says no deploy pipeline is confirmed yet: every deploy pipeline the repo\'s own config lists, by ID and ring name, including int and production ones, so the owner can confirm the test rings'),
 	todos: z.array(z.string()).optional().describe('Reply workflow: actions the reply promises that no listed write tool can do, so the owner must do them. One short line each.'),
 	follow: z.object({ target: z.string(), until: z.string(), everyHours: z.number().min(1).max(24).optional() }).optional().describe('Reply workflow: when the reply promises to check back (for a partner team\'s answer, a fix, a rollout), what to watch, until when, and how often (hours; pick from urgency, default 4).'),

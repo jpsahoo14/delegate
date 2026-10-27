@@ -1,4 +1,7 @@
-import type { BuildFacts, Config, Effect, PrFacts, RingFacts, RunFact, Workflow } from '../core/types.ts'
+import type { BuildFacts, Config, Effect, Job, PrFacts, PrUnit, RingFacts, RunFact, Workflow } from '../core/types.ts'
+import type { PrRef } from '../core/pr-refs.ts'
+import { isDeepStrictEqual } from 'node:util'
+import { scrub } from '../core/secrets.ts'
 import { buildCheck, buildOf, deployLine, isDeploy, pipelineOf, ringMeaning, ringMoved, targetOf } from '../core/deploy.ts'
 import { remoteOf } from './repos.ts'
 import { effectLeftAction, isVote, pendingEffects, prIdOf, reviewAgain, sameHead, voteValue } from '../core/effects.ts'
@@ -15,11 +18,14 @@ import { closeFamily } from './apply.ts'
 import { realProcs } from './jobs.ts'
 import { close } from './intake.ts'
 import { stopWatch } from './track.ts'
-import { addMeEffect, isAddMe, liveOwnerVote, MAY_REVIEW, groupQuestion, reviewerGroups, roleOn, roleWhy, unknownGroups } from './review-gate.ts'
+import { addMeEffect, isAddMe, isReviewJob, liveOwnerVote, MAY_REVIEW, groupQuestion, reviewerGroups, roleOn, roleWhy, unknownGroups } from './review-gate.ts'
+import { unitForJob } from '../core/review.ts'
+import { bumpReviewEpoch, resetUnitReview } from './pr-review-state.ts'
 import { freshRead } from '../store/fs.ts'
 import { recordCommit } from './commit.ts'
 import { stateFields, statusFields } from '../core/upgrades.ts'
 export { adoPrNumber } from '../core/pr-refs.ts'
+export type { PrRef } from '../core/pr-refs.ts'
 
 // Checklist steps that wait on a build are checked by the runner, not the AI (R-WRK-13).
 // branch, version, repo: where the build is from, for a deploy's build check (review 10-21 P1-3).
@@ -51,6 +57,8 @@ export function adoProbe(cfg: Config): BuildProbe | undefined {
 		async pr(project, repo, id) {
 			type Rev = { displayName?: string; uniqueName?: string; vote?: number; isRequired?: boolean; isContainer?: boolean; hasDeclined?: boolean }
 			const r = await mcp.call<{ status?: string; closedDate?: string; title?: string; createdBy?: { displayName?: string; uniqueName?: string }; autoCompleteSetBy?: unknown; lastMergeSourceCommit?: { commitId?: string }; sourceRefName?: string; lastMergeCommit?: { commitId?: string }; repository?: { name?: string; id?: string }; reviewers?: Rev[] }>('repo_pull_request', { action: 'get', project, repositoryId: repo, pullRequestId: id })
+			if (/^active$/i.test(r.status ?? '') && !Array.isArray(r.reviewers))
+				throw new Error('The PR read returned no reviewer list')
 			const reviewers = r.reviewers ?? []
 			return {
 				status: String(r.status ?? 'unknown'), ...(r.closedDate ? { closedAt: String(r.closedDate) } : {}), votes: reviewers.map(v => ({ name: String(v.displayName ?? ''), vote: Number(v.vote ?? 0) })),
@@ -149,11 +157,9 @@ export async function probeBuilds(store: Store, probe: BuildProbe | undefined, n
 // A pull request link in an item: its project, repository, and number (Azure DevOps needs all three to read it).
 const PR_LINK = /https?:\/\/(?:[\w-]+\.visualstudio\.com|dev\.azure\.com\/[\w-]+)\/([^/\s]+)\/_git\/([^/\s?#]+)\/pullrequest\/(\d+)/i
 const anchorConflicts = new Set<string>()
-// remote: the repo by its remote, from the PR's own link, never the AI's key (owned work).
-// url: the PR's own web link, as the item has it.
-export type PrRef = { project: string; repo: string; id: number; remote?: string; url?: string }
 // The ask's own PR wins over an old job. A pronoun follow-up can use the asker's earlier link, never another sender's PR.
 export function prTarget(store: Store, w: Workflow): number | undefined {
+	if (w.prs) return w.prs.length === 1 ? w.prs[0].id : undefined
 	const job = w.job ? store.job(w.job) : undefined
 	const inText = (text = '') => linksIn(text).filter(l => l.startsWith('pr:')).map(l => l.slice(3))
 	const linked = [...new Set((w.work?.links ?? []).filter(l => /^pr:/i.test(l)).map(l => l.split(/[:/]/).at(-1)))]
@@ -181,15 +187,32 @@ export function prOf(store: Store, w: Workflow): PrRef | undefined {
 	const target = prTarget(store, w)
 	return target ? prRefFor(store, w, target) : undefined
 }
+export function prRefForJob(store: Store, w: Workflow, job: Pick<Job, 'id' | 'key' | 'intent' | 'purpose' | 'carrier'>): PrRef | undefined {
+	if (w.prs && job.purpose === 'work' && !job.carrier && isReviewJob(job.key, job.intent))
+		return unitForJob(w, job.id)?.ref
+	return prOf(store, w)
+}
+export function prTargetForJob(store: Store, w: Workflow, job: Pick<Job, 'id' | 'key' | 'intent' | 'purpose' | 'carrier'>): number | undefined {
+	if (w.prs && job.purpose === 'work' && !job.carrier && isReviewJob(job.key, job.intent))
+		return unitForJob(w, job.id)?.id
+	return prTarget(store, w)
+}
+export function prTargetForEffect(store: Store, w: Workflow, effect: Effect): number | undefined {
+	const id = prIdOf(effect.call)
+	return w.prs && id !== undefined ? w.prs.find(unit => unit.id === id)?.id : prTarget(store, w)
+}
 // Every place an item keeps a PR's full link: the ask, the job, work links, the thread, and the draft's and job reply's sources;
 // only a link with this number counts, never another PR's (queue-new #6, #12).
 export function prRefFor(store: Store, w: Workflow, target: number): PrRef | undefined {
 	const job = w.job ? store.job(w.job) : undefined
 	const sources = [...(w.draft?.sources ?? []), ...(job?.result?.reply?.sources ?? [])].map(s => s.ref)
-	const texts = [w.lastAsk, job?.goal, ...(job?.asks ?? []), ...(w.work?.links ?? []), ...store.thread(w.id).map(m => m.text), ...sources]
+	const thread = store.thread(w.id).filter(m => !m.byOwner && (w.msgIds.includes(m.id) || m.from.id === w.asker?.id)).map(m => m.text)
+	const texts = [w.lastAsk, ...thread, job?.goal, ...(job?.asks ?? []), ...(w.work?.links ?? []), ...sources]
 	for (const t of texts) for (const m of (t ?? '').matchAll(new RegExp(PR_LINK.source, 'gi'))) if (Number(m[3]) === target) return { project: decodeURIComponent(m[1]), repo: decodeURIComponent(m[2]), id: target, remote: remoteOf(m[0]), url: m[0] }
 	const c = (w.effects ?? []).find(e => isVote(e.call) && prIdOf(e.call) === target)?.call
-	return c?.args.project && c.args.repositoryId ? { project: String(c.args.project), repo: String(c.args.repositoryId), id: target } : undefined
+	if (c?.args.project && c.args.repositoryId) return { project: String(c.args.project), repo: String(c.args.repositoryId), id: target }
+	const saved = !w.redacted && w.prs?.find(unit => unit.id === target)?.ref
+	return saved && saved.id === target && saved.project.trim() && saved.repo.trim() ? { ...saved } : undefined
 }
 // The PR numbers the ask (and the asker's messages in the item) name, in order.
 export function askPrs(store: Store, w: Workflow): number[] {
@@ -197,10 +220,175 @@ export function askPrs(store: Store, w: Workflow): number[] {
 	return [...new Set([w.lastAsk ?? '', ...thread].flatMap(t => linksIn(t).filter(l => l.startsWith('pr:')).map(l => Number(l.slice(3)))))]
 }
 
+// Derivation never imports scalar role/read claims as unit authority.
+const unitFacts = (unit: PrUnit) => [unit.ref, unit.requested, unit.read, unit.tries, unit.failure, unit.role, unit.groups,
+	unit.author, unit.status, unit.head, unit.title, unit.decline, unit.skip, unit.again]
+
+export function derivePrUnits(store: Store, w: Workflow, now = Date.now()): PrUnit[] {
+	if (w.state === 'done' || w.redacted) return w.prs ?? []
+	const ids = askPrs(store, w), target = ids.length ? undefined : prTarget(store, w)
+	if (target !== undefined) ids.push(target)
+	const at = new Date(now).toISOString()
+	return ids.filter(id => Number.isSafeInteger(id) && id > 0).map(id => {
+		const ref = prRefFor(store, w, id), previous = w.prs?.find(unit => unit.id === id)
+		if (!ref) {
+			const skip: NonNullable<PrUnit['skip']> = previous?.skip?.by === 'owner' ? previous.skip :
+				previous?.skip?.why === 'no-link' ? previous.skip : { by: 'system', why: 'no-link', at }
+			const next: PrUnit = { id, requested: previous?.requested, read: 'pending', tries: 0, skip, review: previous?.review }
+			if (!previous || !isDeepStrictEqual(unitFacts(previous), unitFacts(next))) bumpReviewEpoch(next)
+			return next
+		}
+		const same = previous?.ref && previous.ref.project === ref.project && previous.ref.repo === ref.repo && previous.ref.id === ref.id
+		const unit: PrUnit = same ? { ...previous, ref } : { id, ref, requested: previous?.requested, read: 'pending', tries: 0 }
+		if (previous && !same) {
+			if (previous.review) unit.review = { epoch: previous.review.epoch }
+			resetUnitReview(unit)
+		}
+		if (previous?.skip?.by === 'owner') unit.skip = previous.skip
+		else if (unit.skip?.why === 'no-link') unit.skip = undefined
+		if (same && !isDeepStrictEqual(unitFacts(previous), unitFacts(unit))) bumpReviewEpoch(unit)
+		return unit
+	})
+}
+
+export async function probePrUnits(store: Store, cfg: Config, probe: BuildProbe | undefined, now = Date.now(), force = false, subjects?: Workflow[], only?: number): Promise<number> {
+	const candidates = (subjects ?? store.workflows()).filter(w => w.prs && w.state !== 'done' && !w.redacted && w.kind !== 'tracker')
+	return readPrUnitCandidates(store, cfg, probe, now, force, candidates, subjects !== undefined, only)
+}
+
+type UnitRead = { state: PrState; role: NonNullable<PrUnit['role']> } | { failure: string }
+function readPrOnce(probe: BuildProbe, ref: PrRef, pass: Map<string, Promise<PrState>>): Promise<PrState> {
+	const key = `${ref.project}/${ref.repo}/${ref.id}`, found = pass.get(key)
+	if (found) return found
+	const read = probe.pr
+	if (!read) throw new Error('No PR reader is configured')
+	const result = Promise.resolve().then(() => read.call(probe, ref.project, ref.repo, ref.id))
+	pass.set(key, result)
+	return result
+}
+
+function unitReadSnapshot(unit: PrUnit, read: UnitRead, at: string): PrUnit {
+	let next: PrUnit
+	if ('failure' in read) {
+		const tries = unit.tries + 1
+		next = { ...unit, tries, read: tries >= 3 ? 'gave-up' : 'failed', readAt: at, failure: read.failure }
+	} else {
+		const { state, role } = read
+		next = { ...unit, read: 'ok', tries: 0, readAt: at, failure: undefined,
+			role, groups: reviewerGroups(state), author: state.author, status: state.status, head: state.head, title: state.title }
+	}
+	if (!isDeepStrictEqual(unitFacts(unit), unitFacts(next))) bumpReviewEpoch(next)
+	return next
+}
+
+async function readPrUnitCandidates(store: Store, cfg: Config, probe: BuildProbe | undefined, now: number, force: boolean, candidates: Workflow[], direct: boolean, only?: number, pass = new Map<string, Promise<PrState>>()): Promise<number> {
+	const commits = new Map(candidates.map(w => [w, recordCommit(w, () => store.workflow(w.id), store.save.bind(store))]))
+	const commitFor = (w: Workflow) => {
+		let commit = commits.get(w)
+		if (!commit) {
+			commit = recordCommit(w, () => store.workflow(w.id), store.save.bind(store))
+			commits.set(w, commit)
+		}
+		return commit
+	}
+	for (const w of candidates) {
+		const commit = commitFor(w), units = derivePrUnits(store, w, now)
+		if (!isDeepStrictEqual(w.prs, units)) { w.prs = units; commit(false) }
+	}
+	if (!probe?.pr) {
+		for (const w of candidates) {
+			const next = w.prs?.map(unit => {
+				if (unit.skip || unit.read === 'gave-up') return unit
+				const pending: PrUnit = { ...unit, read: 'pending', readAt: undefined, failure: undefined }
+				if (unit.read !== 'pending' || unit.failure !== undefined) bumpReviewEpoch(pending)
+				return pending
+			})
+			if (!isDeepStrictEqual(next, w.prs)) { w.prs = next; commitFor(w)(false) }
+		}
+		return 0
+	}
+	const items = candidates.flatMap(w => (w.prs ?? []).filter(unit => unit.ref && !unit.skip && unit.read !== 'gave-up' &&
+		(only === undefined || unit.id === only) && (force || !Number.isFinite(Date.parse(unit.readAt ?? '')) || now - Date.parse(unit.readAt!) >= EVERY_MS))
+		.map(unit => ({ w, unit, ref: unit.ref! })))
+	const requested = new Map(items.map(item => [`${item.w.id}:${item.unit.id}`, item]))
+	const keyOf = (ref: PrRef) => `${ref.project}/${ref.repo}/${ref.id}`
+	const refs = new Map(items.map(({ ref }) => [keyOf(ref), ref]))
+	const reads = new Map<string, UnitRead>(), keys = [...refs.keys()]
+	for (let i = 0; i < keys.length; i += 4) await Promise.all(keys.slice(i, i + 4).map(async key => {
+		const ref = refs.get(key)!
+		try {
+			const state = await readPrOnce(probe, ref, pass)
+			if (!state || !/^(active|completed|abandoned)$/i.test(state.status) || !Array.isArray(state.votes))
+				throw new Error('The PR read returned no usable status or reviewer list')
+			reads.set(key, { state, role: await roleOn(cfg, probe, ref, state) })
+		} catch (error) {
+			const failure = scrub(String(error)).replace(/\s+/g, ' ').slice(0, 120)
+			reads.set(key, { failure })
+			store.log({ event: 'pr-check-failed', pr: ref.id, error: failure })
+		}
+	}))
+	const queued = direct ? undefined : freshRead(() => new Set(store.answers().map(answer => answer.answer.code)))
+	let n = 0
+	for (const was of candidates) {
+		const w = direct ? was : freshRead(() => store.workflow(was.id))
+		if (!w) continue
+		const commit = commitFor(w)
+		commit.refresh()
+		if (w.state === 'done' || w.redacted || queued?.has(w.code)) continue
+		let changed = false
+		w.prs = w.prs?.map(unit => {
+			const request = requested.get(`${w.id}:${unit.id}`)
+			if (!request || !unit.ref || unit.skip || keyOf(unit.ref) !== keyOf(request.ref) ||
+				unit.read !== request.unit.read || unit.tries !== request.unit.tries || unit.readAt !== request.unit.readAt) return unit
+			const read = reads.get(keyOf(unit.ref))
+			if (!read) throw new Error('The requested PR has no read result')
+			const at = new Date(now).toISOString()
+			changed = true
+			n++
+			const next = unitReadSnapshot(unit, read, at)
+			if ('failure' in read) return next
+			const { state, role } = read
+			const basis = unit.review?.basis?.head ?? unit.review?.done?.head
+			if (basis && state.head && !sameHead(basis, state.head) && !sameHead(unit.again?.head, state.head)) {
+				next.again = { head: state.head, at }
+				if (next.review?.epoch === unit.review?.epoch) bumpReviewEpoch(next)
+				w.revAt = new Date(Math.max(now, (Date.parse(w.revAt ?? w.updatedAt) || 0) + 1)).toISOString()
+				w.reviewReply = undefined
+				store.log({ event: 'pr-moved', code: w.code, pr: unit.id, reason: `PR ${unit.id} changed since your review` })
+			}
+			if (unit.decline && unit.decline.role !== 'not-asked' && MAY_REVIEW.includes(role) &&
+				/^active$/i.test(state.status) && now - Date.parse(unit.decline.at) < 7 * 86_400_000) {
+				next.decline = undefined
+				if (next.review?.epoch === unit.review?.epoch) bumpReviewEpoch(next)
+				store.log({ event: 'review-gate-reopened', code: w.code, pr: unit.id, role, was: unit.decline.role })
+			}
+			return next
+		})
+		if (changed) commit(false)
+	}
+	return n
+}
+
 const VOTE: Record<string, (id: number) => string> = { '10': id => `approved PR ${id}`, '5': id => `approved PR ${id} with suggestions`, '-5': id => `voted "Waiting for author" on PR ${id}`, '-10': id => `rejected PR ${id}` }
 // Items waiting on the owner about a pull request are checked against Azure DevOps every 10 minutes, or at once on Check now:
 // a PR completed or abandoned, or the owner's own vote there, takes the item out of Needs you (dogfood 10-20: A12).
 export async function probePRs(store: Store, cfg: Config, probe: BuildProbe | undefined, now = Date.now(), force = false, subjects?: Workflow[]): Promise<number> {
+	const candidates = (subjects ?? store.workflows()).filter(w => w.kind !== 'tracker' && w.state !== 'done' && !w.redacted &&
+		(subjects || w.state === 'needs_human' || w.intent === 'pr_review'))
+	for (const w of candidates) if (w.prs === undefined) {
+		const units = derivePrUnits(store, w, now)
+		if (units.length) {
+			const commit = recordCommit(w, () => store.workflow(w.id), store.save.bind(store))
+			w.prs = units
+			commit(false)
+		}
+	}
+	const pass = new Map<string, Promise<PrState>>()
+	const many = await readPrUnitCandidates(store, cfg, probe, now, force, candidates.filter(w => (w.prs?.length ?? 0) > 1), subjects !== undefined, undefined, pass)
+	return many + await probeSinglePRs(store, cfg, probe, now, force, subjects, pass)
+}
+
+async function probeSinglePRs(store: Store, cfg: Config, probe: BuildProbe | undefined, now: number, force: boolean, subjects?: Workflow[], pass = new Map<string, Promise<PrState>>()): Promise<number> {
 	const commits = new Map((subjects ?? []).map(w => [w, recordCommit(w, () => store.workflow(w.id), store.save.bind(store))]))
 	const commitFor = (w: Workflow) => {
 		const old = commits.get(w)
@@ -213,6 +401,11 @@ export async function probePRs(store: Store, cfg: Config, probe: BuildProbe | un
 		const unknown = subjects ?? store.workflows().filter(w => w.state !== 'done' && w.prGroups !== undefined)
 		for (const w of unknown.filter(w => w.prRead || w.prGroups !== undefined || prRefOf(store, w))) {
 			const commit = commitFor(w)
+			if (w.prs?.length === 1 && !w.prs[0].skip && w.prs[0].read !== 'gave-up') {
+				const unit = w.prs[0], pending: PrUnit = { ...unit, read: 'pending', readAt: undefined, failure: undefined }
+				if (unit.read !== 'pending' || unit.failure !== undefined) bumpReviewEpoch(pending)
+				w.prs[0] = pending
+			}
 			w.prRead = undefined; w.prUnknown = true; w.prGroups = undefined; commit(false)
 		}
 		return 0
@@ -223,18 +416,22 @@ export async function probePRs(store: Store, cfg: Config, probe: BuildProbe | un
 		const commit = commitFor(w)
 		w.prGroups = undefined; commit(false)
 	}
-	const items = candidates.filter((x): x is { w: Workflow; ref: PrRef } => !!x.ref)
+	const items = candidates.filter((x): x is { w: Workflow; ref: PrRef } => !!x.ref &&
+		(!x.w.prs || x.w.prs.length === 1 && !x.w.prs[0].skip && x.w.prs[0].read !== 'gave-up'))
 	// A PR change not yet described is read at once, so the owner sees what it means before the ok.
 	if (!force && mark.prAt && now - Date.parse(mark.prAt) < EVERY_MS && !items.some(x => prChanges(x.w).some(e => !e.pr))) return 0
 	if (!items.length) return 0
 	store.saveProbeMark({ ...store.probeMark(), prAt: new Date(now).toISOString() })
 	// One read per PR, a few at a time.
 	const byPr = new Map<string, PrRef>(items.map(x => [`${x.ref.project}/${x.ref.repo}/${x.ref.id}`, x.ref]))
-	const states = new Map<string, PrState | undefined>()
+	const states = new Map<string, PrState | undefined>(), failures = new Map<string, string>()
 	const keys = [...byPr.keys()]
 	for (let i = 0; i < keys.length; i += 4) await Promise.all(keys.slice(i, i + 4).map(async k => {
 		const ref = byPr.get(k)!
-		try { states.set(k, await probe.pr!(ref.project, ref.repo, ref.id)) } catch (e) { states.set(k, undefined); store.log({ event: 'pr-check-failed', pr: ref.id, error: String(e).slice(0, 200) }) }
+		try { states.set(k, await readPrOnce(probe, ref, pass)) } catch (e) {
+			const failure = scrub(String(e)).replace(/\s+/g, ' ').slice(0, 120)
+			states.set(k, undefined); failures.set(k, failure); store.log({ event: 'pr-check-failed', pr: ref.id, error: failure })
+		}
 	}))
 	// An answer the owner gave while the PRs were read is applied next tick; the item is theirs until then.
 	const queued = freshRead(() => new Set(store.answers().map(a => a.answer.code)))
@@ -245,7 +442,10 @@ export async function probePRs(store: Store, cfg: Config, probe: BuildProbe | un
 		const commit = commitFor(w)
 		const st = states.get(`${ref.project}/${ref.repo}/${ref.id}`)
 		// A reply without a status or reviewers says nothing; it never moves an item or its baseline.
-		if (!st || !/^(active|completed|abandoned)$/i.test(st.status) || !st.votes.length && !/completed|abandoned/i.test(st.status)) {
+		if (!st || !/^(active|completed|abandoned)$/i.test(st.status) || !st.votes.length && !Array.isArray(st.reviewers) && !/completed|abandoned/i.test(st.status)) {
+			if (w.prs?.length === 1) w.prs[0] = unitReadSnapshot(w.prs[0], {
+				failure: failures.get(`${ref.project}/${ref.repo}/${ref.id}`) ?? 'The PR read returned no usable status or reviewer list',
+			}, new Date(now).toISOString())
 			w.prRead = undefined; w.prUnknown = true; w.prRole = undefined; w.prGroups = undefined; commitFor(w)(false)
 			continue
 		}
@@ -255,6 +455,9 @@ export async function probePRs(store: Store, cfg: Config, probe: BuildProbe | un
 		w.prRole = role
 		w.prGroups = reviewerGroups(st)
 		if (st.author) w.prAuthor = st.author
+		const unit = w.prs?.find(unit => unit.id === ref.id)
+		const priorEpoch = unit?.review?.epoch
+		if (unit) Object.assign(unit, unitReadSnapshot(unit, { state: st, role }, new Date(now).toISOString()))
 		const mine = liveOwnerVote(cfg, st), jobId = w.job, job = jobId ? freshRead(() => store.job(jobId)) : undefined
 		const compoundAsk = /\b(?:and|then|also|after|before|plus)\b|[;&]/i.test(w.lastAsk ?? '')
 		const standaloneReview = w.intent === 'pr_review' && !w.partOf && !pendingParts(store, w) && (!compoundAsk || canCloseApproval(store, w))
@@ -278,13 +481,16 @@ export async function probePRs(store: Store, cfg: Config, probe: BuildProbe | un
 		w.prRead = JSON.stringify([ref.id, st.status, st.head, mine])
 		w.prReadAt = new Date(now).toISOString()
 		w.prUnknown = mine === undefined ? true : undefined
-		const basis = w.reviewBasis, liveHead = st.head
+		const basis = unit?.review?.basis ? { pr: unit.id, ...unit.review.basis } : w.reviewBasis, liveHead = st.head
 		const reviewHeadMoved = w.intent === 'pr_review' && basis?.pr === ref.id && !!basis.head?.trim() && !!liveHead?.trim() && !sameHead(liveHead, basis.head)
 		let reviewMarked = false
 		if (reviewHeadMoved && liveHead) {
 			const marked = w.reviewAgain?.pr === ref.id && sameHead(w.reviewAgain.head, liveHead)
 			if (!marked) {
 				w.reviewAgain = { pr: ref.id, head: liveHead, at: new Date(now).toISOString() }
+				if (unit) unit.again = { head: liveHead, at: new Date(now).toISOString() }
+				if (unit && unit.review?.epoch === priorEpoch) bumpReviewEpoch(unit)
+				w.reviewReply = undefined
 				w.revAt = new Date(Math.max(now, (Date.parse(w.revAt ?? w.updatedAt) || 0) + 1)).toISOString()
 				store.log({ event: 'pr-moved', code: w.code, pr: ref.id, reason: `PR ${ref.id} changed since your review` })
 				reviewMarked = true
@@ -293,10 +499,14 @@ export async function probePRs(store: Store, cfg: Config, probe: BuildProbe | un
 		regateVotes(store, cfg, w, ref, st)
 		// A review declined by the gate starts by itself once the owner is a reviewer (added in Azure DevOps, or by Add me), within
 		// a week of the ask; a PR that could not be read is decided again now that it can be (review gate G6, G13).
-		const declined = w.reviewDecline
+		const declined = w.reviewDecline ?? (unit?.decline ? { pr: unit.id, ...unit.decline } : undefined)
 		if (!subjects && declined && declined.pr === ref.id && declined.role !== 'not-asked' && (MAY_REVIEW.includes(w.prRole) || declined.role === 'unread') && /^active$/i.test(st.status) && now - Date.parse(declined.at) < 7 * 86_400_000) {
 			Object.assign(w, { ...stateFields(w, 'running'), status: MAY_REVIEW.includes(w.prRole) ? `You're a reviewer on PR ${ref.id} now; starting the review` : `PR ${ref.id} can be read again; checking whether you are a reviewer`,
 				reviewDecline: undefined, question: undefined, questionHint: undefined, context: w.context?.filter(c => c.label !== 'Not reviewing'), effects: (w.effects ?? []).filter(e => !isAddMe(e)), pending: w.pending.length ? w.pending : w.msgIds.slice(-1) })
+			if (unit) {
+				unit.decline = undefined
+				if (unit.review?.epoch === priorEpoch) bumpReviewEpoch(unit)
+			}
 			store.log({ event: 'review-gate-reopened', code: w.code, pr: ref.id, role: w.prRole, was: declined.role })
 			commitFor(w)()
 			n++
@@ -360,19 +570,24 @@ export function prRefOf(store: Store, w: Workflow): PrRef | undefined {
 }
 
 // What a PR change means, from Azure DevOps, on the item and its job alike. New facts are a new revision, so an ok never approves unseen ones.
-const factsOf = (st: PrState): PrFacts => ({ title: st.title ?? '', author: st.author ?? '', required: st.required ?? [], autoComplete: !!st.autoComplete })
-function describe(store: Store, w: Workflow, st: PrState): boolean {
+export const factsOf = (st: PrState): PrFacts => ({ title: st.title ?? '', author: st.author ?? '', required: st.required ?? [], autoComplete: !!st.autoComplete })
+function describe(store: Store, w: Workflow, st: PrState, id?: number): boolean {
 	const facts = factsOf(st)
-	if (prChanges(w).every(e => JSON.stringify(e.pr) === JSON.stringify(facts))) return false
-	const set = (es: Effect[] = []) => es.map(e => (isVote(e.call) && prIdOf(e.call) !== undefined && !e.done ? { ...e, pr: facts } : e))
-	setEffects(store, w, set)
+	if (prChanges(w).filter(e => id === undefined || prIdOf(e.call) === id).every(e => JSON.stringify(e.pr) === JSON.stringify(facts))) return false
+	const set = (es: Effect[] = []) => es.map(e => (isVote(e.call) && prIdOf(e.call) !== undefined &&
+		(id === undefined || prIdOf(e.call) === id) && !e.done ? { ...e, pr: facts } : e))
+	setEffects(store, w, set, id)
 	return true
 }
 
-function setEffects(store: Store, w: Workflow, f: (es?: Effect[]) => Effect[]) {
+function setEffects(store: Store, w: Workflow, f: (es?: Effect[]) => Effect[], id?: number) {
 	w.effects = f(w.effects)
-	const job = w.job ? store.job(w.job) : undefined
-	if (job?.result) { job.result = { ...job.result, effects: f(job.result.effects) }; store.saveJob(job) }
+	const unit = id === undefined ? undefined : w.prs?.find(unit => unit.id === id)
+	const ids = [...new Set([w.job, unit?.job, unit?.review?.completed?.job].filter((id): id is string => !!id))]
+	for (const id of ids) {
+		const job = store.job(id)
+		if (job?.result) { job.result = { ...job.result, effects: f(job.result.effects) }; store.saveJob(job) }
+	}
 	w.revAt = new Date().toISOString()
 }
 
@@ -429,9 +644,10 @@ function clearResetVotes(store: Store, w: Workflow, id: number, state: PrState, 
 	if (vote === undefined || !/^active$/i.test(state.status)) return
 	const stale = (e: Effect) => e.done && isVote(e.call) && prIdOf(e.call) === id &&
 		(!sameVote(vote, voteValue(e.call)) || !!e.head && !!state.head && !sameHead(e.head, state.head))
-	const job = w.job ? store.job(w.job) : undefined
-	if (!w.effects?.some(stale) && !job?.result?.effects?.some(stale)) return
-	setEffects(store, w, (effects = []) => effects.map(e => stale(e) ? { ...e, done: undefined } : e))
+	const unit = w.prs?.find(unit => unit.id === id)
+	const ids = [...new Set([w.job, unit?.job, unit?.review?.completed?.job].filter((id): id is string => !!id))]
+	if (!w.effects?.some(stale) && !ids.some(id => store.job(id)?.result?.effects?.some(stale))) return
+	setEffects(store, w, (effects = []) => effects.map(e => stale(e) ? { ...e, done: undefined } : e), id)
 	store.log({ event: 'vote-receipt-reset', workflowId: w.id, code: w.code, pr: id, vote })
 }
 
@@ -442,10 +658,13 @@ export const noVoteNeeded = (id: number, state: string) => `PR ${id} is ${state}
 export const voteDropped = (status = '') => /^PR \d+ is \w+, so no vote is needed$/.test(status)
 export async function recheckPr(store: Store, w: Workflow, probe?: BuildProbe): Promise<string | undefined> {
 	const before = prChanges(w)
-	const votes = (w.effects ?? []).filter(e => !e.off && isVote(e.call) && prIdOf(e.call) !== undefined)
+	const votes = w.prs ? before : (w.effects ?? []).filter(e => !e.off && isVote(e.call) && prIdOf(e.call) !== undefined)
 	if (!votes.length) return undefined
-	const ref = prRefOf(store, w), code = w.code, id = prIdOf(votes[0].call)!
-	if (!ref || ref.id !== id || id !== prTarget(store, w)) { w.prGroups = undefined; return `Not done ${code}: PR ${id} is not this item's PR. Nothing was changed.` }
+	const ids = [...new Set(votes.map(effect => prIdOf(effect.call)))]
+	if (ids.length !== 1) return `Not done ${w.code}: approve one PR at a time. Nothing was changed.`
+	const id = prIdOf(votes[0].call)!, unit = w.prs?.find(unit => unit.id === id)
+	const ref = w.prs ? unit?.ref : prRefOf(store, w), code = w.code
+	if (!ref || ref.id !== id || (w.prs ? !unit : id !== prTarget(store, w))) { w.prGroups = undefined; return `Not done ${code}: PR ${id} is not this item's PR. Nothing was changed.` }
 	if (!probe?.pr) { w.prGroups = undefined; return `Not done ${code}: PR ${id} must be checked first, and no Azure DevOps server is set up. Nothing was changed.` }
 	let st: PrState
 	try { st = await probe.pr(ref.project, ref.repo, id) } catch (e) { w.prGroups = undefined; return `Not done ${code}: could not read PR ${id} first (${String(e).slice(0, 120)}). Nothing was changed. Say "ok ${code}" to try again.` }
@@ -454,12 +673,13 @@ export async function recheckPr(store: Store, w: Workflow, probe?: BuildProbe): 
 	const mine = liveOwnerVote(store.config(), st)
 	w.prRead = JSON.stringify([id, st.status, st.head, mine])
 	w.prUnknown = mine === undefined ? true : undefined
+	if (unit) Object.assign(unit, unitReadSnapshot(unit, { state: st, role: await roleOn(store.config(), probe, ref, st) }, new Date().toISOString()))
 	clearResetVotes(store, w, id, st, mine)
-	const left = prChanges(w)
+	const left = prChanges(w).filter(effect => prIdOf(effect.call) === id)
 	if (!left.length) return /^active$/i.test(st.status) && mine === undefined
 		? `Not done ${code}: the current owner vote on PR ${id} could not be verified. Nothing was changed or sent.` : undefined
 	if (/completed|abandoned/i.test(st.status)) {
-		setEffects(store, w, (es = []) => es.map(e => (isVote(e.call) && !e.done ? { ...e, off: true } : e)))
+		setEffects(store, w, (es = []) => es.map(e => (isVote(e.call) && prIdOf(e.call) === id && !e.done ? { ...e, off: true } : e)), id)
 		const rest = pendingEffects(w.effects).length, state = st.status.toLowerCase()
 		Object.assign(w, statusFields('refused', noVoteNeeded(id, state)))
 		// The reply was written counting on the vote, so it is quoted before it goes without it (review 10-21 P2-10).
@@ -467,15 +687,16 @@ export async function recheckPr(store: Store, w: Workflow, probe?: BuildProbe): 
 	}
 	const head = left.find(e => isVote(e.call))?.head
 	if (head && !sameHead(st.head, head)) {
+		if (unit) { unit.again = { head: st.head ?? head, at: new Date().toISOString() }; bumpReviewEpoch(unit) }
 		Object.assign(w, { question: reviewAgain(code, `PR ${id} changed since your review (new commits).`), questionHint: undefined, status: `PR ${id} changed since your review`, reviewAgain: { pr: id, head: st.head ?? head, at: new Date().toISOString() }, revAt: new Date().toISOString() })
 		return `Not done ${code}: ${reviewAgain(code, `PR ${id} changed since your review (new commits).`)} Nothing was changed or sent.`
 	}
 	if (!before.length) {
-		describe(store, w, st)
+		describe(store, w, st, id)
 		w.status = `The recorded vote on PR ${id} is no longer in place. Review the newly required change.`
 		return `Not done ${code}: ${w.status} Nothing was changed or sent.`
 	}
-	if (describe(store, w, st)) return `Before you ok ${code}: ${effectLine(pendingEffects(w.effects))}. Say "ok ${code}" to go ahead.`
+	if (describe(store, w, st, id)) return `Before you ok ${code}: ${effectLine(pendingEffects(w.effects))}. Say "ok ${code}" to go ahead.`
 	return undefined
 }
 
@@ -486,12 +707,17 @@ export const sameVote = (a: number, b?: number) => a === b || (a >= 5 && (b ?? 0
 export async function voteNow(store: Store, cfg: Config, w: Workflow, effects: Effect[], probe?: BuildProbe): Promise<{ effects: Effect[]; why?: string; again?: string; vote?: number; head?: string }> {
 	const votes = effects.filter(e => isVote(e.call))
 	if (!votes.length) return { effects }
+	const ids = [...new Set(votes.map(effect => prIdOf(effect.call)))]
+	if (ids.length !== 1) return { effects, why: 'Votes on different PRs require separate approval' }
 	if (!probe?.pr) { w.prGroups = undefined; return { effects } }
-	const c = votes[0].call!, ref = prOf(store, w) ?? { project: String(c.args.project ?? ''), repo: String(c.args.repositoryId ?? ''), id: prIdOf(c)! }
+	const c = votes[0].call!, unit = w.prs?.find(unit => unit.id === prIdOf(c))
+	const ref = w.prs ? unit?.ref : prOf(store, w) ?? { project: String(c.args.project ?? ''), repo: String(c.args.repositoryId ?? ''), id: prIdOf(c)! }
+	if (!ref) return { effects, why: 'The vote has no readable PR in this ask' }
 	let st: PrState
 	try { st = await probe.pr(ref.project, ref.repo, ref.id) } catch (e) { w.prGroups = undefined; store.log({ event: 'pr-check-failed', pr: ref.id, error: String(e).slice(0, 200) }); return { effects } }
 	if (!/^(active|completed|abandoned)$/i.test(st.status)) { w.prGroups = undefined; return { effects } }
 	w.prGroups = reviewerGroups(st)
+	if (unit) Object.assign(unit, unitReadSnapshot(unit, { state: st, role: await roleOn(cfg, probe, ref, st) }, new Date().toISOString()))
 	const rest = effects.filter(e => !isVote(e.call))
 	if (/completed|abandoned/i.test(st.status)) return { effects: rest, why: `PR ${ref.id} is ${st.status.toLowerCase()}` }
 	const vote = liveOwnerVote(cfg, st)

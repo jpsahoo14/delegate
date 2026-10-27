@@ -18,7 +18,9 @@ export function voteClaimText(pr: number | undefined, claim: number | 'approval'
 
 // A run tag such as "[E2E-… 1792751673901]" before the words is a label, not part of what they say (bug 10-23 E35).
 const untagged = (text: string) => text.trim().replace(/\u2019/g, "'").replace(/^(?:\[[^\]\n]{1,120}\]\s*)+/, '')
-const sentencesOf = (text: string) => untagged(text).split(/(?<=[.!?;])\s+|\n+/).map(s => s.trim()).filter(Boolean)
+export const sentencesOf = (text: string) => untagged(text).split(/(?<=[.!?;])\s+|\n+/).map(s => s.trim()).filter(Boolean)
+export const clausesOf = (sentence: string, keepNumberLists = false) =>
+	sentence.split(keepNumberLists ? /(?:,(?!\s*(?:(?:and|or)\s+)?#?\d)|[;\u2014\u2013:])\s*(?:(?:but|and)\s+)?/i : /[,;\u2014\u2013:]\s*(?:(?:but|and)\s+)?/i).map(clause => clause.trim())
 export function approvalReplyMatches(text: string, vote: number | undefined, pr: number): boolean {
 	if (!voteMention(text)) return true
 	// Every sentence that speaks of approval must be a complete, bounded statement the vote supports; the rest is free.
@@ -111,7 +113,7 @@ const VOTE_CLASSES = [
 ] as const
 export function voteSentences(text: string, owner = '') {
 	return sentencesOf(text).filter(voteMention).flatMap(sentence =>
-		sentence.split(/[,;\u2014\u2013:]\s*(?:(?:but|and)\s+)?/i).map(clause => clause.trim()).filter(voteMention).map(clause => {
+		clausesOf(sentence).filter(voteMention).map(clause => {
 			const others = othersSentence(clause, owner)
 			const vote = explicitVote(clause) ?? (/\breject(?:ed|ion)?\b|\brequested changes\b/i.test(clause) ? -10 :
 				/\bwaiting (?:for|on) author\b/i.test(clause) ? -5 : 'approval' as const)

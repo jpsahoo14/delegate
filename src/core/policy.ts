@@ -1,5 +1,5 @@
 import { shareHoldText } from './share.ts'
-import { pendingEffects, sameHead } from './effects.ts'
+import { pendingEffects, prIdOf, sameHead } from './effects.ts'
 import type { Confidence, Config, Job, Person, Rule, Source, Workflow } from './types.ts'
 import { voteMention } from './vote-claims.ts'
 import { scrub } from './secrets.ts'
@@ -59,7 +59,12 @@ function matchesScope(r: Rule, wf: Workflow, conf: Confidence): boolean {
 	// "direct": any one-to-one chat with these people, so a rule needs no chat ID found in advance (dogfood 10-19).
 	if (r.when.chat === 'direct') { if (wf.chat.group || wf.chat.test || wf.chat.id.startsWith('ch|')) return false }
 	else if (r.when.chat && r.when.chat !== wf.chat.id) return false
-	if (r.when.reviewerGroup && !wf.prGroups?.some(g => groupName(g) === groupName(r.when.reviewerGroup!))) return false
+	if (r.when.reviewerGroup) {
+		const matches = (groups?: string[]) => !!groups?.some(g => groupName(g) === groupName(r.when.reviewerGroup!))
+		if (r.then === 'review' && wf.reviewReply) {
+			if (!wf.reviewReply.units.length || !wf.reviewReply.units.every(id => matches(wf.prs?.find(unit => unit.id === id)?.groups))) return false
+		} else if (!matches(wf.prGroups)) return false
+	}
 	return r.then === 'review' || !r.when.minConfidence || RANK[conf] >= RANK[r.when.minConfidence]
 }
 const groupName = (name: string) => name.split('\\').at(-1)!.normalize('NFKC').trim().toLowerCase()
@@ -84,9 +89,27 @@ export function decide(wf: Workflow, rules: Rule[], ctx: PolicyContext, mode: 'r
 	const lane = mode === 'result' ? 'result' : 'reply'
 	const rule = ruleFor(current, rules, conf, lane)
 	const review = rule?.then === 'review' ? rule : undefined
-	const reviewReply = !!review && !!wf.reviewBasis && wf.reviewBasis.pr === wf.reviewRun?.pr && sameHead(wf.reviewBasis.head, wf.reviewRun.head) &&
-		wf.reviewRun.rule === review.id && (mode === 'review-comments' ? wf.reviewRun.phase === 'posting' :
-		wf.reviewRun.phase === 'held' && wf.reviewRun.turn === wf.revAt && wf.reviewRun.sendText === wf.draft?.text && wf.reviewDone?.byRule === review.id && (wf.reviewDone.posted.length > 0 || wf.reviewDone.clean === true))
+	const shared = wf.reviewReply
+	const reviewed = (wf.prs ?? []).filter(unit => unit.requested && !unit.skip && (unit.review?.completed || unit.review?.done))
+	const reviewReply = !!review && (mode === 'review-comments' ? !!wf.prs?.some(unit => {
+		const frame = unit.review, run = frame?.run, completed = frame?.completed
+		return unit.requested && unit.read === 'ok' && !unit.skip && !unit.again && !unit.decline && completed?.verified &&
+			sameHead(unit.head, completed.head) && sameHead(completed.head, frame?.basis?.head) && run?.phase === 'posting' &&
+			run.rule === review.id && run.approval.byRule === review.id && Number.isSafeInteger(frame?.epoch) && frame!.epoch >= 0 &&
+			run.approval.epoch === frame?.epoch &&
+			sameHead(run.head, completed.head) && run.resultAt === completed.resultAt && run.carrier === completed.job
+	}) : !!shared && shared.phase === 'held' && shared.rule === review.id && !!shared.turn && shared.turn === wf.revAt &&
+		shared.sendText === wf.draft?.text && shared.units.length > 0 && new Set(shared.units).size === shared.units.length &&
+		!(wf.effects ?? []).some(effect => effect.maybe && wf.prs?.some(unit => shared.units.includes(unit.id) && prIdOf(effect.call) === unit.id)) &&
+		shared.units.length === reviewed.length && reviewed.every(unit => shared.units.includes(unit.id) && unit.read === 'ok' &&
+			!unit.again && !unit.decline && unit.review?.completed?.verified && unit.review.done?.byRule === review.id &&
+			(unit.review.done.posted.length > 0 || unit.review.done.clean === true) &&
+			sameHead(unit.head, unit.review.completed.head) && sameHead(unit.head, unit.review.done.head) &&
+			sameHead(unit.head, unit.review.basis?.head) && unit.review.run?.phase === 'held' && unit.review.run.rule === review.id &&
+			unit.review.run.carrier === unit.review.completed.job && unit.review.run.resultAt === unit.review.completed.resultAt &&
+			unit.review.run.approval.byRule === review.id && Number.isSafeInteger(unit.review.epoch) && unit.review.epoch >= 0 &&
+			unit.review.run.approval.epoch === unit.review.epoch) &&
+		!!wf.prs?.every(unit => !unit.requested || unit.skip || unit.decline || unit.read === 'gave-up' || !!unit.review?.completed))
 	const d = (action: Decision['action'], reason: string): Decision => ({ action, ruleId: rule?.id, reason, confidence: conf })
 	if (!rule) {
 		const pending = rules.filter(r => !r.style && !grantConfirmed(r) && matchesScope(r, current, conf) && inLane(r, current, lane)).sort(compareGrants)[0]
@@ -107,9 +130,9 @@ export function decide(wf: Workflow, rules: Rule[], ctx: PolicyContext, mode: 'r
 	if (wf.startedBy === 'room') return d('draft', 'It was sent to the whole chat; a reply there waits for you')
 	if (mode !== 'result' && (wf.work || wf.partOf)) return d('draft', 'Replies on open work always wait for you')
 	if (wf.shareHold) return d('draft', shareHoldText(wf.shareHold)!)
-	if ((!reviewReply && pendingEffects(wf.effects).length) || wf.todos?.length || wf.follow) return d('draft', 'It promises changes, a follow-up, or something you must do')
+	if ((!reviewReply && pendingEffects(wf.effects).some(e => e.origin !== 'suggested')) || wf.todos?.length || wf.follow) return d('draft', 'It promises changes, a follow-up, or something you must do')
 	if (mode !== 'result' && wf.intent === 'pr_review' && !review && !rule) return d('draft', 'PR reviews wait for you; no review rule covers this.')
-	if (review && wf.reviewRun?.phase === 'replied') return d('draft', 'The review reply was sent; approving stays yours.')
+	if (review && shared?.phase === 'replied') return d('draft', 'The review reply was sent; approving stays yours.')
 	if (voteMention(wf.draft?.text ?? '')) return d('draft', 'It speaks of an approval or a vote, so it waits for you')
 	if (!rule) return d('draft', mode === 'result' ? 'No rule sends results in this chat' : 'No rule covers this sender and ask')
 	if (ctx.held?.includes(rule.id)) return d('draft', `Rule ${rule.id} is on hold: you said one of its replies was not needed`)

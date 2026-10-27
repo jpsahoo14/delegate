@@ -10,6 +10,7 @@ import { adoPrNumber, isNonAdoPrLink, linksIn, prMentions } from '../core/pr-ref
 import { messageLink } from '../adapters/channels.ts'
 import { leftActionText, leftPromise } from '../core/left-lines.ts'
 import { clearLeft, mergeLeft, openLeft } from './left.ts'
+import { resetUnitReview } from './pr-review-state.ts'
 export { openLeft } from './left.ts'
 export { approvalMention, voteMention, approvalReplyMatches, reReviewAsk, othersApproval, othersApprovalMismatch, voteSentences, claimedVote, claimsApproval, approvalClaim, voteClaimGap, claimedPrs, approvalAsk, approvalOnly, type ApprovalClaim } from '../core/vote-claims.ts'
 export { linksIn, prNumbersIn, isNonAdoPrLink } from '../core/pr-refs.ts'
@@ -155,12 +156,17 @@ export function newTurn(wf: Workflow, keepSent = false) {
 	wf.statusReason = undefined; wf.reviewAgain = undefined; wf.returnedFrom = undefined; wf.leftRetry = undefined
 	wf.ownerSend = undefined; clearHold(wf)
 	wf.reviewRun = undefined; wf.reviewDone = undefined; wf.reviewAsk = undefined; wf.reviewAttempt = undefined; wf.reviewBasis = undefined
+	wf.reviewReply = undefined
+	wf.questionOf = undefined
+	for (const unit of wf.prs ?? []) { resetUnitReview(unit); unit.again = undefined }
 	wf.voteClaimRedrafted = undefined
 	Object.assign(wf, { draft: undefined, prDraft: undefined, learnAfter: undefined, closeWorkAfterSend: undefined, choices: undefined, question: undefined, questionHint: undefined, effects: undefined, promised: undefined, decision: undefined, approved: undefined, picked: undefined, sendAt: undefined, correction: undefined, todos: undefined, newCount: 0, ...(keepSent ? {} : { sent: undefined }) })
 }
 
 // When a reply goes out, what it promised the owner would do becomes theirs to keep, once per open text (R-NEX-07).
 export function keepTodos(wf: Workflow, at: string, todos = wf.todos) {
+	if (wf.sent?.at === at && wf.sent.byRule)
+		wf.effects = wf.effects?.filter(effect => effect.origin !== 'suggested' || !!(effect.done || effect.maybe || effect.error))
 	const msgId = wf.sent?.at === at ? wf.sent.msgId : wf.promise?.at === at ? wf.promise.msgId : undefined
 	mergeLeft(wf, [...new Set(todos ?? [])].map(leftPromise), { kind: 'your-reply', at,
 		...(msgId ? { href: messageLink(wf.chat.id, msgId) } : {}) })

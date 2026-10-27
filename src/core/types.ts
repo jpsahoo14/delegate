@@ -2,6 +2,8 @@ import type { Section } from './whose.ts'
 import type { Attachment } from './intake.ts'
 import type { Capability } from './capabilities.ts'
 import type { LeftLine, LeftRefusal } from './left-lines.ts'
+import type { PrRef } from './pr-refs.ts'
+import type { ReviewFrame, ReviewReply } from './review.ts'
 export type Id = string
 export type Code = string
 // open: the reply is out and the work it started goes on; nothing needs the owner now (dev-spec/work.md).
@@ -15,6 +17,26 @@ export type QuestionHint = { answers?: string[] }
 export type EditScope = { item: string; chat: string; chatName?: string; group: boolean; asker?: Person }
 // Who the owner is on a pull request: a reviewer by name, a member of a reviewer team that has not approved, its author, or none.
 export type PrRole = 'reviewer' | 'group' | 'group-approved' | 'group-unknown' | 'author' | 'declined' | 'none' | 'ambiguous'
+export type PrUnit = {
+	id: number
+	ref?: PrRef
+	requested?: true
+	read: 'pending' | 'ok' | 'failed' | 'gave-up'
+	tries: number
+	readAt?: string
+	failure?: string
+	role?: PrRole
+	groups?: string[]
+	author?: string
+	status?: string
+	head?: string
+	title?: string
+	decline?: { role: PrRole | 'not-asked'; at: string }
+	skip?: { by: 'owner' | 'system'; why: 'owner' | 'no-link'; at: string }
+	again?: { head: string; at: string }
+	job?: string
+	review?: ReviewFrame
+}
 export type Confidence = 'high' | 'medium' | 'low'
 
 export type Rule = {
@@ -123,7 +145,11 @@ export type WorkReport = {
 // ring: the ring as Azure DevOps showed it before the ok; a late ok compares it with the ring as it is then (owned work).
 // turns: server-owned proposal provenance, separate from the operation's write-ledger identity.
 export type ReviewSeverity = 'High' | 'Medium' | 'Low'
-export type Effect = { system: string; action: string; target: string; summary: string; payload?: unknown; call?: Call; head?: string; pr?: PrFacts; deploy?: { ring: string; pr: number }; ring?: RingFacts; build?: BuildFacts; turns?: string[]; byRule?: string; severity?: ReviewSeverity; held?: 'sharing'; done?: { ref?: string; at: string; byRule?: string; severity?: ReviewSeverity }; error?: string; off?: boolean; offReason?: 'self-chat-ok'; maybe?: true }
+export type EffectOrigin = 'asked' | 'promised' | 'note' | 'rule' | 'suggested'
+export type EffectReason = { kind: 'asked' | 'promised' | 'open-item' | 'history' | 'rule'; text: string }
+export type EffectGroup = { id: string; question: string; min: number }
+export type Effect = { system: string; action: string; target: string; summary: string; payload?: unknown; call?: Call; head?: string; pr?: PrFacts; deploy?: { ring: string; pr: number }; ring?: RingFacts; build?: BuildFacts; turns?: string[]; byRule?: string; severity?: ReviewSeverity; held?: 'sharing'; done?: { ref?: string; at: string; byRule?: string; severity?: ReviewSeverity }; error?: string; off?: boolean; offReason?: 'self-chat-ok'; maybe?: true; origin?: EffectOrigin; reason?: EffectReason; askQuote?: string; group?: EffectGroup }
+export type SuggestedEffect = Effect & { origin: 'suggested'; reason: EffectReason }
 // A pipeline run as Azure DevOps lists it: who started it, when, and how it stands.
 export type RunFact = { id: number; by: string; at: string; status: string; result?: string }
 export type RingFacts = { last?: RunFact; running: RunFact[]; readAt: string }
@@ -153,6 +179,7 @@ export type Job = {
 	session: { agent: string; id: string }
 	state: 'queued' | 'running' | 'done' | 'failed'
 	purpose: 'work' | 'execute'
+	carrier?: true
 	byRule?: string
 	// Set when a work run used up its time without reporting: the next run is one short turn to report what it found.
 	wrapUp?: boolean
@@ -166,12 +193,13 @@ export type Job = {
 	branch?: string
 	redacted?: boolean
 	// A relay run is a message to the owner's open session on some machine (research/cross-session-opus.md): no process here, so no pid to watch.
-	run?: { id: Id; pid: number; startedAt: string; machine: string; purpose: 'work' | 'execute'; asks: number; wrapUp?: boolean; relay?: string; direct?: true }
+	run?: { id: Id; pid: number; startedAt: string; machine: string; purpose: 'work' | 'execute'; asks: number; wrapUp?: boolean; relay?: string; direct?: true; oneMore?: true; spent?: true; tools?: { offered: number; scoped: boolean } }
 	// Set when the job's session is the owner's own open session: asks go to it as messages, never as a second process on its history.
 	// sent: asks the session has; from: where the run in flight started; ok: asks the owner let through (review 10-19 #5, #12).
 	relay?: { machine: string; session: string; what: string; sent?: number; from?: number; ok?: number }
 	// at: when a tracker check gave this result, so the page says when the last check really ran.
-	result?: { summary: string; reply?: Draft; effects: Effect[]; context?: Fact[]; refused?: LeftRefusal[]; at?: string; findings?: ReviewFinding[]; reviewHead?: string; reviewClean?: true; reviewSources?: { unknown: boolean; chats: string[]; restricted: boolean }; voteRecommendation?: VoteRecommendation; sendFacts?: Record<string, ResultFacts> }
+	result?: { summary: string; reply?: Draft; effects: Effect[]; context?: Fact[]; refused?: LeftRefusal[]; at?: string; findings?: ReviewFinding[]; reviewHead?: string; reviewClean?: true; reviewSources?: { unknown: boolean; chats: string[]; restricted: boolean }; voteRecommendation?: VoteRecommendation; sendFacts?: Record<string, ResultFacts>
+		state?: Report['state']; question?: string; questionHint?: QuestionHint; goalMet?: boolean; blocker?: Blocker; todos?: string[] }
 	error?: string
 	// Trackers (R-TRK-01): run again every N minutes until the condition in words holds.
 	every?: number
@@ -181,6 +209,10 @@ export type Job = {
 	missed?: number
 	// A work run that fell short of its goal tries again at nextAt, another way (design-spec/goal-retry.md).
 	retry?: Retry
+	stopped?: { kind: 'capability' | 'budget'; need?: string; at: string; limit?: { runs: number; tokens: number }; basis?: 'runs' | 'tokens' }
+	oneMore?: true
+	fullCatalog?: true
+	spent?: { runs: number; tokensIn: number; tokensOut: number; creditsNano?: number; unknownRuns: number; since: string }
 	// A tracker started by a reply's promise stops checking at this time unless the owner extends it.
 	endsAt?: string
 	last?: string
@@ -214,6 +246,7 @@ export type Workflow = {
 	prRead?: string
 	prReadAt?: string
 	prUnknown?: true
+	prs?: PrUnit[]
 	prAnchor?: { pr: number; msgId: string; at: string; also?: number[] }
 	// The owner's place on the item's PR at the last read, and why a review was not started (PR review gate, owner rule 10-23).
 	prRole?: PrRole
@@ -233,6 +266,7 @@ export type Workflow = {
 	reviewAsk?: { job: string; ids: string[]; lastMsgId: string; ownerAnswer?: string }
 	reviewAttempt?: { job: string; resultAt: string }
 	reviewRun?: { job: string; carrier: string; resultAt: string; rule: string; pr: number; head: string; turn?: string; phase: 'posting' | 'held' | 'replied'; reply?: Draft; sendText?: string }
+	reviewReply?: ReviewReply
 	reviewDone?: { pr: number; head: string; reviewedAt: string; byRule: string; clean?: true; posted: { severity: ReviewSeverity; file?: string; line?: number; text: string; thread?: string }[]; counts: { high: number; medium: number; low: number }; waiting: string[]; reply?: { text: string; teams: string }; fallback?: string }
 	completionSeen?: string
 	draft?: Draft
@@ -249,6 +283,7 @@ export type Workflow = {
 	voteClaimRedrafted?: true
 	question?: string
 	questionHint?: QuestionHint
+	questionOf?: { job: string; pr: number }
 	// What the worker could not read, such as an image or a file it has no access to (R-ING-11).
 	gaps?: string[]
 	choices?: Choices
@@ -263,7 +298,7 @@ export type Workflow = {
 	answerSurface?: 'chat' | 'self' | 'panel'
 	status: string
 	workingSince?: string
-	statusReason?: { kind: 'not-sent' | 'not-sure-sent' | 'could-not-start' | 'not-finished' | 'refused' | 'back-from-window' | 'vote-claim'; text: string; at: string }
+	statusReason?: { kind: 'not-sent' | 'not-sure-sent' | 'could-not-start' | 'not-finished' | 'refused' | 'back-from-window' | 'vote-claim' | 'action-claim'; text: string; at: string }
 	reviewAgain?: { pr: number; head: string; at: string }
 	returnedFrom?: { machine: string; at: string; report: boolean }
 	// holding: the last send was a holding reply; the full answer is still owed and the item stays open (#41).
@@ -344,6 +379,7 @@ export type Workflow = {
 	// for ok (Slice 3). pending: waits for the run; checking: the run is going; offered: its changes wait for ok; failed: it could not tell.
 	promise?: { text: string; at: string; msgId?: string; state: 'pending' | 'checking' | 'offered' | 'failed'; why?: string }
 	approved?: { text: string; effects: string; at: string; replyDigest?: string; sendReview?: string; byRule?: string; effectIds?: string[] }
+	actionClaimOverride?: { digest: string; include: string[]; capability: string }
 	revAt?: string
 	newCount: number
 	// A short summary of this sender's previous, closed item, so a new item starts with that context (R-WF-09).
@@ -371,6 +407,7 @@ export type Report = {
 	context?: Fact[]
 	findings?: ReviewFinding[]
 	voteRecommendation?: VoteRecommendation
+	reviewPrs?: number[]
 	meeting?: Meeting
 	answer?: string
 	answeredItems?: string[]
@@ -383,6 +420,7 @@ export type Report = {
 	deployTargets?: ProposedTarget[]
 	done?: boolean
 	effects?: Effect[]
+	suggested?: SuggestedEffect[]
 	todos?: string[]
 	follow?: Follow
 	work?: WorkReport
@@ -396,13 +434,13 @@ export type Report = {
 }
 
 // Why a run fell short of its goal, so the runner can try again by another route (design-spec/goal-retry.md).
-export type BlockerKind = 'tool' | 'transient' | 'not_ready' | 'budget' | 'access' | 'asker'
+export type BlockerKind = 'tool' | 'capability' | 'transient' | 'not_ready' | 'budget' | 'access' | 'asker'
 // documentFailure is stamped by doc_read at submission, never accepted from the model's report schema.
-export type Blocker = { kind: BlockerKind; why: string; tried: string[]; retryAfterMin?: number; waitFor?: string; documentFailure?: true }
+export type Blocker = { kind: BlockerKind; why: string; tried: string[]; need?: string; retryAfterMin?: number; waitFor?: string; documentFailure?: true }
 // The tries so far for one ask: when the next is due, and what each one met.
 export type Retry = { at: string; n: number; total?: number; firstAt: string; kindAt?: string; last: Blocker; tried: string[] }
 
-export type Verb = 'watch' | 'unwatch' | 'mine' | 'ok' | 'edit' | 'send' | 'later' | 'answer' | 'skip' | 'more' | 'undo' | 'continue' | 'pick' | 'ask' | 'wrong' | 'incomplete' | 'unneeded' | 'every' | 'extend' | 'close' | 'wait' | 'never' | 'pause' | 'resume' | 'stop' | 'auto-on' | 'auto-off' | 'left-ask-again' | 'left-draft-invite'
+export type Verb = 'watch' | 'unwatch' | 'mine' | 'ok' | 'edit' | 'send' | 'later' | 'answer' | 'skip' | 'more' | 'undo' | 'continue' | 'pick' | 'ask' | 'wrong' | 'incomplete' | 'unneeded' | 'every' | 'extend' | 'close' | 'wait' | 'never' | 'pause' | 'resume' | 'stop' | 'auto-on' | 'auto-off' | 'left-ask-again' | 'left-draft-invite' | 'dont-suggest' | 'pr-retry' | 'pr-skip' | 'one-more'
 export const CONTROL_VERBS = ['pause', 'resume', 'stop', 'auto-on', 'auto-off'] as const
 
 // seenAt: when the owner gave the command. An ok older than the item's last change approves nothing (review 01-04 P0).
@@ -410,7 +448,7 @@ export const CONTROL_VERBS = ['pause', 'resume', 'stop', 'auto-on', 'auto-off'] 
 // again: "ok A1 again", the owner checked that a change which may have been made was not, so it is made once more.
 // todos: on a close from the page, the open to-dos the owner saw, so Mark done marks only those (review N2 P2-1).
 export type PageApproval = { kind: 'send-reply' | 'make-changes' | 'pick' | 'undo-send' | 'feedback-send' | 'mark-todos' | 'approve' | 'manage'; expect: string; sentMessageId?: string; todoIds?: string[]; replyDigest?: string; reviewed?: string }
-export type Answer = { id: Id; code: Code; verb: Verb; text?: string; nums?: number[]; except?: number[]; again?: true; sendReview?: string; surface: 'chat' | 'self' | 'panel'; at: string; seenAt?: string; todos?: string[]; page?: PageApproval; pageSubmissionId?: string }
+export type Answer = { id: Id; code: Code; verb: Verb; text?: string; nums?: number[]; except?: number[]; include?: string[]; vote?: string; key?: string; label?: string; again?: true; sendReview?: string; actionClaimReview?: string; surface: 'chat' | 'self' | 'panel'; at: string; seenAt?: string; todos?: string[]; page?: PageApproval; pageSubmissionId?: string }
 
 export type WatchedChat = { id: string; name: string; test?: boolean; group?: boolean; since?: string }
 
@@ -432,7 +470,7 @@ export type Config = {
 	// that old list waits for a listing; trimmedFrom: the old list itself, kept until then. host: false turns the resident AI host off;
 	// hostFaults: host faults in a row before it is set aside for a while (default 2, #19b). hostIdleMin: minutes it stays ready after its
 	// last run during work hours (default a working day, #25).
-	agent: { flavor: 'copilot' | 'claude'; command: string[]; tools: string[]; model?: string; maxCredits?: number; effectTools?: string[]; mcpServers?: Record<string, unknown>; deny?: string[]; allowRead?: string[]; toolsTrimmed?: boolean; pendingTrim?: string[]; trimmedFrom?: string[]; host?: boolean; hostFaults?: number; hostIdleMin?: number }
+	agent: { flavor: 'copilot' | 'claude'; command: string[]; tools: string[]; model?: string; maxCredits?: number; effectTools?: string[]; mcpServers?: Record<string, unknown>; deny?: string[]; allowRead?: string[]; toolsTrimmed?: boolean; pendingTrim?: string[]; trimmedFrom?: string[]; host?: boolean; hostFaults?: number; hostIdleMin?: number; toolFamilies?: Record<string, 'teams' | 'ado' | 'doc' | 'calendar'>; jobLimit?: { runs: number; tokens: number } }
 	jobs?: { minutes: number; credits?: number; parallel?: number }
 	// team: a shared folder (for example a synced SharePoint library) that holds the team's cards (R-KNO-06).
 	cards?: { adapter: 'files'; root?: string; team?: string }

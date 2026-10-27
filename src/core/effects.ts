@@ -5,12 +5,50 @@ import { NAME } from '../brand.ts'
 import { DEPLOY, deployLine, deployRefusal, isDeploy, isPipelineTool, pipelineOf, ringParts, targetOf } from './deploy.ts'
 import { leftActionKey, leftQuote, leftRefusal, type LeftAction, type LeftDraft, type LeftKind, type LeftRefusal } from './left-lines.ts'
 import { settingKey, type SettingKey } from './setting-keys.ts'
+import { z } from 'zod'
+
+const internalText = z.string().refine(value => !!value.trim(), 'A nonblank value is required.')
+export const INTERNAL_ACTIONS = z.discriminatedUnion('action', [
+	z.object({ system: z.literal('delegate'), action: z.literal('watch'), call: z.never().optional(),
+		payload: z.object({ target: internalText, until: internalText }).strict() }),
+	z.object({ system: z.literal('delegate'), action: z.literal('check-back'), call: z.never().optional(),
+		payload: z.object({ days: z.number().int().positive() }).strict() }),
+])
+export type InternalEffect = Effect & z.infer<typeof INTERNAL_ACTIONS>
+export function internalEffectProblem(effect: Effect): string | undefined {
+	const parsed = INTERNAL_ACTIONS.safeParse(effect)
+	return parsed.success ? undefined : `the internal change is invalid: ${parsed.error.issues.map(issue => issue.message).join('; ')}`
+}
+export const effectCapability = (effect: Effect): string => effect.call
+	? `${effect.call.tool}${effect.call.args.action ? `:${String(effect.call.args.action).toLowerCase()}` : ''}`
+	: `${effect.system}:${effect.action}`
 
 // The changes still to make: not done, and not unchecked by the owner (design-spec S6).
 export const pendingEffects = (es: Effect[] = []): Effect[] => es.filter(e => !e.done && !e.off)
+export const isInternal = (effect: Effect): boolean => effect.system === 'delegate'
+export const externalPending = (effects: Effect[] = []): Effect[] => pendingEffects(effects).filter(effect => !isInternal(effect))
 // The same change: the same call, or the same payload when there is no call. Two comments on one PR are two changes (review 10-21c P2-2).
 // A vote names no commit in its call, so its head tells a re-approval apart; a comment is the same comment at any head (review 10-21e P1-3).
 export const sameChange = (a: Effect, b: Effect) => JSON.stringify([a.system, a.action, a.target, a.call ?? a.payload ?? null]) === JSON.stringify([b.system, b.action, b.target, b.call ?? b.payload ?? null]) && (!isVote(a.call) || (a.head ?? null) === (b.head ?? null))
+export type OriginDowngrade = 'no-ask-quote' | 'no-attribution' | 'untrusted-origin'
+export type OriginContext = {
+	askerMessages: readonly string[]
+	replyText?: string
+	attributePromise?: (replyText: string, effect: Effect) => string | undefined
+	downgraded: (effect: Effect, why: OriginDowngrade) => void
+}
+// Worker labels are evidence to check, never authority. Code-built note/rule effects do not use this path.
+export function verifyOrigin(effect: Effect, ctx: OriginContext): Effect {
+	if (effect.origin === 'suggested') return effect
+	const quote = effect.askQuote
+	if (effect.origin === 'asked' && quote?.trim() && ctx.askerMessages.some(text => text.includes(quote))) return effect
+	if (effect.origin === 'promised' && ctx.replyText) {
+		const sentence = ctx.attributePromise?.(ctx.replyText, effect)
+		if (sentence?.trim() && ctx.replyText.includes(sentence)) return effect
+	}
+	ctx.downgraded(effect, effect.origin === 'promised' ? 'no-attribution' : effect.origin === 'asked' ? 'no-ask-quote' : 'untrusted-origin')
+	return { ...effect, origin: 'suggested' }
+}
 export function proposalEffects(effects: Effect[], items: Pick<Workflow, 'id' | 'lastMsgId'>[]): Effect[] {
 	const turns = items.map(w => `${w.id}:${w.lastMsgId}`)
 	return effects.map(e => ({ ...e, turns }))
@@ -112,6 +150,10 @@ export function effectLeftAction(e: Effect, pr?: number): LeftAction {
 export function effectRefusal(cfg: Config, e: Effect, pr?: number): LeftRefusal | undefined {
 	const c = e.call
 	const deny = (kind: LeftKind, why: string, setting?: SettingKey) => leftRefusal(effectLeftAction(e, pr), kind, { why, ...(setting ? { setting } : {}) })
+	if (e.system === 'delegate') {
+		const why = internalEffectProblem(e)
+		return why ? deny('incomplete', why) : undefined
+	}
 	if (!c) return deny('incomplete', 'it names no exact call')
 	// A pipeline is only ever run: never created, renamed, or changed, and its stages never cancelled or retried (owned work).
 	if (isPipelineTool(c) && !isDeploy(c)) return deny('deploy', `${NAME} never creates, renames, or changes a pipeline, or cancels or retries its stages`)
@@ -212,13 +254,22 @@ export const asksReviewAgain = (code: string, question?: string) => !!question?.
 export const refusedAsk = (code: string, n: number) => `The reply counts on ${n === 1 ? 'a change' : `${n} changes`} ${NAME} cannot make, listed as yours to do. Change the reply with "edit ${code}: <text>", or skip ${code}.`
 
 // What each change does, in one line, for the AI's prompt and Settings.
-const LINES: Record<string, [string, string]> = {
-	[DEPLOY]: ['Deploy', `run a pipeline on "Where ${NAME} may deploy" with a PR's build as its resource`],
-	'ado-repo_pull_request_thread_write': ['PR comment', 'comment on a pull request, or reply in one of its threads'],
-	'ado-repo_pull_request_write:vote': ['PR vote', 'cast the owner\'s vote on a pull request: Approved, ApprovedWithSuggestions, WaitingForAuthor, Rejected, or NoVote'],
-	'ado-repo_pull_request_write:update_reviewers': ['Add you as a PR reviewer', 'add the owner, and only the owner, as an optional reviewer on the item\'s pull request, so a review he was asked for can start'],
-	'ado-wit_work_item_write:update': ['Work item update', 'change fields on one work item; the update must fail if the item changed since it was read'],
-	'calendar-CreateEvent': ['Calendar invite', 'create a meeting on the owner\'s calendar and invite people'],
+export type ActionClaimDescriptor = { capability: string; completed: string[]; promised: string[]; objects: string[]; action: string; vote?: true }
+export const ACTION_CLAIMS: Record<string, ActionClaimDescriptor> = {
+	[DEPLOY]: { capability: DEPLOY, completed: ['deployed', 'released', 'rolled out'], promised: ['deploy', 'release', 'roll out'], objects: ['build', 'pipeline', 'ring', 'deployment'], action: 'deploy the build' },
+	'ado-repo_pull_request_thread_write': { capability: 'ado-repo_pull_request_thread_write', completed: ['posted', 'commented', 'replied', 'added', 'edited', 'updated'], promised: ['post', 'comment', 'reply', 'add', 'edit', 'update'], objects: ['comment', 'thread', 'review comment'], action: 'post the comment' },
+	'ado-repo_pull_request_write:vote': { capability: 'ado-repo_pull_request_write:vote', completed: ['approved', 'voted', 'rejected', 'signed off'], promised: ['approve', 'vote', 'reject', 'sign off'], objects: ['PR', 'pull request', 'vote', 'it'], action: 'vote on the PR', vote: true },
+	'ado-repo_pull_request_write:update_reviewers': { capability: 'ado-repo_pull_request_write:update_reviewers', completed: ['added'], promised: ['add'], objects: ['reviewer'], action: 'add you as a reviewer' },
+	'ado-wit_work_item_write:update': { capability: 'ado-wit_work_item_write:update', completed: ['updated', 'changed', 'edited', 'set'], promised: ['update', 'change', 'edit', 'set'], objects: ['tracker', 'work item', 'work-item', 'incident', 'ticket', 'bug', 'task'], action: 'update the tracker' },
+	'calendar-CreateEvent': { capability: 'calendar-CreateEvent', completed: ['invited', 'sent', 'booked', 'scheduled', 'created', 'set up'], promised: ['invite', 'send', 'book', 'schedule', 'create', 'set up'], objects: ['invited', 'invite', 'invitation', 'meeting', 'sync', 'call'], action: 'send the invite' },
+}
+const LINES: Record<string, [string, string, ActionClaimDescriptor]> = {
+	[DEPLOY]: ['Deploy', `run a pipeline on "Where ${NAME} may deploy" with a PR's build as its resource`, ACTION_CLAIMS[DEPLOY]],
+	'ado-repo_pull_request_thread_write': ['PR comment', 'comment on a pull request, or reply in one of its threads', ACTION_CLAIMS['ado-repo_pull_request_thread_write']],
+	'ado-repo_pull_request_write:vote': ['PR vote', 'cast the owner\'s vote on a pull request: Approved, ApprovedWithSuggestions, WaitingForAuthor, Rejected, or NoVote', ACTION_CLAIMS['ado-repo_pull_request_write:vote']],
+	'ado-repo_pull_request_write:update_reviewers': ['Add you as a PR reviewer', 'add the owner, and only the owner, as an optional reviewer on the item\'s pull request, so a review he was asked for can start', ACTION_CLAIMS['ado-repo_pull_request_write:update_reviewers']],
+	'ado-wit_work_item_write:update': ['Work item update', 'change fields on one work item; the update must fail if the item changed since it was read', ACTION_CLAIMS['ado-wit_work_item_write:update']],
+	'calendar-CreateEvent': ['Calendar invite', 'create a meeting on the owner\'s calendar and invite people', ACTION_CLAIMS['calendar-CreateEvent']],
 }
 // The changes Delegate may propose by default, by server, each made after the owner's ok (R-HIL-29); setup offers them, and
 // Settings shows each as a switch. Never offered: abandoning, completing or merging, bypassing policies, deleting, or creating
@@ -230,6 +281,11 @@ export const offerable = (entry: string) => { const [tool, action] = parts(entry
 
 // A workplace's own changes describe themselves in site.json.
 const line = (entry: string) => LINES[entry] ?? site().actions?.[entry]
+export const changeClaim = (effect: Effect): ActionClaimDescriptor | undefined => {
+	const call = effect.call
+	if (!call) return undefined
+	return ACTION_CLAIMS[`${call.tool}:${String(call.args.action ?? '')}`] ?? ACTION_CLAIMS[call.tool]
+}
 export const changeName = (entry: string) => line(entry)?.[0] ?? entry
 export const changeLine = (entry: string) => { const l = line(entry); return l ? `${entry}: ${l[1]}` : entry }
 

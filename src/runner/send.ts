@@ -29,7 +29,7 @@ import { prRefOf, prTarget, type BuildProbe } from './probe.ts'
 
 import { notePromise, promiseDue, rest } from './promise.ts'
 
-import { PAGE_REPLY_CHANGED, pageAnswerRefusal, pageDigest } from '../core/page-approval.ts'
+import { effectConsent, pageChangeId, PAGE_REPLY_CHANGED, pageAnswerRefusal, pageDigest, workflowApprovalRev } from '../core/page-approval.ts'
 
 import { holdReplyGap } from './reply-gap.ts'
 import { clearHold, clearVoteHold, holdDigest, holdReasons, reasonMessages, reviewDigest, reviewedReasons, setHoldReasons, voteHold } from '../core/owner-send.ts'
@@ -38,6 +38,7 @@ import { freshRead } from '../store/fs.ts'
 import { recordCommit } from './commit.ts'
 import { checkVoteClaims, voteClaimDigest, voteClaimReview } from './vote-claim.ts'
 import { voteClaimText } from '../core/vote-claims.ts'
+import { actionClaimApproved, actionClaimContext, actionClaimGap, actionClaimReview, type ActionClaimGap } from '../core/action-claims.ts'
 import { stateFields, statusFields } from '../core/upgrades.ts'
 import { telemetryEvent } from '../core/telemetry.ts'
 import { reply, closeFamily, only } from './apply.ts'
@@ -45,7 +46,58 @@ import { reply, closeFamily, only } from './apply.ts'
 export function okSendGate(store: Store, cfg: Config, wf: Workflow, a: Answer): { refuse?: { text: string; refused: boolean }; voteChecks: string[] } {
 	const commit = recordCommit(wf, () => store.workflow(wf.id), store.save.bind(store))
 	let voteChecks: string[] = []
-	if (a.surface === 'self' && !a.page && a.verb === 'ok') {
+	if (a.page && a.page.expect !== workflowApprovalRev(wf))
+		return { refuse: { text: `${MARK} Changed since you looked. Nothing was sent or changed. Open the new version first.`, refused: true }, voteChecks }
+	const consent = effectConsent(wf, a)
+	if (!consent.ok) return { refuse: { text: `${MARK} ${consent.reason}`, refused: true }, voteChecks }
+	const text = a.verb === 'send' && a.text !== undefined ? a.text : wf.draft?.text ?? ''
+	const pending = pendingEffects(wf.effects)
+	const except = a.except, nums = a.nums
+	let include = consent.include === undefined ? pending.map(pageChangeId) : [...consent.include, ...(consent.vote ? [consent.vote] : [])]
+	if (consent.include === undefined) {
+		if (except?.length) include = pending.filter((_, index) => !except.includes(index + 1)).map(pageChangeId)
+		else if (nums?.length) {
+			const none = nums.length === 1 && nums[0] === 0
+			if (!none && nums.some(number => number < 1 || number > pending.length))
+				return { refuse: { text: `${MARK} ${wf.code} has changes 1 to ${pending.length}.`, refused: true }, voteChecks }
+			include = pending.filter((_, index) => nums.includes(index + 1)).map(pageChangeId)
+		}
+	}
+	const claim = actionClaimGap(text, wf.effects, include)
+	const override = !!claim && !!a.page && a.page.expect === workflowApprovalRev(wf) &&
+		a.actionClaimReview === actionClaimReview(wf, text, include)
+	if (a.actionClaimReview && !override) return { refuse: { text: `${MARK} The reply or change selection changed. Review it and confirm Send anyway again. Nothing was sent or changed.`, refused: true }, voteChecks }
+	if (claim && !override) {
+		holdActionClaim(wf, claim)
+		commit()
+		return { refuse: { text: `${MARK} ${wf.statusReason?.kind === 'vote-claim' ? `${wf.statusReason.text} ` : ''}${claim.why}`, refused: true }, voteChecks }
+	}
+	wf.actionClaimOverride = override && claim ? { digest: actionClaimContext(wf, text, include), include, capability: claim.capability } : undefined
+	if (override && claim) store.log(telemetryEvent('action-claim-send-anyway', { code: wf.code, capability: claim.capability }))
+	commit()
+	if (wf.statusReason?.kind === 'action-claim') wf.statusReason = undefined
+	if (consent.include !== undefined) {
+		const pending = pendingEffects(wf.effects), included = new Set(include)
+		if (pending.some(effect => !included.has(pageChangeId(effect)))) {
+			const keep = pending.flatMap((effect, index) => included.has(pageChangeId(effect)) ? [index + 1] : [])
+			const removed = only(store, wf, keep.length ? keep : [0], a.page ? undefined : 'self-chat-ok')
+			if (typeof removed === 'string') return { refuse: { text: `${MARK} ${removed}`, refused: true }, voteChecks }
+			commit()
+			const votes = removed.filter(effect => isVote(effect.call))
+			if (!a.page && votes.length) store.log({ event: 'self-ok-votes-left-out', workflowId: wf.id, code: wf.code, prs: votes.map(effect => prIdOf(effect.call)) })
+		}
+		voteChecks = [...omittedVoteChecks(wf), ...(consent.notice ? [consent.notice] : [])]
+		if (wf.ownerSend && voteChecks.length) {
+			wf.ownerSend.checks = [...new Set([...(wf.ownerSend.checks ?? []), ...voteChecks])]
+			commit()
+		}
+		if (!wf.draft?.text && !text.trim() && !pendingEffects(wf.effects).length) {
+			if (wf.promise && wf.sent) rest(store, wf)
+			wf.status = `Nothing was changed.${voteChecks.length ? ` ${voteChecks.join(' ')}` : ''}`
+			commit()
+			return { refuse: { text: `${MARK} ${wf.status}`, refused: false }, voteChecks }
+		}
+	} else if (a.surface === 'self' && !a.page && a.verb === 'ok') {
 		const left = pendingEffects(wf.effects), omitted = left.filter(e => isVote(e.call) && !namesVote(a.text, e))
 		if (omitted.length) {
 			const keep = left.flatMap((e, i) => omitted.includes(e) ? [] : [i + 1])
@@ -56,7 +108,7 @@ export function okSendGate(store: Store, cfg: Config, wf: Workflow, a: Answer): 
 			wf.status = voteChecks.join(' ')
 			commit()
 			store.log({ event: 'self-ok-votes-left-out', workflowId: wf.id, code: wf.code, prs: omitted.map(e => prIdOf(e.call)) })
-			if (!wf.draft?.text && !pendingEffects(wf.effects).length) {
+			if (!wf.draft?.text && !text.trim() && !pendingEffects(wf.effects).length) {
 				if (wf.promise && wf.sent) rest(store, wf)
 				wf.status = `Nothing was changed. ${voteChecks.join(' ')}`
 				commit()
@@ -64,7 +116,8 @@ export function okSendGate(store: Store, cfg: Config, wf: Workflow, a: Answer): 
 			}
 		}
 	}
-	const denied = pendingEffects(wf.effects).map(effect => ({ effect, why: refusal(cfg, effect, prTarget(store, wf)) })).find(entry => entry.why)
+	const denied = pendingEffects(wf.effects).filter(effect => include.includes(pageChangeId(effect)))
+		.map(effect => ({ effect, why: refusal(cfg, effect, prTarget(store, wf)) })).find(entry => entry.why)
 	if (denied) {
 		wf.status = `${shown(denied.effect).line} cannot be made: ${denied.why}.`
 		// An old invite cannot be retried as it is: the owner is offered a new draft (legacy E16).
@@ -74,6 +127,14 @@ export function okSendGate(store: Store, cfg: Config, wf: Workflow, a: Answer): 
 		return { refuse: { text: `${MARK} Not done ${wf.code}: ${wf.status} Nothing was changed.`, refused: true }, voteChecks }
 	}
 	return { voteChecks }
+}
+
+function holdActionClaim(wf: Workflow, claim: ActionClaimGap) {
+	Object.assign(wf, { ...stateFields(wf, 'needs_human'), sendAt: undefined, approved: undefined })
+	if (wf.statusReason?.kind === 'vote-claim') return
+	if (wf.statusReason?.kind !== 'action-claim' || wf.statusReason.text !== claim.why)
+		wf.statusReason = { kind: 'action-claim', text: claim.why, at: new Date().toISOString() }
+	wf.status = claim.why
 }
 
 // The numbers are the order the changes are shown in: only those still to make.
@@ -202,7 +263,7 @@ export function aboutPr(store: Store, wf: Workflow, text?: string): boolean {
 
 export async function send(store: Store, src: Source, cfg: Config, wf: Workflow, text: string | undefined, by: SendBy, probe?: BuildProbe): Promise<boolean> {
 	const commit = recordCommit(wf, () => store.workflow(wf.id), store.save.bind(store))
-	const reviewReply = !!by.ruleId && wf.reviewRun?.rule === by.ruleId && !!wf.reviewDone
+	const reviewReply = !!by.ruleId && wf.reviewReply?.rule === by.ruleId && wf.reviewReply.phase === 'held'
 	if (!by.ruleId) rememberSend(store, wf)
 	if (holdReplyGap(store, wf, text, !!by.ruleId)) {
 		if (by.answer) await reply(store, src, by.answer, `${MARK} ${REPLY_BLANK}`, true)
@@ -222,7 +283,7 @@ export async function send(store: Store, src: Source, cfg: Config, wf: Workflow,
 	const told = async (why: string) => { if (by.answer) await reply(store, src, by.answer, `${MARK} Not sent ${wf.code}: ${why}`, true) }
 	// A reply may say the invite went only once it exists: one left out, failed or not made yet holds the reply (bug 10-23 E16).
 	const unmadeInvite = (wf.effects ?? []).find(e => isInvite(e) && !e.done)
-	if (unmadeInvite && claimsInvite(text ?? '')) {
+	if (unmadeInvite && claimsInvite(text ?? '') && (by.ruleId || !actionClaimApproved(wf, text ?? ''))) {
 		const why = `the reply says the invite was sent, but it has not been made${unmadeInvite.error ? ` (${unmadeInvite.error.slice(0, 120)})` : unmadeInvite.off ? ' (you left it out)' : ''}. Make the invite first with "ok ${wf.code}", or edit the reply.`
 		Object.assign(wf, { ...stateFields(wf, 'needs_human'), sendAt: undefined, approved: undefined, ...statusFields('not-sent', `Not sent: ${why}`) })
 		store.log({ event: 'invite-claim-held', workflowId: wf.id, code: wf.code })
@@ -263,6 +324,14 @@ export async function send(store: Store, src: Source, cfg: Config, wf: Workflow,
 			}
 		}
 	}
+	const actionGap = actionClaimGap(text ?? '', wf.effects)
+	if (actionGap && (by.ruleId || !actionClaimApproved(wf, text ?? ''))) {
+		holdActionClaim(wf, actionGap)
+		commit()
+		await told(actionGap.why)
+		return false
+	}
+	if (wf.statusReason?.kind === 'action-claim') wf.statusReason = undefined
 	// After approved changes the reply goes out later; the result goes back to where the owner said ok.
 	const a = by.answer ?? { id: '', code: wf.code, verb: 'ok', surface: wf.answerSurface ?? 'chat', at: '', sendReview: by.sendReview } as Answer
 	const p = { ...DEFAULT_POLICY, ...cfg.policy }
@@ -332,8 +401,11 @@ export async function send(store: Store, src: Source, cfg: Config, wf: Workflow,
 			if (decision) wf.decision = decision
 			if (!latest || latest.pending.length || latest.ownerSend || latest.draft?.text !== text ||
 				decision?.action !== 'send' || decision.ruleId !== by.ruleId) return decision?.reason ?? 'The automatic reply changed'
-			if (reviewReply || wf.reviewRun) {
-				if (latest.state !== 'needs_human' || latest.reviewRun?.rule !== by.ruleId || latest.reviewRun?.sendText !== text ||
+			if (reviewReply || wf.reviewReply) {
+				if (latest.state !== 'needs_human' || latest.approved || latest.draft?.byOwner || latest.draft?.preview ||
+					latest.reviewReply?.phase !== 'held' || latest.reviewReply.rule !== by.ruleId ||
+					latest.reviewReply.turn !== latest.revAt || latest.reviewReply.sendText !== text ||
+					latest.reviewReply.turn !== wf.reviewReply?.turn || JSON.stringify(latest.reviewReply.units) !== JSON.stringify(wf.reviewReply?.units) ||
 					reviewRuleFor(latest, store.rules())?.id !== by.ruleId) return 'The review reply changed'
 			} else if (latest.state !== 'scheduled') return 'The automatic reply is no longer scheduled'
 			const auth = authorizeReply(latest, policyContext(store, currentCfg, latest), out, true, ruleFor(latest, store.rules())?.who.group === 'outside')
@@ -422,8 +494,8 @@ export async function send(store: Store, src: Source, cfg: Config, wf: Workflow,
 	const first = (wf.asker?.name ?? 'them').split(/\s+/)[0]
 	if (holding) Object.assign(wf, { ...stateFields(wf, 'needs_human'), question: wf.question ?? `What should the full reply to ${first} say?`, questionHint: wf.question != null ? wf.questionHint : undefined, approved: undefined, status: `Holding reply sent. ${first} is waiting for the full answer.` })
 	else if (reviewReply) {
-		if (wf.reviewRun?.rule === by.ruleId && wf.reviewDone && !wf.pending.length)
-			Object.assign(wf, { ...stateFields(wf, 'needs_human'), status: `PR ${wf.reviewDone.pr} waits for your approval`, approved: undefined })
+		if (wf.reviewReply && wf.reviewReply.rule === by.ruleId && !wf.pending.length)
+			Object.assign(wf, { ...stateFields(wf, 'needs_human'), status: `PR ${wf.reviewReply.units.join(', ')} waits for your approval`, approved: undefined })
 	}
 	else if (home.work) { afterSend(wf, out!, msgId, home, canCloseApproval(store, home), !home.pending.length && !pendingEffects(home.effects).length && !pendingParts(store, home, wf.id)); if (!active(home)) { stopWatch(store, home); closeFamily(store, realProcs, home, home.work.closed?.why ?? 'closed') } if (home !== wf) store.save(home) }
 	else close(wf, by.ruleId ? `Sent by rule ${by.ruleId}: "${text!.slice(0, 70)}"` : `Sent: "${text!.slice(0, 80)}"`)

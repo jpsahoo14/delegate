@@ -1,5 +1,7 @@
 import { site } from './site.ts'
 
+export type PrRef = { project: string; repo: string; id: number; remote?: string; url?: string }
+
 // Typed links a message names; numbers alone are never links (review part 2 #2).
 export function linksIn(text: string): string[] {
 	const out = new Set<string>()

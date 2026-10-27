@@ -9,7 +9,10 @@ import { leftRefusal, type LeftDraft } from '../core/left-lines.ts'
 
 export type CommentRef = { project: string; repositoryId: string; pullRequestId: number }
 export type EffectCallRepair = { event: 'effect-call-repaired'; from: 'threadContext' | 'rebuilt'; ok: boolean }
-export type EffectCallPreparation = { effects: Effect[]; problems: string[]; repaired: number[]; left: LeftDraft[] }
+export type EffectCallPreparation = {
+	effects: Effect[]; problems: string[]; repaired: number[]; left: LeftDraft[]
+	failures: { effect: Effect; why: string; left: LeftDraft }[]
+}
 type ListedTool = { name: string; server: string; info: ToolInfo }
 type BuiltCall = { call: Call; problem?: never } | { call?: never; problem: string }
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
@@ -76,12 +79,13 @@ export function prepareEffectCalls(
 	const tools: ListedTool[] = Object.entries(catalogs).flatMap(([server, catalog]) =>
 		catalog.tools.map(t => ({ server, name: `${server}-${t.name}`, info: t.info })))
 	const comments = tools.filter(t => threadTool(t.name))
-	const result: EffectCallPreparation = { effects: [], problems: [], repaired: [], left: [] }
+	const result: EffectCallPreparation = { effects: [], problems: [], repaired: [], left: [], failures: [] }
 	const problemLeft = (effect: Effect, why: string, comment = false) => {
 		const action = effectLeftAction(effect, ref?.pullRequestId)
 		const draft = { ...leftRefusal(comment ? { ...action, verb: 'comment' } : action, 'incomplete'), why }
 		result.left.push(draft)
 		result.problems.push(draft.why)
+		result.failures.push({ effect, why, left: draft })
 	}
 	let n = 0
 	for (const [index, effect] of effects.entries()) {

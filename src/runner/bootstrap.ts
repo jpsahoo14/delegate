@@ -1,5 +1,5 @@
 import { resolve } from 'node:path'
-import { randomUUID } from 'node:crypto'
+import { chooseSession } from './session-policy.ts'
 import type { Job } from '../core/types.ts'
 import { ulid } from '../core/ids.ts'
 import type { Store } from '../store/state.ts'
@@ -37,7 +37,7 @@ export function startBootstrap(store: Store, sources: readonly BootSource[] = ['
 		if (old && (old.state === 'running' || old.state === 'queued')) { busy.push(YOURS[s]); continue }
 		const job: Job = old
 			? { ...old, goal, state: 'queued', purpose: 'work', asks: [...old.asks, goal], error: undefined }
-			: { schema: 1, id: ulid(), key, goal, session: { agent: cfg.agent.flavor, id: randomUUID() }, state: 'queued', purpose: 'work', parents: [], asks: [goal], createdAt: now, updatedAt: now }
+			: { schema: 1, id: ulid(), key, goal, session: { agent: cfg.agent.flavor, id: chooseSession('one-off', { fresh: true }) }, state: 'queued', purpose: 'work', parents: [], asks: [goal], createdAt: now, updatedAt: now }
 		store.saveJob(job)
 		started.push(YOURS[s])
 	}
@@ -77,7 +77,7 @@ export async function planChats(store: Store, history: History | undefined, now 
 	parts.forEach((p, i) => {
 		const goal = [`Read ${p.length === 1 ? 'this Teams conversation' : `these ${p.length} Teams conversations`} from ${since} on, newest first, and propose lasting knowledge. The owner wrote in each; the number is how many of their messages there are.`,
 			...p.map(c => `- ${c.team ? `channel ${c.id} in team ${c.team}` : `chat ${c.id}`} (${c.mine} by the owner, last ${c.lastAt.slice(0, 10)})`)].join('\n')
-		store.saveJob({ schema: 1, id: ulid(), key: `bootstrap:chats:${stamp}:${i + 1}`, goal, label: `your Teams chats, part ${i + 1} of ${parts.length}`, session: { agent: cfg.agent.flavor, id: randomUUID() }, state: 'queued', purpose: 'work', parents: [], asks: [goal], createdAt: at, updatedAt: at })
+		store.saveJob({ schema: 1, id: ulid(), key: `bootstrap:chats:${stamp}:${i + 1}`, goal, label: `your Teams chats, part ${i + 1} of ${parts.length}`, session: { agent: cfg.agent.flavor, id: chooseSession('one-off', { fresh: true }) }, state: 'queued', purpose: 'work', parents: [], asks: [goal], createdAt: at, updatedAt: at })
 	})
 	Object.assign(plan, { state: 'done', result: { summary: `Found ${cs.length} conversations you wrote in since ${since}; reading them in ${parts.length} parts.`, effects: [] } })
 	store.saveJob(plan)
