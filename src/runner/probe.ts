@@ -1,4 +1,4 @@
-import type { BuildFacts, Config, Effect, Job, PrFacts, PrUnit, RingFacts, RunFact, Workflow } from '../core/types.ts'
+import type { BuildFacts, Config, Effect, Job, PrFacts, PrUnit, ReadFailureKind, RingFacts, RunFact, Workflow } from '../core/types.ts'
 import type { PrRef } from '../core/pr-refs.ts'
 import { isDeepStrictEqual } from 'node:util'
 import { scrub } from '../core/secrets.ts'
@@ -256,7 +256,19 @@ export async function probePrUnits(store: Store, cfg: Config, probe: BuildProbe 
 	return readPrUnitCandidates(store, cfg, probe, now, force, candidates, subjects !== undefined, only)
 }
 
-type UnitRead = { state: PrState; role: NonNullable<PrUnit['role']> } | { failure: string }
+export function readFailureKind(error: unknown): ReadFailureKind {
+	const value = error !== null && typeof error === 'object' ? error as { status?: unknown; statusCode?: unknown; code?: unknown; message?: unknown } : undefined
+	const message = typeof value?.message === 'string' ? value.message : typeof error === 'string' ? error : ''
+	const statuses = [value?.status, value?.statusCode]
+	if (/no usable status or reviewer list/i.test(message)) return 'no-status'
+	if (statuses.some(status => status === 401 || status === 403) || /\b(401|403)\b|unauthori[sz]ed|forbidden/i.test(message)) return 'auth'
+	if (statuses.includes(404) || /\b404\b|not found/i.test(message)) return 'not-found'
+	if (typeof value?.code === 'string' && ['ETIMEDOUT', 'ECONNRESET', 'ENOTFOUND', 'EAI_AGAIN', 'ECONNREFUSED'].includes(value.code) ||
+		/timed? ?out|network|fetch failed/i.test(message)) return 'network'
+	return 'other'
+}
+
+type UnitRead = { state: PrState; role: NonNullable<PrUnit['role']> } | { failure: string; kind: ReadFailureKind }
 function readPrOnce(probe: BuildProbe, ref: PrRef, pass: Map<string, Promise<PrState>>): Promise<PrState> {
 	const key = `${ref.project}/${ref.repo}/${ref.id}`, found = pass.get(key)
 	if (found) return found
@@ -271,10 +283,10 @@ function unitReadSnapshot(unit: PrUnit, read: UnitRead, at: string): PrUnit {
 	let next: PrUnit
 	if ('failure' in read) {
 		const tries = unit.tries + 1
-		next = { ...unit, tries, read: tries >= 3 ? 'gave-up' : 'failed', readAt: at, failure: read.failure }
+		next = { ...unit, tries, read: tries >= 3 ? 'gave-up' : 'failed', readAt: at, failure: read.failure, failureKind: read.kind }
 	} else {
 		const { state, role } = read
-		next = { ...unit, read: 'ok', tries: 0, readAt: at, failure: undefined,
+		next = { ...unit, read: 'ok', tries: 0, readAt: at, failure: undefined, failureKind: undefined,
 			role, groups: reviewerGroups(state), author: state.author, status: state.status, head: state.head, title: state.title }
 	}
 	if (!isDeepStrictEqual(unitFacts(unit), unitFacts(next))) bumpReviewEpoch(next)
@@ -299,7 +311,7 @@ async function readPrUnitCandidates(store: Store, cfg: Config, probe: BuildProbe
 		for (const w of candidates) {
 			const next = w.prs?.map(unit => {
 				if (unit.skip || unit.read === 'gave-up') return unit
-				const pending: PrUnit = { ...unit, read: 'pending', readAt: undefined, failure: undefined }
+				const pending: PrUnit = { ...unit, read: 'pending', readAt: undefined, failure: undefined, failureKind: undefined }
 				if (unit.read !== 'pending' || unit.failure !== undefined) bumpReviewEpoch(pending)
 				return pending
 			})
@@ -322,8 +334,9 @@ async function readPrUnitCandidates(store: Store, cfg: Config, probe: BuildProbe
 				throw new Error('The PR read returned no usable status or reviewer list')
 			reads.set(key, { state, role: await roleOn(cfg, probe, ref, state) })
 		} catch (error) {
+			const kind = readFailureKind(error)
 			const failure = scrub(String(error)).replace(/\s+/g, ' ').slice(0, 120)
-			reads.set(key, { failure })
+			reads.set(key, { failure, kind })
 			store.log({ event: 'pr-check-failed', pr: ref.id, error: failure })
 		}
 	}))
@@ -402,7 +415,7 @@ async function probeSinglePRs(store: Store, cfg: Config, probe: BuildProbe | und
 		for (const w of unknown.filter(w => w.prRead || w.prGroups !== undefined || prRefOf(store, w))) {
 			const commit = commitFor(w)
 			if (w.prs?.length === 1 && !w.prs[0].skip && w.prs[0].read !== 'gave-up') {
-				const unit = w.prs[0], pending: PrUnit = { ...unit, read: 'pending', readAt: undefined, failure: undefined }
+				const unit = w.prs[0], pending: PrUnit = { ...unit, read: 'pending', readAt: undefined, failure: undefined, failureKind: undefined }
 				if (unit.read !== 'pending' || unit.failure !== undefined) bumpReviewEpoch(pending)
 				w.prs[0] = pending
 			}
@@ -424,11 +437,12 @@ async function probeSinglePRs(store: Store, cfg: Config, probe: BuildProbe | und
 	store.saveProbeMark({ ...store.probeMark(), prAt: new Date(now).toISOString() })
 	// One read per PR, a few at a time.
 	const byPr = new Map<string, PrRef>(items.map(x => [`${x.ref.project}/${x.ref.repo}/${x.ref.id}`, x.ref]))
-	const states = new Map<string, PrState | undefined>(), failures = new Map<string, string>()
+	const states = new Map<string, PrState | undefined>(), failures = new Map<string, string>(), kinds = new Map<string, ReadFailureKind>()
 	const keys = [...byPr.keys()]
 	for (let i = 0; i < keys.length; i += 4) await Promise.all(keys.slice(i, i + 4).map(async k => {
 		const ref = byPr.get(k)!
 		try { states.set(k, await readPrOnce(probe, ref, pass)) } catch (e) {
+			kinds.set(k, readFailureKind(e))
 			const failure = scrub(String(e)).replace(/\s+/g, ' ').slice(0, 120)
 			states.set(k, undefined); failures.set(k, failure); store.log({ event: 'pr-check-failed', pr: ref.id, error: failure })
 		}
@@ -445,6 +459,7 @@ async function probeSinglePRs(store: Store, cfg: Config, probe: BuildProbe | und
 		if (!st || !/^(active|completed|abandoned)$/i.test(st.status) || !st.votes.length && !Array.isArray(st.reviewers) && !/completed|abandoned/i.test(st.status)) {
 			if (w.prs?.length === 1) w.prs[0] = unitReadSnapshot(w.prs[0], {
 				failure: failures.get(`${ref.project}/${ref.repo}/${ref.id}`) ?? 'The PR read returned no usable status or reviewer list',
+				kind: kinds.get(`${ref.project}/${ref.repo}/${ref.id}`) ?? 'no-status',
 			}, new Date(now).toISOString())
 			w.prRead = undefined; w.prUnknown = true; w.prRole = undefined; w.prGroups = undefined; commitFor(w)(false)
 			continue

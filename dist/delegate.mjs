@@ -46134,6 +46134,20 @@ function reviewAsked(store2, wf, pr, current3 = false) {
   const said2 = store2.thread(wf.id).filter((m) => !m.byOwner);
   return theirs.filter((m) => about(m.text)).some((link2) => said2.some((ask) => ask.id !== link2.id && ask.from.id === link2.from.id && REVIEW_ASK.test(ask.text) && Math.abs(Date.parse(ask.at) - Date.parse(link2.at)) <= SPLIT_ASK_MS));
 }
+function readFailureReason(kind) {
+  switch (kind) {
+    case "auth":
+      return "Azure DevOps refused access";
+    case "not-found":
+      return "Azure DevOps can't find it";
+    case "no-status":
+      return "Azure DevOps sent an incomplete answer";
+    case "network":
+      return `${NAME} couldn't reach Azure DevOps`;
+    default:
+      return void 0;
+  }
+}
 function unitOutcome(unit) {
   if (!unit.requested) return { outcome: "not-reviewing", reason: "not-asked" };
   if (unit.skip) return { outcome: "not-reviewing", reason: unit.skip.why };
@@ -46143,8 +46157,8 @@ function unitOutcome(unit) {
     const head = completed?.head ?? review?.done?.head;
     return { outcome: "reviewed", ...completed?.verified === false || !sameHead(unit.head, head) ? { reason: "moved" } : {} };
   }
-  if (unit.read === "failed") return { outcome: "couldnt-read" };
-  if (unit.read === "gave-up") return { outcome: "gave-up" };
+  if (unit.read === "failed") return { outcome: "couldnt-read", reason: unit.failureKind ?? "other" };
+  if (unit.read === "gave-up") return { outcome: "gave-up", reason: unit.failureKind ?? "other" };
   if (unit.read !== "ok") return { outcome: "checking" };
   return { outcome: unit.job || review?.run ? "reviewing" : "checking" };
 }
@@ -51024,6 +51038,90 @@ ${nextProposal(store2, kp.code, answer.surface === "self" ? 6 : Infinity)}`}`).s
 }
 async function applyOne(store2, src, cfg, wf, a, procs, probe, quick2) {
   const commit = recordCommit(wf, () => store2.workflow(wf.id), store2.save.bind(store2));
+  if (a.verb === "pr-approve") {
+    commit.refresh();
+    const refused = (reason) => reply(store2, src, a, `${MARK} ${reason} Nothing was approved or sent.`, true);
+    const id = a.nums?.length === 1 ? a.nums[0] : void 0, units = wf.prs ?? [];
+    const unit = units.find((unit2) => unit2.id === id);
+    if (typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0 || units.length < 2 || !unit)
+      return refused("Choose one PR from the current multi-PR item.");
+    const jobId = unit.review?.completed?.job ?? unit.review?.run?.carrier ?? unit.job;
+    const ids = [...new Set([jobId, unit.job, unit.review?.run?.job, unit.review?.run?.carrier].filter((id2) => !!id2))];
+    if (wf.state === "done" || wf.redacted || store2.openWindow(wf.id) || wf.job && store2.openWindow(wf.job) || ids.some((id2) => store2.openWindow(id2)))
+      return refused("This item is closed or open elsewhere.");
+    const jobs = ids.map((id2) => store2.job(id2)), itemJob = wf.job ? store2.job(wf.job) : void 0;
+    if (wf.state === "waiting_on_task" || unit.review?.run?.phase === "posting" || jobs.some((job2) => job2 && (executing(job2) || job2.state === "running" || job2.state === "queued")) || itemJob && (executing(itemJob) || itemJob.state === "queued"))
+      return refused(`PR ${id} is still working. Wait for its result.`);
+    const control2 = store2.control();
+    if (control2.paused || control2.stopped)
+      return reply(store2, src, a, `${MARK} ${NAME} is paused, so PR ${id} wasn't approved. Resume it, then approve again.`, true);
+    const consent = effectConsent(wf, { ...a, nums: void 0, include: [] });
+    if (!consent.ok) return refused(consent.reason.replace(/ Nothing was sent or changed\.$/, ""));
+    const matches2 = pendingEffects(wf.effects).filter((effect2) => pageChangeId(effect2) === a.vote);
+    const effect = matches2.length === 1 ? matches2[0] : void 0;
+    if (!effect || !isVote(effect.call) || prIdOf(effect.call) !== id || !((voteValue(effect.call) ?? 0) >= 5) || effect.error || effect.maybe || effect.off)
+      return refused("The vote changed. Open the current item.");
+    const job = jobId ? store2.job(jobId) : void 0;
+    const indexes = job?.result?.effects.flatMap((candidate, index2) => pendingEffects([candidate]).length && isVote(candidate.call) && prIdOf(candidate.call) === id && sameProposal(candidate, effect) ? [index2] : []) ?? [];
+    if (!job || !job.parents.includes(wf.id) || indexes.length !== 1) return refused("Open the current item.");
+    const index = indexes[0], runId = ulid3(), live3 = probe ?? adoProbe(cfg);
+    let result2, record4, unreadable = false;
+    try {
+      try {
+        result2 = await readPhase(`change:${job.id}:${index}`, () => makeChange(store2, job.id, runId, index, mcpCaller(cfg), live3, wf));
+      } catch (error63) {
+        result2 = { error: scrub(String(error63)).slice(0, 300) };
+        store2.log({ event: "vote-action-failed", workflowId: wf.id, job: job.id, runId, error: result2.error });
+      }
+      try {
+        record4 = store2.changes(job.id, runId)[index];
+      } catch (error63) {
+        unreadable = true;
+        store2.log({ event: "vote-receipt-read-failed", workflowId: wf.id, job: job.id, runId, error: scrub(String(error63)).slice(0, 300) });
+      }
+      let movedHead = effect.head;
+      if (record4?.stale && unit.ref && live3?.pr) try {
+        movedHead = (await live3.pr(unit.ref.project, unit.ref.repo, unit.id)).head ?? movedHead;
+      } catch (error63) {
+        store2.log({ event: "pr-check-failed", pr: id, error: scrub(String(error63)).slice(0, 120) });
+      }
+      commit.refresh();
+      const stored = !record4 && result2?.ref !== void 0 ? store2.job(job.id)?.result?.effects[index] : void 0;
+      const done2 = record4?.state === "done" ? { ref: record4.ref, at: record4.at } : stored && sameProposal(stored, effect) ? stored.done : void 0;
+      const noAnswer = unreadable || record4?.state === "calling";
+      const error62 = noAnswer ? "No answer from the tool, so it may have been made" : record4?.state === "failed" ? record4.error ?? result2?.error ?? "The vote has no recorded failure reason" : result2?.error ?? "The vote has no recorded result";
+      const folded = done2 ? { ...effect, done: done2, error: void 0 } : { ...effect, error: error62 };
+      wf.effects = wf.effects?.map((current3) => pageChangeId(current3) === a.vote ? done2 ? { ...current3, done: done2, error: void 0 } : { ...current3, error: error62 } : current3);
+      saveUnitReceipts(store2, wf, [folded]);
+      if (record4?.stale) {
+        const current3 = wf.prs?.find((unit2) => unit2.id === id);
+        if (current3 && movedHead) {
+          current3.again = { head: movedHead, at: (/* @__PURE__ */ new Date()).toISOString() };
+          bumpReviewEpoch(current3);
+        }
+      }
+      const home = homeOf(store2, wf), made = !!folded.done;
+      const moved = step(
+        home,
+        made ? `Made: ${effect.summary.replace(/[.\s]+$/, "")}${folded.done?.ref && folded.done.ref !== "done" ? ` (${folded.done.ref})` : ""}` : `Not made: ${effect.summary.replace(/[.\s]+$/, "")} (${(folded.error ?? "it failed").replace(/^Error: /, "").replace(/\.$/, "").slice(0, 160)})`,
+        { ref: `change:${runId}:${index}` }
+      );
+      if (moved && home !== wf) store2.save(home);
+      wf.revAt = new Date(Math.max(Date.now(), (Date.parse(wf.revAt ?? wf.updatedAt) || 0) + 1)).toISOString();
+      commit();
+      const sentDraft = wf.sent && !wf.sent.holding && wf.sent.text !== void 0 && wf.sent.text === wf.draft?.text && wf.sent.askMsgId === wf.lastMsgId && !wf.pending.length;
+      const rest2 = wf.draft?.text && !sentDraft ? " Your reply still waits for you to send it." : "";
+      const why2 = changeReason(folded.error ?? "");
+      const text5 = made ? `PR ${id}: approved.` : record4?.stale ? `PR ${id} changed since the review, so it wasn't approved.` : noAnswer ? `PR ${id} may already be approved: Azure DevOps didn't answer. Open the PR to check before approving again.` : `PR ${id} wasn't approved${why2 ? `: ${why2}` : ""}.`;
+      return reply(store2, src, a, `${MARK} ${text5}${rest2}`, !made);
+    } finally {
+      if (!probe && live3?.close) try {
+        await live3.close();
+      } catch (error62) {
+        store2.log({ event: "pr-reader-close-failed", workflowId: wf.id, error: scrub(String(error62)).slice(0, 300) });
+      }
+    }
+  }
   if (a.verb === "pr-retry" || a.verb === "pr-skip") {
     const id = a.nums?.length === 1 ? a.nums[0] : void 0;
     const units = wf.prs ?? [], unit = units.find((unit2) => unit2.id === id);
@@ -51047,7 +51145,7 @@ async function applyOne(store2, src, cfg, wf, a, procs, probe, quick2) {
     const at3 = new Date(Math.max(Date.now(), (Date.parse(wf.revAt ?? wf.updatedAt) || 0) + 1)).toISOString();
     wf.prs = units.map((current4) => {
       if (current4.id !== unit.id) return current4;
-      const next2 = a.verb === "pr-skip" ? { ...current4, skip: { by: "owner", why: "owner", at: at3 } } : { ...current4, read: "pending", tries: 0, readAt: void 0, failure: void 0, skip: void 0 };
+      const next2 = a.verb === "pr-skip" ? { ...current4, skip: { by: "owner", why: "owner", at: at3 } } : { ...current4, read: "pending", tries: 0, readAt: void 0, failure: void 0, failureKind: void 0, skip: void 0 };
       bumpReviewEpoch(next2);
       return next2;
     });
@@ -51072,7 +51170,8 @@ async function applyOne(store2, src, cfg, wf, a, procs, probe, quick2) {
       return reply(store2, src, a, `${MARK} PR ${unit.id}: not reviewing: you skipped it. Nothing was sent or made.`);
     const current3 = wf.prs?.find((candidate) => candidate.id === unit.id);
     if (!current3) return reply(store2, src, a, `${MARK} The PR list changed. Open the current item. Nothing was sent or made.`, true);
-    const outcome2 = current3?.read === "ok" ? "read again" : current3?.read === "failed" || current3?.read === "gave-up" ? `couldn't read it${current3.failure ? `: ${current3.failure}` : ""}` : current3?.skip?.why === "no-link" ? "there's no link to it, so Delegate can't open it" : "checking you're a reviewer";
+    const reason = readFailureReason(current3.failureKind);
+    const outcome2 = current3?.read === "ok" ? "read again" : current3?.read === "failed" || current3?.read === "gave-up" ? `couldn't read it${reason ? `: ${reason}` : ""}` : current3?.skip?.why === "no-link" ? "there's no link to it, so Delegate can't open it" : "checking you're a reviewer";
     return reply(store2, src, a, `${MARK} PR ${unit.id}: ${outcome2}. Nothing was sent or made.`, current3?.read !== "ok");
   }
   if (a.verb === "dont-suggest") {
@@ -52195,6 +52294,16 @@ async function probePrUnits(store2, cfg, probe, now = Date.now(), force = false,
   const candidates2 = (subjects ?? store2.workflows()).filter((w) => w.prs && w.state !== "done" && !w.redacted && w.kind !== "tracker");
   return readPrUnitCandidates(store2, cfg, probe, now, force, candidates2, subjects !== void 0, only2);
 }
+function readFailureKind(error62) {
+  const value = error62 !== null && typeof error62 === "object" ? error62 : void 0;
+  const message = typeof value?.message === "string" ? value.message : typeof error62 === "string" ? error62 : "";
+  const statuses = [value?.status, value?.statusCode];
+  if (/no usable status or reviewer list/i.test(message)) return "no-status";
+  if (statuses.some((status3) => status3 === 401 || status3 === 403) || /\b(401|403)\b|unauthori[sz]ed|forbidden/i.test(message)) return "auth";
+  if (statuses.includes(404) || /\b404\b|not found/i.test(message)) return "not-found";
+  if (typeof value?.code === "string" && ["ETIMEDOUT", "ECONNRESET", "ENOTFOUND", "EAI_AGAIN", "ECONNREFUSED"].includes(value.code) || /timed? ?out|network|fetch failed/i.test(message)) return "network";
+  return "other";
+}
 function readPrOnce(probe, ref, pass) {
   const key = `${ref.project}/${ref.repo}/${ref.id}`, found = pass.get(key);
   if (found) return found;
@@ -52208,7 +52317,7 @@ function unitReadSnapshot(unit, read3, at3) {
   let next2;
   if ("failure" in read3) {
     const tries = unit.tries + 1;
-    next2 = { ...unit, tries, read: tries >= 3 ? "gave-up" : "failed", readAt: at3, failure: read3.failure };
+    next2 = { ...unit, tries, read: tries >= 3 ? "gave-up" : "failed", readAt: at3, failure: read3.failure, failureKind: read3.kind };
   } else {
     const { state, role } = read3;
     next2 = {
@@ -52217,6 +52326,7 @@ function unitReadSnapshot(unit, read3, at3) {
       tries: 0,
       readAt: at3,
       failure: void 0,
+      failureKind: void 0,
       role,
       groups: reviewerGroups(state),
       author: state.author,
@@ -52249,7 +52359,7 @@ async function readPrUnitCandidates(store2, cfg, probe, now, force, candidates2,
     for (const w of candidates2) {
       const next2 = w.prs?.map((unit) => {
         if (unit.skip || unit.read === "gave-up") return unit;
-        const pending = { ...unit, read: "pending", readAt: void 0, failure: void 0 };
+        const pending = { ...unit, read: "pending", readAt: void 0, failure: void 0, failureKind: void 0 };
         if (unit.read !== "pending" || unit.failure !== void 0) bumpReviewEpoch(pending);
         return pending;
       });
@@ -52273,8 +52383,9 @@ async function readPrUnitCandidates(store2, cfg, probe, now, force, candidates2,
         throw new Error("The PR read returned no usable status or reviewer list");
       reads.set(key, { state, role: await roleOn(cfg, probe, ref, state) });
     } catch (error62) {
+      const kind = readFailureKind(error62);
       const failure2 = scrub(String(error62)).replace(/\s+/g, " ").slice(0, 120);
-      reads.set(key, { failure: failure2 });
+      reads.set(key, { failure: failure2, kind });
       store2.log({ event: "pr-check-failed", pr: ref.id, error: failure2 });
     }
   }));
@@ -52345,7 +52456,7 @@ async function probeSinglePRs(store2, cfg, probe, now, force, subjects, pass = /
     for (const w of unknown2.filter((w2) => w2.prRead || w2.prGroups !== void 0 || prRefOf(store2, w2))) {
       const commit = commitFor(w);
       if (w.prs?.length === 1 && !w.prs[0].skip && w.prs[0].read !== "gave-up") {
-        const unit = w.prs[0], pending = { ...unit, read: "pending", readAt: void 0, failure: void 0 };
+        const unit = w.prs[0], pending = { ...unit, read: "pending", readAt: void 0, failure: void 0, failureKind: void 0 };
         if (unit.read !== "pending" || unit.failure !== void 0) bumpReviewEpoch(pending);
         w.prs[0] = pending;
       }
@@ -52368,13 +52479,14 @@ async function probeSinglePRs(store2, cfg, probe, now, force, subjects, pass = /
   if (!items2.length) return 0;
   store2.saveProbeMark({ ...store2.probeMark(), prAt: new Date(now).toISOString() });
   const byPr = new Map(items2.map((x) => [`${x.ref.project}/${x.ref.repo}/${x.ref.id}`, x.ref]));
-  const states2 = /* @__PURE__ */ new Map(), failures = /* @__PURE__ */ new Map();
+  const states2 = /* @__PURE__ */ new Map(), failures = /* @__PURE__ */ new Map(), kinds3 = /* @__PURE__ */ new Map();
   const keys2 = [...byPr.keys()];
   for (let i = 0; i < keys2.length; i += 4) await Promise.all(keys2.slice(i, i + 4).map(async (k) => {
     const ref = byPr.get(k);
     try {
       states2.set(k, await readPrOnce(probe, ref, pass));
     } catch (e) {
+      kinds3.set(k, readFailureKind(e));
       const failure2 = scrub(String(e)).replace(/\s+/g, " ").slice(0, 120);
       states2.set(k, void 0);
       failures.set(k, failure2);
@@ -52390,7 +52502,8 @@ async function probeSinglePRs(store2, cfg, probe, now, force, subjects, pass = /
     const st = states2.get(`${ref.project}/${ref.repo}/${ref.id}`);
     if (!st || !/^(active|completed|abandoned)$/i.test(st.status) || !st.votes.length && !Array.isArray(st.reviewers) && !/completed|abandoned/i.test(st.status)) {
       if (w.prs?.length === 1) w.prs[0] = unitReadSnapshot(w.prs[0], {
-        failure: failures.get(`${ref.project}/${ref.repo}/${ref.id}`) ?? "The PR read returned no usable status or reviewer list"
+        failure: failures.get(`${ref.project}/${ref.repo}/${ref.id}`) ?? "The PR read returned no usable status or reviewer list",
+        kind: kinds3.get(`${ref.project}/${ref.repo}/${ref.id}`) ?? "no-status"
       }, new Date(now).toISOString());
       w.prRead = void 0;
       w.prUnknown = true;
@@ -53342,6 +53455,10 @@ function changeRefusal(store2, cfg, wf, effect) {
       return `PR ${unit.id} needs a verified review at the commit being approved`;
   }
   return void 0;
+}
+function changeReason(error62) {
+  const match = /^Change \d+ cannot be made: ([^\r\n]+)\.$/.exec(error62);
+  return match?.[0] === error62 ? match[1] : void 0;
 }
 async function makeChange(store2, jobId, runId, index, call2, probe, voteConsent) {
   const job = store2.job(jobId), e = job?.result?.effects[index];

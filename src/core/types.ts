@@ -17,6 +17,7 @@ export type QuestionHint = { answers?: string[] }
 export type EditScope = { item: string; chat: string; chatName?: string; group: boolean; asker?: Person }
 // Who the owner is on a pull request: a reviewer by name, a member of a reviewer team that has not approved, its author, or none.
 export type PrRole = 'reviewer' | 'group' | 'group-approved' | 'group-unknown' | 'author' | 'declined' | 'none' | 'ambiguous'
+export type ReadFailureKind = 'auth' | 'not-found' | 'no-status' | 'network' | 'other'
 export type PrUnit = {
 	id: number
 	ref?: PrRef
@@ -25,6 +26,7 @@ export type PrUnit = {
 	tries: number
 	readAt?: string
 	failure?: string
+	failureKind?: ReadFailureKind
 	role?: PrRole
 	groups?: string[]
 	author?: string

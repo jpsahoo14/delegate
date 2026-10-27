@@ -4,14 +4,14 @@ export { send, replyContext, aboutPr, type SendBy } from './send.ts'
 import { answerHabitResult, dismissKey, dismissSuggestion, outcome } from './habits.ts'
 
 import { active, closeWork, doneTodos, homeOf, inWork, newTurn, openTodos, pendingParts, statusOf, step, wait } from './work.ts'
-import { allows, changeClaim, deployBusyLeft, doLine, effectCapability, externalPending, INTERNAL_ACTIONS, isInternal, isInvite, isVote, OLD_INVITE, OLD_INVITE_ASK, pendingEffects, prIdOf, proposalEffects, refusal, refusedAsk, sameChange, shown, vet } from '../core/effects.ts'
+import { allows, changeClaim, deployBusyLeft, doLine, effectCapability, externalPending, INTERNAL_ACTIONS, isInternal, isInvite, isVote, OLD_INVITE, OLD_INVITE_ASK, pendingEffects, prIdOf, proposalEffects, refusal, refusedAsk, sameChange, sameProposal, shown, vet, voteValue } from '../core/effects.ts'
 import { allowLeft, clearLeft, closeLeft, openLeft } from './left.ts'
 import { leaveForYou } from './left-source.ts'
 import { settingKey } from '../core/setting-keys.ts'
 import { leftActionText } from '../core/left-lines.ts'
 import { telemetryEvent } from '../core/telemetry.ts'
 import { placeOf } from '../web/model/place.ts'
-import { PAGE_CONTROL_VERBS, type Answer, type Config, type Effect, type Workflow } from '../core/types.ts'
+import { PAGE_CONTROL_VERBS, type Answer, type Change, type Config, type Effect, type Workflow } from '../core/types.ts'
 
 import { contentKey, htmlToText } from '../core/intake.ts'
 
@@ -24,7 +24,7 @@ import { type Source } from '../adapters/source.ts'
 import type { Store } from '../store/state.ts'
 import { close, isControl, say } from './intake.ts'
 import { OWNER_REPLY_UNCHECKED } from './owner-reply.ts'
-import { approveEffects, cancelRetry, carry, executing, okRelay, realProcs, refreshReviewQuestions, requestOneMore, saveInternalReceipts, stopPromisedWatch, stopStatusText, stopTracker, withdraw, type Procs } from './jobs.ts'
+import { approveEffects, cancelRetry, carry, executing, okRelay, realProcs, refreshReviewQuestions, requestOneMore, saveInternalReceipts, saveUnitReceipts, stopPromisedWatch, stopStatusText, stopTracker, withdraw, type Procs } from './jobs.ts'
 import { openContinue } from './continue.ts'
 import { heldBy, workflowJobIds } from './owner.ts'
 import { bumpReviewEpoch, clearReviewRequests, resetUnitReview } from './pr-review-state.ts'
@@ -36,24 +36,24 @@ import { ulid } from '../core/ids.ts'
 import { chooseSession } from './session-policy.ts'
 import { answerProposal, knowledgeOf, nextProposal } from './proposals.ts'
 import { CMD, NAME } from '../brand.ts'
-import { groupSelection, isReviewJob, MAY_REVIEW, reviewerGroupMatches } from './review-gate.ts'
+import { groupSelection, isReviewJob, MAY_REVIEW, readFailureReason, reviewerGroupMatches } from './review-gate.ts'
 import { askAtOf } from '../core/numbers.ts'
 import { FOLLOW_DAYS, stopWatch, watchCommand } from './track.ts'
 import { adoProbe, prRefOf, probePRs, probePrUnits, prTarget, recheckDeploy, recheckPr, type BuildProbe } from './probe.ts'
 import { deployRunning, isValidate, reportsResult, saysTested, testedAsk } from './validate.ts'
 import { checkAgain, dropPromise, notePromise, reopenPromise, rest } from './promise.ts'
 import { isDeploy } from '../core/deploy.ts'
-import { pageAnswerRefusal, pageChangeId, pageDigest } from '../core/page-approval.ts'
+import { effectConsent, pageAnswerRefusal, pageChangeId, pageDigest } from '../core/page-approval.ts'
 import { pageManagementRev } from '../store/page-revision.ts'
 import { holdReplyGap } from './reply-gap.ts'
 import { clearHold, clearVoteHold, holdReasons, reasonMessages, restampReasons, reviewedReasons, voteHold } from '../core/owner-send.ts'
 import { holdCheck, type Quick } from './send-holds.ts'
-import { freshRead } from '../store/fs.ts'
+import { freshRead, readPhase } from '../store/fs.ts'
 import { recordCommit } from './commit.ts'
 import { voteClaimReview } from './vote-claim.ts'
 import { scrub } from '../core/secrets.ts'
 import { legacyEffectOrigins } from '../core/normalize-report.ts'
-import { internalReceipt, makeInternalChanges } from './change.ts'
+import { changeReason, internalReceipt, makeChange, makeInternalChanges, mcpCaller } from './change.ts'
 
 import { stateFields, statusFields, WORKFLOW_SCHEMA } from '../core/upgrades.ts'
 
@@ -162,6 +162,89 @@ export async function applyAnswers(store: Store, src: Source, cfg: Config, procs
 
 async function applyOne(store: Store, src: Source, cfg: Config, wf: Workflow, a: Answer, procs: Procs, probe?: BuildProbe, quick?: Quick) {
 	const commit = recordCommit(wf, () => store.workflow(wf.id), store.save.bind(store))
+	if (a.verb === 'pr-approve') {
+		commit.refresh()
+		const refused = (reason: string) => reply(store, src, a, `${MARK} ${reason} Nothing was approved or sent.`, true)
+		const id = a.nums?.length === 1 ? a.nums[0] : undefined, units = wf.prs ?? []
+		const unit = units.find(unit => unit.id === id)
+		if (typeof id !== 'number' || !Number.isSafeInteger(id) || id <= 0 || units.length < 2 || !unit)
+			return refused('Choose one PR from the current multi-PR item.')
+		const jobId = unit.review?.completed?.job ?? unit.review?.run?.carrier ?? unit.job
+		const ids = [...new Set([jobId, unit.job, unit.review?.run?.job, unit.review?.run?.carrier].filter((id): id is string => !!id))]
+		if (wf.state === 'done' || wf.redacted || store.openWindow(wf.id) || wf.job && store.openWindow(wf.job) || ids.some(id => store.openWindow(id)))
+			return refused('This item is closed or open elsewhere.')
+		const jobs = ids.map(id => store.job(id)), itemJob = wf.job ? store.job(wf.job) : undefined
+		if (wf.state === 'waiting_on_task' || unit.review?.run?.phase === 'posting' ||
+			jobs.some(job => job && (executing(job) || job.state === 'running' || job.state === 'queued')) ||
+			itemJob && (executing(itemJob) || itemJob.state === 'queued'))
+			return refused(`PR ${id} is still working. Wait for its result.`)
+		const control = store.control()
+		if (control.paused || control.stopped)
+			return reply(store, src, a, `${MARK} ${NAME} is paused, so PR ${id} wasn't approved. Resume it, then approve again.`, true)
+		const consent = effectConsent(wf, { ...a, nums: undefined, include: [] })
+		if (!consent.ok) return refused(consent.reason.replace(/ Nothing was sent or changed\.$/, ''))
+		const matches = pendingEffects(wf.effects).filter(effect => pageChangeId(effect) === a.vote)
+		const effect = matches.length === 1 ? matches[0] : undefined
+		if (!effect || !isVote(effect.call) || prIdOf(effect.call) !== id || !((voteValue(effect.call) ?? 0) >= 5) || effect.error || effect.maybe || effect.off)
+			return refused('The vote changed. Open the current item.')
+		const job = jobId ? store.job(jobId) : undefined
+		const indexes = job?.result?.effects.flatMap((candidate, index) =>
+			pendingEffects([candidate]).length && isVote(candidate.call) && prIdOf(candidate.call) === id && sameProposal(candidate, effect) ? [index] : []) ?? []
+		if (!job || !job.parents.includes(wf.id) || indexes.length !== 1) return refused('Open the current item.')
+		const index = indexes[0], runId = ulid(), live = probe ?? adoProbe(cfg)
+		let result: Awaited<ReturnType<typeof makeChange>> | undefined, record: Change | undefined, unreadable = false
+		try {
+			try {
+				result = await readPhase(`change:${job.id}:${index}`, () => makeChange(store, job.id, runId, index, mcpCaller(cfg), live, wf))
+			} catch (error) {
+				result = { error: scrub(String(error)).slice(0, 300) }
+				store.log({ event: 'vote-action-failed', workflowId: wf.id, job: job.id, runId, error: result.error })
+			}
+			try { record = store.changes(job.id, runId)[index] } catch (error) {
+				unreadable = true
+				store.log({ event: 'vote-receipt-read-failed', workflowId: wf.id, job: job.id, runId, error: scrub(String(error)).slice(0, 300) })
+			}
+			let movedHead = effect.head
+			if (record?.stale && unit.ref && live?.pr) try {
+				movedHead = (await live.pr(unit.ref.project, unit.ref.repo, unit.id)).head ?? movedHead
+			} catch (error) {
+				store.log({ event: 'pr-check-failed', pr: id, error: scrub(String(error)).slice(0, 120) })
+			}
+			commit.refresh()
+			const stored = !record && result?.ref !== undefined ? store.job(job.id)?.result?.effects[index] : undefined
+			const done = record?.state === 'done' ? { ref: record.ref, at: record.at } : stored && sameProposal(stored, effect) ? stored.done : undefined
+			const noAnswer = unreadable || record?.state === 'calling'
+			const error = noAnswer ? 'No answer from the tool, so it may have been made' :
+				record?.state === 'failed' ? record.error ?? result?.error ?? 'The vote has no recorded failure reason' : result?.error ?? 'The vote has no recorded result'
+			const folded: Effect = done ? { ...effect, done, error: undefined } : { ...effect, error }
+			wf.effects = wf.effects?.map(current => pageChangeId(current) === a.vote ?
+				done ? { ...current, done, error: undefined } : { ...current, error } : current)
+			saveUnitReceipts(store, wf, [folded])
+			if (record?.stale) {
+				const current = wf.prs?.find(unit => unit.id === id)
+				if (current && movedHead) { current.again = { head: movedHead, at: new Date().toISOString() }; bumpReviewEpoch(current) }
+			}
+			const home = homeOf(store, wf), made = !!folded.done
+			const moved = step(home, made ? `Made: ${effect.summary.replace(/[.\s]+$/, '')}${folded.done?.ref && folded.done.ref !== 'done' ? ` (${folded.done.ref})` : ''}` :
+				`Not made: ${effect.summary.replace(/[.\s]+$/, '')} (${(folded.error ?? 'it failed').replace(/^Error: /, '').replace(/\.$/, '').slice(0, 160)})`,
+			{ ref: `change:${runId}:${index}` })
+			if (moved && home !== wf) store.save(home)
+			wf.revAt = new Date(Math.max(Date.now(), (Date.parse(wf.revAt ?? wf.updatedAt) || 0) + 1)).toISOString()
+			commit()
+			const sentDraft = wf.sent && !wf.sent.holding && wf.sent.text !== undefined &&
+				wf.sent.text === wf.draft?.text && wf.sent.askMsgId === wf.lastMsgId && !wf.pending.length
+			const rest = wf.draft?.text && !sentDraft ? ' Your reply still waits for you to send it.' : ''
+			const why = changeReason(folded.error ?? '')
+			const text = made ? `PR ${id}: approved.` : record?.stale ? `PR ${id} changed since the review, so it wasn't approved.` :
+				noAnswer ? `PR ${id} may already be approved: Azure DevOps didn't answer. Open the PR to check before approving again.` :
+					`PR ${id} wasn't approved${why ? `: ${why}` : ''}.`
+			return reply(store, src, a, `${MARK} ${text}${rest}`, !made)
+		} finally {
+			if (!probe && live?.close) try { await live.close() } catch (error) {
+				store.log({ event: 'pr-reader-close-failed', workflowId: wf.id, error: scrub(String(error)).slice(0, 300) })
+			}
+		}
+	}
 	if (a.verb === 'pr-retry' || a.verb === 'pr-skip') {
 		const id = a.nums?.length === 1 ? a.nums[0] : undefined
 		const units = wf.prs ?? [], unit = units.find(unit => unit.id === id)
@@ -188,7 +271,7 @@ async function applyOne(store: Store, src: Source, cfg: Config, wf: Workflow, a:
 			if (current.id !== unit.id) return current
 			const next: typeof current = a.verb === 'pr-skip'
 				? { ...current, skip: { by: 'owner', why: 'owner', at } }
-				: { ...current, read: 'pending', tries: 0, readAt: undefined, failure: undefined, skip: undefined }
+				: { ...current, read: 'pending', tries: 0, readAt: undefined, failure: undefined, failureKind: undefined, skip: undefined }
 			bumpReviewEpoch(next)
 			return next
 		})
@@ -212,8 +295,9 @@ async function applyOne(store: Store, src: Source, cfg: Config, wf: Workflow, a:
 			return reply(store, src, a, `${MARK} PR ${unit.id}: not reviewing: you skipped it. Nothing was sent or made.`)
 		const current = wf.prs?.find(candidate => candidate.id === unit.id)
 		if (!current) return reply(store, src, a, `${MARK} The PR list changed. Open the current item. Nothing was sent or made.`, true)
+		const reason = readFailureReason(current.failureKind)
 		const outcome = current?.read === 'ok' ? 'read again' : current?.read === 'failed' || current?.read === 'gave-up'
-			? `couldn't read it${current.failure ? `: ${current.failure}` : ''}` : current?.skip?.why === 'no-link'
+			? `couldn't read it${reason ? `: ${reason}` : ''}` : current?.skip?.why === 'no-link'
 				? "there's no link to it, so Delegate can't open it" : "checking you're a reviewer"
 		return reply(store, src, a, `${MARK} PR ${unit.id}: ${outcome}. Nothing was sent or made.`, current?.read !== 'ok')
 	}

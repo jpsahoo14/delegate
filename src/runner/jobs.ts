@@ -1185,7 +1185,7 @@ export function saveInternalReceipts(store: Store, wf: Workflow) {
 	}
 }
 
-function saveUnitReceipts(store: Store, wf: Workflow, effects: Effect[]) {
+export function saveUnitReceipts(store: Store, wf: Workflow, effects: Effect[]) {
 	if ((wf.prs?.length ?? 0) < 2) return
 	for (const unit of wf.prs ?? []) {
 		const id = reviewJobId(unit), job = id ? store.job(id) : undefined

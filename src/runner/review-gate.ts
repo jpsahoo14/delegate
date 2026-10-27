@@ -3,7 +3,7 @@ import { NAME } from '../brand.ts'
 import { allows, effectLeftAction, isVote, prIdOf, sameHead, VOTES } from '../core/effects.ts'
 import { leftRefusal, type LeftDraft } from '../core/left-lines.ts'
 import { settingKey } from '../core/setting-keys.ts'
-import type { Choices, Config, Effect, PrRole, PrUnit, Report, Workflow } from '../core/types.ts'
+import type { Choices, Config, Effect, PrRole, PrUnit, ReadFailureKind, Report, Workflow } from '../core/types.ts'
 import type { Store } from '../store/state.ts'
 import { prNumbersIn } from '../core/pr-refs.ts'
 import { askPrs, prTarget, type BuildProbe, type PrRef, type PrState } from './probe.ts'
@@ -119,9 +119,19 @@ export type UnitGate = { ok: true } |
 	{ ok: false; reason: 'checking' | 'couldnt-read' | 'gave-up' | 'owner' | 'no-link' } |
 	{ ok: false; reason: 'declined'; gate: DeclinedUnit }
 
+export function readFailureReason(kind?: ReadFailureKind): string | undefined {
+	switch (kind) {
+		case 'auth': return 'Azure DevOps refused access'
+		case 'not-found': return "Azure DevOps can't find it"
+		case 'no-status': return 'Azure DevOps sent an incomplete answer'
+		case 'network': return `${NAME} couldn't reach Azure DevOps`
+		default: return undefined
+	}
+}
+
 export function unitOutcome(unit: PrUnit): {
 	outcome: 'checking' | 'reviewing' | 'reviewed' | 'not-reviewing' | 'couldnt-read' | 'gave-up'
-	reason?: PrRole | 'not-asked' | 'owner' | 'no-link' | 'moved'
+	reason?: PrRole | ReadFailureKind | 'not-asked' | 'owner' | 'no-link' | 'moved'
 } {
 	if (!unit.requested) return { outcome: 'not-reviewing', reason: 'not-asked' }
 	if (unit.skip) return { outcome: 'not-reviewing', reason: unit.skip.why }
@@ -131,8 +141,8 @@ export function unitOutcome(unit: PrUnit): {
 		const head = completed?.head ?? review?.done?.head
 		return { outcome: 'reviewed', ...(completed?.verified === false || !sameHead(unit.head, head) ? { reason: 'moved' as const } : {}) }
 	}
-	if (unit.read === 'failed') return { outcome: 'couldnt-read' }
-	if (unit.read === 'gave-up') return { outcome: 'gave-up' }
+	if (unit.read === 'failed') return { outcome: 'couldnt-read', reason: unit.failureKind ?? 'other' }
+	if (unit.read === 'gave-up') return { outcome: 'gave-up', reason: unit.failureKind ?? 'other' }
 	if (unit.read !== 'ok') return { outcome: 'checking' }
 	return { outcome: unit.job || review?.run ? 'reviewing' : 'checking' }
 }
