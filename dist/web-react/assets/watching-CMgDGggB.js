@@ -1,1 +1,0 @@
-import{Y as e}from"./index-Cy_zsd_9.js";var t=e(()=>({})),n=e=>e?.status.watching?.on===!1&&e.status.state===`paused`,r=(e,t)=>n(t)?e.filter(e=>e.id!==`paused`):e;export{t as n,r as t};

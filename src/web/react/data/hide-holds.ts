@@ -10,7 +10,7 @@ import { UNDO_MS } from './todo-marks.ts'
 export type Hold = { action: string; line: string; sent?: boolean }
 export const useHolds = create<{ holds: Record<string, Hold> }>(() => ({ holds: {} }))
 const timers = new Map<string, ReturnType<typeof setTimeout>>()
-type Act = (action: Action, input?: Intent['input']) => Promise<void>
+type Act = (action: Action, input?: Intent['input'], onSubmitted?: (submissionId: string) => void) => Promise<void>
 const put = (item: string, hold?: Hold) => useHolds.setState(state => {
 	const holds = { ...state.holds }
 	if (hold) holds[item] = hold
@@ -26,14 +26,10 @@ export function holdHide(action: Action, act: Act) {
 	timers.set(item, setTimeout(() => {
 		timers.delete(item)
 		put(item, { action: action.id, line, sent: true })
-		const key = revisionKey(item, action.rev), before = useData.getState().byRevision[key]
-		void act(action).finally(() => {
-			// CR B1 (18:15:11Z): act can decline without submitting (another click on this item is still pending, or saved actions can't
-			// be read): it leaves only a note, never a pending submission or a new result. Then the hold ends at once, the item returns and
-			// its ActionState shows that note, rather than looking done until the 30 s limit.
-			const ui = useData.getState().byRevision[key]
-			const submitted = ui?.pending?.action === action.id || ui?.lastAction === action.id && !!ui.result && ui.result !== before?.result
-			if (!submitted && !ui?.error) return put(item)
+		let mine: string | undefined
+		void act(action, undefined, id => { mine = id }).finally(() => {
+			// Only a submission this dispatch created keeps the hold; refusals and pre-submission failures show their native note/error.
+			if (mine === undefined) return put(item)
 			const settled = () => {
 				const state = useData.getState(), ui = state.byRevision[revisionKey(item, action.rev)]
 				return !state.entities.actions[action.id] || !!ui?.error || !!ui?.result && (!ui.result.accepted || !!ui.result.refused)
