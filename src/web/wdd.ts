@@ -8,7 +8,7 @@ import { actionApprovalRev } from '../core/page-approval.ts'
 
 // WDD N1 (joint-what-delegate-did.md, PE build lines "New, in order" 1; Designer D1/D2/D5/D8; PE E1/E4/E7): what Delegate did for the
 // owner by itself, from the reviewed action ledger (SEND W1), as facts only. The words are composed on the page.
-// - History: the last 30 days (the ledger's retention), newest first; Done › By Delegate reads all of it.
+// - History: the configured retention window, capped at 30 days, newest first; Done › By Delegate reads all of it.
 // - Now's "Done for you" section: a row leaves only when its Undo window has closed AND it was seen on an earlier look (D1), or once he
 //   marked it reviewed. A row whose item is still open (waiting on him) is never also in the section (exactly once, D1/E1 itemOpen).
 // - Never the draft's sources or anything private: a record holds only what was sent and his line (E7); snapshots leave it out.
@@ -56,15 +56,16 @@ export type WddRow = {
 	// Not yet seen: after the last time he looked at what Delegate did (the existing New marker rule, key `wdd`).
 	fresh: boolean
 }
-// from: the start of the 30-day window read. since: the ledger's start (PE v1.135), through SEND's reviewed export only; absent while no
-// ledger-capable runner has run on this root.
-export type WddView = { from: string; since?: string; rows: WddRow[]; section: string[]; fresh: number; undoable: number }
+// from/days describe the same read window; missing days in an older projection means the former fixed 30 days.
+// since: the ledger's start (PE v1.135), through SEND's reviewed export only; absent before a ledger-capable runner has run.
+export type WddView = { from: string; days?: number; since?: string; rows: WddRow[]; section: string[]; fresh: number; undoable: number }
 
 const OPEN = new Set(['needs_human', 'waiting_on_task', 'waiting_on_sender'])
 const latest = (action: FoldedAction, kind: FoldedAction['amendments'][number]['kind']) => action.amendments.filter(change => change.kind === kind).at(-1)
 
 export function wddView(store: Store, seen: Record<string, string>, now = Date.now()): WddView {
-	const from = new Date(now - WDD_DAYS * 86_400_000).toISOString()
+	const days = Math.min(store.config().retentionDays ?? WDD_DAYS, WDD_DAYS)
+	const from = new Date(now - days * 86_400_000).toISOString()
 	const actions = readActions(store, { since: from, until: new Date(now).toISOString() })
 	const lines = new Map(ruleLines(store).map(line => [line.id, line]))
 	const lastLook = seen[WDD_SEEN] ?? ''
@@ -124,7 +125,7 @@ export function wddView(store: Store, seen: Record<string, string>, now = Date.n
 	}
 	const section = rows.filter(row => !row.itemOpen && !row.reviewed && (!!row.undoUntil || row.fresh)).map(row => row.id)
 	const since = ledgerStart(store)
-	return { from, ...(since ? { since } : {}), rows, section, fresh: rows.filter(row => row.fresh).length, undoable: rows.filter(row => !!row.undoUntil).length }
+	return { from, days, ...(since ? { since } : {}), rows, section, fresh: rows.filter(row => row.fresh).length, undoable: rows.filter(row => !!row.undoUntil).length }
 }
 
 // "Mark all reviewed" (D1/D7.7): every row the section showed at `shownAt` (no later row) gets a `reviewed` amendment by the owner. The

@@ -190,9 +190,9 @@ export const snapshotSchema = z.object({
 	busy: z.object({ now: z.number(), queued: z.number(), max: z.number(), scheduled: z.object({ n: z.number(), at: text, to: optional }).optional(), reason: z.object({ kind: z.enum(['ai', 'paused', 'off', 'slots']), at: optional, text: optional }).optional() }).optional(),
 	version: z.object({ version: optional, code: optional, fullCode: optional, tag: optional, auto: z.boolean(), channel: text, everyMin: z.number(), checkedAt: optional, failed: optional, last: z.object({ to: text, rolledBack: optional }).optional() }).optional(),
 	sinceLine: z.object({ at: text, parts: z.array(z.object({ text, href: text })) }).optional(),
-	// WDD N1 (joint-what-delegate-did.md): what Delegate did by itself, last 30 days, as facts (web/wdd.ts). Never in a snapshot page.
+	// WDD N1/H4: the read window and words share a derived retention-days fact, capped at 30. Never in a snapshot page.
 	wdd: z.object({
-		from: text, since: optional, sinceDay: optional, section: strings, fresh: z.number(), undoable: z.number(),
+		from: text, days: z.number().min(7).max(30).optional(), since: optional, sinceDay: optional, section: strings, fresh: z.number(), undoable: z.number(),
 		rows: z.array(z.object({
 			id: text, kind: z.enum(['reply', 'ack', 'review', 'reminder', 'change']), at: text,
 			chat: z.object({ name: text, group: z.boolean() }), to: optional, item: optional, itemOpen: z.literal(true).optional(), check: optional,

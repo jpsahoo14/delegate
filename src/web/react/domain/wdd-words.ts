@@ -7,13 +7,15 @@ export type WddPart = WddRow['parts'][number]
 
 export const WDD_TITLE = 'Done for you'
 // The subline and the empty line (PM R3/D8, D5; PE v1.135 item 4; PM 14:05:55), from the ledger's start (SEND's reviewed ledgerStart):
-// unknown: "What Delegate did for you" / "Nothing yet."; under 30 days: "· since <day>" / "Nothing yet. Delegate lists what it does for
-// you from <day>."; after: "· last 30 days" / "Nothing done by Delegate in the last 30 days.". The day is the owner-zone ownerDay.
+// unknown: "What Delegate did for you" / "Nothing yet."; under N days: "· since <day>" / "Nothing yet. Delegate lists what it does for
+// you from <day>."; after: "· last N days" / "Nothing done by Delegate in the last N days.". H4 uses the reader's capped retention N.
+// Missing days in an older projection means the former 30-day window. The day is the owner-zone ownerDay.
 type Wdd = NonNullable<Snapshot['wdd']>
-const recent = (wdd: Wdd, now: string) => !!wdd.since && Date.parse(now) - Date.parse(wdd.since) < 30 * 86_400_000
-export const wddSubline = (wdd: Wdd | undefined, now = new Date().toISOString()) => `What ${NAME} did for you${!wdd?.since || !wdd.sinceDay ? '' : recent(wdd, now) ? ` · since ${wdd.sinceDay}` : ' · last 30 days'}`
+const windowDays = (wdd: Wdd) => wdd.days ?? 30
+const recent = (wdd: Wdd, now: string) => !!wdd.since && Date.parse(now) - Date.parse(wdd.since) < windowDays(wdd) * 86_400_000
+export const wddSubline = (wdd: Wdd | undefined, now = new Date().toISOString()) => `What ${NAME} did for you${!wdd?.since || !wdd.sinceDay ? '' : recent(wdd, now) ? ` · since ${wdd.sinceDay}` : ` · last ${windowDays(wdd)} days`}`
 export const wddEmpty = (wdd: Wdd, now = new Date().toISOString()) => !wdd.since || !wdd.sinceDay ? 'Nothing yet.'
-	: recent(wdd, now) ? `Nothing yet. ${NAME} lists what it does for you from ${wdd.sinceDay}.` : `Nothing done by ${NAME} in the last 30 days.`
+	: recent(wdd, now) ? `Nothing yet. ${NAME} lists what it does for you from ${wdd.sinceDay}.` : `Nothing done by ${NAME} in the last ${windowDays(wdd)} days.`
 export const WDD_OLD = 'This action is older than 30 days'
 // The kind chips that combine with By Delegate (D1), over the ledger's own kinds; an ack is a reply.
 export const WDD_KINDS: Record<string, { label: string; kinds: WddRow['kind'][] }> = {

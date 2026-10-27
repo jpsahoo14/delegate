@@ -64545,7 +64545,8 @@ var WDD_SEEN = "wdd";
 var OPEN2 = /* @__PURE__ */ new Set(["needs_human", "waiting_on_task", "waiting_on_sender"]);
 var latest = (action2, kind) => action2.amendments.filter((change2) => change2.kind === kind).at(-1);
 function wddView(store2, seen, now = Date.now()) {
-  const from = new Date(now - WDD_DAYS * 864e5).toISOString();
+  const days2 = Math.min(store2.config().retentionDays ?? WDD_DAYS, WDD_DAYS);
+  const from = new Date(now - days2 * 864e5).toISOString();
   const actions2 = readActions(store2, { since: from, until: new Date(now).toISOString() });
   const lines = new Map(ruleLines(store2).map((line3) => [line3.id, line3]));
   const lastLook = seen[WDD_SEEN] ?? "";
@@ -64610,7 +64611,7 @@ function wddView(store2, seen, now = Date.now()) {
   }
   const section = rows.filter((row) => !row.itemOpen && !row.reviewed && (!!row.undoUntil || row.fresh)).map((row) => row.id);
   const since2 = ledgerStart(store2);
-  return { from, ...since2 ? { since: since2 } : {}, rows, section, fresh: rows.filter((row) => row.fresh).length, undoable: rows.filter((row) => !!row.undoUntil).length };
+  return { from, days: days2, ...since2 ? { since: since2 } : {}, rows, section, fresh: rows.filter((row) => row.fresh).length, undoable: rows.filter((row) => !!row.undoUntil).length };
 }
 
 // src/web/react/domain/contracts.ts
@@ -64984,9 +64985,10 @@ var snapshotSchema = external_exports.object({
   busy: external_exports.object({ now: external_exports.number(), queued: external_exports.number(), max: external_exports.number(), scheduled: external_exports.object({ n: external_exports.number(), at: text3, to: optional2 }).optional(), reason: external_exports.object({ kind: external_exports.enum(["ai", "paused", "off", "slots"]), at: optional2, text: optional2 }).optional() }).optional(),
   version: external_exports.object({ version: optional2, code: optional2, fullCode: optional2, tag: optional2, auto: external_exports.boolean(), channel: text3, everyMin: external_exports.number(), checkedAt: optional2, failed: optional2, last: external_exports.object({ to: text3, rolledBack: optional2 }).optional() }).optional(),
   sinceLine: external_exports.object({ at: text3, parts: external_exports.array(external_exports.object({ text: text3, href: text3 })) }).optional(),
-  // WDD N1 (joint-what-delegate-did.md): what Delegate did by itself, last 30 days, as facts (web/wdd.ts). Never in a snapshot page.
+  // WDD N1/H4: the read window and words share a derived retention-days fact, capped at 30. Never in a snapshot page.
   wdd: external_exports.object({
     from: text3,
+    days: external_exports.number().min(7).max(30).optional(),
     since: optional2,
     sinceDay: optional2,
     section: strings,
