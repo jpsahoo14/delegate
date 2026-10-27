@@ -46,13 +46,13 @@ export function snapshot(store: Store, now = Date.now(), only?: Workflow[]): Sna
 	// Paused only changes what is sent; whether anything runs comes first. Stopped, then no machine reading, then paused
 	// (set in the config or by the owner, as status and the send gate read it), then the day's limit (review round 3, P1, P2-5).
 	const runner: Facts['runner'] = c.stopped ? 'stopped' : reading === 'off' || reading === 'never' ? 'off' : c.paused || cfg.paused ? 'paused' : runs >= cap ? 'capped' : 'ok'
-	// The same order and slots as dispatch: live asks first, the week before setup a few per check within half the day's runs.
+	// The same order and slots as dispatch: live asks first, the first-setup backlog a few per check within half the day's runs.
 	const held = new Set(store.openWindows().map(w => w.id))
 	const queued = workflows.filter(w => w.state === 'running').sort((a, b) => a.updatedAt.localeCompare(b.updatedAt))
 	const queue = new Map<string, NonNullable<Facts['queue']>>()
 	const pacedSlots = runs < cap / 2 ? cfg.maxParallel ?? 3 : 0
 	let paced = 0, room = cap - runs
-	// Live asks take the day's room before the week before setup, as in dispatch.
+	// Live asks take the day's room before the first-setup backlog, as in dispatch.
 	for (const w of queued) queue.set(w.id, held.has(w.id) || (w.job && held.has(w.job)) ? 'held' : !w.paced || paced++ < pacedSlots ? 'next' : 'line')
 	for (const w of [...queued.filter(w => !w.paced), ...queued.filter(w => w.paced)]) if (queue.get(w.id) === 'next' && room-- <= 0) queue.set(w.id, 'limit')
 	// The owner's Ask-box questions run after the drafts and use the same room.

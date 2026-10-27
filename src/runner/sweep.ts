@@ -9,13 +9,13 @@ import { kindOf } from './discover.ts'
 import { intake, say } from './intake.ts'
 import { MARK } from '../core/render.ts'
 
-// First setup reads the week before it once, for people still waiting on the owner (design-spec/first-sweep.md).
-export const SWEEP_DAYS = 7
+// First setup reads the 14 days before it once, for people still waiting on the owner (design-spec/first-sweep.md).
+export const SWEEP_DAYS = 14
 const PAGES = 5
 const FULL = 45
 const DAY = 86_400_000
 const TRIES = 3
-// A first check reads for at most this long, so live messages never wait long behind the week (dry run 10-20: 73 chats took 222 s).
+// A first check reads for at most this long, so live messages never wait long behind the first-setup read (dry run 10-20: 73 chats took 222 s).
 const BUDGET_MS = 90_000
 const t = (iso: string) => Date.parse(iso)
 
@@ -43,7 +43,7 @@ export async function sweep(store: Store, src: Source, cfg: Config, now = Date.n
 		const chats = new Map<string, SweepChat>()
 		const add = (c: { id: string; name: string; lastAt: string }) => { if (t(c.lastAt) > t(since) && t(c.lastAt) <= t(cut) && !skip(c.id) && !chats.has(c.id)) chats.set(c.id, { id: c.id, name: c.name, group: isThread(c.id) || kindOf(c.id) !== 'oneOnOne' }) }
 		for (const c of [...listed, ...threads]) add(c)
-		// A full list ends before the week does; search adds the chats it did not reach. If search fails, the count says how far back it read.
+		// A full list ends before the read window does; search adds the chats it did not reach. If search fails, the count says how far back it read.
 		let reach = since
 		const oldest = listed.map(c => c.lastAt).sort((a, b) => t(a) - t(b))[0]
 		if (listed.length >= FULL && t(oldest) > t(since)) {
@@ -84,8 +84,9 @@ export async function sweep(store: Store, src: Source, cfg: Config, now = Date.n
 	const items = store.workflows().filter(w => w.before)
 	if (items.some(w => w.state === 'running')) return made
 	const need = items.filter(w => w.state !== 'done').length, keep = items.filter(w => w.state === 'done' && w.fyi?.watch).length
-	const back = (s.reach && t(s.reach) > t(s.since) ? `since ${s.reach.slice(0, 10)}` : `from the last ${SWEEP_DAYS} days`) + (s.skipped ? ` (${s.skipped} chat${s.skipped === 1 ? '' : 's'} could not be read)` : '')
-	// Said when there is something, or when the read could not reach the whole week, so the owner knows how far back it looked.
+	// A sweep saved before the window grew keeps its own since.
+	const back = (s.reach && t(s.reach) > t(s.since) ? `since ${s.reach.slice(0, 10)}` : s.cut && t(s.since) > t(s.cut) - SWEEP_DAYS * DAY ? `since ${s.since.slice(0, 10)}` : `from the last ${SWEEP_DAYS} days`) + (s.skipped ? ` (${s.skipped} chat${s.skipped === 1 ? '' : 's'} could not be read)` : '')
+	// Said when there is something, or when the read could not reach the whole window, so the owner knows how far back it looked.
 	const short = !!s.reach && t(s.reach) > t(s.since) || !!s.skipped
 	if (need + keep) await say(store, src, `${MARK} I read your chats ${back}: ${need} still need${need === 1 ? 's' : ''} you (in Needs you, marked From before setup)${keep ? `, ${keep} to keep an eye on (Catch up)` : ''}. Nothing is sent without your ok.`)
 	else if (short) await say(store, src, `${MARK} I read your chats ${back}: nobody from before setup is still waiting on you.${s.reach && t(s.reach) > t(s.since) ? ' Older chats were out of reach.' : ''}`)

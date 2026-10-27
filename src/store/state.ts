@@ -44,7 +44,7 @@ export function loadLocal(): Local {
 }
 
 export type SweepChat = { id: string; name: string; group: boolean; tries?: number }
-// since..cut is the week read; left, the chats still to read; reach, how far back it could read; skipped, chats that could not be read; told, the owner heard the count.
+// since..cut is the first-setup read window; left, the chats still to read; reach, how far back it could read; skipped, chats that could not be read; told, the owner heard the count.
 export type Sweep = { since: string; cut?: string; left?: SweepChat[]; reach?: string; told?: boolean; skipped?: number; listTries?: number }
 export type Shown = { rev: string; at: string }
 export type Preview = { code: string; at: string }
@@ -312,7 +312,7 @@ export class Store {
 	}
 	saveChats(c: ChatsState) { this.w(this.p('state', 'chats.json'), c) }
 	hasChats(): boolean { return existsSync(this.p('state', 'chats.json')) }
-	// The first-setup read of the week before (first-sweep.md); its own file, so the chat state and the sweep never overwrite each other.
+	// The first-setup read (first-sweep.md); its own file, so the chat state and the sweep never overwrite each other.
 	sweep(): Sweep | undefined { return readJson<Sweep | undefined>(this.p('state', 'sweep.json'), undefined) }
 	saveSweep(s: Sweep) { this.w(this.p('state', 'sweep.json'), s) }
 

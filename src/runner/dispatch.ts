@@ -77,7 +77,7 @@ export async function dispatch(store: Store, src: Source, cfg: Config, run: RunW
 	const cap = cfg.dailyRuns ?? 200
 	const room = cap - store.runsToday()
 	const running = store.workflows().filter(w => (!only || only.includes(w.id)) && w.state === 'running' && heldBy(store, w) !== 'window').sort((a, b) => a.updatedAt.localeCompare(b.updatedAt))
-	// The week before setup is drafted behind live asks, a few per check, within half of the day's runs (first-sweep.md).
+	// The first-setup backlog is drafted behind live asks, a few per check, within half of the day's runs (first-sweep.md).
 	const paced = running.filter(w => w.paced).sort((a, b) => Number(!!a.startedBy) - Number(!!b.startedBy)).slice(0, store.runsToday() < cap / 2 ? cfg.maxParallel : 0)
 	const queue = [...running.filter(w => !w.paced), ...paced].slice(0, Math.max(0, room))
 	const defer = (items: Workflow[]) => {

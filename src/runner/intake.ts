@@ -449,7 +449,7 @@ export function splitOff(store: Store, cfg: Config, from: Workflow, ids: string[
 		schema: WORKFLOW_SCHEMA, id: ulid(), code: store.nextCode(), kind: from.kind, ...stateFields(undefined, 'running'), key: from.key, chat: from.chat,
 		asker: msgs[0].from, session: { agent: cfg.agent.flavor, id: chooseSession('item', { fresh: true }) }, lastMsgId: last.id, lastAsk: last.text,
 		pending: [...moving], msgIds: [...moving], status: 'Drafting a reply', newCount: 0, createdAt: now, updatedAt: now,
-		// A topic split from the week before keeps its hold.
+		// A topic split from the first-setup read keeps its hold.
 		...(from.before ? { before: true as const } : {}),
 	}
 	from.msgIds = from.msgIds.filter(id => !moving.has(id))

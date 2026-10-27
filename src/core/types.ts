@@ -363,7 +363,7 @@ export type Workflow = {
 	prVote?: number
 	// The PR's status at Delegate's first look, so a PR already closed when the ask came in does not close the item.
 	prStatus?: string
-	// It came from the first-setup read of the week before setup: its replies always wait for the owner (design-spec/first-sweep.md).
+	// It came from the first-setup read: its replies always wait for the owner (design-spec/first-sweep.md).
 	before?: true
 	// Its first draft waits behind live asks, a few per check.
 	paced?: true

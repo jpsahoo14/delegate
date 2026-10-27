@@ -43023,7 +43023,7 @@ var init_state = __esm({
       hasChats() {
         return existsSync8(this.p("state", "chats.json"));
       }
-      // The first-setup read of the week before (first-sweep.md); its own file, so the chat state and the sweep never overwrite each other.
+      // The first-setup read (first-sweep.md); its own file, so the chat state and the sweep never overwrite each other.
       sweep() {
         return readJson(this.p("state", "sweep.json"), void 0);
       }
@@ -50260,7 +50260,7 @@ function splitOff(store2, cfg, from, ids) {
     newCount: 0,
     createdAt: now,
     updatedAt: now,
-    // A topic split from the week before keeps its hold.
+    // A topic split from the first-setup read keeps its hold.
     ...from.before ? { before: true } : {}
   };
   from.msgIds = from.msgIds.filter((id) => !moving.has(id));
@@ -61629,7 +61629,7 @@ init_channels();
 init_discover();
 init_intake2();
 init_render();
-var SWEEP_DAYS = 7;
+var SWEEP_DAYS = 14;
 var PAGES = 5;
 var FULL = 45;
 var DAY5 = 864e5;
@@ -61705,7 +61705,7 @@ async function sweep(store2, src, cfg, now = Date.now) {
   const items2 = store2.workflows().filter((w) => w.before);
   if (items2.some((w) => w.state === "running")) return made;
   const need = items2.filter((w) => w.state !== "done").length, keep = items2.filter((w) => w.state === "done" && w.fyi?.watch).length;
-  const back = (s3.reach && t(s3.reach) > t(s3.since) ? `since ${s3.reach.slice(0, 10)}` : `from the last ${SWEEP_DAYS} days`) + (s3.skipped ? ` (${s3.skipped} chat${s3.skipped === 1 ? "" : "s"} could not be read)` : "");
+  const back = (s3.reach && t(s3.reach) > t(s3.since) ? `since ${s3.reach.slice(0, 10)}` : s3.cut && t(s3.since) > t(s3.cut) - SWEEP_DAYS * DAY5 ? `since ${s3.since.slice(0, 10)}` : `from the last ${SWEEP_DAYS} days`) + (s3.skipped ? ` (${s3.skipped} chat${s3.skipped === 1 ? "" : "s"} could not be read)` : "");
   const short3 = !!s3.reach && t(s3.reach) > t(s3.since) || !!s3.skipped;
   if (need + keep) await say(store2, src, `${MARK} I read your chats ${back}: ${need} still need${need === 1 ? "s" : ""} you (in Needs you, marked From before setup)${keep ? `, ${keep} to keep an eye on (Catch up)` : ""}. Nothing is sent without your ok.`);
   else if (short3) await say(store2, src, `${MARK} I read your chats ${back}: nobody from before setup is still waiting on you.${s3.reach && t(s3.reach) > t(s3.since) ? " Older chats were out of reach." : ""}`);
