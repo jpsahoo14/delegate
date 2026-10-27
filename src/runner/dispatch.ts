@@ -56,6 +56,7 @@ import { addInternalSuggestions } from './internal-effects.ts'
 import { compileRule } from './rule-compile.ts'
 import { lineNeedsCompile, ruleTextHash } from '../core/rule-lines.ts'
 import { ruleLines, rulesToCompile } from '../store/rules.ts'
+import { standingInstructions } from '../core/ways.ts'
 
 export type RunWorker = (cfg: Config['agent'], input: RunInput & { workflowId: string; runId: string }) => Promise<RunResult>
 
@@ -407,9 +408,10 @@ async function runOne(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 	const { cwd, mcpConfigPath } = workerMcp(store, wf.id, runId)
 	const others = wf.code && !separate ? store.openInChat(wf.chat.id).filter(o => o.id !== wf.id && o.code && !o.followUp && !o.sent && freshAsk(store, o) && askRelation(store, o, wf.lastAsk ?? '') !== 'different') : []
 	const home = homeOf(store, wf)
+	const scopes = [{ workflow: wf, pr: prTarget(store, wf) }]
 	// A new item may belong to work that started in another chat; the worker sees the open work to say so (R-WRK-10).
 	const works = !wf.work && !wf.partOf ? store.workflows().filter(w => active(w) && !w.partOf && w.chat.id !== wf.chat.id && !heldLevel(cfg, w.chat.id)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 8) : []
-	const prompt = buildPrompt(wf, store.thread(wf.id), { ...cfg, agent: { ...cfg.agent, tools } }, store.root, store.owners(), others, corrections(store.lessons().filter(l => lessonFits(cfg, (l.detail as { chat?: string } | undefined)?.chat, wf.chat.id)), wf), { home: home === wf ? undefined : home, works, parts: home.work?.parts?.map(id => store.workflow(id)).filter((p): p is Workflow => !!p) ?? [], job: completedJob, scopes: [{ workflow: wf, pr: prTarget(store, wf) }], tools: offered })
+	const prompt = buildPrompt(wf, store.thread(wf.id), { ...cfg, agent: { ...cfg.agent, tools } }, store.root, store.owners(), others, corrections(store.lessons().filter(l => lessonFits(cfg, (l.detail as { chat?: string } | undefined)?.chat, wf.chat.id)), wf), { home: home === wf ? undefined : home, works, parts: home.work?.parts?.map(id => store.workflow(id)).filter((p): p is Workflow => !!p) ?? [], job: completedJob, scopes, instructions: standingInstructions(store, scopes), tools: offered })
 	const usage = { ...sessionUse(sessionId, '', Date.parse(startedAt), { fresh: true, ...(retrySession ? { why: 'catalog' as const } : {}) }),
 		key: usageKey('chat', `chat:${wf.chat.id}`), promptChars: prompt.length }
 	store.addRun()
@@ -663,7 +665,7 @@ async function runAsk(store: Store, src: Source, cfg: Config, wf: Workflow, run:
 	store.addRun()
 	restoreSession(store, session)
 	const beforeLog = sessionLog(cfg.agent.flavor, session), logStart = beforeLog.length
-	const prompt = buildAskPrompt(wf, store.thread(wf.id), { ...cfg, agent: { ...cfg.agent, tools } }, store.root, { tools: offered }), startedAt = new Date().toISOString()
+	const prompt = buildAskPrompt(wf, store.thread(wf.id), { ...cfg, agent: { ...cfg.agent, tools } }, store.root, { tools: offered, instructions: standingInstructions(store, [{ workflow: wf, pr: prTarget(store, wf) }]) }), startedAt = new Date().toISOString()
 	const usage = { ...sessionUse(session, beforeLog, Date.parse(startedAt), retrySession ? { fresh: true, why: 'catalog' } : {}),
 		key: usageKey('ask', `ask:${wf.id}`), promptChars: prompt.length }
 	const res = await run({ ...cfg.agent, tools }, { workflowId: wf.id, runId, sessionId: session, prompt, cwd: job?.repo ?? cwd, mcpConfigPath, extraTools: WORKER_TOOLS, dirs: readDirs(store, cfg) })

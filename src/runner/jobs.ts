@@ -36,7 +36,8 @@ import type { Source } from '../adapters/source.ts'
 import { alive, aliveAs, killTree } from '../os/process.ts'
 import { openWindow } from '../os/window.ts'
 import { LOCAL_DIR, type Store } from '../store/state.ts'
-import { buildJobPrompt } from '../worker/prompt.ts'
+import { buildJobPrompt, standingInstructionsBlock } from '../worker/prompt.ts'
+import { standingInstructions } from '../core/ways.ts'
 import { checked, WORKER_SERVER, WORKER_TOOLS, workerMcp, readDirs, runReads } from './dispatch.ts'
 import { catalogInfo, jobToolScope, scopeTools, workerTools } from './catalog.ts'
 import { isBootstrap, YOURS, type BootSource } from './bootstrap.ts'
@@ -565,7 +566,9 @@ export async function startJobs(store: Store, cfg: Config, procs: Procs, hold: s
 		try {
 			restoreSession(store, job.session.id)
 			const startedAt = new Date().toISOString()
-			const prompt = job.wrapUp ? WRAP_UP(job.id) : buildJobPrompt(job, { ...cfg, agent }, store.root, { clone, telemetry, scopes: parentsOf(store, job).map(wf => ({ workflow: wf, pr: prTargetForJob(store, wf, job) })), tools: offered })
+			const scopes = parentsOf(store, job).map(wf => ({ workflow: wf, pr: prTargetForJob(store, wf, job) }))
+			const instructions = standingInstructions(store, scopes, 'result')
+			const prompt = job.wrapUp ? scrub([WRAP_UP(job.id), ...standingInstructionsBlock(instructions)].join('\n')) : buildJobPrompt(job, { ...cfg, agent }, store.root, { clone, telemetry, scopes, instructions, tools: offered })
 			const usage = { ...sessionUse(job.session.id, sessionLog(job.session.agent, job.session.id), Date.parse(startedAt),
 				rotated ? { fresh: true, why: 'cap' } : {}), key: jobUsageKey(canonicalKey(job.key)), promptChars: prompt.length }
 			pid = procs.start(agent, { workflowId: job.id, runId, sessionId: job.session.id, prompt, cwd: job.repo ?? clone ?? cwd, mcpConfigPath, extraTools: job.purpose === 'execute' ? [`${WORKER_SERVER}-submit_report`, `${WORKER_SERVER}-make_change`] : WORKER_TOOLS, dirs: readDirs(store, cfg) }).pid

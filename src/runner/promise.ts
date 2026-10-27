@@ -1,4 +1,5 @@
 import { stateFields } from '../core/upgrades.ts'
+import { standingInstructions } from '../core/ways.ts'
 // Slice 3 of next action (reviews/eng-next-action.md, case 6): the owner's own words that promise a change on the item's target.
 // The reply has already gone; one short run in the item's session maps the words to changes, which wait for one ok on the same
 // item, through the same vet, ok, and make_change as every other change. Nothing is made without that ok.
@@ -118,7 +119,8 @@ export async function checkPromise(store: Store, src: Source, cfg: Config, wf: W
 		const { cwd, mcpConfigPath } = workerMcp(store, wf.id, runId)
 		store.addRun()
 		restoreSession(store, session)
-		const res = await run({ ...cfg.agent, tools }, { workflowId: wf.id, runId, sessionId: session, prompt: buildPromisePrompt(wf, store.thread(wf.id), cfg, store.root, prTarget(store, wf)), cwd: job?.repo ?? cwd, mcpConfigPath, extraTools: WORKER_TOOLS, dirs: readDirs(store, cfg) })
+		const pr = prTarget(store, wf)
+		const res = await run({ ...cfg.agent, tools }, { workflowId: wf.id, runId, sessionId: session, prompt: buildPromisePrompt(wf, store.thread(wf.id), cfg, store.root, pr, { instructions: standingInstructions(store, [{ workflow: wf, pr }]) }), cwd: job?.repo ?? cwd, mcpConfigPath, extraTools: WORKER_TOOLS, dirs: readDirs(store, cfg) })
 		store.log({ event: 'promise-run', workflowId: wf.id, runId, ms: res.ms, tools: { offered: tools.length, scoped: false }, ...ran('promise', res.used) })
 		backupSession(store, session)
 		report = store.peekReport(wf.id, runId)

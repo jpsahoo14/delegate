@@ -22788,6 +22788,23 @@ function matchesWhen(when3, wf, conf, groups2, review) {
   if (when3.reviewerGroup && (!groups2.length || !groups2.every((names) => names?.some((name) => groupName(name) === groupName(when3.reviewerGroup))))) return false;
   return review || !when3.minConfidence || RANK[conf] >= RANK[when3.minConfidence];
 }
+function instructionScopeMatches(instruction, wf, pr, mode = "reply") {
+  const who2 = instruction.who, when3 = instruction.when ?? {};
+  if (who2?.accounts?.length) {
+    if (!wf.asker || !who2.accounts.some((account) => account.id === wf.asker.id)) return false;
+  } else if (who2?.group && (who2.group !== "org" || !wf.asker || wf.chat.guests !== false)) return false;
+  if (when3.results && mode !== "result") return false;
+  if ("lane" in when3 && when3.lane && when3.lane !== laneOf(wf, mode)) return false;
+  const units = wf.prs?.filter((unit) => unit.ref && !unit.skip && (pr === void 0 || unit.id === pr));
+  if (pr !== void 0 && !units?.length) return false;
+  return matchesWhen(
+    when3,
+    wf,
+    confidence(wf.draft?.sources ?? []),
+    units?.map((unit) => unit.groups) ?? [wf.prGroups],
+    "then" in instruction && instruction.then === "review"
+  );
+}
 function ruleFor(wf, rules, conf = confidence(wf.draft?.sources ?? []), mode = "reply") {
   return rules.filter((r) => !r.off && grantConfirmed(r) && !r.style && matchesScope(r, wf, conf) && inLane(r, wf, mode)).sort(compareGrants)[0];
 }
@@ -44325,17 +44342,185 @@ var init_format = __esm({
   }
 });
 
+// src/core/ways.ts
+import { join as join13 } from "node:path";
+function view(line3, used = {}, conflictWith = [], conflict) {
+  const status3 = ruleLineView(line3, conflict);
+  const ruleIds = [.../* @__PURE__ */ new Set([...line3.grantIds ?? [], ...(line3.compile?.grants ?? []).map((grant) => grant.id)])];
+  const usedThisWeek = ruleIds.reduce((count, id) => count + (used[id] ?? 0), 0);
+  const reading = status3.status === "reading", redirect = !reading && !!line3.compile?.setting;
+  const readBackLabel = reading || redirect ? "" : "Delegate reads this as:";
+  const readBackValue = status3.meaning || "It waits for you.";
+  const statusText2 = status3.state === "on" ? `\u2713 Doing this \xB7 used ${usedThisWeek} times this week` : status3.statusText;
+  const setting = status3.setting ?? (line3.compile?.grants.some((grant) => grant.then === "review") ? "reviewRule" : void 0);
+  return {
+    id: line3.id,
+    text: line3.text,
+    textHash: ruleTextHash(line3.text),
+    source: line3.source === "settings" ? "setting" : line3.source,
+    group: status3.state === "off" ? "off" : ["reading", "waiting", "not-in-effect"].includes(status3.state) ? "needs-him" : "doing",
+    status: status3.status,
+    state: status3.state,
+    readBack: [line3.text, readBackLabel ? `${readBackLabel} ${readBackValue}` : readBackValue, statusText2],
+    readBackLabel,
+    readBackValue,
+    statusText: statusText2,
+    usedThisWeek,
+    ruleIds,
+    ...line3.compile?.notYet.length ? { notYet: line3.compile.notYet.map((part2) => ({ clause: part2.clause, untilThen: "It waits for you." })) } : {},
+    ...line3.compile?.limited.length ? { limited: [...new Set(line3.compile.limited.map((part2) => part2.limit))] } : {},
+    ...line3.compile?.question ? { question: line3.compile.question } : {},
+    ...setting ? { setting } : {},
+    ...redirect ? { redirect: true } : {},
+    ...lineConfirmed(line3) ? { confirmedAt: line3.confirmedAt } : {},
+    ...conflictWith.length ? { conflictWith } : {}
+  };
+}
+function lineViews(store2) {
+  const lines = ruleLines(store2), conflicts = ruleConflicts(lines);
+  const used = scoped(`ruleuses:${join13(store2.root, "state", "log")}`, () => ruleUses(store2.logs(7)));
+  return lines.map((line3) => view(line3, used, conflicts[line3.id], lines.find((other) => conflicts[line3.id]?.includes(other.id))));
+}
+function standingInstructions(store2, scopes2, mode = "reply") {
+  const lines = ruleLines(store2), conflicts = ruleConflicts(lines);
+  return lines.flatMap((line3) => {
+    const instruction = line3.compile?.instruction;
+    if (!instruction) return [];
+    const state = ruleLineView(line3, lines.find((other) => conflicts[line3.id]?.includes(other.id))).state;
+    if (state !== "on" && state !== "part" && state !== "guidance") return [];
+    const grants = lineGrants(line3).filter((grant) => !grant.off);
+    const unscoped = !instruction.who?.accounts?.length && !instruction.who?.group && !Object.values(instruction.when ?? {}).some((value) => value !== void 0);
+    if (!scopes2.length && (!unscoped || state !== "guidance")) return [];
+    if (!scopes2.every(({ workflow, pr }) => instructionScopeMatches(instruction, workflow, pr, mode) && (state === "guidance" || grants.some((grant) => instructionScopeMatches(grant, workflow, pr, mode))))) return [];
+    return [{
+      state: state === "guidance" ? "Guidance" : "Active",
+      instruction: {
+        ...instruction.task ? { task: instruction.task } : {},
+        constraints: [...instruction.constraints],
+        ...instruction.output ? { output: instruction.output } : {}
+      }
+    }];
+  });
+}
+function suggestion(habit) {
+  const text5 = suggestionText(habit);
+  const meaning = habit.removes ? text5 : habit.kind === "style" ? `Use this drafting style: ${habit.rule.style ?? text5}` : readBack(habit.rule);
+  const evidence = `${habit.evidence.count} ${habit.kind === "style" ? "edited" : "unedited"} replies on ${habit.evidence.days} days, out of ${habit.evidence.total}.`;
+  return {
+    id: habit.code,
+    text: text5,
+    textHash: ruleTextHash(text5),
+    readBack: [text5, `Delegate reads this as: ${meaning}`, evidence],
+    evidence,
+    links: habit.evidence.links
+  };
+}
+function suggestions(store2) {
+  const habits = habitSuggestions(store2);
+  return {
+    ...habits.open ? { open: suggestion(habits.open) } : {},
+    turnedDown: [
+      ...habits.turnedDown.map(({ habit, at: at3, how }) => ({ suggestion: suggestion(habit), at: at3, how })),
+      ...turnedDownSuggestions(store2, Date.now()).map(({ key, label: label2, at: at3 }) => ({ kind: "suggestion", key, label: label2, at: at3 }))
+    ]
+  };
+}
+function result(store2, written) {
+  if (!written.ok || !written.line) return written.ok ? { ok: true } : written;
+  const line3 = lineViews(store2).find((line4) => line4.id === written.line.id);
+  if (!line3) throw new Error("The saved rule line could not be read back.");
+  return { ok: true, line: line3 };
+}
+function currentSuggestion(store2, id, expectHash) {
+  const habit = freshRead(() => store2.habits().find((habit2) => habit2.key === id || habit2.code.toUpperCase() === id.toUpperCase()));
+  return habit && ruleTextHash(suggestionText(habit)) === expectHash ? habit : void 0;
+}
+function acceptSuggestion(store2, id, text5, expectHash) {
+  const habit = currentSuggestion(store2, id, expectHash);
+  if (!habit || !["suggested", "accepted"].includes(habit.state)) return { ok: false, why: WAY_CHANGED };
+  if (!text5.trim()) return { ok: false, why: "Write a line before saving it." };
+  const unchanged = text5 === suggestionText(habit);
+  if (!unchanged && habit.state !== "suggested") return { ok: false, why: WAY_CHANGED };
+  const accepted = answerHabitResult(store2, habit, "ok", unchanged ? habit.rule.text : text5);
+  if (!accepted.ok) return accepted;
+  const record4 = ruleLines(store2).find((record5) => record5.learned?.key === habit.key);
+  const line3 = record4 && lineViews(store2).find((line4) => line4.id === record4.id);
+  return { ok: true, ...line3 ? { line: line3 } : {} };
+}
+function undoAcceptSuggestion(store2, id, expectHash) {
+  const undone = withRecordWriteNow(join13(store2.root, "rules.compiled.json"), () => freshRead(() => {
+    const line3 = ruleLines(store2).find((line4) => line4.id === id);
+    if (!line3 || line3.source !== "learned" || !line3.learned?.key || ruleTextHash(line3.text) !== expectHash)
+      return { ok: false, why: WAY_CHANGED };
+    const restored = undoAcceptHabit(store2, line3.learned.key);
+    return restored.ok ? { ok: true } : restored;
+  }));
+  return undone === BUSY ? { ok: false, why: RULE_WRITE_BUSY } : undone;
+}
+function dismissSuggestion2(store2, id, how, expectHash) {
+  if (!currentSuggestion(store2, id, expectHash)) return { ok: false, why: WAY_CHANGED };
+  const dismissed2 = dismissHabit(store2, id, how);
+  return dismissed2.ok ? { ok: true } : dismissed2;
+}
+function undoDismiss2(store2, id) {
+  const restored = undoDismiss(store2, id);
+  return restored.ok ? { ok: true } : restored;
+}
+function reconsiderSuggestion2(store2, id, kind) {
+  if (kind === "suggestion") return reconsiderSuggestion(store2, id);
+  const reconsidered = reconsiderHabit(store2, id);
+  return reconsidered.ok ? { ok: true } : reconsidered;
+}
+var wayNotes, WAY_CHANGED, limitsCard, wayLines, suggestionText, linesToCheck, needsHim, addLine, editLine, confirmLine, setLineOff, deleteLine, restoreLine, answerLine, makeNoteLine, deleteNote;
+var init_ways = __esm({
+  "src/core/ways.ts"() {
+    "use strict";
+    init_brand();
+    init_state();
+    init_policy();
+    init_limits();
+    init_rules();
+    init_actions();
+    init_telemetry();
+    init_fs();
+    init_rule_lines();
+    init_capabilities();
+    init_habits();
+    init_limits();
+    wayNotes = (store2) => ruleNotes(store2).map((note) => ({
+      ...note,
+      textHash: ruleTextHash(note.text),
+      review: /\b(?:PRs?|pull requests?)\b/i.test(note.text) && /\breview\w*\b/i.test(note.text)
+    }));
+    WAY_CHANGED = "This line changed; your text is kept";
+    limitsCard = (cfg) => productLimits({ ...DEFAULT_POLICY, ...cfg.policy }.maxAutoPerChatHour);
+    wayLines = (store2, _cfg) => lineViews(store2);
+    suggestionText = (habit) => habit.removes ? `Stop using this drafting style: ${habit.rule.style ?? habit.rule.text}` : habit.rule.text;
+    linesToCheck = (store2, _cfg) => ruleLines(store2).filter((line3) => ["waiting", "not-in-effect"].includes(ruleLineView(line3).state)).length;
+    needsHim = (store2, cfg) => linesToCheck(store2, cfg) + Number(!!habitSuggestions(store2).open);
+    addLine = (store2, text5) => result(store2, addRuleLine(store2, text5));
+    editLine = (store2, id, text5, expectHash) => result(store2, changeRuleLine(store2, id, { text: text5 }, expectHash));
+    confirmLine = (store2, id, textHash) => result(store2, changeRuleLine(store2, id, "confirm", textHash));
+    setLineOff = (store2, id, off, expectHash) => result(store2, changeRuleLine(store2, id, off ? "off" : "on", expectHash));
+    deleteLine = (store2, id, expectHash) => result(store2, changeRuleLine(store2, id, "delete", expectHash));
+    restoreLine = (store2, id, expectHash) => result(store2, changeRuleLine(store2, id, "restore", expectHash));
+    answerLine = editLine;
+    makeNoteLine = (store2, id, expectHash) => result(store2, changeRuleNote(store2, id, true, expectHash));
+    deleteNote = (store2, id, expectHash) => result(store2, changeRuleNote(store2, id, false, expectHash));
+  }
+});
+
 // src/core/intents.ts
 import { existsSync as existsSync9, readFileSync as readFileSync10 } from "node:fs";
-import { join as join13 } from "node:path";
+import { join as join14 } from "node:path";
 function intents(root) {
-  const all = new Map(read(join13(SKILL_DIR, "intents.json")).map((i) => [i.id, i]));
-  for (const i of read(join13(root, "intents.json"))) all.set(i.id, { ...all.get(i.id), ...i });
+  const all = new Map(read(join14(SKILL_DIR, "intents.json")).map((i) => [i.id, i]));
+  for (const i of read(join14(root, "intents.json"))) all.set(i.id, { ...all.get(i.id), ...i });
   return [...all.values()];
 }
 function intentPlaybook(root, def) {
   if (!def?.playbook) return "";
-  for (const p of [join13(root, "playbooks", def.playbook), join13(SKILL_DIR, "workflows", def.playbook)]) if (existsSync9(p)) return readFileSync10(p, "utf8");
+  for (const p of [join14(root, "playbooks", def.playbook), join14(SKILL_DIR, "workflows", def.playbook)]) if (existsSync9(p)) return readFileSync10(p, "utf8");
   return "";
 }
 var read;
@@ -44423,7 +44608,7 @@ var init_suggestion_scope = __esm({
 
 // src/worker/prompt.ts
 import { existsSync as existsSync10, readFileSync as readFileSync11 } from "node:fs";
-import { join as join14, resolve as resolve7 } from "node:path";
+import { join as join15, resolve as resolve7 } from "node:path";
 function standingInstructionsBlock(instructions) {
   return [
     "",
@@ -44436,15 +44621,15 @@ function standingInstructionsBlock(instructions) {
   ];
 }
 function inlineFile(root, path) {
-  const file4 = join14(root, path);
+  const file4 = join15(root, path);
   if (!existsSync10(file4)) return "none";
   const bytes = readFileSync11(file4), truncated = bytes.length > 4096;
   const text5 = new TextDecoder().decode(bytes.subarray(0, 4096), { stream: truncated });
   return `${text5 || "none"}${truncated ? "\n[truncated after 4096 bytes]" : ""}`;
 }
 function knowledgeLine(root, cfg) {
-  const cards = [cfg.cards?.root ?? join14(root, "knowledge"), ...cfg.cards?.team ? [cfg.cards.team] : []];
-  return `Your knowledge is in ${cards.map((c) => join14(c, "topics", "<topic>", "<card>.md")).join(" and ")}: one fact per line, as "- [type] text ^<id> (src: link, date, who)". Find facts with grep, read a card with view, and cite a fact as card:<topic>/<card>#<id>.`;
+  const cards = [cfg.cards?.root ?? join15(root, "knowledge"), ...cfg.cards?.team ? [cfg.cards.team] : []];
+  return `Your knowledge is in ${cards.map((c) => join15(c, "topics", "<topic>", "<card>.md")).join(" and ")}: one fact per line, as "- [type] text ^<id> (src: link, date, who)". Find facts with grep, read a card with view, and cite a fact as card:<topic>/<card>#<id>.`;
 }
 function ownerFiles(root, cfg) {
   return [
@@ -44454,7 +44639,7 @@ function ownerFiles(root, cfg) {
 ${inlineFile(root, "profile.md")}`,
     `Knowledge index:
 ${inlineFile(root, "knowledge/index.md")}`,
-    ...cfg.cards?.team ? [`Team knowledge index: ${existsSync10(join14(cfg.cards.team, "index.md")) ? join14(cfg.cards.team, "index.md") : "none"}`] : [],
+    ...cfg.cards?.team ? [`Team knowledge index: ${existsSync10(join15(cfg.cards.team, "index.md")) ? join15(cfg.cards.team, "index.md") : "none"}`] : [],
     knowledgeLine(root, cfg),
     `Knowledge folders: ${cfg.knowledge?.length ? cfg.knowledge.map((f) => resolve7(root, f)).join(", ") : "none"}`
   ];
@@ -44634,8 +44819,8 @@ function orientation(code, id, status3, draft2, effects) {
   ].filter(Boolean).join("\n");
 }
 function playbook(root, kind) {
-  const own3 = join14(root, "playbooks", `${kind}.md`);
-  return `${readFileSync11(existsSync10(own3) ? own3 : join14(SKILL_DIR, "workflows", `${kind}.md`), "utf8")}
+  const own3 = join15(root, "playbooks", `${kind}.md`);
+  return `${readFileSync11(existsSync10(own3) ? own3 : join15(SKILL_DIR, "workflows", `${kind}.md`), "utf8")}
 
 When the goal is not met, report a blocker. Use kind "capability" only after searching the listed tools by what they do and finding none that can do the step; otherwise use "tool" for a missing tool or failed call. Describe the need as a plain lowercase verb phrase of at most 80 characters, never a tool name, id, path, URL, secret or error text. A capability blocker stops automatic retries.`;
 }
@@ -44733,7 +44918,7 @@ var init_prompt = __esm({
     init_paths();
     compiledRules = (root) => {
       try {
-        return JSON.parse(readFileSync11(join14(root, "rules.compiled.json"), "utf8")).rules ?? [];
+        return JSON.parse(readFileSync11(join15(root, "rules.compiled.json"), "utf8")).rules ?? [];
       } catch {
         return [];
       }
@@ -44912,7 +45097,7 @@ var init_format2 = __esm({
 // src/mesh/inbox.mjs
 import { closeSync as closeSync4, existsSync as existsSync11, mkdirSync as mkdirSync4, openSync as openSync4, readdirSync as readdirSync7, readFileSync as readFileSync12, renameSync as renameSync2, rmSync as rmSync4, statSync as statSync7, writeFileSync as writeFileSync4, writeSync as writeSync3 } from "node:fs";
 import { randomBytes as randomBytes2 } from "node:crypto";
-import { dirname as dirname6, join as join15 } from "node:path";
+import { dirname as dirname6, join as join16 } from "node:path";
 function readJson2(p) {
   try {
     return JSON.parse(readFileSync12(p, "utf8").replace(/^\uFEFF/, ""));
@@ -44936,7 +45121,7 @@ function writeJsonAtomic(p, v, who2) {
 function writeMessage(root, { to, from, text: text5, ttlMs = TTL_MS, now = Date.now() }) {
   const id = newId(from, now);
   const msg = { v: V, id, to: { machine: to.machine, session: to.session }, from, at: new Date(now).toISOString(), expiresAt: new Date(now + ttlMs).toISOString(), text: text5 };
-  writeJsonAtomic(join15(dirs(root).inbox, addr(to.machine, to.session), `${id}.json`), msg, from);
+  writeJsonAtomic(join16(dirs(root).inbox, addr(to.machine, to.session), `${id}.json`), msg, from);
   return msg;
 }
 function pidAlive(pid) {
@@ -44951,18 +45136,18 @@ function closeDead(root, machine2, alive4 = pidAlive) {
   const d = dirs(root).sessions;
   let n = 0;
   for (const f of listJson2(d)) {
-    const s3 = readJson2(join15(d, f));
+    const s3 = readJson2(join16(d, f));
     if (!s3 || s3.v !== V || s3.machine !== machine2 || s3.open === false || !s3.pid || alive4(s3.pid)) continue;
-    const again = readJson2(join15(d, f));
+    const again = readJson2(join16(d, f));
     if (again?.pid !== s3.pid || again.open === false) continue;
-    writeJsonAtomic(join15(d, f), { ...again, open: false }, machine2);
+    writeJsonAtomic(join16(d, f), { ...again, open: false }, machine2);
     n++;
   }
   return n;
 }
 function listSessions(root, now = Date.now()) {
   const d = dirs(root).sessions;
-  return listJson2(d).map((f) => readJson2(join15(d, f))).filter((s3) => s3 && s3.v === V && typeof s3.beatAt === "string").map((s3) => ({ ...s3, open: s3.open !== false && now - Date.parse(s3.beatAt) < OPEN_MS })).sort((a, b) => b.beatAt.localeCompare(a.beatAt));
+  return listJson2(d).map((f) => readJson2(join16(d, f))).filter((s3) => s3 && s3.v === V && typeof s3.beatAt === "string").map((s3) => ({ ...s3, open: s3.open !== false && now - Date.parse(s3.beatAt) < OPEN_MS })).sort((a, b) => b.beatAt.localeCompare(a.beatAt));
 }
 var V, MAX_TEXT, BEAT_MS, OPEN_MS, TTL_MS, clean2, addr, dirs, isDir, subdirs, listJson2, newId, readInbox, readReceipt, settle2;
 var init_inbox = __esm({
@@ -44975,7 +45160,7 @@ var init_inbox = __esm({
     TTL_MS = 24 * 36e5;
     clean2 = (s3) => String(s3).replace(/[^A-Za-z0-9._-]/g, "-").slice(0, 80);
     addr = (machine2, session) => `${clean2(machine2)}__${clean2(session)}`;
-    dirs = (root) => ({ sessions: join15(root, "mesh", "sessions"), inbox: join15(root, "mesh", "inbox"), receipts: join15(root, "mesh", "receipts") });
+    dirs = (root) => ({ sessions: join16(root, "mesh", "sessions"), inbox: join16(root, "mesh", "inbox"), receipts: join16(root, "mesh", "receipts") });
     isDir = (d) => {
       try {
         return statSync7(d).isDirectory();
@@ -44983,21 +45168,21 @@ var init_inbox = __esm({
         return false;
       }
     };
-    subdirs = (d) => isDir(d) ? readdirSync7(d).filter((f) => isDir(join15(d, f))) : [];
+    subdirs = (d) => isDir(d) ? readdirSync7(d).filter((f) => isDir(join16(d, f))) : [];
     listJson2 = (d) => isDir(d) ? readdirSync7(d).filter((f) => f.endsWith(".json") && !f.includes(".tmp-")).sort() : [];
     newId = (from, now = Date.now()) => `${now.toString(36).padStart(9, "0")}-${randomBytes2(4).toString("hex")}-${clean2(from)}`;
-    readInbox = (root, a) => listJson2(join15(dirs(root).inbox, a)).map((f) => readJson2(join15(dirs(root).inbox, a, f))).filter(Boolean);
-    readReceipt = (root, a, id) => readJson2(join15(dirs(root).receipts, a, `${id}.json`));
-    settle2 = (root, a, id) => rmSync4(join15(dirs(root).inbox, a, `${id}.json`), { force: true });
+    readInbox = (root, a) => listJson2(join16(dirs(root).inbox, a)).map((f) => readJson2(join16(dirs(root).inbox, a, f))).filter(Boolean);
+    readReceipt = (root, a, id) => readJson2(join16(dirs(root).receipts, a, `${id}.json`));
+    settle2 = (root, a, id) => rmSync4(join16(dirs(root).inbox, a, `${id}.json`), { force: true });
   }
 });
 
 // src/mesh/route.ts
 import { createHash as createHash10 } from "node:crypto";
 import { copyFileSync, existsSync as existsSync12, mkdirSync as mkdirSync5, readFileSync as readFileSync13, rmSync as rmSync5, writeFileSync as writeFileSync5 } from "node:fs";
-import { join as join16 } from "node:path";
+import { join as join17 } from "node:path";
 function readSettings(copilotHome, forWriting = false) {
-  const f = join16(copilotHome, "settings.json");
+  const f = join17(copilotHome, "settings.json");
   if (!existsSync12(f)) return {};
   const text5 = readFileSync13(f, "utf8").replace(/^\uFEFF/, "");
   if (forWriting && /^\s*\/\//m.test(text5)) return void 0;
@@ -45010,27 +45195,27 @@ function readSettings(copilotHome, forWriting = false) {
 function installExtension(copilotHome, from = MESH_DIR, local2 = LOCAL_DIR) {
   const dir2 = extensionDir(copilotHome);
   if (existsSync12(dir2) && !ours2(dir2)) return `Left ${dir2} alone: it is not ${NAME}'s.`;
-  const before = ours2(dir2) ? JSON.parse(readFileSync13(join16(dir2, MARK2), "utf8")) : void 0;
+  const before = ours2(dir2) ? JSON.parse(readFileSync13(join17(dir2, MARK2), "utf8")) : void 0;
   assertTestSafe(dir2);
   mkdirSync5(dir2, { recursive: true });
-  for (const f of FILES) copyFileSync(join16(from, f), join16(dir2, f));
-  const createdSettings = before?.createdSettings ?? !existsSync12(join16(copilotHome, "settings.json"));
+  for (const f of FILES) copyFileSync(join17(from, f), join17(dir2, f));
+  const createdSettings = before?.createdSettings ?? !existsSync12(join17(copilotHome, "settings.json"));
   const s3 = readSettings(copilotHome, true);
   let setFlag = before?.setFlag ?? false, note = "";
   if (extensionsOn(copilotHome)) {
-  } else if (!s3) note = ` Turn on extensions yourself: add "enabledFeatureFlags": { "EXTENSIONS": true } to ${join16(copilotHome, "settings.json")}.`;
+  } else if (!s3) note = ` Turn on extensions yourself: add "enabledFeatureFlags": { "EXTENSIONS": true } to ${join17(copilotHome, "settings.json")}.`;
   else if (s3.enabledFeatureFlags?.EXTENSIONS === false) note = " Extensions are turned off in your Copilot settings, so it will not load until you turn them on.";
   else {
-    writeJsonAtomic(join16(copilotHome, "settings.json"), { ...s3, enabledFeatureFlags: { ...s3.enabledFeatureFlags, EXTENSIONS: true } }, "delegate");
+    writeJsonAtomic(join17(copilotHome, "settings.json"), { ...s3, enabledFeatureFlags: { ...s3.enabledFeatureFlags, EXTENSIONS: true } }, "delegate");
     setFlag = true;
   }
-  writeFileSync5(join16(dir2, MARK2), JSON.stringify({ by: "delegate", local: local2, setFlag, createdSettings }, null, "	") + "\n");
+  writeFileSync5(join17(dir2, MARK2), JSON.stringify({ by: "delegate", local: local2, setFlag, createdSettings }, null, "	") + "\n");
   return `Added the session extension (${dir2}). Copilot CLI sessions started or resumed from now on can receive ${NAME}'s messages.${note}`;
 }
 function uninstallExtension(copilotHome) {
   const dir2 = extensionDir(copilotHome);
   if (!ours2(dir2)) return void 0;
-  const mark2 = JSON.parse(readFileSync13(join16(dir2, MARK2), "utf8"));
+  const mark2 = JSON.parse(readFileSync13(join17(dir2, MARK2), "utf8"));
   assertTestSafe(dir2);
   rmSync5(dir2, { recursive: true, force: true });
   const s3 = mark2.setFlag ? readSettings(copilotHome, true) : void 0;
@@ -45038,8 +45223,8 @@ function uninstallExtension(copilotHome) {
     const { EXTENSIONS: _, ...rest2 } = s3.enabledFeatureFlags;
     const { enabledFeatureFlags: __, ...others } = s3;
     const left = Object.keys(rest2).length ? { ...others, enabledFeatureFlags: rest2 } : others;
-    if (mark2.createdSettings && !Object.keys(left).length) rmSync5(join16(copilotHome, "settings.json"), { force: true });
-    else writeJsonAtomic(join16(copilotHome, "settings.json"), left, "delegate");
+    if (mark2.createdSettings && !Object.keys(left).length) rmSync5(join17(copilotHome, "settings.json"), { force: true });
+    else writeJsonAtomic(join17(copilotHome, "settings.json"), left, "delegate");
   }
   return `Removed ${dir2}.`;
 }
@@ -45047,9 +45232,9 @@ function extensionCheck(copilotHome, from = MESH_DIR) {
   const dir2 = extensionDir(copilotHome);
   const fix = `Run "${CMD} install".`;
   if (!ours2(dir2)) return { ok: false, what: `The session extension is not installed, so ${NAME} cannot reach your open sessions`, fix };
-  const stale = FILES.filter((f) => !existsSync12(join16(dir2, f)) || hash2(join16(dir2, f)) !== hash2(join16(from, f)));
+  const stale = FILES.filter((f) => !existsSync12(join17(dir2, f)) || hash2(join17(dir2, f)) !== hash2(join17(from, f)));
   if (stale.length) return { ok: false, what: `The session extension is out of date (${stale.join(", ")})`, fix };
-  if (!extensionsOn(copilotHome)) return { ok: false, what: "Copilot CLI extensions are turned off, so the session extension never loads", fix: `Set "enabledFeatureFlags": { "EXTENSIONS": true } in ${join16(copilotHome, "settings.json")}, then start or resume the session.` };
+  if (!extensionsOn(copilotHome)) return { ok: false, what: "Copilot CLI extensions are turned off, so the session extension never loads", fix: `Set "enabledFeatureFlags": { "EXTENSIONS": true } in ${join17(copilotHome, "settings.json")}, then start or resume the session.` };
   return { ok: true, what: `Session extension installed in ${dir2}`, fix };
 }
 function findSession(store2, target2, now = Date.now()) {
@@ -45108,8 +45293,8 @@ var init_route = __esm({
     FILES = ["extension.mjs", "inbox.mjs"];
     MARK2 = "delegate.json";
     hash2 = (f) => createHash10("sha256").update(readFileSync13(f, "utf8").replace(/\r\n/g, "\n")).digest("hex");
-    extensionDir = (copilotHome) => join16(copilotHome, "extensions", EXTENSION);
-    ours2 = (dir2) => existsSync12(join16(dir2, MARK2));
+    extensionDir = (copilotHome) => join17(copilotHome, "extensions", EXTENSION);
+    ours2 = (dir2) => existsSync12(join17(dir2, MARK2));
     extensionsOn = (copilotHome) => {
       const s3 = readSettings(copilotHome);
       return !!s3 && (s3.enabledFeatureFlags?.EXTENSIONS ?? s3.experimental) === true;
@@ -45125,18 +45310,18 @@ var init_route = __esm({
 // src/runner/own.ts
 import { cpSync, existsSync as existsSync13, lstatSync as lstatSync2, mkdirSync as mkdirSync6, readFileSync as readFileSync14, renameSync as renameSync3, rmSync as rmSync6, statSync as statSync8, writeFileSync as writeFileSync6 } from "node:fs";
 import { homedir as homedir6 } from "node:os";
-import { dirname as dirname7, join as join17 } from "node:path";
+import { dirname as dirname7, join as join18 } from "node:path";
 import { createHash as createHash11, randomUUID as randomUUID5 } from "node:crypto";
 function sessionCwd(id) {
-  const f = join17(sessions(), id, "workspace.yaml");
+  const f = join18(sessions(), id, "workspace.yaml");
   return existsSync13(f) ? readFileSync14(f, "utf8").match(/^cwd:\s*(.+)$/m)?.[1].trim() : void 0;
 }
 function forkSession(id) {
   if (!sessionExists(id)) return void 0;
   const copy2 = randomUUID5();
   assertTestSafe(sessions());
-  cpSync(join17(sessions(), id), join17(sessions(), copy2), { recursive: true, filter: (s3) => !s3.endsWith(".lock") && !lstatSync2(s3).isSymbolicLink() });
-  const f = join17(sessions(), copy2, "workspace.yaml");
+  cpSync(join18(sessions(), id), join18(sessions(), copy2), { recursive: true, filter: (s3) => !s3.endsWith(".lock") && !lstatSync2(s3).isSymbolicLink() });
+  const f = join18(sessions(), copy2, "workspace.yaml");
   if (existsSync13(f)) writeFileSync6(f, readFileSync14(f, "utf8").replace(/^id:.*$/m, `id: ${copy2}`).replace(/^mc_[a-z_]+:.*\n/gm, ""));
   return copy2;
 }
@@ -45148,15 +45333,15 @@ function put(p, data) {
   renameSync3(tmp, p);
 }
 function move(from, to, events) {
-  if (existsSync13(join17(from, "workspace.yaml"))) put(join17(to, "workspace.yaml"), readFileSync14(join17(from, "workspace.yaml")));
-  put(join17(to, "events.jsonl"), events);
+  if (existsSync13(join18(from, "workspace.yaml"))) put(join18(to, "workspace.yaml"), readFileSync14(join18(from, "workspace.yaml")));
+  put(join18(to, "events.jsonl"), events);
 }
 function diverged(store2, id, dir2, events) {
   keepCopy(dir2, events);
   noteDiverged(store2, id);
 }
 function keepCopy(dir2, events) {
-  const p = join17(dir2, `events.conflict-${createHash11("sha256").update(events).digest("hex").slice(0, 16)}.jsonl`);
+  const p = join18(dir2, `events.conflict-${createHash11("sha256").update(events).digest("hex").slice(0, 16)}.jsonl`);
   if (!existsSync13(p)) put(p, events);
   return p;
 }
@@ -45229,7 +45414,7 @@ function pruneReplySessions(store2) {
         continue;
       }
       try {
-        for (const folder of [join17(sessions(), id), join17(store2.root, "sessions", id)]) {
+        for (const folder of [join18(sessions(), id), join18(store2.root, "sessions", id)]) {
           if (!existsSync13(folder)) continue;
           if (lstatSync2(folder).isSymbolicLink()) throw new Error("the session folder is a symbolic link");
           assertTestSafe(folder);
@@ -45257,8 +45442,8 @@ function pruneReplySessions(store2) {
   return n;
 }
 function backupSession(store2, id) {
-  const from = join17(sessions(), id), to = join17(store2.root, "sessions", id);
-  const raw = read2(join17(from, "events.jsonl")), shared = read2(join17(to, "events.jsonl"));
+  const from = join18(sessions(), id), to = join18(store2.root, "sessions", id);
+  const raw = read2(join18(from, "events.jsonl")), shared = read2(join18(to, "events.jsonl"));
   const local2 = raw && scrubbed(raw);
   if (!local2) return false;
   if (shared && !isPrefix(shared, local2)) {
@@ -45277,8 +45462,8 @@ function backupSession(store2, id) {
   return true;
 }
 function restoreSession(store2, id) {
-  const from = join17(store2.root, "sessions", id), to = join17(sessions(), id);
-  const shared = read2(join17(from, "events.jsonl")), raw = read2(join17(to, "events.jsonl")), local2 = raw && scrubbed(raw);
+  const from = join18(store2.root, "sessions", id), to = join18(sessions(), id);
+  const shared = read2(join18(from, "events.jsonl")), raw = read2(join18(to, "events.jsonl")), local2 = raw && scrubbed(raw);
   if (!shared || local2 && isPrefix(shared, local2)) return false;
   if (local2 && !isPrefix(local2, shared)) {
     if (leads(store2)) {
@@ -45331,11 +45516,11 @@ var init_own = __esm({
     init_brand();
     init_route();
     init_secrets();
-    sessions = () => join17(process.env.COPILOT_HOME ?? join17(homedir6(), ".copilot"), "session-state");
-    sessionExists = (id) => existsSync13(join17(sessions(), id, "events.jsonl"));
+    sessions = () => join18(process.env.COPILOT_HOME ?? join18(homedir6(), ".copilot"), "session-state");
+    sessionExists = (id) => existsSync13(join18(sessions(), id, "events.jsonl"));
     sessionBytes = (id) => {
       try {
-        return statSync8(join17(sessions(), id, "events.jsonl")).size;
+        return statSync8(join18(sessions(), id, "events.jsonl")).size;
       } catch {
         return 0;
       }
@@ -47144,14 +47329,14 @@ var init_rule_prompt = __esm({
 });
 
 // src/runner/rule-compile.ts
-import { join as join18 } from "node:path";
+import { join as join19 } from "node:path";
 async function compileRule(store2, cfg, line3, run2) {
   const expectedTextHash = ruleTextHash(line3.text), runId = ulid3(), sessionId = chooseSession("one-off", { fresh: true });
   const failed2 = (why2) => {
     const saved = failRuleCompile(store2, line3.id, expectedTextHash, why2);
     return { ok: false, why: saved.ok ? why2 : `${why2} ${saved.why}` };
   };
-  const cwd = join18(LOCAL_DIR, "sessions"), mcpConfigPath = join18(cwd, `mcp-${runId}.json`);
+  const cwd = join19(LOCAL_DIR, "sessions"), mcpConfigPath = join19(cwd, `mcp-${runId}.json`);
   const accounts = { [cfg.owner.id]: cfg.owner.name };
   for (const person2 of cfg.policy?.never ?? []) accounts[person2.id] = person2.name;
   for (const member of Object.values(store2.members())) for (const id of member.ids) {
@@ -47233,7 +47418,7 @@ var init_rule_compile = __esm({
 // src/runner/dispatch.ts
 import { existsSync as existsSync15, readFileSync as readFileSync16 } from "node:fs";
 import { mkdirSync as mkdirSync7, writeFileSync as writeFileSync7 } from "node:fs";
-import { join as join19 } from "node:path";
+import { join as join20 } from "node:path";
 async function dispatch(store2, src, cfg, run2 = runAgent, probe, only2) {
   if (!store2.upgrades()["reply-sessions-1"]) pruneReplySessions(store2);
   restoreApprovedDrafts(store2);
@@ -47389,7 +47574,7 @@ function retryHostToolFailures(store2) {
     if (!e || e.via !== "host" || e.intent || e.summary || typeof e.runId !== "string" || typeof e.ms !== "number" || retried.has(key)) continue;
     const ended2 = Date.parse(String(e.at)), started2 = ended2 - e.ms;
     if (w.sent && Date.parse(w.sent.at) >= started2 || w.revAt && Date.parse(w.revAt) > ended2) continue;
-    const file4 = join19(store2.root, "sessions", w.session.id, "events.jsonl");
+    const file4 = join20(store2.root, "sessions", w.session.id, "events.jsonl");
     let answer;
     try {
       if (!existsSync15(file4)) continue;
@@ -47499,10 +47684,10 @@ function runReads(store2, cfg, session, logStart) {
   return readsOf(sessionLog(cfg.agent.flavor, session).slice(logStart), knowledgeOf(store2, cfg), readDirs(store2, cfg), void 0, (ref) => store2.documentChats(ref), cfg.orgVisibleProjects ?? []);
 }
 function workerMcp(store2, targetId, runId, interactive = false) {
-  const cwd = join19(LOCAL_DIR, "sessions");
+  const cwd = join20(LOCAL_DIR, "sessions");
   assertTestSafe(cwd);
   mkdirSync7(cwd, { recursive: true });
-  const mcpConfigPath = join19(cwd, `mcp-${runId}.json`);
+  const mcpConfigPath = join20(cwd, `mcp-${runId}.json`);
   writeFileSync7(mcpConfigPath, JSON.stringify({
     mcpServers: {
       ...store2.config()?.agent.mcpServers,
@@ -47580,8 +47765,9 @@ async function runOne(store2, src, cfg, wf, run2, probe, catalogRetried = false,
   const { cwd, mcpConfigPath } = workerMcp(store2, wf.id, runId);
   const others = wf.code && !separate ? store2.openInChat(wf.chat.id).filter((o) => o.id !== wf.id && o.code && !o.followUp && !o.sent && freshAsk(store2, o) && askRelation(store2, o, wf.lastAsk ?? "") !== "different") : [];
   const home = homeOf(store2, wf);
+  const scopes2 = [{ workflow: wf, pr: prTarget(store2, wf) }];
   const works = !wf.work && !wf.partOf ? store2.workflows().filter((w) => active2(w) && !w.partOf && w.chat.id !== wf.chat.id && !heldLevel(cfg, w.chat.id)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 8) : [];
-  const prompt = buildPrompt(wf, store2.thread(wf.id), { ...cfg, agent: { ...cfg.agent, tools } }, store2.root, store2.owners(), others, corrections(store2.lessons().filter((l) => lessonFits(cfg, l.detail?.chat, wf.chat.id)), wf), { home: home === wf ? void 0 : home, works, parts: home.work?.parts?.map((id) => store2.workflow(id)).filter((p) => !!p) ?? [], job: completedJob, scopes: [{ workflow: wf, pr: prTarget(store2, wf) }], tools: offered });
+  const prompt = buildPrompt(wf, store2.thread(wf.id), { ...cfg, agent: { ...cfg.agent, tools } }, store2.root, store2.owners(), others, corrections(store2.lessons().filter((l) => lessonFits(cfg, l.detail?.chat, wf.chat.id)), wf), { home: home === wf ? void 0 : home, works, parts: home.work?.parts?.map((id) => store2.workflow(id)).filter((p) => !!p) ?? [], job: completedJob, scopes: scopes2, instructions: standingInstructions(store2, scopes2), tools: offered });
   const usage = {
     ...sessionUse(sessionId, "", Date.parse(startedAt), { fresh: true, ...retrySession ? { why: "catalog" } : {} }),
     key: usageKey("chat", `chat:${wf.chat.id}`),
@@ -47851,7 +48037,7 @@ async function runAsk(store2, src, cfg, wf, run2, retrySession, fullCatalog = fa
   store2.addRun();
   restoreSession(store2, session);
   const beforeLog = sessionLog(cfg.agent.flavor, session), logStart = beforeLog.length;
-  const prompt = buildAskPrompt(wf, store2.thread(wf.id), { ...cfg, agent: { ...cfg.agent, tools } }, store2.root, { tools: offered }), startedAt = (/* @__PURE__ */ new Date()).toISOString();
+  const prompt = buildAskPrompt(wf, store2.thread(wf.id), { ...cfg, agent: { ...cfg.agent, tools } }, store2.root, { tools: offered, instructions: standingInstructions(store2, [{ workflow: wf, pr: prTarget(store2, wf) }]) }), startedAt = (/* @__PURE__ */ new Date()).toISOString();
   const usage = {
     ...sessionUse(session, beforeLog, Date.parse(startedAt), retrySession ? { fresh: true, why: "catalog" } : {}),
     key: usageKey("ask", `ask:${wf.id}`),
@@ -48091,6 +48277,7 @@ var init_dispatch = __esm({
     init_rule_compile();
     init_rule_lines();
     init_rules();
+    init_ways();
     AUTH = /bad credentials|not logged in|please run \/login|authenticat|unauthori[sz]ed|sign[ -]?in/i;
     CATALOG_CHANGED = /MCP tool catalog changed/i;
     UNKNOWN_READ_HOLD = "It searched your chats and I couldn't tell which ones it read";
@@ -48099,7 +48286,7 @@ var init_dispatch = __esm({
       const first3 = (res.error ?? "").split(/\r?\n/).map((l) => l.trim()).find(Boolean)?.replace(/^Error: /, "");
       return res.exitCode === 0 || !first3 ? "the run stopped without a result" : `the run failed (${first3.slice(0, 140)})`;
     };
-    readDirs = (store2, cfg) => [.../* @__PURE__ */ new Set([...(cfg.knowledge ?? []).map((f) => here2(store2.root, f)), cfg.cards?.root ?? join19(store2.root, "knowledge"), ...cfg.cards?.team ? [cfg.cards.team] : []])].filter((d) => existsSync15(d));
+    readDirs = (store2, cfg) => [.../* @__PURE__ */ new Set([...(cfg.knowledge ?? []).map((f) => here2(store2.root, f)), cfg.cards?.root ?? join20(store2.root, "knowledge"), ...cfg.cards?.team ? [cfg.cards.team] : []])].filter((d) => existsSync15(d));
     WORKER_SERVER = "delegate_worker";
     WORKER_TOOLS = ["submit_report", "image_read", "doc_read"].map((t2) => `${WORKER_SERVER}-${t2}`);
     lessonFits = (cfg, chat2, here3) => {
@@ -48180,7 +48367,8 @@ async function checkPromise(store2, src, cfg, wf, run2, probe) {
     const { cwd, mcpConfigPath } = workerMcp(store2, wf.id, runId);
     store2.addRun();
     restoreSession(store2, session);
-    const res = await run2({ ...cfg.agent, tools }, { workflowId: wf.id, runId, sessionId: session, prompt: buildPromisePrompt(wf, store2.thread(wf.id), cfg, store2.root, prTarget(store2, wf)), cwd: job?.repo ?? cwd, mcpConfigPath, extraTools: WORKER_TOOLS, dirs: readDirs(store2, cfg) });
+    const pr = prTarget(store2, wf);
+    const res = await run2({ ...cfg.agent, tools }, { workflowId: wf.id, runId, sessionId: session, prompt: buildPromisePrompt(wf, store2.thread(wf.id), cfg, store2.root, pr, { instructions: standingInstructions(store2, [{ workflow: wf, pr }]) }), cwd: job?.repo ?? cwd, mcpConfigPath, extraTools: WORKER_TOOLS, dirs: readDirs(store2, cfg) });
     store2.log({ event: "promise-run", workflowId: wf.id, runId, ms: res.ms, tools: { offered: tools.length, scoped: false }, ...ran("promise", res.used) });
     backupSession(store2, session);
     report2 = store2.peekReport(wf.id, runId);
@@ -48256,6 +48444,7 @@ var init_promise2 = __esm({
   "src/runner/promise.ts"() {
     "use strict";
     init_upgrades();
+    init_ways();
     init_ids();
     init_render();
     init_effects();
@@ -48838,7 +49027,7 @@ var init_owner_reply = __esm({
 import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync as existsSync16, mkdirSync as mkdirSync8, rmSync as rmSync7, writeFileSync as writeFileSync8 } from "node:fs";
 import { homedir as homedir7 } from "node:os";
-import { dirname as dirname8, join as join20, posix, win32 } from "node:path";
+import { dirname as dirname8, join as join21, posix, win32 } from "node:path";
 function launcher(p, win) {
   if (win) {
     return { file: win32.join(p.local, "bin", "delegate-tick.cmd"), body: `@echo off\r
@@ -48889,19 +49078,19 @@ function registerScript(vbsFile) {
 function install(p, platform = process.platform) {
   const win = platform === "win32";
   assertTestSafe(p.local);
-  mkdirSync8(join20(p.local, "logs"), { recursive: true });
+  mkdirSync8(join21(p.local, "logs"), { recursive: true });
   const l = launcher(p, win);
   assertTestSafe(l.file);
   mkdirSync8(dirname8(l.file), { recursive: true });
   writeFileSync8(l.file, l.body, { mode: 448 });
   if (win) {
-    const vbs = join20(p.local, "bin", "delegate-tick.vbs");
+    const vbs = join21(p.local, "bin", "delegate-tick.vbs");
     writeFileSync8(vbs, hiddenVbs(l.file));
     execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", registerScript(vbs)], { stdio: "pipe" });
     return `Installed scheduled task "${TASK}" (every minute, hidden).`;
   }
   chmodSync(l.file, 448);
-  const file4 = join20(homedir7(), "Library", "LaunchAgents", `${LABEL2}.plist`);
+  const file4 = join21(homedir7(), "Library", "LaunchAgents", `${LABEL2}.plist`);
   assertTestSafe(file4);
   mkdirSync8(dirname8(file4), { recursive: true });
   writeFileSync8(file4, plist(p, l.file), { mode: 384 });
@@ -48920,15 +49109,15 @@ function uninstall(p, platform = process.platform) {
     } catch {
     }
   } else {
-    assertTestSafe(join20(homedir7(), "Library", "LaunchAgents"));
+    assertTestSafe(join21(homedir7(), "Library", "LaunchAgents"));
     try {
       execFileSync("launchctl", ["bootout", `gui/${process.getuid?.()}/${LABEL2}`], { stdio: "pipe" });
     } catch {
     }
-    rmSync7(join20(homedir7(), "Library", "LaunchAgents", `${LABEL2}.plist`), { force: true });
+    rmSync7(join21(homedir7(), "Library", "LaunchAgents", `${LABEL2}.plist`), { force: true });
   }
   assertTestSafe(p.local);
-  for (const f of ["delegate-tick", "delegate-tick.cmd", "delegate-tick.vbs"]) rmSync7(join20(p.local, "bin", f), { force: true });
+  for (const f of ["delegate-tick", "delegate-tick.cmd", "delegate-tick.vbs"]) rmSync7(join21(p.local, "bin", f), { force: true });
   return "Removed the background runner. Your data is kept.";
 }
 function status(platform = process.platform) {
@@ -48963,10 +49152,10 @@ function statusText(store2, now = /* @__PURE__ */ new Date()) {
     `${NAME} is ${state} \xB7 auto-send ${c.autoSend ? "on" : "off"} \xB7 runner: ${cfg.runner ?? store2.machine}${status() ? ", in the background" : ", only when asked"}`,
     `Last check: ${lastTick ? `${age(lastTick, now)} ago` : "not today"} \xB7 Today: ${n("sent")} sent (${n("sent", (e) => String(e.approvedBy ?? "").startsWith("rule:"))} by your rules), ${n("worker")} drafted, ${store2.runsToday()} of ${cfg.dailyRuns ?? 200} AI runs (resets at local midnight)`,
     modelsLine(today),
-    ...suggestions(store2)
+    ...suggestions2(store2)
   ].join("\n");
 }
-function suggestions(store2) {
+function suggestions2(store2) {
   const started2 = store2.chats().startedAt;
   if (!started2 || Date.now() - Date.parse(started2) < 7 * 864e5) return [];
   const ruled = new Set(store2.rules().filter((r) => !r.off && !r.style).flatMap((r) => r.who.accounts?.map((a) => `${a.id}|${r.when.intent ?? ""}`) ?? []));
@@ -50740,7 +50929,7 @@ var init_send = __esm({
 import { spawnSync as spawnProcess3 } from "node:child_process";
 import { uptime as uptime2 } from "node:os";
 import { existsSync as existsSync17 } from "node:fs";
-import { join as join21 } from "node:path";
+import { join as join22 } from "node:path";
 function target(store2, wf) {
   const job = wf.job ? store2.job(wf.job) : void 0;
   if (wf.session.at && (!job || (job.state === "done" || job.state === "failed") && !job.relay && wf.session.at >= job.updatedAt))
@@ -50839,7 +51028,7 @@ function checkOpen(store2, procs, bootMs = Date.now() - uptime2() * 1e3) {
       commit();
     }
     store2.archiveReport(id, o.runId);
-    if (o.machine === store2.machine && o.runId) removeRunFiles(join21(LOCAL_DIR, "sessions", `mcp-${o.runId}.json`));
+    if (o.machine === store2.machine && o.runId) removeRunFiles(join22(LOCAL_DIR, "sessions", `mcp-${o.runId}.json`));
     store2.setOpenWindow(id, void 0);
     const why2 = o.takenBack ? "taken-back" : o.closed ? "closed" : !(age2 < WINDOW_MS) ? "over-12h" : !o.pid || o.machine !== store2.machine || Date.parse(o.since) <= bootMs || !alive(o.pid) ? "gone" : "not-ours";
     store2.log({ event: "continue-closed", target: id, report: !!r, why: why2 });
@@ -53630,16 +53819,16 @@ var init_change = __esm({
 import { execFileSync as executeProcess } from "node:child_process";
 import { existsSync as existsSync18, readdirSync as readdirSync8 } from "node:fs";
 import { homedir as homedir8 } from "node:os";
-import { join as join22 } from "node:path";
+import { join as join23 } from "node:path";
 function packageAt(dir2, version4 = "") {
-  const runtime = join22(dir2, "index.js"), sdk = join22(dir2, "copilot-sdk", "index.js");
+  const runtime = join23(dir2, "index.js"), sdk = join23(dir2, "copilot-sdk", "index.js");
   return existsSync18(runtime) && existsSync18(sdk) ? { dir: dir2, version: version4 || dir2.split(/[\\/]/).pop(), runtime, sdk } : void 0;
 }
 function newestIn(root) {
   if (!existsSync18(root)) return void 0;
   const dirs2 = readdirSync8(root).filter((v) => /^\d+\.\d+\.\d+/.test(v)).sort((a, b) => versionKey(b).localeCompare(versionKey(a)));
   for (const v of dirs2) {
-    const p = packageAt(join22(root, v), v);
+    const p = packageAt(join23(root, v), v);
     if (p) return p;
   }
   return void 0;
@@ -53655,15 +53844,15 @@ function cliPackage(now = Date.now()) {
   if (cached3 && now - cached3.at < 6e5) return cached3.pkg;
   const plat = `${process.platform}-${process.arch}`;
   const roots = [
-    process.env.LOCALAPPDATA && join22(process.env.LOCALAPPDATA, "copilot", "pkg", plat),
-    join22(process.env.XDG_CACHE_HOME ?? join22(homedir8(), ".cache"), "copilot", "pkg", plat),
-    join22(homedir8(), "Library", "Caches", "copilot", "pkg", plat)
+    process.env.LOCALAPPDATA && join23(process.env.LOCALAPPDATA, "copilot", "pkg", plat),
+    join23(process.env.XDG_CACHE_HOME ?? join23(homedir8(), ".cache"), "copilot", "pkg", plat),
+    join23(homedir8(), "Library", "Caches", "copilot", "pkg", plat)
   ].filter((r) => !!r);
   const own3 = process.env.DELEGATE_COPILOT_PKG ? packageAt(process.env.DELEGATE_COPILOT_PKG) : void 0;
   let pkg = own3 ?? roots.map(newestIn).find(Boolean);
   if (!pkg) {
     const g = npmGlobal();
-    pkg = g ? packageAt(join22(g, "@github", "copilot")) : void 0;
+    pkg = g ? packageAt(join23(g, "@github", "copilot")) : void 0;
   }
   cached3 = { at: now, pkg };
   return pkg;
@@ -53695,7 +53884,7 @@ var init_locate = __esm({
 
 // src/adapters/demo.ts
 import { existsSync as existsSync19, readFileSync as readFileSync17 } from "node:fs";
-import { join as join23 } from "node:path";
+import { join as join24 } from "node:path";
 var DemoSource, demoRun, demoProcs;
 var init_demo = __esm({
   "src/adapters/demo.ts"() {
@@ -53705,7 +53894,7 @@ var init_demo = __esm({
       selfChatId = "self";
       file;
       constructor(root) {
-        this.file = join23(root, "demo", "chats.json");
+        this.file = join24(root, "demo", "chats.json");
       }
       all() {
         return existsSync19(this.file) ? JSON.parse(readFileSync17(this.file, "utf8")) : {};
@@ -54140,7 +54329,7 @@ var init_history = __esm({
 });
 
 // src/adapters/source-teams.ts
-import { join as join24 } from "node:path";
+import { join as join25 } from "node:path";
 function captureForwardedShape(m, log) {
   if (forwardedShapeLogged) return;
   try {
@@ -54266,7 +54455,7 @@ var init_source_teams = __esm({
         return toRaw(m);
       }
       cachedMembers() {
-        return this.root ? readJson(join24(this.root, "state", "members.json"), {}) : {};
+        return this.root ? readJson(join25(this.root, "state", "members.json"), {}) : {};
       }
       otherName(chatId, members2) {
         if (!this.ownerId) return void 0;
@@ -54626,7 +54815,7 @@ import { createHash as createHash12, randomUUID as randomUUID6 } from "node:cryp
 import { existsSync as existsSync20, readFileSync as readFileSync18, renameSync as renameSync4, rmSync as rmSync8, writeFileSync as writeFileSync9 } from "node:fs";
 import { createServer } from "node:http";
 import { homedir as homedir9, tmpdir as tmpdir2 } from "node:os";
-import { isAbsolute as isAbsolute6, join as join25, relative as relative3, resolve as resolve8 } from "node:path";
+import { isAbsolute as isAbsolute6, join as join26, relative as relative3, resolve as resolve8 } from "node:path";
 import { pathToFileURL } from "node:url";
 function envProvider() {
   const e = process.env;
@@ -55039,7 +55228,7 @@ var init_host = __esm({
     init_zod();
     init_tools();
     init_rule_prompt();
-    hostFile = () => join25(LOCAL_DIR, "host.json");
+    hostFile = () => join26(LOCAL_DIR, "host.json");
     WORKER_SERVER2 = "delegate_worker";
     REPORT_JSON = external_exports.toJSONSchema(REPORT2);
     LEASE_MS = 5 * 6e4;
@@ -55061,7 +55250,7 @@ var init_host = __esm({
         return false;
       }
     });
-    sessionFile = (id) => join25(process.env.COPILOT_HOME ?? join25(homedir9(), ".copilot"), "session-state", id, "events.jsonl");
+    sessionFile = (id) => join26(process.env.COPILOT_HOME ?? join26(homedir9(), ".copilot"), "session-state", id, "events.jsonl");
   }
 });
 
@@ -55080,7 +55269,7 @@ __export(client_exports, {
 import { spawn as spawn3 } from "node:child_process";
 import { closeSync as closeSync5, openSync as openSync5 } from "node:fs";
 import { request } from "node:http";
-import { join as join26 } from "node:path";
+import { join as join27 } from "node:path";
 function hostDisabledUntil(now = Date.now()) {
   const u = readMark().disabledUntil;
   return u && Date.parse(u) > now ? u : void 0;
@@ -55171,7 +55360,7 @@ async function findOrStart(store2, cfg) {
   }
   const mark2 = readMark();
   if (mark2.fails && Date.now() - Date.parse(mark2.at) < BACKOFF[Math.min(mark2.fails, BACKOFF.length) - 1]) return void 0;
-  const log = openSync5(join26(LOCAL_DIR, "host.log"), "a");
+  const log = openSync5(join27(LOCAL_DIR, "host.log"), "a");
   try {
     spawn3(process.execPath, [CLI, "host"], { detached: true, windowsHide: true, stdio: ["ignore", log, log], env: process.env }).unref();
   } finally {
@@ -55232,7 +55421,7 @@ var init_client3 = __esm({
     init_io_time();
     READY_MS = 15e3;
     BACKOFF = [5e3, 3e4, 12e4];
-    markFile = () => join26(LOCAL_DIR, "host-start.json");
+    markFile = () => join27(LOCAL_DIR, "host-start.json");
     alive2 = (pid) => {
       try {
         process.kill(pid, 0);
@@ -55652,7 +55841,7 @@ var init_usage_backfill = __esm({
 import { spawn as spawn4 } from "node:child_process";
 import { writeFileSync as writeFileSync10 } from "node:fs";
 import { tmpdir as tmpdir3 } from "node:os";
-import { join as join27 } from "node:path";
+import { join as join28 } from "node:path";
 function openUrl(url2, run2 = spawn4) {
   noTestWindow("browser", url2);
   const [cmd2, args2] = process.platform === "darwin" ? ["open", [url2]] : process.platform === "win32" ? ["cmd.exe", ["/d", "/s", "/c", `start "" "${url2}"`]] : ["xdg-open", [url2]];
@@ -55661,7 +55850,7 @@ function openUrl(url2, run2 = spawn4) {
 function openWindow(title, argv, env2, run2 = spawn4) {
   noTestWindow("window", title);
   if (process.platform === "darwin") {
-    const file4 = join27(tmpdir3(), `delegate-${title.replace(/\W+/g, "-")}-${process.pid}.command`);
+    const file4 = join28(tmpdir3(), `delegate-${title.replace(/\W+/g, "-")}-${process.pid}.command`);
     const lines = ["#!/bin/sh", ...Object.entries(env2).map(([k, v]) => `export ${k}=${shq(v)}`), `rm -f ${shq(file4)}`, `exec ${argv.map(shq).join(" ")}`];
     writeFileSync10(file4, lines.join("\n") + "\n", { mode: 493 });
     run2("open", [file4], { detached: true, stdio: "ignore" }).unref();
@@ -55791,7 +55980,7 @@ var init_review_context = __esm({
 // src/runner/jobs.ts
 import { uptime as uptime3 } from "node:os";
 import { existsSync as existsSync21, readFileSync as readFileSync19 } from "node:fs";
-import { isAbsolute as isAbsolute7, join as join28 } from "node:path";
+import { isAbsolute as isAbsolute7, join as join29 } from "node:path";
 function canonicalKey2(key) {
   const k = key.trim().toLowerCase().replace(/\s+/g, "");
   const pr = /^pr:([^/]+)\/(?:.*\/)?(\d+)$/.exec(k);
@@ -56265,7 +56454,9 @@ async function startJobs(store2, cfg, procs, hold = [], probe) {
     try {
       restoreSession(store2, job.session.id);
       const startedAt = (/* @__PURE__ */ new Date()).toISOString();
-      const prompt = job.wrapUp ? WRAP_UP(job.id) : buildJobPrompt(job, { ...cfg, agent }, store2.root, { clone: clone2, telemetry, scopes: parentsOf(store2, job).map((wf) => ({ workflow: wf, pr: prTargetForJob(store2, wf, job) })), tools: offered });
+      const scopes2 = parentsOf(store2, job).map((wf) => ({ workflow: wf, pr: prTargetForJob(store2, wf, job) }));
+      const instructions = standingInstructions(store2, scopes2, "result");
+      const prompt = job.wrapUp ? scrub([WRAP_UP(job.id), ...standingInstructionsBlock(instructions)].join("\n")) : buildJobPrompt(job, { ...cfg, agent }, store2.root, { clone: clone2, telemetry, scopes: scopes2, instructions, tools: offered });
       const usage = { ...sessionUse(
         job.session.id,
         sessionLog(job.session.agent, job.session.id),
@@ -56389,9 +56580,9 @@ async function checkJobs(store2, src, cfg, procs, probe, startedBefore) {
     }
     ended.set(job.id, readUse(store2, job));
     try {
-      const f = join28(LOCAL_DIR, "sessions", `${run2.id}.log`);
+      const f = join29(LOCAL_DIR, "sessions", `${run2.id}.log`);
       const account = !r && !live3 ? agentSetupFailure(`${existsSync21(f) ? readFileSync19(f, "utf8") : ""}
-${agentProcessLog(job.session.agent, join28(LOCAL_DIR, "sessions", `mcp-${run2.id}.json`))}`) : void 0;
+${agentProcessLog(job.session.agent, join29(LOCAL_DIR, "sessions", `mcp-${run2.id}.json`))}`) : void 0;
       if (account) holdJob(store2, cfg, job, account);
       else if (r) {
         if (run2.purpose === "execute") await finishExecute(store2, src, cfg, job, procs, probe);
@@ -56443,7 +56634,7 @@ function holdJob(store2, cfg, job, failure2) {
 function cleanJobFiles(store2, run2) {
   if (run2.relay || run2.machine !== store2.machine) return;
   try {
-    removeRunFiles(join28(LOCAL_DIR, "sessions", `mcp-${run2.id}.json`));
+    removeRunFiles(join29(LOCAL_DIR, "sessions", `mcp-${run2.id}.json`));
     store2.setHealth(`worker-files:${run2.id}`);
   } catch (error62) {
     const text5 = `Could not remove files for ended worker ${run2.id}: ${String(error62).slice(0, 160)}`;
@@ -56521,7 +56712,7 @@ function tallyRun(store2, job, use = {}) {
   store2.log({ event: "job-spend", job: job.id, runId: run2.id, unknown: input2 === void 0 || output2 === void 0 });
 }
 function readUse(store2, job) {
-  const run2 = job.run, f = run2 && !run2.relay && run2.machine === store2.machine ? join28(LOCAL_DIR, "sessions", `${run2.id}.log`) : void 0;
+  const run2 = job.run, f = run2 && !run2.relay && run2.machine === store2.machine ? join29(LOCAL_DIR, "sessions", `${run2.id}.log`) : void 0;
   if (!run2 || run2.direct) return {};
   if (!f) {
     tallyRun(store2, job);
@@ -57517,7 +57708,7 @@ function fail(store2, job, why2, outcome2 = "failed") {
   store2.log({ event: "job-failed", job: job.id, ...job.stopped ? { kind: job.stopped.kind } : { key: job.key, error: why2 }, ...usedBy(job, outcome2) });
 }
 function scrubLog(store2, runId) {
-  const f = join28(LOCAL_DIR, "sessions", `${runId}.log`);
+  const f = join29(LOCAL_DIR, "sessions", `${runId}.log`);
   if (!existsSync21(f)) return;
   const text5 = readFileSync19(f, "utf8"), clean4 = scrub(text5);
   if (clean4 !== text5) writeText(f, clean4, store2.machine);
@@ -57564,6 +57755,7 @@ var init_jobs = __esm({
     init_window();
     init_state();
     init_prompt();
+    init_ways();
     init_dispatch();
     init_catalog();
     init_bootstrap();
@@ -57592,7 +57784,7 @@ var init_jobs = __esm({
     init_pr_review_state();
     init_review_context();
     realProcs = {
-      start: (cfg, i) => startAgent(cfg, i, join28(LOCAL_DIR, "sessions", `${i.runId}.log`)),
+      start: (cfg, i) => startAgent(cfg, i, join29(LOCAL_DIR, "sessions", `${i.runId}.log`)),
       alive: (pid) => aliveAs(pid),
       // A process ID that is not ours any more is never killed; its run is already gone.
       kill: (pid) => aliveAs(pid) ? killTree(pid) : true,
@@ -58729,7 +58921,7 @@ function tiles(store2, since2, needs, done2) {
   ];
   return t2.filter((x) => x.key === "needs" || x.count > 0);
 }
-function view(store2, since2, now = /* @__PURE__ */ new Date(), workflows = store2.workflows(), snap) {
+function view2(store2, since2, now = /* @__PURE__ */ new Date(), workflows = store2.workflows(), snap) {
   const cfg = store2.config(), c = store2.control();
   const from = since2 ?? new Date(now.getTime() - 864e5).toISOString();
   const wfs = workflows;
@@ -58834,7 +59026,7 @@ var init_view = __esm({
 
 // src/knowledge/index.ts
 import { existsSync as existsSync22, mkdirSync as mkdirSync9, readdirSync as readdirSync9, readFileSync as readFileSync20 } from "node:fs";
-import { dirname as dirname9, join as join29, relative as relative4 } from "node:path";
+import { dirname as dirname9, join as join30, relative as relative4 } from "node:path";
 function newId2(text5) {
   for (; ; ) {
     const id = Math.random().toString(36).slice(2, 6);
@@ -58865,10 +59057,10 @@ var init_knowledge = __esm({
         this.machine = machine2;
       }
       cards() {
-        const dir2 = join29(this.root, "topics");
+        const dir2 = join30(this.root, "topics");
         return scoped(`cards:${dir2}`, () => {
           if (!existsSync22(dir2)) return [];
-          return readdirSync9(dir2, { withFileTypes: true }).filter((d) => d.isDirectory()).flatMap((d) => CARDS.map((c) => join29(dir2, d.name, `${c}.md`)).filter(existsSync22).map((p) => parseCard(p, readText(p))));
+          return readdirSync9(dir2, { withFileTypes: true }).filter((d) => d.isDirectory()).flatMap((d) => CARDS.map((c) => join30(dir2, d.name, `${c}.md`)).filter(existsSync22).map((p) => parseCard(p, readText(p))));
         });
       }
       search(q2, f = {}) {
@@ -58892,7 +59084,7 @@ var init_knowledge = __esm({
         const [path, id] = ref.replace(/^card:/, "").split("#");
         const [topic, card2] = path.split("/");
         if (id && card2 && /^[\w.-]+$/.test(topic) && /^[\w.-]+$/.test(card2)) {
-          const p = join29(this.root, "topics", topic, `${card2}.md`);
+          const p = join30(this.root, "topics", topic, `${card2}.md`);
           const c = existsSync22(p) ? parseCard(p, readText(p)) : void 0;
           if (c?.topic === topic && c.card === card2) return c.entries.find((e) => e.id === id);
         }
@@ -58953,7 +59145,7 @@ var init_knowledge = __esm({
       moveBack(items2) {
         let n = 0;
         for (const path of [...new Set(items2.map((i) => i.path))]) {
-          const file4 = join29(this.root, path), lines = existsSync22(file4) ? readFileSync20(file4, "utf8").split("\n") : [];
+          const file4 = join30(this.root, path), lines = existsSync22(file4) ? readFileSync20(file4, "utf8").split("\n") : [];
           for (const i of items2.filter((x) => x.path === path).sort((a, b) => a.at - b.at)) if (!lines.includes(i.line)) {
             lines.splice(Math.min(i.at, lines.length), 0, i.line);
             n++;
@@ -58965,7 +59157,7 @@ var init_knowledge = __esm({
         return n;
       }
       path(topic, card2) {
-        return join29(this.root, "topics", topic, `${card2}.md`);
+        return join30(this.root, "topics", topic, `${card2}.md`);
       }
       cardHash(topic, card2) {
         const p = this.path(topic, card2);
@@ -59009,7 +59201,7 @@ var init_knowledge = __esm({
       // index.md is generated, so it never drifts from the cards (R-KNO-02).
       writeIndex() {
         const lines = this.topics().map((t2) => `- [[${t2.topic}]] ${t2.title}${t2.aliases.length ? ` (also: ${t2.aliases.join(", ")})` : ""} \xB7 ${t2.entries} entr${t2.entries === 1 ? "y" : "ies"}`);
-        writeText(join29(this.root, "index.md"), ["# Knowledge index", "", "One line per topic. Generated from the cards; edit the cards, not this file.", "", ...lines, ""].join("\n"), this.machine);
+        writeText(join30(this.root, "index.md"), ["# Knowledge index", "", "One line per topic. Generated from the cards; edit the cards, not this file.", "", ...lines, ""].join("\n"), this.machine);
       }
     };
     LayeredKnowledge = class {
@@ -59072,7 +59264,7 @@ var init_knowledge = __esm({
 
 // src/runner/proposals.ts
 import { existsSync as existsSync23 } from "node:fs";
-import { isAbsolute as isAbsolute8, join as join30, relative as relative5, resolve as resolve10 } from "node:path";
+import { isAbsolute as isAbsolute8, join as join31, relative as relative5, resolve as resolve10 } from "node:path";
 function propose2(store2, k, claims2, from, source3) {
   const pending = store2.proposals().filter((p) => p.state === "needs_human").flatMap((p) => p.ops);
   const byTopic = /* @__PURE__ */ new Map();
@@ -59298,7 +59490,7 @@ function inbox2(store2, since2) {
     /* @__PURE__ */ new Date(),
     since2,
     store2.health(),
-    { proposals: store2.proposals(), background: bootLines(store2), automations: store2.automations().filter((a) => a.state !== "ended").map((a) => ({ line: describe3(a), state: a.state, next: a.next, code: a.code })), waiting: view(store2, since2).waiting },
+    { proposals: store2.proposals(), background: bootLines(store2), automations: store2.automations().filter((a) => a.state !== "ended").map((a) => ({ line: describe3(a), state: a.state, next: a.next, code: a.code })), waiting: view2(store2, since2).waiting },
     (wf) => placeOf(store2, wf.chat, wf.asker)
   );
   store2.markShown(store2.workflows());
@@ -59352,7 +59544,7 @@ var init_proposals = __esm({
     init_channels();
     init_learning();
     init_secrets();
-    knowledgeOf = (store2, cfg) => openKnowledge(cfg.cards?.root ?? join30(store2.root, "knowledge"), store2.machine, cfg.cards?.team);
+    knowledgeOf = (store2, cfg) => openKnowledge(cfg.cards?.root ?? join31(store2.root, "knowledge"), store2.machine, cfg.cards?.team);
     privateLink = (link2) => {
       const chat2 = link2.match(/teams\.microsoft\.com\/l\/message\/([^/]+)\//)?.[1];
       return !!chat2 && kindOf2(decodeURIComponent(chat2)) === "oneOnOne" || /outlook\.|mailto:/i.test(link2);
@@ -59364,7 +59556,7 @@ var init_proposals = __esm({
 });
 
 // src/runner/offrecord.ts
-import { join as join31 } from "node:path";
+import { join as join32 } from "node:path";
 function moveOffRecord(store2, chat2) {
   const k = knowledgeOf(store2, store2.config());
   const lines = k.moveOut?.(fromChat(chat2)) ?? [];
@@ -59389,14 +59581,14 @@ var init_offrecord = __esm({
     init_channels();
     init_fs();
     init_proposals();
-    file2 = (store2, chat2) => join31(store2.root, "knowledge-offrecord", `${chat2.replace(/[^\w.@-]/g, "_")}.json`);
+    file2 = (store2, chat2) => join32(store2.root, "knowledge-offrecord", `${chat2.replace(/[^\w.@-]/g, "_")}.json`);
     fromChat = (chat2) => (e) => !e.src.some((s3) => s3.link.startsWith("delegate:remember")) && e.src.some((s3) => parseMessageLink(s3.link)?.chatId === chat2);
   }
 });
 
 // src/runner/sharing.ts
 import { existsSync as existsSync24, mkdirSync as mkdirSync10, readFileSync as readFileSync21, rmSync as rmSync9, writeFileSync as writeFileSync11 } from "node:fs";
-import { dirname as dirname10, join as join32 } from "node:path";
+import { dirname as dirname10, join as join33 } from "node:path";
 function recordRead(root, runId, links2, query, tool = "teams", n = links2.length) {
   if (!runId) return;
   const f = provenanceFile(root, runId);
@@ -59411,7 +59603,7 @@ function membershipUnknown(store2, chatId) {
   return members2?.guests !== false && members2?.guests !== true && !members2?.outside?.length;
 }
 function membershipWait(store2, chatId, waiting = true) {
-  const file4 = join32(store2.root, "state", "membership-waits.json"), before = readJson(file4, []);
+  const file4 = join33(store2.root, "state", "membership-waits.json"), before = readJson(file4, []);
   const chats = waiting ? [.../* @__PURE__ */ new Set([...before, chatId])] : before.filter((id) => id !== chatId);
   if (JSON.stringify(chats) !== JSON.stringify(before)) writeJson(file4, chats, store2.machine);
   const text5 = chats.length ? `Automatic replies are waiting: Delegate couldn't verify who is in ${chats.length} chat${chats.length === 1 ? "" : "s"}.` : void 0;
@@ -59565,7 +59757,7 @@ var init_sharing = __esm({
     init_telemetry();
     init_format();
     init_place();
-    provenanceFile = (root, runId) => join32(root, "state", "provenance", `${runId}.json`);
+    provenanceFile = (root, runId) => join33(root, "state", "provenance", `${runId}.json`);
     normal = (v) => Array.isArray(v) ? { chats: v, searches: [] } : v;
     UNTRACKED = /^teams-(List|Get|Search)/i;
     guestsIn = (store2, chat2) => store2.members()[chat2]?.guests;
@@ -59583,7 +59775,7 @@ var init_sharing = __esm({
 import { createHash as createHash13 } from "node:crypto";
 import { existsSync as existsSync25, mkdirSync as mkdirSync11, readdirSync as readdirSync10, readFileSync as readFileSync22, renameSync as renameSync5, statSync as statSync10, writeFileSync as writeFileSync12 } from "node:fs";
 import { homedir as homedir10 } from "node:os";
-import { basename as basename7, join as join33 } from "node:path";
+import { basename as basename7, join as join34 } from "node:path";
 function sourceToolScope(text5, meeting = false, base2 = ["teams"]) {
   if (!Array.isArray(base2) || base2.some((family2) => !TOOL_FAMILIES.has(family2)))
     throw new SetupError("Reply base families must be teams, ado, doc, or calendar.");
@@ -59645,7 +59837,7 @@ function ignoreServer(server, ignore) {
   writeFileSync12(ignoreFile(), JSON.stringify({ ignored: [...now].sort() }, null, 1));
 }
 function serverSource(cfg, server, root) {
-  if ((cfg.agent.mcpServers ?? {})[server]) return { file: join33(root, "config.json"), shown: `${NAME}'s settings, config.json` };
+  if ((cfg.agent.mcpServers ?? {})[server]) return { file: join34(root, "config.json"), shown: `${NAME}'s settings, config.json` };
   const path = cliConfigPath(cfg.agent.flavor), home = homedir10();
   return { file: path, shown: `your AI CLI's tool settings, ${path.startsWith(home) ? `~${path.slice(home.length).replace(/\\/g, "/")}` : path}` };
 }
@@ -59760,8 +59952,8 @@ var init_catalog = __esm({
     TIMEOUT = 3e4;
     RETRY = [HOUR, 6 * HOUR];
     OWN = /* @__PURE__ */ new Set(["delegate", "delegate_worker"]);
-    dir = () => join33(LOCAL_DIR, "catalog");
-    file3 = (server) => join33(dir(), `${server.replace(/[^\w.-]/g, "_")}.json`);
+    dir = () => join34(LOCAL_DIR, "catalog");
+    file3 = (server) => join34(dir(), `${server.replace(/[^\w.-]/g, "_")}.json`);
     specKey = (s3) => createHash13("sha256").update(JSON.stringify({ command: s3.command, args: s3.args ?? [], env: Object.keys(s3.env ?? {}).sort(), ...s3.url ? { url: s3.url } : {} })).digest("hex").slice(0, 16);
     toolsHash = (tools) => createHash13("sha256").update(JSON.stringify(tools.map((t2) => [t2.name, t2.annotations ?? null, t2.inputSchema ?? null]).sort())).digest("hex").slice(0, 16);
     stampOf = (path) => {
@@ -59773,7 +59965,7 @@ var init_catalog = __esm({
       }
     };
     McpClient.onListChanged = staleCatalog;
-    ignoreFile = () => join33(LOCAL_DIR, "tool-servers.json");
+    ignoreFile = () => join34(LOCAL_DIR, "tool-servers.json");
     ignoredServers = () => {
       try {
         return JSON.parse(readFileSync22(ignoreFile(), "utf8")).ignored ?? [];
@@ -60022,7 +60214,7 @@ init_mcp_client();
 init_site();
 init_catalog();
 import { copyFileSync as copyFileSync2, existsSync as existsSync26 } from "node:fs";
-import { join as join34 } from "node:path";
+import { join as join35 } from "node:path";
 var OLD_READ_DEFAULTS = {
   teams: ["ListChats", "ListChatMessages", "GetChatMessage", "GetChat", "SearchTeamMessagesQueryParameters", "ListChannelMessages", "ListChannelMessageReplies"],
   calendar: ["ListCalendarView", "FindMeetingTimes", "GetUserDateAndTimeZoneSettings"],
@@ -60052,7 +60244,7 @@ function convertTools(cfg) {
   return { cfg: { ...cfg, agent }, move: { mode: trimmed.length ? "trimmed" : "all-reads", deny, pending, allowRead } };
 }
 function backupConfig(store2, now = /* @__PURE__ */ new Date()) {
-  const from = join34(store2.root, "config.json"), to = join34(store2.root, `config.backup-${now.toISOString().slice(0, 10)}.json`);
+  const from = join35(store2.root, "config.json"), to = join35(store2.root, `config.backup-${now.toISOString().slice(0, 10)}.json`);
   if (!existsSync26(from)) return void 0;
   if (!existsSync26(to)) copyFileSync2(from, to);
   return to;
@@ -60112,7 +60304,7 @@ init_work();
 init_review_context();
 init_probe();
 init_pr_review_state();
-import { join as join35 } from "node:path";
+import { join as join36 } from "node:path";
 import { isDeepStrictEqual as isDeepStrictEqual6 } from "node:util";
 var LIMIT = 50;
 var sameLink2 = (a, b) => a.split(":")[0].toLowerCase() === b.split(":")[0].toLowerCase() && a.split(/[:/]/).at(-1) === b.split(/[:/]/).at(-1);
@@ -60202,7 +60394,7 @@ function migrateWorkflows(store2, now = Date.now()) {
             } else skipped = "the author question has no verified PR reference";
           }
           if (w.todos?.some((t2) => /names no exact call/.test(t2))) {
-            const reports = listJson(join35(store2.root, "state", "done", "reports")).filter((path) => path.startsWith(join35(store2.root, "state", "done", "reports", `${job.id}-`))).map((path) => readJson(path, void 0)).filter((r) => !!r);
+            const reports = listJson(join36(store2.root, "state", "done", "reports")).filter((path) => path.startsWith(join36(store2.root, "state", "done", "reports", `${job.id}-`))).map((path) => readJson(path, void 0)).filter((r) => !!r);
             const run2 = history().filter((e) => e.job === job.id && typeof e.runId === "string").at(-1)?.runId;
             const report2 = typeof run2 === "string" ? store2.archivedReport(job.id, run2) : reports.length === 1 ? reports[0] : void 0;
             const original = report2?.effects ?? job.result?.effects ?? [];
@@ -60502,7 +60694,7 @@ init_paths();
 init_state();
 import { execFile, execFileSync as executeProcess2 } from "node:child_process";
 import { existsSync as existsSync27, mkdirSync as mkdirSync12, readFileSync as readFileSync23, writeFileSync as writeFileSync13 } from "node:fs";
-import { join as join36 } from "node:path";
+import { join as join37 } from "node:path";
 var execFileSync3 = timedCall(() => executeProcess2);
 var UPDATE_EVERY_MIN = 1440;
 function channelOf(setting, origin) {
@@ -60520,9 +60712,9 @@ function onUpdateApplied(listener) {
 }
 function autoUpdate(opt = {}) {
   const root = opt.root ?? ROOT, cli = opt.cli ?? CLI, local2 = opt.local ?? LOCAL_DIR, now = opt.now ?? Date.now();
-  if (!existsSync27(join36(root, ".git"))) return;
+  if (!existsSync27(join37(root, ".git"))) return;
   const git = (...a) => execFileSync3("git", a, { cwd: root, stdio: "pipe", encoding: "utf8" }).trim();
-  const mark2 = join36(local2, "update.json");
+  const mark2 = join37(local2, "update.json");
   try {
     const channel = channelOf(opt.setting, git("remote", "get-url", "origin"));
     if (channel === "off") return;
@@ -60573,7 +60765,7 @@ function autoUpdate(opt = {}) {
   }
 }
 function untold(local2 = LOCAL_DIR) {
-  const mark2 = join36(local2, "update.json"), m = readMark2(mark2);
+  const mark2 = join37(local2, "update.json"), m = readMark2(mark2);
   if (!m.last || m.last.told) return;
   writeMark(mark2, { ...m, last: { ...m.last, told: true } });
   return m.last;
@@ -60611,7 +60803,7 @@ function exitWhenUpdated(close2, root = ROOT, everyMs = 15e3) {
   }, everyMs);
 }
 function savedVersion(root, stateRoot) {
-  for (const file4 of [join36(root, "package.json"), ...stateRoot ? [join36(stateRoot, "state", "version.json")] : []]) {
+  for (const file4 of [join37(root, "package.json"), ...stateRoot ? [join37(stateRoot, "state", "version.json")] : []]) {
     try {
       const v = JSON.parse(readFileSync23(file4, "utf8")).version;
       if (typeof v === "string" && v.trim()) return v.trim();
@@ -60633,7 +60825,7 @@ function identity(head, description, origin, root, stateRoot) {
   };
 }
 function versionStatus(info, setting, local2 = LOCAL_DIR, everyMin = UPDATE_EVERY_MIN) {
-  const m = readMark2(join36(local2, "update.json"));
+  const m = readMark2(join37(local2, "update.json"));
   const channel = !info.fullCode || setting === false ? "off" : setting === "main" || setting === "release" ? setting : info.channel;
   return { ...info, auto: channel !== "off", channel, everyMin, checkedAt: m.checkedAt, failed: m.failed, last: m.last };
 }
@@ -60645,12 +60837,12 @@ function versionInfo(setting, root = ROOT, local2 = LOCAL_DIR, everyMin = UPDATE
       return "";
     }
   };
-  const repo = existsSync27(join36(root, ".git"));
+  const repo = existsSync27(join37(root, ".git"));
   return versionStatus(identity(repo ? git("rev-parse", "HEAD") : "", repo ? git("describe", "--tags", "--match", "v[0-9]*", "--long") : "", repo ? git("remote", "get-url", "origin") : "", root, stateRoot), setting, local2, everyMin);
 }
 async function versionInfoLater(setting, root = ROOT, local2 = LOCAL_DIR, everyMin = UPDATE_EVERY_MIN, stateRoot = process.env.DELEGATE_ROOT) {
   const git = (...a) => new Promise((done2) => execFile("git", a, { cwd: root, encoding: "utf8", windowsHide: true }, (error62, out) => done2(error62 ? "" : String(out).trim())));
-  const repo = existsSync27(join36(root, ".git"));
+  const repo = existsSync27(join37(root, ".git"));
   const [head, origin, description] = repo ? await Promise.all([git("rev-parse", "HEAD"), git("remote", "get-url", "origin"), git("describe", "--tags", "--match", "v[0-9]*", "--long")]) : ["", "", ""];
   return versionStatus(identity(head, description, origin, root, stateRoot), setting, local2, everyMin);
 }
@@ -60663,7 +60855,7 @@ function readMark2(f) {
 }
 function writeMark(f, m) {
   assertTestSafe(f);
-  mkdirSync12(join36(f, ".."), { recursive: true });
+  mkdirSync12(join37(f, ".."), { recursive: true });
   writeFileSync13(f, JSON.stringify(m, null, "	") + "\n");
 }
 
@@ -60680,13 +60872,13 @@ init_state();
 // src/store/retention.ts
 init_state();
 import { existsSync as existsSync28, readdirSync as readdirSync11, readFileSync as readFileSync24, rmSync as rmSync10, statSync as statSync11, writeFileSync as writeFileSync14 } from "node:fs";
-import { join as join37 } from "node:path";
+import { join as join38 } from "node:path";
 var CONTENT = ["text", "summary", "lastAsk", "sent", "answer", "ask", "draft", "note"];
 function sweep2(store2, days2 = 30, now = Date.now()) {
   const cutoff = new Date(now - days2 * 864e5).toISOString();
   let n = 0;
   for (const wf of store2.workflows().filter((w) => w.state === "done" && w.updatedAt < cutoff && !w.redacted)) {
-    rmSync10(join37(store2.root, "state", "threads", `${wf.id}.json`), { force: true });
+    rmSync10(join38(store2.root, "state", "threads", `${wf.id}.json`), { force: true });
     Object.assign(wf, {
       redacted: true,
       fyi: void 0,
@@ -60713,21 +60905,21 @@ function sweep2(store2, days2 = 30, now = Date.now()) {
   }
   store2.pruneOutcomes(cutoff);
   const live3 = /* @__PURE__ */ new Set([...store2.workflows().filter((w) => w.state !== "done").map((w) => w.session.id), ...store2.jobs().filter((j) => j.state !== "done" && j.state !== "failed").map((j) => j.session.id), ...store2.owners().map((o) => o.session)]);
-  const sessions2 = join37(store2.root, "sessions");
+  const sessions2 = join38(store2.root, "sessions");
   if (existsSync28(sessions2)) for (const id of readdirSync11(sessions2)) {
-    const p = join37(sessions2, id);
+    const p = join38(sessions2, id);
     if (!live3.has(id) && statSync11(p).mtimeMs < now - days2 * 864e5) {
       rmSync10(p, { recursive: true, force: true });
       n++;
     }
   }
   store2.keepSent((s3) => s3.at >= cutoff ? s3 : { ...s3, text: "" });
-  for (const dir2 of [["done", "answers"], ["done", "reports"], ["changes"]]) n += removeOlder(join37(store2.root, "state", ...dir2), now - days2 * 864e5);
-  n += removeOlder(join37(store2.root, "state", "provenance"), now - days2 * 864e5);
-  n += removeOlder(join37(LOCAL_DIR, "sessions"), now - days2 * 864e5);
-  const fbDir = join37(store2.root, "feedback");
+  for (const dir2 of [["done", "answers"], ["done", "reports"], ["changes"]]) n += removeOlder(join38(store2.root, "state", ...dir2), now - days2 * 864e5);
+  n += removeOlder(join38(store2.root, "state", "provenance"), now - days2 * 864e5);
+  n += removeOlder(join38(LOCAL_DIR, "sessions"), now - days2 * 864e5);
+  const fbDir = join38(store2.root, "feedback");
   if (existsSync28(fbDir)) for (const f of readdirSync11(fbDir).filter((f2) => f2.endsWith(".jsonl"))) {
-    const p = join37(fbDir, f);
+    const p = join38(fbDir, f);
     const lines = readFileSync24(p, "utf8").split("\n").filter(Boolean).map((l) => {
       try {
         const e = JSON.parse(l);
@@ -60739,9 +60931,9 @@ function sweep2(store2, days2 = 30, now = Date.now()) {
     });
     writeFileSync14(p, lines.filter(Boolean).join("\n") + "\n");
   }
-  const logDir = join37(store2.root, "state", "log");
+  const logDir = join38(store2.root, "state", "log");
   if (existsSync28(logDir)) for (const f of readdirSync11(logDir).filter((f2) => f2.endsWith(".jsonl") && f2.slice(0, 10) < cutoff.slice(0, 10))) {
-    const p = join37(logDir, f);
+    const p = join38(logDir, f);
     const lines = readFileSync24(p, "utf8").split("\n").filter(Boolean).map((l) => {
       try {
         const e = JSON.parse(l);
@@ -60759,7 +60951,7 @@ function removeOlder(dir2, beforeMs) {
   if (!existsSync28(dir2)) return 0;
   let n = 0;
   for (const f of readdirSync11(dir2)) {
-    const p = join37(dir2, f);
+    const p = join38(dir2, f);
     if (statSync11(p).mtimeMs < beforeMs) {
       rmSync10(p, { recursive: true, force: true });
       n++;
@@ -62599,7 +62791,7 @@ init_repos();
 init_state();
 init_brand();
 import { existsSync as existsSync29, readFileSync as readFileSync25, statSync as statSync12, writeFileSync as writeFileSync15 } from "node:fs";
-import { isAbsolute as isAbsolute9, join as join38, resolve as resolve11 } from "node:path";
+import { isAbsolute as isAbsolute9, join as join39, resolve as resolve11 } from "node:path";
 init_runinfo();
 init_habits();
 init_catalog();
@@ -62649,9 +62841,9 @@ var SETTINGS = [
     help: `A few lines ${NAME} reads before every draft: what you do and how you write.`,
     kind: "text",
     section: "you",
-    read: (_c, s3) => existsSync29(join38(s3.root, "profile.md")) ? readFileSync25(join38(s3.root, "profile.md"), "utf8") : "",
+    read: (_c, s3) => existsSync29(join39(s3.root, "profile.md")) ? readFileSync25(join39(s3.root, "profile.md"), "utf8") : "",
     parse: (raw) => raw.trim().length < 20 ? { ok: false, why: "Write at least a sentence about yourself." } : { ok: true, save: (cfg, s3) => {
-      writeFileSync15(join38(s3.root, "profile.md"), raw.trim() + "\n");
+      writeFileSync15(join39(s3.root, "profile.md"), raw.trim() + "\n");
       return cfg;
     } }
   },
@@ -63080,7 +63272,7 @@ function whoOf(r) {
 function aboutView(store2) {
   const habits = store2.habits(), held = store2.heldRules(), cfg = store2.config();
   return {
-    profile: existsSync29(join38(store2.root, "profile.md")) ? readFileSync25(join38(store2.root, "profile.md"), "utf8").trim() : "",
+    profile: existsSync29(join39(store2.root, "profile.md")) ? readFileSync25(join39(store2.root, "profile.md"), "utf8").trim() : "",
     rules: store2.rules().map((r) => {
       const h = r.learned ? habits.find((x) => x.key === r.learned.key) : void 0;
       return {
@@ -64470,149 +64662,7 @@ init_jobs();
 init_probe();
 init_apply();
 init_review_autonomy();
-
-// src/core/ways.ts
-init_brand();
-init_state();
-init_policy();
-init_limits();
-init_rules();
-init_actions();
-init_telemetry();
-init_fs();
-init_rule_lines();
-init_capabilities();
-init_habits();
-init_limits();
-import { join as join39 } from "node:path";
-var wayNotes = (store2) => ruleNotes(store2).map((note) => ({
-  ...note,
-  textHash: ruleTextHash(note.text),
-  review: /\b(?:PRs?|pull requests?)\b/i.test(note.text) && /\breview\w*\b/i.test(note.text)
-}));
-var WAY_CHANGED = "This line changed; your text is kept";
-var limitsCard = (cfg) => productLimits({ ...DEFAULT_POLICY, ...cfg.policy }.maxAutoPerChatHour);
-function view2(line3, used = {}, conflictWith = [], conflict) {
-  const status3 = ruleLineView(line3, conflict);
-  const ruleIds = [.../* @__PURE__ */ new Set([...line3.grantIds ?? [], ...(line3.compile?.grants ?? []).map((grant) => grant.id)])];
-  const usedThisWeek = ruleIds.reduce((count, id) => count + (used[id] ?? 0), 0);
-  const reading = status3.status === "reading", redirect = !reading && !!line3.compile?.setting;
-  const readBackLabel = reading || redirect ? "" : "Delegate reads this as:";
-  const readBackValue = status3.meaning || "It waits for you.";
-  const statusText2 = status3.state === "on" ? `\u2713 Doing this \xB7 used ${usedThisWeek} times this week` : status3.statusText;
-  const setting = status3.setting ?? (line3.compile?.grants.some((grant) => grant.then === "review") ? "reviewRule" : void 0);
-  return {
-    id: line3.id,
-    text: line3.text,
-    textHash: ruleTextHash(line3.text),
-    source: line3.source === "settings" ? "setting" : line3.source,
-    group: status3.state === "off" ? "off" : ["reading", "waiting", "not-in-effect"].includes(status3.state) ? "needs-him" : "doing",
-    status: status3.status,
-    state: status3.state,
-    readBack: [line3.text, readBackLabel ? `${readBackLabel} ${readBackValue}` : readBackValue, statusText2],
-    readBackLabel,
-    readBackValue,
-    statusText: statusText2,
-    usedThisWeek,
-    ruleIds,
-    ...line3.compile?.notYet.length ? { notYet: line3.compile.notYet.map((part2) => ({ clause: part2.clause, untilThen: "It waits for you." })) } : {},
-    ...line3.compile?.limited.length ? { limited: [...new Set(line3.compile.limited.map((part2) => part2.limit))] } : {},
-    ...line3.compile?.question ? { question: line3.compile.question } : {},
-    ...setting ? { setting } : {},
-    ...redirect ? { redirect: true } : {},
-    ...lineConfirmed(line3) ? { confirmedAt: line3.confirmedAt } : {},
-    ...conflictWith.length ? { conflictWith } : {}
-  };
-}
-function lineViews(store2) {
-  const lines = ruleLines(store2), conflicts = ruleConflicts(lines);
-  const used = scoped(`ruleuses:${join39(store2.root, "state", "log")}`, () => ruleUses(store2.logs(7)));
-  return lines.map((line3) => view2(line3, used, conflicts[line3.id], lines.find((other) => conflicts[line3.id]?.includes(other.id))));
-}
-var wayLines = (store2, _cfg) => lineViews(store2);
-var suggestionText = (habit) => habit.removes ? `Stop using this drafting style: ${habit.rule.style ?? habit.rule.text}` : habit.rule.text;
-function suggestion(habit) {
-  const text5 = suggestionText(habit);
-  const meaning = habit.removes ? text5 : habit.kind === "style" ? `Use this drafting style: ${habit.rule.style ?? text5}` : readBack(habit.rule);
-  const evidence = `${habit.evidence.count} ${habit.kind === "style" ? "edited" : "unedited"} replies on ${habit.evidence.days} days, out of ${habit.evidence.total}.`;
-  return {
-    id: habit.code,
-    text: text5,
-    textHash: ruleTextHash(text5),
-    readBack: [text5, `Delegate reads this as: ${meaning}`, evidence],
-    evidence,
-    links: habit.evidence.links
-  };
-}
-function suggestions2(store2) {
-  const habits = habitSuggestions(store2);
-  return {
-    ...habits.open ? { open: suggestion(habits.open) } : {},
-    turnedDown: [
-      ...habits.turnedDown.map(({ habit, at: at3, how }) => ({ suggestion: suggestion(habit), at: at3, how })),
-      ...turnedDownSuggestions(store2, Date.now()).map(({ key, label: label2, at: at3 }) => ({ kind: "suggestion", key, label: label2, at: at3 }))
-    ]
-  };
-}
-var linesToCheck = (store2, _cfg) => ruleLines(store2).filter((line3) => ["waiting", "not-in-effect"].includes(ruleLineView(line3).state)).length;
-var needsHim = (store2, cfg) => linesToCheck(store2, cfg) + Number(!!habitSuggestions(store2).open);
-function result(store2, written) {
-  if (!written.ok || !written.line) return written.ok ? { ok: true } : written;
-  const line3 = lineViews(store2).find((line4) => line4.id === written.line.id);
-  if (!line3) throw new Error("The saved rule line could not be read back.");
-  return { ok: true, line: line3 };
-}
-var addLine = (store2, text5) => result(store2, addRuleLine(store2, text5));
-var editLine = (store2, id, text5, expectHash) => result(store2, changeRuleLine(store2, id, { text: text5 }, expectHash));
-var confirmLine = (store2, id, textHash) => result(store2, changeRuleLine(store2, id, "confirm", textHash));
-var setLineOff = (store2, id, off, expectHash) => result(store2, changeRuleLine(store2, id, off ? "off" : "on", expectHash));
-var deleteLine = (store2, id, expectHash) => result(store2, changeRuleLine(store2, id, "delete", expectHash));
-var restoreLine = (store2, id, expectHash) => result(store2, changeRuleLine(store2, id, "restore", expectHash));
-var answerLine = editLine;
-var makeNoteLine = (store2, id, expectHash) => result(store2, changeRuleNote(store2, id, true, expectHash));
-var deleteNote = (store2, id, expectHash) => result(store2, changeRuleNote(store2, id, false, expectHash));
-function currentSuggestion(store2, id, expectHash) {
-  const habit = freshRead(() => store2.habits().find((habit2) => habit2.key === id || habit2.code.toUpperCase() === id.toUpperCase()));
-  return habit && ruleTextHash(suggestionText(habit)) === expectHash ? habit : void 0;
-}
-function acceptSuggestion(store2, id, text5, expectHash) {
-  const habit = currentSuggestion(store2, id, expectHash);
-  if (!habit || !["suggested", "accepted"].includes(habit.state)) return { ok: false, why: WAY_CHANGED };
-  if (!text5.trim()) return { ok: false, why: "Write a line before saving it." };
-  const unchanged = text5 === suggestionText(habit);
-  if (!unchanged && habit.state !== "suggested") return { ok: false, why: WAY_CHANGED };
-  const accepted = answerHabitResult(store2, habit, "ok", unchanged ? habit.rule.text : text5);
-  if (!accepted.ok) return accepted;
-  const record4 = ruleLines(store2).find((record5) => record5.learned?.key === habit.key);
-  const line3 = record4 && lineViews(store2).find((line4) => line4.id === record4.id);
-  return { ok: true, ...line3 ? { line: line3 } : {} };
-}
-function undoAcceptSuggestion(store2, id, expectHash) {
-  const undone = withRecordWriteNow(join39(store2.root, "rules.compiled.json"), () => freshRead(() => {
-    const line3 = ruleLines(store2).find((line4) => line4.id === id);
-    if (!line3 || line3.source !== "learned" || !line3.learned?.key || ruleTextHash(line3.text) !== expectHash)
-      return { ok: false, why: WAY_CHANGED };
-    const restored = undoAcceptHabit(store2, line3.learned.key);
-    return restored.ok ? { ok: true } : restored;
-  }));
-  return undone === BUSY ? { ok: false, why: RULE_WRITE_BUSY } : undone;
-}
-function dismissSuggestion2(store2, id, how, expectHash) {
-  if (!currentSuggestion(store2, id, expectHash)) return { ok: false, why: WAY_CHANGED };
-  const dismissed2 = dismissHabit(store2, id, how);
-  return dismissed2.ok ? { ok: true } : dismissed2;
-}
-function undoDismiss2(store2, id) {
-  const restored = undoDismiss(store2, id);
-  return restored.ok ? { ok: true } : restored;
-}
-function reconsiderSuggestion2(store2, id, kind) {
-  if (kind === "suggestion") return reconsiderSuggestion(store2, id);
-  const reconsidered = reconsiderHabit(store2, id);
-  return reconsidered.ok ? { ok: true } : reconsidered;
-}
-
-// src/web/react-projection.ts
+init_ways();
 init_vote_claims();
 init_format();
 init_place();
@@ -64807,7 +64857,7 @@ function reactProjection(store2, query = "", visit2, opts = {}) {
   const facts = { ...stored, workflows: stored.workflows.map((workflow) => currentDraft(workflow, workflow.job ? stored.jobs.get(workflow.job) : void 0) === workflow.draft ? workflow : { ...workflow, draft: void 0 }) };
   const placed = place(facts), placementOf = new Map(placed.map((placement2) => [placement2.code, placement2])), cfg = store2.config();
   const since2 = visit2 ? visit2.since : store2.lastViewed();
-  const base2 = view(store2, since2, new Date(facts.now), facts.workflows, onlyWfs ? stored : void 0), next2 = nextView(store2, facts.now, { snapshot: facts, allCatchup: true, only: !!onlyWfs }), entities = emptyEntities();
+  const base2 = view2(store2, since2, new Date(facts.now), facts.workflows, onlyWfs ? stored : void 0), next2 = nextView(store2, facts.now, { snapshot: facts, allCatchup: true, only: !!onlyWfs }), entities = emptyEntities();
   const bindings = /* @__PURE__ */ new Map(), workflows = facts.workflows, byCode = new Map(workflows.map((w) => [w.code, w]));
   const expectations = /* @__PURE__ */ new Map();
   const managementRevisions = /* @__PURE__ */ new Map();
@@ -65717,7 +65767,7 @@ function reactProjection(store2, query = "", visit2, opts = {}) {
       fn = "suggestions";
       const open2 = (() => {
         try {
-          return suggestions2(store2);
+          return suggestions(store2);
         } catch (error62) {
           if (notYet(error62)) return void 0;
           throw error62;
@@ -66682,7 +66732,7 @@ var SLOW_MS = 1e3;
 var BEAT_MS2 = 500;
 function actOutcome(store2, ids, code) {
   const said2 = ids.map((id) => store2.outcome(id));
-  const v = view(store2, store2.lastViewed());
+  const v = view2(store2, store2.lastViewed());
   const card2 = v.needs.find((c) => c.code === code) ?? v.knowledge.find((c) => c.code === code);
   const state = (/^A/i.test(code) ? store2.byCode(code)?.state : /^K/i.test(code) ? store2.proposal(code)?.state : store2.automation(code)?.state) ?? "";
   return { applied: said2.every((t2) => t2 !== void 0), text: said2.filter(Boolean).join(" "), state, card: card2 };
@@ -66959,7 +67009,7 @@ async function serveInbox(get, port = 0, token = randomBytes3(16).toString("hex"
       return;
     }
     if (req.method === "GET" && u.pathname === "/data") {
-      res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" }).end(JSON.stringify(withUi(get(), withVersion(get(), view(get(), u.searchParams.get("since") || void 0)), u.searchParams.get("ui") === "new")));
+      res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" }).end(JSON.stringify(withUi(get(), withVersion(get(), view2(get(), u.searchParams.get("since") || void 0)), u.searchParams.get("ui") === "new")));
       return;
     }
     if (req.method === "GET" && u.pathname === "/numbers") {
