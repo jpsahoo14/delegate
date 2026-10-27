@@ -1,4 +1,6 @@
 import type { Answer, Automation, Config, Rotation, Schedule } from '../core/types.ts'
+import { randomUUID } from 'node:crypto'
+import { NAME } from '../brand.ts'
 import { isPersona } from '../core/intake.ts'
 import { ulid } from '../core/ids.ts'
 import { DEFAULT_POLICY, REPLY_BLANK, replyGap, signatureOf, withMarker } from '../core/policy.ts'
@@ -7,8 +9,10 @@ import { membersOf, membershipUnknown, membershipWait } from './sharing.ts'
 import { voteMention } from '../core/vote-claims.ts'
 import { freshRead } from '../store/fs.ts'
 import type { Source } from '../adapters/source.ts'
-import type { Store } from '../store/state.ts'
+import { BUSY, type Store } from '../store/state.ts'
 import { isThread } from '../adapters/channels.ts'
+import { amendAction, appendAction, becauseOf, readActions, type ActionRecord } from '../store/actions.ts'
+import { messagePart, type ActionPart } from './action-record.ts'
 import { telemetryEvent } from '../core/telemetry.ts'
 
 const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
@@ -138,23 +142,101 @@ export function answerAutomation(store: Store, a: Automation, ans: Answer): stri
 		case 'pause':
 			if (a.state !== 'active') return `${a.code} is not running.`
 			Object.assign(a, { state: 'paused', next: undefined })
-			store.saveAutomation(a)
-			return `Paused ${a.code}. Say "resume ${a.code}" to start it again.`
-		case 'resume':
-			if (a.state !== 'paused') return `${a.code} is not paused.`
+			return `Paused ${a.code}. Say "resume ${a.code}" to start it again.${saveReminderStop(store, a, ans, 'paused', now)}`
+		case 'resume': {
+			const restore = a.state === 'ended' && a.endedFrom && ans.page ? a.endedFrom : undefined
+			if (restore) {
+				a.endedFrom = undefined
+				if (restore === 'paused') {
+					a.state = 'paused'
+					store.saveAutomation(a)
+					return `Paused ${a.code}. Say "resume ${a.code}" to start it again.`
+				}
+			}
+			if (a.state !== 'paused' && restore !== 'active') return `${a.code} is not paused.`
 			if (!nextAt(a.schedule, now)) { Object.assign(a, { state: 'ended' }); store.saveAutomation(a); return `${a.code} has no more times to send, so it ended.` }
 			Object.assign(a, { state: 'active', next: nextAt(a.schedule, now)!.toISOString(), why: undefined })
 			store.saveAutomation(a)
 			return `Resumed ${a.code}. Next: ${new Date(a.next!).toLocaleString()}.`
+		}
 		case 'skip':
+			if (a.state === 'active' || a.state === 'paused') a.endedFrom = a.state
 			Object.assign(a, { state: 'ended', next: undefined })
-			store.saveAutomation(a)
-			return `Ended ${a.code}. Nothing more will be sent.`
+			return `Ended ${a.code}. Nothing more will be sent.${saveReminderStop(store, a, ans, 'ended', now)}`
 		case 'more':
 			return `${describe(a)}. ${a.state}${a.next ? `, next ${new Date(a.next).toLocaleString()}` : ''}. Sent ${a.count} time${a.count === 1 ? '' : 's'}.`
 		default:
 			return `${a.code} takes ok, edit, pause, resume, or skip.`
 	}
+}
+
+function saveReminderStop(store: Store, a: Automation, answer: Answer, produced: 'paused' | 'ended', now: Date): string {
+	let stop: Automation['stop'], historyFailed = false
+	if (answer.page && /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(answer.text ?? '')) {
+		try {
+			const action = readActions(store, { since: new Date(now.getTime() - 30 * 86_400_000).toISOString() }).find(record =>
+				record.id === answer.text && record.kind === 'reminder' && record.because.kind === 'setting' && record.because.key === a.code)
+			if (action) {
+				const latest = action.amendments.reduce((at, amendment) => amendment.kind === 'stopped' ? Math.max(at, Date.parse(amendment.at)) : at, -Infinity)
+				stop = { recordId: action.id, produced, at: new Date(Math.max(now.getTime(), latest + 1)).toISOString() }
+			}
+		} catch { historyFailed = true }
+	}
+	store.saveAutomation(a, stop)
+	if (stop) {
+		try {
+			const saved = amendAction(store, { v: 1, ref: stop.recordId, at: stop.at, by: 'owner', kind: 'stopped' })
+			historyFailed = saved === BUSY || saved === undefined
+		} catch { historyFailed = true }
+	}
+	return historyFailed ? ` ${produced === 'paused' ? 'Paused' : 'Ended'}, but ${NAME} could not save its history. Check the reminder in Settings.` : ''
+}
+
+function holdReminderRecord(store: Store, a: Automation): undefined {
+	a.recordTries = (a.recordTries ?? 0) + 1
+	store.saveAutomation(a)
+	store.log(telemetryEvent('wdd-record-held', { tries: a.recordTries }))
+	if (a.recordTries >= 3) store.setHealth(`wdd-record:${a.id}`, `${NAME} can't save its record of what it does for you. Automatic replies wait until it can.`)
+}
+
+function startReminderRecord(store: Store, cfg: Config, a: Automation, out: string, now: Date): ActionRecord | undefined {
+	const chatId = a.to.chatId
+	const group = /@unq\.gbl\.spaces$/i.test(chatId) ? false : /@thread\.(?:v2|skype)$/i.test(chatId) ? true :
+		store.workflows().find(wf => wf.chat.id === chatId)?.chat.group
+	if (group === undefined) return holdReminderRecord(store, a)
+	const others = store.members()[chatId]?.ids.filter(id => id.toLowerCase() !== cfg.owner.id.toLowerCase()) ?? []
+	let saved: ActionRecord | typeof BUSY
+	try {
+		saved = appendAction(store, {
+			v: 1, id: randomUUID(), at: now.toISOString(), kind: 'reminder',
+			chat: { id: chatId, group, name: a.to.name },
+			...(!group && others.length === 1 ? { to: { id: others[0], first: a.to.name.split(/\s+/)[0] } } : {}),
+			because: becauseOf(store, { setting: { key: a.code, label: textFor(a).slice(0, 160) } }),
+			parts: [messagePart(out, chatId)],
+		})
+	} catch {
+		return holdReminderRecord(store, a)
+	}
+	if (saved === BUSY) return holdReminderRecord(store, a)
+	if (a.recordTries !== undefined) {
+		a.recordTries = undefined
+		store.setHealth(`wdd-record:${a.id}`)
+	}
+	return saved
+}
+
+function completeReminderRecord(store: Store, a: Automation, action: ActionRecord, parts: ActionPart[], undo?: ActionRecord['undo']): void {
+	try {
+		const saved = amendAction(store, { v: 1, ref: action.id, at: new Date().toISOString(), kind: 'completed', by: 'engine', parts, ...(undo ? { undo } : {}) })
+		if (saved !== BUSY && saved !== undefined) {
+			store.setHealth(`wdd-incomplete:${a.id}`)
+			return
+		}
+	} catch {
+		// The reserved count and due time must never be retried after an external attempt.
+	}
+	store.log(telemetryEvent('wdd-record-incomplete', { kind: action.kind }))
+	store.setHealth(`wdd-incomplete:${a.id}`, `${NAME} couldn't confirm its record of an automatic action. Check Teams or the PR before trying again.`)
 }
 
 // Each due time is handled once. A time skipped by pause or policy moves on without using up a send.
@@ -200,20 +282,28 @@ export async function dueAutomations(store: Store, src: Source, cfg: Config, now
 			store.log({ event: 'automation-skipped', code: a.code, why: skip, ...(!auth.allowed ? { blockedBy: auth.blockedBy } : {}) })
 			continue
 		}
+		const action = startReminderRecord(store, cfg, a, out, now)
+		if (!action) continue
 		const count = a.count + 1
 		const spent = count >= (a.maxSends ?? Infinity) || (a.rotation === 'once-each' && count >= textsOf(a).length)
 		Object.assign(a, { count, next: spent || after(next) ? undefined : next!.toISOString(), state: spent || after(next) ? 'ended' : 'active', lastAt: now.toISOString() })
 		store.saveAutomation(a)
 		store.addAuto(a.to.chatId, 'send')
+		let sent: { msgId: string; at: string } | undefined, error: unknown
 		try {
 			const { msgId } = await src.send(a.to.chatId, out)
+			sent = { msgId, at: now.toISOString() }
 			store.addSent(msgId, out)
 			store.log(telemetryEvent('marker', { code: a.code, applied: true, why: 'auto' }))
 			store.setHealth(`auto:${a.code}`)
 			store.log({ event: 'sent', code: a.code, chat: a.to.chatId, asker: { id: '', name: a.to.name }, approvedBy: `automation:${a.code}`, msgId, text: out })
 			n++
 		} catch (e) {
+			if (!sent) error = e
 			store.setHealth(`auto:${a.code}`, `${a.code} may not have reached ${a.to.name}: ${String(e).slice(0, 120)}. It counts as sent, so nothing goes twice.`)
+		} finally {
+			const undo = sent ? { msgId: sent.msgId, until: new Date(now.getTime() + ({ ...DEFAULT_POLICY, ...cfg.policy }).undoMin * 60_000).toISOString() } : undefined
+			completeReminderRecord(store, a, action, [messagePart(out, a.to.chatId, sent, error)], undo)
 		}
 	}
 	return n

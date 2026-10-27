@@ -128,6 +128,19 @@ remain available for review and in the daily summary.
 Automatic-action history follows your message-retention period, capped at
 30 days. If a month file is busy, its cleanup waits until the next daily sweep.
 
+Wrong or Incomplete feedback corrects the item's current sent reply; the
+correction waits for your approval. Its matching action record is updated after
+the correction is saved. Reminder Pause and End also update their matching
+history when possible, without reversing a saved change if history is busy.
+Each page stop saves its record, produced state and a strictly increasing
+per-record history timestamp, then appends that same timestamp. Every other
+reminder save clears the association, including Undo, resume and engine updates.
+Old reminders have no association; the writer never infers one from old history.
+The history reader can require the exact current amendment rather than borrow
+an earlier stop's history when the new append fails.
+When offered, page Undo restores an ended reminder's prior active or paused
+state. Chat `resume` still does not restart an ended reminder.
+
 Development: `npm run build` builds the page into `dist/web-react` and updates
 integrity hashes; run it once before `delegate open` from source.
 `npm run typecheck` covers the server and the page; `npm run test:react` runs the React

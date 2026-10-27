@@ -1,7 +1,7 @@
 import type { Draft, Effect, PrFacts, Workflow } from './types.ts'
 import { pageChangeId } from './page-approval.ts'
 
-export type UnitReviewRun = { job: string; carrier: string; resultAt: string; rule: string; head: string; turn?: string; phase: 'posting' | 'held'; approval: { byRule: string; effectIds: string[]; effects: string; epoch: number } }
+export type UnitReviewRun = { job: string; carrier: string; resultAt: string; rule: string; head: string; turn?: string; phase: 'posting' | 'held'; action?: { id: string; at: string }; approval: { byRule: string; effectIds: string[]; effects: string; epoch: number } }
 export type UnitReviewDone = Omit<NonNullable<Workflow['reviewDone']>, 'pr'>
 export type UnitReviewCompleted = { job: string; resultAt: string; head: string; verified: boolean; findings: number; clean?: true; facts?: PrFacts }
 export type ReviewFrame = { epoch: number; basis?: { head: string; at: string }; run?: UnitReviewRun; done?: UnitReviewDone; completed?: UnitReviewCompleted }

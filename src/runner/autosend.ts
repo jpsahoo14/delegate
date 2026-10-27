@@ -12,8 +12,31 @@ import { freshRead } from '../store/fs.ts'
 import { recordCommit } from './commit.ts'
 import { stateFields, statusFields } from '../core/upgrades.ts'
 import { hourlyCap } from '../core/limits.ts'
-import { telemetryEvent } from '../core/telemetry.ts'
+import { currentTrace, telemetryEvent } from '../core/telemetry.ts'
 import { frameOf } from '../core/review.ts'
+import type { ActionRecord } from '../store/actions.ts'
+import { completeAction, holdActionRecord, messagePart, reviewAction, startAction } from './action-record.ts'
+
+// send.ts calls this only at the final automatic write boundary, with its marked and scrubbed text.
+export function recordAutomaticReply(store: Store, wf: Workflow, ruleId: string, text: string) {
+	const shared = wf.reviewReply
+	let action: ActionRecord | undefined
+	if (shared?.rule === ruleId && shared.phase === 'held') {
+		if (!shared.units.length) return holdActionRecord(store, wf)
+		for (const id of shared.units) {
+			const run = frameOf(wf, id)?.run
+			const recorded = run && reviewAction(store, wf, run)
+			if (!recorded?.completedAt) return holdActionRecord(store, wf)
+			if (shared.units.length === 1) action = recorded
+		}
+		if (shared.units.length > 1) action = startAction(store, wf, 'reply', ruleId, [messagePart(text, wf.chat.id)])
+	} else action = startAction(store, wf, 'reply', ruleId, [messagePart(text, wf.chat.id)])
+	if (!action) return undefined
+	const previous = action.kind === 'review' ? action.parts.filter(part => part.kind !== 'message') : []
+	if (action.kind === 'review' && !completeAction(store, wf, action, [...previous, messagePart(text, wf.chat.id)])) return holdActionRecord(store, wf)
+	return (sent?: Workflow['sent'], error?: unknown) => completeAction(store, wf, action, [...previous, messagePart(text, wf.chat.id, sent, error)],
+		sent?.undoUntil ? { msgId: sent.msgId, until: sent.undoUntil } : undefined)
+}
 
 const policy = (cfg: Config) => ({ ...DEFAULT_POLICY, ...cfg.policy })
 // What the owner's rules are judged with for this item: the page's "why it waited" uses the same (#33).
@@ -133,11 +156,18 @@ async function ack(store: Store, src: Source, cfg: Config, wf: Workflow, ruleId?
 		}
 		const text = auth.text!
 		if (replyGap(text)) { holdReplyGap(store, wf, text, true); store.setHealth(`ack:${wf.code}`, REPLY_BLANK); return }
+		const action = startAction(store, wf, 'ack', ruleId, [messagePart(text, wf.chat.id)])
+		if (!action) return
 		// Marked and saved before posting: an acknowledgement goes out at most once, even if the result is lost.
 		wf.acked = true
 		commit()
-		const { msgId } = await src.send(wf.chat.id, text)
+		let msgId: string
+		try { ({ msgId } = await src.send(wf.chat.id, text)) } catch (error) {
+			completeAction(store, wf, action, [messagePart(text, wf.chat.id, undefined, error)])
+			throw error
+		}
 		store.addSent(msgId, text)
+		completeAction(store, wf, action, [messagePart(text, wf.chat.id, { msgId, at: new Date().toISOString() })])
 		store.addAuto(wf.chat.id, 'ack')
 		store.log(telemetryEvent('marker', { code: wf.code, applied: true, why: 'auto' }))
 		store.log({ event: 'ack', workflowId: wf.id, code: wf.code, rule: ruleId, byRule: ruleId, msgId })
@@ -166,6 +196,11 @@ export async function ownerActive(store: Store, src: Source): Promise<boolean> {
 
 // Send every scheduled reply whose delay has passed, through the same pre-send checks as an owner send (R-POL-03).
 export async function dueSends(store: Store, src: Source, cfg: Config, probe?: BuildProbe): Promise<number> {
+	for (const old of store.workflows().filter(w => w.ackRecordRetry && w.state !== 'done' && !w.acked && !w.ownerSend &&
+		(!w.ackRecordRetry.trace || w.ackRecordRetry.trace !== currentTrace()?.trace))) {
+		const wf = freshRead(() => store.workflow(old.id))
+		if (wf?.ackRecordRetry && !wf.acked && !wf.ownerSend && wf.state !== 'done') await ackJob(store, src, cfg, wf)
+	}
 	const due = store.workflows().filter(w => w.state === 'scheduled' && w.sendAt && Date.parse(w.sendAt) <= Date.now()).filter(w => !holdReplyGap(store, w, w.draft?.text, true))
 	for (const w of due.filter(w => w.draft?.preview)) {
 		const commit = recordCommit(w, () => store.workflow(w.id), store.save.bind(store))

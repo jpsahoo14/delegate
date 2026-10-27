@@ -228,7 +228,7 @@ export class Store {
 
 	automations(): Automation[] { return records<Automation>(this.p('state', 'automations')) }
 	automation(code: string): Automation | undefined { return this.automations().find(a => a.code === code.toUpperCase()) }
-	saveAutomation(a: Automation) { a.updatedAt = new Date().toISOString(); this.w(this.p('state', 'automations', `${a.id}.json`), a) }
+	saveAutomation(a: Automation, stop?: Automation['stop']) { a.stop = stop; a.updatedAt = new Date().toISOString(); this.w(this.p('state', 'automations', `${a.id}.json`), a) }
 
 	proposals(): Proposal[] { return records<Proposal>(this.p('state', 'proposals')) }
 	proposal(code: string): Proposal | undefined { return this.proposals().find(p => p.code === code.toUpperCase()) }

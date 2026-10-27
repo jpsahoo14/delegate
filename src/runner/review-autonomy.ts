@@ -5,7 +5,7 @@ import { pendingEffects, isVote, prIdOf, sameChange, sameHead, refusal } from '.
 import { pageChangeId } from '../core/page-approval.ts'
 import { decide, replyGap, reviewRuleFor } from '../core/policy.ts'
 import { authorize } from '../core/limits.ts'
-import { reviewDoneFacts, unitForJob } from '../core/review.ts'
+import { reviewDoneFacts, unitForJob, type UnitReviewRun } from '../core/review.ts'
 import { scrubDeep } from '../core/secrets.ts'
 import type { Config, Effect, Job, PrFacts, PrUnit, ReviewFinding, Workflow } from '../core/types.ts'
 import { stateFields } from '../core/upgrades.ts'
@@ -22,6 +22,7 @@ import { madeBefore, maybeOf } from './ledger.ts'
 import { adoProbe, factsOf, prOf, type BuildProbe, type PrRef } from './probe.ts'
 import { MAY_REVIEW, roleOn } from './review-gate.ts'
 import { membersOf } from './sharing.ts'
+import { completeAction, reviewAction, startAction, type ActionPart } from './action-record.ts'
 
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
 const clean = (v: string) => v.replace(/^\[(?:High|Medium|Low)\]\s*/i, '').replace(/\s+/g, ' ').trim()
@@ -29,6 +30,21 @@ const priority = { High: 0, Medium: 1, Low: 2 }
 type Thread = { file: string; line: number; text: string }
 type Options = { probe?: BuildProbe; call: Caller; completed?: { job: Job; effects: Effect[] } }
 export type ReviewCompletion = { pr: number; head?: string; status?: string; at: string; basis?: Workflow['reviewBasis']; facts?: PrFacts }
+const ledgerSeverity = { High: 'high', Medium: 'medium', Low: 'low' } as const
+function commentParts(effects: Effect[], pr: number, ruleId: string): ActionPart[] {
+	return effects.map(e => {
+		const payload = object(e.payload) ? e.payload : {}, args = e.call?.args ?? {}
+		return {
+			kind: 'comment', pr, text: String(args.content ?? args.text ?? args.body ?? '').split(/\r?\n/)[0],
+			...(typeof payload.file === 'string' ? { file: payload.file } : {}),
+			...(typeof payload.line === 'number' ? { line: payload.line } : {}),
+			...(e.severity ? { severity: ledgerSeverity[e.severity] } : {}),
+			...(e.done?.ref && /^https?:\/\//i.test(e.done.ref) ? { link: e.done.ref } : {}),
+			outcome: e.maybe ? 'unconfirmed' : e.error || e.off ? 'failed' : e.done?.byRule === ruleId ? 'posted' : 'unconfirmed',
+			...(e.error ? { why: e.error } : e.off ? { why: 'Not posted: already covered on the PR or left out.' } : {}),
+		}
+	})
+}
 
 export async function checkReviewCompletion(store: Store, job: Job, probe?: BuildProbe): Promise<ReviewCompletion | undefined> {
 	const parents = freshRead(() => job.parents.map(id => store.workflow(id)).filter((w): w is Workflow => w?.intent === 'pr_review'))
@@ -196,7 +212,9 @@ export async function reviewPostCheck(store: Store, job: Job, e: Effect, call: C
 				currentRun.resultAt !== currentCarrier?.result?.at || !currentFinding || !shareable(latest, currentFinding, ref, currentCarrier?.result) ||
 				!isDeepStrictEqual(commentCall(currentCfg, e, ref), e.call)) return { error: 'The finding or its audience changed while checking; comments stay proposed' }
 			const error = refusal(currentCfg, e, ref.id) ?? safety(store, currentCfg, now, currentUnit, byRule, groups)
-			return error ? { error } : duplicate ? { duplicate: true as const } : {}
+			if (error) return { error }
+			if (duplicate) return { duplicate: true as const }
+			return reviewAction(store, latest, currentRun) ? {} : { error: latest.statusReason!.text }
 		})
 	} catch (error) { return { error: String(error).slice(0, 300) } }
 }
@@ -246,18 +264,38 @@ export async function reviewCommentHook(store: Store, src: ChatSource, cfg: Conf
 			const currentOriginal = store.job(original.id)
 			if (currentOriginal?.state !== 'done' || currentOriginal.result?.at !== completed.resultAt ||
 				!isDeepStrictEqual(currentOriginal.result, original.result)) continue
+			const priorRun = structuredClone(unit.review.run), priorTurn = wf.revAt
 			if (cleanReview) {
-				unit.review.run = { job: original.id, carrier: original.id, resultAt: completed.resultAt, rule: rule.id, head, phase: 'posting',
+				const run: UnitReviewRun = { job: original.id, carrier: original.id, resultAt: completed.resultAt, rule: rule.id, head, phase: 'posting',
 					approval: { byRule: rule.id, effectIds: [], effects: keyOf([]), epoch } }
-				const error = freshRead(() => safety(store, store.config(), wf, unit!, rule.id, groups))
-				if (error) { unit.review.run = undefined; wf.status = `Review waits: ${error}`; commit(); continue }
+				const checkUnit: PrUnit = { ...unit, review: { ...unit.review, run } }
+				const check = { ...wf, prs: wf.prs?.map(value => value.id === checkUnit.id ? checkUnit : value) }
+				const error = freshRead(() => safety(store, store.config(), check, checkUnit, rule.id, groups))
+				if (error) { wf.status = `Review waits: ${error}`; commit(); continue }
+				const action = startAction(store, wf, 'review', rule.id, [])
+				if (!action) continue
+				// Ledger recovery can refresh wf.prs even without an owner change.
+				commit.refresh()
+				unit = wf.prs?.find(value => value.id === target.pr)
+				if (!unit || wf.intent !== 'pr_review' || wf.revAt !== priorTurn || postingBlocked(store, wf, unit) || !verified(unit) ||
+					unit.job !== original.id || unit.review?.epoch !== epoch || unit.review.completed?.resultAt !== completed.resultAt ||
+					!sameHead(unit.head, head) || !isDeepStrictEqual(unit.ref, ref) || !isDeepStrictEqual(unit.review.run, priorRun) ||
+					!isDeepStrictEqual(store.config().owner, cfg.owner)) continue
+				const latestOriginal = store.job(original.id)
+				if (latestOriginal?.state !== 'done' || latestOriginal.result?.at !== completed.resultAt ||
+					!isDeepStrictEqual(latestOriginal.result, original.result)) continue
+				const readyUnit: PrUnit = { ...unit, review: { ...unit.review, run } }
+				const ready = { ...wf, prs: wf.prs?.map(value => value.id === readyUnit.id ? readyUnit : value) }
+				const readyError = freshRead(() => safety(store, store.config(), ready, readyUnit, rule.id, groups))
+				if (readyError) { wf.status = `Review waits: ${readyError}`; commit(); continue }
+				unit.review.run = { ...run, action: { id: action.id, at: action.at } }
 				commit()
 				await finishReview(store, src, original, [], options.probe, true)
 				continue
 			}
 			const selected: Effect[] = []
 			const effects = (wf.effects ?? []).map(e => {
-				if (prIdOf(e.call) !== unit.id) return e
+				if (prIdOf(e.call) !== target.pr) return e
 				if (!pendingEffects([e]).length || e.origin === 'suggested' || e.group || e.error || maybeOf(store, e) || madeBefore(store, e)) return e
 				const finding = findingFor(e, original.result!.findings)
 				if (!finding?.severity || finding.thread || !isInlineComment(e)) return e
@@ -274,10 +312,28 @@ export async function reviewCommentHook(store: Store, src: ChatSource, cfg: Conf
 			selected.sort((a, b) => priority[a.severity!] - priority[b.severity!])
 			const batch = selected.slice(0, 10)
 			if (!batch.length) { wf.effects = effects; wf.status = 'Review comments wait for you: no new comment with verified severity and audience is ready'; commit(); continue }
-			unit.review.run = { job: '', carrier: original.id, resultAt: completed.resultAt, rule: rule.id, head, phase: 'posting',
+			const run: UnitReviewRun = { job: '', carrier: original.id, resultAt: completed.resultAt, rule: rule.id, head, phase: 'posting',
 				approval: { byRule: rule.id, effectIds: batch.map(pageChangeId), effects: keyOf(batch), epoch } }
-			const error = safety(store, store.config(), wf, unit, rule.id, groups)
-			if (error) { unit.review.run = undefined; wf.effects = effects; wf.status = `Review waits: ${error}`; commit(); continue }
+			const checkUnit: PrUnit = { ...unit, review: { ...unit.review, run } }
+			const check = { ...wf, prs: wf.prs?.map(value => value.id === checkUnit.id ? checkUnit : value) }
+			const error = safety(store, store.config(), check, checkUnit, rule.id, groups)
+			if (error) { wf.effects = effects; wf.status = `Review waits: ${error}`; commit(); continue }
+			const action = startAction(store, wf, 'review', rule.id, commentParts(batch, unit.id, rule.id))
+			if (!action) continue
+			commit.refresh()
+			unit = wf.prs?.find(value => value.id === target.pr)
+			if (!unit || wf.intent !== 'pr_review' || wf.revAt !== priorTurn || postingBlocked(store, wf, unit) || !verified(unit) ||
+				unit.job !== original.id || unit.review?.epoch !== epoch || unit.review.completed?.resultAt !== completed.resultAt ||
+				!sameHead(unit.head, head) || !isDeepStrictEqual(unit.ref, ref) || !isDeepStrictEqual(unit.review.run, priorRun) ||
+				!isDeepStrictEqual(store.config().owner, cfg.owner)) continue
+			const latestOriginal = store.job(original.id)
+			if (latestOriginal?.state !== 'done' || latestOriginal.result?.at !== completed.resultAt ||
+				!isDeepStrictEqual(latestOriginal.result, original.result)) continue
+			const readyUnit: PrUnit = { ...unit, review: { ...unit.review, run } }
+			const ready = { ...wf, prs: wf.prs?.map(value => value.id === readyUnit.id ? readyUnit : value) }
+			const readyError = safety(store, store.config(), ready, readyUnit, rule.id, groups)
+			if (readyError) { wf.effects = effects; wf.status = `Review waits: ${readyError}`; commit(); continue }
+			unit.review.run = { ...run, action: { id: action.id, at: action.at } }
 			const approvedIds = new Set(batch.map(pageChangeId))
 			wf.effects = effects.map(e => prIdOf(e.call) === unit.id && !e.done && !approvedIds.has(pageChangeId(e)) ? { ...e, byRule: undefined } : e)
 			const job = createChangeCarrier(store, cfg, wf, batch, unit)
@@ -305,9 +361,19 @@ const reviewRuleForEnabled = (store: Store) => store.rules().some(r => r.then ==
 async function finishReview(store: Store, src: ChatSource, job: Job, effects: Effect[], probe?: BuildProbe, cleanReview = false) {
 	for (const id of job.parents) {
 		const wf = freshRead(() => store.workflow(id))
-		const unit = wf && unitForJob(wf, job.id), run = unit?.review?.run
+		let unit = wf && unitForJob(wf, job.id), run = unit?.review?.run
 		if (!wf || !unit?.review || !run || run.phase !== 'posting' || run.job !== job.id) continue
+		const expectedUnit = unit.id, expectedEpoch = unit.review.epoch, expectedHead = unit.head
+		const expectedRun = structuredClone(run), expectedRef = structuredClone(unit.ref)
 		const commit = recordCommit(wf, () => store.workflow(wf.id), store.save.bind(store))
+		const action = reviewAction(store, wf, run)
+		const recorded = !!action && completeAction(store, wf, action, commentParts(effects.filter(e => prIdOf(e.call) === expectedUnit), expectedUnit, expectedRun.rule))
+		commit.refresh()
+		unit = unitForJob(wf, job.id)
+		run = unit?.review?.run
+		if (!unit?.review || !run || unit.id !== expectedUnit || unit.review.epoch !== expectedEpoch ||
+			!isDeepStrictEqual(unit.head, expectedHead) || !isDeepStrictEqual(unit.ref, expectedRef) ||
+			!isDeepStrictEqual(run, expectedRun) || run.phase !== 'posting' || run.job !== job.id) continue
 		const completed = unit.review.completed, original = store.job(run.carrier)
 		const current = wf.state !== 'done' && verified(unit) && unit.review.epoch === run.approval.epoch && completed?.job === run.carrier &&
 			completed.resultAt === run.resultAt && original?.state === 'done' && original.result?.at === run.resultAt &&
@@ -356,7 +422,7 @@ async function finishReview(store: Store, src: ChatSource, job: Job, effects: Ef
 		const unsettled = effects.some(e => e.maybe || !e.done && !e.off && !e.error)
 		if (unsettled && !ownerBusy) wf.status = 'Some review comments have no final receipt; check them before sending the reply'
 		commit()
-		if ((!facts.posted.length && !facts.clean) || unsettled || ownerBusy) continue
+		if ((!facts.posted.length && !facts.clean) || unsettled || ownerBusy || !recorded) continue
 		advanceReviewUnits(store, store.config(), wf)
 		await sendReviewReply(store, src, wf.id, probe)
 	}

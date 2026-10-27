@@ -9,7 +9,7 @@ import { mdToHtml } from '../core/format.ts'
 import { authorizeReply, currentDraft, DEFAULT_POLICY, REPLY_BLANK, signatureOf, signsApproved, withMarker, reviewRuleFor, ruleFor } from '../core/policy.ts'
 import { scrub } from '../core/secrets.ts'
 import { authorize } from '../core/limits.ts'
-import { automaticDecision, policyContext } from './autosend.ts'
+import { automaticDecision, policyContext, recordAutomaticReply } from './autosend.ts'
 import { effectResultLine, MARK } from '../core/render.ts'
 import { placeOf } from '../web/model/place.ts'
 import { SendUncertain, type SendOpts, type Source } from '../adapters/source.ts'
@@ -548,7 +548,10 @@ export async function send(store: Store, src: Source, cfg: Config, wf: Workflow,
 			...(line.source === 'settings' && line.compile?.grants.some(grant => grant.id === ruleId && grant.then === 'review')
 				? { setting: 'reviewRule' as const } : {}) }
 	}) : undefined
+	const receipt = by.ruleId ? recordAutomaticReply(store, wf, by.ruleId, out!) : undefined
+	if (by.ruleId && !receipt) return false
 	try { ({ msgId } = await src.send(wf.chat.id, out!, replyContext(wf, out!, named, cfg.owner.id))) } catch (e) {
+		receipt?.(undefined, e)
 		if (!(e instanceof SendUncertain)) throw e
 		// May have been posted: held for the owner, never sent again by a rule, a retry or a stale ok (bug 10-23 R4).
 		Object.assign(wf, { ...stateFields(wf, 'needs_human'), sendAt: undefined, approved: undefined, ...statusFields('not-sure-sent', `Not sure it was sent; check Teams. Its answer was lost, and the chat did not show it yet. If it is there, skip ${wf.code}; if not, send it again.`) })
@@ -575,6 +578,7 @@ export async function send(store: Store, src: Source, cfg: Config, wf: Workflow,
 	wf.sent = { msgId, at: new Date().toISOString(), text, sendText: out !== text ? out : undefined, byRule: by.ruleId, ...(sentRule ? { rule: sentRule } : {}), undoUntil: new Date(Date.now() + p.undoMin * 60_000).toISOString(), ...(askMsgId ? { askMsgId } : {}), ...(sendChecks.length ? { checks: sendChecks } : {}), ...(holding ? { holding: true as const } : {}) }
 	if (wf.approved) wf.approved.replyDigest = undefined
 	commit(false)
+	receipt?.(wf.sent)
 	if (marker) store.log(telemetryEvent('marker', { code: wf.code, applied: marker.applied, why: marker.why }))
 	if (reviewReply) store.addAuto(wf.chat.id, 'send')
 	keepTodos(wf, wf.sent.at)

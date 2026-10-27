@@ -34,7 +34,7 @@ export const workflowApprovalRev = (workflow: Workflow): string => pageDigest({
 	work: workflow.work && { goal: workflow.work.goal, next: workflow.work.next, proposed: workflow.work.proposed },
 })
 export const automationApprovalRev = (automation: Automation): string => pageDigest({
-	state: automation.state, to: automation.to, text: automation.text, texts: automation.texts, rotation: automation.rotation,
+	state: automation.state, endedFrom: automation.endedFrom, to: automation.to, text: automation.text, texts: automation.texts, rotation: automation.rotation,
 	schedule: automation.schedule, until: automation.until, maxSends: automation.maxSends, stopOnReply: automation.stopOnReply,
 })
 export const proposalApprovalRev = (proposal: Proposal): string => pageDigest({ state: proposal.state, title: proposal.title, ops: proposal.ops })

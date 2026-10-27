@@ -21,7 +21,8 @@ import { authorize } from '../core/limits.ts'
 
 import { effectLine, effectResultLine, MARK, plain, renderMore, renderPreview } from '../core/render.ts'
 import { type Source } from '../adapters/source.ts'
-import type { Store } from '../store/state.ts'
+import { BUSY, type Store } from '../store/state.ts'
+import { amendAction } from '../store/actions.ts'
 import { close, isControl, say } from './intake.ts'
 import { OWNER_REPLY_UNCHECKED } from './owner-reply.ts'
 import { approveEffects, cancelRetry, carry, executing, okRelay, realProcs, refreshReviewQuestions, requestOneMore, saveInternalReceipts, saveUnitReceipts, stopPromisedWatch, stopStatusText, stopTracker, withdraw, type Procs } from './jobs.ts'
@@ -1020,9 +1021,24 @@ async function mark(store: Store, src: Source, cfg: Config, wf: Workflow, a: Ans
 		if (rule && Date.now() < Date.parse(wf.sent.undoUntil ?? '')) { await undo(store, src, cfg, wf, a); recordCommit(wf, () => store.workflow(wf.id), store.save.bind(store))(); return held ? reply(store, src, a, `${MARK}${held}`) : undefined }
 		return reply(store, src, a, `${MARK} Noted: ${wf.code} needed no reply. It is too late to take it back, so it stays in the chat.${held}`)
 	}
+	const sentId = wf.sent.msgId, sentAt = wf.sent.at
 	withdraw(store, procs, wf)
 	Object.assign(wf, { correction: { kind, note: a.text, sent, at: new Date().toISOString() }, sent: undefined, sendAt: undefined, decision: undefined, approved: undefined, ...stateFields(wf, 'running'), status: kind === 'wrong' ? 'Drafting a correction' : 'Drafting what was missing' })
 	recordCommit(wf, () => store.workflow(wf.id), store.save.bind(store))()
+	let historyHeld = false
+	try {
+		const matches = readActions(store, { since: new Date(Date.parse(sentAt) - 24 * 3_600_000).toISOString() }).filter(action =>
+			action.item?.wf === wf.id && action.parts.some(part => part.kind === 'message' && part.msgId === sentId) &&
+			!action.amendments.some(change => change.kind === 'undone'))
+		if (matches.length === 1) {
+			const saved = amendAction(store, { v: 1, ref: matches[0].id, at: new Date().toISOString(), by: 'owner', kind: 'corrected', item: wf.code })
+			historyHeld = saved === BUSY || saved === undefined
+		}
+	} catch { historyHeld = true }
+	if (historyHeld) {
+		try { store.log({ event: 'wdd-amend-held', kind: 'corrected' }) }
+		catch { console.error(`${NAME}: could not record correction history or its diagnostic.`) }
+	}
 	return reply(store, src, a, `${MARK} Drafting a ${kind === 'wrong' ? 'correction' : 'follow-up with what was missing'} for ${wf.code}. It waits for your ok; nothing is sent.`)
 }
 

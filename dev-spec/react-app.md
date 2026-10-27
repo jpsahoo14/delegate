@@ -695,6 +695,43 @@
   the token. Pair this binding with H0 before exposing it in New. The runner's same record guard is authoritative
   if the record changes or the window closes after enqueue. A too-late facade result also carries `reason: 'too-late'`
   for H0's typed outcome mapping.
+## What Delegate did: action-ledger foundation (W1, 0.2.47)
+
+- `store/actions.ts` exports the version-one subject/amendment types and append/amend/read/fold/prune APIs.
+  Subjects live in `state/actions/YYYY-MM.jsonl` by their immutable UTC `at`; amendments append to the subject's month,
+  even when the amendment arrives later. No legacy backfill or automatic writer is installed by this foundation.
+- Writes use the existing per-file record lock and test-root guard. A busy lock returns the existing `BUSY` symbol;
+  errors propagate, a conflicting subject ID refuses, and retrying the identical subject does not append another line.
+- The fold keeps amendment order, applies the last completed receipts/undo (including removing a prior undo), and
+  exposes `completedAt` plus amendment history. Without completion, planned parts remain unconfirmed. Unknown refs
+  are ignored and logged as UUID/kind metadata only, with no text or private context.
+- Reads use inclusive subject-time windows, newest month/record first, stopping at the window or requested limit.
+  Parsing/folding is cached by file mtime/size/inode; callers receive copies. Malformed files fail explicitly.
+- Only `pruneActions` rewrites/removes ledger lines, retaining each surviving subject with its amendments together.
+  Its result preserves the pruned subject count and `BUSY` status if any month lock could not be taken. This exposes
+  the agreed retention primitive only; HOST's retention scheduling, writers, Undo, stop and UI remain separate work.
+- W2 `becauseOf(store, grantId | {setting: {key, label}})` freezes the permitting line via the canonical `ruleLines`
+  `grantIds` mapping and `ruleTextHash`, or copies the supplied setting key/label. It copies values, not live rule or
+  setting objects. Missing or ambiguous grant mappings return `{kind: 'unknown'}` and log only the catalogued,
+  shape-only `wdd-because-missing` event. No text, grant ID or setting label is logged. The corresponding row copy is
+  "Delegate didn't record why this was allowed." (New's later projection/UI work, not installed here).
+  This helper records provenance only; it does not grant permission, append an action or install an automatic writer.
+- W3 installs pending records for automatic replies (including the existing typed work-result send path), acknowledgments
+  and one bundle per PR-unit review run. The final send boundary records the actual marked/scrubbed text; owner sends never
+  write the ledger. Review comments carry their actual first line and per-part receipts. A single-unit review reply joins
+  that unit's record, with its exact text completed as unconfirmed before the write so a crash cannot hide a possible message.
+  A multi-unit shared reply has a separate reply record and one Undo; comments stay on the individual PR review records.
+  Ledger helpers can commit and refresh the workflow's unit array during recovery. After a successful stub, queue paths
+  reacquire and revalidate the current mapped unit before assigning its run/action or creating its carrier. Completion
+  paths likewise reacquire the unit/run after record helpers before frame edits, retaining all head/epoch/owner/consent guards.
+- A failed/busy stub keeps the automatic action unsent for that tick with the agreed `statusReason`; its persisted
+  `actionRecordTries` raises the named `wdd-record:<workflow>` Health entry after three tries and clears on recovery.
+  A held acknowledgment retries through the next `dueSends` tick, not again within the same tick trace; it is not
+  marked acknowledged until the stub succeeds. Recovery restores the pre-hold acknowledgment status and clears its
+  narrow `ackRecordRetry` marker.
+  An incomplete completion leaves the pending evidence and a separate `wdd-incomplete:<workflow>` Health entry; it never
+  retries an external action. The only added W3 diagnostics are metadata-only `wdd-record-held {tries}` and
+  `wdd-record-incomplete {kind}`. Undo/stop/nudges, reminder writers and new A76 producers remain separate slices.
 
 ## Suggested-answer hint ownership (SEND, decision 57)
 

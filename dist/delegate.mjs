@@ -23146,6 +23146,7 @@ var init_page_approval = __esm({
     });
     automationApprovalRev = (automation2) => pageDigest({
       state: automation2.state,
+      endedFrom: automation2.endedFrom,
       to: automation2.to,
       text: automation2.text,
       texts: automation2.texts,
@@ -41603,6 +41604,21 @@ function readMonth(store2, file4) {
   if (months.size > 64) months.delete(months.keys().next().value);
   return month;
 }
+function appendAction(store2, action2) {
+  const value = record2.parse(action2), file4 = monthPath(store2, value.at);
+  assertTestSafe(file4);
+  markLedgerStart(store2, value.at);
+  return withRecordWriteNow(file4, () => {
+    const previous = readMonth(store2, file4).entries.find((item2) => "id" in item2 && item2.id === value.id);
+    if (previous) {
+      if (JSON.stringify(previous) !== JSON.stringify(value)) throw new Error(`Action ${value.id} was already recorded with different facts.`);
+      return structuredClone(previous);
+    }
+    appendLine(file4, value);
+    months.delete(file4);
+    return structuredClone(value);
+  });
+}
 function amendAction(store2, change2) {
   const value = amendment.parse(change2);
   for (const name of monthFiles(store2)) {
@@ -42396,6 +42412,7 @@ var init_telemetry = __esm({
       "wdd-stop": { privacy: "metadata", fields: ["kind", "scope", "mode"] },
       "wdd-record-held": { privacy: "metadata", fields: ["tries"] },
       "wdd-stop-record-failed": { privacy: "metadata", fields: ["reason"] },
+      "wdd-record-incomplete": { privacy: "metadata", fields: ["kind"] },
       "members-shape": { privacy: "metadata", fields: ["memberKeys", "roles", "roleValues", "tenantIdPresent"] },
       "forwarded-message-shape": { privacy: "metadata", fields: ["contentStatus", "shape", "truncated"] }
     };
@@ -42809,7 +42826,8 @@ var init_state = __esm({
       automation(code) {
         return this.automations().find((a) => a.code === code.toUpperCase());
       }
-      saveAutomation(a) {
+      saveAutomation(a, stop) {
+        a.stop = stop;
         a.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
         this.w(this.p("state", "automations", `${a.id}.json`), a);
       }
@@ -46065,7 +46083,117 @@ var init_provenance = __esm({
   }
 });
 
+// src/adapters/source.ts
+var SendUncertain;
+var init_source = __esm({
+  "src/adapters/source.ts"() {
+    "use strict";
+    SendUncertain = class extends Error {
+      constructor(detail) {
+        super(`Not sure it was sent; check Teams. ${detail}`);
+      }
+    };
+  }
+});
+
+// src/runner/action-record.ts
+import { randomUUID as randomUUID6 } from "node:crypto";
+function holdActionRecord(store2, wf, kind = "review") {
+  const commit = recordCommit(wf, () => store2.workflow(wf.id), store2.save.bind(store2));
+  wf.actionRecordTries = (wf.actionRecordTries ?? 0) + 1;
+  if (kind === "ack") wf.ackRecordRetry = { trace: currentTrace()?.trace, status: wf.ackRecordRetry?.status ?? wf.status };
+  Object.assign(wf, statusFields("not-sent", heldText));
+  commit(false);
+  store2.log({ event: "wdd-record-held", tries: wf.actionRecordTries });
+  if (wf.actionRecordTries >= 3) store2.setHealth(healthKey(wf), healthText);
+  return void 0;
+}
+function recorded(store2, wf) {
+  if (wf.actionRecordTries) {
+    const commit = recordCommit(wf, () => store2.workflow(wf.id), store2.save.bind(store2));
+    wf.actionRecordTries = void 0;
+    if (wf.status === heldText && wf.ackRecordRetry?.status !== void 0) wf.status = wf.ackRecordRetry.status;
+    wf.ackRecordRetry = void 0;
+    if (wf.statusReason?.text === heldText) wf.statusReason = void 0;
+    commit(false);
+  }
+  store2.setHealth(healthKey(wf));
+}
+function startAction(store2, wf, kind, ruleId, parts2) {
+  let saved;
+  try {
+    saved = appendAction(store2, {
+      v: 1,
+      id: randomUUID6(),
+      at: (/* @__PURE__ */ new Date()).toISOString(),
+      kind,
+      item: { code: wf.code, wf: wf.id },
+      chat: { id: wf.chat.id, group: !!wf.chat.group, name: wf.chat.name },
+      ...wf.asker ? { to: { id: wf.asker.id, first: wf.asker.name.split(/\s+/)[0] } } : {},
+      because: freshRead(() => becauseOf(store2, ruleId ?? "")),
+      parts: parts2.map((part2) => ({ ...part2, outcome: "unconfirmed" }))
+    });
+  } catch {
+    return holdActionRecord(store2, wf, kind);
+  }
+  if (saved === BUSY) return holdActionRecord(store2, wf, kind);
+  recorded(store2, wf);
+  return saved;
+}
+function reviewAction(store2, wf, run2) {
+  const ref = run2.action;
+  try {
+    const action2 = ref && readActions(store2, { since: ref.at, until: ref.at }).find((action3) => action3.id === ref.id);
+    if (action2?.kind === "review" && action2.item?.wf === wf.id && (action2.because.kind !== "line" || action2.because.grantId === run2.rule)) return action2;
+  } catch {
+    return holdActionRecord(store2, wf);
+  }
+  return holdActionRecord(store2, wf);
+}
+function completeAction(store2, wf, action2, parts2, undo3) {
+  try {
+    const saved = amendAction(store2, { v: 1, ref: action2.id, at: (/* @__PURE__ */ new Date()).toISOString(), kind: "completed", by: "engine", parts: parts2, ...undo3 ? { undo: undo3 } : {} });
+    if (saved !== BUSY && saved !== void 0) {
+      store2.setHealth(`wdd-incomplete:${wf.id}`);
+      return true;
+    }
+  } catch {
+  }
+  store2.log({ event: "wdd-record-incomplete", kind: action2.kind });
+  store2.setHealth(`wdd-incomplete:${wf.id}`, `${NAME} couldn't confirm its record of an automatic action. Check Teams or the PR before trying again.`);
+  return false;
+}
+function messagePart(text5, chat2, sent, error62) {
+  return {
+    kind: "message",
+    text: text5,
+    ...sent ? { msgId: sent.msgId, link: messageLink(chat2, sent.msgId) } : {},
+    outcome: sent ? "posted" : error62 === void 0 || error62 instanceof SendUncertain ? "unconfirmed" : "failed",
+    ...error62 === void 0 ? {} : { why: scrub(String(error62)).slice(0, 300) }
+  };
+}
+var heldText, healthText, healthKey;
+var init_action_record = __esm({
+  "src/runner/action-record.ts"() {
+    "use strict";
+    init_brand();
+    init_channels();
+    init_source();
+    init_secrets();
+    init_telemetry();
+    init_upgrades();
+    init_actions();
+    init_fs();
+    init_state();
+    init_commit();
+    heldText = `${NAME} couldn't save its record of this, so it didn't send by itself.`;
+    healthText = `${NAME} can't save its record of what it does for you. Automatic replies wait until it can.`;
+    healthKey = (wf) => `wdd-record:${wf.id}`;
+  }
+});
+
 // src/runner/automations.ts
+import { randomUUID as randomUUID7 } from "node:crypto";
 function nextAt(s3, after) {
   if (s3.every === "once") {
     const t2 = new Date(s3.start);
@@ -46166,10 +46294,18 @@ function answerAutomation(store2, a, ans) {
     case "pause":
       if (a.state !== "active") return `${a.code} is not running.`;
       Object.assign(a, { state: "paused", next: void 0 });
-      store2.saveAutomation(a);
-      return `Paused ${a.code}. Say "resume ${a.code}" to start it again.`;
-    case "resume":
-      if (a.state !== "paused") return `${a.code} is not paused.`;
+      return `Paused ${a.code}. Say "resume ${a.code}" to start it again.${saveReminderStop(store2, a, ans, "paused", now)}`;
+    case "resume": {
+      const restore = a.state === "ended" && a.endedFrom && ans.page ? a.endedFrom : void 0;
+      if (restore) {
+        a.endedFrom = void 0;
+        if (restore === "paused") {
+          a.state = "paused";
+          store2.saveAutomation(a);
+          return `Paused ${a.code}. Say "resume ${a.code}" to start it again.`;
+        }
+      }
+      if (a.state !== "paused" && restore !== "active") return `${a.code} is not paused.`;
       if (!nextAt(a.schedule, now)) {
         Object.assign(a, { state: "ended" });
         store2.saveAutomation(a);
@@ -46178,15 +46314,85 @@ function answerAutomation(store2, a, ans) {
       Object.assign(a, { state: "active", next: nextAt(a.schedule, now).toISOString(), why: void 0 });
       store2.saveAutomation(a);
       return `Resumed ${a.code}. Next: ${new Date(a.next).toLocaleString()}.`;
+    }
     case "skip":
+      if (a.state === "active" || a.state === "paused") a.endedFrom = a.state;
       Object.assign(a, { state: "ended", next: void 0 });
-      store2.saveAutomation(a);
-      return `Ended ${a.code}. Nothing more will be sent.`;
+      return `Ended ${a.code}. Nothing more will be sent.${saveReminderStop(store2, a, ans, "ended", now)}`;
     case "more":
       return `${describe3(a)}. ${a.state}${a.next ? `, next ${new Date(a.next).toLocaleString()}` : ""}. Sent ${a.count} time${a.count === 1 ? "" : "s"}.`;
     default:
       return `${a.code} takes ok, edit, pause, resume, or skip.`;
   }
+}
+function saveReminderStop(store2, a, answer, produced, now) {
+  let stop, historyFailed = false;
+  if (answer.page && /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(answer.text ?? "")) {
+    try {
+      const action2 = readActions(store2, { since: new Date(now.getTime() - 30 * 864e5).toISOString() }).find((record4) => record4.id === answer.text && record4.kind === "reminder" && record4.because.kind === "setting" && record4.because.key === a.code);
+      if (action2) {
+        const latest2 = action2.amendments.reduce((at3, amendment2) => amendment2.kind === "stopped" ? Math.max(at3, Date.parse(amendment2.at)) : at3, -Infinity);
+        stop = { recordId: action2.id, produced, at: new Date(Math.max(now.getTime(), latest2 + 1)).toISOString() };
+      }
+    } catch {
+      historyFailed = true;
+    }
+  }
+  store2.saveAutomation(a, stop);
+  if (stop) {
+    try {
+      const saved = amendAction(store2, { v: 1, ref: stop.recordId, at: stop.at, by: "owner", kind: "stopped" });
+      historyFailed = saved === BUSY || saved === void 0;
+    } catch {
+      historyFailed = true;
+    }
+  }
+  return historyFailed ? ` ${produced === "paused" ? "Paused" : "Ended"}, but ${NAME} could not save its history. Check the reminder in Settings.` : "";
+}
+function holdReminderRecord(store2, a) {
+  a.recordTries = (a.recordTries ?? 0) + 1;
+  store2.saveAutomation(a);
+  store2.log(telemetryEvent("wdd-record-held", { tries: a.recordTries }));
+  if (a.recordTries >= 3) store2.setHealth(`wdd-record:${a.id}`, `${NAME} can't save its record of what it does for you. Automatic replies wait until it can.`);
+}
+function startReminderRecord(store2, cfg, a, out, now) {
+  const chatId = a.to.chatId;
+  const group2 = /@unq\.gbl\.spaces$/i.test(chatId) ? false : /@thread\.(?:v2|skype)$/i.test(chatId) ? true : store2.workflows().find((wf) => wf.chat.id === chatId)?.chat.group;
+  if (group2 === void 0) return holdReminderRecord(store2, a);
+  const others = store2.members()[chatId]?.ids.filter((id) => id.toLowerCase() !== cfg.owner.id.toLowerCase()) ?? [];
+  let saved;
+  try {
+    saved = appendAction(store2, {
+      v: 1,
+      id: randomUUID7(),
+      at: now.toISOString(),
+      kind: "reminder",
+      chat: { id: chatId, group: group2, name: a.to.name },
+      ...!group2 && others.length === 1 ? { to: { id: others[0], first: a.to.name.split(/\s+/)[0] } } : {},
+      because: becauseOf(store2, { setting: { key: a.code, label: textFor(a).slice(0, 160) } }),
+      parts: [messagePart(out, chatId)]
+    });
+  } catch {
+    return holdReminderRecord(store2, a);
+  }
+  if (saved === BUSY) return holdReminderRecord(store2, a);
+  if (a.recordTries !== void 0) {
+    a.recordTries = void 0;
+    store2.setHealth(`wdd-record:${a.id}`);
+  }
+  return saved;
+}
+function completeReminderRecord(store2, a, action2, parts2, undo3) {
+  try {
+    const saved = amendAction(store2, { v: 1, ref: action2.id, at: (/* @__PURE__ */ new Date()).toISOString(), kind: "completed", by: "engine", parts: parts2, ...undo3 ? { undo: undo3 } : {} });
+    if (saved !== BUSY && saved !== void 0) {
+      store2.setHealth(`wdd-incomplete:${a.id}`);
+      return;
+    }
+  } catch {
+  }
+  store2.log(telemetryEvent("wdd-record-incomplete", { kind: action2.kind }));
+  store2.setHealth(`wdd-incomplete:${a.id}`, `${NAME} couldn't confirm its record of an automatic action. Check Teams or the PR before trying again.`);
 }
 async function dueAutomations(store2, src, cfg, now = /* @__PURE__ */ new Date()) {
   let n = 0;
@@ -46243,20 +46449,28 @@ async function dueAutomations(store2, src, cfg, now = /* @__PURE__ */ new Date()
       store2.log({ event: "automation-skipped", code: a.code, why: skip, ...!auth.allowed ? { blockedBy: auth.blockedBy } : {} });
       continue;
     }
+    const action2 = startReminderRecord(store2, cfg, a, out, now);
+    if (!action2) continue;
     const count = a.count + 1;
     const spent = count >= (a.maxSends ?? Infinity) || a.rotation === "once-each" && count >= textsOf(a).length;
     Object.assign(a, { count, next: spent || after(next2) ? void 0 : next2.toISOString(), state: spent || after(next2) ? "ended" : "active", lastAt: now.toISOString() });
     store2.saveAutomation(a);
     store2.addAuto(a.to.chatId, "send");
+    let sent, error62;
     try {
       const { msgId } = await src.send(a.to.chatId, out);
+      sent = { msgId, at: now.toISOString() };
       store2.addSent(msgId, out);
       store2.log(telemetryEvent("marker", { code: a.code, applied: true, why: "auto" }));
       store2.setHealth(`auto:${a.code}`);
       store2.log({ event: "sent", code: a.code, chat: a.to.chatId, asker: { id: "", name: a.to.name }, approvedBy: `automation:${a.code}`, msgId, text: out });
       n++;
     } catch (e) {
+      if (!sent) error62 = e;
       store2.setHealth(`auto:${a.code}`, `${a.code} may not have reached ${a.to.name}: ${String(e).slice(0, 120)}. It counts as sent, so nothing goes twice.`);
+    } finally {
+      const undo3 = sent ? { msgId: sent.msgId, until: new Date(now.getTime() + { ...DEFAULT_POLICY, ...cfg.policy }.undoMin * 6e4).toISOString() } : void 0;
+      completeReminderRecord(store2, a, action2, [messagePart(out, a.to.chatId, sent, error62)], undo3);
     }
   }
   return n;
@@ -46265,6 +46479,7 @@ var DAYS2, localDay3, at2, clock2, stamp, textsOf, HHMM;
 var init_automations = __esm({
   "src/runner/automations.ts"() {
     "use strict";
+    init_brand();
     init_intake();
     init_ids();
     init_policy();
@@ -46272,7 +46487,10 @@ var init_automations = __esm({
     init_sharing();
     init_vote_claims();
     init_fs();
+    init_state();
     init_channels();
+    init_actions();
+    init_action_record();
     init_telemetry();
     DAYS2 = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
     localDay3 = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -49896,6 +50114,30 @@ var init_reply_gap = __esm({
 });
 
 // src/runner/autosend.ts
+function recordAutomaticReply(store2, wf, ruleId, text5) {
+  const shared = wf.reviewReply;
+  let action2;
+  if (shared?.rule === ruleId && shared.phase === "held") {
+    if (!shared.units.length) return holdActionRecord(store2, wf);
+    for (const id of shared.units) {
+      const run2 = frameOf(wf, id)?.run;
+      const recorded2 = run2 && reviewAction(store2, wf, run2);
+      if (!recorded2?.completedAt) return holdActionRecord(store2, wf);
+      if (shared.units.length === 1) action2 = recorded2;
+    }
+    if (shared.units.length > 1) action2 = startAction(store2, wf, "reply", ruleId, [messagePart(text5, wf.chat.id)]);
+  } else action2 = startAction(store2, wf, "reply", ruleId, [messagePart(text5, wf.chat.id)]);
+  if (!action2) return void 0;
+  const previous = action2.kind === "review" ? action2.parts.filter((part2) => part2.kind !== "message") : [];
+  if (action2.kind === "review" && !completeAction(store2, wf, action2, [...previous, messagePart(text5, wf.chat.id)])) return holdActionRecord(store2, wf);
+  return (sent, error62) => completeAction(
+    store2,
+    wf,
+    action2,
+    [...previous, messagePart(text5, wf.chat.id, sent, error62)],
+    sent?.undoUntil ? { msgId: sent.msgId, until: sent.undoUntil } : void 0
+  );
+}
 function automaticDecision(store2, cfg, wf, ctx = policyContext(store2, cfg, wf)) {
   const job = wf.job ? store2.job(wf.job) : void 0;
   const nativeReviewReply = wf.intent === "pr_review" && !!wf.reviewReply;
@@ -50004,10 +50246,19 @@ async function ack(store2, src, cfg, wf, ruleId) {
       store2.setHealth(`ack:${wf.code}`, REPLY_BLANK);
       return;
     }
+    const action2 = startAction(store2, wf, "ack", ruleId, [messagePart(text5, wf.chat.id)]);
+    if (!action2) return;
     wf.acked = true;
     commit();
-    const { msgId } = await src.send(wf.chat.id, text5);
+    let msgId;
+    try {
+      ({ msgId } = await src.send(wf.chat.id, text5));
+    } catch (error62) {
+      completeAction(store2, wf, action2, [messagePart(text5, wf.chat.id, void 0, error62)]);
+      throw error62;
+    }
     store2.addSent(msgId, text5);
+    completeAction(store2, wf, action2, [messagePart(text5, wf.chat.id, { msgId, at: (/* @__PURE__ */ new Date()).toISOString() })]);
     store2.addAuto(wf.chat.id, "ack");
     store2.log(telemetryEvent("marker", { code: wf.code, applied: true, why: "auto" }));
     store2.log({ event: "ack", workflowId: wf.id, code: wf.code, rule: ruleId, byRule: ruleId, msgId });
@@ -50028,6 +50279,10 @@ async function ownerActive(store2, src) {
   return (await src.presence()).availability === "Available";
 }
 async function dueSends(store2, src, cfg, probe) {
+  for (const old of store2.workflows().filter((w) => w.ackRecordRetry && w.state !== "done" && !w.acked && !w.ownerSend && (!w.ackRecordRetry.trace || w.ackRecordRetry.trace !== currentTrace()?.trace))) {
+    const wf = freshRead(() => store2.workflow(old.id));
+    if (wf?.ackRecordRetry && !wf.acked && !wf.ownerSend && wf.state !== "done") await ackJob(store2, src, cfg, wf);
+  }
   const due2 = store2.workflows().filter((w) => w.state === "scheduled" && w.sendAt && Date.parse(w.sendAt) <= Date.now()).filter((w) => !holdReplyGap(store2, w, w.draft?.text, true));
   for (const w of due2.filter((w2) => w2.draft?.preview)) {
     const commit = recordCommit(w, () => store2.workflow(w.id), store2.save.bind(store2));
@@ -50087,6 +50342,7 @@ var init_autosend = __esm({
     init_limits();
     init_telemetry();
     init_review();
+    init_action_record();
     policy = (cfg) => ({ ...DEFAULT_POLICY, ...cfg.policy });
     policyContext = (store2, cfg, wf) => {
       const members2 = store2.members()[wf.chat.id];
@@ -50132,19 +50388,6 @@ var init_place = __esm({
     "use strict";
     init_sharing();
     isGroup = (chat2) => chat2.group ?? /@thread\.v2$/i.test(chat2.id);
-  }
-});
-
-// src/adapters/source.ts
-var SendUncertain;
-var init_source = __esm({
-  "src/adapters/source.ts"() {
-    "use strict";
-    SendUncertain = class extends Error {
-      constructor(detail) {
-        super(`Not sure it was sent; check Teams. ${detail}`);
-      }
-    };
   }
 });
 
@@ -50816,9 +51059,12 @@ async function send(store2, src, cfg, wf, text5, by, probe) {
       ...line3.source === "settings" && line3.compile?.grants.some((grant) => grant.id === ruleId && grant.then === "review") ? { setting: "reviewRule" } : {}
     };
   }) : void 0;
+  const receipt = by.ruleId ? recordAutomaticReply(store2, wf, by.ruleId, out) : void 0;
+  if (by.ruleId && !receipt) return false;
   try {
     ({ msgId } = await src.send(wf.chat.id, out, replyContext(wf, out, named2, cfg.owner.id)));
   } catch (e) {
+    receipt?.(void 0, e);
     if (!(e instanceof SendUncertain)) throw e;
     Object.assign(wf, { ...stateFields(wf, "needs_human"), sendAt: void 0, approved: void 0, ...statusFields("not-sure-sent", `Not sure it was sent; check Teams. Its answer was lost, and the chat did not show it yet. If it is there, skip ${wf.code}; if not, send it again.`) });
     store2.log({ event: "send-uncertain", workflowId: wf.id, code: wf.code, chat: wf.chat.id, byRule: by.ruleId, error: e.message.slice(0, 300) });
@@ -50839,6 +51085,7 @@ async function send(store2, src, cfg, wf, text5, by, probe) {
   wf.sent = { msgId, at: (/* @__PURE__ */ new Date()).toISOString(), text: text5, sendText: out !== text5 ? out : void 0, byRule: by.ruleId, ...sentRule ? { rule: sentRule } : {}, undoUntil: new Date(Date.now() + p.undoMin * 6e4).toISOString(), ...askMsgId ? { askMsgId } : {}, ...sendChecks.length ? { checks: sendChecks } : {}, ...holding ? { holding: true } : {} };
   if (wf.approved) wf.approved.replyDigest = void 0;
   commit(false);
+  receipt?.(wf.sent);
   if (marker) store2.log(telemetryEvent("marker", { code: wf.code, applied: marker.applied, why: marker.why }));
   if (reviewReply) store2.addAuto(wf.chat.id, "send");
   keepTodos(wf, wf.sent.at);
@@ -50906,13 +51153,13 @@ function replyContext(wf, text5 = "", all = {}, ownerId = "") {
 }
 async function undo2(store2, src, cfg, wf, a) {
   const actions2 = recentActions(store2).filter((action3) => action3.item?.wf === wf.id);
-  const recorded = wf.sent && actions2.find((action3) => action3.parts.some((part2) => part2.kind === "message" && part2.msgId === wf.sent.msgId));
-  const action2 = wf.sent ? recorded : actions2.find((action3) => undoableAction(action3));
+  const recorded2 = wf.sent && actions2.find((action3) => action3.parts.some((part2) => part2.kind === "message" && part2.msgId === wf.sent.msgId));
+  const action2 = wf.sent ? recorded2 : actions2.find((action3) => undoableAction(action3));
   if (action2) {
     const result2 = await undoAction(store2, src, cfg, action2.id, actionApprovalRev(action2));
     return reply(store2, src, a, `${MARK} ${result2.ok ? result2.warning ?? `Taken back.${result2.item ? ` ${result2.item} is back in your inbox as a draft.` : " The current draft and changes were left alone."} PR comments and other changes stay as they are.` : result2.why}`, !result2.ok);
   }
-  if (recorded || !wf.sent && actions2.length) return reply(store2, src, a, `${MARK} ${tooLate}`, true);
+  if (recorded2 || !wf.sent && actions2.length) return reply(store2, src, a, `${MARK} ${tooLate}`, true);
   if (wf.sent?.byRule && actions2.some((action3) => !action3.completedAt && action3.at <= wf.sent.at && action3.because.kind === "line" && action3.because.grantId === wf.sent.byRule))
     return reply(store2, src, a, `${MARK} The record does not confirm this sent reply. Check Teams before taking it back.`, true);
   if (!wf.sent) return reply(store2, src, a, `${MARK} ${wf.code} has not been sent. Nothing changed.`);
@@ -51664,8 +51911,8 @@ async function applyOne(store2, src, cfg, wf, a, procs, probe, quick2) {
     if (a.verb === "undo") {
       const now = Date.now(), sent = wf.sent;
       const actions2 = readActions(store2, { since: new Date(now - 30 * 864e5).toISOString() }).filter((action2) => action2.item?.wf === wf.id);
-      const recorded = sent && actions2.find((action2) => action2.parts.some((part2) => part2.kind === "message" && part2.msgId === sent.msgId));
-      const target2 = sent ? recorded : actions2.find((action2) => undoableAction(action2, now));
+      const recorded2 = sent && actions2.find((action2) => action2.parts.some((part2) => part2.kind === "message" && part2.msgId === sent.msgId));
+      const target2 = sent ? recorded2 : actions2.find((action2) => undoableAction(action2, now));
       const unconfirmed = sent?.byRule && actions2.some((action2) => !action2.completedAt && action2.at <= sent.at && action2.because.kind === "line" && action2.because.grantId === sent.byRule);
       canUndo = target2 ? undoableAction(target2, now) : !!sent && now < Date.parse(sent.undoUntil ?? "") && !unconfirmed;
     }
@@ -52220,9 +52467,27 @@ async function mark(store2, src, cfg, wf, a, procs) {
     }
     return reply(store2, src, a, `${MARK} Noted: ${wf.code} needed no reply. It is too late to take it back, so it stays in the chat.${held}`);
   }
+  const sentId = wf.sent.msgId, sentAt = wf.sent.at;
   withdraw(store2, procs, wf);
   Object.assign(wf, { correction: { kind, note: a.text, sent, at: (/* @__PURE__ */ new Date()).toISOString() }, sent: void 0, sendAt: void 0, decision: void 0, approved: void 0, ...stateFields(wf, "running"), status: kind === "wrong" ? "Drafting a correction" : "Drafting what was missing" });
   recordCommit(wf, () => store2.workflow(wf.id), store2.save.bind(store2))();
+  let historyHeld = false;
+  try {
+    const matches2 = readActions(store2, { since: new Date(Date.parse(sentAt) - 24 * 36e5).toISOString() }).filter((action2) => action2.item?.wf === wf.id && action2.parts.some((part2) => part2.kind === "message" && part2.msgId === sentId) && !action2.amendments.some((change2) => change2.kind === "undone"));
+    if (matches2.length === 1) {
+      const saved = amendAction(store2, { v: 1, ref: matches2[0].id, at: (/* @__PURE__ */ new Date()).toISOString(), by: "owner", kind: "corrected", item: wf.code });
+      historyHeld = saved === BUSY || saved === void 0;
+    }
+  } catch {
+    historyHeld = true;
+  }
+  if (historyHeld) {
+    try {
+      store2.log({ event: "wdd-amend-held", kind: "corrected" });
+    } catch {
+      console.error(`${NAME}: could not record correction history or its diagnostic.`);
+    }
+  }
   return reply(store2, src, a, `${MARK} Drafting a ${kind === "wrong" ? "correction" : "follow-up with what was missing"} for ${wf.code}. It waits for your ok; nothing is sent.`);
 }
 async function retune(store2, src, wf, a) {
@@ -52346,6 +52611,8 @@ var init_apply = __esm({
     init_limits();
     init_render();
     init_source();
+    init_state();
+    init_actions();
     init_intake2();
     init_owner_reply();
     init_jobs();
@@ -53311,6 +53578,22 @@ var init_probe = __esm({
 
 // src/runner/review-autonomy.ts
 import { isDeepStrictEqual as isDeepStrictEqual5 } from "node:util";
+function commentParts(effects, pr, ruleId) {
+  return effects.map((e) => {
+    const payload = object7(e.payload) ? e.payload : {}, args2 = e.call?.args ?? {};
+    return {
+      kind: "comment",
+      pr,
+      text: String(args2.content ?? args2.text ?? args2.body ?? "").split(/\r?\n/)[0],
+      ...typeof payload.file === "string" ? { file: payload.file } : {},
+      ...typeof payload.line === "number" ? { line: payload.line } : {},
+      ...e.severity ? { severity: ledgerSeverity[e.severity] } : {},
+      ...e.done?.ref && /^https?:\/\//i.test(e.done.ref) ? { link: e.done.ref } : {},
+      outcome: e.maybe ? "unconfirmed" : e.error || e.off ? "failed" : e.done?.byRule === ruleId ? "posted" : "unconfirmed",
+      ...e.error ? { why: e.error } : e.off ? { why: "Not posted: already covered on the PR or left out." } : {}
+    };
+  });
+}
 async function checkReviewCompletion(store2, job, probe) {
   const parents = freshRead(() => job.parents.map((id) => store2.workflow(id)).filter((w) => w?.intent === "pr_review"));
   const unit = parents.map((w) => unitForJob(w, job.id)).find((unit2) => unit2 !== void 0);
@@ -53461,7 +53744,9 @@ async function reviewPostCheck(store2, job, e, call2, probe) {
       const currentCompletion = currentUnit.review?.completed;
       if (!currentCompletion || currentCompletion.job !== currentCarrier?.id || currentCompletion.resultAt !== currentCarrier?.result?.at || currentRun.resultAt !== currentCarrier?.result?.at || !currentFinding || !shareable2(latest2, currentFinding, ref, currentCarrier?.result) || !isDeepStrictEqual5(commentCall(currentCfg, e, ref), e.call)) return { error: "The finding or its audience changed while checking; comments stay proposed" };
       const error62 = refusal(currentCfg, e, ref.id) ?? safety(store2, currentCfg, now, currentUnit, byRule, groups2);
-      return error62 ? { error: error62 } : duplicate ? { duplicate: true } : {};
+      if (error62) return { error: error62 };
+      if (duplicate) return { duplicate: true };
+      return reviewAction(store2, latest2, currentRun) ? {} : { error: latest2.statusReason.text };
     });
   } catch (error62) {
     return { error: String(error62).slice(0, 300) };
@@ -53504,8 +53789,9 @@ async function reviewCommentHook(store2, src, cfg, options) {
       if (!unit || postingBlocked(store2, wf, unit) || !verified(unit) || unit.job !== original.id || unit.review?.epoch !== epoch || unit.review.completed?.resultAt !== completed.resultAt || !isDeepStrictEqual5(unit.ref, ref) || !isDeepStrictEqual5(store2.config().owner, cfg.owner)) continue;
       const currentOriginal = store2.job(original.id);
       if (currentOriginal?.state !== "done" || currentOriginal.result?.at !== completed.resultAt || !isDeepStrictEqual5(currentOriginal.result, original.result)) continue;
+      const priorRun = structuredClone(unit.review.run), priorTurn = wf.revAt;
       if (cleanReview) {
-        unit.review.run = {
+        const run3 = {
           job: original.id,
           carrier: original.id,
           resultAt: completed.resultAt,
@@ -53514,20 +53800,37 @@ async function reviewCommentHook(store2, src, cfg, options) {
           phase: "posting",
           approval: { byRule: rule.id, effectIds: [], effects: keyOf2([]), epoch }
         };
-        const error63 = freshRead(() => safety(store2, store2.config(), wf, unit, rule.id, groups2));
+        const checkUnit2 = { ...unit, review: { ...unit.review, run: run3 } };
+        const check3 = { ...wf, prs: wf.prs?.map((value) => value.id === checkUnit2.id ? checkUnit2 : value) };
+        const error63 = freshRead(() => safety(store2, store2.config(), check3, checkUnit2, rule.id, groups2));
         if (error63) {
-          unit.review.run = void 0;
           wf.status = `Review waits: ${error63}`;
           commit();
           continue;
         }
+        const action3 = startAction(store2, wf, "review", rule.id, []);
+        if (!action3) continue;
+        commit.refresh();
+        unit = wf.prs?.find((value) => value.id === target2.pr);
+        if (!unit || wf.intent !== "pr_review" || wf.revAt !== priorTurn || postingBlocked(store2, wf, unit) || !verified(unit) || unit.job !== original.id || unit.review?.epoch !== epoch || unit.review.completed?.resultAt !== completed.resultAt || !sameHead(unit.head, head) || !isDeepStrictEqual5(unit.ref, ref) || !isDeepStrictEqual5(unit.review.run, priorRun) || !isDeepStrictEqual5(store2.config().owner, cfg.owner)) continue;
+        const latestOriginal2 = store2.job(original.id);
+        if (latestOriginal2?.state !== "done" || latestOriginal2.result?.at !== completed.resultAt || !isDeepStrictEqual5(latestOriginal2.result, original.result)) continue;
+        const readyUnit2 = { ...unit, review: { ...unit.review, run: run3 } };
+        const ready2 = { ...wf, prs: wf.prs?.map((value) => value.id === readyUnit2.id ? readyUnit2 : value) };
+        const readyError2 = freshRead(() => safety(store2, store2.config(), ready2, readyUnit2, rule.id, groups2));
+        if (readyError2) {
+          wf.status = `Review waits: ${readyError2}`;
+          commit();
+          continue;
+        }
+        unit.review.run = { ...run3, action: { id: action3.id, at: action3.at } };
         commit();
         await finishReview(store2, src, original, [], options.probe, true);
         continue;
       }
       const selected = [];
       const effects = (wf.effects ?? []).map((e) => {
-        if (prIdOf(e.call) !== unit.id) return e;
+        if (prIdOf(e.call) !== target2.pr) return e;
         if (!pendingEffects([e]).length || e.origin === "suggested" || e.group || e.error || maybeOf(store2, e) || madeBefore(store2, e)) return e;
         const finding = findingFor(e, original.result.findings);
         if (!finding?.severity || finding.thread || !isInlineComment(e)) return e;
@@ -53549,7 +53852,7 @@ async function reviewCommentHook(store2, src, cfg, options) {
         commit();
         continue;
       }
-      unit.review.run = {
+      const run2 = {
         job: "",
         carrier: original.id,
         resultAt: completed.resultAt,
@@ -53558,14 +53861,32 @@ async function reviewCommentHook(store2, src, cfg, options) {
         phase: "posting",
         approval: { byRule: rule.id, effectIds: batch.map(pageChangeId), effects: keyOf2(batch), epoch }
       };
-      const error62 = safety(store2, store2.config(), wf, unit, rule.id, groups2);
+      const checkUnit = { ...unit, review: { ...unit.review, run: run2 } };
+      const check2 = { ...wf, prs: wf.prs?.map((value) => value.id === checkUnit.id ? checkUnit : value) };
+      const error62 = safety(store2, store2.config(), check2, checkUnit, rule.id, groups2);
       if (error62) {
-        unit.review.run = void 0;
         wf.effects = effects;
         wf.status = `Review waits: ${error62}`;
         commit();
         continue;
       }
+      const action2 = startAction(store2, wf, "review", rule.id, commentParts(batch, unit.id, rule.id));
+      if (!action2) continue;
+      commit.refresh();
+      unit = wf.prs?.find((value) => value.id === target2.pr);
+      if (!unit || wf.intent !== "pr_review" || wf.revAt !== priorTurn || postingBlocked(store2, wf, unit) || !verified(unit) || unit.job !== original.id || unit.review?.epoch !== epoch || unit.review.completed?.resultAt !== completed.resultAt || !sameHead(unit.head, head) || !isDeepStrictEqual5(unit.ref, ref) || !isDeepStrictEqual5(unit.review.run, priorRun) || !isDeepStrictEqual5(store2.config().owner, cfg.owner)) continue;
+      const latestOriginal = store2.job(original.id);
+      if (latestOriginal?.state !== "done" || latestOriginal.result?.at !== completed.resultAt || !isDeepStrictEqual5(latestOriginal.result, original.result)) continue;
+      const readyUnit = { ...unit, review: { ...unit.review, run: run2 } };
+      const ready = { ...wf, prs: wf.prs?.map((value) => value.id === readyUnit.id ? readyUnit : value) };
+      const readyError = safety(store2, store2.config(), ready, readyUnit, rule.id, groups2);
+      if (readyError) {
+        wf.effects = effects;
+        wf.status = `Review waits: ${readyError}`;
+        commit();
+        continue;
+      }
+      unit.review.run = { ...run2, action: { id: action2.id, at: action2.at } };
       const approvedIds = new Set(batch.map(pageChangeId));
       wf.effects = effects.map((e) => prIdOf(e.call) === unit.id && !e.done && !approvedIds.has(pageChangeId(e)) ? { ...e, byRule: void 0 } : e);
       const job = createChangeCarrier(store2, cfg, wf, batch, unit);
@@ -53594,9 +53915,17 @@ async function reviewCommentHook(store2, src, cfg, options) {
 async function finishReview(store2, src, job, effects, probe, cleanReview = false) {
   for (const id of job.parents) {
     const wf = freshRead(() => store2.workflow(id));
-    const unit = wf && unitForJob(wf, job.id), run2 = unit?.review?.run;
+    let unit = wf && unitForJob(wf, job.id), run2 = unit?.review?.run;
     if (!wf || !unit?.review || !run2 || run2.phase !== "posting" || run2.job !== job.id) continue;
+    const expectedUnit = unit.id, expectedEpoch = unit.review.epoch, expectedHead = unit.head;
+    const expectedRun = structuredClone(run2), expectedRef = structuredClone(unit.ref);
     const commit = recordCommit(wf, () => store2.workflow(wf.id), store2.save.bind(store2));
+    const action2 = reviewAction(store2, wf, run2);
+    const recorded2 = !!action2 && completeAction(store2, wf, action2, commentParts(effects.filter((e) => prIdOf(e.call) === expectedUnit), expectedUnit, expectedRun.rule));
+    commit.refresh();
+    unit = unitForJob(wf, job.id);
+    run2 = unit?.review?.run;
+    if (!unit?.review || !run2 || unit.id !== expectedUnit || unit.review.epoch !== expectedEpoch || !isDeepStrictEqual5(unit.head, expectedHead) || !isDeepStrictEqual5(unit.ref, expectedRef) || !isDeepStrictEqual5(run2, expectedRun) || run2.phase !== "posting" || run2.job !== job.id) continue;
     const completed = unit.review.completed, original = store2.job(run2.carrier);
     const current3 = wf.state !== "done" && verified(unit) && unit.review.epoch === run2.approval.epoch && completed?.job === run2.carrier && completed.resultAt === run2.resultAt && original?.state === "done" && original.result?.at === run2.resultAt && sameHead(completed.head, run2.head);
     const verifiedClean = cleanReview && current3 && job.result?.reviewClean === true && job.result.findings?.length === 0 && job.result.effects.every((effect) => isVote(effect.call) && prIdOf(effect.call) === unit.id) && (wf.effects ?? []).filter((effect) => prIdOf(effect.call) === unit.id).every((effect) => isVote(effect.call)) && !wf.pending.length && !wf.ownerSend && !wf.approved && !job.result.question && !job.result.todos?.length;
@@ -53638,7 +53967,7 @@ async function finishReview(store2, src, job, effects, probe, cleanReview = fals
     const unsettled = effects.some((e) => e.maybe || !e.done && !e.off && !e.error);
     if (unsettled && !ownerBusy) wf.status = "Some review comments have no final receipt; check them before sending the reply";
     commit();
-    if (!facts.posted.length && !facts.clean || unsettled || ownerBusy) continue;
+    if (!facts.posted.length && !facts.clean || unsettled || ownerBusy || !recorded2) continue;
     advanceReviewUnits(store2, store2.config(), wf);
     await sendReviewReply(store2, src, wf.id, probe);
   }
@@ -53667,7 +53996,7 @@ async function sendReviewReply(store2, src, id, probe) {
     store2.log({ event: "review-autoreply-failed", code: wf.code, byRule: shared.rule, reason: String(error62).slice(0, 300) });
   }
 }
-var object7, clean3, priority, covered2, reviewRuleForEnabled;
+var object7, clean3, priority, ledgerSeverity, covered2, reviewRuleForEnabled;
 var init_review_autonomy = __esm({
   "src/runner/review-autonomy.ts"() {
     "use strict";
@@ -53690,9 +54019,11 @@ var init_review_autonomy = __esm({
     init_probe();
     init_review_gate();
     init_sharing();
+    init_action_record();
     object7 = (v) => !!v && typeof v === "object" && !Array.isArray(v);
     clean3 = (v) => v.replace(/^\[(?:High|Medium|Low)\]\s*/i, "").replace(/\s+/g, " ").trim();
     priority = { High: 0, Medium: 1, Low: 2 };
+    ledgerSeverity = { High: "high", Medium: "medium", Low: "low" };
     covered2 = (all, e) => object7(e.payload) && all.some((t2) => t2.file.replace(/^[/\\]/, "") === String(e.payload && object7(e.payload) ? e.payload.file : "").replace(/^[/\\]/, "") && t2.line === (object7(e.payload) ? e.payload.line : void 0) && t2.text === clean3(String(object7(e.payload) ? e.payload.text : "")));
     reviewRuleForEnabled = (store2) => store2.rules().some((r) => r.then === "review" && !r.off);
   }
@@ -54918,7 +55249,7 @@ __export(host_exports, {
   hostHash: () => hostHash,
   runHost: () => runHost
 });
-import { createHash as createHash12, randomUUID as randomUUID6 } from "node:crypto";
+import { createHash as createHash12, randomUUID as randomUUID8 } from "node:crypto";
 import { existsSync as existsSync20, readFileSync as readFileSync18, renameSync as renameSync4, rmSync as rmSync8, writeFileSync as writeFileSync9 } from "node:fs";
 import { createServer } from "node:http";
 import { homedir as homedir9, tmpdir as tmpdir2 } from "node:os";
@@ -54966,7 +55297,7 @@ async function runHost() {
   async function run2({ agent, input: input2 }) {
     const t2 = Date.now(), id = input2.sessionId;
     if (input2.purpose === "rule-compile") {
-      const controller = new AbortController(), warm3 = modelReady, sessionId = `rule-${randomUUID6()}`;
+      const controller = new AbortController(), warm3 = modelReady, sessionId = `rule-${randomUUID8()}`;
       let submitted = false;
       const timer = setTimeout(() => controller.abort(new Error("Reading this rule timed out")), RUN_MS);
       try {
@@ -55082,7 +55413,7 @@ async function runHost() {
     }
   }
   async function structured(input2, signal, options = {}) {
-    const provider = envProvider(), kind = options.kind ?? "quick", id = options.id ?? randomUUID6();
+    const provider = envProvider(), kind = options.kind ?? "quick", id = options.id ?? randomUUID8();
     const opening = client.createSession({
       sessionId: id,
       model: cfg.agent.model ?? process.env.COPILOT_PROVIDER_MODEL_ID,
@@ -55131,9 +55462,9 @@ async function runHost() {
       }, () => void 0).catch((error62) => store2.log({ event: `host-${kind}-cleanup-failed`, sessionId: id, error: String(error62).slice(0, 160) }));
     }
   }
-  const token = randomUUID6();
+  const token = randomUUID8();
   async function listViaCli(names) {
-    const id = `delegate-catalog-${randomUUID6()}`, out = {};
+    const id = `delegate-catalog-${randomUUID8()}`, out = {};
     const provider = envProvider();
     let s3;
     try {
@@ -60347,7 +60678,7 @@ init_repos();
 init_mcp_client();
 init_catalog();
 import { spawnSync as spawnSync4 } from "node:child_process";
-import { randomUUID as randomUUID7 } from "node:crypto";
+import { randomUUID as randomUUID9 } from "node:crypto";
 import { existsSync as existsSync31, mkdirSync as mkdirSync13, readdirSync as readdirSync12, statSync as statSync15, writeFileSync as writeFileSync16 } from "node:fs";
 import { homedir as homedir11, hostname as hostname4 } from "node:os";
 import { join as join42 } from "node:path";
@@ -66734,10 +67065,10 @@ function readSubmissionReceipt(store2, id, write = true) {
   const saved = write ? recover(store2, record4) : record4, outcomes = saved.ids.map((answerId) => store2.outcome(answerId));
   const applied = saved.processed || !saved.ids.length || outcomes.every((outcome2) => outcome2 !== void 0) || saved.ids.every((id2) => store2.answered(id2));
   const lostDetails = applied && saved.ids.length > 0 && !saved.processed && outcomes.some((outcome2) => outcome2 === void 0);
-  const recorded = pageText(outcomes.join(" "));
+  const recorded2 = pageText(outcomes.join(" "));
   const current3 = store2.byCode(saved.item);
   const missingDetail = current3 && pageText(current3.status) ? `Current item: ${pageText(current3.status)}` : "No result detail was recorded. Open the item to verify what happened.";
-  const text5 = lostDetails ? "The saved action was processed, but its detailed result is no longer available. Check the current item before acting; it will not be resent." : outcomes.length && outcomes.every((outcome2) => outcome2 !== void 0) ? recorded || missingDetail : applied ? pageText(saved.text) || missingDetail : `Queued. Waiting for ${NAME}.`;
+  const text5 = lostDetails ? "The saved action was processed, but its detailed result is no longer available. Check the current item before acting; it will not be resent." : outcomes.length && outcomes.every((outcome2) => outcome2 !== void 0) ? recorded2 || missingDetail : applied ? pageText(saved.text) || missingDetail : `Queued. Waiting for ${NAME}.`;
   const refused = !!saved.refused || !saved.accepted || saved.ids.some((id2) => store2.outcomeRefused(id2));
   const uncertain = !!saved.uncertain || !!lostDetails;
   if (write && applied && !saved.processed) store2.savePageSubmission({ ...saved, processed: true, text: text5, refused, uncertain });
@@ -67927,7 +68258,7 @@ Fix the first one you use (for most people: run it once and type /login), then r
 var candidates = () => [...(site().agents ?? []).map((c) => ["copilot", c]), ["copilot", ["copilot"]], ["claude", ["claude"]]];
 function agentProblem(flavor, command) {
   const [cmd2, ...pre] = command;
-  const session = ["--session-id", randomUUID7()];
+  const session = ["--session-id", randomUUID9()];
   const args2 = flavor === "claude" ? ["-p", "Reply with the single word OK", ...session] : ["-p", "Reply with the single word OK", ...session, "--allow-all-tools", "--no-ask-user", "-s", "--disable-builtin-mcps", "--available-tools", "task_complete"];
   const r = spawnSync4(cmd2, [...pre, ...args2], { encoding: "utf8", timeout: 18e4, windowsHide: true, env: workerEnv(process.env) });
   const out = `${r.stdout ?? ""}

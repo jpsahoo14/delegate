@@ -97,6 +97,9 @@ export type Automation = {
 	// The person's reply, waiting for the AI to decide: done (end it), a time (move the next send), or keep (B4).
 	heard?: { text: string; from: string; at: string }
 	state: 'proposed' | 'active' | 'paused' | 'ended'; next?: string; lastAt?: string; count: number
+	recordTries?: number
+	endedFrom?: 'active' | 'paused'
+	stop?: { recordId: string; produced: 'paused' | 'ended'; at: string }
 	createdAt: string; updatedAt: string
 }
 
@@ -301,6 +304,8 @@ export type Workflow = {
 	status: string
 	workingSince?: string
 	statusReason?: { kind: 'not-sent' | 'not-sure-sent' | 'could-not-start' | 'not-finished' | 'refused' | 'back-from-window' | 'vote-claim' | 'action-claim'; text: string; at: string }
+	actionRecordTries?: number
+	ackRecordRetry?: { trace?: string; status?: string }
 	reviewAgain?: { pr: number; head: string; at: string }
 	returnedFrom?: { machine: string; at: string; report: boolean }
 	// holding: the last send was a holding reply; the full answer is still owed and the item stays open (#41).

@@ -65,6 +65,7 @@ type EventFields = {
 	'wdd-stop': { kind: 'reply' | 'ack' | 'review' | 'reminder' | 'change'; scope: 'chat' | 'person' | 'never'; mode: 'added' | 'turned-off' }
 	'wdd-record-held': { tries: number }
 	'wdd-stop-record-failed': { reason: 'busy' | 'missing' | 'write-failed' }
+	'wdd-record-incomplete': { kind: string }
 	'members-shape': { memberKeys: string[]; roles: { array: number; undefined: number; other: number }; roleValues: string[]; tenantIdPresent: number }
 	'forwarded-message-shape': { contentStatus: 'json' | 'invalid-json' | 'value'; shape: { path: string; kind: string }[]; truncated: boolean }
 }
@@ -94,6 +95,7 @@ const metadataEvents = {
 	'wdd-stop': { privacy: 'metadata', fields: ['kind', 'scope', 'mode'] },
 	'wdd-record-held': { privacy: 'metadata', fields: ['tries'] },
 	'wdd-stop-record-failed': { privacy: 'metadata', fields: ['reason'] },
+	'wdd-record-incomplete': { privacy: 'metadata', fields: ['kind'] },
 	'members-shape': { privacy: 'metadata', fields: ['memberKeys', 'roles', 'roleValues', 'tenantIdPresent'] },
 	'forwarded-message-shape': { privacy: 'metadata', fields: ['contentStatus', 'shape', 'truncated'] },
 } as const satisfies { [K in keyof EventFields]: { privacy: 'metadata'; fields: readonly (keyof EventFields[K])[] } }
